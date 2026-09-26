@@ -676,10 +676,17 @@ This is a hint, not a hard constraint. Use your own good judgement if ever in do
     sample/event views and sparse transaction-owned backing now interpret each
     `PortStoragePlan` index, bind non-owning published-page readers, preserve the
     stable/generation-local identity boundary and validate required views before the
-    realization is sealed. Next execute the retained direct/conversion/projection/
-    fan-in operations against those views, then extend the generated background root
-    to invoke narrow transaction-local prepare/finalize hooks around node calls.
-    Then add the complete transaction coordinator and the Tick invocation frame with
+    realization is sealed. The realization now executes compiler-retained operations
+    exactly once: direct delivery stays copy-free, sample operations apply planned
+    latency/conversion/projection assembly, and event operations reuse the common
+    conversion plus stable semantic-order k-way merge primitives. The generated
+    evaluate root now invokes transaction-supplied prepare/finalize hooks immediately
+    around each active authored-Tock invocation or complete replay loop. Each hook
+    receives only an opaque `BackgroundStorageOperationFrame`; that frame retains the
+    node's immutable before/after operation spans and executes them in compiler order.
+    Forward/reverse propagation remains hook-free, and generated code receives no
+    executor, store or transaction pointer. Next populate the Tock/replay bindings and
+    add the complete transaction coordinator, then add the Tick invocation frame with
     pinned published pages plus `TickMaterializationSnapshot` bindings. Final commit
     advances prepared coverage, page publication and any capture frontier together;
     every failure advances none. Background ephemeral Random Access may use

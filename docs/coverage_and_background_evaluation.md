@@ -2123,22 +2123,35 @@ recording merely because that planning metadata exists.
       non-audio reclamation pass after no slot pins them. Existing retained pages
       currently reject a page-width change until the later explicit repaging/
       generation-transition stage is implemented;
-   4. **In progress:** add address-stable runtime views and small sample/event
+   4. **Landed:** add address-stable runtime views and small sample/event
       direct, conversion, projection, fan-in and merge operations, then realize
       the complete `BackgroundStoragePlan` for transaction-local and persisted
-      storage. The ownership/view half has landed: `BackgroundStorageRealization`
+      storage. `BackgroundStorageRealization`
       resolves plan storage indices into stable opaque sample/event read/write views,
       owns sparse transaction-local and future materialized-window buffers, binds
       non-owning published-page readers under the surrounding transaction's pin,
       derives stable or generation-local persisted identities outside the page store,
-      and seals only after required views are compatible. It does not traverse nodes,
-      decide demand, execute the retained operations or publish. Next implement the
-      small operations and execute the compiler-owned placement schedule against
-      these views;
-   5. extend the generated background root to call narrow transaction-supplied
-      prepare/finalize hooks around its statically ordered node invocations, populate
-      the existing Tock/replay frames, and implement the complete transaction
-      coordinator; and
+      and seals only after required views are compatible. It now also executes each
+      compiler-retained runtime operation at most once against those sealed views.
+      Direct sample/event operations remain copy-free alias validation; sample
+      materialization applies per-source read latency plus the planned heterogeneous
+      conversion/projection assembly; event materialization applies the immutable
+      non-expanding conversion and reuses the shared stable k-way merge, preserving
+      `(absolute time, semantic source order)`. It still does not traverse nodes,
+      decide demand or publish. The generated hook frame in the next item selects
+      the already-placed operation indices; the realization never rebuilds placement;
+   5. **In progress:** extend the generated background root to call narrow
+      transaction-supplied prepare/finalize hooks around its statically ordered node
+      invocations, populate the existing Tock/replay frames, and implement the complete
+      transaction coordinator. The generated evaluate root now loads a prepare hook,
+      finalize hook and one opaque operation-frame pointer from each active node frame;
+      it calls prepare immediately before authored Tock or the complete replay loop and
+      finalize only after that invocation returns successfully. Forward/reverse roots
+      do not call storage hooks. `BackgroundStorageOperationFrame` retains only the
+      realization plus the immutable before/after operation spans for that node and
+      executes them in compiler order; generated code receives no executor, store or
+      transaction pointer. Next populate the node Tock/replay binding frames and build
+      these operation frames in the transaction coordinator; and
    6. add the Tick invocation binding frame, pinned published-snapshot reads,
       `TickMaterializationSnapshot` playback and per-input neutral values for genuinely
       missing sequential data.

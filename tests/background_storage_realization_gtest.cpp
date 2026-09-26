@@ -300,13 +300,24 @@ TEST(BackgroundStorageRealization, SealingRejectsMissingExternalDirectViews)
         .sample_channels = {0},
     }};
     plan.storage.direct_samples = {{.storage = 0}};
+    plan.runtime.operations = {{
+        .kind = iv::graph_jit::BackgroundRuntimeOperationKind::direct_sample,
+        .operation = 0,
+    }};
+    plan.runtime.node_operations = {{.before = {0}}};
 
     iv::BackgroundStorageRealization realization{
         plan,
         {
             .storage_coverage = {iv::Coverage{{{0, 1}}}},
         }};
+    iv::BackgroundStorageOperationFrame operation_frame{
+        realization,
+        plan.runtime.node_operations[0].before,
+        plan.runtime.node_operations[0].after,
+    };
     EXPECT_FALSE(realization.seal().has_value());
+    EXPECT_FALSE(realization.execute_operation(0).has_value());
 
     struct External {
         iv::Coverage coverage{{{0, 1}}};
@@ -329,10 +340,230 @@ TEST(BackgroundStorageRealization, SealingRejectsMissingExternalDirectViews)
     });
 
     EXPECT_TRUE(realization.seal().has_value());
+    EXPECT_EQ(realization.operation_count(), 1);
+    EXPECT_FALSE(realization.operation_executed(0));
+    EXPECT_NO_THROW(
+        iv::BackgroundStorageOperationFrame::prepare_callback(&operation_frame));
+    EXPECT_TRUE(realization.operation_executed(0));
+    EXPECT_FALSE(realization.execute_operation(0).has_value());
+    EXPECT_NO_THROW(
+        iv::BackgroundStorageOperationFrame::finalize_callback(&operation_frame));
     EXPECT_FLOAT_EQ(realization.sample_read(0)->at(0, 0).value, 5.0f);
     EXPECT_THROW(
         realization.bind_sample(0, *realization.sample_read(0)),
         std::logic_error);
+}
+
+TEST(BackgroundStorageRealization, ExecutesHeterogeneousSampleProjectionPlan)
+{
+    iv::graph_jit::BackgroundEvaluationPlan plan;
+    plan.ports = {
+        {
+            .kind = iv::PortKind::sample,
+            .direction = iv::graph_jit::PortDirection::output,
+            .authored_tock_output = true,
+        },
+        {
+            .kind = iv::PortKind::sample,
+            .direction = iv::graph_jit::PortDirection::output,
+            .authored_tock_output = true,
+        },
+    };
+    plan.storage.ports = {
+        {
+            .kind = iv::PortKind::sample,
+            .storage = iv::graph_jit::PortStorageKind::background,
+            .output_port = 0,
+            .sample_layout = {
+                .channel_type = iv::ChannelTypeId::stereo,
+                .sample_layout = iv::SampleStreamLayout::planar,
+            },
+            .sample_channels = {0, 1},
+        },
+        {
+            .kind = iv::PortKind::sample,
+            .storage = iv::graph_jit::PortStorageKind::background,
+            .output_port = 1,
+            .sample_layout = {
+                .channel_type = iv::ChannelTypeId::mono,
+                .sample_layout = iv::SampleStreamLayout::planar,
+            },
+            .sample_channels = {0},
+        },
+        {
+            .kind = iv::PortKind::sample,
+            .storage = iv::graph_jit::PortStorageKind::background,
+            .sample_layout = {
+                .channel_type = iv::ChannelTypeId::stereo,
+                .sample_layout = iv::SampleStreamLayout::interleaved,
+            },
+            .sample_channels = {0, 1},
+            .sample_materialization = 0,
+        },
+    };
+    plan.storage.sample_materializations = {{
+        .storage = iv::graph_jit::PortStorageKind::background,
+        .inputs = {0, 0, 1},
+        .source_channels = {
+            {.channel = 0},
+            {.channel = 1},
+            {.channel = 0},
+        },
+        .source_read_latencies = {1, 1, 0},
+        .source_type = iv::ChannelTypeId::stereo,
+        .target_layout = {
+            .channel_type = iv::ChannelTypeId::stereo,
+            .sample_layout = iv::SampleStreamLayout::interleaved,
+        },
+        .target_channels = {0, 1},
+        .projections = {
+            {
+                .source_type = iv::ChannelTypeId::stereo,
+                .source_channel_indices = {0, 1},
+                .target_type = iv::ChannelTypeId::mono,
+                .target_channels = {0},
+            },
+            {
+                .source_type = iv::ChannelTypeId::mono,
+                .source_channel_indices = {2},
+                .target_type = iv::ChannelTypeId::mono,
+                .target_channels = {1},
+            },
+        },
+        .output = 2,
+    }};
+    plan.runtime.operations = {{
+        .kind = iv::graph_jit::BackgroundRuntimeOperationKind::
+            sample_materialization,
+        .operation = 0,
+    }};
+
+    iv::BackgroundStorageRealization realization{
+        plan,
+        {
+            .storage_coverage = {
+                iv::Coverage{{{9, 11}}},
+                iv::Coverage{{{10, 12}}},
+                iv::Coverage{{{10, 12}}},
+            },
+        }};
+    auto const* stereo = realization.sample_write(0);
+    auto const* mono = realization.sample_write(1);
+    ASSERT_NE(stereo, nullptr);
+    ASSERT_NE(mono, nullptr);
+    ASSERT_TRUE(stereo->write(9, 0, 2.0f));
+    ASSERT_TRUE(stereo->write(9, 1, 6.0f));
+    ASSERT_TRUE(stereo->write(10, 0, 4.0f));
+    ASSERT_TRUE(stereo->write(10, 1, 8.0f));
+    ASSERT_TRUE(mono->write(10, 0, 9.0f));
+    ASSERT_TRUE(mono->write(11, 0, 10.0f));
+
+    ASSERT_TRUE(realization.seal().has_value());
+    ASSERT_TRUE(realization.execute_operation(0).has_value());
+    auto const* output = realization.sample_read(2);
+    ASSERT_NE(output, nullptr);
+    EXPECT_FLOAT_EQ(output->at(10, 0).value, 4.0f);
+    EXPECT_FLOAT_EQ(output->at(10, 1).value, 9.0f);
+    EXPECT_FLOAT_EQ(output->at(11, 0).value, 6.0f);
+    EXPECT_FLOAT_EQ(output->at(11, 1).value, 10.0f);
+}
+
+TEST(BackgroundStorageRealization, ConvertsAndStablyMergesEventSources)
+{
+    iv::graph_jit::BackgroundEvaluationPlan plan;
+    plan.ports = {
+        {
+            .kind = iv::PortKind::event,
+            .direction = iv::graph_jit::PortDirection::output,
+            .authored_tock_output = true,
+        },
+        {
+            .kind = iv::PortKind::event,
+            .direction = iv::graph_jit::PortDirection::output,
+            .authored_tock_output = true,
+        },
+    };
+    plan.storage.ports = {
+        {
+            .kind = iv::PortKind::event,
+            .storage = iv::graph_jit::PortStorageKind::background,
+            .output_port = 0,
+            .event_type = iv::EventTypeId::midi,
+            .max_events_per_index = 1.0,
+        },
+        {
+            .kind = iv::PortKind::event,
+            .storage = iv::graph_jit::PortStorageKind::background,
+            .output_port = 1,
+            .event_type = iv::EventTypeId::midi,
+            .max_events_per_index = 1.0,
+        },
+        {
+            .kind = iv::PortKind::event,
+            .storage = iv::graph_jit::PortStorageKind::background,
+            .event_type = iv::EventTypeId::boundary,
+            .max_events_per_index = 2.0,
+            .event_materialization = 0,
+        },
+    };
+    auto const conversion = iv::EventConversionRegistry::instance().plan(
+        iv::EventTypeId::midi, iv::EventTypeId::boundary);
+    plan.storage.event_materializations = {{
+        .storage = iv::graph_jit::PortStorageKind::background,
+        .inputs = {0, 1},
+        .source_type = iv::EventTypeId::midi,
+        .target_type = iv::EventTypeId::boundary,
+        .conversion = conversion,
+        .output = 2,
+    }};
+    plan.storage.direct_events = {{.storage = 0}};
+    plan.runtime.operations = {
+        {
+            .kind = iv::graph_jit::BackgroundRuntimeOperationKind::direct_event,
+            .operation = 0,
+        },
+        {
+            .kind = iv::graph_jit::BackgroundRuntimeOperationKind::
+                event_materialization,
+            .operation = 0,
+        },
+    };
+
+    iv::BackgroundStorageRealization realization{
+        plan,
+        {
+            .storage_coverage = {
+                iv::Coverage{{{0, 4}}},
+                iv::Coverage{{{0, 4}}},
+                iv::Coverage{{{0, 4}}},
+            },
+        }};
+    ASSERT_TRUE(realization.event_write(0)->write({
+        .time = 1,
+        .value = iv::MidiEvent{
+            .bytes = {0x90, 60, 100},
+            .size = 3,
+        },
+    }));
+    ASSERT_TRUE(realization.event_write(1)->write({
+        .time = 1,
+        .value = iv::MidiEvent{
+            .bytes = {0x80, 60, 0},
+            .size = 3,
+        },
+    }));
+
+    ASSERT_TRUE(realization.seal().has_value());
+    ASSERT_TRUE(realization.execute_operation(0).has_value());
+    ASSERT_TRUE(realization.execute_operation(1).has_value());
+    std::vector<bool> boundaries;
+    realization.event_read(2)->for_each(
+        {0, 4},
+        [&](iv::TimedEvent const& event) {
+            boundaries.push_back(std::get<iv::BoundaryEvent>(event.value)
+                .is_begin);
+        });
+    EXPECT_EQ(boundaries, (std::vector<bool>{true, false}));
 }
 
 TEST(BackgroundStorageRealization, UsesGenerationLocalIdentityForAnonymousOutput)

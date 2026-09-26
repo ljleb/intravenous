@@ -55,6 +55,9 @@ struct BackgroundCallByteOffsets {
     std::size_t nodes_data = 0;
     std::size_t nodes_size = 0;
     std::size_t activity = 0;
+    std::size_t operation_frame = 0;
+    std::size_t prepare_operations = 0;
+    std::size_t finalize_operations = 0;
     std::size_t forward_context = 0;
     std::size_t reverse_context = 0;
     std::size_t tock_context = 0;
@@ -146,6 +149,11 @@ constexpr BackgroundCallByteOffsets background_batch_byte_offsets() noexcept
         .nodes_size = offsetof(BackgroundEvaluationCall, nodes)
             + offsetof(ReflectedSpan<BackgroundNodeCall>, extent),
         .activity = offsetof(BackgroundNodeCall, activity),
+        .operation_frame = offsetof(BackgroundNodeCall, operation_frame),
+        .prepare_operations = offsetof(
+            BackgroundNodeCall, prepare_operations),
+        .finalize_operations = offsetof(
+            BackgroundNodeCall, finalize_operations),
         .forward_context = offsetof(BackgroundNodeCall, forward),
         .reverse_context = offsetof(BackgroundNodeCall, reverse),
         .tock_context = offsetof(BackgroundNodeCall, tock),
@@ -196,6 +204,14 @@ llvm::FunctionType* background_operation_type(llvm::LLVMContext& context)
     auto* pointer = llvm::PointerType::getUnqual(context);
     return llvm::FunctionType::get(
         llvm::Type::getVoidTy(context), {pointer, pointer}, false);
+}
+
+llvm::FunctionType* background_operation_hook_type(
+    llvm::LLVMContext& context)
+{
+    auto* pointer = llvm::PointerType::getUnqual(context);
+    return llvm::FunctionType::get(
+        llvm::Type::getVoidTy(context), {pointer}, false);
 }
 
 llvm::GlobalVariable* immutable_bytes_global(
@@ -3903,6 +3919,31 @@ std::expected<llvm::Function*, std::string> define_background_root_operation(
             "background.node");
     };
 
+    auto emit_operation_hook = [&](llvm::Value* node_frame,
+                                   std::size_t callback_offset,
+                                   llvm::Twine const& name) {
+        auto* callback = builder.CreateLoad(
+            pointer_type,
+            byte_offset_pointer(
+                builder,
+                node_frame,
+                callback_offset,
+                name + ".callback.index"),
+            name + ".callback");
+        auto* operation_frame = builder.CreateLoad(
+            pointer_type,
+            byte_offset_pointer(
+                builder,
+                node_frame,
+                offsets.operation_frame,
+                name + ".frame.index"),
+            name + ".frame");
+        builder.CreateCall(
+            background_operation_hook_type(context),
+            callback,
+            {operation_frame});
+    };
+
     auto emit_when_active = [&]<typename Emit>(
                                 BackgroundNodeIndex node,
                                 BackgroundNodeActivity activity,
@@ -3924,7 +3965,19 @@ std::expected<llvm::Function*, std::string> define_background_root_operation(
         auto* next = llvm::BasicBlock::Create(context, "background.next", function);
         builder.CreateCondBr(active, invoke, next);
         builder.SetInsertPoint(invoke);
+        if (phase == BackgroundRootOperation::evaluate) {
+            emit_operation_hook(
+                node_frame,
+                offsets.prepare_operations,
+                "background.prepare");
+        }
         emit(node_frame);
+        if (phase == BackgroundRootOperation::evaluate) {
+            emit_operation_hook(
+                node_frame,
+                offsets.finalize_operations,
+                "background.finalize");
+        }
         // Every emitter deliberately leaves its current tail open. Authored and
         // generated callbacks leave `invoke` open; replay leaves its loop's
         // `replay.done` block open. Close that exact tail unconditionally before

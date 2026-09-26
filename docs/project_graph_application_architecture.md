@@ -824,9 +824,15 @@ The implementation checkpoints now stand as follows:
     `BackgroundStorageRealization` now owns address-stable sparse transaction buffers,
     binds published pages through the transaction's non-owning pinned view, resolves
     stable/generation-local persisted identity and validates explicit views before
-    sealing. Next execute the compiler-planned storage operations, make the generated
-    root invoke narrow transaction-local prepare/finalize hooks, implement
-    transaction-wide atomic commit, then add the Tick binding frame,
+    sealing. It now executes compiler-planned direct/sample/event operations exactly
+    once over those sealed views, including latency-aware heterogeneous sample
+    projection and shared stable event conversion/fan-in. The generated evaluate root
+    now invokes narrow transaction-local prepare/finalize hooks around each active
+    authored-Tock call or complete replay loop. Those hooks receive only an opaque
+    `BackgroundStorageOperationFrame` containing the realization and compiler-owned
+    before/after spans; forward/reverse propagation remains hook-free. Next populate
+    Tock/replay bindings and implement the coordinator's transaction-wide atomic
+    commit, then add the Tick binding frame,
     `TickMaterializationSnapshot`, stale-page playback and per-input missing-page
     neutrality. Do this before enabling transactional recording consumption;
 11. integrate stable logical `SystemAudioDevices` bindings with ordinary system

@@ -2,8 +2,9 @@
 
 // Runtime-owned data frame consumed by the generated background graph programs.
 // The call contains no topology: node indices and traversal order are fixed in
-// generated code from BackgroundEvaluationPlan. GraphExecutor owns every
-// referenced coverage, page, port, and accumulator for the duration of the call.
+// generated code from BackgroundEvaluationPlan. The surrounding transaction
+// owns every referenced coverage, page, port, accumulator and operation frame
+// for the duration of the call.
 
 #include <intravenous/graph/reflected_node_operations.h>
 #include <intravenous/coverage.h>
@@ -42,9 +43,18 @@ using ReplayForwardCoverageFunction = void (*)(
     void*, ReflectedNodeForwardCoverageContext const&);
 using ReplayReverseCoverageFunction = void (*)(
     void*, ReflectedNodeReverseCoverageContext const&);
+using BackgroundOperationFunction = void (*)(void* operation_frame);
 
 struct BackgroundNodeCall {
     BackgroundNodeActivity activity = BackgroundNodeActivity::none;
+
+    // Generated evaluation code treats this as an opaque transaction-local
+    // frame. The prepare/finalize callbacks interpret it and execute only the
+    // compiler-placed operations belonging immediately before/after this node.
+    // It is never an executor, page-store or transaction pointer.
+    void* operation_frame = nullptr;
+    BackgroundOperationFunction prepare_operations = nullptr;
+    BackgroundOperationFunction finalize_operations = nullptr;
 
     // Authored Tock nodes consume these reflected one-node contexts directly.
     // A pointwise replay node consumes the same accumulator-shaped F/R contexts

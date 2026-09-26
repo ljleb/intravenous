@@ -1,10 +1,14 @@
 #include <intravenous/runtime/background_storage_realization.h>
 
 #include <intravenous/compat.h>
+#include <intravenous/graph_jit/event_conversion_runtime.h>
 
 #include <algorithm>
+#include <array>
+#include <bit>
 #include <cmath>
 #include <limits>
+#include <numeric>
 #include <optional>
 #include <ranges>
 #include <stdexcept>
@@ -73,6 +77,42 @@ Coverage const empty_storage_coverage{};
         break;
     }
     return false;
+}
+
+template<typename Fn>
+void for_each_intersection(
+    Coverage const& left,
+    Coverage const& right,
+    Fn&& fn)
+{
+    auto left_region = left.regions().begin();
+    auto right_region = right.regions().begin();
+    while (left_region != left.regions().end()
+        && right_region != right.regions().end()) {
+        auto const intersection = IndexRegion{
+            .begin = std::max(left_region->begin, right_region->begin),
+            .end = std::min(left_region->end, right_region->end),
+        };
+        if (intersection.valid() && !intersection.empty()) fn(intersection);
+        if (left_region->end < right_region->end) {
+            ++left_region;
+        } else {
+            ++right_region;
+        }
+    }
+}
+
+[[nodiscard]] std::expected<std::size_t, std::string>
+event_merge_capacity(std::size_t count)
+{
+    auto const requested = std::max<std::size_t>(count, 1);
+    auto const maximum_power_of_two = std::size_t{1}
+        << (std::numeric_limits<std::size_t>::digits - 1);
+    if (requested > maximum_power_of_two) {
+        return std::unexpected(
+            "background event materialization is too large to merge");
+    }
+    return std::bit_ceil(requested);
 }
 
 class TransactionSampleStorage {
@@ -563,6 +603,7 @@ BackgroundStorageRealization::BackgroundStorageRealization(
     BackgroundStorageSelection selection)
     : plan_(&plan)
     , selection_(std::move(selection))
+    , executed_operations_(plan.runtime.operations.size(), false)
 {
     if (selection_.storage_coverage.size() != plan.storage.ports.size()) {
         throw std::invalid_argument(
@@ -648,6 +689,17 @@ BackgroundStorageRealization::Slot const& BackgroundStorageRealization::slot(
 std::size_t BackgroundStorageRealization::storage_count() const noexcept
 {
     return slots_.size();
+}
+
+std::size_t BackgroundStorageRealization::operation_count() const noexcept
+{
+    return executed_operations_.size();
+}
+
+bool BackgroundStorageRealization::operation_executed(
+    graph_jit::BackgroundRuntimeOperationIndex index) const noexcept
+{
+    return index < executed_operations_.size() && executed_operations_[index];
 }
 
 void BackgroundStorageRealization::bind_sample(
@@ -813,6 +865,410 @@ std::expected<void, std::string> BackgroundStorageRealization::seal()
 
     sealed_ = true;
     return {};
+}
+
+std::expected<void, std::string>
+BackgroundStorageRealization::execute_operation(
+    graph_jit::BackgroundRuntimeOperationIndex index)
+{
+    if (!sealed_) {
+        return std::unexpected(
+            "background storage operations require a sealed realization");
+    }
+    if (index >= plan_->runtime.operations.size()) {
+        return std::unexpected(
+            "background runtime operation index is out of range");
+    }
+    if (executed_operations_[index]) {
+        return std::unexpected(
+            "background runtime operation executed more than once");
+    }
+
+    auto const& operation = plan_->runtime.operations[index];
+    std::expected<void, std::string> result;
+    switch (operation.kind) {
+    case graph_jit::BackgroundRuntimeOperationKind::direct_sample: {
+        if (operation.operation >= plan_->storage.direct_samples.size()) {
+            result = std::unexpected(
+                "background direct-sample operation is out of range");
+            break;
+        }
+        auto const& direct =
+            plan_->storage.direct_samples[operation.operation];
+        auto const* source = sample_read(direct.storage);
+        if (!source || !source->has_channel(direct.source_channel)) {
+            result = std::unexpected(
+                "background direct-sample operation has no source channel");
+        }
+        // The node binding frame applies target_channel/read_latency. There is
+        // deliberately no copy or destination storage for a direct operation.
+        break;
+    }
+    case graph_jit::BackgroundRuntimeOperationKind::direct_event: {
+        if (operation.operation >= plan_->storage.direct_events.size()) {
+            result = std::unexpected(
+                "background direct-event operation is out of range");
+            break;
+        }
+        auto const& direct =
+            plan_->storage.direct_events[operation.operation];
+        if (!event_read(direct.storage)) {
+            result = std::unexpected(
+                "background direct-event operation has no source view");
+        }
+        // The binding frame applies the target history window directly to the
+        // selected source view; direct delivery owns no derived event buffer.
+        break;
+    }
+    case graph_jit::BackgroundRuntimeOperationKind::sample_materialization: {
+        if (operation.operation
+            >= plan_->storage.sample_materializations.size()) {
+            result = std::unexpected(
+                "background sample materialization is out of range");
+            break;
+        }
+        auto const& materialization =
+            plan_->storage.sample_materializations[operation.operation];
+        auto const* target = sample_write(materialization.output);
+        auto const& target_coverage =
+            *slot(materialization.output).coverage;
+        if (!target
+            || target->layout.channel_type
+                != materialization.target_layout.channel_type) {
+            result = std::unexpected(
+                "background sample materialization has no compatible target");
+            break;
+        }
+        if (materialization.inputs.size()
+                != materialization.source_channels.size()
+            || materialization.inputs.size()
+                != materialization.source_read_latencies.size()) {
+            result = std::unexpected(
+                "background sample materialization inputs are not aligned");
+            break;
+        }
+
+        struct RuntimeProjection {
+            ChannelConversionPlan conversion{};
+            std::vector<std::size_t> source_indices{};
+            std::vector<std::size_t> target_channels{};
+        };
+        std::vector<RuntimeProjection> projections;
+        auto append_projection = [&] (
+            ChannelTypeId source_type,
+            std::vector<std::size_t> source_indices,
+            ChannelTypeId target_type,
+            std::vector<std::size_t> target_channels)
+            -> std::expected<void, std::string> {
+            if (source_indices.size() != channel_count(source_type)
+                || target_channels.size() != channel_count(target_type)) {
+                return std::unexpected(
+                    "background sample projection has invalid channel arity");
+            }
+            for (auto const source_index : source_indices) {
+                if (source_index >= materialization.inputs.size()) {
+                    return std::unexpected(
+                        "background sample projection has an invalid source");
+                }
+                auto const* source = sample_read(
+                    materialization.inputs[source_index]);
+                auto const channel =
+                    materialization.source_channels[source_index].channel;
+                if (!source || !source->has_channel(channel)) {
+                    return std::unexpected(
+                        "background sample projection has no source channel");
+                }
+            }
+            if (!std::ranges::all_of(
+                    target_channels,
+                    [&](std::size_t channel) {
+                        return target->has_channel(channel);
+                    })) {
+                return std::unexpected(
+                    "background sample projection has no target channel");
+            }
+            try {
+                projections.push_back(RuntimeProjection{
+                    .conversion = ChannelConversionRegistry::plan(
+                        ChannelLayout{
+                            .channel_type = source_type,
+                            .sample_layout = SampleStreamLayout::interleaved,
+                        },
+                        ChannelLayout{
+                            .channel_type = target_type,
+                            .sample_layout = SampleStreamLayout::interleaved,
+                        }),
+                    .source_indices = std::move(source_indices),
+                    .target_channels = std::move(target_channels),
+                });
+            } catch (std::exception const& error) {
+                return std::unexpected(
+                    "background sample projection conversion is unsupported: "
+                    + std::string(error.what()));
+            }
+            return {};
+        };
+
+        if (materialization.projections.empty()) {
+            std::vector<std::size_t> source_indices(
+                materialization.inputs.size());
+            std::iota(source_indices.begin(), source_indices.end(), 0);
+            result = append_projection(
+                materialization.source_type,
+                std::move(source_indices),
+                materialization.target_layout.channel_type,
+                materialization.target_channels);
+        } else {
+            for (auto const& projection : materialization.projections) {
+                result = append_projection(
+                    projection.source_type,
+                    projection.source_channel_indices,
+                    projection.target_type,
+                    projection.target_channels);
+                if (!result) break;
+            }
+        }
+        if (!result) break;
+
+        std::array<Sample, 2> source_values{};
+        std::array<Sample, 2> target_values{};
+        for (auto const region : target_coverage.regions()) {
+            for (auto sample_index = region.begin;
+                 sample_index < region.end; ++sample_index) {
+                for (auto const& projection : projections) {
+                    for (std::size_t channel = 0;
+                         channel < projection.source_indices.size(); ++channel) {
+                        auto const source_index =
+                            projection.source_indices[channel];
+                        auto const latency = materialization
+                            .source_read_latencies[source_index];
+                        if (latency > sample_index) {
+                            result = std::unexpected(
+                                "background sample latency precedes the timeline");
+                            break;
+                        }
+                        auto const source_sample_index = sample_index - latency;
+                        auto const* source = sample_read(
+                            materialization.inputs[source_index]);
+                        if (!slot(materialization.inputs[source_index])
+                                .coverage->contains(source_sample_index)) {
+                            result = std::unexpected(
+                                "background sample source does not cover its delayed read");
+                            break;
+                        }
+                        source_values[channel] = source->at(
+                            source_sample_index,
+                            materialization.source_channels[source_index]
+                                .channel);
+                    }
+                    if (!result) break;
+                    projection.conversion.convert(
+                        source_values.data(), target_values.data(), 1);
+                    for (std::size_t channel = 0;
+                         channel < projection.target_channels.size(); ++channel) {
+                        if (!target->write(
+                                sample_index,
+                                projection.target_channels[channel],
+                                target_values[channel])) {
+                            result = std::unexpected(
+                                "background sample materialization write failed");
+                            break;
+                        }
+                    }
+                    if (!result) break;
+                }
+                if (!result) break;
+            }
+            if (!result) break;
+        }
+        break;
+    }
+    case graph_jit::BackgroundRuntimeOperationKind::event_materialization: {
+        if (operation.operation
+            >= plan_->storage.event_materializations.size()) {
+            result = std::unexpected(
+                "background event materialization is out of range");
+            break;
+        }
+        auto const& materialization =
+            plan_->storage.event_materializations[operation.operation];
+        auto const* target = event_write(materialization.output);
+        auto const& target_coverage =
+            *slot(materialization.output).coverage;
+        if (!target || target->type != materialization.target_type) {
+            result = std::unexpected(
+                "background event materialization has no compatible target");
+            break;
+        }
+        if (materialization.inputs.empty()) {
+            result = std::unexpected(
+                "background event materialization has no sources");
+            break;
+        }
+        if (materialization.conversion.source_type
+                != materialization.source_type
+            || materialization.conversion.target_type
+                != materialization.target_type
+            || materialization.conversion.step_count
+                > EventConversionPlan::max_steps
+            || !EventConversionRegistry::is_nonexpanding(
+                materialization.conversion)) {
+            result = std::unexpected(
+                "background event materialization has an invalid conversion");
+            break;
+        }
+
+        std::vector<std::vector<TimedEvent>> converted(
+            materialization.inputs.size());
+        std::size_t total_count = 0;
+        for (std::size_t source_index = 0;
+             source_index < materialization.inputs.size(); ++source_index) {
+            auto const* source = event_read(
+                materialization.inputs[source_index]);
+            if (!source || source->type != materialization.source_type) {
+                result = std::unexpected(
+                    "background event materialization has no compatible source");
+                break;
+            }
+            std::vector<TimedEvent> source_events;
+            bool ordered = true;
+            for_each_intersection(
+                *slot(materialization.inputs[source_index]).coverage,
+                target_coverage,
+                [&](IndexRegion region) {
+                    source->for_each(region, [&](TimedEvent const& event) {
+                        if (!source_events.empty()
+                            && event.time < source_events.back().time) {
+                            ordered = false;
+                        }
+                        source_events.push_back(event);
+                    });
+                });
+            if (!ordered) {
+                result = std::unexpected(
+                    "background event source is not time ordered");
+                break;
+            }
+            converted[source_index].resize(source_events.size());
+            if (!source_events.empty()) {
+                auto const& conversion = materialization.conversion;
+                auto const written = graph_jit::detail::
+                    iv_graph_jit_convert_event_sequence(
+                        static_cast<std::uint32_t>(conversion.source_type),
+                        static_cast<std::uint32_t>(conversion.target_type),
+                        static_cast<std::uint32_t>(conversion.steps[0]),
+                        static_cast<std::uint32_t>(conversion.steps[1]),
+                        static_cast<std::uint32_t>(conversion.steps[2]),
+                        conversion.step_count,
+                        source_events.data(),
+                        source_events.size(),
+                        converted[source_index].data(),
+                        converted[source_index].size());
+                converted[source_index].resize(written);
+            }
+            if (converted[source_index].size()
+                > std::numeric_limits<std::size_t>::max() - total_count) {
+                result = std::unexpected(
+                    "background event materialization is too large");
+                break;
+            }
+            total_count += converted[source_index].size();
+        }
+        if (!result) break;
+
+        auto capacity = event_merge_capacity(total_count);
+        if (!capacity) {
+            result = std::unexpected(std::move(capacity.error()));
+            break;
+        }
+        std::vector<TimedEvent> merged(*capacity);
+        std::ranges::copy(converted.front(), merged.begin());
+        std::vector<void const*> source_events;
+        std::vector<std::size_t> source_remaining;
+        source_events.reserve(converted.size() - 1);
+        source_remaining.reserve(converted.size() - 1);
+        for (std::size_t source = 1; source < converted.size(); ++source) {
+            source_events.push_back(converted[source].data());
+            source_remaining.push_back(converted[source].size());
+        }
+        auto const merged_count = graph_jit::detail::
+            iv_graph_jit_merge_event_sequences_into_home(
+                merged.data(),
+                merged.size(),
+                converted.front().size(),
+                source_events.data(),
+                source_remaining.data(),
+                source_events.size());
+        if (merged_count != total_count) {
+            result = std::unexpected(
+                "background event materialization merge failed");
+            break;
+        }
+        for (std::size_t event = 0; event < merged_count; ++event) {
+            if (!target->write(merged[event])) {
+                result = std::unexpected(
+                    "background event materialization write failed");
+                break;
+            }
+        }
+        break;
+    }
+    }
+
+    if (result) executed_operations_[index] = true;
+    return result;
+}
+
+BackgroundStorageOperationFrame::BackgroundStorageOperationFrame(
+    BackgroundStorageRealization& realization,
+    std::span<graph_jit::BackgroundRuntimeOperationIndex const> before,
+    std::span<graph_jit::BackgroundRuntimeOperationIndex const> after) noexcept
+    : realization_(&realization)
+    , before_(before)
+    , after_(after)
+{}
+
+void BackgroundStorageOperationFrame::execute(
+    std::span<graph_jit::BackgroundRuntimeOperationIndex const> operations)
+{
+    if (!realization_) {
+        throw std::logic_error(
+            "background storage operation frame has no realization");
+    }
+    for (auto const operation : operations) {
+        auto executed = realization_->execute_operation(operation);
+        if (!executed) {
+            throw std::runtime_error(std::move(executed.error()));
+        }
+    }
+}
+
+void BackgroundStorageOperationFrame::prepare()
+{
+    execute(before_);
+}
+
+void BackgroundStorageOperationFrame::finalize()
+{
+    execute(after_);
+}
+
+void BackgroundStorageOperationFrame::prepare_callback(void* opaque)
+{
+    if (!opaque) {
+        throw std::invalid_argument(
+            "background prepare callback has no operation frame");
+    }
+    static_cast<BackgroundStorageOperationFrame*>(opaque)->prepare();
+}
+
+void BackgroundStorageOperationFrame::finalize_callback(void* opaque)
+{
+    if (!opaque) {
+        throw std::invalid_argument(
+            "background finalize callback has no operation frame");
+    }
+    static_cast<BackgroundStorageOperationFrame*>(opaque)->finalize();
 }
 
 } // namespace iv

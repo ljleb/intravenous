@@ -554,8 +554,12 @@ The storage-model and storage-placement refactors have landed:
   buffers, binds published pages without acquiring another owner, distinguishes
   stable from generation-local persisted identity outside the page store, accepts
   external current-Tick/materialized views before sealing, and validates every view
-  required by retained bindings and operations. Execution of the small planned
-  direct/conversion/projection/fan-in operations is the next runtime step;
+  required by retained bindings and operations. It also executes each retained
+  operation once against the sealed views: direct delivery is a no-copy validation,
+  sample projection uses each source channel's planned latency and semantic channel
+  conversion, and event conversion/fan-in reuses the shared stable k-way merge so
+  equal timestamps remain in semantic source order. Generated prepare/finalize hook
+  wiring is the next runtime step;
 - sample and event producer groups now select the shared three-kind storage
   model, while event invocation aggregation is a separate operation fact;
 - ordinary event capacities start from
@@ -635,6 +639,19 @@ coordinator itself. This keeps materialization implementation in small reusable
 runtime operations without turning generated code into a route to executor internals.
 Background realization reuses/factors the existing event conversion and stable merge
 primitives; it must not introduce a second equal-time ordering implementation.
+That reuse is now concrete: event materialization gathers only the intersection of
+each selected source and destination domain, invokes the common non-expanding
+conversion leaf, and hands the semantic source sequences to the existing stable k-way
+merge. Sample materialization similarly reads each source at
+`target_index - source_read_latency` before applying the planned projection. The
+operation executor is deliberately ignorant of node order. The generated hook
+boundary has now landed: every active background-evaluation node calls prepare before
+authored Tock or its complete replay loop and finalize after successful return.
+`BackgroundStorageOperationFrame` contains only the realization and the immutable
+before/after spans selected for that node. Forward/reverse propagation does not enter
+these hooks, and no hook receives an executor, store or transaction pointer. The
+remaining work is to have the transaction coordinator own/populate these frames and
+the node-facing Tock/replay bindings.
 
 Transaction-local addressable storage and Tick-visible materialized storage are
 different lifetimes. The former dies with its background transaction. The latter is

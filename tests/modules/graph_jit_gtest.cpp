@@ -125,6 +125,28 @@ struct BackgroundExecutionProbeStateMirror {
     std::uint64_t sample_rate = 0;
 };
 
+struct BackgroundOperationHookCapture {
+    BackgroundExecutionProbeStateMirror const* state = nullptr;
+    std::size_t prepare_calls = 0;
+    std::size_t finalize_calls = 0;
+    std::uint64_t calls_seen_by_prepare = 0;
+    std::uint64_t calls_seen_by_finalize = 0;
+};
+
+void prepare_background_operations(void* opaque)
+{
+    auto& capture = *static_cast<BackgroundOperationHookCapture*>(opaque);
+    ++capture.prepare_calls;
+    capture.calls_seen_by_prepare = capture.state->calls;
+}
+
+void finalize_background_operations(void* opaque)
+{
+    auto& capture = *static_cast<BackgroundOperationHookCapture*>(opaque);
+    ++capture.finalize_calls;
+    capture.calls_seen_by_finalize = capture.state->calls;
+}
+
 struct BackgroundExecutionCapture {
     iv::Coverage coverage{};
     iv::Coverage changed{};
@@ -6566,6 +6588,7 @@ TEST_F(GraphJitRuntimeFixture, GeneratedBackgroundRootsUseSuppliedBatchBindings)
     auto* state = static_cast<BackgroundExecutionProbeStateMirror*>(
         storage.background_state_ptr(0));
     ASSERT_NE(state, nullptr);
+    BackgroundOperationHookCapture operation_hooks{.state = state};
 
     BackgroundExecutionCapture capture;
     iv::Coverage const empty;
@@ -6577,6 +6600,9 @@ TEST_F(GraphJitRuntimeFixture, GeneratedBackgroundRootsUseSuppliedBatchBindings)
     }};
     std::array node_frames{iv::graph_jit::BackgroundNodeCall{
         .activity = iv::graph_jit::BackgroundNodeActivity::forward,
+        .operation_frame = &operation_hooks,
+        .prepare_operations = &prepare_background_operations,
+        .finalize_operations = &finalize_background_operations,
         .forward = iv::ReflectedNodeForwardCoverageContext{
             .outputs = output_changes,
             .local_state_changed = true,
@@ -6589,6 +6615,8 @@ TEST_F(GraphJitRuntimeFixture, GeneratedBackgroundRootsUseSuppliedBatchBindings)
         storage.buffer().data(), &batch);
     EXPECT_EQ(capture.coverage, (iv::Coverage{{{10, 13}}}));
     EXPECT_EQ(capture.changed, capture.coverage);
+    EXPECT_EQ(operation_hooks.prepare_calls, 0u);
+    EXPECT_EQ(operation_hooks.finalize_calls, 0u);
 
     iv::Coverage const requested{{{10, 13}}};
     std::array outputs{iv::TockSampleOutputPort{
@@ -6604,6 +6632,10 @@ TEST_F(GraphJitRuntimeFixture, GeneratedBackgroundRootsUseSuppliedBatchBindings)
     compiled.compiled_graph->background_operations.evaluate(
         storage.buffer().data(), &batch);
 
+    EXPECT_EQ(operation_hooks.prepare_calls, 1u);
+    EXPECT_EQ(operation_hooks.finalize_calls, 1u);
+    EXPECT_EQ(operation_hooks.calls_seen_by_prepare, 0u);
+    EXPECT_EQ(operation_hooks.calls_seen_by_finalize, 1u);
     EXPECT_EQ(state->calls, 1u);
     EXPECT_EQ(state->sample_rate, 88200u);
     ASSERT_EQ(capture.samples.size(), 3u);

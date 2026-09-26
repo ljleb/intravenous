@@ -125,13 +125,15 @@ struct BackgroundStorageSelection {
 
 // Interprets immutable PortStoragePlan indices into address-stable runtime
 // owners and views. It owns transaction-local/materialized buffers, but it does
-// not traverse nodes, decide demand, execute planned operations, or publish.
+// not traverse nodes, decide demand, choose operation placement, or publish.
+// Callers execute only the runtime operation indices already placed by the plan.
 class BackgroundStorageRealization {
     struct Slot;
 
     graph_jit::BackgroundEvaluationPlan const* plan_ = nullptr;
     BackgroundStorageSelection selection_{};
     std::vector<std::unique_ptr<Slot>> slots_{};
+    std::vector<bool> executed_operations_{};
     bool sealed_ = false;
 
     [[nodiscard]] Slot& slot(graph_jit::PortStorageIndex index);
@@ -151,6 +153,9 @@ public:
         BackgroundStorageRealization&&) = delete;
 
     [[nodiscard]] std::size_t storage_count() const noexcept;
+    [[nodiscard]] std::size_t operation_count() const noexcept;
+    [[nodiscard]] bool operation_executed(
+        graph_jit::BackgroundRuntimeOperationIndex index) const noexcept;
     [[nodiscard]] bool sealed() const noexcept { return sealed_; }
     [[nodiscard]] BackgroundStorageSelection const& selection() const noexcept
     {
@@ -184,6 +189,39 @@ public:
     // Freezes external bindings and verifies that every retained runtime
     // binding and storage operation has the explicit views it requires.
     [[nodiscard]] std::expected<void, std::string> seal();
+
+    // Executes one compiler-placed operation against the sealed views. Direct
+    // operations validate no-copy aliases; materializations perform
+    // the planned conversion/projection/fan-in into their owned destination.
+    // Each runtime operation may execute exactly once per realization.
+    [[nodiscard]] std::expected<void, std::string> execute_operation(
+        graph_jit::BackgroundRuntimeOperationIndex index);
+};
+
+// Address-stable transaction-local frame passed opaquely through generated
+// background code. The retained spans come directly from one node's immutable
+// placement plan; this leaf never discovers or reorders operations.
+class BackgroundStorageOperationFrame {
+    BackgroundStorageRealization* realization_ = nullptr;
+    std::span<graph_jit::BackgroundRuntimeOperationIndex const> before_{};
+    std::span<graph_jit::BackgroundRuntimeOperationIndex const> after_{};
+
+    void execute(
+        std::span<graph_jit::BackgroundRuntimeOperationIndex const> operations);
+
+public:
+    BackgroundStorageOperationFrame() = default;
+    BackgroundStorageOperationFrame(
+        BackgroundStorageRealization& realization,
+        std::span<graph_jit::BackgroundRuntimeOperationIndex const> before,
+        std::span<graph_jit::BackgroundRuntimeOperationIndex const> after)
+        noexcept;
+
+    void prepare();
+    void finalize();
+
+    static void prepare_callback(void* opaque);
+    static void finalize_callback(void* opaque);
 };
 
 } // namespace iv
