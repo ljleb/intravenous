@@ -562,17 +562,27 @@ The initial runtime substrate is in place: a compiled generation is staged into
 executor-owned `NodeStorage` without reading mutable active state, and an explicit
 quiescent whole-root-boundary operation migrates the final active state and publishes
 it. `tick_block()` dispatches only the already-active generation and never performs
-activation, allocation, or lifecycle work. Project-transaction wiring and background
-page/data realization remain the next layer. The executor now also owns separate
+activation, allocation, or lifecycle work. Project-transaction wiring and the Tick
+invocation/capture layers remain next. The executor now also owns separate
 committed per-generation semantic coverage and a reusable background-evaluation
 propagation workspace for the active realization. The workspace binds compiler-planned
 port accumulators into `BackgroundEvaluationCall`, executes exact generated
 forward/reverse traversals once per implicated node, and returns an owned prepared
 coverage result without mutating the committed baseline. There is no public
-propagation-only executor operation. The complete transaction will retain the
-prepared result through Tock/replay data evaluation and promote it only at final
-transaction commit, alongside successful page publication when a candidate is
-present.
+propagation-only executor operation. `BackgroundEvaluationTransaction` pins one
+published base, completes persisted-page demand before reverse propagation, realizes
+the selected storage, binds authored Tock or isolated replay buffers through opaque
+per-node operation frames, and invokes the generated evaluate root. It stages pages
+privately only when persisted state changes, so page-free operations do not advance
+the page version; those operations still revalidate their pinned base before coverage
+promotion. After the generated root returns, the coordinator verifies complete
+initialization of every selected produced sample/channel and rejects callback writes
+that missed selected storage or exceeded an event bound. Before invocation it also
+rejects any selected pinned input whose compatible published pages do not contain the
+complete requested domain. Prepared semantic coverage
+is promoted only after any required page publication succeeds; incomplete output,
+other failure, or stale-base rejection promotes neither.
+`GraphExecutor` exposes only that end-to-end background operation.
 
 `GraphExecutor` keeps at least:
 
@@ -830,10 +840,16 @@ The implementation checkpoints now stand as follows:
     now invokes narrow transaction-local prepare/finalize hooks around each active
     authored-Tock call or complete replay loop. Those hooks receive only an opaque
     `BackgroundStorageOperationFrame` containing the realization and compiler-owned
-    before/after spans; forward/reverse propagation remains hook-free. Next populate
-    Tock/replay bindings and implement the coordinator's transaction-wide atomic
-    commit, then add the Tick binding frame,
-    `TickMaterializationSnapshot`, stale-page playback and per-input missing-page
+    before/after spans; forward/reverse propagation remains hook-free. The transaction
+    coordinator now populates authored-Tock/replay bindings, allocates isolated replay
+    storage, completes persisted-page demand from one pinned base, invokes the generated
+    evaluate root once, and promotes prepared coverage only after any required private
+    page publication succeeds. It also validates produced-sample completeness before
+    staging pages and limits each multi-output replay flush to that output's selected
+    coverage. Failed, incomplete or stale transactions promote neither state, and
+    page-free operations neither advance the page version nor skip pinned-base stale
+    validation. Next add the Tick binding
+    frame, `TickMaterializationSnapshot`, stale-page playback and per-input missing-page
     neutrality. Do this before enabling transactional recording consumption;
 11. integrate stable logical `SystemAudioDevices` bindings with ordinary system
     audio leaf node definitions;

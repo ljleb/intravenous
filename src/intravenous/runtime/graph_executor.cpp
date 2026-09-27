@@ -98,6 +98,21 @@ std::shared_ptr<CompiledGraph const> GraphExecutor::active_graph() const noexcep
     return active_ ? realizations_[*active_]->graph : nullptr;
 }
 
+std::expected<BackgroundEvaluationResult, std::string>
+GraphExecutor::evaluate_background(BackgroundEvaluationRequest request)
+{
+    auto& realization = active_realization();
+    BackgroundEvaluationTransaction transaction{
+        *realization.graph,
+        realization.storage.buffer().data(),
+        realization.coverage,
+        realization.propagation,
+        persisted_pages_,
+        std::move(request),
+    };
+    return transaction.execute();
+}
+
 void GraphExecutor::tick_block(std::size_t sample_index, std::size_t block_size)
 {
     auto& realization = active_realization();

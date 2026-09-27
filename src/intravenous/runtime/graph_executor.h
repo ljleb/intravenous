@@ -1,6 +1,7 @@
 #pragma once
 
 #include <intravenous/node/resources.h>
+#include <intravenous/runtime/background_evaluation_transaction.h>
 #include <intravenous/runtime/background_coverage_propagation.h>
 #include <intravenous/runtime/graph_jit.h>
 #include <intravenous/runtime/persisted_page_store.h>
@@ -70,6 +71,11 @@ public:
     [[nodiscard]] std::optional<std::uint64_t> active_generation() const noexcept;
     [[nodiscard]] std::optional<std::uint64_t> pending_generation() const noexcept;
     [[nodiscard]] std::shared_ptr<CompiledGraph const> active_graph() const noexcept;
+
+    // Runs one complete prepared/evaluate/publish operation against the active
+    // generation. No propagation-only commit surface is exposed.
+    [[nodiscard]] std::expected<BackgroundEvaluationResult, std::string>
+    evaluate_background(BackgroundEvaluationRequest request);
 
     // Executes only the already-active realization. Generation activation is
     // deliberately never hidden in this audio-thread entry point.

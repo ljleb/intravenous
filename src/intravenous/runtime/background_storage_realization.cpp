@@ -122,6 +122,7 @@ class TransactionSampleStorage {
     std::vector<std::size_t> region_offsets_{};
     std::size_t frame_count_ = 0;
     std::vector<Sample> values_{};
+    std::vector<std::uint8_t> written_{};
 
     [[nodiscard]] std::optional<std::size_t> frame_offset(
         SampleIndex index) const noexcept
@@ -180,7 +181,9 @@ public:
             }
             frame_count_ += static_cast<std::size_t>(length);
         }
-        values_.resize(checked_product(frame_count_, channels_.size()));
+        auto const value_count = checked_product(frame_count_, channels_.size());
+        values_.resize(value_count);
+        written_.resize(value_count, 0);
     }
 
     [[nodiscard]] Sample read(
@@ -203,8 +206,16 @@ public:
         auto const frame = frame_offset(index);
         auto const selected_channel = channel_offset(channel);
         if (!frame || !selected_channel) return false;
-        values_[*selected_channel * frame_count_ + *frame] = value;
+        auto const offset = *selected_channel * frame_count_ + *frame;
+        values_[offset] = value;
+        written_[offset] = 1;
         return true;
+    }
+
+    [[nodiscard]] bool complete() const noexcept
+    {
+        return std::ranges::all_of(
+            written_, [](std::uint8_t written) { return written != 0; });
     }
 
     [[nodiscard]] BackgroundSampleReadView read_view() const noexcept
@@ -362,6 +373,37 @@ public:
         , channels_(channels)
     {}
 
+    [[nodiscard]] bool complete() const noexcept
+    {
+        auto const width = snapshot_->page_width();
+        if (coverage_->empty()) return true;
+        if (width == 0) return false;
+        for (auto const region : coverage_->regions()) {
+            auto page_index = region.begin / width;
+            auto const last_page = (region.end - 1) / width;
+            for (;; ++page_index) {
+                auto const page_begin = page_index * width;
+                auto const page_end = saturating_sample_index_add(
+                    page_begin, static_cast<SampleIndex>(width));
+                auto const required = IndexRegion{
+                    std::max(region.begin, page_begin),
+                    std::min(region.end, page_end),
+                };
+                auto const* page =
+                    snapshot_->find_sample_page(output_, page_index);
+                if (!page || page->layout != layout_ ||
+                    !page->domain.contains(required) ||
+                    std::ranges::any_of(channels_, [&](std::size_t channel) {
+                        return channel >= channel_count(page->layout);
+                    })) {
+                    return false;
+                }
+                if (page_index == last_page) break;
+            }
+        }
+        return true;
+    }
+
     [[nodiscard]] Sample read(
         SampleIndex index,
         std::size_t channel) const noexcept
@@ -433,6 +475,33 @@ public:
         , coverage_(&coverage)
         , type_(type)
     {}
+
+    [[nodiscard]] bool complete() const noexcept
+    {
+        auto const width = snapshot_->page_width();
+        if (coverage_->empty()) return true;
+        if (width == 0) return false;
+        for (auto const region : coverage_->regions()) {
+            auto page_index = region.begin / width;
+            auto const last_page = (region.end - 1) / width;
+            for (;; ++page_index) {
+                auto const page_begin = page_index * width;
+                auto const page_end = saturating_sample_index_add(
+                    page_begin, static_cast<SampleIndex>(width));
+                auto const required = IndexRegion{
+                    std::max(region.begin, page_begin),
+                    std::min(region.end, page_end),
+                };
+                auto const* page = snapshot_->find_event_page(output_, page_index);
+                if (!page || page->type != type_ ||
+                    !page->domain.contains(required)) {
+                    return false;
+                }
+                if (page_index == last_page) break;
+            }
+        }
+        return true;
+    }
 
     void for_each(
         IndexRegion region,
@@ -609,6 +678,11 @@ BackgroundStorageRealization::BackgroundStorageRealization(
         throw std::invalid_argument(
             "background storage coverage is not aligned with the compiled plan");
     }
+    if (!selection_.produce_storage.empty()
+        && selection_.produce_storage.size() != plan.storage.ports.size()) {
+        throw std::invalid_argument(
+            "background storage production is not aligned with the compiled plan");
+    }
     slots_.reserve(plan.storage.ports.size());
     for (graph_jit::PortStorageIndex index = 0;
          index < plan.storage.ports.size(); ++index) {
@@ -622,7 +696,9 @@ BackgroundStorageRealization::BackgroundStorageRealization(
                 plan, planned, selection_.generation);
         }
 
-        auto const produced = storage_is_runtime_produced(plan, planned);
+        auto const produced = selection_.produce_storage.empty()
+            ? storage_is_runtime_produced(plan, planned)
+            : selection_.produce_storage[index];
         if (produced && planned.storage != graph_jit::PortStorageKind::current_tick) {
             if (planned.kind == PortKind::sample) {
                 created->owned_sample = std::make_unique<TransactionSampleStorage>(
@@ -810,6 +886,14 @@ std::expected<void, std::string> BackgroundStorageRealization::seal()
     auto require_read = [&](graph_jit::PortStorageIndex index)
         -> std::expected<void, std::string> {
         auto const& selected = slot(index);
+        if ((selected.persisted_sample &&
+             !selected.persisted_sample->complete()) ||
+            (selected.persisted_event &&
+             !selected.persisted_event->complete())) {
+            return std::unexpected(
+                "background persisted input is missing selected published "
+                "coverage");
+        }
         auto const valid = selected.plan->kind == PortKind::sample
             ? valid_sample_read(selected)
             : valid_event_read(selected);
@@ -834,6 +918,12 @@ std::expected<void, std::string> BackgroundStorageRealization::seal()
 
     for (auto const& binding : plan_->runtime.bindings) {
         for (auto const storage : binding.storage) {
+            if (slot(storage).coverage->empty()) continue;
+            if (binding.direction == graph_jit::PortDirection::output
+                && !selection_.produce_storage.empty()
+                && !selection_.produce_storage[storage]) {
+                continue;
+            }
             auto valid = binding.direction == graph_jit::PortDirection::input
                 ? require_read(storage)
                 : require_write(storage);
@@ -841,6 +931,7 @@ std::expected<void, std::string> BackgroundStorageRealization::seal()
         }
     }
     for (auto const& materialization : plan_->storage.sample_materializations) {
+        if (slot(materialization.output).coverage->empty()) continue;
         for (auto const input : materialization.inputs) {
             if (auto valid = require_read(input); !valid) return valid;
         }
@@ -849,6 +940,7 @@ std::expected<void, std::string> BackgroundStorageRealization::seal()
         }
     }
     for (auto const& materialization : plan_->storage.event_materializations) {
+        if (slot(materialization.output).coverage->empty()) continue;
         for (auto const input : materialization.inputs) {
             if (auto valid = require_read(input); !valid) return valid;
         }
@@ -857,9 +949,11 @@ std::expected<void, std::string> BackgroundStorageRealization::seal()
         }
     }
     for (auto const& direct : plan_->storage.direct_samples) {
+        if (slot(direct.storage).coverage->empty()) continue;
         if (auto valid = require_read(direct.storage); !valid) return valid;
     }
     for (auto const& direct : plan_->storage.direct_events) {
+        if (slot(direct.storage).coverage->empty()) continue;
         if (auto valid = require_read(direct.storage); !valid) return valid;
     }
 
@@ -1219,6 +1313,154 @@ BackgroundStorageRealization::execute_operation(
     return result;
 }
 
+std::expected<void, std::string>
+BackgroundStorageRealization::validate_produced_storage() const
+{
+    if (!sealed_) {
+        return std::unexpected(
+            "background storage realization is not sealed");
+    }
+    for (graph_jit::PortStorageIndex index = 0; index < slots_.size(); ++index) {
+        auto const& selected = *slots_[index];
+        if (selected.owned_sample && !selected.owned_sample->complete()) {
+            return std::unexpected(
+                "background sample output did not initialize every selected "
+                "sample and channel");
+        }
+    }
+    return {};
+}
+
+std::expected<void, std::string>
+BackgroundStorageRealization::stage_persisted_pages(
+    PersistedPageStore::Candidate& candidate) const
+{
+    if (auto complete = validate_produced_storage(); !complete)
+        return complete;
+    auto const width = candidate.page_width();
+    if (width == 0) {
+        return std::unexpected("persisted candidate has no page grid");
+    }
+
+    struct StagedPage {
+        PersistedOutputId output{};
+        std::uint64_t page = 0;
+        graph_jit::PortStorageIndex storage = 0;
+    };
+    std::vector<StagedPage> staged;
+
+    for (graph_jit::PortStorageIndex index = 0;
+         index < plan_->storage.ports.size(); ++index) {
+        auto const& planned = plan_->storage.ports[index];
+        auto const& selected = slot(index);
+        auto const produced = selection_.produce_storage.empty()
+            ? storage_is_runtime_produced(*plan_, planned)
+            : selection_.produce_storage[index];
+        if (planned.storage != graph_jit::PortStorageKind::persisted_pages
+            || selected.coverage->empty() || !produced) {
+            continue;
+        }
+        if (!selected.persisted_identity) {
+            return std::unexpected(
+                "produced persisted storage has no output identity");
+        }
+
+        for (auto const region : selected.coverage->regions()) {
+            auto page_index = static_cast<std::uint64_t>(region.begin / width);
+            auto const last_page =
+                static_cast<std::uint64_t>((region.end - 1) / width);
+            for (;; ++page_index) {
+                auto const existing = std::ranges::find_if(
+                    staged, [&](StagedPage const& page) {
+                        return page.page == page_index
+                            && page.output == *selected.persisted_identity;
+                    });
+                if (existing != staged.end()) {
+                    if (existing->storage != index) {
+                        return std::unexpected(
+                            "persisted output page is produced by multiple storage slots");
+                    }
+                    if (page_index == last_page) break;
+                    continue;
+                }
+                auto const page_begin =
+                    static_cast<SampleIndex>(page_index * width);
+                auto const page_end = saturating_sample_index_add(
+                    page_begin, static_cast<SampleIndex>(width));
+                auto const domain = *selected.coverage
+                    & Coverage{IndexRegion{page_begin, page_end}};
+                if (!domain.empty()) {
+                    if (planned.kind == PortKind::sample) {
+                        auto const* view = sample_read(index);
+                        auto const channels = channel_count(planned.sample_layout);
+                        if (!view || planned.sample_channels.size() != channels
+                            || !std::ranges::all_of(
+                                planned.sample_channels,
+                                [&](std::size_t channel) {
+                                    return channel < channels
+                                        && view->has_channel(channel);
+                                })) {
+                            return std::unexpected(
+                                "persisted sample page has incomplete channels");
+                        }
+                        auto const frames = coverage_sample_count(domain);
+                        PersistedSamplePage page{
+                            .output = *selected.persisted_identity,
+                            .page_index = page_index,
+                            .domain = domain,
+                            .layout = planned.sample_layout,
+                            .packing = PersistedSamplePacking::coverage_packed,
+                        };
+                        page.values.resize(checked_product(frames, channels));
+                        std::size_t packed_frame = 0;
+                        for (auto const part : domain.regions()) {
+                            for (auto sample = part.begin; sample < part.end;
+                                 ++sample, ++packed_frame) {
+                                for (std::size_t channel = 0;
+                                     channel < channels; ++channel) {
+                                    auto const offset =
+                                        planned.sample_layout.sample_layout
+                                                == SampleStreamLayout::planar
+                                            ? channel * frames + packed_frame
+                                            : packed_frame * channels + channel;
+                                    page.values[offset] = view->at(sample, channel);
+                                }
+                            }
+                        }
+                        candidate.put(std::move(page));
+                    } else {
+                        auto const* view = event_read(index);
+                        if (!view) {
+                            return std::unexpected(
+                                "persisted event page has no readable storage");
+                        }
+                        PersistedEventPage page{
+                            .output = *selected.persisted_identity,
+                            .page_index = page_index,
+                            .domain = domain,
+                            .type = planned.event_type,
+                        };
+                        for (auto const part : domain.regions()) {
+                            view->for_each(part, [&](TimedEvent const& event) {
+                                auto stored = event;
+                                stored.time = static_cast<EventTime>(
+                                    static_cast<SampleIndex>(event.time)
+                                    - page_begin);
+                                page.events.push_back(std::move(stored));
+                            });
+                        }
+                        candidate.put(std::move(page));
+                    }
+                    staged.push_back(
+                        {*selected.persisted_identity, page_index, index});
+                }
+                if (page_index == last_page) break;
+            }
+        }
+    }
+    return {};
+}
+
 BackgroundStorageOperationFrame::BackgroundStorageOperationFrame(
     BackgroundStorageRealization& realization,
     std::span<graph_jit::BackgroundRuntimeOperationIndex const> before,
@@ -1227,6 +1469,14 @@ BackgroundStorageOperationFrame::BackgroundStorageOperationFrame(
     , before_(before)
     , after_(after)
 {}
+
+void BackgroundStorageOperationFrame::set_leaf_hooks(
+    void* data, LeafHook prepare_leaf, LeafHook finalize_leaf) noexcept
+{
+    leaf_data_ = data;
+    prepare_leaf_ = prepare_leaf;
+    finalize_leaf_ = finalize_leaf;
+}
 
 void BackgroundStorageOperationFrame::execute(
     std::span<graph_jit::BackgroundRuntimeOperationIndex const> operations)
@@ -1246,10 +1496,12 @@ void BackgroundStorageOperationFrame::execute(
 void BackgroundStorageOperationFrame::prepare()
 {
     execute(before_);
+    if (prepare_leaf_) prepare_leaf_(leaf_data_);
 }
 
 void BackgroundStorageOperationFrame::finalize()
 {
+    if (finalize_leaf_) finalize_leaf_(leaf_data_);
     execute(after_);
 }
 

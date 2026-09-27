@@ -665,9 +665,10 @@ This is a hint, not a hard constraint. Use your own good judgement if ever in do
     executor-independent reusable propagation workspace: F/R produces a move-only
     prepared result exposing exact changes/requirements and immutable per-node
     activity. Reverse-demanded nodes receive `evaluate` only after both traversals
-    succeed. No public executor operation commits the candidate after F/R alone. The
-    complete transaction will retain that prepared result and promote it only at final
-    transaction commit, together with page publication when a candidate is present.
+    succeed. No public executor operation commits the candidate after F/R alone.
+    `BackgroundEvaluationTransaction` retains that prepared result and promotes it
+    only at final transaction commit, together with page publication when a candidate
+    is present.
 
     Immutable before/after-node materialization placement, compact runtime binding
     slots and replay schedule constraints/slots now live in the compiled background
@@ -693,11 +694,22 @@ This is a hint, not a hard constraint. Use your own good judgement if ever in do
     reflected sample/event arrays for replay. Logical binding coverage is supplied
     separately from storage coverage so direct read latency and output fan-out remain
     explicit. Replay regions are accepted only as an ordered, nonempty schedule whose
-    entries satisfy the compiled maximum block size; the later scheduler still owns
-    their raw block-local storage bindings and replay state. The complete transaction
-    coordinator will consume the prepared activity without exposing executor state to
-    generated code. Next add replay-buffer population, generated-root invocation and
-    all-or-nothing commit, then add the Tick invocation frame with
+    entries satisfy the compiled maximum block size. The call-frame owner now derives
+    isolated power-of-two raw sample/event buffers from that schedule, fills replay
+    inputs after the placed prepare operations, flushes outputs before the placed
+    finalize operations, and binds an empty replay state rather than live realtime
+    state. The complete transaction pins one page snapshot, completes persisted-page
+    demands between forward and reverse propagation, invokes the generated root with
+    prepared activity and privately stages produced or invalidated pages only when
+    page state changes. Page-free operations do not advance the page version, but
+    revalidate their pinned base before coverage promotion; stale publication is
+    rejected. Selected pinned inputs are sealed only when compatible published pages
+    contain their complete requested domains. Before any publication, the transaction rejects incomplete selected
+    sample/channel production and any callback write that missed its selected storage
+    or exceeded an event bound. Multi-output replay flushes only each output's selected
+    coverage from the node-wide union schedule. Semantic coverage is promoted only
+    after any required page publication succeeds. `GraphExecutor`
+    exposes only that end-to-end operation. Next add the Tick invocation frame with
     pinned published pages plus `TickMaterializationSnapshot` bindings. Final commit
     advances prepared coverage, page publication and any capture frontier together;
     every failure advances none. Background ephemeral Random Access may use

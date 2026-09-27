@@ -1230,9 +1230,11 @@ the selected storage realization is sealed. Its logical binding coverage is alig
 with the compiler's dense binding slots rather than raw storage slots: this preserves
 direct sample channel/read-latency mappings and permits one logical output write to fan
 out to all selected destination stores. The same owner reserves the exact reflected
-sample/event input/output arrays required by every replay slot. The replay scheduler
-must populate their raw block-local bindings and state before sealing; call-frame
-assembly does not choose coverage, activity or publication policy.
+sample/event input/output arrays required by every replay slot. Once the transaction
+installs the validated replay-region schedule, sealing allocates isolated power-of-two
+sample/event storage and binds those arrays. The compiler-placed prepare/finalize hooks
+populate replay inputs from the selected realization and flush replay outputs back;
+call-frame assembly still does not choose coverage, activity or publication policy.
 
 Replay invocation schedules are not raw, arbitrarily coalesced `Coverage` regions.
 The immutable plan retains the applicable compiled root/primitive maximum block size
@@ -2168,7 +2170,7 @@ recording merely because that planning metadata exists.
       `(absolute time, semantic source order)`. It still does not traverse nodes,
       decide demand or publish. The generated hook frame selects
       the already-placed operation indices; the realization never rebuilds placement;
-   5. **In progress:** use the generated background root's narrow
+   5. **Landed:** use the generated background root's narrow
       transaction-supplied prepare/finalize hooks and the populated Tock/replay
       call-frame owner to implement the complete transaction coordinator. The
       generated evaluate root now loads a prepare hook,
@@ -2185,15 +2187,38 @@ recording merely because that planning metadata exists.
       `GraphExecutor` into a standalone workspace, and its move-only prepared result
       exposes exact requirements plus immutable node activity for the coordinator;
       reverse-demanded nodes are marked for evaluation only after successful F/R.
-      Next implement replay raw-buffer/state population, invoke the generated root
-      with that prepared activity, and add all-or-nothing commit; and
+      `BackgroundEvaluationTransaction` now pins exactly one published base, lets a
+      narrow post-forward demand policy complete invalid or missing persisted pages
+      before reverse propagation, derives logical-binding and physical-storage
+      selections, and owns a private page candidate only when persisted page state
+      actually changes. The call-frame owner allocates
+      isolated power-of-two replay sample/event storage, populates inputs after the
+      compiler-placed prepare operations, flushes outputs before the placed finalize
+      operations, and binds no live realtime state. A replay node with several outputs
+      flushes each output only over that output binding's selected coverage, even
+      though the imported Tick wrapper runs over the union schedule. The transaction
+      first seals every pinned persisted input only after proving that its selected
+      coverage is present in compatible published pages. It then invokes the generated
+      evaluate root once with the prepared activity and
+      verifies that every selected produced sample/channel was initialized and that
+      no sample/event callback write was rejected before staging any page. Failure,
+      including incomplete sample production, discards all
+      transaction-local values; stale-base rejection promotes neither pages nor
+      semantic coverage. A transaction that produces no persisted page data and no
+      invalidation does not advance the page version, but still preserves the pinned
+      base's semantic-version monotonicity and nonempty page-layout compatibility and
+      revalidates that base as current before promoting semantic coverage. When page
+      state does change, successful publication precedes the propagation workspace's
+      non-throwing coverage promotion. `GraphExecutor`
+      exposes this end-to-end operation and no propagation-only compatibility API; and
    6. add the Tick invocation binding frame, pinned published-snapshot reads,
       `TickMaterializationSnapshot` playback and per-input neutral values for genuinely
       missing sequential data.
 
    Final commit atomically promotes prepared semantic coverage plus any candidate page
-   publication and processed capture frontier. Any failure or stale-base rejection
-   promotes none of them. Expose only the end-to-end semantic transaction operation;
+   publication. Step 5 below extends that same boundary with the processed capture
+   frontier once capture exists. Any failure or stale-base rejection promotes none of
+   the state owned by the current transaction. Expose only the end-to-end semantic transaction operation;
    do not add a public F/R-only commit path. Verify throughout that no
    audio-thread path invokes Tock, allocates, blocks or reclaims the final owner of a
    retired snapshot. This checkpoint does not add a `ProjectGraph` or application-

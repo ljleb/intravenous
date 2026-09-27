@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <bit>
+#include <limits>
 #include <ranges>
 #include <stdexcept>
 #include <utility>
@@ -80,6 +81,65 @@ void append_unique_view(std::vector<View>& views, View view)
         views.push_back(std::move(view));
 }
 
+[[nodiscard]] std::size_t replay_sample_count(
+    std::span<IndexRegion const> regions)
+{
+    std::size_t result = 0;
+    for (auto const region : regions) {
+        auto const size = region.end - region.begin;
+        if (size > std::numeric_limits<std::size_t>::max() - result) {
+            throw std::length_error("background replay schedule is too large");
+        }
+        result += static_cast<std::size_t>(size);
+    }
+    return result;
+}
+
+[[nodiscard]] std::size_t replay_frame_capacity(
+    std::span<IndexRegion const> regions)
+{
+    if (regions.empty()) return 0;
+    auto const span = regions.back().end - regions.front().begin;
+    auto const maximum_power = std::size_t{1}
+        << (std::numeric_limits<std::size_t>::digits - 1);
+    if (span > maximum_power) {
+        throw std::length_error(
+            "background replay raw sample span is too large");
+    }
+    return std::bit_ceil(std::max<std::size_t>(span, 1));
+}
+
+[[nodiscard]] std::size_t replay_event_capacity(
+    double maximum_per_index, std::span<IndexRegion const> regions)
+{
+    auto requested = event_count_for_sample_span(
+        maximum_per_index, replay_sample_count(regions));
+    if (!requested) {
+        throw std::length_error(
+            "background replay raw event capacity is not representable");
+    }
+    auto const count = std::max<std::size_t>(*requested, 1);
+    auto const maximum_power = std::size_t{1}
+        << (std::numeric_limits<std::size_t>::digits - 1);
+    if (count > maximum_power) {
+        throw std::length_error(
+            "background replay raw event capacity is too large");
+    }
+    return std::bit_ceil(count);
+}
+
+[[nodiscard]] std::size_t align_up(
+    std::size_t value, std::size_t alignment)
+{
+    auto const remainder = value % alignment;
+    if (remainder == 0) return value;
+    auto const padding = alignment - remainder;
+    if (value > std::numeric_limits<std::size_t>::max() - padding) {
+        throw std::length_error("background replay raw storage is too large");
+    }
+    return value + padding;
+}
+
 } // namespace
 
 struct BackgroundEvaluationCallFrame::BindingAdapter {
@@ -103,6 +163,7 @@ struct BackgroundEvaluationCallFrame::BindingAdapter {
     std::vector<BackgroundSampleWriteView> sample_writes{};
     std::vector<BackgroundEventReadView> event_reads{};
     std::vector<BackgroundEventWriteView> event_writes{};
+    bool rejected_write = false;
 
     static Sample read_sample(void const* opaque, SampleIndex index,
                               std::size_t channel) noexcept
@@ -125,13 +186,16 @@ struct BackgroundEvaluationCallFrame::BindingAdapter {
                              std::size_t channel, Sample value) noexcept
     {
         auto& self = *static_cast<BindingAdapter*>(opaque);
-        bool wrote = false;
+        bool routed = false;
+        bool rejected = false;
         for (auto const& view : self.sample_writes) {
             if (!view.has_channel(channel) || !view.coverage().contains(index))
                 continue;
-            wrote = view.write(index, channel, value) || wrote;
+            routed = true;
+            rejected = !view.write(index, channel, value) || rejected;
         }
-        IV_ASSERT(wrote,
+        self.rejected_write = self.rejected_write || !routed || rejected;
+        IV_ASSERT(routed && !rejected,
                   "background sample binding has no selected writable route");
     }
 
@@ -169,13 +233,16 @@ struct BackgroundEvaluationCallFrame::BindingAdapter {
     static void write_event(void* opaque, TimedEvent const& event) noexcept
     {
         auto& self = *static_cast<BindingAdapter*>(opaque);
-        bool wrote = false;
+        bool routed = false;
+        bool rejected = false;
         for (auto const& view : self.event_writes) {
             if (!view.coverage().contains(event.time))
                 continue;
-            wrote = view.write(event) || wrote;
+            routed = true;
+            rejected = !view.write(event) || rejected;
         }
-        IV_ASSERT(wrote,
+        self.rejected_write = self.rejected_write || !routed || rejected;
+        IV_ASSERT(routed && !rejected,
                   "background event binding has no selected writable route");
     }
 };
@@ -188,12 +255,216 @@ struct BackgroundEvaluationCallFrame::NodeFrameStorage {
 };
 
 struct BackgroundEvaluationCallFrame::ReplayFrameStorage {
+    struct SampleStorage {
+        ChannelLayout layout{};
+        std::size_t capacity = 0;
+        std::vector<Sample> values{};
+
+        SampleStorage(ChannelLayout selected_layout, std::size_t selected_capacity)
+            : layout(selected_layout), capacity(selected_capacity)
+        {
+            auto const channels = channel_count(layout);
+            if (capacity != 0
+                && channels > std::numeric_limits<std::size_t>::max()
+                    / capacity) {
+                throw std::length_error(
+                    "background replay raw sample storage is too large");
+            }
+            values.resize(channels * capacity);
+        }
+
+        [[nodiscard]] ReflectedSamplePortStorageBinding binding() noexcept
+        {
+            ReflectedSamplePortStorageBinding result{
+                .frame_capacity = capacity,
+                .channel_layout = layout,
+            };
+            auto const channels = channel_count(layout);
+            for (std::size_t channel = 0; channel < channels; ++channel) {
+                auto const offset = layout.sample_layout
+                        == SampleStreamLayout::planar
+                    ? channel * capacity
+                    : channel;
+                result.channels[channel] = {
+                    .storage = reinterpret_cast<std::byte*>(
+                        values.data() + offset),
+                    .frame_capacity = capacity,
+                    .frame_stride = layout.sample_layout
+                            == SampleStreamLayout::planar
+                        ? 1
+                        : channels,
+                };
+            }
+            return result;
+        }
+
+        [[nodiscard]] Sample& at(
+            SampleIndex index, std::size_t channel) noexcept
+        {
+            auto const frame = static_cast<std::size_t>(index) & (capacity - 1);
+            auto const channels = channel_count(layout);
+            auto const offset = layout.sample_layout
+                    == SampleStreamLayout::planar
+                ? channel * capacity + frame
+                : frame * channels + channel;
+            return values[offset];
+        }
+    };
+
+    struct EventStorage {
+        std::size_t events_offset = 0;
+        std::size_t capacity = 0;
+        std::vector<std::max_align_t> words{};
+        std::uint64_t overflow = 0;
+
+        explicit EventStorage(std::size_t selected_capacity)
+            : events_offset(align_up(sizeof(std::size_t), alignof(TimedEvent)))
+            , capacity(selected_capacity)
+        {
+            static_assert(alignof(TimedEvent) <= alignof(std::max_align_t));
+            if (capacity > (std::numeric_limits<std::size_t>::max()
+                    - events_offset) / sizeof(TimedEvent)) {
+                throw std::length_error(
+                    "background replay raw event storage is too large");
+            }
+            auto const bytes = events_offset + capacity * sizeof(TimedEvent);
+            if (bytes > std::numeric_limits<std::size_t>::max()
+                    - (sizeof(std::max_align_t) - 1)) {
+                throw std::length_error(
+                    "background replay raw event storage is too large");
+            }
+            words.resize((bytes + sizeof(std::max_align_t) - 1)
+                         / sizeof(std::max_align_t));
+            count() = 0;
+        }
+
+        [[nodiscard]] std::byte* data() noexcept
+        {
+            return reinterpret_cast<std::byte*>(words.data());
+        }
+        [[nodiscard]] std::size_t& count() noexcept
+        {
+            return *reinterpret_cast<std::size_t*>(data());
+        }
+        [[nodiscard]] TimedEvent* events() noexcept
+        {
+            return reinterpret_cast<TimedEvent*>(data() + events_offset);
+        }
+        [[nodiscard]] ReflectedEventPortStorageBinding binding(
+            EventTypeId type) noexcept
+        {
+            return {
+                .storage = data(),
+                .count_offset = 0,
+                .events_offset = events_offset,
+                .event_capacity = capacity,
+                .type = type,
+            };
+        }
+    };
+
     std::vector<ReflectedSampleInputPortBinding> sample_inputs{};
     std::vector<ReflectedSampleOutputPortBinding> sample_outputs{};
     std::vector<ReflectedEventInputPortBinding> event_inputs{};
     std::vector<ReflectedEventOutputPortBinding> event_outputs{};
     std::vector<IndexRegion> regions{};
+    std::vector<std::unique_ptr<SampleStorage>> sample_input_storage{};
+    std::vector<std::unique_ptr<SampleStorage>> sample_output_storage{};
+    std::vector<std::unique_ptr<EventStorage>> event_input_storage{};
+    std::vector<std::unique_ptr<EventStorage>> event_output_storage{};
+    std::vector<BindingAdapter*> sample_input_adapters{};
+    std::vector<BindingAdapter*> sample_output_adapters{};
+    std::vector<BindingAdapter*> event_input_adapters{};
+    std::vector<BindingAdapter*> event_output_adapters{};
 };
+
+void BackgroundEvaluationCallFrame::prepare_replay(void* opaque)
+{
+    auto& replay = *static_cast<ReplayFrameStorage*>(opaque);
+    for (std::size_t input = 0;
+         input < replay.sample_input_storage.size(); ++input) {
+        auto& raw = *replay.sample_input_storage[input];
+        auto const& adapter = *replay.sample_input_adapters[input];
+        for (auto const region : replay.regions) {
+            if (!adapter.coverage->contains(region)) {
+                throw std::runtime_error(
+                    "background replay sample input is not fully selected");
+            }
+            for (auto index = region.begin; index < region.end; ++index) {
+                for (std::size_t channel = 0;
+                     channel < channel_count(raw.layout); ++channel) {
+                    raw.at(index, channel) =
+                        BindingAdapter::read_sample(&adapter, index, channel);
+                }
+            }
+        }
+    }
+    for (std::size_t input = 0;
+         input < replay.event_input_storage.size(); ++input) {
+        auto& raw = *replay.event_input_storage[input];
+        auto const& adapter = *replay.event_input_adapters[input];
+        raw.count() = 0;
+        for (auto const region : replay.regions) {
+            if (!adapter.coverage->contains(region)) {
+                throw std::runtime_error(
+                    "background replay event input is not fully selected");
+            }
+            BindingAdapter::for_each_event(
+                &adapter, region.begin, region.end, &raw,
+                +[](void* data, TimedEvent const& event) {
+                    auto& storage = *static_cast<
+                        ReplayFrameStorage::EventStorage*>(data);
+                    if (storage.count() == storage.capacity) {
+                        throw std::runtime_error(
+                            "background replay event input exceeded its bound");
+                    }
+                    storage.events()[storage.count()++] = event;
+                });
+        }
+    }
+    for (auto& output : replay.event_output_storage) {
+        output->count() = 0;
+        output->overflow = 0;
+    }
+}
+
+void BackgroundEvaluationCallFrame::finalize_replay(void* opaque)
+{
+    auto& replay = *static_cast<ReplayFrameStorage*>(opaque);
+    for (std::size_t output = 0;
+         output < replay.sample_output_storage.size(); ++output) {
+        auto& raw = *replay.sample_output_storage[output];
+        auto& adapter = *replay.sample_output_adapters[output];
+        Coverage scheduled;
+        for (auto const region : replay.regions) scheduled.include(region);
+        auto const selected = scheduled & *adapter.coverage;
+        for (auto const region : selected.regions()) {
+            for (auto index = region.begin; index < region.end; ++index) {
+                for (std::size_t channel = 0;
+                     channel < channel_count(raw.layout); ++channel) {
+                    BindingAdapter::write_sample(
+                        &adapter, index, channel, raw.at(index, channel));
+                }
+            }
+        }
+    }
+    for (std::size_t output = 0;
+         output < replay.event_output_storage.size(); ++output) {
+        auto& raw = *replay.event_output_storage[output];
+        auto& adapter = *replay.event_output_adapters[output];
+        if (raw.overflow != 0) {
+            throw std::runtime_error(
+                "background replay event output exceeded its bound");
+        }
+        for (std::size_t event = 0; event < raw.count(); ++event) {
+            auto const& value = raw.events()[event];
+            if (adapter.coverage->contains(
+                    static_cast<SampleIndex>(value.time))) {
+                BindingAdapter::write_event(&adapter, value);
+            }
+        }
+    }
+}
 
 BackgroundEvaluationCallFrame::BackgroundEvaluationCallFrame(
     graph_jit::BackgroundEvaluationPlan const& plan,
@@ -367,6 +638,10 @@ std::expected<void, std::string> BackgroundEvaluationCallFrame::seal()
 
         auto adapter = std::make_unique<BindingAdapter>();
         adapter->coverage = &selection_.binding_coverage[slot];
+        if (adapter->coverage->empty()) {
+            adapters.push_back(std::move(adapter));
+            continue;
+        }
         auto storage_selected = [&](graph_jit::PortStorageIndex index) {
             return std::ranges::contains(binding.storage, index);
         };
@@ -647,6 +922,65 @@ std::expected<void, std::string> BackgroundEvaluationCallFrame::seal()
         auto& storage = *replay_storage_[slot];
         auto& frame = built_nodes[replay.node];
         if (!storage.regions.empty()) {
+            auto const sample_capacity = replay_frame_capacity(storage.regions);
+            std::size_t sample_input = 0;
+            std::size_t event_input = 0;
+            for (auto const binding_slot : replay.input_bindings) {
+                auto const& binding = runtime.bindings[binding_slot];
+                auto const& port = plan.ports[binding.port];
+                auto* adapter = adapters[binding_slot].get();
+                if (binding.kind == PortKind::sample) {
+                    auto raw = std::make_unique<
+                        ReplayFrameStorage::SampleStorage>(
+                            port.sample_layout, sample_capacity);
+                    storage.sample_inputs[sample_input].storage = raw->binding();
+                    storage.sample_input_adapters.push_back(adapter);
+                    storage.sample_input_storage.push_back(std::move(raw));
+                    ++sample_input;
+                } else {
+                    auto raw = std::make_unique<
+                        ReplayFrameStorage::EventStorage>(
+                            replay_event_capacity(
+                                port.max_events_per_index, storage.regions));
+                    storage.event_inputs[event_input].storage =
+                        raw->binding(port.event_type);
+                    storage.event_input_adapters.push_back(adapter);
+                    storage.event_input_storage.push_back(std::move(raw));
+                    ++event_input;
+                }
+            }
+            std::size_t sample_output = 0;
+            std::size_t event_output = 0;
+            for (auto const binding_slot : replay.output_bindings) {
+                auto const& binding = runtime.bindings[binding_slot];
+                auto const& port = plan.ports[binding.port];
+                auto* adapter = adapters[binding_slot].get();
+                if (binding.kind == PortKind::sample) {
+                    auto raw = std::make_unique<
+                        ReplayFrameStorage::SampleStorage>(
+                            port.sample_layout, sample_capacity);
+                    storage.sample_outputs[sample_output].storage = raw->binding();
+                    storage.sample_output_adapters.push_back(adapter);
+                    storage.sample_output_storage.push_back(std::move(raw));
+                    ++sample_output;
+                } else {
+                    auto raw = std::make_unique<
+                        ReplayFrameStorage::EventStorage>(
+                            replay_event_capacity(
+                                port.max_events_per_index, storage.regions));
+                    storage.event_outputs[event_output] = {
+                        .storage = raw->binding(port.event_type),
+                        .overflow_count = &raw->overflow,
+                        .source_type = port.event_type,
+                        .append_existing = true,
+                    };
+                    storage.event_output_adapters.push_back(adapter);
+                    storage.event_output_storage.push_back(std::move(raw));
+                    ++event_output;
+                }
+            }
+            operation_frames[replay.node]->set_leaf_hooks(
+                &storage, &prepare_replay, &finalize_replay);
             if (!std::ranges::all_of(
                     storage.sample_inputs,
                     [](ReflectedSampleInputPortBinding const& binding) {
@@ -686,6 +1020,23 @@ std::expected<void, std::string> BackgroundEvaluationCallFrame::seal()
     call_.nodes = nodes_;
     sealed_ = true;
     return {};
+}
+
+std::expected<void, std::string>
+BackgroundEvaluationCallFrame::validate_evaluation() const
+{
+    if (!sealed_) {
+        return std::unexpected("background call frame is not sealed");
+    }
+    if (std::ranges::any_of(
+            binding_adapters_, [](auto const& adapter) {
+                return adapter->rejected_write;
+            })) {
+        return std::unexpected(
+            "background callback attempted a write outside selected output "
+            "storage or exceeded an event bound");
+    }
+    return realization_->validate_produced_storage();
 }
 
 graph_jit::BackgroundEvaluationCall&

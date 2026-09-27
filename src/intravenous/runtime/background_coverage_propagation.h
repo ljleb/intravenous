@@ -67,6 +67,18 @@ struct CoveragePropagationResult {
     std::vector<RequiredOutputCoverage> output_requirements{};
 };
 
+// Optional transaction policy invoked after the generated forward traversal
+// and before reverse propagation. Persisted-page planning uses this narrow
+// seam to complete page-sized output demands without teaching propagation
+// about page stores. The callback may only add to `additional`.
+struct BackgroundCoverageDemandExpansion {
+    void* data = nullptr;
+    void (*expand_output)(
+        void*, graph_jit::BackgroundPortIndex, Coverage const& available,
+        Coverage const& changed, Coverage const& required,
+        Coverage& additional) = nullptr;
+};
+
 class BackgroundPropagationWorkspace;
 
 // Long-lived semantic coverage committed for one compiled realization. It is
@@ -114,6 +126,7 @@ public:
     {
         return node_activity_;
     }
+
 };
 
 // Reusable propagation scratch and callback frames. Each preparation starts
@@ -228,7 +241,8 @@ public:
     [[nodiscard]] PreparedCoveragePropagation
     prepare(CompiledGraphBackgroundOperations const& operations,
             std::byte* storage, BackgroundCoverageState const& coverage,
-            CoveragePropagationRequest const& request);
+            CoveragePropagationRequest const& request,
+            BackgroundCoverageDemandExpansion expansion = {});
     [[nodiscard]] CoveragePropagationResult
     commit(BackgroundCoverageState& coverage,
            PreparedCoveragePropagation&& prepared) noexcept;

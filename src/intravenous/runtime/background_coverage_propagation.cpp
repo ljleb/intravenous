@@ -445,7 +445,8 @@ BackgroundPropagationWorkspace::BackgroundPropagationWorkspace(
 BackgroundPropagationWorkspace::prepare(
     CompiledGraphBackgroundOperations const& operations, std::byte* storage,
     BackgroundCoverageState const& coverage,
-    CoveragePropagationRequest const& request)
+    CoveragePropagationRequest const& request,
+    BackgroundCoverageDemandExpansion expansion)
 {
     auto const check_port = [this](graph_jit::BackgroundPortIndex index,
                                    graph_jit::PortDirection direction) {
@@ -495,7 +496,28 @@ BackgroundPropagationWorkspace::prepare(
         require_input(root.port, root.required);
     }
     for (auto const& root : request.output_demands) {
-        require_output(root.port, root.required, true);
+        auto const& planned = port(root.port);
+        auto const stored_boundary = planned.retention
+            && *planned.retention == OutputRetention::persisted;
+        require_output(root.port, root.required, !stored_boundary);
+    }
+    if (expansion.expand_output) {
+        for (graph_jit::BackgroundPortIndex index = 0;
+             index < plan_->ports.size(); ++index) {
+            auto const& planned = port(index);
+            if (planned.direction != graph_jit::PortDirection::output)
+                continue;
+            auto const change_index = output_index(index);
+            Coverage additional;
+            expansion.expand_output(
+                expansion.data, index,
+                candidate_output_coverages_[change_index],
+                output_changes_[change_index].changed,
+                output_requirements_[
+                    *planned.accumulators.output_requirement].required,
+                additional);
+            require_output(index, additional, true);
+        }
     }
     operations.propagate_reverse(storage, &call_);
 

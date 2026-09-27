@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <span>
 #include <stdexcept>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -241,6 +242,22 @@ TEST(BackgroundStorageRealization, ReadsTypedPublishedPagesWithoutCopyingThem)
             *realization.persisted_output(0)),
         sample_id);
     EXPECT_TRUE(realization.seal().has_value());
+
+    iv::BackgroundStorageRealization missing_page{
+        plan,
+        {
+            .generation = 20,
+            .storage_coverage = {
+                iv::Coverage{{{0, 5}}},
+                iv::Coverage{},
+            },
+            .published = &pin.snapshot(),
+        }};
+    auto missing_result = missing_page.seal();
+    ASSERT_FALSE(missing_result.has_value());
+    EXPECT_NE(
+        missing_result.error().find("missing selected published coverage"),
+        std::string::npos);
 }
 
 TEST(BackgroundStorageRealization, GivesProducedPersistedStoragePrivateOwners)
@@ -280,6 +297,7 @@ TEST(BackgroundStorageRealization, GivesProducedPersistedStoragePrivateOwners)
     ASSERT_NE(realization.sample_read(0), nullptr);
     ASSERT_NE(realization.sample_write(0), nullptr);
     EXPECT_TRUE(realization.sample_write(0)->write(100, 0, 8.0f));
+    EXPECT_TRUE(realization.sample_write(0)->write(101, 0, 9.0f));
     EXPECT_FLOAT_EQ(realization.sample_read(0)->at(100, 0).value, 8.0f);
     ASSERT_NE(realization.persisted_output(0), nullptr);
     EXPECT_EQ(
@@ -287,6 +305,21 @@ TEST(BackgroundStorageRealization, GivesProducedPersistedStoragePrivateOwners)
             *realization.persisted_output(0)),
         output);
     EXPECT_TRUE(realization.seal().has_value());
+
+    iv::PersistedPageStore store;
+    auto candidate = store.begin_candidate(12, 4);
+    ASSERT_TRUE(realization.stage_persisted_pages(candidate).has_value());
+    ASSERT_EQ(store.publish(std::move(candidate)),
+              iv::PersistedPagePublishResult::published);
+    auto reader = store.register_reader();
+    auto pin = reader.pin();
+    auto const* page = pin->find_sample_page(output, 25);
+    ASSERT_NE(page, nullptr);
+    EXPECT_EQ(page->domain, (iv::Coverage{{{100, 102}}}));
+    EXPECT_EQ(page->packing, iv::PersistedSamplePacking::coverage_packed);
+    ASSERT_EQ(page->values.size(), 2);
+    EXPECT_FLOAT_EQ(page->values[0].value, 8.0f);
+    EXPECT_FLOAT_EQ(page->values[1].value, 9.0f);
 }
 
 TEST(BackgroundStorageRealization, SealingRejectsMissingExternalDirectViews)
@@ -803,6 +836,7 @@ TEST(BackgroundEvaluationCallFrame, ReservesAndValidatesReplaySchedule)
     plan.ports = {
         {
             .node = 0,
+            .configured_port = {0, iv::PortKind::sample, 0},
             .kind = iv::PortKind::sample,
             .direction = iv::graph_jit::PortDirection::input,
             .replay_sequential_input = true,
@@ -814,6 +848,7 @@ TEST(BackgroundEvaluationCallFrame, ReservesAndValidatesReplaySchedule)
         },
         {
             .node = 0,
+            .configured_port = {0, iv::PortKind::event, 0},
             .kind = iv::PortKind::event,
             .direction = iv::graph_jit::PortDirection::input,
             .replay_sequential_input = true,
@@ -836,6 +871,12 @@ TEST(BackgroundEvaluationCallFrame, ReservesAndValidatesReplaySchedule)
             .replayed_tick_output = true,
         },
     };
+    plan.sample_target_subsets = {{
+        .port = {0, iv::PortKind::sample, 0},
+    }};
+    plan.event_target_subsets = {{
+        .port = {.bundle = 0, .port = 0},
+    }};
     plan.storage.ports = {
         {
             .kind = iv::PortKind::sample,
@@ -870,6 +911,16 @@ TEST(BackgroundEvaluationCallFrame, ReservesAndValidatesReplaySchedule)
             .output_port = 3,
         },
     };
+    plan.storage.direct_samples = {{
+        .target_subset = 0,
+        .target_channel = 0,
+        .source_channel = 0,
+        .storage = 0,
+    }};
+    plan.storage.direct_events = {{
+        .target_subset = 0,
+        .storage = 1,
+    }};
     plan.runtime.bindings = {
         {.node = 0,
          .port = 0,
@@ -903,50 +954,22 @@ TEST(BackgroundEvaluationCallFrame, ReservesAndValidatesReplaySchedule)
     plan.runtime.node_replay_invocations = {0};
 
     iv::BackgroundStorageRealization realization{
-        plan, {.storage_coverage = std::vector<iv::Coverage>(4)}};
+        plan,
+        {.storage_coverage = std::vector<iv::Coverage>(
+             4, iv::Coverage{{{0, 10}}})}};
+    ASSERT_TRUE(realization.sample_write(0)->write(0, 0, 3.0f));
     ASSERT_TRUE(realization.seal().has_value());
     iv::BackgroundEvaluationCallFrame frame{
-        plan, realization, {.binding_coverage = std::vector<iv::Coverage>(4)}};
+        plan,
+        realization,
+        {.binding_coverage = std::vector<iv::Coverage>(
+             4, iv::Coverage{{{0, 10}}})}};
     EXPECT_EQ(frame.replay_sample_inputs(0).size(), 1);
     EXPECT_EQ(frame.replay_event_inputs(0).size(), 1);
     EXPECT_EQ(frame.replay_sample_outputs(0).size(), 1);
     EXPECT_EQ(frame.replay_event_outputs(0).size(), 1);
     EXPECT_FALSE(frame.set_replay_regions(0, {{0, 5}}).has_value());
     ASSERT_TRUE(frame.set_replay_regions(0, {{0, 4}, {8, 10}}).has_value());
-    EXPECT_FALSE(frame.seal().has_value());
-
-    std::array<iv::Sample, 4> replay_sample_input{};
-    std::array<iv::Sample, 4> replay_sample_output{};
-    auto bind_sample = [](auto& binding, std::span<iv::Sample> samples) {
-        binding.storage.channels[0] = {
-            .storage = reinterpret_cast<std::byte*>(samples.data()),
-            .frame_capacity = samples.size(),
-            .frame_stride = 1,
-        };
-        binding.storage.frame_capacity = samples.size();
-        binding.storage.channel_layout = {
-            .channel_type = iv::ChannelTypeId::mono,
-            .sample_layout = iv::SampleStreamLayout::planar,
-        };
-    };
-    bind_sample(frame.replay_sample_inputs(0).front(), replay_sample_input);
-    bind_sample(frame.replay_sample_outputs(0).front(), replay_sample_output);
-
-    struct ReplayEventStorage {
-        std::size_t count = 0;
-        std::array<iv::TimedEvent, 4> events{};
-    } replay_event_input, replay_event_output;
-    auto bind_event = [](auto& binding, ReplayEventStorage& storage) {
-        binding.storage = {
-            .storage = reinterpret_cast<std::byte*>(&storage),
-            .count_offset = offsetof(ReplayEventStorage, count),
-            .events_offset = offsetof(ReplayEventStorage, events),
-            .event_capacity = storage.events.size(),
-            .type = iv::EventTypeId::empty,
-        };
-    };
-    bind_event(frame.replay_event_inputs(0).front(), replay_event_input);
-    bind_event(frame.replay_event_outputs(0).front(), replay_event_output);
     ASSERT_TRUE(frame.seal().has_value());
     auto const& replay = frame.nodes().front().replay;
     EXPECT_EQ(replay.sample_input_bindings.size(), 1);
@@ -956,6 +979,138 @@ TEST(BackgroundEvaluationCallFrame, ReservesAndValidatesReplaySchedule)
     ASSERT_EQ(frame.nodes().front().replay_regions.size(), 2);
     EXPECT_EQ(frame.nodes().front().replay_regions.data()[1],
               (iv::IndexRegion{8, 10}));
+
+    auto& node = frame.nodes().front();
+    ASSERT_NE(node.prepare_operations, nullptr);
+    ASSERT_NE(node.finalize_operations, nullptr);
+    node.prepare_operations(node.operation_frame);
+    auto const& sample_input = node.replay.sample_input_bindings.data()[0];
+    auto* input_values = reinterpret_cast<iv::Sample*>(
+        sample_input.storage.channels[0].storage);
+    EXPECT_FLOAT_EQ(input_values[0].value, 3.0f);
+
+    auto const& sample_output = node.replay.sample_output_bindings.data()[0];
+    auto* output_values = reinterpret_cast<iv::Sample*>(
+        sample_output.storage.channels[0].storage);
+    output_values[8 & (sample_output.storage.frame_capacity - 1)] =
+        iv::Sample{9.0f};
+    node.finalize_operations(node.operation_frame);
+    EXPECT_FLOAT_EQ(realization.sample_read(2)->at(8, 0).value, 9.0f);
+}
+
+TEST(
+    BackgroundEvaluationCallFrame,
+    ReplayFlushesOnlyTheCoverageSelectedForEachOutput)
+{
+    iv::graph_jit::BackgroundEvaluationPlan plan;
+    plan.nodes = {{
+        .replays_tick = true,
+        .replay_maximum_block_size = 4,
+        .outputs = {0, 1},
+    }};
+    plan.ports = {
+        {
+            .node = 0,
+            .kind = iv::PortKind::sample,
+            .direction = iv::graph_jit::PortDirection::output,
+            .replayed_tick_output = true,
+            .sample_layout = {
+                .channel_type = iv::ChannelTypeId::mono,
+                .sample_layout = iv::SampleStreamLayout::planar,
+            },
+        },
+        {
+            .node = 0,
+            .kind = iv::PortKind::sample,
+            .direction = iv::graph_jit::PortDirection::output,
+            .replayed_tick_output = true,
+            .sample_layout = {
+                .channel_type = iv::ChannelTypeId::mono,
+                .sample_layout = iv::SampleStreamLayout::planar,
+            },
+        },
+    };
+    plan.storage.ports = {
+        {
+            .kind = iv::PortKind::sample,
+            .storage = iv::graph_jit::PortStorageKind::background,
+            .output_port = 0,
+            .sample_layout = {
+                .channel_type = iv::ChannelTypeId::mono,
+                .sample_layout = iv::SampleStreamLayout::planar,
+            },
+            .sample_channels = {0},
+        },
+        {
+            .kind = iv::PortKind::sample,
+            .storage = iv::graph_jit::PortStorageKind::background,
+            .output_port = 1,
+            .sample_layout = {
+                .channel_type = iv::ChannelTypeId::mono,
+                .sample_layout = iv::SampleStreamLayout::planar,
+            },
+            .sample_channels = {0},
+        },
+    };
+    plan.runtime.bindings = {
+        {.node = 0,
+         .port = 0,
+         .kind = iv::PortKind::sample,
+         .direction = iv::graph_jit::PortDirection::output,
+         .storage = {0}},
+        {.node = 0,
+         .port = 1,
+         .kind = iv::PortKind::sample,
+         .direction = iv::graph_jit::PortDirection::output,
+         .storage = {1}},
+    };
+    plan.runtime.port_bindings = {0, 1};
+    plan.runtime.node_operations.resize(1);
+    plan.runtime.replay_invocations = {{
+        .node = 0,
+        .maximum_block_size = 4,
+        .output_bindings = {0, 1},
+    }};
+    plan.runtime.node_replay_invocations = {0};
+
+    iv::BackgroundStorageRealization realization{
+        plan,
+        {
+            .storage_coverage = {
+                iv::Coverage{{{0, 4}}},
+                iv::Coverage{{{4, 8}}},
+            },
+        }};
+    ASSERT_TRUE(realization.seal().has_value());
+    iv::BackgroundEvaluationCallFrame frame{
+        plan,
+        realization,
+        {
+            .binding_coverage = {
+                iv::Coverage{{{0, 4}}},
+                iv::Coverage{{{4, 8}}},
+            },
+        }};
+    ASSERT_TRUE(frame.set_replay_regions(0, {{0, 4}, {4, 8}}).has_value());
+    ASSERT_TRUE(frame.seal().has_value());
+
+    auto& node = frame.nodes().front();
+    node.prepare_operations(node.operation_frame);
+    auto outputs = node.replay.sample_output_bindings;
+    ASSERT_EQ(outputs.size(), 2u);
+    for (std::size_t output = 0; output < outputs.size(); ++output) {
+        auto* values = reinterpret_cast<iv::Sample*>(
+            outputs.data()[output].storage.channels[0].storage);
+        for (std::size_t index = 0; index < 8; ++index) {
+            values[index & (outputs.data()[output].storage.frame_capacity - 1)] =
+                iv::Sample{static_cast<float>(10 * output + index)};
+        }
+    }
+    node.finalize_operations(node.operation_frame);
+    ASSERT_TRUE(frame.validate_evaluation().has_value());
+    EXPECT_FLOAT_EQ(realization.sample_read(0)->at(3, 0).value, 3.0f);
+    EXPECT_FLOAT_EQ(realization.sample_read(1)->at(4, 0).value, 14.0f);
+    EXPECT_FLOAT_EQ(realization.sample_read(1)->at(7, 0).value, 17.0f);
 }
 
 } // namespace

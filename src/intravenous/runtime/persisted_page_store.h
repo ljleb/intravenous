@@ -239,6 +239,14 @@ public:
 
     [[nodiscard]] PersistedPagePublishResult publish(Candidate&& candidate);
 
+    // Background/control transactions use this immediately before committing
+    // state derived from a pinned snapshot when they have no page candidate to
+    // publish. Candidate publication performs the same base-identity check.
+    [[nodiscard]] bool is_current(Snapshot const& snapshot) const noexcept
+    {
+        return published_.load(std::memory_order_seq_cst) == &snapshot;
+    }
+
     // Registration and reclamation are control/background operations and may
     // allocate or destroy storage. Acquiring/releasing a pin does neither.
     [[nodiscard]] ReaderSlot register_reader();

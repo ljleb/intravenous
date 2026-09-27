@@ -27,8 +27,8 @@ struct BackgroundEvaluationCallFrameSelection {
 // transaction-local assembly layer, not the transaction coordinator: it binds
 // the coordinator's already-selected logical coverage to a sealed storage
 // realization, owns each node's operation frame and compact Tock facades, and
-// reserves the compiler-sized replay binding arrays. Coverage propagation,
-// replay buffer production, activity selection and commit remain outside it.
+// owns the compiler-sized replay binding arrays and their isolated raw backing.
+// Coverage propagation, activity selection and commit remain outside it.
 class BackgroundEvaluationCallFrame {
     struct BindingAdapter;
     struct NodeFrameStorage;
@@ -45,6 +45,9 @@ class BackgroundEvaluationCallFrame {
     std::vector<std::unique_ptr<ReplayFrameStorage>> replay_storage_{};
     graph_jit::BackgroundEvaluationCall call_{};
     bool sealed_ = false;
+
+    static void prepare_replay(void* opaque);
+    static void finalize_replay(void* opaque);
 
 public:
     BackgroundEvaluationCallFrame(
@@ -75,10 +78,11 @@ public:
         return nodes_;
     }
 
-    // Replay binding arrays have their final addresses at construction. Their
-    // entries are populated by the later replay scheduler before seal(). The
-    // ordering is the corresponding replay plan's input/output binding order,
-    // filtered by port kind.
+    // Replay binding arrays have their final addresses at construction; seal()
+    // populates them with isolated transaction-local backing derived from the
+    // replay regions. Mutable access remains available for focused frame/ABI
+    // validation before seal. Ordering is the corresponding replay plan's
+    // input/output binding order, filtered by port kind.
     [[nodiscard]] std::span<ReflectedSampleInputPortBinding>
     replay_sample_inputs(graph_jit::BackgroundReplayInvocationSlot slot);
     [[nodiscard]] std::span<ReflectedSampleOutputPortBinding>
@@ -98,6 +102,13 @@ public:
     // have been populated. The underlying storage realization must already be
     // sealed. A successful call may be passed directly to generated code.
     [[nodiscard]] std::expected<void, std::string> seal();
+
+    // Called after the generated evaluate root returns and before any candidate
+    // publication. It rejects invalid callback writes and incomplete produced
+    // sample storage so default-initialized transaction memory can never become
+    // authoritative output.
+    [[nodiscard]] std::expected<void, std::string>
+    validate_evaluation() const;
 
     [[nodiscard]] graph_jit::BackgroundEvaluationCall& call() noexcept;
     [[nodiscard]] graph_jit::BackgroundEvaluationCall const&

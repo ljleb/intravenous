@@ -75,6 +75,7 @@ TEST(PersistedPageStore, PublishesSampleAndEventPagesAsOneImmutableRoot)
     auto old_slot = store.register_reader();
     auto current_slot = store.register_reader();
     auto old = old_slot.pin();
+    EXPECT_TRUE(store.is_current(old.snapshot()));
 
     auto const sample = stable_output(iv::PortKind::sample, "samples");
     auto const events = local_output(iv::PortKind::event, 8);
@@ -87,6 +88,8 @@ TEST(PersistedPageStore, PublishesSampleAndEventPagesAsOneImmutableRoot)
         iv::PersistedPagePublishResult::published);
 
     auto current = current_slot.pin();
+    EXPECT_FALSE(store.is_current(old.snapshot()));
+    EXPECT_TRUE(store.is_current(current.snapshot()));
     EXPECT_EQ(old->version(), (iv::PersistedPageSnapshotVersion{}));
     EXPECT_EQ(old->sample_page_count(), 0);
     EXPECT_EQ(old->event_page_count(), 0);

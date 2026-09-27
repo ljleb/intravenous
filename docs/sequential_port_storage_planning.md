@@ -560,8 +560,14 @@ The storage-model and storage-placement refactors have landed:
   conversion, and event conversion/fan-in reuses the shared stable k-way merge so
   equal timestamps remain in semantic source order. Generated prepare/finalize hooks
   and the address-stable transaction call-frame owner now wire those operations and
-  node-facing Tock/replay slots; coordinator-driven dynamic replay-buffer population
-  and commit remain;
+  node-facing Tock/replay slots. The background transaction coordinator now pins one
+  published page base, completes missing persisted-page demand, allocates isolated
+  replay buffers, invokes the generated evaluate root, privately stages produced or
+  invalidated pages only when page state changes, rejects a superseded pinned base
+  even when no page candidate is needed, and promotes prepared semantic coverage only
+  after any required publication succeeds. It rejects incomplete selected sample
+  production and callback writes that miss selected storage before staging pages, and
+  refuses to seal a pinned persisted input whose selected domain is not fully published;
 - sample and event producer groups now select the shared three-kind storage
   model, while event invocation aggregation is a separate operation fact;
 - ordinary event capacities start from
@@ -660,9 +666,13 @@ resolves dense runtime slots into compact authored-Tock sample/event facades ove
 sealed `BackgroundStorageRealization`, including direct sample channel remapping/read
 latency and output fan-out, without revisiting configured topology. It also owns the
 fixed typed replay binding arrays and validates the explicit replay-region schedule
-against the compiled block limit. The remaining replay work is for the transaction
-coordinator to populate those arrays with isolated raw buffers/state selected for that
-schedule; activity, coverage accumulators and commit also remain coordinator concerns.
+against the compiled block limit. The transaction coordinator now allocates isolated
+power-of-two sample/event replay storage for that schedule; prepare operations populate
+replay inputs from the selected realization and finalize operations flush replay outputs
+back before publication. When one replay invocation has differently demanded outputs,
+the node runs over their union schedule but each output flush is intersected with its
+own selected binding coverage. Activity selection, prepared coverage and final page/coverage
+promotion remain coordinator concerns rather than generated-root responsibilities.
 
 Transaction-local addressable storage and Tick-visible materialized storage are
 different lifetimes. The former dies with its background transaction. The latter is

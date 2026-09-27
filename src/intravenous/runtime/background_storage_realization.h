@@ -120,6 +120,11 @@ struct BackgroundEventWriteView {
 struct BackgroundStorageSelection {
     std::uint64_t generation = 0;
     std::vector<Coverage> storage_coverage{};
+    // Empty preserves the plan-derived default used by direct component tests.
+    // A complete transaction supplies one flag per storage slot so a persisted
+    // authored output can be read from the pinned base when it is still valid,
+    // or privately regenerated when its node is scheduled.
+    std::vector<bool> produce_storage{};
     PersistedPageStore::Snapshot const* published = nullptr;
 };
 
@@ -196,15 +201,35 @@ public:
     // Each runtime operation may execute exactly once per realization.
     [[nodiscard]] std::expected<void, std::string> execute_operation(
         graph_jit::BackgroundRuntimeOperationIndex index);
+
+    // Verifies that every selected sample/channel owned by this realization
+    // was initialized by Tock/replay or a placed materialization operation.
+    // Event storage needs no analogous "written" bitmap because an empty
+    // sequence is a complete event result; rejected event writes are tracked by
+    // the invocation frame instead.
+    [[nodiscard]] std::expected<void, std::string>
+    validate_produced_storage() const;
+
+    // Serializes every selected runtime-produced persisted slot into the
+    // transaction's private candidate. No page becomes visible here.
+    [[nodiscard]] std::expected<void, std::string> stage_persisted_pages(
+        PersistedPageStore::Candidate& candidate) const;
 };
 
 // Address-stable transaction-local frame passed opaquely through generated
 // background code. The retained spans come directly from one node's immutable
 // placement plan; this leaf never discovers or reorders operations.
 class BackgroundStorageOperationFrame {
+public:
+    using LeafHook = void (*)(void*);
+
+private:
     BackgroundStorageRealization* realization_ = nullptr;
     std::span<graph_jit::BackgroundRuntimeOperationIndex const> before_{};
     std::span<graph_jit::BackgroundRuntimeOperationIndex const> after_{};
+    void* leaf_data_ = nullptr;
+    LeafHook prepare_leaf_ = nullptr;
+    LeafHook finalize_leaf_ = nullptr;
 
     void execute(
         std::span<graph_jit::BackgroundRuntimeOperationIndex const> operations);
@@ -216,6 +241,12 @@ public:
         std::span<graph_jit::BackgroundRuntimeOperationIndex const> before,
         std::span<graph_jit::BackgroundRuntimeOperationIndex const> after)
         noexcept;
+
+    // Replay uses these transaction-local leaf hooks to move between sealed
+    // addressable storage and isolated raw Tick buffers. Generated code still
+    // sees only this opaque operation frame.
+    void set_leaf_hooks(
+        void* data, LeafHook prepare_leaf, LeafHook finalize_leaf) noexcept;
 
     void prepare();
     void finalize();
