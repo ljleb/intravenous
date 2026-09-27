@@ -20,6 +20,7 @@ struct TickObservation {
     std::size_t sample_index = 0;
     std::size_t block_size = 0;
     std::byte* storage = nullptr;
+    iv::graph_jit::TickInvocationCall const* invocation = nullptr;
 };
 
 TickObservation first_tick;
@@ -52,6 +53,7 @@ BackgroundPropagationObservation background_observation;
 
 void observe_first(
     std::byte* storage,
+    iv::graph_jit::TickInvocationCall const* invocation,
     std::size_t sample_index,
     std::size_t block_size)
 {
@@ -60,11 +62,13 @@ void observe_first(
         .sample_index = sample_index,
         .block_size = block_size,
         .storage = storage,
+        .invocation = invocation,
     };
 }
 
 void observe_second(
     std::byte* storage,
+    iv::graph_jit::TickInvocationCall const* invocation,
     std::size_t sample_index,
     std::size_t block_size)
 {
@@ -73,15 +77,24 @@ void observe_second(
         .sample_index = sample_index,
         .block_size = block_size,
         .storage = storage,
+        .invocation = invocation,
     };
 }
 
-void write_raw_state(std::byte* storage, std::size_t, std::size_t)
+void write_raw_state(
+    std::byte* storage,
+    iv::graph_jit::TickInvocationCall const*,
+    std::size_t,
+    std::size_t)
 {
     storage[first_raw_offset] = std::byte{0x5a};
 }
 
-void observe_raw_state(std::byte* storage, std::size_t, std::size_t)
+void observe_raw_state(
+    std::byte* storage,
+    iv::graph_jit::TickInvocationCall const*,
+    std::size_t,
+    std::size_t)
 {
     migrated_raw_value = std::to_integer<unsigned>(storage[second_raw_offset]);
 }
@@ -719,6 +732,11 @@ TEST_F(GraphExecutorFixture, StagesActivatesAndDispatchesOnlyActiveGeneration)
     EXPECT_EQ(first_tick.calls, 1u);
     EXPECT_EQ(first_tick.sample_index, 17u);
     EXPECT_EQ(first_tick.block_size, 32u);
+    ASSERT_NE(first_tick.invocation, nullptr);
+    EXPECT_TRUE(first_tick.invocation->sequential_sample_inputs.empty());
+    EXPECT_TRUE(first_tick.invocation->sequential_event_inputs.empty());
+    EXPECT_TRUE(first_tick.invocation->random_access_sample_inputs.empty());
+    EXPECT_TRUE(first_tick.invocation->random_access_event_inputs.empty());
 
     EXPECT_EQ(
         executor.stage(second), iv::GraphExecutorStageResult::staged);

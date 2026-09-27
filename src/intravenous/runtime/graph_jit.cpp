@@ -724,7 +724,7 @@ llvm::FunctionType* root_block_operation_type(llvm::LLVMContext& context)
         context, static_cast<unsigned>(sizeof(std::size_t) * 8));
     return llvm::FunctionType::get(
         llvm::Type::getVoidTy(context),
-        {pointer, size_type, size_type},
+        {pointer, pointer, size_type, size_type},
         false);
 }
 

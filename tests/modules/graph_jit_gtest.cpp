@@ -39,6 +39,8 @@
 
 
 namespace {
+
+iv::graph_jit::TickInvocationCall const empty_tick_invocation{};
 constexpr char graph_jit_state_package_id[] = "iv.test.graph_jit.state_context.package";
 constexpr char graph_jit_stateful_module_id[] = "iv.test.graph_jit.state_context.stateful_module";
 constexpr char graph_jit_state_only_module_id[] = "iv.test.graph_jit.state_context.state_only_module";
@@ -778,7 +780,7 @@ TEST(GraphJit, EmptyGraphCompilesAndMaterializesRootOperation)
     EXPECT_TRUE(result.compiled_graph->root_operations.valid());
     EXPECT_FALSE(result.compiled_graph->background_operations.valid());
 
-    EXPECT_NO_THROW(result.compiled_graph->root_operations.tick_block(nullptr, 0, 256));
+    EXPECT_NO_THROW(result.compiled_graph->root_operations.tick_block(nullptr, &empty_tick_invocation, 0, 256));
 }
 
 TEST(GraphJit, MissingPinnedInputsAreCompileDiagnostics)
@@ -6502,7 +6504,7 @@ TEST_F(GraphJitRuntimeFixture, StateAndBackgroundStateContexts)
             + stateful_node.background_state_offset);
 
     stateful.compiled_graph->root_operations.tick_block(
-        stateful_storage.buffer().data(), 17, 32);
+        stateful_storage.buffer().data(), &empty_tick_invocation, 17, 32);
     EXPECT_EQ(state->tick_calls, 1u);
     EXPECT_EQ(state->skip_calls, 0u);
     EXPECT_EQ(state->last_index, 17u);
@@ -6518,7 +6520,7 @@ TEST_F(GraphJitRuntimeFixture, StateAndBackgroundStateContexts)
     EXPECT_EQ(background->observed_background_extent, 0u);
 
     stateful.compiled_graph->root_operations.tick_block(
-        stateful_storage.buffer().data(), 73, 64);
+        stateful_storage.buffer().data(), &empty_tick_invocation, 73, 64);
     EXPECT_EQ(state->tick_calls, 2u);
     EXPECT_EQ(state->skip_calls, 0u);
     EXPECT_EQ(state->last_index, 73u);
@@ -6541,7 +6543,7 @@ TEST_F(GraphJitRuntimeFixture, StateAndBackgroundStateContexts)
     auto* state_only_value = static_cast<SingleSpanProbeMirror*>(
         state_only_storage.state_ptr(0));
     state_only.compiled_graph->root_operations.tick_block(
-        state_only_storage.buffer().data(), 3, 8);
+        state_only_storage.buffer().data(), &empty_tick_invocation, 3, 8);
     ASSERT_NE(state_only_value, nullptr);
     EXPECT_EQ(state_only_value->calls, 1u);
     EXPECT_EQ(state_only_value->observed_state_extent, sizeof(SingleSpanProbeMirror));
@@ -6560,7 +6562,7 @@ TEST_F(GraphJitRuntimeFixture, StateAndBackgroundStateContexts)
     auto* background_only_value = static_cast<SingleSpanProbeMirror*>(
         background_only_storage.background_state_ptr(0));
     background_only.compiled_graph->root_operations.tick_block(
-        background_only_storage.buffer().data(), 5, 16);
+        background_only_storage.buffer().data(), &empty_tick_invocation, 5, 16);
     ASSERT_NE(background_only_value, nullptr);
     EXPECT_EQ(background_only_value->calls, 0u);
     EXPECT_EQ(background_only_value->observed_state_extent, 0u);
@@ -6571,7 +6573,7 @@ TEST_F(GraphJitRuntimeFixture, StateAndBackgroundStateContexts)
         << (stateless.diagnostics.empty() ? "" : stateless.diagnostics.front().message);
     expect_single_node_canonical_regions(stateless.compiled_graph->node_layout, 0, 0);
     EXPECT_EQ(stateless.compiled_graph->node_layout.storage_size, 0u);
-    EXPECT_NO_THROW(stateless.compiled_graph->root_operations.tick_block(nullptr, 9, 32));
+    EXPECT_NO_THROW(stateless.compiled_graph->root_operations.tick_block(nullptr, &empty_tick_invocation, 9, 32));
 
 }
 
@@ -6698,7 +6700,7 @@ TEST_F(GraphJitRuntimeFixture, ConfiguredValuesAndPointerRelocations)
         configured_storage.state_ptr(0));
     ASSERT_NE(configured_state, nullptr);
     configured.compiled_graph->root_operations.tick_block(
-        configured_storage.buffer().data(), 11, 32);
+        configured_storage.buffer().data(), &empty_tick_invocation, 11, 32);
     EXPECT_EQ(configured_state->calls, 1u);
     EXPECT_EQ(configured_state->first, std::size_t{0x12345678u});
     EXPECT_EQ(configured_state->second, std::size_t{0xabcdef01u});
@@ -6732,7 +6734,7 @@ TEST_F(GraphJitRuntimeFixture, ConfiguredValuesAndPointerRelocations)
         pointer_storage.state_ptr(0));
     ASSERT_NE(pointer_state, nullptr);
     pointer_configured.compiled_graph->root_operations.tick_block(
-        pointer_storage.buffer().data(), 13, 16);
+        pointer_storage.buffer().data(), &empty_tick_invocation, 13, 16);
     EXPECT_EQ(pointer_state->calls, 1u);
     EXPECT_EQ(pointer_state->first_value, 0x2222222222222222ull);
     EXPECT_EQ(pointer_state->second_value, 0x4444444444444444ull);
@@ -6772,7 +6774,7 @@ TEST_F(GraphJitRuntimeFixture, MultipleNodesAndBlockSlicing)
     ASSERT_NE(multiple_stateful_state, nullptr);
     ASSERT_NE(multiple_configured_state, nullptr);
     multiple.compiled_graph->root_operations.tick_block(
-        multiple_storage.buffer().data(), 19, 32);
+        multiple_storage.buffer().data(), &empty_tick_invocation, 19, 32);
     EXPECT_EQ(multiple_stateful_state->tick_calls, 1u);
     EXPECT_EQ(multiple_stateful_state->last_index, 19u);
     EXPECT_EQ(multiple_stateful_state->last_block_size, 32u);
@@ -6802,7 +6804,7 @@ TEST_F(GraphJitRuntimeFixture, MultipleNodesAndBlockSlicing)
     ASSERT_NE(pair_state_0, nullptr);
     ASSERT_NE(pair_state_1, nullptr);
     skippable_pair.compiled_graph->root_operations.tick_block(
-        skippable_pair_storage.buffer().data(), 23, 32);
+        skippable_pair_storage.buffer().data(), &empty_tick_invocation, 23, 32);
     EXPECT_EQ(pair_state_0->tick_calls, 1u);
     EXPECT_EQ(pair_state_1->tick_calls, 1u);
     auto limited = compile(graph_jit_limited_block_module_id, 108);
@@ -6819,7 +6821,7 @@ TEST_F(GraphJitRuntimeFixture, MultipleNodesAndBlockSlicing)
     ASSERT_NE(limited_state, nullptr);
 
     limited.compiled_graph->root_operations.tick_block(
-        limited_storage.buffer().data(), 200, 64);
+        limited_storage.buffer().data(), &empty_tick_invocation, 200, 64);
     EXPECT_EQ(limited_state->tick_calls, 4u);
     EXPECT_EQ(
         limited_state->tick_indices,
@@ -6829,7 +6831,7 @@ TEST_F(GraphJitRuntimeFixture, MultipleNodesAndBlockSlicing)
         (std::array<std::uint64_t, 8>{16, 16, 16, 16, 0, 0, 0, 0}));
 
     limited.compiled_graph->root_operations.tick_block(
-        limited_storage.buffer().data(), 300, 8);
+        limited_storage.buffer().data(), &empty_tick_invocation, 300, 8);
     EXPECT_EQ(limited_state->tick_calls, 5u);
     EXPECT_EQ(limited_state->tick_indices[4], 300u);
     EXPECT_EQ(limited_state->tick_sizes[4], 8u);
@@ -6862,7 +6864,7 @@ TEST_F(GraphJitRuntimeFixture, DisconnectedSampleInputUsesDeclaredDefault)
     ASSERT_NE(state, nullptr);
 
     compiled.compiled_graph->root_operations.tick_block(
-        storage.buffer().data(), 100, 64);
+        storage.buffer().data(), &empty_tick_invocation, 100, 64);
     EXPECT_EQ(state->calls, 1u);
     EXPECT_EQ(state->last_index, 100u);
     EXPECT_EQ(state->last_block_size, 64u);
@@ -6876,7 +6878,7 @@ TEST_F(GraphJitRuntimeFixture, DisconnectedSampleInputUsesDeclaredDefault)
     EXPECT_EQ(state->marker, 0xd15c0a11u);
 
     compiled.compiled_graph->root_operations.tick_block(
-        storage.buffer().data(), 164, 16);
+        storage.buffer().data(), &empty_tick_invocation, 164, 16);
     EXPECT_EQ(state->calls, 2u);
     EXPECT_EQ(state->last_index, 164u);
     EXPECT_EQ(state->last_block_size, 16u);
@@ -6917,13 +6919,13 @@ TEST_F(GraphJitRuntimeFixture, DisconnectedSampleOutputKeepsDeclaredHistory)
     ASSERT_NE(state, nullptr);
 
     compiled.compiled_graph->root_operations.tick_block(
-        storage.buffer().data(), 0, 64);
+        storage.buffer().data(), &empty_tick_invocation, 0, 64);
     EXPECT_EQ(state->calls, 1u);
     EXPECT_FLOAT_EQ(state->previous_output, 0.0f);
     EXPECT_EQ(state->marker, 0x91a2b3c4u);
 
     compiled.compiled_graph->root_operations.tick_block(
-        storage.buffer().data(), 64, 64);
+        storage.buffer().data(), &empty_tick_invocation, 64, 64);
     EXPECT_EQ(state->calls, 2u);
     EXPECT_FLOAT_EQ(state->previous_output, 63.0f);
 }
@@ -6965,7 +6967,7 @@ TEST_F(GraphJitRuntimeFixture, DirectSampleStorage)
     auto* direct_state = find_consumer_state(*direct.compiled_graph, direct_storage);
     ASSERT_NE(direct_state, nullptr);
     direct.compiled_graph->root_operations.tick_block(
-        direct_storage.buffer().data(), 100, 64);
+        direct_storage.buffer().data(), &empty_tick_invocation, 100, 64);
     EXPECT_EQ(direct_state->calls, 1u);
     EXPECT_EQ(direct_state->last_index, 100u);
     EXPECT_EQ(direct_state->last_block_size, 64u);
@@ -6973,7 +6975,7 @@ TEST_F(GraphJitRuntimeFixture, DirectSampleStorage)
     EXPECT_FLOAT_EQ(direct_state->last, 163.0f);
     EXPECT_FLOAT_EQ(direct_state->sum, 8416.0f);
     direct.compiled_graph->root_operations.tick_block(
-        direct_storage.buffer().data(), 200, 16);
+        direct_storage.buffer().data(), &empty_tick_invocation, 200, 16);
     EXPECT_EQ(direct_state->calls, 2u);
     EXPECT_EQ(direct_state->last_index, 200u);
     EXPECT_EQ(direct_state->last_block_size, 16u);
@@ -7032,7 +7034,7 @@ TEST_F(GraphJitRuntimeFixture, TransientSampleStorage)
     // while all slices target the same planned current-block storage.
     // The 64-frame consumer therefore observes one contiguous logical block.
     transient.compiled_graph->root_operations.tick_block(
-        transient_storage.buffer().data(), 300, 64);
+        transient_storage.buffer().data(), &empty_tick_invocation, 300, 64);
     EXPECT_EQ(transient_state->calls, 1u);
     EXPECT_EQ(transient_state->last_index, 300u);
     EXPECT_EQ(transient_state->last_block_size, 64u);
@@ -7040,7 +7042,7 @@ TEST_F(GraphJitRuntimeFixture, TransientSampleStorage)
     EXPECT_FLOAT_EQ(transient_state->last, 363.0f);
     EXPECT_FLOAT_EQ(transient_state->sum, 21216.0f);
     transient.compiled_graph->root_operations.tick_block(
-        transient_storage.buffer().data(), 500, 32);
+        transient_storage.buffer().data(), &empty_tick_invocation, 500, 32);
     EXPECT_EQ(transient_state->calls, 2u);
     EXPECT_EQ(transient_state->last_index, 500u);
     EXPECT_EQ(transient_state->last_block_size, 32u);
@@ -7113,7 +7115,7 @@ TEST_F(GraphJitRuntimeFixture, TransientArenaReuse)
     }
     ASSERT_EQ(reused_consumer_states.size(), 2u);
     reused_arena.compiled_graph->root_operations.tick_block(
-        reused_storage.buffer().data(), 700, 64);
+        reused_storage.buffer().data(), &empty_tick_invocation, 700, 64);
     for (auto const* state : reused_consumer_states) {
         ASSERT_NE(state, nullptr);
         EXPECT_EQ(state->calls, 1u);
@@ -7157,7 +7159,7 @@ TEST_F(GraphJitRuntimeFixture, StackBudgetUsesPackedSampleLifetimes)
     auto storage = compiled.compiled_graph->node_layout.create_storage(resources);
     storage.initialize();
     compiled.compiled_graph->root_operations.tick_block(
-        storage.buffer().data(), 700, 64);
+        storage.buffer().data(), &empty_tick_invocation, 700, 64);
 
     std::size_t observed = 0;
     for (std::size_t i = 0;
@@ -7227,7 +7229,7 @@ TEST_F(GraphJitRuntimeFixture, StackBudgetMovesOverlappingSampleBuffersToNodeSto
     }
     ASSERT_NE(consumer, nullptr);
     compiled.compiled_graph->root_operations.tick_block(
-        storage.buffer().data(), 0, 4);
+        storage.buffer().data(), &empty_tick_invocation, 0, 4);
     EXPECT_EQ(consumer->calls, 1u);
     EXPECT_FLOAT_EQ(consumer->first_left, 0.0f);
     EXPECT_FLOAT_EQ(consumer->first_right, 0.0f);
@@ -7359,7 +7361,7 @@ TEST_F(GraphJitRuntimeFixture, SampleFanoutConversion)
     // now read the canonical source channel directly, so absolute-index alias
     // addressing must remain correct across the wrap.
     fanout.compiled_graph->root_operations.tick_block(
-        fanout_storage.buffer().data(), 37, 64);
+        fanout_storage.buffer().data(), &empty_tick_invocation, 37, 64);
     for (auto const* state : fanout_mono_states) {
         ASSERT_NE(state, nullptr);
         EXPECT_EQ(state->calls, 1u);
@@ -7381,7 +7383,7 @@ TEST_F(GraphJitRuntimeFixture, SampleFanoutConversion)
     }
 
     fanout.compiled_graph->root_operations.tick_block(
-        fanout_storage.buffer().data(), 205, 16);
+        fanout_storage.buffer().data(), &empty_tick_invocation, 205, 16);
     for (auto const* state : fanout_mono_states) {
         EXPECT_EQ(state->calls, 2u);
         EXPECT_FLOAT_EQ(state->first, 205.0f);
@@ -7484,7 +7486,7 @@ TEST_F(GraphJitRuntimeFixture, StereoSampleConversion)
     ASSERT_NE(stereo_to_planar_state, nullptr);
 
     stereo_conversion.compiled_graph->root_operations.tick_block(
-        stereo_conversion_storage.buffer().data(), 51, 32);
+        stereo_conversion_storage.buffer().data(), &empty_tick_invocation, 51, 32);
     EXPECT_EQ(stereo_to_mono_state->calls, 1u);
     EXPECT_EQ(stereo_to_mono_state->last_index, 51u);
     EXPECT_EQ(stereo_to_mono_state->last_block_size, 32u);
@@ -7559,7 +7561,7 @@ TEST_F(GraphJitRuntimeFixture, SampleOutputUpdateRevisesUnpublishedFrames)
     ASSERT_NE(stereo, nullptr);
 
     compiled.compiled_graph->root_operations.tick_block(
-        storage.buffer().data(), 0, 4);
+        storage.buffer().data(), &empty_tick_invocation, 0, 4);
     EXPECT_EQ(mono->calls, 1u);
     EXPECT_FLOAT_EQ(mono->first, 0.0f);
     EXPECT_FLOAT_EQ(mono->last, 102.0f);
@@ -7577,7 +7579,7 @@ TEST_F(GraphJitRuntimeFixture, SampleOutputUpdateRevisesUnpublishedFrames)
     // must revise that retained frame before either direct or converted fanout
     // observes it.
     compiled.compiled_graph->root_operations.tick_block(
-        storage.buffer().data(), 4, 4);
+        storage.buffer().data(), &empty_tick_invocation, 4, 4);
     EXPECT_EQ(mono->calls, 2u);
     EXPECT_FLOAT_EQ(mono->first, 103.0f);
     EXPECT_FLOAT_EQ(mono->last, 106.0f);
@@ -7639,7 +7641,7 @@ TEST_F(GraphJitRuntimeFixture, SampleOutputUpdateSurvivesPersistentRingStorage)
     ASSERT_NE(consumer, nullptr);
 
     compiled.compiled_graph->root_operations.tick_block(
-        storage.buffer().data(), 0, 4);
+        storage.buffer().data(), &empty_tick_invocation, 0, 4);
     EXPECT_EQ(consumer->calls, 1u);
     EXPECT_FLOAT_EQ(consumer->first, 0.0f);
     EXPECT_FLOAT_EQ(consumer->last, 101.0f);
@@ -7649,7 +7651,7 @@ TEST_F(GraphJitRuntimeFixture, SampleOutputUpdateSurvivesPersistentRingStorage)
     // root call while the canonical producer storage is a persistent
     // ring rather than compact carry.
     compiled.compiled_graph->root_operations.tick_block(
-        storage.buffer().data(), 4, 4);
+        storage.buffer().data(), &empty_tick_invocation, 4, 4);
     EXPECT_EQ(consumer->calls, 2u);
     EXPECT_FLOAT_EQ(consumer->first, 102.0f);
     EXPECT_FLOAT_EQ(consumer->last, 105.0f);
@@ -7708,7 +7710,7 @@ TEST_F(GraphJitRuntimeFixture, SampleOutputUpdateFeedsComposedFanout)
     ASSERT_NE(consumer, nullptr);
 
     compiled.compiled_graph->root_operations.tick_block(
-        storage.buffer().data(), 0, 4);
+        storage.buffer().data(), &empty_tick_invocation, 0, 4);
     EXPECT_EQ(consumer->calls, 1u);
     EXPECT_FLOAT_EQ(consumer->first_left, 0.0f);
     EXPECT_FLOAT_EQ(consumer->first_right, 0.0f);
@@ -7716,7 +7718,7 @@ TEST_F(GraphJitRuntimeFixture, SampleOutputUpdateFeedsComposedFanout)
     EXPECT_FLOAT_EQ(consumer->last_right, 102.0f);
 
     compiled.compiled_graph->root_operations.tick_block(
-        storage.buffer().data(), 4, 4);
+        storage.buffer().data(), &empty_tick_invocation, 4, 4);
     EXPECT_EQ(consumer->calls, 2u);
     EXPECT_FLOAT_EQ(consumer->first_left, 103.0f);
     EXPECT_FLOAT_EQ(consumer->first_right, 103.0f);
@@ -7755,7 +7757,7 @@ TEST_F(GraphJitRuntimeFixture, TickOnlySampleNodePreservesContextAcrossPrimitive
     // preceding primitive callback invocation, while the one-sample source
     // latency keeps those frames unpublished until the consumer runs.
     compiled.compiled_graph->root_operations.tick_block(
-        storage.buffer().data(), 0, 4);
+        storage.buffer().data(), &empty_tick_invocation, 0, 4);
     EXPECT_EQ(consumer->calls, 1u);
     EXPECT_EQ(consumer->last_index, 0u);
     EXPECT_EQ(consumer->last_block_size, 4u);
@@ -7766,7 +7768,7 @@ TEST_F(GraphJitRuntimeFixture, TickOnlySampleNodePreservesContextAcrossPrimitive
     // The next root call begins by revising frame 3 from the previous root.
     // Later updates cross the [4,6) -> [6,8) primitive-slice boundary too.
     compiled.compiled_graph->root_operations.tick_block(
-        storage.buffer().data(), 4, 4);
+        storage.buffer().data(), &empty_tick_invocation, 4, 4);
     EXPECT_EQ(consumer->calls, 2u);
     EXPECT_EQ(consumer->last_index, 4u);
     EXPECT_EQ(consumer->last_block_size, 4u);
@@ -7803,7 +7805,7 @@ TEST_F(GraphJitRuntimeFixture, SampleLatencyCompensation)
     ASSERT_NE(latency_probe, nullptr);
 
     latency_compensation.compiled_graph->root_operations.tick_block(
-        latency_storage.buffer().data(), 0, 64);
+        latency_storage.buffer().data(), &empty_tick_invocation, 0, 64);
     EXPECT_EQ(latency_probe->calls, 1u);
     EXPECT_EQ(latency_probe->last_index, 0u);
     EXPECT_EQ(latency_probe->last_block_size, 64u);
@@ -7819,7 +7821,7 @@ TEST_F(GraphJitRuntimeFixture, SampleLatencyCompensation)
     // compiler-owned seven-frame carry while the slow branch restores its own
     // two-frame output carry. Both must still address the same logical sample.
     latency_compensation.compiled_graph->root_operations.tick_block(
-        latency_storage.buffer().data(), 64, 64);
+        latency_storage.buffer().data(), &empty_tick_invocation, 64, 64);
     EXPECT_EQ(latency_probe->calls, 2u);
     EXPECT_EQ(latency_probe->last_index, 64u);
     EXPECT_EQ(latency_probe->last_block_size, 64u);
@@ -7943,7 +7945,7 @@ TEST_F(GraphJitRuntimeFixture, ConvertedFanoutLatencyWindows)
     ASSERT_NE(current_observer, nullptr);
 
     latency_conversion_fanout.compiled_graph->root_operations.tick_block(
-        latency_conversion_storage.buffer().data(), 0, 64);
+        latency_conversion_storage.buffer().data(), &empty_tick_invocation, 0, 64);
     EXPECT_EQ(interleaved_latency_probe->calls, 1u);
     EXPECT_EQ(interleaved_latency_probe->mismatches, 0u);
     EXPECT_FLOAT_EQ(interleaved_latency_probe->fast_first, 0.0f);
@@ -7965,7 +7967,7 @@ TEST_F(GraphJitRuntimeFixture, ConvertedFanoutLatencyWindows)
     EXPECT_FLOAT_EQ(current_observer->sum, 2016.0f);
 
     latency_conversion_fanout.compiled_graph->root_operations.tick_block(
-        latency_conversion_storage.buffer().data(), 64, 64);
+        latency_conversion_storage.buffer().data(), &empty_tick_invocation, 64, 64);
     EXPECT_EQ(interleaved_latency_probe->calls, 2u);
     EXPECT_EQ(interleaved_latency_probe->mismatches, 0u);
     EXPECT_FLOAT_EQ(interleaved_latency_probe->fast_first, 57.0f);
@@ -8042,7 +8044,7 @@ TEST_F(GraphJitRuntimeFixture, ComposedSampleLatency)
     ASSERT_NE(composed_probe, nullptr);
 
     composed_latency.compiled_graph->root_operations.tick_block(
-        composed_latency_storage.buffer().data(), 0, 64);
+        composed_latency_storage.buffer().data(), &empty_tick_invocation, 0, 64);
     EXPECT_EQ(composed_probe->calls, 1u);
     EXPECT_EQ(composed_probe->last_index, 0u);
     EXPECT_EQ(composed_probe->last_block_size, 64u);
@@ -8057,7 +8059,7 @@ TEST_F(GraphJitRuntimeFixture, ComposedSampleLatency)
     // independently restored history (7 frames from the direct source, 2 from
     // the delayed source) without a gathered stereo storage.
     composed_latency.compiled_graph->root_operations.tick_block(
-        composed_latency_storage.buffer().data(), 64, 64);
+        composed_latency_storage.buffer().data(), &empty_tick_invocation, 64, 64);
     EXPECT_EQ(composed_probe->calls, 2u);
     EXPECT_EQ(composed_probe->last_index, 64u);
     EXPECT_EQ(composed_probe->last_block_size, 64u);
@@ -8183,7 +8185,7 @@ TEST_F(GraphJitRuntimeFixture, ComposedSampleHistory)
     ASSERT_NE(composed_history_probe, nullptr);
 
     composed_history.compiled_graph->root_operations.tick_block(
-        composed_history_storage.buffer().data(), 0, 64);
+        composed_history_storage.buffer().data(), &empty_tick_invocation, 0, 64);
     EXPECT_EQ(composed_history_probe->calls, 1u);
     EXPECT_EQ(composed_history_probe->last_index, 0u);
     EXPECT_FLOAT_EQ(composed_history_probe->current_left, 0.0f);
@@ -8194,7 +8196,7 @@ TEST_F(GraphJitRuntimeFixture, ComposedSampleHistory)
     // At absolute index 64 both channels represent source frame 57 after path
     // equalization, and get(5) must reconstruct source frame 52 on each side.
     composed_history.compiled_graph->root_operations.tick_block(
-        composed_history_storage.buffer().data(), 64, 64);
+        composed_history_storage.buffer().data(), &empty_tick_invocation, 64, 64);
     EXPECT_EQ(composed_history_probe->calls, 2u);
     EXPECT_EQ(composed_history_probe->last_index, 64u);
     EXPECT_FLOAT_EQ(composed_history_probe->current_left, 57.0f);
@@ -8206,7 +8208,7 @@ TEST_F(GraphJitRuntimeFixture, ComposedSampleHistory)
     // A short third block catches composition code that accidentally assumes
     // the kernel's configured block size while reconstructing target history.
     composed_history.compiled_graph->root_operations.tick_block(
-        composed_history_storage.buffer().data(), 128, 4);
+        composed_history_storage.buffer().data(), &empty_tick_invocation, 128, 4);
     EXPECT_EQ(composed_history_probe->calls, 3u);
     EXPECT_EQ(composed_history_probe->last_index, 128u);
     EXPECT_FLOAT_EQ(composed_history_probe->current_left, 121.0f);
@@ -8362,7 +8364,7 @@ TEST_F(GraphJitRuntimeFixture, ProjectedSampleComposition)
     ASSERT_NE(projected_probe, nullptr);
 
     projected.compiled_graph->root_operations.tick_block(
-        projected_storage.buffer().data(), 0, 64);
+        projected_storage.buffer().data(), &empty_tick_invocation, 0, 64);
     EXPECT_EQ(projected_probe->calls, 1u);
     EXPECT_FLOAT_EQ(projected_probe->first_left, 0.0f);
     EXPECT_FLOAT_EQ(projected_probe->first_right, 0.0f);
@@ -8372,7 +8374,7 @@ TEST_F(GraphJitRuntimeFixture, ProjectedSampleComposition)
     EXPECT_FLOAT_EQ(projected_probe->sum_right, 1596.0f);
 
     projected.compiled_graph->root_operations.tick_block(
-        projected_storage.buffer().data(), 64, 64);
+        projected_storage.buffer().data(), &empty_tick_invocation, 64, 64);
     EXPECT_EQ(projected_probe->calls, 2u);
     EXPECT_FLOAT_EQ(projected_probe->first_left, 557.0f);
     EXPECT_FLOAT_EQ(projected_probe->first_right, 57.0f);
@@ -8430,7 +8432,7 @@ TEST_F(GraphJitRuntimeFixture, DirectEventFlow)
     ASSERT_NE(direct_event_probe, nullptr);
 
     direct_event.compiled_graph->root_operations.tick_block(
-        direct_event_storage.buffer().data(), 0, 64);
+        direct_event_storage.buffer().data(), &empty_tick_invocation, 0, 64);
     EXPECT_EQ(direct_event_probe->calls, 1u);
     EXPECT_EQ(direct_event_probe->last_index, 0u);
     EXPECT_EQ(direct_event_probe->last_block_size, 64u);
@@ -8444,7 +8446,7 @@ TEST_F(GraphJitRuntimeFixture, DirectEventFlow)
     // the previous bounded sequence before publishing this block, and the
     // consumer observes only timestamps in the new block.
     direct_event.compiled_graph->root_operations.tick_block(
-        direct_event_storage.buffer().data(), 64, 64);
+        direct_event_storage.buffer().data(), &empty_tick_invocation, 64, 64);
     EXPECT_EQ(direct_event_probe->calls, 2u);
     EXPECT_EQ(direct_event_probe->last_index, 64u);
     EXPECT_EQ(direct_event_probe->event_count, 2u);
@@ -8510,7 +8512,7 @@ TEST_F(GraphJitRuntimeFixture, ExactSampleDetachFeedback)
     ASSERT_NE(state_b, nullptr);
 
     compiled.compiled_graph->root_operations.tick_block(
-        storage.buffer().data(), 0, 13);
+        storage.buffer().data(), &empty_tick_invocation, 0, 13);
 
     ASSERT_EQ(state_a->calls, 4u);
     ASSERT_EQ(state_b->calls, 4u);
@@ -8564,7 +8566,7 @@ TEST_F(GraphJitRuntimeFixture, ExactSampleDetachFeedback)
     ASSERT_NE(migrated_b, nullptr);
 
     recompiled.compiled_graph->root_operations.tick_block(
-        migrated_storage.buffer().data(), 13, 6);
+        migrated_storage.buffer().data(), &empty_tick_invocation, 13, 6);
     ASSERT_EQ(migrated_a->calls, 2u);
     ASSERT_EQ(migrated_b->calls, 2u);
     EXPECT_EQ(migrated_a->indices[0], 13u);
@@ -8632,9 +8634,9 @@ TEST_F(GraphJitRuntimeFixture, SampleFeedbackSccFansOutToAcyclicIdentityAndConve
     storage.initialize();
 
     compiled.compiled_graph->root_operations.tick_block(
-        storage.buffer().data(), 0, 64);
+        storage.buffer().data(), &empty_tick_invocation, 0, 64);
     compiled.compiled_graph->root_operations.tick_block(
-        storage.buffer().data(), 64, 8);
+        storage.buffer().data(), &empty_tick_invocation, 64, 8);
 
     // Both probe states are 40 bytes, so state size alone cannot distinguish
     // them. Identify the stereo/history probe by its post-execution marker and
@@ -8759,7 +8761,7 @@ TEST_F(GraphJitRuntimeFixture, MultipleSampleDetachBranchesShareProducerHomeAndF
     ASSERT_NE(state, nullptr);
 
     compiled.compiled_graph->root_operations.tick_block(
-        storage.buffer().data(), 0, 13);
+        storage.buffer().data(), &empty_tick_invocation, 0, 13);
 
     ASSERT_EQ(state->calls, 4u);
     EXPECT_EQ(state->scc_feedback_latency, 4u);
@@ -8801,7 +8803,7 @@ TEST_F(GraphJitRuntimeFixture, MultipleSampleDetachBranchesMigrateSharedHomeAndF
     storage.initialize();
 
     current.compiled_graph->root_operations.tick_block(
-        storage.buffer().data(), 0, 13);
+        storage.buffer().data(), &empty_tick_invocation, 0, 13);
 
     // The two zero-initialized detach branches share one producer-home ring,
     // while the non-zero branch owns a second branch-local ring. Snapshot both
@@ -8871,7 +8873,7 @@ TEST_F(GraphJitRuntimeFixture, MultipleSampleDetachBranchesMigrateSharedHomeAndF
     // must continue both zero-initialized branches, while the independently
     // migrated initialized timeline must continue without replaying its -2 pre-roll.
     migrated.compiled_graph->root_operations.tick_block(
-        migrated_storage.buffer().data(), 13, 6);
+        migrated_storage.buffer().data(), &empty_tick_invocation, 13, 6);
 
     ASSERT_EQ(state->calls, 2u);
     EXPECT_EQ(state->scc_feedback_latency, 4u);
@@ -8961,7 +8963,7 @@ TEST_F(GraphJitRuntimeFixture, SampleDetachFeedbackPreservesSourceLatencyAndTarg
     ASSERT_NE(state, nullptr);
 
     compiled.compiled_graph->root_operations.tick_block(
-        storage.buffer().data(), 0, 17);
+        storage.buffer().data(), &empty_tick_invocation, 0, 17);
 
     ASSERT_EQ(state->calls, 5u);
     EXPECT_EQ(state->scc_feedback_latency, 4u);
@@ -9028,11 +9030,11 @@ TEST_F(GraphJitRuntimeFixture, SampleDetachFeedbackRecopiesAuthoredLatencyHorizo
     ASSERT_NE(state, nullptr);
 
     compiled.compiled_graph->root_operations.tick_block(
-        storage.buffer().data(), 0, 4);
+        storage.buffer().data(), &empty_tick_invocation, 0, 4);
     compiled.compiled_graph->root_operations.tick_block(
-        storage.buffer().data(), 4, 4);
+        storage.buffer().data(), &empty_tick_invocation, 4, 4);
     compiled.compiled_graph->root_operations.tick_block(
-        storage.buffer().data(), 8, 4);
+        storage.buffer().data(), &empty_tick_invocation, 8, 4);
 
     ASSERT_EQ(state->calls, 3u);
     EXPECT_EQ(state->indices[0], 0u);
@@ -9092,11 +9094,11 @@ TEST_F(GraphJitRuntimeFixture, ProjectedSampleDetachFeedbackRecomputesRevisionHo
     ASSERT_NE(state, nullptr);
 
     compiled.compiled_graph->root_operations.tick_block(
-        storage.buffer().data(), 0, 4);
+        storage.buffer().data(), &empty_tick_invocation, 0, 4);
     compiled.compiled_graph->root_operations.tick_block(
-        storage.buffer().data(), 4, 4);
+        storage.buffer().data(), &empty_tick_invocation, 4, 4);
     compiled.compiled_graph->root_operations.tick_block(
-        storage.buffer().data(), 8, 4);
+        storage.buffer().data(), &empty_tick_invocation, 8, 4);
 
     ASSERT_EQ(state->calls, 3u);
     EXPECT_EQ(state->indices[0], 0u);
@@ -9176,7 +9178,7 @@ TEST_F(GraphJitRuntimeFixture, ConvertedSampleDetachFeedback)
     ASSERT_NE(state, nullptr);
 
     compiled.compiled_graph->root_operations.tick_block(
-        storage.buffer().data(), 0, 17);
+        storage.buffer().data(), &empty_tick_invocation, 0, 17);
 
     ASSERT_EQ(state->calls, 5u);
     EXPECT_EQ(state->scc_feedback_latency, 4u);
@@ -9262,7 +9264,7 @@ TEST_F(GraphJitRuntimeFixture, ZeroInitializedConvertedFeedbackWritesDirectlyToP
     ASSERT_NE(state, nullptr);
 
     compiled.compiled_graph->root_operations.tick_block(
-        storage.buffer().data(), 0, 17);
+        storage.buffer().data(), &empty_tick_invocation, 0, 17);
 
     ASSERT_EQ(state->calls, 5u);
     EXPECT_EQ(state->scc_feedback_latency, 4u);
@@ -9419,7 +9421,7 @@ TEST_F(GraphJitRuntimeFixture, ProjectedSampleDetachFeedback)
     storage.initialize();
 
     compiled.compiled_graph->root_operations.tick_block(
-        storage.buffer().data(), 0, 17);
+        storage.buffer().data(), &empty_tick_invocation, 0, 17);
 
     // TemporalSampleFeedback and ConvertedSampleFeedback intentionally have
     // same-sized state mirrors, so state_size cannot identify the converted
@@ -9516,7 +9518,7 @@ TEST_F(GraphJitRuntimeFixture, ProjectedSampleDetachFeedbackAlignsUnequalMixingL
     auto storage = compiled.compiled_graph->node_layout.create_storage(resources);
     storage.initialize();
     compiled.compiled_graph->root_operations.tick_block(
-        storage.buffer().data(), 0, 17);
+        storage.buffer().data(), &empty_tick_invocation, 0, 17);
 
     ConvertedSampleFeedbackStateMirror* state = nullptr;
     for (std::size_t i = 0;
@@ -9604,7 +9606,7 @@ TEST_F(GraphJitRuntimeFixture, ProjectedSampleDetachFeedbackPermutesTargetChanne
     auto storage = compiled.compiled_graph->node_layout.create_storage(resources);
     storage.initialize();
     compiled.compiled_graph->root_operations.tick_block(
-        storage.buffer().data(), 0, 17);
+        storage.buffer().data(), &empty_tick_invocation, 0, 17);
 
     ConvertedSampleFeedbackStateMirror* state = nullptr;
     for (std::size_t i = 0;
@@ -9674,9 +9676,9 @@ TEST_F(GraphJitRuntimeFixture, UnequalLatencySampleFeedbackMigratesAlignmentPreh
     // initialized prehistory for the older aligned read. Both must migrate
     // together; there is deliberately no separate validity/warmup scalar.
     reference.compiled_graph->root_operations.tick_block(
-        reference_storage.buffer().data(), 0, 1);
+        reference_storage.buffer().data(), &empty_tick_invocation, 0, 1);
     current.compiled_graph->root_operations.tick_block(
-        storage.buffer().data(), 0, 1);
+        storage.buffer().data(), &empty_tick_invocation, 0, 1);
 
     auto const reference_regions =
         sample_feedback_alignment_region(reference_storage);
@@ -9714,17 +9716,17 @@ TEST_F(GraphJitRuntimeFixture, UnequalLatencySampleFeedbackMigratesAlignmentPreh
     // Root tick_block() accepts only power-of-two block sizes. Continue the
     // same logical 11-frame suffix using legal calls on both generations.
     reference.compiled_graph->root_operations.tick_block(
-        reference_storage.buffer().data(), 1, 8);
+        reference_storage.buffer().data(), &empty_tick_invocation, 1, 8);
     reference.compiled_graph->root_operations.tick_block(
-        reference_storage.buffer().data(), 9, 2);
+        reference_storage.buffer().data(), &empty_tick_invocation, 9, 2);
     reference.compiled_graph->root_operations.tick_block(
-        reference_storage.buffer().data(), 11, 1);
+        reference_storage.buffer().data(), &empty_tick_invocation, 11, 1);
     migrated.compiled_graph->root_operations.tick_block(
-        migrated_storage.buffer().data(), 1, 8);
+        migrated_storage.buffer().data(), &empty_tick_invocation, 1, 8);
     migrated.compiled_graph->root_operations.tick_block(
-        migrated_storage.buffer().data(), 9, 2);
+        migrated_storage.buffer().data(), &empty_tick_invocation, 9, 2);
     migrated.compiled_graph->root_operations.tick_block(
-        migrated_storage.buffer().data(), 11, 1);
+        migrated_storage.buffer().data(), &empty_tick_invocation, 11, 1);
 
     auto* reference_state = converted_sample_feedback_state(reference_storage);
     auto* migrated_state = converted_sample_feedback_state(migrated_storage);
@@ -9761,13 +9763,13 @@ TEST_F(GraphJitRuntimeFixture, UnequalLatencySampleFeedbackMigratesPopulatedAlig
     // its still-valid initialized prehistory. Migration must preserve the ring
     // exactly rather than reinitializing either part.
     reference.compiled_graph->root_operations.tick_block(
-        reference_storage.buffer().data(), 0, 2);
+        reference_storage.buffer().data(), &empty_tick_invocation, 0, 2);
     reference.compiled_graph->root_operations.tick_block(
-        reference_storage.buffer().data(), 2, 1);
+        reference_storage.buffer().data(), &empty_tick_invocation, 2, 1);
     current.compiled_graph->root_operations.tick_block(
-        storage.buffer().data(), 0, 2);
+        storage.buffer().data(), &empty_tick_invocation, 0, 2);
     current.compiled_graph->root_operations.tick_block(
-        storage.buffer().data(), 2, 1);
+        storage.buffer().data(), &empty_tick_invocation, 2, 1);
 
     auto const current_regions = sample_feedback_alignment_region(storage);
     ASSERT_TRUE(current_regions.has_value());
@@ -9802,13 +9804,13 @@ TEST_F(GraphJitRuntimeFixture, UnequalLatencySampleFeedbackMigratesPopulatedAlig
         static_cast<std::size_t>(reference_state_before->calls);
 
     reference.compiled_graph->root_operations.tick_block(
-        reference_storage.buffer().data(), 3, 8);
+        reference_storage.buffer().data(), &empty_tick_invocation, 3, 8);
     reference.compiled_graph->root_operations.tick_block(
-        reference_storage.buffer().data(), 11, 2);
+        reference_storage.buffer().data(), &empty_tick_invocation, 11, 2);
     migrated.compiled_graph->root_operations.tick_block(
-        migrated_storage.buffer().data(), 3, 8);
+        migrated_storage.buffer().data(), &empty_tick_invocation, 3, 8);
     migrated.compiled_graph->root_operations.tick_block(
-        migrated_storage.buffer().data(), 11, 2);
+        migrated_storage.buffer().data(), &empty_tick_invocation, 11, 2);
 
     auto* reference_state = converted_sample_feedback_state(reference_storage);
     auto* migrated_state = converted_sample_feedback_state(migrated_storage);
@@ -9868,7 +9870,7 @@ TEST_F(GraphJitRuntimeFixture, ExactTypeEventDetachFeedback)
     ASSERT_NE(state_b, nullptr);
 
     compiled.compiled_graph->root_operations.tick_block(
-        storage.buffer().data(), 0, 64);
+        storage.buffer().data(), &empty_tick_invocation, 0, 64);
 
     ASSERT_EQ(state_a->calls, 8u);
     ASSERT_EQ(state_b->calls, 8u);
@@ -9929,7 +9931,7 @@ TEST_F(GraphJitRuntimeFixture, ExactTypeEventDetachFeedback)
     ASSERT_NE(migrated_a, nullptr);
     ASSERT_NE(migrated_b, nullptr);
     recompiled.compiled_graph->root_operations.tick_block(
-        migrated_storage.buffer().data(), 64, 8);
+        migrated_storage.buffer().data(), &empty_tick_invocation, 64, 8);
     ASSERT_EQ(migrated_a->calls, 1u);
     ASSERT_EQ(migrated_b->calls, 1u);
     EXPECT_EQ(migrated_a->indices[0], 64u);
@@ -9963,17 +9965,17 @@ TEST_F(GraphJitRuntimeFixture, ExactTypeEventDetachFeedback)
     ASSERT_NE(tail_a, nullptr);
     ASSERT_NE(tail_b, nullptr);
     compiled.compiled_graph->root_operations.tick_block(
-        tail_storage.buffer().data(), 0, 4);
+        tail_storage.buffer().data(), &empty_tick_invocation, 0, 4);
     compiled.compiled_graph->root_operations.tick_block(
-        tail_storage.buffer().data(), 4, 2);
+        tail_storage.buffer().data(), &empty_tick_invocation, 4, 2);
     compiled.compiled_graph->root_operations.tick_block(
-        tail_storage.buffer().data(), 6, 1);
+        tail_storage.buffer().data(), &empty_tick_invocation, 6, 1);
     compiled.compiled_graph->root_operations.tick_block(
-        tail_storage.buffer().data(), 7, 8);
+        tail_storage.buffer().data(), &empty_tick_invocation, 7, 8);
     compiled.compiled_graph->root_operations.tick_block(
-        tail_storage.buffer().data(), 15, 1);
+        tail_storage.buffer().data(), &empty_tick_invocation, 15, 1);
     compiled.compiled_graph->root_operations.tick_block(
-        tail_storage.buffer().data(), 16, 2);
+        tail_storage.buffer().data(), &empty_tick_invocation, 16, 2);
 
     std::array<std::uint64_t, 6> const expected_indices{0, 4, 6, 7, 15, 16};
     std::array<std::uint64_t, 6> const expected_sizes{4, 2, 1, 8, 1, 2};
@@ -10048,7 +10050,7 @@ TEST_F(GraphJitRuntimeFixture, EventFanInStagesAcyclicIngressIntoFeedbackScc)
     ASSERT_NE(state, nullptr);
 
     compiled.compiled_graph->root_operations.tick_block(
-        storage.buffer().data(), 0, 64);
+        storage.buffer().data(), &empty_tick_invocation, 0, 64);
     ASSERT_EQ(state->calls, 8u);
     for (std::size_t slice = 0; slice < 8; ++slice) {
         auto const index = slice * 8u;
@@ -10067,7 +10069,7 @@ TEST_F(GraphJitRuntimeFixture, EventFanInStagesAcyclicIngressIntoFeedbackScc)
     // ingress event at 63. The next SCC slice inserts B's new event at 66 ahead
     // of the ingress source's 67/71 events without losing semantic tie order.
     compiled.compiled_graph->root_operations.tick_block(
-        storage.buffer().data(), 64, 8);
+        storage.buffer().data(), &empty_tick_invocation, 64, 8);
     ASSERT_EQ(state->calls, 9u);
     EXPECT_EQ(state->indices[8], 64u);
     EXPECT_EQ(state->block_sizes[8], 8u);
@@ -10140,7 +10142,7 @@ TEST_F(GraphJitRuntimeFixture, EventFeedbackSccConsumesRetainedAndConvertedHisto
     ASSERT_NE(state, nullptr);
 
     compiled.compiled_graph->root_operations.tick_block(
-        storage.buffer().data(), 0, 64);
+        storage.buffer().data(), &empty_tick_invocation, 0, 64);
     ASSERT_EQ(state->calls, 8u);
     EXPECT_EQ(state->scc_feedback_latency, 8u);
     EXPECT_EQ(state->marker, 0xa11ce808u);
@@ -10163,7 +10165,7 @@ TEST_F(GraphJitRuntimeFixture, EventFeedbackSccConsumesRetainedAndConvertedHisto
     // call therefore sees the prior event at 58 as history together with the
     // newly authored event at 66, for both exact and converted branches.
     compiled.compiled_graph->root_operations.tick_block(
-        storage.buffer().data(), 64, 8);
+        storage.buffer().data(), &empty_tick_invocation, 64, 8);
     ASSERT_EQ(state->calls, 9u);
     EXPECT_EQ(state->indices[8], 64u);
     EXPECT_EQ(state->block_sizes[8], 8u);
@@ -10410,7 +10412,7 @@ TEST_F(GraphJitRuntimeFixture, FeedForwardEventFanInMergesSlicedSourcesAndFansOu
     ASSERT_EQ(probes.size(), 2u);
 
     compiled.compiled_graph->root_operations.tick_block(
-        storage.buffer().data(), 0, 64);
+        storage.buffer().data(), &empty_tick_invocation, 0, 64);
     for (auto const* probe : probes) {
         ASSERT_NE(probe, nullptr);
         EXPECT_EQ(probe->calls, 1u);
@@ -10457,7 +10459,7 @@ TEST_F(GraphJitRuntimeFixture, FeedForwardEventFanInHomeUsesPlannedCapacity)
     ASSERT_NE(probe, nullptr);
 
     compiled.compiled_graph->root_operations.tick_block(
-        storage.buffer().data(), 0, 64);
+        storage.buffer().data(), &empty_tick_invocation, 0, 64);
 
     // Each source declares 0.125 events/sample, so the 64-frame sizing input
     // reserves eight events per producer. Source 0 emits eight and source 1
@@ -10547,7 +10549,7 @@ TEST_F(GraphJitRuntimeFixture, FeedForwardEventFanInConvertsAfterMerge)
     }
     ASSERT_EQ(probes.size(), 2u);
     compiled.compiled_graph->root_operations.tick_block(
-        storage.buffer().data(), 0, 64);
+        storage.buffer().data(), &empty_tick_invocation, 0, 64);
     for (auto const* probe : probes) {
         EXPECT_EQ(probe->event_count, 4u);
         EXPECT_EQ(probe->trigger_count, 4u);
@@ -10595,14 +10597,14 @@ TEST_F(GraphJitRuntimeFixture, FeedForwardEventFanInTargetHistoryUsesRetainedPro
     ASSERT_NE(probe, nullptr);
 
     compiled.compiled_graph->root_operations.tick_block(
-        storage.buffer().data(), 0, 64);
+        storage.buffer().data(), &empty_tick_invocation, 0, 64);
     EXPECT_EQ(probe->event_counts[0], 4u);
     EXPECT_EQ(probe->first_times[0], 3u);
     EXPECT_EQ(probe->second_times[0], 3u);
     EXPECT_EQ(probe->last_times[0], 63u);
 
     compiled.compiled_graph->root_operations.tick_block(
-        storage.buffer().data(), 64, 64);
+        storage.buffer().data(), &empty_tick_invocation, 64, 64);
     EXPECT_EQ(probe->event_counts[1], 6u);
     EXPECT_EQ(probe->first_times[1], 63u);
     EXPECT_EQ(probe->second_times[1], 63u);
@@ -10642,7 +10644,7 @@ TEST_F(GraphJitRuntimeFixture, FeedForwardEventFanInCompactCarryMigrates)
     }
     ASSERT_NE(probe, nullptr);
     compiled.compiled_graph->root_operations.tick_block(
-        storage.buffer().data(), 0, 64);
+        storage.buffer().data(), &empty_tick_invocation, 0, 64);
     EXPECT_EQ(probe->event_counts[0], 4u);
     EXPECT_EQ(probe->first_times[0], 5u);
     EXPECT_EQ(probe->second_times[0], 5u);
@@ -10667,7 +10669,7 @@ TEST_F(GraphJitRuntimeFixture, FeedForwardEventFanInCompactCarryMigrates)
     }
     ASSERT_NE(migrated_probe, nullptr);
     recompiled.compiled_graph->root_operations.tick_block(
-        migrated.buffer().data(), 64, 64);
+        migrated.buffer().data(), &empty_tick_invocation, 64, 64);
     // The compiler-owned carry migrates; this authored probe state starts fresh
     // in the new NodeStorage generation, so the resumed observation is index 0.
     EXPECT_EQ(migrated_probe->calls, 1u);
@@ -10709,7 +10711,7 @@ TEST_F(GraphJitRuntimeFixture, FeedForwardEventFanInPersistentRingRetainsBursts)
     ASSERT_NE(probe, nullptr);
     for (std::uint64_t index : {0u, 64u, 128u, 192u}) {
         compiled.compiled_graph->root_operations.tick_block(
-            storage.buffer().data(), index, 64);
+            storage.buffer().data(), &empty_tick_invocation, index, 64);
     }
     EXPECT_EQ(probe->event_counts[0], 64u);
     EXPECT_EQ(probe->event_counts[1], 128u);
@@ -10778,7 +10780,7 @@ TEST_F(GraphJitRuntimeFixture, EventFeedbackSccFansOutToAcyclicConsumer)
     ASSERT_NE(observer, nullptr);
 
     compiled.compiled_graph->root_operations.tick_block(
-        storage.buffer().data(), 0, 64);
+        storage.buffer().data(), &empty_tick_invocation, 0, 64);
     EXPECT_EQ(observer->calls, 1u);
     EXPECT_EQ(observer->last_index, 0u);
     EXPECT_EQ(observer->last_block_size, 64u);
@@ -10789,7 +10791,7 @@ TEST_F(GraphJitRuntimeFixture, EventFeedbackSccFansOutToAcyclicConsumer)
     EXPECT_EQ(observer->marker, 0xe71e17u);
 
     compiled.compiled_graph->root_operations.tick_block(
-        storage.buffer().data(), 64, 8);
+        storage.buffer().data(), &empty_tick_invocation, 64, 8);
     EXPECT_EQ(observer->calls, 2u);
     EXPECT_EQ(observer->last_index, 64u);
     EXPECT_EQ(observer->last_block_size, 8u);
@@ -10919,7 +10921,7 @@ TEST_F(GraphJitRuntimeFixture, EventFeedbackSccRetainsAuthoredFutureEvents)
     // samples leaves exactly 67 and 75 live across the root boundary, so the
     // feedback stream uses a two-event compact carry here.
     compiled.compiled_graph->root_operations.tick_block(
-        storage.buffer().data(), 0, 64);
+        storage.buffer().data(), &empty_tick_invocation, 0, 64);
     EXPECT_EQ(observer->calls, 1u);
     EXPECT_EQ(observer->last_index, 0u);
     EXPECT_EQ(observer->last_block_size, 64u);
@@ -10934,7 +10936,7 @@ TEST_F(GraphJitRuntimeFixture, EventFeedbackSccRetainsAuthoredFutureEvents)
     // back delayed events 67 and 75; cursor initializeing prevents source event 65
     // from being delayed and enqueued a second time.
     compiled.compiled_graph->root_operations.tick_block(
-        storage.buffer().data(), 64, 64);
+        storage.buffer().data(), &empty_tick_invocation, 64, 64);
     EXPECT_EQ(observer->calls, 2u);
     EXPECT_EQ(observer->last_index, 64u);
     EXPECT_EQ(observer->last_block_size, 64u);
@@ -10948,7 +10950,7 @@ TEST_F(GraphJitRuntimeFixture, EventFeedbackSccRetainsAuthoredFutureEvents)
     // feedback carry still retains exactly the two events live beyond the new
     // root boundary.
     compiled.compiled_graph->root_operations.tick_block(
-        storage.buffer().data(), 128, 8);
+        storage.buffer().data(), &empty_tick_invocation, 128, 8);
     EXPECT_EQ(observer->calls, 3u);
     EXPECT_EQ(observer->last_index, 128u);
     EXPECT_EQ(observer->last_block_size, 8u);
@@ -11074,7 +11076,7 @@ TEST_F(GraphJitRuntimeFixture, EventFeedbackSccPersistentRingRetainsAuthoredFutu
     };
 
     compiled.compiled_graph->root_operations.tick_block(
-        storage.buffer().data(), 0, 64);
+        storage.buffer().data(), &empty_tick_invocation, 0, 64);
     EXPECT_EQ(observer->calls, 1u);
     EXPECT_EQ(observer->last_index, 0u);
     EXPECT_EQ(observer->last_block_size, 64u);
@@ -11091,7 +11093,7 @@ TEST_F(GraphJitRuntimeFixture, EventFeedbackSccPersistentRingRetainsAuthoredFutu
     // source ring's prior write index, so that retained event is not copied a
     // second time into detached feedback.
     compiled.compiled_graph->root_operations.tick_block(
-        storage.buffer().data(), 64, 64);
+        storage.buffer().data(), &empty_tick_invocation, 64, 64);
     EXPECT_EQ(observer->calls, 2u);
     EXPECT_EQ(observer->last_index, 64u);
     EXPECT_EQ(observer->last_block_size, 64u);
@@ -11104,7 +11106,7 @@ TEST_F(GraphJitRuntimeFixture, EventFeedbackSccPersistentRingRetainsAuthoredFutu
     EXPECT_EQ(indices(*feedback_ring)[1], 16u);
 
     compiled.compiled_graph->root_operations.tick_block(
-        storage.buffer().data(), 128, 8);
+        storage.buffer().data(), &empty_tick_invocation, 128, 8);
     EXPECT_EQ(observer->calls, 3u);
     EXPECT_EQ(observer->last_index, 128u);
     EXPECT_EQ(observer->last_block_size, 8u);
@@ -11183,7 +11185,7 @@ TEST_F(GraphJitRuntimeFixture, EventFeedbackSccConvertsFanoutToAcyclicConsumer)
     ASSERT_NE(observer, nullptr);
 
     compiled.compiled_graph->root_operations.tick_block(
-        storage.buffer().data(), 0, 64);
+        storage.buffer().data(), &empty_tick_invocation, 0, 64);
     EXPECT_EQ(observer->calls, 1u);
     EXPECT_EQ(observer->last_index, 0u);
     EXPECT_EQ(observer->last_block_size, 64u);
@@ -11194,7 +11196,7 @@ TEST_F(GraphJitRuntimeFixture, EventFeedbackSccConvertsFanoutToAcyclicConsumer)
     EXPECT_EQ(observer->marker, 0xe71e17u);
 
     compiled.compiled_graph->root_operations.tick_block(
-        storage.buffer().data(), 64, 8);
+        storage.buffer().data(), &empty_tick_invocation, 64, 8);
     EXPECT_EQ(observer->calls, 2u);
     EXPECT_EQ(observer->last_index, 64u);
     EXPECT_EQ(observer->last_block_size, 8u);
@@ -11309,7 +11311,7 @@ TEST_F(GraphJitRuntimeFixture, EventFeedbackSccRetainsOutboundTargetHistory)
     };
 
     compiled.compiled_graph->root_operations.tick_block(
-        storage.buffer().data(), 0, 64);
+        storage.buffer().data(), &empty_tick_invocation, 0, 64);
     ASSERT_EQ(observer->calls, 1u);
     EXPECT_EQ(observer->indices[0], 0u);
     EXPECT_EQ(observer->event_counts[0], 8u);
@@ -11322,7 +11324,7 @@ TEST_F(GraphJitRuntimeFixture, EventFeedbackSccRetainsOutboundTargetHistory)
     // root call. The SCC then appends eight current events before one root-exit
     // materialization selects [56, 128).
     compiled.compiled_graph->root_operations.tick_block(
-        storage.buffer().data(), 64, 64);
+        storage.buffer().data(), &empty_tick_invocation, 64, 64);
     ASSERT_EQ(observer->calls, 2u);
     EXPECT_EQ(observer->indices[1], 64u);
     EXPECT_EQ(observer->event_counts[1], 9u);
@@ -11338,7 +11340,7 @@ TEST_F(GraphJitRuntimeFixture, EventFeedbackSccRetainsOutboundTargetHistory)
     // Changing the root-call size still uses the root history window, not an
     // SCC-slice-sized window. Only prior event 121 and current event 129 fit.
     compiled.compiled_graph->root_operations.tick_block(
-        storage.buffer().data(), 128, 8);
+        storage.buffer().data(), &empty_tick_invocation, 128, 8);
     ASSERT_EQ(observer->calls, 3u);
     EXPECT_EQ(observer->indices[2], 128u);
     EXPECT_EQ(observer->event_counts[2], 2u);
@@ -11473,7 +11475,7 @@ TEST_F(GraphJitRuntimeFixture, EventFeedbackSccComposesLatencyHistoryAndConversi
     };
 
     compiled.compiled_graph->root_operations.tick_block(
-        storage.buffer().data(), 0, 64);
+        storage.buffer().data(), &empty_tick_invocation, 0, 64);
     ASSERT_EQ(observer->calls, 1u);
     EXPECT_EQ(observer->indices[0], 0u);
     EXPECT_EQ(observer->event_counts[0], 7u);
@@ -11485,7 +11487,7 @@ TEST_F(GraphJitRuntimeFixture, EventFeedbackSccComposesLatencyHistoryAndConversi
     EXPECT_EQ(indices(*feedback_ring)[1], 8u);
 
     compiled.compiled_graph->root_operations.tick_block(
-        storage.buffer().data(), 64, 64);
+        storage.buffer().data(), &empty_tick_invocation, 64, 64);
     ASSERT_EQ(observer->calls, 2u);
     EXPECT_EQ(observer->indices[1], 64u);
     EXPECT_EQ(observer->event_counts[1], 15u);
@@ -11496,7 +11498,7 @@ TEST_F(GraphJitRuntimeFixture, EventFeedbackSccComposesLatencyHistoryAndConversi
     EXPECT_EQ(indices(*feedback_ring)[1], 16u);
 
     compiled.compiled_graph->root_operations.tick_block(
-        storage.buffer().data(), 128, 64);
+        storage.buffer().data(), &empty_tick_invocation, 128, 64);
     ASSERT_EQ(observer->calls, 3u);
     EXPECT_EQ(observer->indices[2], 128u);
     EXPECT_EQ(observer->event_counts[2], 23u);
@@ -11633,7 +11635,7 @@ TEST_F(GraphJitRuntimeFixture, EventFeedbackSccPersistentRingRetainsOutboundTarg
     for (std::size_t call = 0; call < 4; ++call) {
         auto const index = call * 64;
         compiled.compiled_graph->root_operations.tick_block(
-            storage.buffer().data(), index, 64);
+            storage.buffer().data(), &empty_tick_invocation, index, 64);
         ASSERT_EQ(observer->calls, call + 1);
         EXPECT_EQ(observer->indices[call], index);
         EXPECT_EQ(observer->event_counts[call], (call + 1) * 8);
@@ -11693,7 +11695,7 @@ TEST_F(GraphJitRuntimeFixture, EventDetachFeedbackFanoutSharesDelayedStream)
     ASSERT_EQ(consumers.size(), 2u);
 
     compiled.compiled_graph->root_operations.tick_block(
-        storage.buffer().data(), 0, 24);
+        storage.buffer().data(), &empty_tick_invocation, 0, 24);
     for (auto const* state : consumers) {
         ASSERT_NE(state, nullptr);
         ASSERT_EQ(state->calls, 3u);
@@ -11753,7 +11755,7 @@ TEST_F(GraphJitRuntimeFixture, EventDetachFeedbackRetainsBurstAcrossTinyBlocks)
     // 160 events, rounded to a 256-event compact carry.
     for (std::size_t index = 0; index < 15; ++index) {
         compiled.compiled_graph->root_operations.tick_block(
-            storage.buffer().data(), index, 1);
+            storage.buffer().data(), &empty_tick_invocation, index, 1);
     }
 
     ASSERT_EQ(state_b->calls, 15u);
@@ -11819,7 +11821,7 @@ TEST_F(GraphJitRuntimeFixture, TransientEventSlicing)
     ASSERT_NE(transient_event_probe, nullptr);
 
     transient_event.compiled_graph->root_operations.tick_block(
-        transient_event_storage.buffer().data(), 0, 64);
+        transient_event_storage.buffer().data(), &empty_tick_invocation, 0, 64);
     ASSERT_EQ(transient_event_probe->calls, 2u);
     EXPECT_EQ(transient_event_probe->indices[0], 0u);
     EXPECT_EQ(transient_event_probe->indices[1], 32u);
@@ -11838,7 +11840,7 @@ TEST_F(GraphJitRuntimeFixture, TransientEventSlicing)
     // consumer split. The transient producer sequence is cleared once at the
     // root boundary, then all source slices append before materialization.
     transient_event.compiled_graph->root_operations.tick_block(
-        transient_event_storage.buffer().data(), 64, 48);
+        transient_event_storage.buffer().data(), &empty_tick_invocation, 64, 48);
     ASSERT_EQ(transient_event_probe->calls, 4u);
     EXPECT_EQ(transient_event_probe->indices[2], 64u);
     EXPECT_EQ(transient_event_probe->indices[3], 96u);
@@ -11918,7 +11920,7 @@ TEST_F(GraphJitRuntimeFixture, ConvertedEventFanout)
     ASSERT_EQ(converted_event_probes.size(), 2u);
 
     converted_event.compiled_graph->root_operations.tick_block(
-        converted_event_storage.buffer().data(), 0, 64);
+        converted_event_storage.buffer().data(), &empty_tick_invocation, 0, 64);
     for (auto const* probe : converted_event_probes) {
         EXPECT_EQ(probe->calls, 1u);
         EXPECT_EQ(probe->event_count, 2u);
@@ -11928,7 +11930,7 @@ TEST_F(GraphJitRuntimeFixture, ConvertedEventFanout)
     }
 
     converted_event.compiled_graph->root_operations.tick_block(
-        converted_event_storage.buffer().data(), 64, 64);
+        converted_event_storage.buffer().data(), &empty_tick_invocation, 64, 64);
     for (auto const* probe : converted_event_probes) {
         EXPECT_EQ(probe->calls, 2u);
         EXPECT_EQ(probe->event_count, 2u);
@@ -12017,7 +12019,7 @@ TEST_F(GraphJitRuntimeFixture, CompactRetainedEvents)
     ASSERT_NE(retained_event_probe, nullptr);
 
     retained_event.compiled_graph->root_operations.tick_block(
-        retained_event_storage.buffer().data(), 0, 64);
+        retained_event_storage.buffer().data(), &empty_tick_invocation, 0, 64);
     ASSERT_EQ(retained_event_probe->calls, 1u);
     EXPECT_EQ(retained_event_probe->indices[0], 0u);
     EXPECT_EQ(retained_event_probe->event_counts[0], 2u);
@@ -12028,7 +12030,7 @@ TEST_F(GraphJitRuntimeFixture, CompactRetainedEvents)
     // on the next call and timestamp 67 was authored ahead by output latency.
     // Current-call events 69 and 125 are appended after the restored carry.
     retained_event.compiled_graph->root_operations.tick_block(
-        retained_event_storage.buffer().data(), 64, 64);
+        retained_event_storage.buffer().data(), &empty_tick_invocation, 64, 64);
     ASSERT_EQ(retained_event_probe->calls, 2u);
     EXPECT_EQ(retained_event_probe->indices[1], 64u);
     EXPECT_EQ(retained_event_probe->event_counts[1], 4u);
@@ -12039,7 +12041,7 @@ TEST_F(GraphJitRuntimeFixture, CompactRetainedEvents)
     // The next retained window is [120, 136), proving stale events from the
     // first call were trimmed rather than accumulating indefinitely.
     retained_event.compiled_graph->root_operations.tick_block(
-        retained_event_storage.buffer().data(), 128, 64);
+        retained_event_storage.buffer().data(), &empty_tick_invocation, 128, 64);
     ASSERT_EQ(retained_event_probe->calls, 3u);
     EXPECT_EQ(retained_event_probe->indices[2], 128u);
     EXPECT_EQ(retained_event_probe->event_counts[2], 4u);
@@ -12128,7 +12130,7 @@ TEST_F(GraphJitRuntimeFixture, PersistentEventRing)
     ASSERT_NE(persistent_event_ring_probe, nullptr);
 
     persistent_event_ring.compiled_graph->root_operations.tick_block(
-        persistent_event_ring_storage.buffer().data(), 0, 64);
+        persistent_event_ring_storage.buffer().data(), &empty_tick_invocation, 0, 64);
     ASSERT_EQ(persistent_event_ring_probe->calls, 1u);
     EXPECT_EQ(persistent_event_ring_probe->indices[0], 0u);
     EXPECT_EQ(persistent_event_ring_probe->event_counts[0], 32u);
@@ -12136,14 +12138,14 @@ TEST_F(GraphJitRuntimeFixture, PersistentEventRing)
     EXPECT_EQ(persistent_event_ring_probe->last_times[0], 5u);
 
     persistent_event_ring.compiled_graph->root_operations.tick_block(
-        persistent_event_ring_storage.buffer().data(), 64, 64);
+        persistent_event_ring_storage.buffer().data(), &empty_tick_invocation, 64, 64);
     ASSERT_EQ(persistent_event_ring_probe->calls, 2u);
     EXPECT_EQ(persistent_event_ring_probe->event_counts[1], 64u);
     EXPECT_EQ(persistent_event_ring_probe->first_times[1], 5u);
     EXPECT_EQ(persistent_event_ring_probe->last_times[1], 69u);
 
     persistent_event_ring.compiled_graph->root_operations.tick_block(
-        persistent_event_ring_storage.buffer().data(), 128, 64);
+        persistent_event_ring_storage.buffer().data(), &empty_tick_invocation, 128, 64);
     ASSERT_EQ(persistent_event_ring_probe->calls, 3u);
     EXPECT_EQ(persistent_event_ring_probe->event_counts[2], 96u);
     EXPECT_EQ(persistent_event_ring_probe->first_times[2], 5u);
@@ -12153,7 +12155,7 @@ TEST_F(GraphJitRuntimeFixture, PersistentEventRing)
     // block's 32 co-timestamped events expire in-place. The retained data
     // itself is not copied.
     persistent_event_ring.compiled_graph->root_operations.tick_block(
-        persistent_event_ring_storage.buffer().data(), 192, 64);
+        persistent_event_ring_storage.buffer().data(), &empty_tick_invocation, 192, 64);
     ASSERT_EQ(persistent_event_ring_probe->calls, 4u);
     EXPECT_EQ(persistent_event_ring_probe->event_counts[3], 96u);
     EXPECT_EQ(persistent_event_ring_probe->first_times[3], 69u);
@@ -12163,7 +12165,7 @@ TEST_F(GraphJitRuntimeFixture, PersistentEventRing)
     // the second block, and appends through the storage end of the 128-index
     // ring. The consumer therefore exercises a wrapped BlockView.
     persistent_event_ring.compiled_graph->root_operations.tick_block(
-        persistent_event_ring_storage.buffer().data(), 256, 64);
+        persistent_event_ring_storage.buffer().data(), &empty_tick_invocation, 256, 64);
     ASSERT_EQ(persistent_event_ring_probe->calls, 5u);
     EXPECT_EQ(persistent_event_ring_probe->event_counts[4], 96u);
     EXPECT_EQ(persistent_event_ring_probe->first_times[4], 133u);
@@ -12290,7 +12292,7 @@ TEST_F(GraphJitRuntimeFixture, RetainedConvertedEventFanout)
     ASSERT_NE(retained_sliced_trigger_probe, nullptr);
 
     retained_converted_event.compiled_graph->root_operations.tick_block(
-        retained_converted_event_storage.buffer().data(), 0, 64);
+        retained_converted_event_storage.buffer().data(), &empty_tick_invocation, 0, 64);
     ASSERT_EQ(retained_midi_probe->calls, 1u);
     EXPECT_EQ(retained_midi_probe->event_counts[0], 3u);
     EXPECT_EQ(retained_midi_probe->midi_counts[0], 3u);
@@ -12308,7 +12310,7 @@ TEST_F(GraphJitRuntimeFixture, RetainedConvertedEventFanout)
     EXPECT_EQ(retained_sliced_trigger_probe->event_counts[1], 0u);
 
     retained_converted_event.compiled_graph->root_operations.tick_block(
-        retained_converted_event_storage.buffer().data(), 64, 64);
+        retained_converted_event_storage.buffer().data(), &empty_tick_invocation, 64, 64);
     ASSERT_EQ(retained_midi_probe->calls, 2u);
     EXPECT_EQ(retained_midi_probe->event_counts[1], 6u);
     EXPECT_EQ(retained_midi_probe->midi_counts[1], 6u);
@@ -12402,7 +12404,7 @@ TEST_F(GraphJitRuntimeFixture, SampleHistoryCarryAndMigration)
     ASSERT_NE(history_stereo_state, nullptr);
 
     history.compiled_graph->root_operations.tick_block(
-        history_storage.buffer().data(), 0, 64);
+        history_storage.buffer().data(), &empty_tick_invocation, 0, 64);
     EXPECT_FLOAT_EQ(history_source_state->previous_output, 0.0f);
     EXPECT_FLOAT_EQ(history_mono_state->current, 0.0f);
     EXPECT_FLOAT_EQ(history_mono_state->history_5, 0.0f);
@@ -12410,7 +12412,7 @@ TEST_F(GraphJitRuntimeFixture, SampleHistoryCarryAndMigration)
     EXPECT_FLOAT_EQ(history_stereo_state->current_right, 0.0f);
 
     history.compiled_graph->root_operations.tick_block(
-        history_storage.buffer().data(), 64, 64);
+        history_storage.buffer().data(), &empty_tick_invocation, 64, 64);
     EXPECT_FLOAT_EQ(history_source_state->previous_output, 63.0f);
     EXPECT_EQ(history_mono_state->last_index, 64u);
     EXPECT_FLOAT_EQ(history_mono_state->current, 62.0f);
@@ -12425,12 +12427,12 @@ TEST_F(GraphJitRuntimeFixture, SampleHistoryCarryAndMigration)
     // A block shorter than the retained tail must combine restored older
     // samples with newly produced samples when committing the next carry.
     history.compiled_graph->root_operations.tick_block(
-        history_storage.buffer().data(), 128, 4);
+        history_storage.buffer().data(), &empty_tick_invocation, 128, 4);
     EXPECT_FLOAT_EQ(history_source_state->previous_output, 127.0f);
     EXPECT_FLOAT_EQ(history_mono_state->current, 126.0f);
     EXPECT_FLOAT_EQ(history_mono_state->history_5, 121.0f);
     history.compiled_graph->root_operations.tick_block(
-        history_storage.buffer().data(), 132, 4);
+        history_storage.buffer().data(), &empty_tick_invocation, 132, 4);
     EXPECT_FLOAT_EQ(history_source_state->previous_output, 131.0f);
     EXPECT_FLOAT_EQ(history_mono_state->current, 130.0f);
     EXPECT_FLOAT_EQ(history_mono_state->history_5, 125.0f);
@@ -12462,7 +12464,7 @@ TEST_F(GraphJitRuntimeFixture, SampleHistoryCarryAndMigration)
     ASSERT_NE(migrated_source, nullptr);
     ASSERT_NE(migrated_mono, nullptr);
     history_next.compiled_graph->root_operations.tick_block(
-        history_next_storage.buffer().data(), 136, 4);
+        history_next_storage.buffer().data(), &empty_tick_invocation, 136, 4);
     EXPECT_FLOAT_EQ(migrated_source->previous_output, 135.0f);
     EXPECT_FLOAT_EQ(migrated_mono->current, 134.0f);
     EXPECT_FLOAT_EQ(migrated_mono->history_1, 133.0f);
@@ -12528,7 +12530,7 @@ TEST_F(GraphJitRuntimeFixture, PersistentSampleHistory)
     ASSERT_NE(large_history_state, nullptr);
     for (std::uint64_t index = 0; index <= 5056; index += 64) {
         persistent_history.compiled_graph->root_operations.tick_block(
-            persistent_history_storage.buffer().data(), index, 64);
+            persistent_history_storage.buffer().data(), &empty_tick_invocation, index, 64);
     }
     EXPECT_EQ(large_history_state->calls, 80u);
     EXPECT_EQ(large_history_state->last_index, 5056u);
@@ -12567,9 +12569,9 @@ TEST_F(GraphJitRuntimeFixture, CompiledGraphsRetainPackageAndOrcOwnership)
     ASSERT_NE(state, nullptr);
     ASSERT_NE(background, nullptr);
     stateful_survivor->root_operations.tick_block(
-        stateful_storage.buffer().data(), 17, 32);
+        stateful_storage.buffer().data(), &empty_tick_invocation, 17, 32);
     stateful_survivor->root_operations.tick_block(
-        stateful_storage.buffer().data(), 73, 64);
+        stateful_storage.buffer().data(), &empty_tick_invocation, 73, 64);
 
     auto pointer_graph = configured_module_graph(
         *revision, graph_jit_pointer_configured_module_id);
@@ -12591,7 +12593,7 @@ TEST_F(GraphJitRuntimeFixture, CompiledGraphsRetainPackageAndOrcOwnership)
     ASSERT_EQ(stateful_survivor->package_revisions.size(), 1u);
 
     stateful_survivor->root_operations.tick_block(
-        stateful_storage.buffer().data(), 137, 32);
+        stateful_storage.buffer().data(), &empty_tick_invocation, 137, 32);
     EXPECT_EQ(state->tick_calls, 3u);
     EXPECT_EQ(state->skip_calls, 0u);
     EXPECT_EQ(state->last_index, 137u);
@@ -12608,7 +12610,7 @@ TEST_F(GraphJitRuntimeFixture, CompiledGraphsRetainPackageAndOrcOwnership)
         pointer_survivor_storage.state_ptr(0));
     ASSERT_NE(pointer_survivor_state, nullptr);
     pointer_survivor->root_operations.tick_block(
-        pointer_survivor_storage.buffer().data(), 149, 32);
+        pointer_survivor_storage.buffer().data(), &empty_tick_invocation, 149, 32);
     EXPECT_EQ(pointer_survivor_state->calls, 1u);
     EXPECT_EQ(pointer_survivor_state->first_value, 0x2222222222222222ull);
     EXPECT_EQ(pointer_survivor_state->second_value, 0x4444444444444444ull);

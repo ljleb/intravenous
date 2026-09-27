@@ -184,7 +184,7 @@ llvm::FunctionType* root_block_operation_type(llvm::LLVMContext& context)
         context, static_cast<unsigned>(sizeof(std::size_t) * 8));
     return llvm::FunctionType::get(
         llvm::Type::getVoidTy(context),
-        {pointer, size_type, size_type},
+        {pointer, pointer, size_type, size_type},
         false);
 }
 
@@ -3494,9 +3494,11 @@ std::expected<llvm::Function*, std::string> define_root_operation(
 
     auto arguments = function->arg_begin();
     auto* storage_base = &*arguments++;
+    auto* invocation = &*arguments++;
     auto* sample_index = &*arguments++;
     auto* block_size = &*arguments;
     storage_base->setName("storage_base");
+    invocation->setName("invocation");
     sample_index->setName("sample_index");
     block_size->setName("block_size");
 

@@ -5,6 +5,7 @@
 #include <intravenous/runtime/background_coverage_propagation.h>
 #include <intravenous/runtime/graph_jit.h>
 #include <intravenous/runtime/persisted_page_store.h>
+#include <intravenous/runtime/tick_invocation_frame.h>
 
 #include <array>
 #include <cstddef>
@@ -41,6 +42,9 @@ class GraphExecutor {
     // Compatible generations will rebind their persisted ports into this one
     // canonical sample/event authority rather than migrate page ownership.
     PersistedPageStore persisted_pages_{};
+    // Registered off the audio thread. Each tick_block() acquires one bounded
+    // callback-scoped pin from this slot before entering generated code.
+    PersistedPageStore::ReaderSlot tick_page_reader_{};
     std::array<std::optional<Realization>, 2> realizations_{};
     std::optional<std::size_t> active_{};
     std::optional<std::size_t> pending_{};

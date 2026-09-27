@@ -20,6 +20,7 @@ GraphExecutor::Realization::Realization(
 
 GraphExecutor::GraphExecutor(ResourceContext resources)
     : resources_(std::move(resources))
+    , tick_page_reader_(persisted_pages_.register_reader())
 {}
 
 GraphExecutor::Realization& GraphExecutor::active_realization()
@@ -121,8 +122,12 @@ void GraphExecutor::tick_block(std::size_t sample_index, std::size_t block_size)
         throw std::invalid_argument(
             "GraphExecutor tick block size is outside the compiled specialization");
     }
+    TickInvocationFrame invocation{tick_page_reader_};
     realization.graph->root_operations.tick_block(
-        realization.storage.buffer().data(), sample_index, block_size);
+        realization.storage.buffer().data(),
+        &invocation.call(),
+        sample_index,
+        block_size);
 }
 
 } // namespace iv

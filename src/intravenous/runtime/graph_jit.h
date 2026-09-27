@@ -4,6 +4,7 @@
 #include <intravenous/graph/realtime_port_planning.h>
 #include <intravenous/graph_jit/background_evaluation_call.h>
 #include <intravenous/graph_jit/background_evaluation_plan.h>
+#include <intravenous/graph_jit/tick_invocation_call.h>
 #include <intravenous/node/layout.h>
 #include <intravenous/runtime/node_definition_types.h>
 
@@ -52,11 +53,15 @@ struct GraphJitDiagnostic {
 
 // Generated zero-input/zero-output root-node execution ABI. Mutable bytes are
 // owned by GraphExecutor through NodeStorage created from CompiledGraph::node_layout.
-// Generated code receives only that storage base plus execution coordinates;
-// lifecycle remains entirely in the ordinary NodeStorage machinery. Callers must
-// provide block_size > 0; an empty audio block is outside the root-operation ABI.
-using CompiledGraphBlockFunction =
-    void (*)(std::byte* storage_base, std::size_t sample_index, std::size_t block_size);
+// Dynamic background-derived inputs arrive only as resolved views in one
+// callback-scoped invocation record. Lifecycle remains entirely in the ordinary
+// NodeStorage/runtime-frame machinery. Callers must provide block_size > 0; an
+// empty audio block is outside the root-operation ABI.
+using CompiledGraphBlockFunction = void (*)(
+    std::byte* storage_base,
+    graph_jit::TickInvocationCall const* invocation,
+    std::size_t sample_index,
+    std::size_t block_size);
 
 struct CompiledGraphRootOperations {
     CompiledGraphBlockFunction tick_block = nullptr;

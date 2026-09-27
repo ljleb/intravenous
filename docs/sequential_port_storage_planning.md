@@ -681,6 +681,14 @@ selected and pinned at the Tick root boundary in one immutable
 not acquire canonical persisted-page version/retention semantics. Published persisted
 pages remain a separate canonical snapshot selected at the same boundary.
 
+That root boundary now has a concrete ABI and owner split. `TickInvocationFrame`
+owns the callback-scoped published-page pin (and later the selected
+`TickMaterializationSnapshot`), while generated code receives only a trivially
+copyable `TickInvocationCall` containing resolved sequential and Random Access view
+spans. The reader slot is registered before realtime execution; constructing the
+per-callback frame performs only the store's bounded atomic pin operation. Neither
+the frame owner, executor nor page store is reachable through the generated ABI.
+
 All backing owners become address-stable before callback frames are built. The
 immutable plan retains the replay slot and applicable maximum block size; the
 transaction converts dynamic requirements to an explicit schedule of legal-sized

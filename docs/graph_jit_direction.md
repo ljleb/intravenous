@@ -709,8 +709,14 @@ This is a hint, not a hard constraint. Use your own good judgement if ever in do
     or exceeded an event bound. Multi-output replay flushes only each output's selected
     coverage from the node-wide union schedule. Semantic coverage is promoted only
     after any required page publication succeeds. `GraphExecutor`
-    exposes only that end-to-end operation. Next add the Tick invocation frame with
-    pinned published pages plus `TickMaterializationSnapshot` bindings. Final commit
+    exposes only that end-to-end operation. The Tick root ABI now receives one narrow
+    callback-scoped invocation record containing only resolved sequential and Random
+    Access views. `GraphExecutor` pre-registers its page-reader slot off the audio
+    thread, pins one published root for the complete generated-root call, and keeps
+    that pin in a non-copyable `TickInvocationFrame`; neither the frame owner nor the
+    store crosses the generated ABI. Next populate the compiler-planned binding slots,
+    including `TickMaterializationSnapshot` playback and neutral sequential fallback.
+    Final commit
     advances prepared coverage, page publication and any capture frontier together;
     every failure advances none. Background ephemeral Random Access may use
     transaction-local page-backed materialization; Tick-time ephemeral Random Access

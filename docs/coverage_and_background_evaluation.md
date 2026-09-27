@@ -2211,9 +2211,17 @@ recording merely because that planning metadata exists.
       state does change, successful publication precedes the propagation workspace's
       non-throwing coverage promotion. `GraphExecutor`
       exposes this end-to-end operation and no propagation-only compatibility API; and
-   6. add the Tick invocation binding frame, pinned published-snapshot reads,
-      `TickMaterializationSnapshot` playback and per-input neutral values for genuinely
-      missing sequential data.
+   6. **In progress:** add the Tick invocation binding frame, pinned
+      published-snapshot reads, `TickMaterializationSnapshot` playback and per-input
+      neutral values for genuinely missing sequential data. The generated Tick root's
+      final ABI now accepts one `TickInvocationCall` containing only resolved
+      sequential and Random Access view spans. `GraphExecutor` registers its reader
+      slot on the control path and constructs a non-copyable callback-scoped
+      `TickInvocationFrame`; that owner acquires one bounded atomic page-root pin and
+      retains it across the complete generated-root invocation. Generated code receives
+      neither that owner nor a page-store/executor pointer. The spans are deliberately
+      empty until the next landing wires immutable compiler slot maps and the concrete
+      page/materialization/neutral bindings.
 
    Final commit atomically promotes prepared semantic coverage plus any candidate page
    publication. Step 5 below extends that same boundary with the processed capture

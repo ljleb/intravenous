@@ -1,4 +1,5 @@
 #include <intravenous/runtime/persisted_page_store.h>
+#include <intravenous/runtime/tick_invocation_frame.h>
 
 #include <gtest/gtest.h>
 
@@ -68,6 +69,36 @@ static_assert(noexcept(
     std::declval<iv::PersistedPageStore::ReaderSlot&>().pin()));
 static_assert(std::is_nothrow_destructible_v<
     iv::PersistedPageStore::ReaderPin>);
+static_assert(std::is_nothrow_constructible_v<
+    iv::TickInvocationFrame,
+    iv::PersistedPageStore::ReaderSlot&>);
+
+TEST(PersistedPageStore, TickInvocationFramePinsOnePublishedRootForItsLifetime)
+{
+    iv::PersistedPageStore store;
+    auto slot = store.register_reader();
+
+    {
+        iv::TickInvocationFrame frame{slot};
+        EXPECT_EQ(frame.published_pages().version(),
+            (iv::PersistedPageSnapshotVersion{}));
+        EXPECT_TRUE(frame.call().sequential_sample_inputs.empty());
+        EXPECT_TRUE(frame.call().sequential_event_inputs.empty());
+        EXPECT_TRUE(frame.call().random_access_sample_inputs.empty());
+        EXPECT_TRUE(frame.call().random_access_event_inputs.empty());
+
+        auto candidate = store.begin_candidate(1, 4);
+        ASSERT_EQ(
+            store.publish(std::move(candidate)),
+            iv::PersistedPagePublishResult::published);
+        EXPECT_EQ(store.retired_snapshot_count(), 1u);
+        EXPECT_EQ(store.reclaim_retired(), 0u);
+        EXPECT_EQ(frame.published_pages().version(),
+            (iv::PersistedPageSnapshotVersion{}));
+    }
+
+    EXPECT_EQ(store.reclaim_retired(), 1u);
+}
 
 TEST(PersistedPageStore, PublishesSampleAndEventPagesAsOneImmutableRoot)
 {
