@@ -568,11 +568,11 @@ committed per-generation semantic coverage and a reusable background-evaluation
 propagation workspace for the active realization. The workspace binds compiler-planned
 port accumulators into `BackgroundEvaluationCall`, executes exact generated
 forward/reverse traversals once per implicated node, and returns an owned prepared
-coverage result without mutating the committed baseline. The temporary
-propagation-only wrapper immediately commits that result after successful propagation;
-it does not yet run Tock/replay data evaluation or publish pages. The complete
-transaction instead retains the prepared result until final transaction commit,
-alongside successful page publication when a candidate is present.
+coverage result without mutating the committed baseline. There is no public
+propagation-only executor operation. The complete transaction will retain the
+prepared result through Tock/replay data evaluation and promote it only at final
+transaction commit, alongside successful page publication when a candidate is
+present.
 
 `GraphExecutor` keeps at least:
 

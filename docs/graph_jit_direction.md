@@ -661,9 +661,11 @@ This is a hint, not a hard constraint. Use your own good judgement if ever in do
     The executor now also realizes compiler-planned background-evaluation accumulator records as a
     reusable `BackgroundEvaluationCall`, runs exact transactional forward/reverse propagation
     through the generated roots, accumulates fan-in/fan-out before the one-call-per-node
-    callbacks. Committed semantic coverage is now separate from the reusable
-    propagation workspace: F/R produces an owned prepared result, and the current
-    propagation-only seam immediately commits it after both traversals succeed. The
+    callbacks. Committed semantic coverage is now separate from the standalone,
+    executor-independent reusable propagation workspace: F/R produces a move-only
+    prepared result exposing exact changes/requirements and immutable per-node
+    activity. Reverse-demanded nodes receive `evaluate` only after both traversals
+    succeed. No public executor operation commits the candidate after F/R alone. The
     complete transaction will retain that prepared result and promote it only at final
     transaction commit, together with page publication when a candidate is present.
 
@@ -692,9 +694,10 @@ This is a hint, not a hard constraint. Use your own good judgement if ever in do
     separately from storage coverage so direct read latency and output fan-out remain
     explicit. Replay regions are accepted only as an ordered, nonempty schedule whose
     entries satisfy the compiled maximum block size; the later scheduler still owns
-    their raw block-local storage bindings and replay state. Next add the complete
-    transaction coordinator and that replay-buffer population, then add the Tick
-    invocation frame with
+    their raw block-local storage bindings and replay state. The complete transaction
+    coordinator will consume the prepared activity without exposing executor state to
+    generated code. Next add replay-buffer population, generated-root invocation and
+    all-or-nothing commit, then add the Tick invocation frame with
     pinned published pages plus `TickMaterializationSnapshot` bindings. Final commit
     advances prepared coverage, page publication and any capture frontier together;
     every failure advances none. Background ephemeral Random Access may use

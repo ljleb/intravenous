@@ -653,7 +653,10 @@ authored Tock or its complete replay loop and finalize after successful return.
 before/after spans selected for that node. Forward/reverse propagation does not enter
 these hooks, and no hook receives an executor, store or transaction pointer. The
 transaction-local `BackgroundEvaluationCallFrame` now owns and installs those frames.
-It resolves dense runtime slots into compact authored-Tock sample/event facades over a
+It does not choose node activity: the standalone coverage-propagation workspace
+prepares immutable per-node activity after successful F/R, and the transaction
+coordinator applies that selection when invoking the generated evaluate root. It
+resolves dense runtime slots into compact authored-Tock sample/event facades over a
 sealed `BackgroundStorageRealization`, including direct sample channel remapping/read
 latency and output fan-out, without revisiting configured topology. It also owns the
 fixed typed replay binding arrays and validates the explicit replay-region schedule

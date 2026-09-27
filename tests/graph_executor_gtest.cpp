@@ -1,3 +1,4 @@
+#include <intravenous/runtime/background_coverage_propagation.h>
 #include <intravenous/runtime/graph_executor.h>
 
 #include <intravenous/node/layout.h>
@@ -74,8 +75,6 @@ void observe_raw_state(std::byte* storage, std::size_t, std::size_t)
 {
     migrated_raw_value = std::to_integer<unsigned>(storage[second_raw_offset]);
 }
-
-void no_op_tick(std::byte*, std::size_t, std::size_t) {}
 
 void propagate_background_forward(
     std::byte*,
@@ -261,34 +260,11 @@ iv::graph_jit::BackgroundEvaluationPlan background_fanin_plan()
     return plan;
 }
 
-std::shared_ptr<iv::CompiledGraph const> background_compiled_graph(
-    std::uint64_t generation)
-{
-    auto graph = std::make_shared<iv::CompiledGraph>();
-    graph->project_generation = generation;
-    graph->specialization.sample_rate = 48000;
-    graph->specialization.block_size = 64;
-    graph->node_layout = iv::NodeLayoutBuilder(64).build();
-    graph->background_evaluation_plan = background_fanin_plan();
-    graph->root_operations.tick_block = &no_op_tick;
-    graph->background_operations = iv::CompiledGraphBackgroundOperations{
-        .propagate_forward = &propagate_background_forward,
-        .propagate_reverse = &propagate_background_reverse,
-        .evaluate = &no_op_background_evaluate,
-    };
-    return graph;
-}
-
-std::shared_ptr<iv::CompiledGraph const> background_mixed_output_graph(
-    std::uint64_t generation)
+iv::graph_jit::BackgroundEvaluationPlan background_mixed_output_plan()
 {
     using namespace iv::graph_jit;
-    auto graph = std::make_shared<iv::CompiledGraph>();
-    graph->project_generation = generation;
-    graph->specialization.sample_rate = 48000;
-    graph->specialization.block_size = 64;
-    graph->node_layout = iv::NodeLayoutBuilder(64).build();
-    graph->background_evaluation_plan.nodes = {
+    BackgroundEvaluationPlan plan;
+    plan.nodes = {
         BackgroundNodePlan{
             .bundle = 0,
             .authored_tock_execution = true,
@@ -301,7 +277,7 @@ std::shared_ptr<iv::CompiledGraph const> background_mixed_output_graph(
             },
         },
     };
-    graph->background_evaluation_plan.ports = {
+    plan.ports = {
         BackgroundPortPlan{
             .node = 0,
             .configured_port = {0, iv::PortKind::sample, 0},
@@ -327,17 +303,11 @@ std::shared_ptr<iv::CompiledGraph const> background_mixed_output_graph(
             },
         },
     };
-    graph->background_evaluation_plan.accumulators = CoverageAccumulatorCounts{
+    plan.accumulators = CoverageAccumulatorCounts{
         .output_change_count = 2,
         .output_requirement_count = 2,
     };
-    graph->root_operations.tick_block = &no_op_tick;
-    graph->background_operations = iv::CompiledGraphBackgroundOperations{
-        .propagate_forward = &propagate_background_forward,
-        .propagate_reverse = &no_op_background_evaluate,
-        .evaluate = &no_op_background_evaluate,
-    };
-    return graph;
+    return plan;
 }
 
 std::shared_ptr<iv::CompiledGraph const> compiled_graph(
@@ -373,8 +343,12 @@ protected:
         first_raw_offset = 0;
         second_raw_offset = 0;
         migrated_raw_value = 0;
-        background_observation = {};
     }
+};
+
+class BackgroundCoveragePropagationFixture : public testing::Test {
+protected:
+    void SetUp() override { background_observation = {}; }
 };
 
 TEST_F(GraphExecutorFixture, StagesActivatesAndDispatchesOnlyActiveGeneration)
@@ -467,16 +441,22 @@ TEST_F(GraphExecutorFixture, RejectsInvalidRequestsAndBlockSizes)
 }
 
 TEST_F(
-    GraphExecutorFixture,
-    BackgroundPropagationAccumulatesFaninAndReverseDemandOncePerNode)
+    BackgroundCoveragePropagationFixture,
+    PreparedCoverageExposesEvaluationActivityWithoutCommitting)
 {
-    iv::GraphExecutor executor;
-    ASSERT_EQ(
-        executor.stage(background_compiled_graph(1)),
-        iv::GraphExecutorStageResult::staged);
-    ASSERT_TRUE(executor.activate_pending());
+    auto const plan = background_fanin_plan();
+    iv::BackgroundCoverageState coverage(plan.accumulators.output_change_count);
+    iv::BackgroundPropagationWorkspace workspace(plan, 48000);
+    auto const operations = iv::CompiledGraphBackgroundOperations{
+        .propagate_forward = &propagate_background_forward,
+        .propagate_reverse = &propagate_background_reverse,
+        .evaluate = &no_op_background_evaluate,
+    };
 
-    auto const result = executor.propagate_coverage(
+    auto prepared = workspace.prepare(
+        operations,
+        nullptr,
+        coverage,
         iv::CoveragePropagationRequest{
             .locally_changed_nodes = {0, 1},
             .output_demands = {
@@ -486,6 +466,69 @@ TEST_F(
                 },
             },
         });
+
+    EXPECT_EQ(prepared.result().output_changes.size(), 3u);
+    EXPECT_EQ(prepared.result().input_requirements.size(), 1u);
+    EXPECT_EQ(prepared.result().output_requirements.size(), 3u);
+    ASSERT_EQ(prepared.node_activity().size(), 3u);
+    for (auto const activity : prepared.node_activity()) {
+        EXPECT_TRUE(iv::graph_jit::has_activity(
+            activity, iv::graph_jit::BackgroundNodeActivity::forward));
+        EXPECT_TRUE(iv::graph_jit::has_activity(
+            activity, iv::graph_jit::BackgroundNodeActivity::reverse));
+        EXPECT_TRUE(iv::graph_jit::has_activity(
+            activity, iv::graph_jit::BackgroundNodeActivity::evaluate));
+    }
+
+    workspace.discard(std::move(prepared));
+
+    background_observation = {};
+    auto retry = workspace.prepare(
+        operations,
+        nullptr,
+        coverage,
+        iv::CoveragePropagationRequest{
+            .output_demands = {
+                iv::OutputCoverageRequest{
+                    .port = 3,
+                    .required = iv::Coverage{{{10, 22}}},
+                },
+            },
+        });
+    EXPECT_TRUE(retry.result().output_requirements.empty());
+    for (auto const activity : retry.node_activity()) {
+        EXPECT_EQ(activity, iv::graph_jit::BackgroundNodeActivity::none);
+    }
+    workspace.discard(std::move(retry));
+}
+
+TEST_F(
+    BackgroundCoveragePropagationFixture,
+    BackgroundPropagationAccumulatesFaninAndReverseDemandOncePerNode)
+{
+    auto const plan = background_fanin_plan();
+    iv::BackgroundCoverageState coverage(plan.accumulators.output_change_count);
+    iv::BackgroundPropagationWorkspace workspace(plan, 48000);
+    auto const operations = iv::CompiledGraphBackgroundOperations{
+        .propagate_forward = &propagate_background_forward,
+        .propagate_reverse = &propagate_background_reverse,
+        .evaluate = &no_op_background_evaluate,
+    };
+
+    auto prepared = workspace.prepare(
+        operations,
+        nullptr,
+        coverage,
+        iv::CoveragePropagationRequest{
+            .locally_changed_nodes = {0, 1},
+            .output_demands = {
+                iv::OutputCoverageRequest{
+                    .port = 3,
+                    .required = iv::Coverage{{{11, 21}}},
+                },
+            },
+        });
+    auto const result = workspace.commit(coverage, std::move(prepared));
 
     EXPECT_EQ(background_observation.source_forward_calls[0], 1u);
     EXPECT_EQ(background_observation.source_forward_calls[1], 1u);
@@ -525,7 +568,10 @@ TEST_F(
         (iv::Coverage{{{11, 13}, {20, 21}}}));
 
     background_observation = {};
-    auto const demand_only = executor.propagate_coverage(
+    prepared = workspace.prepare(
+        operations,
+        nullptr,
+        coverage,
         iv::CoveragePropagationRequest{
             .output_demands = {
                 iv::OutputCoverageRequest{
@@ -534,12 +580,17 @@ TEST_F(
                 },
             },
         });
+    auto const demand_only = workspace.commit(
+        coverage, std::move(prepared));
     EXPECT_EQ(background_observation.sink_forward_calls, 0u);
     EXPECT_EQ(background_observation.sink_reverse_calls, 1u);
     ASSERT_EQ(demand_only.output_requirements.size(), 3u);
 
     background_observation = {};
-    auto const propagation_result = executor.propagate_coverage(
+    prepared = workspace.prepare(
+        operations,
+        nullptr,
+        coverage,
         iv::CoveragePropagationRequest{
             .input_demands = {
                 iv::InputCoverageRequest{
@@ -548,6 +599,8 @@ TEST_F(
                 },
             },
         });
+    auto const propagation_result = workspace.commit(
+        coverage, std::move(prepared));
     EXPECT_EQ(background_observation.sink_reverse_calls, 0u);
     ASSERT_EQ(propagation_result.input_requirements.size(), 1u);
     EXPECT_EQ(propagation_result.input_requirements[0].port, 2u);
@@ -556,24 +609,35 @@ TEST_F(
     EXPECT_EQ(propagation_result.output_requirements[1].port, 1u);
 }
 
-TEST_F(GraphExecutorFixture, FailedForwardPropagationDoesNotCommitCoverage)
+TEST_F(
+    BackgroundCoveragePropagationFixture,
+    FailedForwardPreparationLeavesCommittedCoverageUnchanged)
 {
-    iv::GraphExecutor executor;
-    ASSERT_EQ(
-        executor.stage(background_compiled_graph(1)),
-        iv::GraphExecutorStageResult::staged);
-    ASSERT_TRUE(executor.activate_pending());
+    auto const plan = background_fanin_plan();
+    iv::BackgroundCoverageState coverage(plan.accumulators.output_change_count);
+    iv::BackgroundPropagationWorkspace workspace(plan, 48000);
+    auto const operations = iv::CompiledGraphBackgroundOperations{
+        .propagate_forward = &propagate_background_forward,
+        .propagate_reverse = &propagate_background_reverse,
+        .evaluate = &no_op_background_evaluate,
+    };
 
     background_observation.throw_from_sink = true;
     EXPECT_THROW(
-        static_cast<void>(executor.propagate_coverage(
+        static_cast<void>(workspace.prepare(
+            operations,
+            nullptr,
+            coverage,
             iv::CoveragePropagationRequest{
                 .locally_changed_nodes = {0, 1},
             })),
         std::runtime_error);
 
     background_observation = {};
-    auto const result = executor.propagate_coverage(
+    auto prepared = workspace.prepare(
+        operations,
+        nullptr,
+        coverage,
         iv::CoveragePropagationRequest{
             .output_demands = {
                 iv::OutputCoverageRequest{
@@ -582,21 +646,31 @@ TEST_F(GraphExecutorFixture, FailedForwardPropagationDoesNotCommitCoverage)
                 },
             },
         });
+    auto const& result = prepared.result();
     EXPECT_TRUE(result.output_requirements.empty());
     EXPECT_EQ(background_observation.sink_reverse_calls, 0u);
+    workspace.discard(std::move(prepared));
 }
 
-TEST_F(GraphExecutorFixture, FailedReversePropagationDoesNotCommitPreparedCoverage)
+TEST_F(
+    BackgroundCoveragePropagationFixture,
+    FailedReversePreparationLeavesCommittedCoverageUnchanged)
 {
-    iv::GraphExecutor executor;
-    ASSERT_EQ(
-        executor.stage(background_compiled_graph(1)),
-        iv::GraphExecutorStageResult::staged);
-    ASSERT_TRUE(executor.activate_pending());
+    auto const plan = background_fanin_plan();
+    iv::BackgroundCoverageState coverage(plan.accumulators.output_change_count);
+    iv::BackgroundPropagationWorkspace workspace(plan, 48000);
+    auto const operations = iv::CompiledGraphBackgroundOperations{
+        .propagate_forward = &propagate_background_forward,
+        .propagate_reverse = &propagate_background_reverse,
+        .evaluate = &no_op_background_evaluate,
+    };
 
     background_observation.throw_from_reverse = true;
     EXPECT_THROW(
-        static_cast<void>(executor.propagate_coverage(
+        static_cast<void>(workspace.prepare(
+            operations,
+            nullptr,
+            coverage,
             iv::CoveragePropagationRequest{
                 .locally_changed_nodes = {0, 1},
                 .output_demands = {
@@ -609,7 +683,10 @@ TEST_F(GraphExecutorFixture, FailedReversePropagationDoesNotCommitPreparedCovera
         std::runtime_error);
 
     background_observation = {};
-    auto const result = executor.propagate_coverage(
+    auto prepared = workspace.prepare(
+        operations,
+        nullptr,
+        coverage,
         iv::CoveragePropagationRequest{
             .output_demands = {
                 iv::OutputCoverageRequest{
@@ -618,20 +695,31 @@ TEST_F(GraphExecutorFixture, FailedReversePropagationDoesNotCommitPreparedCovera
                 },
             },
         });
+    auto const& result = prepared.result();
     EXPECT_TRUE(result.output_requirements.empty());
     EXPECT_EQ(background_observation.sink_reverse_calls, 0u);
+    workspace.discard(std::move(prepared));
 }
 
-TEST_F(GraphExecutorFixture, BackgroundInputRootRepresentsConnectionSetChange)
+TEST_F(
+    BackgroundCoveragePropagationFixture,
+    BackgroundInputRootRepresentsConnectionSetChange)
 {
-    iv::GraphExecutor executor;
-    ASSERT_EQ(
-        executor.stage(background_compiled_graph(1)),
-        iv::GraphExecutorStageResult::staged);
-    ASSERT_TRUE(executor.activate_pending());
+    auto const plan = background_fanin_plan();
+    iv::BackgroundCoverageState committed(
+        plan.accumulators.output_change_count);
+    iv::BackgroundPropagationWorkspace workspace(plan, 48000);
+    auto const operations = iv::CompiledGraphBackgroundOperations{
+        .propagate_forward = &propagate_background_forward,
+        .propagate_reverse = &propagate_background_reverse,
+        .evaluate = &no_op_background_evaluate,
+    };
 
     auto const coverage = iv::Coverage{{{30, 34}}};
-    auto const result = executor.propagate_coverage(
+    auto prepared = workspace.prepare(
+        operations,
+        nullptr,
+        committed,
         iv::CoveragePropagationRequest{
             .input_changes = {
                 iv::InputCoverageChangeRequest{
@@ -641,6 +729,7 @@ TEST_F(GraphExecutorFixture, BackgroundInputRootRepresentsConnectionSetChange)
                 },
             },
         });
+    auto const& result = prepared.result();
 
     EXPECT_EQ(background_observation.source_forward_calls[0], 0u);
     EXPECT_EQ(background_observation.source_forward_calls[1], 0u);
@@ -650,26 +739,37 @@ TEST_F(GraphExecutorFixture, BackgroundInputRootRepresentsConnectionSetChange)
     EXPECT_EQ(result.output_changes[0].port, 3u);
     EXPECT_EQ(result.output_changes[0].coverage, coverage);
     EXPECT_EQ(result.output_changes[0].changed, coverage);
+    workspace.discard(std::move(prepared));
 }
 
-TEST_F(GraphExecutorFixture, BackgroundCallbackBindingsExcludeNonTockOutputs)
+TEST_F(
+    BackgroundCoveragePropagationFixture,
+    BackgroundCallbackBindingsExcludeNonTockOutputs)
 {
-    iv::GraphExecutor executor;
-    ASSERT_EQ(
-        executor.stage(background_mixed_output_graph(1)),
-        iv::GraphExecutorStageResult::staged);
-    ASSERT_TRUE(executor.activate_pending());
+    auto const plan = background_mixed_output_plan();
+    iv::BackgroundCoverageState coverage(plan.accumulators.output_change_count);
+    iv::BackgroundPropagationWorkspace workspace(plan, 48000);
+    auto const operations = iv::CompiledGraphBackgroundOperations{
+        .propagate_forward = &propagate_background_forward,
+        .propagate_reverse = &no_op_background_evaluate,
+        .evaluate = &no_op_background_evaluate,
+    };
 
-    auto const result = executor.propagate_coverage(
+    auto prepared = workspace.prepare(
+        operations,
+        nullptr,
+        coverage,
         iv::CoveragePropagationRequest{
             .locally_changed_nodes = {0},
         });
+    auto const& result = prepared.result();
 
     ASSERT_EQ(result.output_changes.size(), 1u);
     EXPECT_EQ(result.output_changes[0].port, 1u);
     EXPECT_EQ(
         result.output_changes[0].coverage,
         (iv::Coverage{{{10, 13}}}));
+    workspace.discard(std::move(prepared));
 }
 
 } // namespace

@@ -1125,10 +1125,12 @@ follows:
 
 - `BackgroundCoverageState` (name may follow local naming conventions) owns the
   committed long-lived semantic coverage baseline for one bound generation;
-- `BackgroundPropagationWorkspace` owns reusable F/R accumulator storage and builds
-  the coverage portions of `BackgroundEvaluationCall`;
-- a prepared propagation result owns candidate coverage and exact
-  changes/requirements without mutating the committed baseline;
+- the standalone `BackgroundPropagationWorkspace` owns reusable F/R accumulator
+  storage and builds the coverage portions of `BackgroundEvaluationCall`; it has no
+  dependency on `GraphExecutor`, persisted pages or materialized storage;
+- `PreparedCoveragePropagation` owns candidate coverage and exposes immutable exact
+  changes/requirements plus the per-node activity selected by successful F/R,
+  without mutating the committed baseline;
 - `BackgroundEvaluationTransaction` owns one pinned base snapshot, the prepared
   propagation result, candidate pages, transaction-local materializations, invocation
   bindings and success/failure state;
@@ -1138,22 +1140,29 @@ follows:
 - the executor-level persisted-page store owns the only published persisted data and
   page-validity authority.
 
-The workspace does not own the committed baseline merely because both are currently
-implemented by one nested executor type. Its reusable arena contains things such as:
+The workspace and prepared result are runtime components in their own right, not
+nested executor implementation details. A generation realization may own and reuse a
+workspace, but committed coverage remains a separate state object. The propagation
+workspace's reusable arena is limited to:
 
 - per-node/per-port forward-change accumulators;
 - per-node/per-port reverse-requirement accumulators;
-- computed-output request sets used by the one-call-per-node tock pass;
-- forward/reverse region-set work buffers;
+- forward/reverse region-set work buffers; and
+- coverage callback frames for the generated F/R roots.
+
+The surrounding transaction and storage realization, not the propagation workspace,
+own:
+
+- the prepared activity/request selection used by the one-call-per-node Tock pass;
 - selected stored-page completion plans;
 - background-produced `tock/ephemeral` result/intermediate sample/event values;
 - temporary event data and segmented views; and
 - temporary references to immutable stored snapshots/pages.
 
-The workspace is initialized once per background evaluation transaction. All invalidation or
-demand roots assigned to that batch contribute into the same accumulators before
-the corresponding traversal reaches a node. Transaction-local values remain
-shareable across all consumers in the same batch. Once their last consumer is
+The propagation workspace is reset once per prepared background operation. All
+invalidation or demand roots assigned to that operation contribute into the same
+accumulators before the corresponding traversal reaches a node. Transaction-local
+values remain shareable across all consumers in the same batch. Once their last consumer is
 complete, storage may be reused; future liveness packing is an implementation
 optimization.
 
@@ -1161,9 +1170,15 @@ F/R success prepares a result; it does **not** commit semantic coverage. The pre
 coverage becomes authoritative only in the final transaction commit after all required
 Tock/replay evaluation, materialization, candidate-completeness checks and stale-base
 validation succeed. Abort or failure at any earlier or later phase discards the
-prepared coverage and candidate data together. The existing propagation-only public
-seam may temporarily preserve its checkpoint behavior by preparing and immediately
-committing, but the complete transaction must never advance coverage after F/R alone.
+prepared coverage and candidate data together. There is no public executor operation
+that commits propagation alone; the complete transaction is the first runtime path
+allowed to promote prepared coverage.
+The successful prepared result snapshots node activity after reverse propagation.
+Every reverse-demanded node also carries `evaluate`; forward-only activity still
+propagates invalidation but does not schedule data evaluation. The coordinator passes
+that immutable activity selection into the transaction-owned call frame before it
+invokes the generated evaluate root.
+
 `GraphExecutor` remains the lifetime/orchestration façade: it begins the transaction,
 asks it to evaluate and commits it; page arithmetic, materialization execution and
 callback binding stay in the components above.
@@ -2102,21 +2117,23 @@ recording merely because that planning metadata exists.
    now owns active/pending compiled realizations, stages pending storage without
    reading live mutable state, performs ordinary `NodeStorage` migration only at
    an explicit quiescent boundary, and dispatches the already-active generated root
-   without hidden lifecycle work. It now also owns a reusable per-realization
-   background-evaluation propagation workspace: generation-local port/node indices bind the
-   compiler-planned accumulators into `BackgroundEvaluationCall`, exact fan-in changes and
-   fan-out requirements converge before one generated F/R callback per implicated
-   node, and generated pointwise replay propagation uses the same frame. The current
-   propagation-only checkpoint advances its baseline after F/R success, but the
-   complete transaction replaces that behavior with prepared coverage promoted only
-   by final transaction commit, together with page publication when a candidate is
-   present.
+   without hidden lifecycle work. Each realization now owns an instance of the
+   standalone reusable `BackgroundPropagationWorkspace`: generation-local port/node
+   indices bind the compiler-planned accumulators into `BackgroundEvaluationCall`,
+   exact fan-in changes and fan-out requirements converge before one generated F/R
+   callback per implicated node, and generated pointwise replay propagation uses the
+   same frame. Successful preparation exposes exact changes/requirements and a
+   node-activity snapshot with `evaluate` selected for reverse-demanded nodes. No
+   public executor operation commits that candidate after F/R alone. The complete
+   transaction promotes prepared coverage only at final transaction commit, together
+   with page publication when a candidate is present.
 
    Complete this checkpoint in the following dependency order:
 
-   1. **Landed:** extract committed coverage state from the reusable propagation
-      workspace and introduce prepare/commit/discard semantics while preserving the
-      temporary propagation-only wrapper;
+   1. **Landed:** extract the reusable propagation machinery as a standalone runtime
+      component, separate committed coverage state from it, introduce
+      prepare/commit/discard semantics, and remove the interim propagation-only
+      executor API;
    2. **Landed:** retain immutable per-node materialization placement, runtime
       binding-slot maps plus replay invocation constraints/schedule slots in the
       compiled plan, with validation;
@@ -2164,16 +2181,20 @@ recording merely because that planning metadata exists.
       transaction pointer. `BackgroundEvaluationCallFrame` now owns those stable
       operation frames, resolves compiler binding slots into authored-Tock facades,
       reserves typed replay binding arrays and validates replay regions against the
-      compiled block limit. Next implement the coordinator's coverage/activity
-      selection, replay raw-buffer/state population and all-or-nothing commit; and
+      compiled block limit. The propagation machinery is now extracted from
+      `GraphExecutor` into a standalone workspace, and its move-only prepared result
+      exposes exact requirements plus immutable node activity for the coordinator;
+      reverse-demanded nodes are marked for evaluation only after successful F/R.
+      Next implement replay raw-buffer/state population, invoke the generated root
+      with that prepared activity, and add all-or-nothing commit; and
    6. add the Tick invocation binding frame, pinned published-snapshot reads,
       `TickMaterializationSnapshot` playback and per-input neutral values for genuinely
       missing sequential data.
 
    Final commit atomically promotes prepared semantic coverage plus any candidate page
-   publication and processed capture frontier. Any failure or stale-base rejection promotes none
-   of them. Remove or internalize the propagation-only public seam after end-to-end
-   callers use the semantic transaction operation. Verify throughout that no
+   publication and processed capture frontier. Any failure or stale-base rejection
+   promotes none of them. Expose only the end-to-end semantic transaction operation;
+   do not add a public F/R-only commit path. Verify throughout that no
    audio-thread path invokes Tock, allocates, blocks or reclaims the final owner of a
    retired snapshot. This checkpoint does not add a `ProjectGraph` or application-
    module bridge; that wiring follows only after the executor transaction boundary is
