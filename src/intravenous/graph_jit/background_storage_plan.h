@@ -21,4 +21,12 @@ std::expected<void, std::string> finalize_background_runtime_plan(
 std::expected<void, std::string> validate_background_runtime_plan(
     BackgroundEvaluationPlan const& plan);
 
+// Retain compact per-node Tick Random Access binding ranges over the same
+// immutable storage plan. Runtime realization never rediscovers topology.
+std::expected<void, std::string> finalize_tick_runtime_plan(
+    BackgroundEvaluationPlan& plan);
+
+std::expected<void, std::string> validate_tick_runtime_plan(
+    BackgroundEvaluationPlan const& plan);
+
 } // namespace iv::graph_jit::detail

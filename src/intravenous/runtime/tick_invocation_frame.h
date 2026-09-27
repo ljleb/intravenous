@@ -3,7 +3,37 @@
 #include <intravenous/graph_jit/tick_invocation_call.h>
 #include <intravenous/runtime/persisted_page_store.h>
 
+#include <cstddef>
+#include <cstdint>
+#include <memory>
+
 namespace iv {
+
+// Control-path allocation and identity resolution for the fixed Tick binding
+// slots retained by one CompiledGraph generation. Its arrays remain
+// address-stable for the realization's lifetime.
+class TickInvocationWorkspace {
+    class Impl;
+    std::unique_ptr<Impl> impl_{};
+
+    friend class TickInvocationFrame;
+    [[nodiscard]] graph_jit::TickInvocationCall bind(
+        PersistedPageStore::Snapshot const& published) noexcept;
+
+public:
+    TickInvocationWorkspace(
+        graph_jit::BackgroundEvaluationPlan const& plan,
+        std::uint64_t generation);
+    ~TickInvocationWorkspace();
+
+    TickInvocationWorkspace(TickInvocationWorkspace const&) = delete;
+    TickInvocationWorkspace& operator=(TickInvocationWorkspace const&) = delete;
+    TickInvocationWorkspace(TickInvocationWorkspace&&) = delete;
+    TickInvocationWorkspace& operator=(TickInvocationWorkspace&&) = delete;
+
+    [[nodiscard]] std::size_t random_access_sample_count() const noexcept;
+    [[nodiscard]] std::size_t random_access_event_count() const noexcept;
+};
 
 // Callback-scoped owner for the narrow generated Tick invocation record.
 // Construction performs only the bounded atomic pin operation of a reader slot;
@@ -14,9 +44,8 @@ class TickInvocationFrame {
 
 public:
     explicit TickInvocationFrame(
-        PersistedPageStore::ReaderSlot& page_reader) noexcept
-        : published_pages_(page_reader.pin())
-    {}
+        PersistedPageStore::ReaderSlot& page_reader,
+        TickInvocationWorkspace& workspace) noexcept;
 
     TickInvocationFrame(TickInvocationFrame const&) = delete;
     TickInvocationFrame& operator=(TickInvocationFrame const&) = delete;

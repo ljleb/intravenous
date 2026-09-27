@@ -1656,4 +1656,174 @@ std::expected<void, std::string> finalize_background_runtime_plan(
     return validate_background_runtime_plan(plan);
 }
 
+std::expected<void, std::string> validate_tick_runtime_plan(
+    BackgroundEvaluationPlan const& plan)
+{
+    auto const& runtime = plan.tick_runtime;
+    if (runtime.nodes.size() != plan.nodes.size()) {
+        return std::unexpected(
+            "GraphJit Tick runtime node map is not aligned with the evaluation plan");
+    }
+
+    auto validate_binding = [&](TickRandomAccessBindingPlan const& binding,
+                                PortKind kind,
+                                BackgroundNodeIndex node)
+        -> std::expected<void, std::string> {
+        if (binding.port >= plan.ports.size()) {
+            return std::unexpected(
+                "GraphJit Tick runtime binding references a missing port");
+        }
+        auto const& port = plan.ports[binding.port];
+        if (port.node != node || port.kind != kind
+            || port.direction != PortDirection::input
+            || !port.random_access_input || binding.storage.empty()) {
+            return std::unexpected(
+                "GraphJit Tick runtime binding does not match its Random Access input");
+        }
+        for (auto const storage : binding.storage) {
+            if (storage >= plan.storage.ports.size()
+                || plan.storage.ports[storage].kind != kind
+                || (plan.storage.ports[storage].storage
+                        != PortStorageKind::persisted_pages
+                    && plan.storage.ports[storage].storage
+                        != PortStorageKind::tick_random_access)) {
+                return std::unexpected(
+                    "GraphJit Tick runtime binding references incompatible storage");
+            }
+        }
+        return {};
+    };
+
+    std::size_t next_sample = 0;
+    std::size_t next_event = 0;
+    for (BackgroundNodeIndex node = 0; node < runtime.nodes.size(); ++node) {
+        auto const& invocation = runtime.nodes[node];
+        if (invocation.random_access_sample_begin != next_sample
+            || invocation.random_access_event_begin != next_event
+            || invocation.random_access_sample_count
+                > runtime.random_access_sample_inputs.size() - next_sample
+            || invocation.random_access_event_count
+                > runtime.random_access_event_inputs.size() - next_event) {
+            return std::unexpected(
+                "GraphJit Tick runtime binding ranges are not contiguous");
+        }
+        for (std::size_t slot = next_sample;
+             slot < next_sample + invocation.random_access_sample_count;
+             ++slot) {
+            if (auto valid = validate_binding(
+                    runtime.random_access_sample_inputs[slot],
+                    PortKind::sample,
+                    node);
+                !valid) {
+                return valid;
+            }
+        }
+        for (std::size_t slot = next_event;
+             slot < next_event + invocation.random_access_event_count;
+             ++slot) {
+            if (auto valid = validate_binding(
+                    runtime.random_access_event_inputs[slot],
+                    PortKind::event,
+                    node);
+                !valid) {
+                return valid;
+            }
+        }
+        next_sample += invocation.random_access_sample_count;
+        next_event += invocation.random_access_event_count;
+    }
+    if (next_sample != runtime.random_access_sample_inputs.size()
+        || next_event != runtime.random_access_event_inputs.size()) {
+        return std::unexpected(
+            "GraphJit Tick runtime contains unreachable binding slots");
+    }
+    return {};
+}
+
+std::expected<void, std::string> finalize_tick_runtime_plan(
+    BackgroundEvaluationPlan& plan)
+{
+    auto& runtime = plan.tick_runtime;
+    runtime = {};
+    runtime.nodes.resize(plan.nodes.size());
+
+    auto append_unique_storage = [&](std::vector<PortStorageIndex>& result,
+                                     std::span<PortStorageIndex const> candidates) {
+        for (auto const storage : candidates) {
+            if (storage >= plan.storage.ports.size()) continue;
+            auto const kind = plan.storage.ports[storage].storage;
+            if ((kind == PortStorageKind::persisted_pages
+                    || kind == PortStorageKind::tick_random_access)
+                && !std::ranges::contains(result, storage)) {
+                result.push_back(storage);
+            }
+        }
+    };
+    auto storage_for_port = [&](BackgroundPortPlan const& port) {
+        std::vector<PortStorageIndex> result;
+        if (port.kind == PortKind::sample) {
+            for (PortSubsetIndex subset = 0;
+                 subset < plan.sample_target_subsets.size(); ++subset) {
+                if (plan.sample_target_subsets[subset].port
+                    != port.configured_port) {
+                    continue;
+                }
+                append_unique_storage(
+                    result, plan.storage.sample_target_storage[subset]);
+            }
+        } else {
+            for (PortSubsetIndex subset = 0;
+                 subset < plan.event_target_subsets.size(); ++subset) {
+                auto const& target = plan.event_target_subsets[subset];
+                if (target.port.bundle != port.configured_port.node_bundle_handle
+                    || target.port.port != port.configured_port.port_index) {
+                    continue;
+                }
+                append_unique_storage(
+                    result, plan.storage.event_target_storage[subset]);
+            }
+        }
+        std::ranges::sort(result, [&](auto left, auto right) {
+            return plan.storage.ports[left].storage
+                < plan.storage.ports[right].storage;
+        });
+        return result;
+    };
+
+    for (BackgroundNodeIndex node = 0; node < plan.nodes.size(); ++node) {
+        auto& invocation = runtime.nodes[node];
+        invocation.random_access_sample_begin =
+            runtime.random_access_sample_inputs.size();
+        invocation.random_access_event_begin =
+            runtime.random_access_event_inputs.size();
+        for (auto const port_index : plan.nodes[node].inputs) {
+            if (port_index >= plan.ports.size()) {
+                return std::unexpected(
+                    "GraphJit Tick runtime node references a missing input port");
+            }
+            auto const& port = plan.ports[port_index];
+            if (!port.random_access_input) continue;
+            auto storage = storage_for_port(port);
+            if (storage.empty()) {
+                return std::unexpected(
+                    "GraphJit Tick Random Access input has no compatible storage");
+            }
+            TickRandomAccessBindingPlan binding{
+                .port = port_index,
+                .storage = std::move(storage),
+            };
+            if (port.kind == PortKind::sample) {
+                runtime.random_access_sample_inputs.push_back(
+                    std::move(binding));
+                ++invocation.random_access_sample_count;
+            } else {
+                runtime.random_access_event_inputs.push_back(
+                    std::move(binding));
+                ++invocation.random_access_event_count;
+            }
+        }
+    }
+    return validate_tick_runtime_plan(plan);
+}
+
 } // namespace iv::graph_jit::detail

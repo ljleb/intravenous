@@ -575,25 +575,6 @@ public:
     return output.authored_tock_output || output.replayed_tick_output;
 }
 
-[[nodiscard]] PersistedOutputId persisted_output_for(
-    graph_jit::BackgroundEvaluationPlan const& plan,
-    graph_jit::PortStoragePlan const& storage,
-    std::uint64_t generation)
-{
-    if (!storage.output_port || *storage.output_port >= plan.ports.size()) {
-        throw std::invalid_argument(
-            "persisted storage has no generation output identity");
-    }
-    auto const output_port = *storage.output_port;
-    auto const& output = plan.ports[output_port];
-    if (output.stable_identity) return *output.stable_identity;
-    return GenerationLocalPersistedOutputId{
-        .generation = generation,
-        .port = output_port,
-        .kind = storage.kind,
-    };
-}
-
 } // namespace
 
 Coverage const& BackgroundSampleReadView::coverage() const noexcept
@@ -692,8 +673,8 @@ BackgroundStorageRealization::BackgroundStorageRealization(
         created->coverage = &selection_.storage_coverage[index];
 
         if (planned.storage == graph_jit::PortStorageKind::persisted_pages) {
-            created->persisted_identity = persisted_output_for(
-                plan, planned, selection_.generation);
+            created->persisted_identity = persisted_output_id(
+                plan, index, selection_.generation);
         }
 
         auto const produced = selection_.produce_storage.empty()

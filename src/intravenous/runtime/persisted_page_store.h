@@ -31,6 +31,14 @@ using PersistedOutputId = std::variant<
 [[nodiscard]] PortKind persisted_output_kind(
     PersistedOutputId const& output) noexcept;
 
+// Resolve the canonical store identity already selected by one persisted
+// storage slot. Callers do this while constructing control-path workspaces,
+// never from the audio callback.
+[[nodiscard]] PersistedOutputId persisted_output_id(
+    graph_jit::BackgroundEvaluationPlan const& plan,
+    graph_jit::PortStorageIndex storage,
+    std::uint64_t generation);
+
 struct PersistedPageSnapshotVersion {
     std::uint64_t semantic = 0;
     std::uint64_t page = 0;
@@ -83,6 +91,20 @@ public:
         std::size_t page_width_ = 0;
         std::vector<std::shared_ptr<PersistedSamplePage const>> sample_pages_{};
         std::vector<std::shared_ptr<PersistedEventPage const>> event_pages_{};
+        struct SampleOutputMetadata {
+            PersistedOutputId output{};
+            Coverage coverage{};
+            ChannelLayout layout{};
+        };
+        struct EventOutputMetadata {
+            PersistedOutputId output{};
+            Coverage coverage{};
+            EventTypeId type = EventTypeId::empty;
+        };
+        std::vector<SampleOutputMetadata> sample_outputs_{};
+        std::vector<EventOutputMetadata> event_outputs_{};
+
+        void rebuild_output_metadata();
 
     public:
         [[nodiscard]] PersistedPageSnapshotVersion version() const noexcept
@@ -112,6 +134,15 @@ public:
         [[nodiscard]] PersistedEventPage const* find_event_page(
             PersistedOutputId const& output,
             std::uint64_t page_index) const noexcept;
+
+        // Coverage and format metadata are assembled before publication. Tick
+        // readers only select immutable records and never allocate.
+        [[nodiscard]] Coverage const* find_sample_coverage(
+            PersistedOutputId const& output,
+            ChannelLayout layout) const noexcept;
+        [[nodiscard]] Coverage const* find_event_coverage(
+            PersistedOutputId const& output,
+            EventTypeId type) const noexcept;
     };
 
 private:

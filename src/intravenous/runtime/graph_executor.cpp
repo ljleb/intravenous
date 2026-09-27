@@ -16,6 +16,9 @@ GraphExecutor::Realization::Realization(
     , propagation(
         graph->background_evaluation_plan,
         graph->specialization.sample_rate)
+    , tick_invocation(
+        graph->background_evaluation_plan,
+        graph->project_generation)
 {}
 
 GraphExecutor::GraphExecutor(ResourceContext resources)
@@ -122,7 +125,8 @@ void GraphExecutor::tick_block(std::size_t sample_index, std::size_t block_size)
         throw std::invalid_argument(
             "GraphExecutor tick block size is outside the compiled specialization");
     }
-    TickInvocationFrame invocation{tick_page_reader_};
+    TickInvocationFrame invocation{
+        tick_page_reader_, realization.tick_invocation};
     realization.graph->root_operations.tick_block(
         realization.storage.buffer().data(),
         &invocation.call(),

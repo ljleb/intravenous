@@ -3845,6 +3845,10 @@ std::expected<ConnectionAnalysisPlan, std::string> build_connection_analysis_pla
         !runtime) {
         return std::unexpected(std::move(runtime.error()));
     }
+    if (auto tick_runtime = finalize_tick_runtime_plan(plan.background);
+        !tick_runtime) {
+        return std::unexpected(std::move(tick_runtime.error()));
+    }
     return plan;
 }
 

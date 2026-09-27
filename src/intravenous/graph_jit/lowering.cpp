@@ -47,8 +47,19 @@ struct ReflectedContextByteOffsets {
     std::size_t event_input_bindings_size = 0;
     std::size_t event_output_bindings_data = 0;
     std::size_t event_output_bindings_size = 0;
+    std::size_t random_access_inputs_data = 0;
+    std::size_t random_access_inputs_size = 0;
+    std::size_t random_access_event_inputs_data = 0;
+    std::size_t random_access_event_inputs_size = 0;
     std::size_t state_data = 0;
     std::size_t state_size = 0;
+};
+
+struct TickInvocationByteOffsets {
+    std::size_t random_access_sample_inputs_data = 0;
+    std::size_t random_access_sample_inputs_size = 0;
+    std::size_t random_access_event_inputs_data = 0;
+    std::size_t random_access_event_inputs_size = 0;
 };
 
 struct BackgroundCallByteOffsets {
@@ -134,10 +145,40 @@ constexpr ReflectedContextByteOffsets reflected_context_byte_offsets() noexcept
         .event_output_bindings_size =
             offsetof(ReflectedNodeTickContext, event_output_bindings)
             + offsetof(ReflectedSpan<ReflectedEventOutputPortBinding const>, extent),
+        .random_access_inputs_data =
+            offsetof(ReflectedNodeTickContext, random_access_inputs)
+            + offsetof(ReflectedSpan<RandomAccessSampleInputPort const>, pointer),
+        .random_access_inputs_size =
+            offsetof(ReflectedNodeTickContext, random_access_inputs)
+            + offsetof(ReflectedSpan<RandomAccessSampleInputPort const>, extent),
+        .random_access_event_inputs_data =
+            offsetof(ReflectedNodeTickContext, random_access_event_inputs)
+            + offsetof(ReflectedSpan<RandomAccessEventInputPort const>, pointer),
+        .random_access_event_inputs_size =
+            offsetof(ReflectedNodeTickContext, random_access_event_inputs)
+            + offsetof(ReflectedSpan<RandomAccessEventInputPort const>, extent),
         .state_data = offsetof(ReflectedNodeTickContext, state)
             + offsetof(ReflectedSpan<std::byte>, pointer),
         .state_size = offsetof(ReflectedNodeTickContext, state)
             + offsetof(ReflectedSpan<std::byte>, extent),
+    };
+}
+
+constexpr TickInvocationByteOffsets tick_invocation_byte_offsets() noexcept
+{
+    return {
+        .random_access_sample_inputs_data =
+            offsetof(TickInvocationCall, random_access_sample_inputs)
+            + offsetof(ReflectedSpan<RandomAccessSampleInputPort const>, pointer),
+        .random_access_sample_inputs_size =
+            offsetof(TickInvocationCall, random_access_sample_inputs)
+            + offsetof(ReflectedSpan<RandomAccessSampleInputPort const>, extent),
+        .random_access_event_inputs_data =
+            offsetof(TickInvocationCall, random_access_event_inputs)
+            + offsetof(ReflectedSpan<RandomAccessEventInputPort const>, pointer),
+        .random_access_event_inputs_size =
+            offsetof(TickInvocationCall, random_access_event_inputs)
+            + offsetof(ReflectedSpan<RandomAccessEventInputPort const>, extent),
     };
 }
 
@@ -1007,6 +1048,68 @@ void store_context_span_pointer(
     builder.CreateStore(offset(span_size), size_index);
 }
 
+void store_tick_invocation_span(
+    llvm::IRBuilder<>& builder,
+    llvm::Value* context_storage,
+    std::size_t context_data_offset,
+    std::size_t context_size_offset,
+    llvm::Value* invocation,
+    std::size_t invocation_data_offset,
+    std::size_t invocation_size_offset,
+    std::size_t begin,
+    std::size_t count,
+    std::size_t element_size,
+    llvm::Twine const& name)
+{
+    auto& context = builder.getContext();
+    auto* byte_type = llvm::Type::getInt8Ty(context);
+    auto* pointer_type = llvm::PointerType::getUnqual(context);
+    auto* size_type = llvm::IntegerType::get(
+        context, static_cast<unsigned>(sizeof(std::size_t) * 8));
+    auto constant = [&](std::size_t value) {
+        return llvm::ConstantInt::get(size_type, value);
+    };
+
+    auto* source_data_address = byte_offset_pointer(
+        builder, invocation, invocation_data_offset, name + ".source.data");
+    auto* source_size_address = byte_offset_pointer(
+        builder, invocation, invocation_size_offset, name + ".source.size");
+    auto* source_data = builder.CreateLoad(
+        pointer_type, source_data_address, name + ".data");
+    auto* source_size = builder.CreateLoad(
+        size_type, source_size_address, name + ".size");
+    auto* present = builder.CreateAnd(
+        builder.CreateIsNotNull(source_data),
+        builder.CreateICmpUGE(source_size, constant(begin + count)),
+        name + ".present");
+    auto* selected_data = begin == 0
+        ? source_data
+        : builder.CreateInBoundsGEP(
+            byte_type,
+            source_data,
+            constant(begin * element_size),
+            name + ".begin");
+    selected_data = builder.CreateSelect(
+        present,
+        selected_data,
+        llvm::ConstantPointerNull::get(pointer_type),
+        name + ".selected.data");
+    auto* selected_size = builder.CreateSelect(
+        present,
+        constant(count),
+        constant(0),
+        name + ".selected.size");
+
+    builder.CreateStore(
+        selected_data,
+        byte_offset_pointer(
+            builder, context_storage, context_data_offset, name + ".target.data"));
+    builder.CreateStore(
+        selected_size,
+        byte_offset_pointer(
+            builder, context_storage, context_size_offset, name + ".target.size"));
+}
+
 void store_context_span(
     llvm::IRBuilder<>& builder,
     llvm::Value* context_storage,
@@ -1034,6 +1137,8 @@ void emit_primitive_call(
     detail::PrimitiveStoragePlan const& storage,
     EmittedPrimitiveSamplePorts const& sample_ports,
     EmittedPrimitiveEventPorts const& event_ports,
+    TickNodeInvocationPlan const* tick_invocation,
+    llvm::Value* invocation,
     llvm::Value* storage_base,
     llvm::Value* sample_index,
     llvm::Value* block_size)
@@ -1089,6 +1194,37 @@ void emit_primitive_call(
             event_ports.output_bindings,
             event_ports.output_count);
     }
+    if (tick_invocation != nullptr) {
+        auto const call_offsets = tick_invocation_byte_offsets();
+        if (tick_invocation->random_access_sample_count != 0) {
+            store_tick_invocation_span(
+                builder,
+                context_storage,
+                offsets.random_access_inputs_data,
+                offsets.random_access_inputs_size,
+                invocation,
+                call_offsets.random_access_sample_inputs_data,
+                call_offsets.random_access_sample_inputs_size,
+                tick_invocation->random_access_sample_begin,
+                tick_invocation->random_access_sample_count,
+                sizeof(RandomAccessSampleInputPort),
+                "tick.random_access.sample");
+        }
+        if (tick_invocation->random_access_event_count != 0) {
+            store_tick_invocation_span(
+                builder,
+                context_storage,
+                offsets.random_access_event_inputs_data,
+                offsets.random_access_event_inputs_size,
+                invocation,
+                call_offsets.random_access_event_inputs_data,
+                call_offsets.random_access_event_inputs_size,
+                tick_invocation->random_access_event_begin,
+                tick_invocation->random_access_event_count,
+                sizeof(RandomAccessEventInputPort),
+                "tick.random_access.event");
+        }
+    }
     if (storage.has_state) {
         store_context_span(
             builder,
@@ -1113,6 +1249,8 @@ void emit_sliced_primitive_calls(
     detail::PrimitiveStoragePlan const& storage,
     EmittedPrimitiveSamplePorts const& sample_ports,
     EmittedPrimitiveEventPorts const& event_ports,
+    TickNodeInvocationPlan const* tick_invocation,
+    llvm::Value* invocation,
     llvm::Value* storage_base,
     llvm::Value* sample_index,
     llvm::Value* block_size,
@@ -1150,6 +1288,8 @@ void emit_sliced_primitive_calls(
         storage,
         sample_ports,
         event_ports,
+        tick_invocation,
+        invocation,
         storage_base,
         slice_index,
         slice_size);
@@ -3286,6 +3426,7 @@ std::expected<void, std::string> emit_execution_step(
     detail::PrimitiveExecutionStep const& step,
     std::vector<llvm::Value*> const& event_feedback_cursors,
     EmittedRealtimeStorage const& realtime_storage,
+    llvm::Value* invocation,
     llvm::Value* sample_index,
     llvm::Value* block_size,
     bool skip,
@@ -3306,6 +3447,21 @@ std::expected<void, std::string> emit_execution_step(
     if (step.configuration_index >= event_bindings.primitives.size()) {
         return std::unexpected(
             "GraphJit execution plan references a missing event-port runtime plan");
+    }
+    TickNodeInvocationPlan const* tick_bindings = nullptr;
+    if (step.configuration_index < plan.imports.primitive_callbacks.size()) {
+        auto const bundle = plan.imports
+            .primitive_callbacks[step.configuration_index].bundle;
+        auto const& background = plan.connections.background;
+        if (bundle < background.bundle_to_background_node.size()
+            && background.bundle_to_background_node[bundle]) {
+            auto const node = *background.bundle_to_background_node[bundle];
+            if (node >= background.tick_runtime.nodes.size()) {
+                return std::unexpected(
+                    "GraphJit Tick invocation map references a missing node");
+            }
+            tick_bindings = &background.tick_runtime.nodes[node];
+        }
     }
 
     auto event_before = emit_event_operations(
@@ -3378,6 +3534,8 @@ std::expected<void, std::string> emit_execution_step(
             plan.declarations.primitive_storage[step.storage_index],
             sample_bindings.primitives[step.configuration_index],
             event_bindings.primitives[step.configuration_index],
+            tick_bindings,
+            invocation,
             realtime_storage.persistent_base,
             sample_index,
             block_size,
@@ -3390,6 +3548,8 @@ std::expected<void, std::string> emit_execution_step(
             plan.declarations.primitive_storage[step.storage_index],
             sample_bindings.primitives[step.configuration_index],
             event_bindings.primitives[step.configuration_index],
+            tick_bindings,
+            invocation,
             realtime_storage.persistent_base,
             sample_index,
             block_size);
@@ -3726,6 +3886,7 @@ std::expected<llvm::Function*, std::string> define_root_operation(
                     plan.execution.primitive_steps[step_index],
                     event_feedback_cursors,
                     realtime_storage,
+                    invocation,
                     sample_index,
                     block_size,
                     skip,
@@ -3802,6 +3963,7 @@ std::expected<llvm::Function*, std::string> define_root_operation(
                 step,
                 event_feedback_cursors,
                 realtime_storage,
+                invocation,
                 slice_index,
                 slice_size,
                 skip,

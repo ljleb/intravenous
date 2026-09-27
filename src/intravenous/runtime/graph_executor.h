@@ -30,6 +30,7 @@ class GraphExecutor {
         NodeStorage storage{};
         BackgroundCoverageState coverage{};
         BackgroundPropagationWorkspace propagation;
+        TickInvocationWorkspace tick_invocation;
         bool initialized = false;
 
         Realization(

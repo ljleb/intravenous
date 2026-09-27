@@ -7,6 +7,7 @@
 #include <stdexcept>
 #include <type_traits>
 #include <utility>
+#include <vector>
 
 namespace {
 
@@ -65,21 +66,156 @@ iv::PersistedEventPage empty_event_page(iv::PersistedOutputId output)
     };
 }
 
+iv::graph_jit::BackgroundEvaluationPlan direct_tick_sample_plan()
+{
+    using namespace iv::graph_jit;
+    BackgroundEvaluationPlan plan;
+    plan.nodes = {
+        BackgroundNodePlan{.outputs = {0}},
+        BackgroundNodePlan{.inputs = {1}},
+    };
+    plan.ports = {
+        BackgroundPortPlan{
+            .node = 0,
+            .configured_port = {0, iv::PortKind::sample, 0},
+            .kind = iv::PortKind::sample,
+            .direction = PortDirection::output,
+            .persisted_tick_output = true,
+            .retention = iv::OutputRetention::persisted,
+            .sample_layout = {
+                .channel_type = iv::ChannelTypeId::mono,
+                .sample_layout = iv::SampleStreamLayout::planar,
+            },
+        },
+        BackgroundPortPlan{
+            .node = 1,
+            .configured_port = {1, iv::PortKind::sample, 0},
+            .kind = iv::PortKind::sample,
+            .direction = PortDirection::input,
+            .random_access_input = true,
+            .sample_layout = {
+                .channel_type = iv::ChannelTypeId::mono,
+                .sample_layout = iv::SampleStreamLayout::planar,
+            },
+        },
+    };
+    plan.sample_target_subsets = {{
+        .port = {1, iv::PortKind::sample, 0},
+        .target_layout = {
+            .channel_type = iv::ChannelTypeId::mono,
+            .sample_layout = iv::SampleStreamLayout::planar,
+        },
+        .access = PlannedDestinationAccess::random_access,
+        .channels = {{1, 0, 0}},
+    }};
+    plan.storage.ports = {{
+        .kind = iv::PortKind::sample,
+        .storage = PortStorageKind::persisted_pages,
+        .source_subsets = {0},
+        .target_subsets = {0},
+        .source_port = iv::NodeBundlePortId{0, iv::PortKind::sample, 0},
+        .output_port = 0,
+        .sample_layout = {
+            .channel_type = iv::ChannelTypeId::mono,
+            .sample_layout = iv::SampleStreamLayout::planar,
+        },
+        .sample_channels = {0},
+    }};
+    plan.storage.sample_target_storage = {{0}};
+    plan.storage.direct_samples = {{
+        .target_subset = 0,
+        .target_channel = 0,
+        .source_subset = 0,
+        .source_channel = 0,
+        .storage = 0,
+        .delivery = PlannedDeliveryMechanism::persisted_tick_to_random_access,
+    }};
+    plan.tick_runtime.random_access_sample_inputs = {{
+        .port = 1,
+        .storage = {0},
+    }};
+    plan.tick_runtime.nodes = {
+        TickNodeInvocationPlan{},
+        TickNodeInvocationPlan{
+            .random_access_sample_begin = 0,
+            .random_access_sample_count = 1,
+        },
+    };
+    return plan;
+}
+
+iv::graph_jit::BackgroundEvaluationPlan direct_tick_event_plan()
+{
+    using namespace iv::graph_jit;
+    BackgroundEvaluationPlan plan;
+    plan.nodes = {
+        BackgroundNodePlan{.outputs = {0}},
+        BackgroundNodePlan{.inputs = {1}},
+    };
+    plan.ports = {
+        BackgroundPortPlan{
+            .node = 0,
+            .configured_port = {0, iv::PortKind::event, 0},
+            .kind = iv::PortKind::event,
+            .direction = PortDirection::output,
+            .event_type = iv::EventTypeId::trigger,
+        },
+        BackgroundPortPlan{
+            .node = 1,
+            .configured_port = {1, iv::PortKind::event, 0},
+            .kind = iv::PortKind::event,
+            .direction = PortDirection::input,
+            .random_access_input = true,
+            .event_type = iv::EventTypeId::trigger,
+        },
+    };
+    plan.event_target_subsets = {{
+        .port = {1, 0},
+        .type = iv::EventTypeId::trigger,
+        .access = PlannedDestinationAccess::random_access,
+    }};
+    plan.storage.ports = {{
+        .kind = iv::PortKind::event,
+        .storage = PortStorageKind::persisted_pages,
+        .output_port = 0,
+        .event_type = iv::EventTypeId::trigger,
+    }};
+    plan.storage.direct_events = {{
+        .target_subset = 0,
+        .storage = 0,
+    }};
+    plan.tick_runtime.random_access_event_inputs = {{
+        .port = 1,
+        .storage = {0},
+    }};
+    plan.tick_runtime.nodes = {
+        TickNodeInvocationPlan{},
+        TickNodeInvocationPlan{
+            .random_access_event_begin = 0,
+            .random_access_event_count = 1,
+        },
+    };
+    return plan;
+}
+
 static_assert(noexcept(
     std::declval<iv::PersistedPageStore::ReaderSlot&>().pin()));
 static_assert(std::is_nothrow_destructible_v<
     iv::PersistedPageStore::ReaderPin>);
 static_assert(std::is_nothrow_constructible_v<
     iv::TickInvocationFrame,
-    iv::PersistedPageStore::ReaderSlot&>);
+    iv::PersistedPageStore::ReaderSlot&,
+    iv::TickInvocationWorkspace&>);
 
 TEST(PersistedPageStore, TickInvocationFramePinsOnePublishedRootForItsLifetime)
 {
     iv::PersistedPageStore store;
     auto slot = store.register_reader();
+    iv::graph_jit::BackgroundEvaluationPlan plan;
+    iv::TickInvocationWorkspace workspace{plan, 1};
 
     {
-        iv::TickInvocationFrame frame{slot};
+        iv::TickInvocationFrame frame{slot, workspace};
         EXPECT_EQ(frame.published_pages().version(),
             (iv::PersistedPageSnapshotVersion{}));
         EXPECT_TRUE(frame.call().sequential_sample_inputs.empty());
@@ -98,6 +234,134 @@ TEST(PersistedPageStore, TickInvocationFramePinsOnePublishedRootForItsLifetime)
     }
 
     EXPECT_EQ(store.reclaim_retired(), 1u);
+}
+
+TEST(PersistedPageStore, TickInvocationFrameBindsPublishedRandomAccessSamples)
+{
+    auto plan = direct_tick_sample_plan();
+    iv::PersistedPageStore store;
+    auto reader = store.register_reader();
+    auto const output = local_output(iv::PortKind::sample, 0);
+    auto candidate = store.begin_candidate(3, 4);
+    candidate.put(sample_page(output, 10.0f));
+    ASSERT_EQ(
+        store.publish(std::move(candidate)),
+        iv::PersistedPagePublishResult::published);
+
+    iv::TickInvocationWorkspace workspace{plan, 3};
+    iv::TickInvocationFrame frame{reader, workspace};
+    auto const inputs = static_cast<
+        std::span<iv::RandomAccessSampleInputPort const>>(
+        frame.call().random_access_sample_inputs);
+    ASSERT_EQ(inputs.size(), 1u);
+    EXPECT_EQ(inputs[0].coverage(), (iv::Coverage{{{0, 4}}}));
+    EXPECT_FLOAT_EQ(inputs[0].at(0).value, 10.0f);
+    EXPECT_FLOAT_EQ(inputs[0].at(3).value, 13.0f);
+}
+
+TEST(PersistedPageStore, TickSampleViewsFollowOnePinnedRootAndPackedPageCoverage)
+{
+    auto plan = direct_tick_sample_plan();
+    iv::PersistedPageStore store;
+    auto old_reader = store.register_reader();
+    auto new_reader = store.register_reader();
+    auto const output = local_output(iv::PortKind::sample, 0);
+    auto first = store.begin_candidate(3, 4);
+    first.put(sample_page(output, 10.0f));
+    ASSERT_EQ(store.publish(std::move(first)),
+        iv::PersistedPagePublishResult::published);
+
+    iv::TickInvocationWorkspace old_workspace{plan, 3};
+    iv::TickInvocationWorkspace new_workspace{plan, 3};
+    iv::TickInvocationFrame old_frame{old_reader, old_workspace};
+    auto const old_inputs = static_cast<
+        std::span<iv::RandomAccessSampleInputPort const>>(
+        old_frame.call().random_access_sample_inputs);
+    ASSERT_EQ(old_inputs.size(), 1u);
+    EXPECT_EQ(old_inputs[0].coverage(), (iv::Coverage{{{0, 4}}}));
+
+    auto second = store.begin_candidate(3, 4);
+    second.put(iv::PersistedSamplePage{
+        .output = output,
+        .page_index = 1,
+        .domain = iv::Coverage{{{4, 5}, {7, 8}}},
+        .layout = plan.ports[0].sample_layout,
+        .packing = iv::PersistedSamplePacking::coverage_packed,
+        .values = {40.0f, 70.0f},
+    });
+    ASSERT_EQ(store.publish(std::move(second)),
+        iv::PersistedPagePublishResult::published);
+    EXPECT_EQ(old_inputs[0].coverage(), (iv::Coverage{{{0, 4}}}));
+    EXPECT_FLOAT_EQ(old_inputs[0].at(3).value, 13.0f);
+
+    iv::TickInvocationFrame new_frame{new_reader, new_workspace};
+    auto const new_inputs = static_cast<
+        std::span<iv::RandomAccessSampleInputPort const>>(
+        new_frame.call().random_access_sample_inputs);
+    ASSERT_EQ(new_inputs.size(), 1u);
+    EXPECT_EQ(new_inputs[0].coverage(),
+        (iv::Coverage{{{0, 5}, {7, 8}}}));
+    EXPECT_FLOAT_EQ(new_inputs[0].at(4).value, 40.0f);
+    EXPECT_FLOAT_EQ(new_inputs[0].at(7).value, 70.0f);
+}
+
+TEST(PersistedPageStore, TickEventViewsVisitAcrossPinnedPagesInTimeOrder)
+{
+    auto plan = direct_tick_event_plan();
+    iv::PersistedPageStore store;
+    auto reader = store.register_reader();
+    auto const output = local_output(iv::PortKind::event, 0);
+    auto candidate = store.begin_candidate(3, 4);
+    auto first = empty_event_page(output);
+    first.events = {{.time = 2, .value = iv::TriggerEvent{}}};
+    candidate.put(std::move(first));
+    auto second = empty_event_page(output);
+    second.page_index = 1;
+    second.domain = iv::Coverage{{{4, 8}}};
+    second.events = {
+        {.time = 0, .value = iv::TriggerEvent{}},
+        {.time = 3, .value = iv::TriggerEvent{}},
+    };
+    candidate.put(std::move(second));
+    ASSERT_EQ(store.publish(std::move(candidate)),
+        iv::PersistedPagePublishResult::published);
+
+    iv::TickInvocationWorkspace workspace{plan, 3};
+    iv::TickInvocationFrame frame{reader, workspace};
+    auto const inputs = static_cast<
+        std::span<iv::RandomAccessEventInputPort const>>(
+        frame.call().random_access_event_inputs);
+    ASSERT_EQ(inputs.size(), 1u);
+    EXPECT_EQ(inputs[0].coverage(), (iv::Coverage{{{0, 8}}}));
+    std::vector<iv::EventTime> times;
+    inputs[0].for_each(1, 8, [&](iv::TimedEvent const& event) {
+        times.push_back(event.time);
+    });
+    EXPECT_EQ(times, (std::vector<iv::EventTime>{2, 4, 7}));
+}
+
+TEST(PersistedPageStore, TickViewsDoNotTreatMixedStorageAsDirectPages)
+{
+    auto plan = direct_tick_sample_plan();
+    auto derived = plan.storage.ports.front();
+    derived.storage = iv::graph_jit::PortStorageKind::tick_random_access;
+    plan.storage.ports.push_back(std::move(derived));
+    plan.tick_runtime.random_access_sample_inputs.front().storage.push_back(1);
+
+    iv::PersistedPageStore store;
+    auto reader = store.register_reader();
+    auto candidate = store.begin_candidate(3, 4);
+    candidate.put(sample_page(local_output(iv::PortKind::sample, 0), 10.0f));
+    ASSERT_EQ(store.publish(std::move(candidate)),
+        iv::PersistedPagePublishResult::published);
+
+    iv::TickInvocationWorkspace workspace{plan, 3};
+    iv::TickInvocationFrame frame{reader, workspace};
+    auto const inputs = static_cast<
+        std::span<iv::RandomAccessSampleInputPort const>>(
+        frame.call().random_access_sample_inputs);
+    ASSERT_EQ(inputs.size(), 1u);
+    EXPECT_TRUE(inputs[0].coverage().empty());
 }
 
 TEST(PersistedPageStore, PublishesSampleAndEventPagesAsOneImmutableRoot)

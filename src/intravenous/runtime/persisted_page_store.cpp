@@ -150,6 +150,30 @@ PortKind persisted_output_kind(PersistedOutputId const& output) noexcept
     return std::visit([](auto const& identity) { return identity.kind; }, output);
 }
 
+PersistedOutputId persisted_output_id(
+    graph_jit::BackgroundEvaluationPlan const& plan,
+    graph_jit::PortStorageIndex storage,
+    std::uint64_t generation)
+{
+    if (storage >= plan.storage.ports.size()) {
+        throw std::invalid_argument("persisted storage index is out of range");
+    }
+    auto const& planned = plan.storage.ports[storage];
+    if (planned.storage != graph_jit::PortStorageKind::persisted_pages
+        || !planned.output_port || *planned.output_port >= plan.ports.size()) {
+        throw std::invalid_argument(
+            "persisted storage has no generation output identity");
+    }
+    auto const output_port = *planned.output_port;
+    auto const& output = plan.ports[output_port];
+    if (output.stable_identity) return *output.stable_identity;
+    return GenerationLocalPersistedOutputId{
+        .generation = generation,
+        .port = output_port,
+        .kind = planned.kind,
+    };
+}
+
 PersistedSamplePage const* PersistedPageStore::Snapshot::find_sample_page(
     PersistedOutputId const& output,
     std::uint64_t page_index) const noexcept
@@ -168,6 +192,72 @@ PersistedEventPage const* PersistedPageStore::Snapshot::find_event_page(
         return same_page(output, page_index, *page);
     });
     return found == event_pages_.end() ? nullptr : found->get();
+}
+
+Coverage const* PersistedPageStore::Snapshot::find_sample_coverage(
+    PersistedOutputId const& output,
+    ChannelLayout layout) const noexcept
+{
+    auto const found = std::ranges::find_if(
+        sample_outputs_, [&](auto const& metadata) {
+            return metadata.output == output && metadata.layout == layout;
+        });
+    return found == sample_outputs_.end() ? nullptr : &found->coverage;
+}
+
+Coverage const* PersistedPageStore::Snapshot::find_event_coverage(
+    PersistedOutputId const& output,
+    EventTypeId type) const noexcept
+{
+    auto const found = std::ranges::find_if(
+        event_outputs_, [&](auto const& metadata) {
+            return metadata.output == output && metadata.type == type;
+        });
+    return found == event_outputs_.end() ? nullptr : &found->coverage;
+}
+
+void PersistedPageStore::Snapshot::rebuild_output_metadata()
+{
+    sample_outputs_.clear();
+    event_outputs_.clear();
+    for (auto const& page : sample_pages_) {
+        auto found = std::ranges::find_if(
+            sample_outputs_, [&](auto const& metadata) {
+                return metadata.output == page->output;
+            });
+        if (found == sample_outputs_.end()) {
+            sample_outputs_.push_back(SampleOutputMetadata{
+                .output = page->output,
+                .coverage = page->domain,
+                .layout = page->layout,
+            });
+        } else {
+            if (found->layout != page->layout) {
+                throw std::invalid_argument(
+                    "persisted sample output pages disagree on channel layout");
+            }
+            found->coverage.include(page->domain);
+        }
+    }
+    for (auto const& page : event_pages_) {
+        auto found = std::ranges::find_if(
+            event_outputs_, [&](auto const& metadata) {
+                return metadata.output == page->output;
+            });
+        if (found == event_outputs_.end()) {
+            event_outputs_.push_back(EventOutputMetadata{
+                .output = page->output,
+                .coverage = page->domain,
+                .type = page->type,
+            });
+        } else {
+            if (found->type != page->type) {
+                throw std::invalid_argument(
+                    "persisted event output pages disagree on event type");
+            }
+            found->coverage.include(page->domain);
+        }
+    }
 }
 
 PersistedPageStore::Candidate::Candidate(
@@ -409,6 +499,8 @@ PersistedPagePublishResult PersistedPageStore::publish(Candidate&& candidate)
         candidate = {};
         return PersistedPagePublishResult::stale_base;
     }
+
+    candidate.successor_->rebuild_output_metadata();
 
     retired_.push_back(std::move(published_owner_));
     published_owner_ = std::move(candidate.successor_);

@@ -2213,6 +2213,23 @@ TEST(GraphJitConnectionPlan, PersistedTickToRandomAccessUsesStoredBoundary)
     ASSERT_NE(target_subset, plan->background.sample_target_subsets.end());
     EXPECT_FALSE(target_subset->storage.capture);
     EXPECT_TRUE(target_subset->storage.persisted_pages);
+
+    auto const& tick_runtime = plan->background.tick_runtime;
+    ASSERT_EQ(tick_runtime.random_access_sample_inputs.size(), 1u);
+    auto const& binding = tick_runtime.random_access_sample_inputs.front();
+    ASSERT_LT(binding.port, plan->background.ports.size());
+    EXPECT_EQ(
+        plan->background.ports[binding.port].configured_port,
+        (NodeBundlePortId{sink_handle, PortKind::sample, 0}));
+    ASSERT_EQ(binding.storage.size(), 1u);
+    ASSERT_LT(binding.storage.front(), plan->background.storage.ports.size());
+    EXPECT_EQ(
+        plan->background.storage.ports[binding.storage.front()].storage,
+        graph_jit::PortStorageKind::persisted_pages);
+    auto const sink_node =
+        *plan->background.bundle_to_background_node[sink_handle];
+    ASSERT_LT(sink_node, tick_runtime.nodes.size());
+    EXPECT_EQ(tick_runtime.nodes[sink_node].random_access_sample_count, 1u);
 }
 
 TEST(GraphJitConnectionPlan, IntrinsicTickReplaySuppliesRandomAccess)

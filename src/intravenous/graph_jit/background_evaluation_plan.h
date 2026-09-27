@@ -24,6 +24,7 @@ using EventMaterializationIndex = std::size_t;
 using BackgroundBindingSlot = std::size_t;
 using BackgroundRuntimeOperationIndex = std::size_t;
 using BackgroundReplayInvocationSlot = std::size_t;
+using TickRandomAccessBindingSlot = std::size_t;
 
 enum class PlannedSourceProduction : std::uint8_t {
     tick,
@@ -478,6 +479,32 @@ struct BackgroundRuntimePlan {
         node_replay_invocations{};
 };
 
+// One Tick-root Random Access input slot. Storage candidates are retained in
+// preference order and already refer to compatible target representations.
+// Persisted-page slots can be bound directly from the callback's pinned root;
+// tick_random_access slots are supplied by TickMaterializationSnapshot later.
+struct TickRandomAccessBindingPlan {
+    BackgroundPortIndex port = 0;
+    std::vector<PortStorageIndex> storage{};
+};
+
+// Contiguous ranges in TickInvocationCall's kind-specific arrays. The ranges
+// are aligned with the compact Random Access indices used by the imported node
+// wrapper, not with the node's complete declared input list.
+struct TickNodeInvocationPlan {
+    std::size_t random_access_sample_begin = 0;
+    std::size_t random_access_sample_count = 0;
+    std::size_t random_access_event_begin = 0;
+    std::size_t random_access_event_count = 0;
+};
+
+struct TickRuntimePlan {
+    std::vector<TickRandomAccessBindingPlan> random_access_sample_inputs{};
+    std::vector<TickRandomAccessBindingPlan> random_access_event_inputs{};
+    // Aligned with BackgroundEvaluationPlan::nodes.
+    std::vector<TickNodeInvocationPlan> nodes{};
+};
+
 struct BackgroundDependencyPlan {
     BackgroundNodeIndex source_node = 0;
     BackgroundNodeIndex target_node = 0;
@@ -533,6 +560,7 @@ struct BackgroundEvaluationPlan {
     std::vector<EventTargetPortSubsetPlan> event_target_subsets{};
     BackgroundStoragePlan storage{};
     BackgroundRuntimePlan runtime{};
+    TickRuntimePlan tick_runtime{};
     std::vector<BackgroundComponentPlan> components{};
     std::vector<std::size_t> component_order{};
     // Intrinsic replayability is an authored candidate fact. A candidate enters
