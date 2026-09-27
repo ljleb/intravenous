@@ -558,8 +558,10 @@ The storage-model and storage-placement refactors have landed:
   operation once against the sealed views: direct delivery is a no-copy validation,
   sample projection uses each source channel's planned latency and semantic channel
   conversion, and event conversion/fan-in reuses the shared stable k-way merge so
-  equal timestamps remain in semantic source order. Generated prepare/finalize hook
-  wiring is the next runtime step;
+  equal timestamps remain in semantic source order. Generated prepare/finalize hooks
+  and the address-stable transaction call-frame owner now wire those operations and
+  node-facing Tock/replay slots; coordinator-driven dynamic replay-buffer population
+  and commit remain;
 - sample and event producer groups now select the shared three-kind storage
   model, while event invocation aggregation is a separate operation fact;
 - ordinary event capacities start from
@@ -650,8 +652,14 @@ authored Tock or its complete replay loop and finalize after successful return.
 `BackgroundStorageOperationFrame` contains only the realization and the immutable
 before/after spans selected for that node. Forward/reverse propagation does not enter
 these hooks, and no hook receives an executor, store or transaction pointer. The
-remaining work is to have the transaction coordinator own/populate these frames and
-the node-facing Tock/replay bindings.
+transaction-local `BackgroundEvaluationCallFrame` now owns and installs those frames.
+It resolves dense runtime slots into compact authored-Tock sample/event facades over a
+sealed `BackgroundStorageRealization`, including direct sample channel remapping/read
+latency and output fan-out, without revisiting configured topology. It also owns the
+fixed typed replay binding arrays and validates the explicit replay-region schedule
+against the compiled block limit. The remaining replay work is for the transaction
+coordinator to populate those arrays with isolated raw buffers/state selected for that
+schedule; activity, coverage accumulators and commit also remain coordinator concerns.
 
 Transaction-local addressable storage and Tick-visible materialized storage are
 different lifetimes. The former dies with its background transaction. The latter is

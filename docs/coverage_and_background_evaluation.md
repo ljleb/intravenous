@@ -1208,6 +1208,17 @@ coordinator selects versions and lifetimes; the storage realization resolves
 Backing owners are made address-stable before the trivially-copyable callback frames
 are formed, and remain alive until the generated root returns.
 
+The concrete transaction-local assembly for that boundary is
+`BackgroundEvaluationCallFrame`. It is non-copyable and non-movable, owns one opaque
+operation frame per compiled node, and seals compact authored-Tock facades only after
+the selected storage realization is sealed. Its logical binding coverage is aligned
+with the compiler's dense binding slots rather than raw storage slots: this preserves
+direct sample channel/read-latency mappings and permits one logical output write to fan
+out to all selected destination stores. The same owner reserves the exact reflected
+sample/event input/output arrays required by every replay slot. The replay scheduler
+must populate their raw block-local bindings and state before sealing; call-frame
+assembly does not choose coverage, activity or publication policy.
+
 Replay invocation schedules are not raw, arbitrarily coalesced `Coverage` regions.
 The immutable plan retains the applicable compiled root/primitive maximum block size
 and replay binding slot; the transaction splits its dynamic required coverage into
@@ -2138,20 +2149,23 @@ recording merely because that planning metadata exists.
       conversion/projection assembly; event materialization applies the immutable
       non-expanding conversion and reuses the shared stable k-way merge, preserving
       `(absolute time, semantic source order)`. It still does not traverse nodes,
-      decide demand or publish. The generated hook frame in the next item selects
+      decide demand or publish. The generated hook frame selects
       the already-placed operation indices; the realization never rebuilds placement;
-   5. **In progress:** extend the generated background root to call narrow
-      transaction-supplied prepare/finalize hooks around its statically ordered node
-      invocations, populate the existing Tock/replay frames, and implement the complete
-      transaction coordinator. The generated evaluate root now loads a prepare hook,
+   5. **In progress:** use the generated background root's narrow
+      transaction-supplied prepare/finalize hooks and the populated Tock/replay
+      call-frame owner to implement the complete transaction coordinator. The
+      generated evaluate root now loads a prepare hook,
       finalize hook and one opaque operation-frame pointer from each active node frame;
       it calls prepare immediately before authored Tock or the complete replay loop and
       finalize only after that invocation returns successfully. Forward/reverse roots
       do not call storage hooks. `BackgroundStorageOperationFrame` retains only the
       realization plus the immutable before/after operation spans for that node and
       executes them in compiler order; generated code receives no executor, store or
-      transaction pointer. Next populate the node Tock/replay binding frames and build
-      these operation frames in the transaction coordinator; and
+      transaction pointer. `BackgroundEvaluationCallFrame` now owns those stable
+      operation frames, resolves compiler binding slots into authored-Tock facades,
+      reserves typed replay binding arrays and validates replay regions against the
+      compiled block limit. Next implement the coordinator's coverage/activity
+      selection, replay raw-buffer/state population and all-or-nothing commit; and
    6. add the Tick invocation binding frame, pinned published-snapshot reads,
       `TickMaterializationSnapshot` playback and per-input neutral values for genuinely
       missing sequential data.

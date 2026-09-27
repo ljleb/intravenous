@@ -685,8 +685,16 @@ This is a hint, not a hard constraint. Use your own good judgement if ever in do
     receives only an opaque `BackgroundStorageOperationFrame`; that frame retains the
     node's immutable before/after operation spans and executes them in compiler order.
     Forward/reverse propagation remains hook-free, and generated code receives no
-    executor, store or transaction pointer. Next populate the Tock/replay bindings and
-    add the complete transaction coordinator, then add the Tick invocation frame with
+    executor, store or transaction pointer. The transaction-local
+    `BackgroundEvaluationCallFrame` now owns those operation frames, binds the dense
+    runtime slots to sealed-storage Tock facades, and reserves the compiler-sized
+    reflected sample/event arrays for replay. Logical binding coverage is supplied
+    separately from storage coverage so direct read latency and output fan-out remain
+    explicit. Replay regions are accepted only as an ordered, nonempty schedule whose
+    entries satisfy the compiled maximum block size; the later scheduler still owns
+    their raw block-local storage bindings and replay state. Next add the complete
+    transaction coordinator and that replay-buffer population, then add the Tick
+    invocation frame with
     pinned published pages plus `TickMaterializationSnapshot` bindings. Final commit
     advances prepared coverage, page publication and any capture frontier together;
     every failure advances none. Background ephemeral Random Access may use

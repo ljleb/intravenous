@@ -1,3 +1,4 @@
+#include <intravenous/runtime/background_evaluation_call_frame.h>
 #include <intravenous/runtime/background_storage_realization.h>
 
 #include <gtest/gtest.h>
@@ -5,6 +6,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <span>
 #include <stdexcept>
 #include <utility>
 #include <vector>
@@ -597,6 +599,363 @@ TEST(BackgroundStorageRealization, UsesGenerationLocalIdentityForAnonymousOutput
             .port = 0,
             .kind = iv::PortKind::event,
         }));
+}
+
+TEST(BackgroundEvaluationCallFrame, OwnsOperationFramesAndTockBindings)
+{
+    iv::graph_jit::BackgroundEvaluationPlan plan;
+    plan.nodes = {{
+        .authored_tock_execution = true,
+        .inputs = {0},
+        .outputs = {1, 2},
+    }};
+    plan.ports = {
+        {
+            .node = 0,
+            .configured_port =
+                {
+                    .node_bundle_handle = 0,
+                    .port_kind = iv::PortKind::sample,
+                    .port_index = 0,
+                },
+            .kind = iv::PortKind::sample,
+            .direction = iv::graph_jit::PortDirection::input,
+            .random_access_input = true,
+            .sample_layout =
+                {
+                    .channel_type = iv::ChannelTypeId::mono,
+                    .sample_layout = iv::SampleStreamLayout::planar,
+                },
+        },
+        {
+            .node = 0,
+            .configured_port =
+                {
+                    .node_bundle_handle = 0,
+                    .port_kind = iv::PortKind::sample,
+                    .port_index = 1,
+                },
+            .kind = iv::PortKind::sample,
+            .direction = iv::graph_jit::PortDirection::output,
+            .authored_tock_output = true,
+            .sample_layout =
+                {
+                    .channel_type = iv::ChannelTypeId::mono,
+                    .sample_layout = iv::SampleStreamLayout::planar,
+                },
+        },
+        {
+            .node = 0,
+            .configured_port =
+                {
+                    .node_bundle_handle = 0,
+                    .port_kind = iv::PortKind::event,
+                    .port_index = 2,
+                },
+            .kind = iv::PortKind::event,
+            .direction = iv::graph_jit::PortDirection::output,
+            .authored_tock_output = true,
+            .event_type = iv::EventTypeId::trigger,
+        },
+    };
+    plan.sample_target_subsets = {{
+        .port =
+            {
+                .node_bundle_handle = 0,
+                .port_kind = iv::PortKind::sample,
+                .port_index = 0,
+            },
+        .target_layout =
+            {
+                .channel_type = iv::ChannelTypeId::mono,
+                .sample_layout = iv::SampleStreamLayout::planar,
+            },
+        .access = iv::graph_jit::PlannedDestinationAccess::random_access,
+        .channels = {{.bundle = 0, .port = 0, .channel = 0}},
+    }};
+    plan.storage.ports = {
+        {
+            .kind = iv::PortKind::sample,
+            .storage = iv::graph_jit::PortStorageKind::background,
+            .output_port = 1,
+            .sample_layout =
+                {
+                    .channel_type = iv::ChannelTypeId::mono,
+                    .sample_layout = iv::SampleStreamLayout::planar,
+                },
+            .sample_channels = {0},
+        },
+        {
+            .kind = iv::PortKind::sample,
+            .storage = iv::graph_jit::PortStorageKind::background,
+            .output_port = 1,
+            .sample_layout =
+                {
+                    .channel_type = iv::ChannelTypeId::mono,
+                    .sample_layout = iv::SampleStreamLayout::planar,
+                },
+            .sample_channels = {0},
+        },
+        {
+            .kind = iv::PortKind::event,
+            .storage = iv::graph_jit::PortStorageKind::background,
+            .output_port = 2,
+            .event_type = iv::EventTypeId::trigger,
+            .max_events_per_index = 1.0,
+        },
+    };
+    plan.storage.direct_samples = {{
+        .target_subset = 0,
+        .target_channel = 0,
+        .source_channel = 0,
+        .storage = 0,
+        .delivery =
+            iv::graph_jit::PlannedDeliveryMechanism::tock_to_random_access,
+        .read_latency = 1,
+    }};
+    plan.runtime.bindings = {
+        {
+            .node = 0,
+            .port = 0,
+            .kind = iv::PortKind::sample,
+            .direction = iv::graph_jit::PortDirection::input,
+            .storage = {0},
+        },
+        {
+            .node = 0,
+            .port = 1,
+            .kind = iv::PortKind::sample,
+            .direction = iv::graph_jit::PortDirection::output,
+            .storage = {1},
+        },
+        {
+            .node = 0,
+            .port = 2,
+            .kind = iv::PortKind::event,
+            .direction = iv::graph_jit::PortDirection::output,
+            .storage = {2},
+        },
+    };
+    plan.runtime.port_bindings = {0, 1, 2};
+    plan.runtime.node_operations.resize(1);
+    plan.runtime.node_replay_invocations.resize(1);
+
+    iv::BackgroundStorageRealization realization{
+        plan,
+        {
+            .storage_coverage =
+                {
+                    iv::Coverage{{{9, 11}}},
+                    iv::Coverage{{{10, 12}}},
+                    iv::Coverage{{{10, 12}}},
+                },
+        }};
+    ASSERT_TRUE(realization.sample_write(0)->write(9, 0, 3.0f));
+    ASSERT_TRUE(realization.sample_write(0)->write(10, 0, 4.0f));
+    ASSERT_TRUE(realization.seal().has_value());
+
+    iv::BackgroundEvaluationCallFrame frame{
+        plan,
+        realization,
+        {
+            .binding_coverage =
+                {
+                    iv::Coverage{{{10, 12}}},
+                    iv::Coverage{{{10, 12}}},
+                    iv::Coverage{{{10, 12}}},
+                },
+            .sample_rate = 96000,
+        }};
+    ASSERT_TRUE(frame.seal().has_value());
+    ASSERT_EQ(frame.call().nodes.size(), 1);
+    auto& node = frame.nodes().front();
+    EXPECT_NE(node.operation_frame, nullptr);
+    EXPECT_NE(node.prepare_operations, nullptr);
+    EXPECT_NE(node.finalize_operations, nullptr);
+    ASSERT_EQ(node.tock.inputs.size(), 1);
+    ASSERT_EQ(node.tock.outputs.size(), 1);
+    ASSERT_EQ(node.tock.event_outputs.size(), 1);
+    EXPECT_EQ(node.tock.sample_rate, 96000);
+    EXPECT_FLOAT_EQ(node.tock.inputs.data()[0].at(10).value, 3.0f);
+    node.tock.outputs.data()[0].write(11, 0, iv::Sample{8.0f});
+    EXPECT_FLOAT_EQ(realization.sample_read(1)->at(11, 0).value, 8.0f);
+    node.tock.event_outputs.data()[0].write({
+        .time = 10,
+        .value = iv::TriggerEvent{},
+    });
+    std::vector<iv::EventTime> event_times;
+    realization.event_read(2)->for_each({10, 12},
+                                        [&](iv::TimedEvent const& event) {
+                                            event_times.push_back(event.time);
+                                        });
+    EXPECT_EQ(event_times, (std::vector<iv::EventTime>{10}));
+}
+
+TEST(BackgroundEvaluationCallFrame, ReservesAndValidatesReplaySchedule)
+{
+    iv::graph_jit::BackgroundEvaluationPlan plan;
+    plan.nodes = {{
+        .replays_tick = true,
+        .replay_maximum_block_size = 4,
+        .inputs = {0, 1},
+        .outputs = {2, 3},
+    }};
+    plan.ports = {
+        {
+            .node = 0,
+            .kind = iv::PortKind::sample,
+            .direction = iv::graph_jit::PortDirection::input,
+            .replay_sequential_input = true,
+            .sample_layout =
+                {
+                    .channel_type = iv::ChannelTypeId::mono,
+                    .sample_layout = iv::SampleStreamLayout::planar,
+                },
+        },
+        {
+            .node = 0,
+            .kind = iv::PortKind::event,
+            .direction = iv::graph_jit::PortDirection::input,
+            .replay_sequential_input = true,
+        },
+        {
+            .node = 0,
+            .kind = iv::PortKind::sample,
+            .direction = iv::graph_jit::PortDirection::output,
+            .replayed_tick_output = true,
+            .sample_layout =
+                {
+                    .channel_type = iv::ChannelTypeId::mono,
+                    .sample_layout = iv::SampleStreamLayout::planar,
+                },
+        },
+        {
+            .node = 0,
+            .kind = iv::PortKind::event,
+            .direction = iv::graph_jit::PortDirection::output,
+            .replayed_tick_output = true,
+        },
+    };
+    plan.storage.ports = {
+        {
+            .kind = iv::PortKind::sample,
+            .storage = iv::graph_jit::PortStorageKind::background,
+            .output_port = 2,
+            .sample_layout =
+                {
+                    .channel_type = iv::ChannelTypeId::mono,
+                    .sample_layout = iv::SampleStreamLayout::planar,
+                },
+            .sample_channels = {0},
+        },
+        {
+            .kind = iv::PortKind::event,
+            .storage = iv::graph_jit::PortStorageKind::background,
+            .output_port = 3,
+        },
+        {
+            .kind = iv::PortKind::sample,
+            .storage = iv::graph_jit::PortStorageKind::background,
+            .output_port = 2,
+            .sample_layout =
+                {
+                    .channel_type = iv::ChannelTypeId::mono,
+                    .sample_layout = iv::SampleStreamLayout::planar,
+                },
+            .sample_channels = {0},
+        },
+        {
+            .kind = iv::PortKind::event,
+            .storage = iv::graph_jit::PortStorageKind::background,
+            .output_port = 3,
+        },
+    };
+    plan.runtime.bindings = {
+        {.node = 0,
+         .port = 0,
+         .kind = iv::PortKind::sample,
+         .direction = iv::graph_jit::PortDirection::input,
+         .storage = {0}},
+        {.node = 0,
+         .port = 1,
+         .kind = iv::PortKind::event,
+         .direction = iv::graph_jit::PortDirection::input,
+         .storage = {1}},
+        {.node = 0,
+         .port = 2,
+         .kind = iv::PortKind::sample,
+         .direction = iv::graph_jit::PortDirection::output,
+         .storage = {2}},
+        {.node = 0,
+         .port = 3,
+         .kind = iv::PortKind::event,
+         .direction = iv::graph_jit::PortDirection::output,
+         .storage = {3}},
+    };
+    plan.runtime.port_bindings = {0, 1, 2, 3};
+    plan.runtime.node_operations.resize(1);
+    plan.runtime.replay_invocations = {{
+        .node = 0,
+        .maximum_block_size = 4,
+        .input_bindings = {0, 1},
+        .output_bindings = {2, 3},
+    }};
+    plan.runtime.node_replay_invocations = {0};
+
+    iv::BackgroundStorageRealization realization{
+        plan, {.storage_coverage = std::vector<iv::Coverage>(4)}};
+    ASSERT_TRUE(realization.seal().has_value());
+    iv::BackgroundEvaluationCallFrame frame{
+        plan, realization, {.binding_coverage = std::vector<iv::Coverage>(4)}};
+    EXPECT_EQ(frame.replay_sample_inputs(0).size(), 1);
+    EXPECT_EQ(frame.replay_event_inputs(0).size(), 1);
+    EXPECT_EQ(frame.replay_sample_outputs(0).size(), 1);
+    EXPECT_EQ(frame.replay_event_outputs(0).size(), 1);
+    EXPECT_FALSE(frame.set_replay_regions(0, {{0, 5}}).has_value());
+    ASSERT_TRUE(frame.set_replay_regions(0, {{0, 4}, {8, 10}}).has_value());
+    EXPECT_FALSE(frame.seal().has_value());
+
+    std::array<iv::Sample, 4> replay_sample_input{};
+    std::array<iv::Sample, 4> replay_sample_output{};
+    auto bind_sample = [](auto& binding, std::span<iv::Sample> samples) {
+        binding.storage.channels[0] = {
+            .storage = reinterpret_cast<std::byte*>(samples.data()),
+            .frame_capacity = samples.size(),
+            .frame_stride = 1,
+        };
+        binding.storage.frame_capacity = samples.size();
+        binding.storage.channel_layout = {
+            .channel_type = iv::ChannelTypeId::mono,
+            .sample_layout = iv::SampleStreamLayout::planar,
+        };
+    };
+    bind_sample(frame.replay_sample_inputs(0).front(), replay_sample_input);
+    bind_sample(frame.replay_sample_outputs(0).front(), replay_sample_output);
+
+    struct ReplayEventStorage {
+        std::size_t count = 0;
+        std::array<iv::TimedEvent, 4> events{};
+    } replay_event_input, replay_event_output;
+    auto bind_event = [](auto& binding, ReplayEventStorage& storage) {
+        binding.storage = {
+            .storage = reinterpret_cast<std::byte*>(&storage),
+            .count_offset = offsetof(ReplayEventStorage, count),
+            .events_offset = offsetof(ReplayEventStorage, events),
+            .event_capacity = storage.events.size(),
+            .type = iv::EventTypeId::empty,
+        };
+    };
+    bind_event(frame.replay_event_inputs(0).front(), replay_event_input);
+    bind_event(frame.replay_event_outputs(0).front(), replay_event_output);
+    ASSERT_TRUE(frame.seal().has_value());
+    auto const& replay = frame.nodes().front().replay;
+    EXPECT_EQ(replay.sample_input_bindings.size(), 1);
+    EXPECT_EQ(replay.event_input_bindings.size(), 1);
+    EXPECT_EQ(replay.sample_output_bindings.size(), 1);
+    EXPECT_EQ(replay.event_output_bindings.size(), 1);
+    ASSERT_EQ(frame.nodes().front().replay_regions.size(), 2);
+    EXPECT_EQ(frame.nodes().front().replay_regions.data()[1],
+              (iv::IndexRegion{8, 10}));
 }
 
 } // namespace
