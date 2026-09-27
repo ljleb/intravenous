@@ -24,6 +24,7 @@ using EventMaterializationIndex = std::size_t;
 using BackgroundBindingSlot = std::size_t;
 using BackgroundRuntimeOperationIndex = std::size_t;
 using BackgroundReplayInvocationSlot = std::size_t;
+using TickSequentialBindingSlot = std::size_t;
 using TickRandomAccessBindingSlot = std::size_t;
 
 enum class PlannedSourceProduction : std::uint8_t {
@@ -488,10 +489,26 @@ struct TickRandomAccessBindingPlan {
     std::vector<PortStorageIndex> storage{};
 };
 
+// One Tick-root Sequential input whose current-block storage is supplied by
+// background evaluation rather than only the ordinary realtime graph.
+// Persisted pages and immutable Tick materializations can be selected at the
+// callback boundary; a current_tick candidate denotes a generated-root
+// composition with live Tick sources. The consuming port retains its own
+// sample neutral value.
+struct TickSequentialBindingPlan {
+    BackgroundPortIndex port = 0;
+    std::vector<PortStorageIndex> storage{};
+};
+
 // Contiguous ranges in TickInvocationCall's kind-specific arrays. The ranges
-// are aligned with the compact Random Access indices used by the imported node
-// wrapper, not with the node's complete declared input list.
+// are aligned with the compact dynamic Sequential and Random Access indices
+// retained for each imported node wrapper, not with the node's complete
+// declared input list.
 struct TickNodeInvocationPlan {
+    std::size_t sequential_sample_begin = 0;
+    std::size_t sequential_sample_count = 0;
+    std::size_t sequential_event_begin = 0;
+    std::size_t sequential_event_count = 0;
     std::size_t random_access_sample_begin = 0;
     std::size_t random_access_sample_count = 0;
     std::size_t random_access_event_begin = 0;
@@ -499,6 +516,8 @@ struct TickNodeInvocationPlan {
 };
 
 struct TickRuntimePlan {
+    std::vector<TickSequentialBindingPlan> sequential_sample_inputs{};
+    std::vector<TickSequentialBindingPlan> sequential_event_inputs{};
     std::vector<TickRandomAccessBindingPlan> random_access_sample_inputs{};
     std::vector<TickRandomAccessBindingPlan> random_access_event_inputs{};
     // Aligned with BackgroundEvaluationPlan::nodes.

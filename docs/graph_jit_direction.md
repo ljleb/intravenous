@@ -714,8 +714,9 @@ This is a hint, not a hard constraint. Use your own good judgement if ever in do
     Access views. `GraphExecutor` pre-registers its page-reader slot off the audio
     thread, pins one published root for the complete generated-root call, and keeps
     that pin in a non-copyable `TickInvocationFrame`; neither the frame owner nor the
-    store crosses the generated ABI. Immutable per-node Random Access sample/event
-    slot ranges and their lowering have now landed. The realization-owned workspace
+    store crosses the generated ABI. Immutable per-node dynamic Sequential and Random
+    Access sample/event slot ranges have now landed; Random Access lowering is active
+    while Sequential lowering and binding remain outstanding. The realization-owned workspace
     resolves persisted identities and allocates its address-stable view arrays off the
     audio thread; published roots retain precomputed exact output coverage, so callback
     binding only retargets direct persisted-page views to the one pinned snapshot.
@@ -726,8 +727,8 @@ This is a hint, not a hard constraint. Use your own good judgement if ever in do
     explicitly off the audio thread. `TickInvocationFrame` pins both roots for the
     callback, and materialized bindings are accepted only when the snapshot's
     generation and recorded page version match the active realization and pinned page
-    root. Sequential binding slots and their per-input neutral fallback remain the next
-    part of the Tick snapshot boundary.
+    root. The retained Sequential binding slots must next be consumed by generated
+    lowering and callback binding, including each sample input's own neutral fallback.
     Final commit
     advances prepared coverage, page publication and any capture frontier together;
     every failure advances none. Background ephemeral Random Access may use

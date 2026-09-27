@@ -1642,6 +1642,7 @@ TEST(GraphJitConnectionPlan, AddressableEventMaterializationSubsumesSequential)
     auto source = details::configure_concrete_node<BackgroundMidiSource>(graph);
     auto sequential = details::configure_concrete_node<PlainEventPass>(graph);
     auto random_access = details::configure_concrete_node<BackgroundEventPass>(graph);
+    auto const sequential_handle = sequential.node_bundle_handle();
     sequential.connect_event_input(0, source.event_port());
     random_access.connect_event_input(0, source.event_port());
     graph.outputs();
@@ -1661,6 +1662,21 @@ TEST(GraphJitConnectionPlan, AddressableEventMaterializationSubsumesSequential)
     EXPECT_EQ(
         storage.event_materializations[materialization].storage,
         graph_jit::PortStorageKind::tick_random_access);
+
+    auto const& tick_runtime = plan->background.tick_runtime;
+    ASSERT_EQ(tick_runtime.sequential_event_inputs.size(), 1u);
+    auto const& binding = tick_runtime.sequential_event_inputs.front();
+    ASSERT_LT(binding.port, plan->background.ports.size());
+    EXPECT_EQ(
+        plan->background.ports[binding.port].configured_port,
+        (NodeBundlePortId{sequential_handle, PortKind::event, 0}));
+    ASSERT_EQ(binding.storage.size(), 1u);
+    EXPECT_EQ(binding.storage.front(),
+        storage.event_materializations[materialization].output);
+    auto const sequential_node =
+        *plan->background.bundle_to_background_node[sequential_handle];
+    EXPECT_EQ(
+        tick_runtime.nodes[sequential_node].sequential_event_count, 1u);
 }
 
 TEST(GraphJitConnectionPlan, ExactEventFanoutAliasesPreparedRepresentations)
@@ -1707,6 +1723,7 @@ TEST(GraphJitConnectionPlan, TockToSequentialUsesPreparedBackgroundDelivery)
     auto source = details::configure_concrete_node<BackgroundSource>(graph);
     auto sink = details::configure_concrete_node<NeutralSamplePass>(graph);
     auto const source_handle = source.node_bundle_handle();
+    auto const sink_handle = sink.node_bundle_handle();
     sink(source);
     graph.outputs();
 
@@ -1741,6 +1758,27 @@ TEST(GraphJitConnectionPlan, TockToSequentialUsesPreparedBackgroundDelivery)
     EXPECT_TRUE(port.tick_sequential_input);
     EXPECT_FALSE(port.random_access_input);
     EXPECT_FLOAT_EQ(static_cast<float>(port.sample_neutral_value), 0.375f);
+
+    auto const& tick_runtime = plan->background.tick_runtime;
+    ASSERT_EQ(tick_runtime.sequential_sample_inputs.size(), 1u);
+    auto const& binding = tick_runtime.sequential_sample_inputs.front();
+    EXPECT_EQ(
+        plan->background.ports[binding.port].configured_port,
+        (NodeBundlePortId{sink_handle, PortKind::sample, 0}));
+    ASSERT_EQ(binding.storage.size(), 1u);
+    EXPECT_EQ(
+        plan->background.storage.ports[binding.storage.front()].storage,
+        graph_jit::PortStorageKind::tick_sequential);
+    auto const sink_node =
+        *plan->background.bundle_to_background_node[sink_handle];
+    EXPECT_EQ(
+        tick_runtime.nodes[sink_node].sequential_sample_count, 1u);
+
+    auto malformed = plan->background;
+    malformed.tick_runtime.nodes[sink_node].sequential_sample_begin =
+        malformed.tick_runtime.sequential_sample_inputs.size() + 1;
+    EXPECT_FALSE(
+        graph_jit::detail::validate_tick_runtime_plan(malformed).has_value());
 }
 
 TEST(GraphJitConnectionPlan, AddressableAtomSubsumesSequentialWindow)
@@ -2161,6 +2199,16 @@ TEST(GraphJitConnectionPlan, MixedTickAndTockEventFanInPlansPerSource)
         storage.ports[materialization.output]
             .max_events_per_index,
         0.75);
+
+    auto const& tick_runtime = plan->background.tick_runtime;
+    ASSERT_EQ(tick_runtime.sequential_event_inputs.size(), 1u);
+    auto const& binding = tick_runtime.sequential_event_inputs.front();
+    ASSERT_EQ(binding.storage.size(), 1u);
+    EXPECT_EQ(binding.storage.front(), materialization.output);
+    auto const sink_node =
+        *plan->background.bundle_to_background_node[sink_handle];
+    EXPECT_EQ(
+        tick_runtime.nodes[sink_node].sequential_event_count, 1u);
 }
 
 TEST(GraphJitConnectionPlan, PersistedTickToRandomAccessUsesStoredBoundary)

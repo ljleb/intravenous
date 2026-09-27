@@ -2219,8 +2219,12 @@ recording merely because that planning metadata exists.
       a non-copyable callback-scoped `TickInvocationFrame`; that owner acquires one
       bounded atomic page-root pin and retains it across the complete generated-root
       invocation. Generated code receives neither that owner nor a page-store/executor
-      pointer. Immutable compiler slot maps now assign each node's Random Access sample
-      and event inputs contiguous ranges in the invocation record. A realization-owned,
+      pointer. Immutable compiler slot maps now assign each node's dynamic Sequential
+      and Random Access sample/event inputs contiguous kind-specific ranges in the
+      invocation record. Sequential slots retain persisted-page, Tick-materialization
+      and generated-root current-Tick composite candidates; sample neutral values
+      remain properties of their logical input ports.
+      A realization-owned,
       address-stable `TickInvocationWorkspace` resolves persisted identities on the
       control path, and callback binding only retargets its preallocated views to the
       pinned root. Published snapshots precompute exact per-output coverage metadata,
@@ -2236,8 +2240,9 @@ recording merely because that planning metadata exists.
       generation and exact persisted-page version. The Tick workspace binds its sample
       and event views only when both coordinates match the independently pinned page
       root, otherwise conservatively exposing empty materialized coverage instead of a
-      mixed-version view. Sequential spans remain empty until compiler-planned
-      sequential slot lowering and missing-page neutral playback land.
+      mixed-version view. Sequential spans remain empty until the retained slots are
+      consumed by generated lowering and callback binding, including missing-page
+      neutral playback.
 
    Final commit atomically promotes prepared semantic coverage plus any candidate page
    publication. Step 5 below extends that same boundary with the processed capture
