@@ -3,6 +3,7 @@
 #include <intravenous/runtime/background_coverage_propagation.h>
 #include <intravenous/runtime/graph_jit.h>
 #include <intravenous/runtime/persisted_page_store.h>
+#include <intravenous/runtime/tick_materialization_snapshot.h>
 
 #include <cstddef>
 #include <cstdint>
@@ -29,6 +30,9 @@ struct BackgroundEvaluationResult {
     CoveragePropagationResult coverage{};
     // Set only when this transaction published a successor page snapshot.
     std::optional<PersistedPageSnapshotVersion> published_pages{};
+    // Set when the executor-backed transaction promoted its complete
+    // Tick-visible materialization selection, including an empty selection.
+    std::optional<std::uint64_t> promoted_tick_materialization{};
 };
 
 // One complete background operation. The implementation owns its reader pin,
@@ -46,6 +50,13 @@ public:
                                     BackgroundCoverageState& coverage,
                                     BackgroundPropagationWorkspace& propagation,
                                     PersistedPageStore& pages,
+                                    BackgroundEvaluationRequest request);
+    BackgroundEvaluationTransaction(CompiledGraph const& graph,
+                                    std::byte* node_storage,
+                                    BackgroundCoverageState& coverage,
+                                    BackgroundPropagationWorkspace& propagation,
+                                    PersistedPageStore& pages,
+                                    TickMaterializationStore& materializations,
                                     BackgroundEvaluationRequest request);
     ~BackgroundEvaluationTransaction();
 

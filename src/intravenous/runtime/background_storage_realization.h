@@ -4,6 +4,7 @@
 #include <intravenous/coverage.h>
 #include <intravenous/graph_jit/background_evaluation_plan.h>
 #include <intravenous/runtime/persisted_page_store.h>
+#include <intravenous/runtime/tick_materialization_snapshot.h>
 
 #include <cstddef>
 #include <cstdint>
@@ -209,6 +210,16 @@ public:
     // the invocation frame instead.
     [[nodiscard]] std::expected<void, std::string>
     validate_produced_storage() const;
+
+    // Freezes every selected Tick-visible owned representation into an
+    // immutable callback-lifetime snapshot. This is background work and may
+    // allocate; publication of the completed owner is separately noexcept.
+    [[nodiscard]] std::expected<
+        std::unique_ptr<TickMaterializationSnapshot>, std::string>
+    make_tick_materialization_snapshot(
+        std::uint64_t generation,
+        std::uint64_t semantic_version,
+        PersistedPageSnapshotVersion pages) const;
 
     // Serializes every selected runtime-produced persisted slot into the
     // transaction's private candidate. No page becomes visible here.

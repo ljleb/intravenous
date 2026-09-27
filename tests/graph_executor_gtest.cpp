@@ -834,6 +834,9 @@ TEST_F(GraphExecutorFixture, RunsOnlyTheEndToEndBackgroundTransaction)
     EXPECT_EQ(background_evaluate_calls, 1);
     EXPECT_TRUE(result->coverage.output_changes.empty());
     EXPECT_FALSE(result->published_pages.has_value());
+    EXPECT_EQ(result->promoted_tick_materialization, 1u);
+    EXPECT_EQ(
+        executor.reclaim_retired_snapshots().tick_materializations, 1u);
 }
 
 TEST_F(GraphExecutorFixture, FailedBackgroundEvaluationPublishesNothing)

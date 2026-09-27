@@ -24,6 +24,7 @@ GraphExecutor::Realization::Realization(
 GraphExecutor::GraphExecutor(ResourceContext resources)
     : resources_(std::move(resources))
     , tick_page_reader_(persisted_pages_.register_reader())
+    , tick_materialization_reader_(tick_materializations_.register_reader())
 {}
 
 GraphExecutor::Realization& GraphExecutor::active_realization()
@@ -112,9 +113,18 @@ GraphExecutor::evaluate_background(BackgroundEvaluationRequest request)
         realization.coverage,
         realization.propagation,
         persisted_pages_,
+        tick_materializations_,
         std::move(request),
     };
     return transaction.execute();
+}
+
+GraphExecutorReclaimedSnapshots GraphExecutor::reclaim_retired_snapshots()
+{
+    return {
+        .persisted_pages = persisted_pages_.reclaim_retired(),
+        .tick_materializations = tick_materializations_.reclaim_retired(),
+    };
 }
 
 void GraphExecutor::tick_block(std::size_t sample_index, std::size_t block_size)
@@ -126,7 +136,9 @@ void GraphExecutor::tick_block(std::size_t sample_index, std::size_t block_size)
             "GraphExecutor tick block size is outside the compiled specialization");
     }
     TickInvocationFrame invocation{
-        tick_page_reader_, realization.tick_invocation};
+        tick_page_reader_,
+        tick_materialization_reader_,
+        realization.tick_invocation};
     realization.graph->root_operations.tick_block(
         realization.storage.buffer().data(),
         &invocation.call(),

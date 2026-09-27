@@ -312,6 +312,7 @@ add_library(intravenous_graph_jit OBJECT
     runtime/graph_jit.cpp
     runtime/persisted_page_store.cpp
     runtime/tick_invocation_frame.cpp
+    runtime/tick_materialization_snapshot.cpp
     graph_jit/connection_plan.cpp
     graph_jit/background_storage_plan.cpp
     graph_jit/lowering.cpp

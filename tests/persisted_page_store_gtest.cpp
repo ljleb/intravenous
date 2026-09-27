@@ -205,17 +205,21 @@ static_assert(std::is_nothrow_destructible_v<
 static_assert(std::is_nothrow_constructible_v<
     iv::TickInvocationFrame,
     iv::PersistedPageStore::ReaderSlot&,
+    iv::TickMaterializationStore::ReaderSlot&,
     iv::TickInvocationWorkspace&>);
 
 TEST(PersistedPageStore, TickInvocationFramePinsOnePublishedRootForItsLifetime)
 {
     iv::PersistedPageStore store;
     auto slot = store.register_reader();
+    iv::TickMaterializationStore materializations;
+    auto materialization_slot = materializations.register_reader();
     iv::graph_jit::BackgroundEvaluationPlan plan;
     iv::TickInvocationWorkspace workspace{plan, 1};
 
     {
-        iv::TickInvocationFrame frame{slot, workspace};
+        iv::TickInvocationFrame frame{
+            slot, materialization_slot, workspace};
         EXPECT_EQ(frame.published_pages().version(),
             (iv::PersistedPageSnapshotVersion{}));
         EXPECT_TRUE(frame.call().sequential_sample_inputs.empty());
@@ -241,6 +245,8 @@ TEST(PersistedPageStore, TickInvocationFrameBindsPublishedRandomAccessSamples)
     auto plan = direct_tick_sample_plan();
     iv::PersistedPageStore store;
     auto reader = store.register_reader();
+    iv::TickMaterializationStore materializations;
+    auto materialization_reader = materializations.register_reader();
     auto const output = local_output(iv::PortKind::sample, 0);
     auto candidate = store.begin_candidate(3, 4);
     candidate.put(sample_page(output, 10.0f));
@@ -249,7 +255,8 @@ TEST(PersistedPageStore, TickInvocationFrameBindsPublishedRandomAccessSamples)
         iv::PersistedPagePublishResult::published);
 
     iv::TickInvocationWorkspace workspace{plan, 3};
-    iv::TickInvocationFrame frame{reader, workspace};
+    iv::TickInvocationFrame frame{
+        reader, materialization_reader, workspace};
     auto const inputs = static_cast<
         std::span<iv::RandomAccessSampleInputPort const>>(
         frame.call().random_access_sample_inputs);
@@ -265,6 +272,9 @@ TEST(PersistedPageStore, TickSampleViewsFollowOnePinnedRootAndPackedPageCoverage
     iv::PersistedPageStore store;
     auto old_reader = store.register_reader();
     auto new_reader = store.register_reader();
+    iv::TickMaterializationStore materializations;
+    auto old_materialization_reader = materializations.register_reader();
+    auto new_materialization_reader = materializations.register_reader();
     auto const output = local_output(iv::PortKind::sample, 0);
     auto first = store.begin_candidate(3, 4);
     first.put(sample_page(output, 10.0f));
@@ -273,7 +283,8 @@ TEST(PersistedPageStore, TickSampleViewsFollowOnePinnedRootAndPackedPageCoverage
 
     iv::TickInvocationWorkspace old_workspace{plan, 3};
     iv::TickInvocationWorkspace new_workspace{plan, 3};
-    iv::TickInvocationFrame old_frame{old_reader, old_workspace};
+    iv::TickInvocationFrame old_frame{
+        old_reader, old_materialization_reader, old_workspace};
     auto const old_inputs = static_cast<
         std::span<iv::RandomAccessSampleInputPort const>>(
         old_frame.call().random_access_sample_inputs);
@@ -294,7 +305,8 @@ TEST(PersistedPageStore, TickSampleViewsFollowOnePinnedRootAndPackedPageCoverage
     EXPECT_EQ(old_inputs[0].coverage(), (iv::Coverage{{{0, 4}}}));
     EXPECT_FLOAT_EQ(old_inputs[0].at(3).value, 13.0f);
 
-    iv::TickInvocationFrame new_frame{new_reader, new_workspace};
+    iv::TickInvocationFrame new_frame{
+        new_reader, new_materialization_reader, new_workspace};
     auto const new_inputs = static_cast<
         std::span<iv::RandomAccessSampleInputPort const>>(
         new_frame.call().random_access_sample_inputs);
@@ -310,6 +322,8 @@ TEST(PersistedPageStore, TickEventViewsVisitAcrossPinnedPagesInTimeOrder)
     auto plan = direct_tick_event_plan();
     iv::PersistedPageStore store;
     auto reader = store.register_reader();
+    iv::TickMaterializationStore materializations;
+    auto materialization_reader = materializations.register_reader();
     auto const output = local_output(iv::PortKind::event, 0);
     auto candidate = store.begin_candidate(3, 4);
     auto first = empty_event_page(output);
@@ -327,7 +341,8 @@ TEST(PersistedPageStore, TickEventViewsVisitAcrossPinnedPagesInTimeOrder)
         iv::PersistedPagePublishResult::published);
 
     iv::TickInvocationWorkspace workspace{plan, 3};
-    iv::TickInvocationFrame frame{reader, workspace};
+    iv::TickInvocationFrame frame{
+        reader, materialization_reader, workspace};
     auto const inputs = static_cast<
         std::span<iv::RandomAccessEventInputPort const>>(
         frame.call().random_access_event_inputs);
@@ -350,18 +365,81 @@ TEST(PersistedPageStore, TickViewsDoNotTreatMixedStorageAsDirectPages)
 
     iv::PersistedPageStore store;
     auto reader = store.register_reader();
+    iv::TickMaterializationStore materializations;
+    auto materialization_reader = materializations.register_reader();
     auto candidate = store.begin_candidate(3, 4);
     candidate.put(sample_page(local_output(iv::PortKind::sample, 0), 10.0f));
     ASSERT_EQ(store.publish(std::move(candidate)),
         iv::PersistedPagePublishResult::published);
 
     iv::TickInvocationWorkspace workspace{plan, 3};
-    iv::TickInvocationFrame frame{reader, workspace};
+    iv::TickInvocationFrame frame{
+        reader, materialization_reader, workspace};
     auto const inputs = static_cast<
         std::span<iv::RandomAccessSampleInputPort const>>(
         frame.call().random_access_sample_inputs);
     ASSERT_EQ(inputs.size(), 1u);
     EXPECT_TRUE(inputs[0].coverage().empty());
+}
+
+TEST(PersistedPageStore, TickFrameBindsOneCoherentMaterializationSnapshot)
+{
+    auto plan = direct_tick_sample_plan();
+    auto materialized_storage = plan.storage.ports.front();
+    materialized_storage.storage =
+        iv::graph_jit::PortStorageKind::tick_random_access;
+    materialized_storage.output_port.reset();
+    plan.storage.ports = {std::move(materialized_storage)};
+    plan.tick_runtime.random_access_sample_inputs.front().storage = {0};
+
+    iv::PersistedPageStore pages;
+    auto page_reader = pages.register_reader();
+    iv::TickMaterializationStore materializations;
+    auto materialization_reader = materializations.register_reader();
+    ASSERT_EQ(materializations.promote(
+        std::make_unique<iv::TickMaterializationSnapshot>(
+            3,
+            7,
+            iv::PersistedPageSnapshotVersion{},
+            std::vector<iv::TickMaterializedSampleInput>{
+                {
+                    .port = 1,
+                    .coverage = iv::Coverage{{{4, 6}}},
+                    .layout = plan.ports[1].sample_layout,
+                    .channels = {0},
+                    .values = {40.0f, 50.0f},
+                },
+            },
+            std::vector<iv::TickMaterializedEventInput>{})),
+        1u);
+
+    iv::TickInvocationWorkspace workspace{plan, 3};
+    iv::TickInvocationFrame frame{
+        page_reader, materialization_reader, workspace};
+    auto const inputs = static_cast<
+        std::span<iv::RandomAccessSampleInputPort const>>(
+        frame.call().random_access_sample_inputs);
+    ASSERT_EQ(inputs.size(), 1u);
+    EXPECT_EQ(inputs[0].coverage(), (iv::Coverage{{{4, 6}}}));
+    EXPECT_FLOAT_EQ(inputs[0].at(4).value, 40.0f);
+    EXPECT_FLOAT_EQ(inputs[0].at(5).value, 50.0f);
+
+    auto candidate = pages.begin_candidate(7, 4);
+    ASSERT_EQ(
+        pages.publish(std::move(candidate)),
+        iv::PersistedPagePublishResult::published);
+    auto newer_page_reader = pages.register_reader();
+    auto newer_materialization_reader = materializations.register_reader();
+    iv::TickInvocationWorkspace newer_workspace{plan, 3};
+    iv::TickInvocationFrame incoherent{
+        newer_page_reader,
+        newer_materialization_reader,
+        newer_workspace};
+    auto const incoherent_inputs = static_cast<
+        std::span<iv::RandomAccessSampleInputPort const>>(
+        incoherent.call().random_access_sample_inputs);
+    ASSERT_EQ(incoherent_inputs.size(), 1u);
+    EXPECT_TRUE(incoherent_inputs[0].coverage().empty());
 }
 
 TEST(PersistedPageStore, PublishesSampleAndEventPagesAsOneImmutableRoot)

@@ -63,13 +63,20 @@ class TickInvocationWorkspace::Impl {
 public:
     struct SampleSlot {
         PersistedPageStore::Snapshot const* snapshot = nullptr;
+        TickMaterializedSampleInput const* materialized = nullptr;
         std::optional<PersistedOutputId> output{};
+        graph_jit::BackgroundPortIndex port = 0;
+        bool accepts_materialization = false;
         ChannelLayout layout{};
         Coverage const* coverage = &empty_tick_coverage;
 
         [[nodiscard]] Sample read(
             SampleIndex index, std::size_t channel) const noexcept
         {
+            if (materialized && materialized->coverage.contains(index)
+                && materialized->has_channel(channel)) {
+                return materialized->at(index, channel);
+            }
             if (!snapshot || !output || snapshot->page_width() == 0) return {};
             auto const width = snapshot->page_width();
             auto const page_index = static_cast<std::uint64_t>(index / width);
@@ -101,7 +108,10 @@ public:
 
     struct EventSlot {
         PersistedPageStore::Snapshot const* snapshot = nullptr;
+        TickMaterializedEventInput const* materialized = nullptr;
         std::optional<PersistedOutputId> output{};
+        graph_jit::BackgroundPortIndex port = 0;
+        bool accepts_materialization = false;
         EventTypeId type = EventTypeId::empty;
         Coverage const* coverage = &empty_tick_coverage;
 
@@ -111,6 +121,11 @@ public:
             void* visitor_data,
             RandomAccessEventInputPort::VisitEvent visitor) const
         {
+            if (materialized) {
+                materialized->for_each(
+                    begin, end, visitor_data, visitor);
+                return;
+            }
             if (!snapshot || !output || snapshot->page_width() == 0
                 || begin >= end) {
                 return;
@@ -145,10 +160,12 @@ public:
     std::vector<EventSlot> event_slots{};
     std::vector<RandomAccessSampleInputPort> sample_views{};
     std::vector<RandomAccessEventInputPort> event_views{};
+    std::uint64_t generation = 0;
 
     Impl(
         graph_jit::BackgroundEvaluationPlan const& plan,
-        std::uint64_t generation)
+        std::uint64_t selected_generation)
+        : generation(selected_generation)
     {
         auto const& runtime = plan.tick_runtime;
         sample_slots.resize(runtime.random_access_sample_inputs.size());
@@ -164,7 +181,14 @@ public:
             }
             auto const& port = plan.ports[binding.port];
             auto& selected = sample_slots[slot];
+            selected.port = binding.port;
             selected.layout = port.sample_layout;
+            selected.accepts_materialization = std::ranges::any_of(
+                binding.storage, [&](auto const storage) {
+                    return storage < plan.storage.ports.size()
+                        && plan.storage.ports[storage].storage
+                            == graph_jit::PortStorageKind::tick_random_access;
+                });
 
             std::optional<graph_jit::PortStorageIndex> persisted;
             for (auto const storage : binding.storage) {
@@ -208,7 +232,7 @@ public:
                 }
                 if (identity) {
                     selected.output = persisted_output_id(
-                        plan, *persisted, generation);
+                        plan, *persisted, selected_generation);
                 }
             }
             sample_views[slot] = RandomAccessSampleInputPort{
@@ -231,7 +255,14 @@ public:
             }
             auto const& port = plan.ports[binding.port];
             auto& selected = event_slots[slot];
+            selected.port = binding.port;
             selected.type = port.event_type;
+            selected.accepts_materialization = std::ranges::any_of(
+                binding.storage, [&](auto const storage) {
+                    return storage < plan.storage.ports.size()
+                        && plan.storage.ports[storage].storage
+                            == graph_jit::PortStorageKind::tick_random_access;
+                });
 
             std::optional<graph_jit::PortStorageIndex> persisted;
             for (auto const storage : binding.storage) {
@@ -266,7 +297,7 @@ public:
                     });
             if (direct) {
                 selected.output = persisted_output_id(
-                    plan, *persisted, generation);
+                    plan, *persisted, selected_generation);
             }
             event_views[slot] = RandomAccessEventInputPort{
                 .data = &selected,
@@ -285,25 +316,59 @@ public:
     }
 
     graph_jit::TickInvocationCall bind(
-        PersistedPageStore::Snapshot const& published) noexcept
+        PersistedPageStore::Snapshot const& published,
+        TickMaterializationSnapshot const& materialized) noexcept
     {
+        auto const materialization_matches = materialized.generation() == generation
+            && materialized.pages() == published.version();
         for (std::size_t slot = 0; slot < sample_slots.size(); ++slot) {
             auto& selected = sample_slots[slot];
             selected.snapshot = &published;
-            selected.coverage = selected.output
-                ? published.find_sample_coverage(
-                    *selected.output, selected.layout)
+            selected.materialized = materialization_matches
+                    && selected.accepts_materialization
+                ? materialized.find_sample(selected.port)
                 : nullptr;
+            auto const materialized_sample_is_complete = selected.materialized
+                && selected.materialized->layout == selected.layout
+                && [&] {
+                    for (std::size_t channel = 0;
+                         channel < channel_count(selected.layout); ++channel) {
+                        if (!selected.materialized->has_channel(channel)) {
+                            return false;
+                        }
+                    }
+                    return true;
+                }();
+            selected.coverage = materialized_sample_is_complete
+                ? &selected.materialized->coverage
+                : selected.output
+                    ? published.find_sample_coverage(
+                        *selected.output, selected.layout)
+                    : nullptr;
+            if (!materialized_sample_is_complete) {
+                selected.materialized = nullptr;
+            }
             if (!selected.coverage) selected.coverage = &empty_tick_coverage;
             sample_views[slot].coverage_value = selected.coverage;
         }
         for (std::size_t slot = 0; slot < event_slots.size(); ++slot) {
             auto& selected = event_slots[slot];
             selected.snapshot = &published;
-            selected.coverage = selected.output
-                ? published.find_event_coverage(
-                    *selected.output, selected.type)
+            selected.materialized = materialization_matches
+                    && selected.accepts_materialization
+                ? materialized.find_event(selected.port)
                 : nullptr;
+            selected.coverage = selected.materialized
+                && selected.materialized->type == selected.type
+                ? &selected.materialized->coverage
+                : selected.output
+                    ? published.find_event_coverage(
+                        *selected.output, selected.type)
+                    : nullptr;
+            if (selected.materialized
+                && selected.materialized->type != selected.type) {
+                selected.materialized = nullptr;
+            }
             if (!selected.coverage) selected.coverage = &empty_tick_coverage;
             event_views[slot].coverage_value = selected.coverage;
         }
@@ -333,16 +398,20 @@ std::size_t TickInvocationWorkspace::random_access_event_count() const noexcept
 }
 
 graph_jit::TickInvocationCall TickInvocationWorkspace::bind(
-    PersistedPageStore::Snapshot const& published) noexcept
+    PersistedPageStore::Snapshot const& published,
+    TickMaterializationSnapshot const& materialized) noexcept
 {
-    return impl_->bind(published);
+    return impl_->bind(published, materialized);
 }
 
 TickInvocationFrame::TickInvocationFrame(
     PersistedPageStore::ReaderSlot& page_reader,
+    TickMaterializationStore::ReaderSlot& materialization_reader,
     TickInvocationWorkspace& workspace) noexcept
     : published_pages_(page_reader.pin())
-    , call_(workspace.bind(published_pages_.snapshot()))
+    , materialized_storage_(materialization_reader.pin())
+    , call_(workspace.bind(
+        published_pages_.snapshot(), materialized_storage_.snapshot()))
 {}
 
 } // namespace iv

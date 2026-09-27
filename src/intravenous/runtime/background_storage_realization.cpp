@@ -1312,6 +1312,235 @@ BackgroundStorageRealization::validate_produced_storage() const
     return {};
 }
 
+std::expected<std::unique_ptr<TickMaterializationSnapshot>, std::string>
+BackgroundStorageRealization::make_tick_materialization_snapshot(
+    std::uint64_t generation,
+    std::uint64_t semantic_version,
+    PersistedPageSnapshotVersion pages) const
+{
+    if (auto complete = validate_produced_storage(); !complete) {
+        return std::unexpected(std::move(complete.error()));
+    }
+
+    struct SampleRoute {
+        BackgroundSampleReadView const* view = nullptr;
+        std::size_t logical_channel = 0;
+        std::size_t storage_channel = 0;
+        std::size_t latency = 0;
+    };
+    auto shifted_forward = [](Coverage const& source, std::size_t latency) {
+        Coverage result;
+        for (auto const region : source.regions()) {
+            auto const begin = saturating_sample_index_add(region.begin, latency);
+            auto const end = saturating_sample_index_add(region.end, latency);
+            if (begin < end) result.include({begin, end});
+        }
+        return result;
+    };
+    auto tick_storage = [&](graph_jit::PortStorageIndex index) {
+        return index < plan_->storage.ports.size()
+            && plan_->storage.ports[index].storage
+                == graph_jit::PortStorageKind::tick_random_access;
+    };
+
+    std::vector<TickMaterializedSampleInput> samples;
+    for (auto const& binding :
+         plan_->tick_runtime.random_access_sample_inputs) {
+        if (binding.port >= plan_->ports.size()) {
+            return std::unexpected(
+                "Tick sample materialization references a missing input port");
+        }
+        auto const& port = plan_->ports[binding.port];
+        std::vector<SampleRoute> routes;
+        auto append_route = [&](SampleRoute route) {
+            if (std::ranges::none_of(routes, [&](SampleRoute const& existing) {
+                    return existing.view->data == route.view->data
+                        && existing.logical_channel == route.logical_channel
+                        && existing.storage_channel == route.storage_channel
+                        && existing.latency == route.latency;
+                })) {
+                routes.push_back(route);
+            }
+        };
+        for (auto const& direct : plan_->storage.direct_samples) {
+            if (!tick_storage(direct.storage)
+                || !std::ranges::contains(binding.storage, direct.storage)
+                || direct.target_subset
+                    >= plan_->sample_target_subsets.size()
+                || plan_->sample_target_subsets[direct.target_subset].port
+                    != port.configured_port) {
+                continue;
+            }
+            auto const* view = sample_read(direct.storage);
+            if (view) {
+                append_route({
+                    .view = view,
+                    .logical_channel = direct.target_channel,
+                    .storage_channel = direct.source_channel,
+                    .latency = direct.read_latency,
+                });
+            }
+        }
+        for (auto const storage_index : binding.storage) {
+            if (!tick_storage(storage_index)) continue;
+            auto const* view = sample_read(storage_index);
+            if (!view) continue;
+            auto const& storage = plan_->storage.ports[storage_index];
+            for (auto const subset : storage.target_subsets) {
+                if (subset >= plan_->sample_target_subsets.size()) continue;
+                auto const& target = plan_->sample_target_subsets[subset];
+                if (target.port != port.configured_port) continue;
+                for (auto const channel : target.channels) {
+                    if (view->has_channel(channel.channel)) {
+                        append_route({
+                            .view = view,
+                            .logical_channel = channel.channel,
+                            .storage_channel = channel.channel,
+                        });
+                    }
+                }
+            }
+        }
+        Coverage complete_coverage;
+        auto const channels = channel_count(port.sample_layout);
+        for (std::size_t channel = 0; channel < channels; ++channel) {
+            Coverage available;
+            for (auto const& route : routes) {
+                if (route.logical_channel == channel) {
+                    available.include(shifted_forward(
+                        route.view->coverage(), route.latency));
+                }
+            }
+            complete_coverage = channel == 0
+                ? std::move(available)
+                : complete_coverage & available;
+        }
+        if (complete_coverage.empty()) continue;
+
+        TickMaterializedSampleInput frozen{
+            .port = binding.port,
+            .coverage = std::move(complete_coverage),
+            .layout = port.sample_layout,
+        };
+        frozen.channels.resize(channels);
+        std::iota(frozen.channels.begin(), frozen.channels.end(), 0);
+        frozen.values.reserve(checked_product(
+            coverage_sample_count(frozen.coverage), channels));
+        bool missing_route = false;
+        for (auto const channel : frozen.channels) {
+            for (auto const region : frozen.coverage.regions()) {
+                for (auto sample = region.begin; sample < region.end; ++sample) {
+                    auto const found = std::ranges::find_if(
+                        routes, [&](SampleRoute const& route) {
+                            return route.logical_channel == channel
+                                && sample >= route.latency
+                                && route.view->coverage().contains(
+                                    sample - route.latency);
+                        });
+                    if (found == routes.end()) {
+                        missing_route = true;
+                        break;
+                    }
+                    frozen.values.push_back(found->view->at(
+                        sample - found->latency, found->storage_channel));
+                }
+                if (missing_route) break;
+            }
+            if (missing_route) break;
+        }
+        if (missing_route) {
+            return std::unexpected(
+                "Tick sample materialization has incomplete routed coverage");
+        }
+        samples.push_back(std::move(frozen));
+    }
+
+    std::vector<TickMaterializedEventInput> events;
+    for (auto const& binding :
+         plan_->tick_runtime.random_access_event_inputs) {
+        if (binding.port >= plan_->ports.size()) {
+            return std::unexpected(
+                "Tick event materialization references a missing input port");
+        }
+        auto const& port = plan_->ports[binding.port];
+        std::vector<BackgroundEventReadView const*> routes;
+        auto append_route = [&](BackgroundEventReadView const* view) {
+            if (view && view->type == port.event_type
+                && std::ranges::none_of(routes, [&](auto const* existing) {
+                    return existing->data == view->data;
+                })) {
+                routes.push_back(view);
+            }
+        };
+        for (auto const& direct : plan_->storage.direct_events) {
+            if (!tick_storage(direct.storage)
+                || !std::ranges::contains(binding.storage, direct.storage)
+                || direct.target_subset >= plan_->event_target_subsets.size()) {
+                continue;
+            }
+            auto const& target =
+                plan_->event_target_subsets[direct.target_subset].port;
+            if (target.bundle == port.configured_port.node_bundle_handle
+                && target.port == port.configured_port.port_index) {
+                append_route(event_read(direct.storage));
+            }
+        }
+        for (auto const storage_index : binding.storage) {
+            if (!tick_storage(storage_index)) continue;
+            auto const& storage = plan_->storage.ports[storage_index];
+            for (auto const subset : storage.target_subsets) {
+                if (subset >= plan_->event_target_subsets.size()) continue;
+                auto const& target = plan_->event_target_subsets[subset].port;
+                if (target.bundle == port.configured_port.node_bundle_handle
+                    && target.port == port.configured_port.port_index) {
+                    append_route(event_read(storage_index));
+                }
+            }
+        }
+        Coverage available;
+        for (auto const* route : routes) available.include(route->coverage());
+        if (available.empty()) continue;
+        TickMaterializedEventInput frozen{
+            .port = binding.port,
+            .coverage = std::move(available),
+            .type = port.event_type,
+        };
+        for (auto const region : frozen.coverage.regions()) {
+            auto cursor = region.begin;
+            while (cursor < region.end) {
+                BackgroundEventReadView const* selected = nullptr;
+                auto selected_end = cursor;
+                for (auto const* route : routes) {
+                    for (auto const covered : route->coverage().regions()) {
+                        if (!covered.contains(cursor)) continue;
+                        selected = route;
+                        selected_end = std::min(region.end, covered.end);
+                        break;
+                    }
+                    if (selected) break;
+                }
+                if (!selected || selected_end <= cursor) {
+                    return std::unexpected(
+                        "Tick event materialization has incomplete routed coverage");
+                }
+                selected->for_each({cursor, selected_end},
+                    [&](TimedEvent const& event) {
+                        frozen.events.push_back(event);
+                    });
+                cursor = selected_end;
+            }
+        }
+        events.push_back(std::move(frozen));
+    }
+
+    return std::make_unique<TickMaterializationSnapshot>(
+        generation,
+        semantic_version,
+        pages,
+        std::move(samples),
+        std::move(events));
+}
+
 std::expected<void, std::string>
 BackgroundStorageRealization::stage_persisted_pages(
     PersistedPageStore::Candidate& candidate) const

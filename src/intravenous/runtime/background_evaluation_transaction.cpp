@@ -85,6 +85,7 @@ class BackgroundEvaluationTransaction::Impl {
     BackgroundCoverageState* coverage_ = nullptr;
     BackgroundPropagationWorkspace* propagation_ = nullptr;
     PersistedPageStore* pages_ = nullptr;
+    TickMaterializationStore* materializations_ = nullptr;
     BackgroundEvaluationRequest request_{};
     PersistedPageStore::ReaderSlot reader_{};
     std::optional<PersistedPageStore::ReaderPin> pin_{};
@@ -248,6 +249,66 @@ class BackgroundEvaluationTransaction::Impl {
                 }
                 if (!direct) {
                     selection.storage_coverage[storage_index].include(coverage);
+                }
+            }
+        }
+
+        // Tick-only Random Access consumers have no authored-Tock/replay call
+        // frame binding. Their compiler-retained Tick slots still select the
+        // storage that this transaction must make available before playback.
+        for (auto const& required : prepared_->result().input_requirements) {
+            if (required.port >= plan.ports.size()) continue;
+            auto const& port = plan.ports[required.port];
+            if (!port.random_access_input) continue;
+            auto select_storage = [&](graph_jit::PortStorageIndex storage) {
+                if (storage >= plan.storage.ports.size()) return;
+                bool direct = false;
+                if (port.kind == PortKind::sample) {
+                    for (auto const& route : plan.storage.direct_samples) {
+                        if (route.storage != storage
+                            || route.target_subset
+                                >= plan.sample_target_subsets.size()
+                            || plan.sample_target_subsets[route.target_subset]
+                                    .port
+                                != port.configured_port) {
+                            continue;
+                        }
+                        selection.storage_coverage[storage].include(
+                            shifted_back(required.required, route.read_latency));
+                        direct = true;
+                    }
+                } else {
+                    for (auto const& route : plan.storage.direct_events) {
+                        if (route.storage != storage
+                            || route.target_subset
+                                >= plan.event_target_subsets.size()) {
+                            continue;
+                        }
+                        auto const& target =
+                            plan.event_target_subsets[route.target_subset].port;
+                        if (target.bundle
+                                != port.configured_port.node_bundle_handle
+                            || target.port
+                                != port.configured_port.port_index) {
+                            continue;
+                        }
+                        selection.storage_coverage[storage].include(
+                            required.required);
+                        direct = true;
+                    }
+                }
+                if (!direct) {
+                    selection.storage_coverage[storage].include(
+                        required.required);
+                }
+            };
+            auto const& bindings = port.kind == PortKind::sample
+                ? plan.tick_runtime.random_access_sample_inputs
+                : plan.tick_runtime.random_access_event_inputs;
+            for (auto const& binding : bindings) {
+                if (binding.port != required.port) continue;
+                for (auto const storage : binding.storage) {
+                    select_storage(storage);
                 }
             }
         }
@@ -431,6 +492,18 @@ class BackgroundEvaluationTransaction::Impl {
             return std::unexpected(std::move(complete.error()));
         }
 
+        std::unique_ptr<TickMaterializationSnapshot> tick_materialization;
+        if (materializations_) {
+            auto frozen = realization->make_tick_materialization_snapshot(
+                graph_->project_generation,
+                request_.semantic_version,
+                candidate ? candidate->target_version() : base.version());
+            if (!frozen) {
+                return std::unexpected(std::move(frozen.error()));
+            }
+            tick_materialization = std::move(*frozen);
+        }
+
         std::optional<PersistedPageSnapshotVersion> published;
         if (candidate) {
             if (auto staged = realization->stage_persisted_pages(*candidate);
@@ -452,12 +525,20 @@ class BackgroundEvaluationTransaction::Impl {
             };
         }
 
+        std::optional<std::uint64_t> promoted_tick_materialization;
+        if (tick_materialization) {
+            promoted_tick_materialization = materializations_->promote(
+                std::move(tick_materialization));
+        }
+
         auto result = propagation_->commit(*coverage_, std::move(*prepared_));
         prepared_.reset();
         return BackgroundEvaluationResult{
             .status = BackgroundEvaluationStatus::committed,
             .coverage = std::move(result),
             .published_pages = published,
+            .promoted_tick_materialization =
+                promoted_tick_materialization,
         };
     }
 
@@ -465,12 +546,14 @@ public:
     Impl(CompiledGraph const& graph, std::byte* node_storage,
          BackgroundCoverageState& coverage,
          BackgroundPropagationWorkspace& propagation, PersistedPageStore& pages,
+         TickMaterializationStore* materializations,
          BackgroundEvaluationRequest request)
         : graph_(&graph)
         , node_storage_(node_storage)
         , coverage_(&coverage)
         , propagation_(&propagation)
         , pages_(&pages)
+        , materializations_(materializations)
         , request_(std::move(request))
     {}
 
@@ -507,7 +590,23 @@ BackgroundEvaluationTransaction::BackgroundEvaluationTransaction(
     BackgroundPropagationWorkspace& propagation, PersistedPageStore& pages,
     BackgroundEvaluationRequest request)
     : impl_(std::make_unique<Impl>(graph, node_storage, coverage, propagation,
-                                   pages, std::move(request)))
+                                   pages, nullptr, std::move(request)))
+{}
+
+BackgroundEvaluationTransaction::BackgroundEvaluationTransaction(
+    CompiledGraph const& graph, std::byte* node_storage,
+    BackgroundCoverageState& coverage,
+    BackgroundPropagationWorkspace& propagation, PersistedPageStore& pages,
+    TickMaterializationStore& materializations,
+    BackgroundEvaluationRequest request)
+    : impl_(std::make_unique<Impl>(
+        graph,
+        node_storage,
+        coverage,
+        propagation,
+        pages,
+        &materializations,
+        std::move(request)))
 {}
 
 BackgroundEvaluationTransaction::~BackgroundEvaluationTransaction() = default;

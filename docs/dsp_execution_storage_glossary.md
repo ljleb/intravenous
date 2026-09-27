@@ -352,7 +352,10 @@ for Tick-visible ephemeral advance materialization. It is selected at the root
 boundary and remains alive through every callback reader. It is not a published
 persisted-page version, has no persisted retention guarantee, and must not be called a
 "published materialization." Its lifetime uses the same audio-safe boundary discipline
-as the published-page reader pin.
+as the published-page reader pin. The concrete snapshot records its compiled generation
+and source persisted-page version; Tick exposes it only when both match the active
+realization and independently pinned page root. Promotion relinks an already-built
+owner without allocation, and explicit non-audio reclamation destroys retired owners.
 
 ### Current Tick representation
 

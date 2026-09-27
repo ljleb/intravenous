@@ -2215,7 +2215,7 @@ recording merely because that planning metadata exists.
       `TickMaterializationSnapshot` playback and per-input neutral values for genuinely
       missing sequential data. The generated Tick root's final ABI accepts one
       `TickInvocationCall` containing only resolved sequential and Random Access view
-      spans. `GraphExecutor` registers its reader slot on the control path and constructs
+      spans. `GraphExecutor` registers both reader slots on the control path and constructs
       a non-copyable callback-scoped `TickInvocationFrame`; that owner acquires one
       bounded atomic page-root pin and retains it across the complete generated-root
       invocation. Generated code receives neither that owner nor a page-store/executor
@@ -2226,10 +2226,18 @@ recording merely because that planning metadata exists.
       pinned root. Published snapshots precompute exact per-output coverage metadata,
       so direct identity sample/event page views require no callback-time allocation or
       coverage construction; generated lowering passes the corresponding node-local
-      subspans to imported Tick wrappers. Derived, converted, fan-in or ephemeral
-      Random Access storage deliberately retains empty coverage until a selected
-      `TickMaterializationSnapshot` supplies it. Sequential spans likewise remain empty
-      until that snapshot path lands together with missing-page neutral playback.
+      subspans to imported Tick wrappers. Successful background transactions now also
+      freeze compiler-routed derived, converted, fan-in and ephemeral Random Access
+      results into one immutable `TickMaterializationSnapshot`. Its promotion is a
+      no-fail owner relink after any page publication and before semantic coverage
+      promotion. A separately pre-registered reader slot pins that root for the whole
+      Tick callback without reference counting; retired owners are reclaimed only by
+      an explicit non-audio executor operation. Each snapshot records its compiled
+      generation and exact persisted-page version. The Tick workspace binds its sample
+      and event views only when both coordinates match the independently pinned page
+      root, otherwise conservatively exposing empty materialized coverage instead of a
+      mixed-version view. Sequential spans remain empty until compiler-planned
+      sequential slot lowering and missing-page neutral playback land.
 
    Final commit atomically promotes prepared semantic coverage plus any candidate page
    publication. Step 5 below extends that same boundary with the processed capture

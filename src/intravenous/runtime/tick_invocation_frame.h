@@ -2,6 +2,7 @@
 
 #include <intravenous/graph_jit/tick_invocation_call.h>
 #include <intravenous/runtime/persisted_page_store.h>
+#include <intravenous/runtime/tick_materialization_snapshot.h>
 
 #include <cstddef>
 #include <cstdint>
@@ -18,7 +19,8 @@ class TickInvocationWorkspace {
 
     friend class TickInvocationFrame;
     [[nodiscard]] graph_jit::TickInvocationCall bind(
-        PersistedPageStore::Snapshot const& published) noexcept;
+        PersistedPageStore::Snapshot const& published,
+        TickMaterializationSnapshot const& materialized) noexcept;
 
 public:
     TickInvocationWorkspace(
@@ -36,15 +38,17 @@ public:
 };
 
 // Callback-scoped owner for the narrow generated Tick invocation record.
-// Construction performs only the bounded atomic pin operation of a reader slot;
-// the slot itself is registered by GraphExecutor on the control path.
+// Construction performs only the bounded atomic pin operations of the two
+// reader slots; both slots are registered by GraphExecutor on the control path.
 class TickInvocationFrame {
     PersistedPageStore::ReaderPin published_pages_{};
+    TickMaterializationStore::ReaderPin materialized_storage_{};
     graph_jit::TickInvocationCall call_{};
 
 public:
     explicit TickInvocationFrame(
         PersistedPageStore::ReaderSlot& page_reader,
+        TickMaterializationStore::ReaderSlot& materialization_reader,
         TickInvocationWorkspace& workspace) noexcept;
 
     TickInvocationFrame(TickInvocationFrame const&) = delete;
@@ -63,6 +67,12 @@ public:
         const noexcept
     {
         return published_pages_.snapshot();
+    }
+
+    [[nodiscard]] TickMaterializationSnapshot const& materialized_storage()
+        const noexcept
+    {
+        return materialized_storage_.snapshot();
     }
 };
 

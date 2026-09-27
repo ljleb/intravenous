@@ -130,6 +130,147 @@ TEST(BackgroundStorageRealization, OwnsAddressStableSparseTransactionStorage)
     EXPECT_EQ(realization.event_read(1), event_read);
 }
 
+TEST(
+    BackgroundStorageRealization,
+    FreezesTickVisibleStorageAndDefersPinnedSnapshotReclamation)
+{
+    using namespace iv;
+    graph_jit::BackgroundEvaluationPlan plan;
+    plan.nodes = {{.inputs = {0, 1}}};
+    plan.ports = {
+        {
+            .node = 0,
+            .configured_port = {0, PortKind::sample, 0},
+            .kind = PortKind::sample,
+            .direction = graph_jit::PortDirection::input,
+            .random_access_input = true,
+            .sample_layout = {
+                .channel_type = ChannelTypeId::stereo,
+                .sample_layout = SampleStreamLayout::interleaved,
+            },
+        },
+        {
+            .node = 0,
+            .configured_port = {0, PortKind::event, 0},
+            .kind = PortKind::event,
+            .direction = graph_jit::PortDirection::input,
+            .random_access_input = true,
+            .event_type = EventTypeId::trigger,
+        },
+    };
+    plan.sample_target_subsets = {{
+        .port = {0, PortKind::sample, 0},
+        .target_layout = {
+            .channel_type = ChannelTypeId::stereo,
+            .sample_layout = SampleStreamLayout::interleaved,
+        },
+        .access = graph_jit::PlannedDestinationAccess::random_access,
+        .channels = {{0, 0, 0}, {0, 0, 1}},
+    }};
+    plan.event_target_subsets = {{
+        .port = {0, 0},
+        .type = EventTypeId::trigger,
+        .access = graph_jit::PlannedDestinationAccess::random_access,
+    }};
+    plan.storage.ports = {
+        {
+            .kind = PortKind::sample,
+            .storage = graph_jit::PortStorageKind::tick_random_access,
+            .target_subsets = {0},
+            .sample_layout = {
+                .channel_type = ChannelTypeId::stereo,
+                .sample_layout = SampleStreamLayout::interleaved,
+            },
+            .sample_channels = {0, 1},
+        },
+        {
+            .kind = PortKind::event,
+            .storage = graph_jit::PortStorageKind::tick_random_access,
+            .target_subsets = {0},
+            .event_type = EventTypeId::trigger,
+            .max_events_per_index = 1.0,
+        },
+    };
+    plan.tick_runtime.random_access_sample_inputs = {{
+        .port = 0,
+        .storage = {0},
+    }};
+    plan.tick_runtime.random_access_event_inputs = {{
+        .port = 1,
+        .storage = {1},
+    }};
+    plan.tick_runtime.nodes = {{
+        .random_access_sample_begin = 0,
+        .random_access_sample_count = 1,
+        .random_access_event_begin = 0,
+        .random_access_event_count = 1,
+    }};
+
+    BackgroundStorageRealization realization{
+        plan,
+        {
+            .generation = 4,
+            .storage_coverage = {
+                Coverage{{{10, 12}}},
+                Coverage{{{10, 12}}},
+            },
+            .produce_storage = {true, true},
+        }};
+    auto const* sample = realization.sample_write(0);
+    auto const* event = realization.event_write(1);
+    ASSERT_NE(sample, nullptr);
+    ASSERT_NE(event, nullptr);
+    EXPECT_TRUE(sample->write(10, 0, 1.0f));
+    EXPECT_TRUE(sample->write(11, 0, 2.0f));
+    EXPECT_TRUE(sample->write(10, 1, 10.0f));
+    EXPECT_TRUE(sample->write(11, 1, 20.0f));
+    EXPECT_TRUE(event->write({.time = 11, .value = TriggerEvent{}}));
+    ASSERT_TRUE(realization.seal().has_value());
+
+    auto frozen = realization.make_tick_materialization_snapshot(
+        4, 9, PersistedPageSnapshotVersion{.semantic = 9, .page = 2});
+    ASSERT_TRUE(frozen.has_value())
+        << (frozen ? std::string{} : frozen.error());
+    ASSERT_NE(*frozen, nullptr);
+    EXPECT_EQ((*frozen)->generation(), 4u);
+    EXPECT_EQ((*frozen)->semantic_version(), 9u);
+    EXPECT_EQ((*frozen)->pages(),
+        (PersistedPageSnapshotVersion{.semantic = 9, .page = 2}));
+    auto const* frozen_sample = (*frozen)->find_sample(0);
+    auto const* frozen_event = (*frozen)->find_event(1);
+    ASSERT_NE(frozen_sample, nullptr);
+    ASSERT_NE(frozen_event, nullptr);
+    EXPECT_FLOAT_EQ(frozen_sample->at(10, 0).value, 1.0f);
+    EXPECT_FLOAT_EQ(frozen_sample->at(11, 1).value, 20.0f);
+    std::vector<EventTime> times;
+    frozen_event->for_each(
+        10,
+        12,
+        &times,
+        +[](void* opaque, TimedEvent const& value) {
+            static_cast<std::vector<EventTime>*>(opaque)->push_back(value.time);
+        });
+    EXPECT_EQ(times, (std::vector<EventTime>{11}));
+
+    TickMaterializationStore store;
+    auto reader = store.register_reader();
+    EXPECT_EQ(store.promote(std::move(*frozen)), 1u);
+    {
+        auto pin = reader.pin();
+        EXPECT_EQ(pin->generation(), 4u);
+        EXPECT_EQ(store.promote(std::make_unique<TickMaterializationSnapshot>(
+            4,
+            10,
+            PersistedPageSnapshotVersion{.semantic = 9, .page = 2},
+            std::vector<TickMaterializedSampleInput>{},
+            std::vector<TickMaterializedEventInput>{})), 2u);
+        EXPECT_EQ(store.retired_snapshot_count(), 2u);
+        EXPECT_EQ(store.reclaim_retired(), 1u);
+        EXPECT_EQ(pin->semantic_version(), 9u);
+    }
+    EXPECT_EQ(store.reclaim_retired(), 1u);
+}
+
 TEST(BackgroundStorageRealization, ReadsTypedPublishedPagesWithoutCopyingThem)
 {
     iv::PersistedPageStore store;

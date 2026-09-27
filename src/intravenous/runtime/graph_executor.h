@@ -20,6 +20,11 @@ enum class GraphExecutorStageResult : std::uint8_t {
     ignored_stale,
 };
 
+struct GraphExecutorReclaimedSnapshots {
+    std::size_t persisted_pages = 0;
+    std::size_t tick_materializations = 0;
+};
+
 // Mutable runtime owner for immutable CompiledGraph generations. Staging and
 // activation are control-path operations: callers must activate only at a legal
 // whole-root boundary with no concurrent tick_block() invocation. The realtime
@@ -43,9 +48,13 @@ class GraphExecutor {
     // Compatible generations will rebind their persisted ports into this one
     // canonical sample/event authority rather than migrate page ownership.
     PersistedPageStore persisted_pages_{};
+    TickMaterializationStore tick_materializations_{};
     // Registered off the audio thread. Each tick_block() acquires one bounded
     // callback-scoped pin from this slot before entering generated code.
     PersistedPageStore::ReaderSlot tick_page_reader_{};
+    // The paired materialization root uses the same non-owning pin protocol;
+    // generation/page-version validation rejects incoherent root pairs.
+    TickMaterializationStore::ReaderSlot tick_materialization_reader_{};
     std::array<std::optional<Realization>, 2> realizations_{};
     std::optional<std::size_t> active_{};
     std::optional<std::size_t> pending_{};
@@ -81,6 +90,10 @@ public:
     // generation. No propagation-only commit surface is exposed.
     [[nodiscard]] std::expected<BackgroundEvaluationResult, std::string>
     evaluate_background(BackgroundEvaluationRequest request);
+
+    // Explicit non-audio reclamation for immutable roots retired by successful
+    // background publication. A live callback pin always defers its owner.
+    [[nodiscard]] GraphExecutorReclaimedSnapshots reclaim_retired_snapshots();
 
     // Executes only the already-active realization. Generation activation is
     // deliberately never hidden in this audio-thread entry point.
