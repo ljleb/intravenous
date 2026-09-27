@@ -721,8 +721,10 @@ This is a hint, not a hard constraint. Use your own good judgement if ever in do
     audio thread; published roots retain precomputed exact output coverage, so callback
     binding only retargets direct persisted-page views to the one pinned snapshot.
     Background transactions now freeze compiler-routed derived/fan-in/converted and
-    ephemeral Random Access results into an immutable `TickMaterializationSnapshot`
-    and promote it through a separate pre-registered-reader store. Promotion is a
+    ephemeral Random Access results, together with direct background-only Sequential
+    materializations, into an immutable `TickMaterializationSnapshot`. Mixed
+    `current_tick` composites remain generated-root work because they also consume live
+    Tick sources. The snapshot is promoted through a separate pre-registered-reader store. Promotion is a
     no-fail owner relink after any page publication; retired owners are reclaimed
     explicitly off the audio thread. `TickInvocationFrame` pins both roots for the
     callback, and materialized bindings are accepted only when the snapshot's

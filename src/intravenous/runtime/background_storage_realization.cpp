@@ -1337,15 +1337,45 @@ BackgroundStorageRealization::make_tick_materialization_snapshot(
         }
         return result;
     };
-    auto tick_storage = [&](graph_jit::PortStorageIndex index) {
+    auto materialized_tick_storage = [&](graph_jit::PortStorageIndex index) {
         return index < plan_->storage.ports.size()
-            && plan_->storage.ports[index].storage
-                == graph_jit::PortStorageKind::tick_random_access;
+            && (plan_->storage.ports[index].storage
+                    == graph_jit::PortStorageKind::tick_sequential
+                || plan_->storage.ports[index].storage
+                    == graph_jit::PortStorageKind::tick_random_access);
     };
 
-    std::vector<TickMaterializedSampleInput> samples;
+    struct TickBindingView {
+        graph_jit::BackgroundPortIndex port = 0;
+        std::span<graph_jit::PortStorageIndex const> storage{};
+    };
+    std::vector<TickBindingView> sample_bindings;
+    sample_bindings.reserve(
+        plan_->tick_runtime.sequential_sample_inputs.size()
+        + plan_->tick_runtime.random_access_sample_inputs.size());
+    for (auto const& binding :
+         plan_->tick_runtime.sequential_sample_inputs) {
+        sample_bindings.push_back({binding.port, binding.storage});
+    }
     for (auto const& binding :
          plan_->tick_runtime.random_access_sample_inputs) {
+        sample_bindings.push_back({binding.port, binding.storage});
+    }
+    std::vector<TickBindingView> event_bindings;
+    event_bindings.reserve(
+        plan_->tick_runtime.sequential_event_inputs.size()
+        + plan_->tick_runtime.random_access_event_inputs.size());
+    for (auto const& binding :
+         plan_->tick_runtime.sequential_event_inputs) {
+        event_bindings.push_back({binding.port, binding.storage});
+    }
+    for (auto const& binding :
+         plan_->tick_runtime.random_access_event_inputs) {
+        event_bindings.push_back({binding.port, binding.storage});
+    }
+
+    std::vector<TickMaterializedSampleInput> samples;
+    for (auto const& binding : sample_bindings) {
         if (binding.port >= plan_->ports.size()) {
             return std::unexpected(
                 "Tick sample materialization references a missing input port");
@@ -1363,7 +1393,7 @@ BackgroundStorageRealization::make_tick_materialization_snapshot(
             }
         };
         for (auto const& direct : plan_->storage.direct_samples) {
-            if (!tick_storage(direct.storage)
+            if (!materialized_tick_storage(direct.storage)
                 || !std::ranges::contains(binding.storage, direct.storage)
                 || direct.target_subset
                     >= plan_->sample_target_subsets.size()
@@ -1382,7 +1412,7 @@ BackgroundStorageRealization::make_tick_materialization_snapshot(
             }
         }
         for (auto const storage_index : binding.storage) {
-            if (!tick_storage(storage_index)) continue;
+            if (!materialized_tick_storage(storage_index)) continue;
             auto const* view = sample_read(storage_index);
             if (!view) continue;
             auto const& storage = plan_->storage.ports[storage_index];
@@ -1456,8 +1486,7 @@ BackgroundStorageRealization::make_tick_materialization_snapshot(
     }
 
     std::vector<TickMaterializedEventInput> events;
-    for (auto const& binding :
-         plan_->tick_runtime.random_access_event_inputs) {
+    for (auto const& binding : event_bindings) {
         if (binding.port >= plan_->ports.size()) {
             return std::unexpected(
                 "Tick event materialization references a missing input port");
@@ -1473,7 +1502,7 @@ BackgroundStorageRealization::make_tick_materialization_snapshot(
             }
         };
         for (auto const& direct : plan_->storage.direct_events) {
-            if (!tick_storage(direct.storage)
+            if (!materialized_tick_storage(direct.storage)
                 || !std::ranges::contains(binding.storage, direct.storage)
                 || direct.target_subset >= plan_->event_target_subsets.size()) {
                 continue;
@@ -1486,7 +1515,7 @@ BackgroundStorageRealization::make_tick_materialization_snapshot(
             }
         }
         for (auto const storage_index : binding.storage) {
-            if (!tick_storage(storage_index)) continue;
+            if (!materialized_tick_storage(storage_index)) continue;
             auto const& storage = plan_->storage.ports[storage_index];
             for (auto const subset : storage.target_subsets) {
                 if (subset >= plan_->event_target_subsets.size()) continue;

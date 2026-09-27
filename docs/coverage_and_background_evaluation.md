@@ -2232,7 +2232,9 @@ recording merely because that planning metadata exists.
       coverage construction; generated lowering passes the corresponding node-local
       subspans to imported Tick wrappers. Successful background transactions now also
       freeze compiler-routed derived, converted, fan-in and ephemeral Random Access
-      results into one immutable `TickMaterializationSnapshot`. Its promotion is a
+      results, plus direct background-only Sequential materializations, into one
+      immutable `TickMaterializationSnapshot`. Mixed `current_tick` composites remain
+      generated-root work because they also consume live Tick sources. Its promotion is a
       no-fail owner relink after any page publication and before semantic coverage
       promotion. A separately pre-registered reader slot pins that root for the whole
       Tick callback without reference counting; retired owners are reclaimed only by

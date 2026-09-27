@@ -136,7 +136,7 @@ TEST(
 {
     using namespace iv;
     graph_jit::BackgroundEvaluationPlan plan;
-    plan.nodes = {{.inputs = {0, 1}}};
+    plan.nodes = {{.inputs = {0, 1, 2, 3}}};
     plan.ports = {
         {
             .node = 0,
@@ -157,21 +157,58 @@ TEST(
             .random_access_input = true,
             .event_type = EventTypeId::trigger,
         },
-    };
-    plan.sample_target_subsets = {{
-        .port = {0, PortKind::sample, 0},
-        .target_layout = {
-            .channel_type = ChannelTypeId::stereo,
-            .sample_layout = SampleStreamLayout::interleaved,
+        {
+            .node = 0,
+            .configured_port = {0, PortKind::sample, 1},
+            .kind = PortKind::sample,
+            .direction = graph_jit::PortDirection::input,
+            .tick_sequential_input = true,
+            .sample_layout = {
+                .channel_type = ChannelTypeId::mono,
+                .sample_layout = SampleStreamLayout::planar,
+            },
         },
-        .access = graph_jit::PlannedDestinationAccess::random_access,
-        .channels = {{0, 0, 0}, {0, 0, 1}},
-    }};
-    plan.event_target_subsets = {{
-        .port = {0, 0},
-        .type = EventTypeId::trigger,
-        .access = graph_jit::PlannedDestinationAccess::random_access,
-    }};
+        {
+            .node = 0,
+            .configured_port = {0, PortKind::event, 1},
+            .kind = PortKind::event,
+            .direction = graph_jit::PortDirection::input,
+            .tick_sequential_input = true,
+            .event_type = EventTypeId::trigger,
+        },
+    };
+    plan.sample_target_subsets = {
+        {
+            .port = {0, PortKind::sample, 0},
+            .target_layout = {
+                .channel_type = ChannelTypeId::stereo,
+                .sample_layout = SampleStreamLayout::interleaved,
+            },
+            .access = graph_jit::PlannedDestinationAccess::random_access,
+            .channels = {{0, 0, 0}, {0, 0, 1}},
+        },
+        {
+            .port = {0, PortKind::sample, 1},
+            .target_layout = {
+                .channel_type = ChannelTypeId::mono,
+                .sample_layout = SampleStreamLayout::planar,
+            },
+            .access = graph_jit::PlannedDestinationAccess::sequential,
+            .channels = {{0, 1, 0}},
+        },
+    };
+    plan.event_target_subsets = {
+        {
+            .port = {0, 0},
+            .type = EventTypeId::trigger,
+            .access = graph_jit::PlannedDestinationAccess::random_access,
+        },
+        {
+            .port = {0, 1},
+            .type = EventTypeId::trigger,
+            .access = graph_jit::PlannedDestinationAccess::sequential,
+        },
+    };
     plan.storage.ports = {
         {
             .kind = PortKind::sample,
@@ -190,7 +227,32 @@ TEST(
             .event_type = EventTypeId::trigger,
             .max_events_per_index = 1.0,
         },
+        {
+            .kind = PortKind::sample,
+            .storage = graph_jit::PortStorageKind::tick_sequential,
+            .target_subsets = {1},
+            .sample_layout = {
+                .channel_type = ChannelTypeId::mono,
+                .sample_layout = SampleStreamLayout::planar,
+            },
+            .sample_channels = {0},
+        },
+        {
+            .kind = PortKind::event,
+            .storage = graph_jit::PortStorageKind::tick_sequential,
+            .target_subsets = {1},
+            .event_type = EventTypeId::trigger,
+            .max_events_per_index = 1.0,
+        },
     };
+    plan.tick_runtime.sequential_sample_inputs = {{
+        .port = 2,
+        .storage = {2},
+    }};
+    plan.tick_runtime.sequential_event_inputs = {{
+        .port = 3,
+        .storage = {3},
+    }};
     plan.tick_runtime.random_access_sample_inputs = {{
         .port = 0,
         .storage = {0},
@@ -200,6 +262,10 @@ TEST(
         .storage = {1},
     }};
     plan.tick_runtime.nodes = {{
+        .sequential_sample_begin = 0,
+        .sequential_sample_count = 1,
+        .sequential_event_begin = 0,
+        .sequential_event_count = 1,
         .random_access_sample_begin = 0,
         .random_access_sample_count = 1,
         .random_access_event_begin = 0,
@@ -213,18 +279,28 @@ TEST(
             .storage_coverage = {
                 Coverage{{{10, 12}}},
                 Coverage{{{10, 12}}},
+                Coverage{{{10, 12}}},
+                Coverage{{{10, 12}}},
             },
-            .produce_storage = {true, true},
+            .produce_storage = {true, true, true, true},
         }};
     auto const* sample = realization.sample_write(0);
     auto const* event = realization.event_write(1);
+    auto const* sequential_sample = realization.sample_write(2);
+    auto const* sequential_event = realization.event_write(3);
     ASSERT_NE(sample, nullptr);
     ASSERT_NE(event, nullptr);
+    ASSERT_NE(sequential_sample, nullptr);
+    ASSERT_NE(sequential_event, nullptr);
     EXPECT_TRUE(sample->write(10, 0, 1.0f));
     EXPECT_TRUE(sample->write(11, 0, 2.0f));
     EXPECT_TRUE(sample->write(10, 1, 10.0f));
     EXPECT_TRUE(sample->write(11, 1, 20.0f));
     EXPECT_TRUE(event->write({.time = 11, .value = TriggerEvent{}}));
+    EXPECT_TRUE(sequential_sample->write(10, 0, 30.0f));
+    EXPECT_TRUE(sequential_sample->write(11, 0, 40.0f));
+    EXPECT_TRUE(
+        sequential_event->write({.time = 10, .value = TriggerEvent{}}));
     ASSERT_TRUE(realization.seal().has_value());
 
     auto frozen = realization.make_tick_materialization_snapshot(
@@ -238,10 +314,16 @@ TEST(
         (PersistedPageSnapshotVersion{.semantic = 9, .page = 2}));
     auto const* frozen_sample = (*frozen)->find_sample(0);
     auto const* frozen_event = (*frozen)->find_event(1);
+    auto const* frozen_sequential_sample = (*frozen)->find_sample(2);
+    auto const* frozen_sequential_event = (*frozen)->find_event(3);
     ASSERT_NE(frozen_sample, nullptr);
     ASSERT_NE(frozen_event, nullptr);
+    ASSERT_NE(frozen_sequential_sample, nullptr);
+    ASSERT_NE(frozen_sequential_event, nullptr);
     EXPECT_FLOAT_EQ(frozen_sample->at(10, 0).value, 1.0f);
     EXPECT_FLOAT_EQ(frozen_sample->at(11, 1).value, 20.0f);
+    EXPECT_FLOAT_EQ(frozen_sequential_sample->at(10, 0).value, 30.0f);
+    EXPECT_FLOAT_EQ(frozen_sequential_sample->at(11, 0).value, 40.0f);
     std::vector<EventTime> times;
     frozen_event->for_each(
         10,
@@ -251,6 +333,15 @@ TEST(
             static_cast<std::vector<EventTime>*>(opaque)->push_back(value.time);
         });
     EXPECT_EQ(times, (std::vector<EventTime>{11}));
+    times.clear();
+    frozen_sequential_event->for_each(
+        10,
+        12,
+        &times,
+        +[](void* opaque, TimedEvent const& value) {
+            static_cast<std::vector<EventTime>*>(opaque)->push_back(value.time);
+        });
+    EXPECT_EQ(times, (std::vector<EventTime>{10}));
 
     TickMaterializationStore store;
     auto reader = store.register_reader();
