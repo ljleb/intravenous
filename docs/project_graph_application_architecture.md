@@ -848,9 +848,13 @@ The implementation checkpoints now stand as follows:
     staging pages and limits each multi-output replay flush to that output's selected
     coverage. Failed, incomplete or stale transactions promote neither state, and
     page-free operations neither advance the page version nor skip pinned-base stale
-    validation. Next add the Tick binding
-    frame, `TickMaterializationSnapshot`, stale-page playback and per-input missing-page
-    neutrality. Do this before enabling transactional recording consumption;
+    validation. The Tick binding frame, callback-lifetime published-root pin and
+    compiler-planned direct persisted-page Random Access sample/event views have now
+    landed. Their address-stable workspace is allocated on the control path and the
+    generated root receives only compact resolved spans. Next add
+    `TickMaterializationSnapshot`, stale-page sequential playback and per-input
+    missing-page neutrality. Do this before enabling transactional recording
+    consumption;
 11. integrate stable logical `SystemAudioDevices` bindings with ordinary system
     audio leaf node definitions;
 12. once GraphJit and GraphExecutor have fully landed as the normal execution

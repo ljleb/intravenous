@@ -709,13 +709,19 @@ This is a hint, not a hard constraint. Use your own good judgement if ever in do
     or exceeded an event bound. Multi-output replay flushes only each output's selected
     coverage from the node-wide union schedule. Semantic coverage is promoted only
     after any required page publication succeeds. `GraphExecutor`
-    exposes only that end-to-end operation. The Tick root ABI now receives one narrow
+    exposes only that end-to-end operation. The Tick root ABI receives one narrow
     callback-scoped invocation record containing only resolved sequential and Random
     Access views. `GraphExecutor` pre-registers its page-reader slot off the audio
     thread, pins one published root for the complete generated-root call, and keeps
     that pin in a non-copyable `TickInvocationFrame`; neither the frame owner nor the
-    store crosses the generated ABI. Next populate the compiler-planned binding slots,
-    including `TickMaterializationSnapshot` playback and neutral sequential fallback.
+    store crosses the generated ABI. Immutable per-node Random Access sample/event
+    slot ranges and their lowering have now landed. The realization-owned workspace
+    resolves persisted identities and allocates its address-stable view arrays off the
+    audio thread; published roots retain precomputed exact output coverage, so callback
+    binding only retargets direct persisted-page views to the one pinned snapshot.
+    Derived/fan-in/converted and ephemeral Random Access bindings remain empty until
+    `TickMaterializationSnapshot` playback lands. Sequential binding slots and their
+    per-input neutral fallback remain the next part of that same snapshot boundary.
     Final commit
     advances prepared coverage, page publication and any capture frontier together;
     every failure advances none. Background ephemeral Random Access may use

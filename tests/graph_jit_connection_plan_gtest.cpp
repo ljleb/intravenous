@@ -2230,6 +2230,13 @@ TEST(GraphJitConnectionPlan, PersistedTickToRandomAccessUsesStoredBoundary)
         *plan->background.bundle_to_background_node[sink_handle];
     ASSERT_LT(sink_node, tick_runtime.nodes.size());
     EXPECT_EQ(tick_runtime.nodes[sink_node].random_access_sample_count, 1u);
+
+    auto malformed = plan->background;
+    malformed.tick_runtime.nodes[sink_node].random_access_sample_begin =
+        malformed.tick_runtime.random_access_sample_inputs.size() + 1;
+    auto const validated =
+        graph_jit::detail::validate_tick_runtime_plan(malformed);
+    EXPECT_FALSE(validated.has_value());
 }
 
 TEST(GraphJitConnectionPlan, IntrinsicTickReplaySuppliesRandomAccess)

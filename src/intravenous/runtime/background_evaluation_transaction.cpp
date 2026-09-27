@@ -47,25 +47,6 @@ runtime_produced(graph_jit::BackgroundEvaluationPlan const& plan,
     return output.authored_tock_output || output.replayed_tick_output;
 }
 
-[[nodiscard]] PersistedOutputId
-persisted_output_for(graph_jit::BackgroundEvaluationPlan const& plan,
-                     graph_jit::PortStoragePlan const& storage,
-                     std::uint64_t generation)
-{
-    if (!storage.output_port || *storage.output_port >= plan.ports.size()) {
-        throw std::invalid_argument(
-            "persisted background storage has no output identity");
-    }
-    auto const port = *storage.output_port;
-    auto const& output = plan.ports[port];
-    if (output.stable_identity) return *output.stable_identity;
-    return GenerationLocalPersistedOutputId{
-        .generation = generation,
-        .port = port,
-        .kind = storage.kind,
-    };
-}
-
 [[nodiscard]] std::vector<IndexRegion> replay_regions(Coverage const& coverage,
                                                       std::size_t maximum)
 {
@@ -155,15 +136,17 @@ class BackgroundEvaluationTransaction::Impl {
         Coverage affected = required | changed;
         if (affected.empty()) return;
 
-        for (auto const& storage : plan.storage.ports) {
+        for (graph_jit::PortStorageIndex index = 0;
+             index < plan.storage.ports.size(); ++index) {
+            auto const& storage = plan.storage.ports[index];
             if (storage.storage !=
                     graph_jit::PortStorageKind::persisted_pages ||
                 storage.output_port != port ||
                 !runtime_produced(plan, storage)) {
                 continue;
             }
-            auto const output = persisted_output_for(
-                plan, storage, self.graph_->project_generation);
+            auto const output = persisted_output_id(
+                plan, index, self.graph_->project_generation);
             for (auto const region : affected.regions()) {
                 auto page = static_cast<std::uint64_t>(region.begin / width);
                 auto const last =

@@ -2211,17 +2211,25 @@ recording merely because that planning metadata exists.
       state does change, successful publication precedes the propagation workspace's
       non-throwing coverage promotion. `GraphExecutor`
       exposes this end-to-end operation and no propagation-only compatibility API; and
-   6. **In progress:** add the Tick invocation binding frame, pinned
-      published-snapshot reads, `TickMaterializationSnapshot` playback and per-input
-      neutral values for genuinely missing sequential data. The generated Tick root's
-      final ABI now accepts one `TickInvocationCall` containing only resolved
-      sequential and Random Access view spans. `GraphExecutor` registers its reader
-      slot on the control path and constructs a non-copyable callback-scoped
-      `TickInvocationFrame`; that owner acquires one bounded atomic page-root pin and
-      retains it across the complete generated-root invocation. Generated code receives
-      neither that owner nor a page-store/executor pointer. The spans are deliberately
-      empty until the next landing wires immutable compiler slot maps and the concrete
-      page/materialization/neutral bindings.
+   6. **In progress:** complete Tick-time dynamic bindings with
+      `TickMaterializationSnapshot` playback and per-input neutral values for genuinely
+      missing sequential data. The generated Tick root's final ABI accepts one
+      `TickInvocationCall` containing only resolved sequential and Random Access view
+      spans. `GraphExecutor` registers its reader slot on the control path and constructs
+      a non-copyable callback-scoped `TickInvocationFrame`; that owner acquires one
+      bounded atomic page-root pin and retains it across the complete generated-root
+      invocation. Generated code receives neither that owner nor a page-store/executor
+      pointer. Immutable compiler slot maps now assign each node's Random Access sample
+      and event inputs contiguous ranges in the invocation record. A realization-owned,
+      address-stable `TickInvocationWorkspace` resolves persisted identities on the
+      control path, and callback binding only retargets its preallocated views to the
+      pinned root. Published snapshots precompute exact per-output coverage metadata,
+      so direct identity sample/event page views require no callback-time allocation or
+      coverage construction; generated lowering passes the corresponding node-local
+      subspans to imported Tick wrappers. Derived, converted, fan-in or ephemeral
+      Random Access storage deliberately retains empty coverage until a selected
+      `TickMaterializationSnapshot` supplies it. Sequential spans likewise remain empty
+      until that snapshot path lands together with missing-page neutral playback.
 
    Final commit atomically promotes prepared semantic coverage plus any candidate page
    publication. Step 5 below extends that same boundary with the processed capture

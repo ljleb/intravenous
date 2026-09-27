@@ -1698,12 +1698,18 @@ std::expected<void, std::string> validate_tick_runtime_plan(
     std::size_t next_event = 0;
     for (BackgroundNodeIndex node = 0; node < runtime.nodes.size(); ++node) {
         auto const& invocation = runtime.nodes[node];
-        if (invocation.random_access_sample_begin != next_sample
+        if (invocation.random_access_sample_begin
+                > runtime.random_access_sample_inputs.size()
+            || invocation.random_access_event_begin
+                > runtime.random_access_event_inputs.size()
+            || invocation.random_access_sample_begin != next_sample
             || invocation.random_access_event_begin != next_event
             || invocation.random_access_sample_count
-                > runtime.random_access_sample_inputs.size() - next_sample
+                > runtime.random_access_sample_inputs.size()
+                    - invocation.random_access_sample_begin
             || invocation.random_access_event_count
-                > runtime.random_access_event_inputs.size() - next_event) {
+                > runtime.random_access_event_inputs.size()
+                    - invocation.random_access_event_begin) {
             return std::unexpected(
                 "GraphJit Tick runtime binding ranges are not contiguous");
         }

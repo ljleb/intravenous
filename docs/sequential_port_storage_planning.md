@@ -688,6 +688,14 @@ copyable `TickInvocationCall` containing resolved sequential and Random Access v
 spans. The reader slot is registered before realtime execution; constructing the
 per-callback frame performs only the store's bounded atomic pin operation. Neither
 the frame owner, executor nor page store is reachable through the generated ABI.
+The compiler now retains contiguous per-node Random Access sample/event slot ranges.
+A realization-owned workspace resolves persisted identities and preallocates every
+view off the audio thread; published snapshots retain exact per-output coverage, and
+the callback only binds direct identity page views to its pinned root. Storage that
+requires conversion, fan-in or ephemeral advance materialization remains uncovered
+until `TickMaterializationSnapshot` supplies its immutable view. Sequential dynamic
+slots and missing-page neutral buffers remain to be added with that snapshot rather
+than being mistaken for ordinary current-Tick storage.
 
 All backing owners become address-stable before callback frames are built. The
 immutable plan retains the replay slot and applicable maximum block size; the
