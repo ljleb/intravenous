@@ -54,7 +54,7 @@ valid:
 
 - requested node instances remain owned by `NodeInstances` even when some
   definitions are unavailable;
-- their C++ configuration argument-list source is retained even if it cannot yet
+- their restricted configuration argument-list source is retained even if it cannot yet
   be compiled;
 - project-wide `ProjectNodePortMatcher` connections are retained even when they
   currently match nothing;

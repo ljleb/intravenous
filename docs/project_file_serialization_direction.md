@@ -18,7 +18,7 @@ For the project graph, persist at least:
 
 - stable project node-instance ids;
 - node definition ids;
-- the exact C++ configuration argument-list source used to request each node;
+- the exact restricted C++-like configuration argument-list source used to request each node;
 - project-wide connection declarations;
 - structured `ProjectNodePortMatcher`s for every connection side;
 - explicit source/output and target/input channel type information required by
@@ -31,7 +31,7 @@ through the persistence collection protocol.
 Do **not** persist derived graph/execution state such as:
 
 - `NodeInstances` configured cache entries;
-- compiled configuration-expression code/retained globals;
+- parsed configuration-expression cache/retained typed values;
 - definition snapshots or package provider callbacks;
 - `GraphBuilder`/`BuilderSession` objects;
 - local-to-parent embedding maps;
@@ -42,20 +42,25 @@ Do **not** persist derived graph/execution state such as:
 
 ## Node configuration expressions
 
-The initial generic node-configuration persistence format stores one C++
-argument-list source string verbatim, for example:
+The initial generic node-configuration persistence format stores one restricted
+C++-like argument-list source string verbatim, for example:
 
 ```text
 OscillatorConfig{.frequency = 440.0f}, 0.25f
 ```
 
-Do not parse or normalize it by splitting on commas. It is C++ source and may
-contain nested comma expressions/arguments. `NodeInstances` later asks the
-configuration compiler to parse/type-check it in the definition provider's
-translation-unit context.
+Do not parse or normalize it by splitting on commas. The restricted grammar may contain
+nested initialization lists, registered containers/aggregates, and other admitted
+expressions with commas. `NodeInstances` later asks the dedicated configuration parser
+to parse/type-check/evaluate it against the registered configuration signature.
 
-A future structured UI may generate this string from forms and controls, but
-the stored semantic request can remain the same.
+The persisted language is deliberately not arbitrary C++. It may include numeric
+operators, an allow-listed set of pure mathematical functions, and framework reference
+forms such as `ref(...)` / `select(...)[...]`, but not statements, mutation, loops,
+lambdas, templates, arbitrary function calls, or general side-effecting execution.
+
+A future structured UI may generate this string from forms and controls, but the stored
+semantic request can remain the same.
 
 ## Structured project connection matchers
 
@@ -103,7 +108,7 @@ As the project-graph surface is added, normalized reconstruction commands should
 represent current desired state, for example:
 
 ```text
-create/update this project node instance id with definition id + C++ arguments
+create/update this project node instance id with definition id + restricted configuration arguments
 remove this project node instance id
 create/update this project connection matcher set
 remove this project connection

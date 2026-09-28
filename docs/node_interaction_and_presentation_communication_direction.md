@@ -210,6 +210,12 @@ The semantic contract is:
 - dispatch is by the C++ event type;
 - the handler is associated with the receiving backend node;
 - the handler may mutate/reconfigure/replace only that node;
+- when replacing/reconfiguring itself, the handler can inspect the predecessor's
+  current configured argument values and preserve all arguments except the selected
+  values/subvalues it intentionally changes;
+- structured/list/container arguments remain first-class values so a node or module can
+  automate an evolving construction-argument set without rebuilding it from unrelated
+  callback captures;
 - the handler may send further typed events to semantic node targets;
 - the public context exposes no `NodeStorage`, concrete node indices, graph
   generations, RPC details, sockets, or editor/webview plumbing;
@@ -241,6 +247,13 @@ selectors merely because dispatch happens later at runtime.
 
 That requires the captured reference to contain/read a stable semantic identity
 rather than dereferencing a stale builder/session pointer when the handler runs.
+
+Captured values remain useful for ordinary handler-specific policy, but they should not
+be the only way to remember a node's prior construction arguments. Replacement needs a
+first-class view of the predecessor's typed/structured configuration values so a
+handler can express "change these arguments, preserve the rest". The same value model
+must handle nested initialization-list/container arguments used by module automation.
+The exact replacement/update spelling remains provisional.
 
 ## Event types are ordinary reusable C++ types
 

@@ -234,7 +234,7 @@ unequal-latency alignment, and migration. This does not reintroduce connection
 helper nodes. External boundaries remain capability-gated rather than being
 approximated with transient storage.
 
-### Planned port-size, pace, history, and latency constraint analysis
+### Planned port-size, pace, history, latency, and Coverage-ordering constraint analysis
 
 The next port-generalization step should add graph-wide constraints over the static
 port schemas before storage planning. `inputs()` and `outputs()` remain
@@ -285,9 +285,26 @@ upstream/downstream anchor instead of storing the FFT size in every node constru
 `declare()` runs after resolution and may read concrete `ctx.input<...>().size()` /
 `ctx.output<...>().size()` values when sizing `State` storage.
 
-The same constraint phase owns **port pace, Sequential-input history, and Tick-output
-latency**. None of these belongs in `static constexpr inputs()/outputs()` once it can
-depend on constructor configuration or another resolved port property. Pace is an exact
+The same constraint phase owns **port pace, Sequential-input history, Tick-output
+latency, and Coverage ordering/sortedness**. None of these belongs in
+`static constexpr inputs()/outputs()` once it can depend on constructor configuration
+or another resolved port property. A Coverage output may, for example, preserve the
+realized ordering of an input:
+
+```cpp
+ctx.output<"out">().ordering() = ctx.input<"in">().ordering();
+```
+
+The input ordering can itself depend on connected producers, so a downstream sorted
+Coverage requirement may propagate transitively through several order-preserving
+nodes. An intrinsically sorted producer or a sorted-input requirement anchors the
+corresponding constraint. The solver/planner then determines where natural guarantees
+and k-way descriptor merge suffice and where an explicit ordering realization is
+required. The exact ordering lattice/proxy spelling may be refined with the solver,
+but ordering participates in the same graph-wide realization pass as the other port
+properties.
+
+Pace is an exact
 relative quantity of transported values per local logical node step; it is not
 sample-rate conversion and
 must not imply interpolation/filtering. Inputs and outputs may have different paces,

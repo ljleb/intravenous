@@ -81,11 +81,13 @@ optimization pass is the same-session scoped construction model in
 Until then, the detached-session/cache behavior in this document remains the
 implemented architecture.
 
-The **C++ configuration-expression compiler has not landed yet**. The new
-configuration core currently accepts already-typed erased arguments synchronously.
-The next checkpoint is to compile the durable project argument-list source into an
-owned typed argument tuple plus its generated operations and feed that result into
-this same value-level cache path.
+The **restricted configuration-expression parser/evaluator has not landed yet**. The
+new configuration core currently accepts already-typed erased arguments synchronously.
+The next checkpoint is to parse the durable C++-like project argument-list source using
+a deliberately small, auditable grammar, evaluate it against the registered
+configuration signature, and produce an owned typed argument tuple plus its generated
+operations for this same value-level cache path. Arbitrary persisted C++ is not part of
+the target contract.
 
 ## Definitions are providers, not configured instances
 
@@ -141,7 +143,7 @@ batch. It cannot alter the definition world halfway through the current batch.
 
 ## Project configuration source
 
-The initial generic project configuration surface stores a single C++
+The initial generic project configuration surface stores one restricted C++-like
 argument-list source string, not an app-defined typed JSON schema.
 
 For example:
@@ -150,13 +152,23 @@ For example:
 FilterConfig{.cutoff = 1800.0f, .q = 0.7f}, Mode::stereo
 ```
 
-The application does not split this string itself. Clang parses it in the
-provider/callee translation-unit context where the demanded C++ types are
-known.
+The application must not split this string on commas. The dedicated configuration
+parser handles nested initialization lists and other syntax admitted by the restricted
+grammar, then type-checks/evaluates those values against the demanded registered
+configuration signature.
 
-A future UI may generate the same C++ argument-list source from dropdowns,
-numeric fields, text fields, and other structured controls. That UI improvement
-does not change the persistence/configuration ABI.
+The accepted language is intentionally much smaller than C++. It should support typed
+literals, nested braced initialization/registered aggregates and containers, ordinary
+numeric arithmetic, an allow-listed set of pure mathematical functions, and a small
+framework query/reference vocabulary. Candidate framework forms include
+`ref(user_authored_node_id)` and `select(virtual_node_name)[idx]...`; exact grammar and
+spelling remain implementation details of that front. Statements, mutation, arbitrary
+function calls, loops, lambdas, templates, allocation APIs, filesystem/network access,
+and general C++ execution are outside the contract.
+
+A future UI may generate the same restricted argument-list source from dropdowns,
+numeric fields, text fields, and other structured controls. That UI improvement does
+not change the persistence/configuration ABI.
 
 ## Typed erased argument ownership
 
@@ -177,17 +189,18 @@ Do not infer semantic equality with raw bytes. Equality/hash are optional for
 reuse: a safely owned value without them is configured normally but is not shared
 through the reusable cache.
 
-The expression compiler may materialize each argument as an LLVM global or
-other retained typed object and pass its address through the existing erased
-configuration interface. Any LLVM/code/data object backing retained pointers
-must stay alive as long as the configured graph that can reference it.
+The restricted evaluator may use provider-generated construction/ownership helpers to
+materialize each argument as an owned typed object and pass its address through the
+existing erased configuration interface. Any provider code/data object backing
+retained pointers must stay alive as long as the configured graph that can reference
+it. The parser/evaluator itself does not need to compile arbitrary user-authored C++.
 
 ## Two caches, two keys
 
 There are two distinct reusable products:
 
-1. expression compilation: `(definition version, C++ argument-list source)` ->
-   typed owned argument tuple and generated operations;
+1. restricted expression parsing/evaluation: `(definition version, argument-list source)` ->
+   parsed/typed values plus an owned typed argument tuple and generated operations;
 2. node instance configuration: `(definition version, typed argument values)` ->
    cached `NodeInstance`.
 

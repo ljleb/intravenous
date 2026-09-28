@@ -277,22 +277,29 @@ against definition generation N and the other half against N+1.
 
 ## Node configuration arguments
 
-Project-authored configuration arguments are persisted initially as one C++
-argument-list source string supplied by the UI, for example:
+Project-authored configuration arguments are persisted initially as one restricted
+C++-like argument-list source string supplied by the UI, for example:
 
 ```cpp
 OscillatorConfig{.frequency = 440.0f}, 0.25f
 ```
 
-Do **not** split this string on commas in application code. Valid C++ argument
-expressions may themselves contain commas in calls, braced initialization,
-templates, lambdas, and other syntax. The whole argument-list source is handed
-to Clang.
+Do **not** split this string on commas in application code. The restricted grammar must
+support nested braced initialization lists, registered aggregate/container values, and
+other admitted expressions containing commas. A dedicated parser/evaluator handles the
+whole argument list and type-checks it against the registered configuration signature.
 
-The argument-list source is compiled in provider/callee translation-unit
-context so the actual demanded C++ argument types are known. Generated code can
-materialize typed globals/owned values and invoke the existing erased configuration
-ABI.
+This language is intentionally not general C++. It may provide scalar/string/enum
+literals, numeric arithmetic, a small allow-listed set of pure `cmath`-like functions,
+and framework-provided reference/query forms such as
+`ref(user_authored_node_id)` or `select(virtual_node_name)[idx]...`. It does not admit
+arbitrary statements, loops, mutation, lambdas, templates, allocation, arbitrary
+function calls, filesystem/network access, or other general program execution. Exact
+syntax is owned by the configuration-expression implementation front.
+
+Provider-generated typed helpers can materialize/own values of the demanded C++ types
+and invoke the existing erased configuration ABI. That preserves type-safe provider
+ownership without treating persisted project text as arbitrary source code to compile.
 
 Each registered configuration signature should expose a generated typed
 operation table for owned erased argument tuples, approximately:
@@ -308,7 +315,7 @@ hash
 Those operations are generated where the real C++ types are known. Do not use
 `memcmp` as semantic argument equality.
 
-The C++ source string can key the configuration-expression compilation cache. The
+The restricted source string can key the configuration-expression parse/evaluation cache. The
 semantic node-instance cache should use provider version plus typed argument
 values where equality/hash support is available. If an argument type cannot
 provide safe value comparison, sharing may be disabled for that invocation;
@@ -329,7 +336,7 @@ A requested instance contains at least:
 ```text
 stable external instance id
 definition id
-C++ configuration argument-list source
+restricted configuration argument-list source
 ```
 
 `NodeInstances` owns the canonical desired project instance set. `ProjectGraph`
@@ -734,7 +741,7 @@ to reconstruct `ProjectGraph`, including:
 
 - stable node-instance ids;
 - definition ids;
-- C++ configuration argument-list source;
+- restricted configuration argument-list source;
 - project-wide connections expressed with `ProjectNodePortMatcher`s;
 - explicit connection channel types;
 - other project-owned metadata as it becomes part of the canonical graph model.
@@ -742,7 +749,7 @@ to reconstruct `ProjectGraph`, including:
 Do not persist:
 
 - `NodeInstances` cache entries;
-- compiled configuration-expression code and retained values;
+- parsed configuration-expression cache and retained typed values;
 - embedding maps;
 - builder-local handles;
 - resolved concrete connection ids;
@@ -796,9 +803,9 @@ The implementation checkpoints now stand as follows:
    provider-generated typed owned argument operations, one-snapshot recursive
    configuration, batched diagnostics, and reusable frozen-graph value caching.
    Cache invalidation is deliberately whole-snapshot for now.
-4. **Pending independent NodeInstances checkpoint:** compile persisted C++
-   configuration argument-list source into owned typed argument tuples plus the
-   generated operations needed by the existing `NodeInstances` value-level cache path.
+4. **Pending independent NodeInstances checkpoint:** parse/type-check/evaluate persisted
+   restricted configuration argument-list source into owned typed argument tuples plus
+   the generated operations needed by the existing `NodeInstances` value-level cache path.
 5. **Landed:** `ProjectGraph` is the root-build transaction coordinator without
    duplicating the desired instance/connection sets.
 6. **Landed (semantic connection core):** `GraphConnections` owns desired

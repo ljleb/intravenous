@@ -93,7 +93,15 @@ Sequential consumer combines overlapping contributions.
 
 A Coverage may additionally promise that its Regions are already sorted. Sorting is
 not inherent to every Coverage because producers and consumers that do not need it
-should not pay for it. The canonical sorted order is:
+should not pay for it. **Whether a configured Coverage port is required/guaranteed to
+be sorted is a realization property contributed through `constrain_ports()`, not a
+fixed field of the static `constexpr` port schema.** The ordering constraint values are conceptually:
+
+```cpp
+enum class CoverageOrdering { unspecified, sorted };
+```
+
+The canonical sorted order is:
 
 ```text
 primary:   lowest logical start index first
@@ -112,6 +120,28 @@ sorted fan-in producers can be combined with a k-way merge of Region descriptors
 without copying their sample/audio backing. An unordered producer feeding a sorted
 consumer requires descriptor sorting, but still does not require sample-value
 materialization merely to establish order.
+
+Ordering constraints must propagate through configured nodes as well as connections.
+For example, a node that preserves descriptor order may constrain its output ordering
+to equal the realized ordering of an input:
+
+```cpp
+void PreserveCoverageOrder::constrain_ports(
+    ConstrainPortsContext<PreserveCoverageOrder>& ctx) const
+{
+    ctx.output<"out">().ordering() = ctx.input<"in">().ordering();
+}
+```
+
+The input ordering can itself depend on the guarantees of the nodes connected to it,
+and a downstream sorted requirement can therefore propagate transitively through an
+arbitrary chain of order-preserving nodes. A node that intrinsically emits sorted
+Coverage can anchor its output to `CoverageOrdering::sorted`; a node whose algorithm
+requires sorted input can anchor the corresponding input requirement. The graph-wide
+solver/planner joins these relations and inserts an ordering realization only where
+the existing guarantees are insufficient. The exact constraint-lattice/proxy API is
+left to the port-realization implementation, but sortedness must participate in the
+same `constrain_ports()` solve as size, pace, history, and latency.
 
 ## 3. Sequential sample inputs define reduction semantics
 
@@ -372,8 +402,11 @@ ctx.local_array<&State::scratch>(fft_size);
 relationship and depend on that same relationship having already been solved.
 
 The same `constrain_ports()` phase also contributes exact per-port `pace()`,
-Sequential-input `history()`, and Tick-output `latency()` constraints. These are
-realization facts rather than static port-schema fields. For an overlap FFT configured
+Sequential-input `history()`, Tick-output `latency()`, and Coverage `ordering()`
+constraints. These are realization facts rather than static port-schema fields.
+Ordering may be anchored locally or related to another port so that sortedness can
+propagate transitively through graph connections and order-preserving nodes. For an
+overlap FFT configured
 with transform size `N` and hop `H`, a complete-window implementation may constrain
 `input.history() = N - H`; if it does not emit a zero-padded startup frame, it may also
 constrain a positive output latency so the first authored FFT block can be finalized by
@@ -418,12 +451,8 @@ struct SequentialSampleInputConfig {
     SampleCombineValuesFn combine_values;
 };
 
-enum class CoverageOrdering { unspecified, sorted };
-
 struct RegionSampleInputConfig {};
-struct CoverageSampleInputConfig {
-    CoverageOrdering ordering = CoverageOrdering::unspecified;
-};
+struct CoverageSampleInputConfig {};
 
 using SampleInputAccessConfig = std::variant<
     SequentialSampleInputConfig,
@@ -462,9 +491,7 @@ their random-access result is one Region or a Coverage:
 struct TickOutputConfig {};
 
 struct RegionTockOutputConfig {};
-struct CoverageTockOutputConfig {
-    CoverageOrdering ordering = CoverageOrdering::unspecified;
-};
+struct CoverageTockOutputConfig {};
 
 using SampleOutputProductionConfig = std::variant<
     TickOutputConfig,
@@ -487,9 +514,11 @@ to determine the temporal window without changing the static callback shape.
 Coverage Tock outputs may be ephemeral or persisted.
 
 The exact final naming of the Region/Coverage alternatives and ordering enum can
-change, but the type separation is the intended contract. A Coverage input uses the
-ordering property as a consumer requirement; a Coverage producer uses it as a producer
-guarantee.
+change, but the type separation is the intended contract. `CoverageOrdering` belongs
+to the configured realization/constraint layer rather than these static config
+structures: a Coverage input may constrain the realized ordering it requires, a
+Coverage producer may constrain the ordering it guarantees, and an order-preserving
+node may relate the two in `constrain_ports()`.
 
 ## 8. Sequential combine helpers select the operation statically
 

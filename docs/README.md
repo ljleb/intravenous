@@ -4,6 +4,7 @@ Documents directly under `docs/` describe the current implementation, the curren
 
 The primary application-architecture entry points are:
 
+- [Outstanding Implementation Fronts](./implementation_fronts_direction.md)
 - [Project Graph Application Architecture](./project_graph_application_architecture.md)
 - [Package Pipeline Application Architecture](./package_pipeline_architecture.md)
 - [Node Definitions And Instances Direction](./node_definitions_and_instances_direction.md)
