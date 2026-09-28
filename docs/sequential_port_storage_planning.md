@@ -849,8 +849,13 @@ aligned slab blocks independently of background evaluation, and exposes only bou
 lock-free acquire/seal operations inside one audio callback scope. Sealed records form
 one monotonic insertion sequence; a background pass fixes one immutable prefix and
 advances its processed frontier only on explicit commit. Committed blocks are recycled
-only after the active root callback ends. Compiler-selected capture operations and
-transaction/page-store consumption remain the next slices.
+only after the active root callback ends. The immutable Tick runtime plan now assigns
+typed sample/event capture slots to each Tick/persisted logical output and retains
+contiguous per-node ranges. `TickInvocationCall` exposes those slots only as an opaque
+context plus a narrow typed callback; generated code cannot recover an executor,
+capture store, persisted identity or transaction owner. Runtime resolution of those
+slots, generated invocation at the exact output-finalization point, and transaction/
+page-store consumption remain the next slices.
 
 The heuristic may consider:
 

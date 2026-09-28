@@ -980,9 +980,13 @@ This is a hint, not a hard constraint. Use your own good judgement if ever in do
     side capture transport now has interned output handles, aligned append-only slab
     provisioning, a lock-free audio-thread free-block path, monotonic seal order,
     immutable fixed-cutoff batches, commit-only frontier advancement and callback-safe
-    deferred recycling. It does not yet receive compiler-selected root operations.
-    Bind Tick/persisted and explicit-recorder blocks at production/finalization time,
-    then consume fixed capture
+    deferred recycling. Immutable planning now assigns typed sample/event capture
+    slots to Tick/persisted outputs, retains contiguous per-node ranges, and carries
+    only opaque-context narrow callbacks through the generated-root invocation ABI;
+    no executor or store owner enters generated code. The realization still needs to
+    resolve those slots and lowering still needs to invoke them at the exact output-
+    finalization point. Then bind explicit-recorder blocks at their authored bridge
+    points and consume fixed capture
     prefixes through the background transaction, publish into the canonical page store,
     and reclaim blocks only with callback-boundary-safe ownership. A same-Tick recent-
     capture Random Access overlay remains a later optional experiment.

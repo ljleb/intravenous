@@ -64,6 +64,10 @@ struct TickInvocationByteOffsets {
     std::size_t random_access_sample_inputs_size = 0;
     std::size_t random_access_event_inputs_data = 0;
     std::size_t random_access_event_inputs_size = 0;
+    std::size_t sample_captures_data = 0;
+    std::size_t sample_captures_size = 0;
+    std::size_t event_captures_data = 0;
+    std::size_t event_captures_size = 0;
 };
 
 struct BackgroundCallByteOffsets {
@@ -199,6 +203,18 @@ constexpr TickInvocationByteOffsets tick_invocation_byte_offsets() noexcept
         .random_access_event_inputs_size =
             offsetof(TickInvocationCall, random_access_event_inputs)
             + offsetof(ReflectedSpan<RandomAccessEventInputPort const>, extent),
+        .sample_captures_data = offsetof(TickInvocationCall, sample_captures)
+            + offsetof(
+                ReflectedSpan<TickSampleCaptureOperation const>, pointer),
+        .sample_captures_size = offsetof(TickInvocationCall, sample_captures)
+            + offsetof(
+                ReflectedSpan<TickSampleCaptureOperation const>, extent),
+        .event_captures_data = offsetof(TickInvocationCall, event_captures)
+            + offsetof(
+                ReflectedSpan<TickEventCaptureOperation const>, pointer),
+        .event_captures_size = offsetof(TickInvocationCall, event_captures)
+            + offsetof(
+                ReflectedSpan<TickEventCaptureOperation const>, extent),
     };
 }
 

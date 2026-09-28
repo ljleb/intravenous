@@ -136,8 +136,12 @@ iv::graph_jit::BackgroundEvaluationPlan direct_tick_sample_plan()
         .port = 1,
         .storage = {0},
     }};
+    plan.tick_runtime.sample_captures = {{.port = 0}};
     plan.tick_runtime.nodes = {
-        TickNodeInvocationPlan{},
+        TickNodeInvocationPlan{
+            .sample_capture_begin = 0,
+            .sample_capture_count = 1,
+        },
         TickNodeInvocationPlan{
             .random_access_sample_begin = 0,
             .random_access_sample_count = 1,
@@ -302,6 +306,8 @@ TEST(PersistedPageStore, TickInvocationFramePinsOnePublishedRootForItsLifetime)
         EXPECT_TRUE(frame.call().sequential_event_inputs.empty());
         EXPECT_TRUE(frame.call().random_access_sample_inputs.empty());
         EXPECT_TRUE(frame.call().random_access_event_inputs.empty());
+        EXPECT_TRUE(frame.call().sample_captures.empty());
+        EXPECT_TRUE(frame.call().event_captures.empty());
 
         auto candidate = store.begin_candidate(1, 4);
         ASSERT_EQ(
@@ -333,6 +339,11 @@ TEST(PersistedPageStore, TickInvocationFrameBindsPublishedRandomAccessSamples)
     iv::TickInvocationWorkspace workspace{plan, 3};
     iv::TickInvocationFrame frame{
         reader, materialization_reader, workspace};
+    ASSERT_EQ(workspace.sample_capture_count(), 1u);
+    EXPECT_EQ(workspace.event_capture_count(), 0u);
+    ASSERT_EQ(frame.call().sample_captures.size(), 1u);
+    EXPECT_EQ(frame.call().sample_captures.data()[0].context, nullptr);
+    EXPECT_EQ(frame.call().sample_captures.data()[0].capture, nullptr);
     auto const inputs = static_cast<
         std::span<iv::RandomAccessSampleInputPort const>>(
         frame.call().random_access_sample_inputs);

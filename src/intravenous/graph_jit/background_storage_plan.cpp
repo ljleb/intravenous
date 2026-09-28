@@ -1725,11 +1725,43 @@ std::expected<void, std::string> validate_tick_runtime_plan(
         }
         return {};
     };
+    auto validate_capture_binding = [&](
+        TickCaptureBindingPlan const& binding,
+        PortKind kind,
+        BackgroundNodeIndex node)
+        -> std::expected<void, std::string> {
+        if (binding.port >= plan.ports.size()) {
+            return std::unexpected(
+                "GraphJit Tick capture references a missing port");
+        }
+        auto const& port = plan.ports[binding.port];
+        if (port.node != node || port.kind != kind
+            || port.direction != PortDirection::output
+            || !port.persisted_tick_output
+            || port.retention != OutputRetention::persisted) {
+            return std::unexpected(
+                "GraphJit Tick capture does not match its persisted output");
+        }
+        auto const has_persisted_storage = std::ranges::any_of(
+            plan.storage.ports,
+            [&](PortStoragePlan const& storage) {
+                return storage.storage == PortStorageKind::persisted_pages
+                    && storage.kind == kind
+                    && storage.output_port == binding.port;
+            });
+        if (!has_persisted_storage) {
+            return std::unexpected(
+                "GraphJit Tick capture has no canonical persisted storage");
+        }
+        return {};
+    };
 
     std::size_t next_sequential_sample = 0;
     std::size_t next_sequential_event = 0;
     std::size_t next_sample = 0;
     std::size_t next_event = 0;
+    std::size_t next_sample_capture = 0;
+    std::size_t next_event_capture = 0;
     for (BackgroundNodeIndex node = 0; node < runtime.nodes.size(); ++node) {
         auto const& invocation = runtime.nodes[node];
         if (invocation.sequential_sample_begin
@@ -1755,7 +1787,19 @@ std::expected<void, std::string> validate_tick_runtime_plan(
                     - invocation.random_access_sample_begin
             || invocation.random_access_event_count
                 > runtime.random_access_event_inputs.size()
-                    - invocation.random_access_event_begin) {
+                    - invocation.random_access_event_begin
+            || invocation.sample_capture_begin
+                > runtime.sample_captures.size()
+            || invocation.event_capture_begin
+                > runtime.event_captures.size()
+            || invocation.sample_capture_begin != next_sample_capture
+            || invocation.event_capture_begin != next_event_capture
+            || invocation.sample_capture_count
+                > runtime.sample_captures.size()
+                    - invocation.sample_capture_begin
+            || invocation.event_capture_count
+                > runtime.event_captures.size()
+                    - invocation.event_capture_begin) {
             return std::unexpected(
                 "GraphJit Tick runtime binding ranges are not contiguous");
         }
@@ -1805,15 +1849,37 @@ std::expected<void, std::string> validate_tick_runtime_plan(
                 return valid;
             }
         }
+        for (std::size_t slot = next_sample_capture;
+             slot < next_sample_capture + invocation.sample_capture_count;
+             ++slot) {
+            if (auto valid = validate_capture_binding(
+                    runtime.sample_captures[slot], PortKind::sample, node);
+                !valid) {
+                return valid;
+            }
+        }
+        for (std::size_t slot = next_event_capture;
+             slot < next_event_capture + invocation.event_capture_count;
+             ++slot) {
+            if (auto valid = validate_capture_binding(
+                    runtime.event_captures[slot], PortKind::event, node);
+                !valid) {
+                return valid;
+            }
+        }
         next_sequential_sample += invocation.sequential_sample_count;
         next_sequential_event += invocation.sequential_event_count;
         next_sample += invocation.random_access_sample_count;
         next_event += invocation.random_access_event_count;
+        next_sample_capture += invocation.sample_capture_count;
+        next_event_capture += invocation.event_capture_count;
     }
     if (next_sequential_sample != runtime.sequential_sample_inputs.size()
         || next_sequential_event != runtime.sequential_event_inputs.size()
         || next_sample != runtime.random_access_sample_inputs.size()
-        || next_event != runtime.random_access_event_inputs.size()) {
+        || next_event != runtime.random_access_event_inputs.size()
+        || next_sample_capture != runtime.sample_captures.size()
+        || next_event_capture != runtime.event_captures.size()) {
         return std::unexpected(
             "GraphJit Tick runtime contains unreachable binding slots");
     }
@@ -1921,6 +1987,8 @@ std::expected<void, std::string> finalize_tick_runtime_plan(
             runtime.random_access_sample_inputs.size();
         invocation.random_access_event_begin =
             runtime.random_access_event_inputs.size();
+        invocation.sample_capture_begin = runtime.sample_captures.size();
+        invocation.event_capture_begin = runtime.event_captures.size();
         for (auto const port_index : plan.nodes[node].inputs) {
             if (port_index >= plan.ports.size()) {
                 return std::unexpected(
@@ -1967,6 +2035,22 @@ std::expected<void, std::string> finalize_tick_runtime_plan(
                         std::move(binding));
                     ++invocation.random_access_event_count;
                 }
+            }
+        }
+        for (auto const port_index : plan.nodes[node].outputs) {
+            if (port_index >= plan.ports.size()) {
+                return std::unexpected(
+                    "GraphJit Tick runtime node references a missing output port");
+            }
+            auto const& port = plan.ports[port_index];
+            if (!port.persisted_tick_output) continue;
+            TickCaptureBindingPlan capture{.port = port_index};
+            if (port.kind == PortKind::sample) {
+                runtime.sample_captures.push_back(capture);
+                ++invocation.sample_capture_count;
+            } else {
+                runtime.event_captures.push_back(capture);
+                ++invocation.event_capture_count;
             }
         }
     }

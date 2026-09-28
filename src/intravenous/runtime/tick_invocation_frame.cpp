@@ -480,6 +480,8 @@ public:
     std::vector<EventSlot> event_slots{};
     std::vector<RandomAccessSampleInputPort> sample_views{};
     std::vector<RandomAccessEventInputPort> event_views{};
+    std::vector<graph_jit::TickSampleCaptureOperation> sample_captures{};
+    std::vector<graph_jit::TickEventCaptureOperation> event_captures{};
     std::uint64_t generation = 0;
     std::size_t maximum_block_size = 0;
 
@@ -503,6 +505,8 @@ public:
         event_slots.resize(runtime.random_access_event_inputs.size());
         sample_views.resize(sample_slots.size());
         event_views.resize(event_slots.size());
+        sample_captures.resize(runtime.sample_captures.size());
+        event_captures.resize(runtime.event_captures.size());
 
         for (std::size_t slot = 0;
              slot < sequential_sample_slots.size(); ++slot) {
@@ -776,6 +780,8 @@ public:
             .sequential_event_inputs = sequential_event_views,
             .random_access_sample_inputs = sample_views,
             .random_access_event_inputs = event_views,
+            .sample_captures = sample_captures,
+            .event_captures = event_captures,
         };
     }
 };
@@ -807,6 +813,16 @@ std::size_t TickInvocationWorkspace::random_access_sample_count() const noexcept
 std::size_t TickInvocationWorkspace::random_access_event_count() const noexcept
 {
     return impl_->event_views.size();
+}
+
+std::size_t TickInvocationWorkspace::sample_capture_count() const noexcept
+{
+    return impl_->sample_captures.size();
+}
+
+std::size_t TickInvocationWorkspace::event_capture_count() const noexcept
+{
+    return impl_->event_captures.size();
 }
 
 graph_jit::TickInvocationCall TickInvocationWorkspace::bind(

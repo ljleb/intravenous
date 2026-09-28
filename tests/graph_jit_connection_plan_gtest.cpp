@@ -110,6 +110,28 @@ struct PlainEventPass {
     void tick_block(iv::TickBlockContext<PlainEventPass> const&) const {}
 };
 
+struct PersistedTickEventSource {
+    static constexpr auto inputs()
+    {
+        return std::array<iv::InputConfig, 0>{};
+    }
+
+    static constexpr auto outputs()
+    {
+        return std::array{iv::tick_event_output(
+            "out",
+            iv::EventOutputProperties{
+                .type = iv::EventTypeId::trigger,
+                .max_events_per_index = 0.25,
+            },
+            {},
+            iv::OutputRetention::persisted)};
+    }
+
+    void tick_block(
+        iv::TickBlockContext<PersistedTickEventSource> const&) const {}
+};
+
 struct MonoSource {
     static constexpr auto inputs()
     {
@@ -1473,6 +1495,11 @@ TEST(GraphJitConnectionPlan, RetainsCompleteBackgroundTopologyAndRetention)
     EXPECT_TRUE(realtime_persisted->persisted_tick_output);
     ASSERT_TRUE(realtime_persisted->retention.has_value());
     EXPECT_EQ(*realtime_persisted->retention, OutputRetention::persisted);
+    ASSERT_EQ(plan.tick_runtime.sample_captures.size(), 1u);
+    EXPECT_TRUE(plan.tick_runtime.event_captures.empty());
+    EXPECT_EQ(
+        plan.ports[plan.tick_runtime.sample_captures.front().port].name,
+        "realtime_persisted");
     ASSERT_NE(background_ephemeral, nullptr);
     ASSERT_NE(background_persisted, nullptr);
     ASSERT_NE(background_persisted_events, nullptr);
@@ -2261,6 +2288,15 @@ TEST(GraphJitConnectionPlan, PersistedTickToRandomAccessUsesStoredBoundary)
 
     auto const& tick_runtime = plan->background.tick_runtime;
     ASSERT_EQ(tick_runtime.random_access_sample_inputs.size(), 1u);
+    ASSERT_EQ(tick_runtime.sample_captures.size(), 1u);
+    EXPECT_TRUE(tick_runtime.event_captures.empty());
+    EXPECT_EQ(tick_runtime.sample_captures.front().port,
+        static_cast<graph_jit::BackgroundPortIndex>(
+            std::distance(plan->background.ports.begin(), port)));
+    auto const& source_invocation = tick_runtime.nodes[source_node];
+    EXPECT_EQ(source_invocation.sample_capture_begin, 0u);
+    EXPECT_EQ(source_invocation.sample_capture_count, 1u);
+    EXPECT_EQ(source_invocation.event_capture_count, 0u);
     auto const& binding = tick_runtime.random_access_sample_inputs.front();
     ASSERT_LT(binding.port, plan->background.ports.size());
     EXPECT_EQ(
@@ -2282,6 +2318,46 @@ TEST(GraphJitConnectionPlan, PersistedTickToRandomAccessUsesStoredBoundary)
     auto const validated =
         graph_jit::detail::validate_tick_runtime_plan(malformed);
     EXPECT_FALSE(validated.has_value());
+
+    malformed = plan->background;
+    malformed.tick_runtime.sample_captures.front().port = binding.port;
+    auto const capture_validated =
+        graph_jit::detail::validate_tick_runtime_plan(malformed);
+    EXPECT_FALSE(capture_validated.has_value());
+}
+
+TEST(GraphJitConnectionPlan, PlansTypedCaptureForPersistedTickEvents)
+{
+    using namespace iv;
+
+    GraphBuilder graph;
+    auto source = details::configure_concrete_node<PersistedTickEventSource>(graph);
+    auto sink = details::configure_concrete_node<BackgroundEventPass>(graph);
+    auto const source_handle = source.node_bundle_handle();
+    sink.connect_event_input(0, source.event_port());
+    graph.outputs();
+
+    auto configured = std::move(graph).finish();
+    auto plan = graph_jit::detail::build_connection_analysis_plan(configured, 64);
+    ASSERT_TRUE(plan.has_value()) << (plan ? std::string{} : plan.error());
+
+    auto const source_node =
+        *plan->background.bundle_to_background_node[source_handle];
+    auto const& runtime = plan->background.tick_runtime;
+    EXPECT_TRUE(runtime.sample_captures.empty());
+    ASSERT_EQ(runtime.event_captures.size(), 1u);
+    ASSERT_LT(runtime.event_captures.front().port,
+        plan->background.ports.size());
+    auto const& captured = plan->background.ports[
+        runtime.event_captures.front().port];
+    EXPECT_EQ(captured.node, source_node);
+    EXPECT_EQ(captured.kind, PortKind::event);
+    EXPECT_TRUE(captured.persisted_tick_output);
+    EXPECT_EQ(captured.event_type, EventTypeId::trigger);
+    auto const& invocation = runtime.nodes[source_node];
+    EXPECT_EQ(invocation.sample_capture_count, 0u);
+    EXPECT_EQ(invocation.event_capture_begin, 0u);
+    EXPECT_EQ(invocation.event_capture_count, 1u);
 }
 
 TEST(GraphJitConnectionPlan, IntrinsicTickReplaySuppliesRandomAccess)

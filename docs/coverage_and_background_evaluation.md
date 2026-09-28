@@ -2323,8 +2323,18 @@ recording merely because that planning metadata exists.
    one consumer-sentinel block until a later record is committed, which is an internal
    ownership detail rather than record loss.
 
-   Next, bind that transport to compiler-selected Tick/persisted outputs and explicit
-   recorder bridges at their production/finalization points, then consume the fixed
+   The immutable Tick runtime plan now selects every Tick/persisted logical output,
+   separates sample and event capture slots, and retains contiguous ranges for each
+   producing node. The callback invocation ABI is defined to carry only runtime-
+   resolved typed operations containing an opaque context and a narrow capture
+   callback. It never carries `GraphExecutor*`, `TickCaptureStore*`, persisted
+   identities or transaction ownership into generated code. Workspaces already size
+   these stable slot arrays;
+   their callbacks remain null until the next realization slice binds them.
+
+   Next, resolve the planned slots against the shared capture transport and have
+   lowering invoke them at the exact output-finalization point. Bind explicit recorder
+   bridges at their authored production/finalization points, then consume the fixed
    batch through `BackgroundEvaluationTransaction`. Use it
    for Tick/persisted staging and explicit recorder bridges as appropriate. Consume
    fixed capture-sequence snapshots through the background transaction, publish into

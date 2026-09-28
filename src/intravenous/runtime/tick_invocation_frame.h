@@ -41,6 +41,8 @@ public:
     [[nodiscard]] std::size_t sequential_event_count() const noexcept;
     [[nodiscard]] std::size_t random_access_sample_count() const noexcept;
     [[nodiscard]] std::size_t random_access_event_count() const noexcept;
+    [[nodiscard]] std::size_t sample_capture_count() const noexcept;
+    [[nodiscard]] std::size_t event_capture_count() const noexcept;
 };
 
 // Callback-scoped owner for the narrow generated Tick invocation record.

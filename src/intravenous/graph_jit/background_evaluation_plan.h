@@ -26,6 +26,7 @@ using BackgroundRuntimeOperationIndex = std::size_t;
 using BackgroundReplayInvocationSlot = std::size_t;
 using TickSequentialBindingSlot = std::size_t;
 using TickRandomAccessBindingSlot = std::size_t;
+using TickCaptureSlot = std::size_t;
 
 enum class PlannedSourceProduction : std::uint8_t {
     tick,
@@ -503,10 +504,20 @@ struct TickSequentialBindingPlan {
     std::vector<PortStorageIndex> storage{};
 };
 
-// Contiguous ranges in TickInvocationCall's kind-specific arrays. The ranges
+// One compiler-selected production/finalization capture. The logical output
+// carries the canonical persisted identity and format; runtime realization
+// resolves this compact slot to an opaque callback operation before Tick.
+// Keeping sample and event slots separate makes the generated ABI typed and
+// lets each node retain contiguous ranges without exposing an executor/store.
+struct TickCaptureBindingPlan {
+    BackgroundPortIndex port = 0;
+};
+
+// Contiguous ranges in TickInvocationCall's kind-specific arrays. Input ranges
 // are aligned with the compact dynamic Sequential and Random Access indices
 // retained for each imported node wrapper, not with the node's complete
-// declared input list.
+// declared input list. Capture ranges are aligned with compiler-selected
+// Tick/persisted outputs of the producing node.
 struct TickNodeInvocationPlan {
     std::size_t sequential_sample_begin = 0;
     std::size_t sequential_sample_count = 0;
@@ -516,6 +527,10 @@ struct TickNodeInvocationPlan {
     std::size_t random_access_sample_count = 0;
     std::size_t random_access_event_begin = 0;
     std::size_t random_access_event_count = 0;
+    std::size_t sample_capture_begin = 0;
+    std::size_t sample_capture_count = 0;
+    std::size_t event_capture_begin = 0;
+    std::size_t event_capture_count = 0;
 };
 
 struct TickRuntimePlan {
@@ -523,6 +538,8 @@ struct TickRuntimePlan {
     std::vector<TickSequentialBindingPlan> sequential_event_inputs{};
     std::vector<TickRandomAccessBindingPlan> random_access_sample_inputs{};
     std::vector<TickRandomAccessBindingPlan> random_access_event_inputs{};
+    std::vector<TickCaptureBindingPlan> sample_captures{};
+    std::vector<TickCaptureBindingPlan> event_captures{};
     // Aligned with BackgroundEvaluationPlan::nodes.
     std::vector<TickNodeInvocationPlan> nodes{};
 };
