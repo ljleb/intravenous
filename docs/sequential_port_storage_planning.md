@@ -826,8 +826,12 @@ advance materialization into logical sample/event input views in one immutable
 without audio-thread ownership release, and no-fail promotion retires its predecessor
 for explicit non-audio reclamation. Its generation and source page version must match
 the realization and callback's independently pinned page root before the workspace
-exposes its coverage. Sequential event callback binding remains to be added over this
-same snapshot rather than being mistaken for ordinary current-Tick storage.
+exposes its coverage. External Sequential event slots now use the same boundary:
+each owns a fixed bounded sequence sized from its selected aggregate event rate and
+the compiled maximum block size, and callback binding copies only events in the
+requested absolute-time window. A missing event materialization/page produces the
+ordinary empty event sequence. Both Sequential kinds therefore remain snapshot-backed
+external inputs rather than being mistaken for ordinary current-Tick storage.
 
 All backing owners become address-stable before callback frames are built. The
 immutable plan retains the replay slot and applicable maximum block size; the

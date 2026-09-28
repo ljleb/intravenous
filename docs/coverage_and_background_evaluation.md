@@ -2256,10 +2256,9 @@ recording merely because that planning metadata exists.
       state does change, successful publication precedes the propagation workspace's
       non-throwing coverage promotion. `GraphExecutor`
       exposes this end-to-end operation and no propagation-only compatibility API; and
-   6. **In progress:** complete Tick-time dynamic bindings with
+   6. **Complete:** Tick-time dynamic bindings use
       `TickMaterializationSnapshot` playback and per-input neutral values for genuinely
-      missing sequential data. The sample half is operational; bounded Sequential
-      event playback remains. The generated Tick root's final ABI accepts one
+      missing sequential data. The generated Tick root's final ABI accepts one
       `TickInvocationCall` containing only resolved sequential and Random Access view
       spans. `GraphExecutor` registers both reader slots on the control path and constructs
       a non-copyable callback-scoped `TickInvocationFrame`; that owner acquires one
@@ -2294,11 +2293,14 @@ recording merely because that planning metadata exists.
       sized from the specialization's maximum block size plus authored history. The
       callback fills only the bounded requested window from coherent materialization
       or direct page data and leaves absent frames at that logical input's neutral
-      value, without allocation. Generated lowering now overlays each node's compact
+      value, without allocation. Sequential event slots likewise own preallocated
+      power-of-two sequences sized from the selected storage's aggregate event rate
+      and maximum block size. Callback binding resets the count and copies only events
+      in the requested absolute-time window; missing data is the empty sequence.
+      Generated lowering now overlays each node's compact
       Sequential slots onto a stack copy of its complete ordinary input-binding array,
-      preserving unaffected and mixed live inputs. Sequential sample spans are now
-      supplied by callback binding; Sequential event spans remain empty until the next
-      bounded-storage slice lands.
+      preserving unaffected and mixed live inputs. Sequential sample and event spans
+      are both supplied by callback binding.
 
    Final commit atomically promotes prepared semantic coverage plus any candidate page
    publication. Step 5 below extends that same boundary with the processed capture

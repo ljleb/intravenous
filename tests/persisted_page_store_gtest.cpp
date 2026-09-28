@@ -7,6 +7,7 @@
 #include <stdexcept>
 #include <type_traits>
 #include <utility>
+#include <variant>
 #include <vector>
 
 namespace {
@@ -154,7 +155,7 @@ iv::graph_jit::BackgroundEvaluationPlan sequential_tick_sample_plan()
     input.sequential_history = 2;
 
     auto& storage = plan.storage.ports[0];
-    storage.storage = iv::graph_jit::PortStorageKind::tick_sequential;
+    storage.storage = iv::graph_jit::PortStorageKind::tick_random_access;
     storage.output_port.reset();
     plan.storage.direct_samples[0].delivery =
         iv::graph_jit::PlannedDeliveryMechanism::tock_to_sequential;
@@ -234,6 +235,42 @@ iv::graph_jit::BackgroundEvaluationPlan direct_tick_event_plan()
         },
     };
     return plan;
+}
+
+iv::graph_jit::BackgroundEvaluationPlan sequential_tick_event_plan()
+{
+    auto plan = direct_tick_event_plan();
+    auto& input = plan.ports[1];
+    input.random_access_input = false;
+    input.tick_sequential_input = true;
+
+    plan.event_target_subsets[0].access =
+        iv::graph_jit::PlannedDestinationAccess::sequential;
+    auto& storage = plan.storage.ports[0];
+    storage.storage = iv::graph_jit::PortStorageKind::tick_sequential;
+    storage.output_port.reset();
+    storage.max_events_per_index = 1.0;
+    plan.tick_runtime.random_access_event_inputs.clear();
+    plan.tick_runtime.sequential_event_inputs = {{
+        .port = 1,
+        .storage = {0},
+    }};
+    plan.tick_runtime.nodes[1] = {
+        .sequential_event_begin = 0,
+        .sequential_event_count = 1,
+    };
+    return plan;
+}
+
+std::span<iv::TimedEvent const> sequential_events(
+    iv::ReflectedEventInputPortBinding const& binding)
+{
+    auto const& storage = binding.storage;
+    auto const count = *reinterpret_cast<std::size_t const*>(
+        storage.storage + storage.count_offset);
+    auto const* events = reinterpret_cast<iv::TimedEvent const*>(
+        storage.storage + storage.events_offset);
+    return {events, count};
 }
 
 static_assert(noexcept(
@@ -436,6 +473,67 @@ TEST(PersistedPageStore, TickEventViewsVisitAcrossPinnedPagesInTimeOrder)
         times.push_back(event.time);
     });
     EXPECT_EQ(times, (std::vector<iv::EventTime>{2, 4, 7}));
+}
+
+TEST(PersistedPageStore, TickFrameCopiesBoundedSequentialEvents)
+{
+    auto plan = sequential_tick_event_plan();
+    iv::PersistedPageStore pages;
+    auto page_reader = pages.register_reader();
+    iv::TickMaterializationStore materializations;
+    auto materialization_reader = materializations.register_reader();
+    ASSERT_EQ(materializations.promote(
+        std::make_unique<iv::TickMaterializationSnapshot>(
+            3,
+            1,
+            iv::PersistedPageSnapshotVersion{},
+            std::vector<iv::TickMaterializedSampleInput>{},
+            std::vector<iv::TickMaterializedEventInput>{
+                {
+                    .port = 1,
+                    .coverage = iv::Coverage{{{4, 9}}},
+                    .type = iv::EventTypeId::trigger,
+                    .events = {
+                        {.time = 4, .value = iv::TriggerEvent{}},
+                        {.time = 6, .value = iv::TriggerEvent{}},
+                        {.time = 8, .value = iv::TriggerEvent{}},
+                    },
+                },
+            })),
+        1u);
+
+    iv::TickInvocationWorkspace workspace{plan, 3, 4};
+    EXPECT_EQ(workspace.sequential_event_count(), 1u);
+    {
+        iv::TickInvocationFrame frame{
+            page_reader,
+            materialization_reader,
+            workspace,
+            5,
+            3};
+        auto const inputs = static_cast<
+            std::span<iv::ReflectedEventInputPortBinding const>>(
+            frame.call().sequential_event_inputs);
+        ASSERT_EQ(inputs.size(), 1u);
+        EXPECT_EQ(inputs[0].storage.event_capacity, 4u);
+        auto const events = sequential_events(inputs[0]);
+        ASSERT_EQ(events.size(), 1u);
+        EXPECT_EQ(events[0].time, 6u);
+        EXPECT_TRUE(std::holds_alternative<iv::TriggerEvent>(events[0].value));
+    }
+    {
+        iv::TickInvocationFrame frame{
+            page_reader,
+            materialization_reader,
+            workspace,
+            7,
+            1};
+        auto const inputs = static_cast<
+            std::span<iv::ReflectedEventInputPortBinding const>>(
+            frame.call().sequential_event_inputs);
+        ASSERT_EQ(inputs.size(), 1u);
+        EXPECT_TRUE(sequential_events(inputs[0]).empty());
+    }
 }
 
 TEST(PersistedPageStore, TickViewsDoNotTreatMixedStorageAsDirectPages)

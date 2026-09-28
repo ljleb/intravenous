@@ -104,6 +104,46 @@ std::optional<PersistedOutputId> direct_persisted_sample_output(
         : std::nullopt;
 }
 
+template<class Binding>
+std::optional<PersistedOutputId> direct_persisted_event_output(
+    graph_jit::BackgroundEvaluationPlan const& plan,
+    Binding const& binding,
+    graph_jit::BackgroundPortPlan const& port,
+    std::uint64_t generation)
+{
+    std::optional<graph_jit::PortStorageIndex> persisted;
+    for (auto const storage : binding.storage) {
+        if (storage < plan.storage.ports.size()
+            && plan.storage.ports[storage].storage
+                == graph_jit::PortStorageKind::persisted_pages) {
+            if (persisted) return std::nullopt;
+            persisted = storage;
+        }
+    }
+    if (!persisted || binding.storage.size() != 1
+        || plan.storage.ports[*persisted].event_type != port.event_type) {
+        return std::nullopt;
+    }
+
+    auto const direct = std::ranges::count_if(
+            plan.storage.direct_events,
+            [&](auto const& candidate) {
+                return target_subset_matches_event(
+                    plan, candidate.target_subset, port.configured_port);
+            }) == 1
+        && std::ranges::any_of(
+            plan.storage.direct_events,
+            [&](auto const& candidate) {
+                return candidate.storage == *persisted
+                    && target_subset_matches_event(
+                        plan, candidate.target_subset, port.configured_port);
+            });
+    return direct
+        ? std::optional<PersistedOutputId>{
+            persisted_output_id(plan, *persisted, generation)}
+        : std::nullopt;
+}
+
 } // namespace
 
 class TickInvocationWorkspace::Impl {
@@ -218,6 +258,125 @@ public:
         }
     };
 
+    struct SequentialEventSlot {
+        graph_jit::BackgroundPortIndex port = 0;
+        std::optional<PersistedOutputId> output{};
+        bool accepts_materialization = false;
+        EventTypeId type = EventTypeId::empty;
+        std::size_t events_offset = 0;
+        std::size_t capacity = 0;
+        std::vector<std::max_align_t> words{};
+        ReflectedEventInputPortBinding binding{};
+
+        void initialize_storage()
+        {
+            static_assert(alignof(TimedEvent) <= alignof(std::max_align_t));
+            if (capacity == 0 || !std::has_single_bit(capacity)
+                || type >= EventTypeId::count) {
+                throw std::invalid_argument(
+                    "Tick Sequential event binding has an invalid layout");
+            }
+            auto const alignment = alignof(TimedEvent);
+            auto const remainder = sizeof(std::size_t) % alignment;
+            events_offset = remainder == 0
+                ? sizeof(std::size_t)
+                : sizeof(std::size_t) + alignment - remainder;
+            if (capacity > (std::numeric_limits<std::size_t>::max()
+                    - events_offset) / sizeof(TimedEvent)) {
+                throw std::length_error(
+                    "Tick Sequential event playback storage is too large");
+            }
+            auto const bytes = events_offset + capacity * sizeof(TimedEvent);
+            if (bytes > std::numeric_limits<std::size_t>::max()
+                    - (sizeof(std::max_align_t) - 1)) {
+                throw std::length_error(
+                    "Tick Sequential event playback storage is too large");
+            }
+            words.resize((bytes + sizeof(std::max_align_t) - 1)
+                         / sizeof(std::max_align_t));
+            count() = 0;
+            binding = {
+                .storage = {
+                    .storage = data(),
+                    .count_offset = 0,
+                    .events_offset = events_offset,
+                    .event_capacity = capacity,
+                    .type = type,
+                },
+            };
+        }
+
+        [[nodiscard]] std::byte* data() noexcept
+        {
+            return reinterpret_cast<std::byte*>(words.data());
+        }
+
+        [[nodiscard]] std::size_t& count() noexcept
+        {
+            return *reinterpret_cast<std::size_t*>(data());
+        }
+
+        [[nodiscard]] TimedEvent* events() noexcept
+        {
+            return reinterpret_cast<TimedEvent*>(data() + events_offset);
+        }
+
+        void append(TimedEvent const& event) noexcept
+        {
+            auto& size = count();
+            if (size == capacity) return;
+            events()[size++] = event;
+        }
+
+        void populate(
+            PersistedPageStore::Snapshot const& published,
+            TickMaterializedEventInput const* materialized,
+            SampleIndex sample_index,
+            std::size_t block_size) noexcept
+        {
+            count() = 0;
+            if (block_size == 0) return;
+            auto const end = sample_index + static_cast<SampleIndex>(block_size);
+            if (end < sample_index) return;
+
+            if (materialized) {
+                materialized->for_each(
+                    sample_index,
+                    end,
+                    this,
+                    +[](void* opaque, TimedEvent const& event) {
+                        static_cast<SequentialEventSlot*>(opaque)->append(event);
+                    });
+                return;
+            }
+            if (!output || published.page_width() == 0) return;
+
+            auto const width = published.page_width();
+            auto const first_page = sample_index / width;
+            auto const last_page = (end - 1) / width;
+            for (auto page_index = first_page;; ++page_index) {
+                auto const* page = published.find_event_page(
+                    *output, static_cast<std::uint64_t>(page_index));
+                if (page && page->type == type) {
+                    auto const page_begin = page_index * width;
+                    for (auto const& stored : page->events) {
+                        auto const absolute = page_begin
+                            + static_cast<SampleIndex>(stored.time);
+                        if (absolute < sample_index || absolute >= end
+                            || absolute
+                                > std::numeric_limits<EventTime>::max()) {
+                            continue;
+                        }
+                        auto event = stored;
+                        event.time = static_cast<EventTime>(absolute);
+                        append(event);
+                    }
+                }
+                if (page_index == last_page) break;
+            }
+        }
+    };
+
     struct SampleSlot {
         PersistedPageStore::Snapshot const* snapshot = nullptr;
         TickMaterializedSampleInput const* materialized = nullptr;
@@ -315,6 +474,8 @@ public:
 
     std::vector<SequentialSampleSlot> sequential_sample_slots{};
     std::vector<ReflectedSampleInputPortBinding> sequential_sample_views{};
+    std::vector<SequentialEventSlot> sequential_event_slots{};
+    std::vector<ReflectedEventInputPortBinding> sequential_event_views{};
     std::vector<SampleSlot> sample_slots{};
     std::vector<EventSlot> event_slots{};
     std::vector<RandomAccessSampleInputPort> sample_views{};
@@ -336,6 +497,8 @@ public:
         auto const& runtime = plan.tick_runtime;
         sequential_sample_slots.resize(runtime.sequential_sample_inputs.size());
         sequential_sample_views.resize(sequential_sample_slots.size());
+        sequential_event_slots.resize(runtime.sequential_event_inputs.size());
+        sequential_event_views.resize(sequential_event_slots.size());
         sample_slots.resize(runtime.random_access_sample_inputs.size());
         event_slots.resize(runtime.random_access_event_inputs.size());
         sample_views.resize(sample_slots.size());
@@ -379,13 +542,72 @@ public:
             selected.accepts_materialization = std::ranges::any_of(
                 planned.storage, [&](auto const storage) {
                     return storage < plan.storage.ports.size()
-                        && plan.storage.ports[storage].storage
-                            == graph_jit::PortStorageKind::tick_sequential;
+                        && (plan.storage.ports[storage].storage
+                                == graph_jit::PortStorageKind::tick_sequential
+                            || plan.storage.ports[storage].storage
+                                == graph_jit::PortStorageKind::tick_random_access);
                 });
             selected.output = direct_persisted_sample_output(
                 plan, planned, port, selected_generation);
             selected.initialize_storage();
             sequential_sample_views[slot] = selected.binding;
+        }
+
+        for (std::size_t slot = 0;
+             slot < sequential_event_slots.size(); ++slot) {
+            auto const& planned = runtime.sequential_event_inputs[slot];
+            if (planned.port >= plan.ports.size()) {
+                throw std::invalid_argument(
+                    "Tick Sequential event binding references a missing "
+                    "logical port");
+            }
+            auto const& port = plan.ports[planned.port];
+            if (port.kind != PortKind::event
+                || port.direction != graph_jit::PortDirection::input) {
+                throw std::invalid_argument(
+                    "Tick Sequential event binding references a non-event "
+                    "input port");
+            }
+
+            double maximum_rate = 0.0;
+            for (auto const storage : planned.storage) {
+                if (storage >= plan.storage.ports.size()) continue;
+                auto const& candidate = plan.storage.ports[storage];
+                if (candidate.kind != PortKind::event
+                    || candidate.event_type != port.event_type
+                    || !is_valid_event_buffer_rate(
+                        candidate.max_events_per_index)) {
+                    throw std::invalid_argument(
+                        "Tick Sequential event binding has incompatible "
+                        "storage");
+                }
+                maximum_rate = std::max(
+                    maximum_rate, candidate.max_events_per_index);
+            }
+            auto const selected_capacity =
+                event_sequence_capacity_for_sample_span(
+                    maximum_rate, maximum_block_size);
+            if (!selected_capacity) {
+                throw std::length_error(
+                    "Tick Sequential event playback capacity is too large");
+            }
+
+            auto& selected = sequential_event_slots[slot];
+            selected.port = planned.port;
+            selected.type = port.event_type;
+            selected.capacity = std::max<std::size_t>(*selected_capacity, 1);
+            selected.accepts_materialization = std::ranges::any_of(
+                planned.storage, [&](auto const storage) {
+                    return storage < plan.storage.ports.size()
+                        && (plan.storage.ports[storage].storage
+                                == graph_jit::PortStorageKind::tick_sequential
+                            || plan.storage.ports[storage].storage
+                                == graph_jit::PortStorageKind::tick_random_access);
+                });
+            selected.output = direct_persisted_event_output(
+                plan, planned, port, selected_generation);
+            selected.initialize_storage();
+            sequential_event_views[slot] = selected.binding;
         }
 
         for (std::size_t slot = 0; slot < sample_slots.size(); ++slot) {
@@ -436,41 +658,8 @@ public:
                             == graph_jit::PortStorageKind::tick_random_access;
                 });
 
-            std::optional<graph_jit::PortStorageIndex> persisted;
-            for (auto const storage : binding.storage) {
-                if (storage < plan.storage.ports.size()
-                    && plan.storage.ports[storage].storage
-                        == graph_jit::PortStorageKind::persisted_pages) {
-                    if (persisted) {
-                        persisted.reset();
-                        break;
-                    }
-                    persisted = storage;
-                }
-            }
-            auto const direct = persisted && binding.storage.size() == 1
-                && plan.storage.ports[*persisted].event_type == port.event_type
-                && std::ranges::count_if(
-                    plan.storage.direct_events,
-                    [&](auto const& candidate) {
-                        return target_subset_matches_event(
-                            plan,
-                            candidate.target_subset,
-                            port.configured_port);
-                    }) == 1
-                && std::ranges::any_of(
-                    plan.storage.direct_events,
-                    [&](auto const& candidate) {
-                        return candidate.storage == *persisted
-                            && target_subset_matches_event(
-                                plan,
-                                candidate.target_subset,
-                                port.configured_port);
-                    });
-            if (direct) {
-                selected.output = persisted_output_id(
-                    plan, *persisted, selected_generation);
-            }
+            selected.output = direct_persisted_event_output(
+                plan, binding, port, selected_generation);
             event_views[slot] = RandomAccessEventInputPort{
                 .data = &selected,
                 .coverage_value = &empty_tick_coverage,
@@ -515,6 +704,19 @@ public:
             selected.populate(
                 published,
                 materialized_sample_is_complete ? materialized_sample : nullptr,
+                sample_index,
+                selected_block_size);
+        }
+        for (auto& selected : sequential_event_slots) {
+            auto const* materialized_event = materialization_matches
+                    && selected.accepts_materialization
+                ? materialized.find_event(selected.port)
+                : nullptr;
+            selected.populate(
+                published,
+                materialized_event && materialized_event->type == selected.type
+                    ? materialized_event
+                    : nullptr,
                 sample_index,
                 selected_block_size);
         }
@@ -571,6 +773,7 @@ public:
         }
         return {
             .sequential_sample_inputs = sequential_sample_views,
+            .sequential_event_inputs = sequential_event_views,
             .random_access_sample_inputs = sample_views,
             .random_access_event_inputs = event_views,
         };
@@ -589,6 +792,11 @@ TickInvocationWorkspace::~TickInvocationWorkspace() = default;
 std::size_t TickInvocationWorkspace::sequential_sample_count() const noexcept
 {
     return impl_->sequential_sample_views.size();
+}
+
+std::size_t TickInvocationWorkspace::sequential_event_count() const noexcept
+{
+    return impl_->sequential_event_views.size();
 }
 
 std::size_t TickInvocationWorkspace::random_access_sample_count() const noexcept

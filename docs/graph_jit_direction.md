@@ -951,8 +951,10 @@ This is a hint, not a hard constraint. Use your own good judgement if ever in do
     realization-owned workspace preallocates one bounded playback ring per external
     sample slot, copies the callback window plus authored history from the coherent
     materialization/page root, and preserves each logical input's neutral value for
-    missing frames. Sequential event callback binding remains outstanding. The
-    realization-owned workspace
+    missing frames. Sequential event callback binding is active as well: each slot
+    owns a power-of-two bounded sequence sized from its selected aggregate event rate
+    and the specialization's maximum block size, then copies only the callback's
+    absolute-time window; missing data is the empty sequence. The realization-owned workspace
     resolves persisted identities and allocates its address-stable view arrays off the
     audio thread; published roots retain precomputed exact output coverage, so Random
     Access callback binding only retargets direct persisted-page views to the one
@@ -966,8 +968,8 @@ This is a hint, not a hard constraint. Use your own good judgement if ever in do
     explicitly off the audio thread. `TickInvocationFrame` pins both roots for the
     callback, and materialized bindings are accepted only when the snapshot's
     generation and recorded page version match the active realization and pinned page
-    root. The retained Sequential event slots must next receive their bounded callback
-    binding; sample slots and their per-input neutral fallback are now supplied.
+    root. Retained Sequential sample and event slots are now both supplied through
+    bounded callback binding without exposing either snapshot owner.
     Final commit
     advances prepared coverage, page publication and any capture frontier together;
     every failure advances none. Background ephemeral Random Access may use
