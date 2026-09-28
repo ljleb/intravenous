@@ -2,6 +2,14 @@
 
 _Status: current design direction for whole-project Tick execution and sequential-consumption sample/event lowering._
 
+
+> **Planned random-access representation change:**
+> [Random-Access Port Data And Sample Input Contract Direction](./random_access_port_data_direction.md)
+> supersedes this document's persisted-page assumptions for random-access sample data.
+> The target representation is Region/Coverage with contiguous storage per Region,
+> while this document still describes the checked-in page-based implementation and
+> its surrounding storage planner.
+
 Related documents:
 
 - [DSP Execution And Storage Glossary](./dsp_execution_storage_glossary.md)

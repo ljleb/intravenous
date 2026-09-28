@@ -2,6 +2,14 @@
 
 _Status: normative terminology for current DSP, GraphJit, coverage, storage, and executor design documents._
 
+
+> **Planned terminology change:**
+> [Random-Access Port Data And Sample Input Contract Direction](./random_access_port_data_direction.md)
+> introduces Region versus Coverage random-access sample forms and allows Coverage
+> Regions to overlap. Where this glossary describes Coverage as only a set/canonical
+> union of positions, the planned Region/Coverage contract takes precedence for the
+> migration target.
+
 This glossary names independent architectural properties directly. It intentionally
 avoids using one broad adjective to imply several different facts at once.
 

@@ -2,6 +2,15 @@
 
 [DSP Execution And Storage Glossary](./dsp_execution_storage_glossary.md) defines the normative vocabulary used here.
 
+
+> **Planned random-access representation change:**
+> [Random-Access Port Data And Sample Input Contract Direction](./random_access_port_data_direction.md)
+> supersedes this document where it requires disjoint/canonical `Coverage` regions,
+> page-backed random-access sample storage, or page-oriented node access. The target
+> API uses contiguous Region/Coverage sample views; Coverage regions may overlap. The
+> page-oriented sections below remain useful as the current implementation checkpoint
+> until that migration lands.
+
 This document is the normative design for **coverage and random-access DSP semantics**,
 their incremental background-evaluation model, and the executor-side
 storage/publication rules needed to make data at global positions usable by both

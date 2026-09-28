@@ -2,6 +2,14 @@
 
 _Status: current design direction for synchronous whole-project graph compilation._
 
+
+> **Planned random-access representation change:**
+> [Random-Access Port Data And Sample Input Contract Direction](./random_access_port_data_direction.md)
+> supersedes page-backed random-access sample storage and disjoint-Coverage assumptions
+> in this document. Existing page-store discussion should be read as an implementation
+> checkpoint until GraphJit/runtime lowering migrates to contiguous Region/Coverage
+> sample views.
+
 Related documents:
 
 - [DSP Execution And Storage Glossary](./dsp_execution_storage_glossary.md)

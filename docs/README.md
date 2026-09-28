@@ -15,6 +15,7 @@ The primary application-architecture entry points are:
 - [Graph JIT Direction](./graph_jit_direction.md)
 - [DSP Execution And Storage Glossary](./dsp_execution_storage_glossary.md)
 - [Coverage, Random Access, And Background Evaluation](./coverage_and_background_evaluation.md)
+- [Random-Access Port Data And Sample Input Contract Direction](./random_access_port_data_direction.md)
 - [Sequential Port Storage And Connection Planning](./sequential_port_storage_planning.md)
 - [Event Propagation Tree Constraint](./event_propagation_tree_constraint.md)
 - [Fundamental Event Flows](./event_flows/README.md)
