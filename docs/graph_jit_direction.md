@@ -2,6 +2,8 @@
 
 _Status: current design direction for synchronous whole-project graph compilation._
 
+[Batched Node Callback Direction](./batched_node_callbacks_direction.md) defines the planned normalized scalar/batch node callback API and the scheduling rules GraphJit will use to exploit it.
+
 
 > **Planned random-access representation change:**
 > [Random-Access Port Data, Audio Value Types, And Input Contract Direction](./random_access_port_data_direction.md)
@@ -88,15 +90,22 @@ per package before a compile-local package module is consumed once, and repeated
 callback share one imported root while still receiving distinct node
 configuration/storage contexts. The reflected compiler callback ABI uses
 explicit pointer/count span records rather than assuming an
-implementation-specific `std::span` object representation. The generated
-Tick root exports only `tick_block`: it is the scheduler and may use primitive
-`skip_block` callbacks internally when activity/skip semantics make that legal. A
-separate Tick-root `skip_block` ABI would invert that ownership and is
-intentionally absent. Graphs with background-evaluation work additionally export off-thread
-forward, reverse, and evaluation batch roots. Those roots use the retained
-`BackgroundEvaluationPlan` orders, imported reflected Tock callbacks, and the existing imported
-`tick_block()` wrapper for replay; executor-owned batch frames still supply
-coverage accumulators and page bindings.
+implementation-specific `std::span` object representation. The checked-in package
+compiler currently retains one-node primitive Tick/skip/Tock/propagation anchors. The
+planned batch API adds a normalized batch anchor beside every applicable scalar anchor;
+GraphJit then chooses scalar or batch calls from dependency/cost facts without testing
+whether the node author wrote `tick()`, `tick_block()`, or `tick_block_batch()`.
+
+The generated Tick root exports only `tick_block`: it is the scheduler and may use
+primitive `skip_block()`/`skip_block_batch()` callbacks internally when activity/skip
+semantics make that legal. A separate Tick-root `skip_block` ABI would invert that
+ownership and is intentionally absent. Graphs with background-evaluation work
+additionally export off-thread forward, reverse, and evaluation batch roots. Those
+roots use the retained `BackgroundEvaluationPlan` orders, imported reflected Tock
+callbacks, and the existing imported `tick_block()` wrapper for replay; executor-owned
+batch frames still supply coverage accumulators and page bindings. Multi-node primitive
+callback batching is a separate planned layer inside those generated roots, as defined
+in [Batched Node Callback Direction](./batched_node_callbacks_direction.md).
 Unsupported shapes still fail explicitly at the lowering boundary; they are
 never compiled as no-ops.
 
@@ -634,6 +643,17 @@ every channel of every sample output and advances inputs by the skipped block.
 GraphJit's generated root does not yet schedule primitive skips, so this remains a
 generic callback contract until activity/TTL lowering lands.
 
+The planned batch callback layer preserves these exact scalar semantics while exposing
+normalized `do_tick_block_batch()` and `do_skip_block_batch()` operations. `tick()`
+generates a sample-major/lane-minor batch loop to expose cross-instance SIMD; native
+`tick_block()` and scalar skip callbacks generate an ordinary lane loop; a node that
+authors only a native batch form receives scalar behavior through a one-lane batch
+facade. Both compiler anchors remain available, so GraphJit may cluster compatible
+ready nodes for SIMD/instruction locality or fall back to scalar execution when a
+heterogeneous dependency schedule makes batching unprofitable. Authored callback-shape
+checks remain entirely inside the node trait/helper API. See
+[Batched Node Callback Direction](./batched_node_callbacks_direction.md).
+
 Fresh compiler-owned persistent connection state is lifecycle-owned. Sample
 feedback/carry/alignment raw regions and persistent event representations install
 `NodeLayout` raw initializers; exact-shape persistent regions skip initialization
@@ -952,9 +972,17 @@ This is a hint, not a hard constraint. Use your own good judgement if ever in do
     code optimization work.
 21. **Finish remaining authored-node semantics** (nested declarations, compiler-
     owned regions, activity/TTL, detach, events and skip scheduling).
-22. **Optimize** with SIMD, loop fusion, materialization placement, storage liveness
-    and bounded immutable-value specialization only after state continuity and the
-    remaining correctness semantics are established.
+22. **Add first-class primitive callback batching.** Add the typed batch ranges and
+    trait-normalized scalar/batch helper pairs for Tick, skip, Tock and forward/reverse
+    propagation; retain both compiler anchors; classify compatible resolved
+    realizations; and let Tick/background schedulers group ready same-class nodes while
+    retaining scalar fallback. Use virtual-node member grouping as a hint but discover
+    batching opportunities over the flattened concrete graph. See
+    [Batched Node Callback Direction](./batched_node_callbacks_direction.md).
+23. **Optimize** with measurement-driven batch sizing, cross-node SIMD, loop fusion,
+    materialization placement, storage liveness and bounded immutable-value
+    specialization only after state continuity and the remaining correctness semantics
+    are established.
 
 The detailed, normative dependency order is
 [coverage_and_background_evaluation.md §32](./coverage_and_background_evaluation.md#32-implementation-landing-order).
@@ -1404,13 +1432,20 @@ require materialized data. Tock/persisted uses the same canonical page read path
 Tick/persisted. Per-channel tiling preserves each member's contract without implicit
 retention.
 
-A separate replayability node type trait validates eligible `tick()`-only nodes:
-no native `tick_block()`, no `State`, random-access inputs, history, or latency,
-plus a fixed-version pure/deterministic replay contract. GraphJit reuses the
-**existing** generated and LLVM-imported `tick_block()` wrapper in background
-evaluation. Its static same-position temporal dependencies admit
-compiler-generated F/R; upstream availability determines whether each particular
-output can actually replay. The tock forward/reverse callback interface is unchanged.
+The checked-in replayability node type trait validates eligible `tick()`-only nodes:
+no native `tick_block()`, no `State`, random-access inputs, history, or latency, plus a
+fixed-version pure/deterministic replay contract. GraphJit reuses the **existing**
+generated and LLVM-imported `tick_block()` wrapper in background evaluation. Its
+static same-position temporal dependencies admit compiler-generated F/R; upstream
+availability determines whether each particular output can actually replay.
+
+The planned batch normalization removes the callback-spelling restriction from the
+long-term replay model. Replay eligibility should be stated against normalized
+`do_tick_block()` semantics, so an otherwise eligible native `tick_block()` can replay
+at legal invocation quanta and a `tick_block_batch()`-only node can replay through its
+one-lane scalar adapter. `tick()` remains valuable because it exposes stronger
+pointwise structure for automatic cross-node vectorization. The detailed migration is
+in [Batched Node Callback Direction](./batched_node_callbacks_direction.md).
 
 `tock_coverage()` and its propagation callbacks **never run on the audio thread**.
 Background workers materialize data. An audio-thread sequential input reads an existing

@@ -304,6 +304,10 @@ before lowering rather than falling back to audio-thread dynamic allocation.
 interface shape that lets the framework instantiate concrete specialized context
 classes for `tick*()`, `tock*()`, declaration, and port-constraint callbacks. Node
 callbacks should therefore be concrete functions, not `auto&` function templates.
+The planned scalar/batch callback forms remain concrete as well: batch callbacks use
+typed range contexts such as `TickBlockBatchContext<Node>` and
+`TockCoverageBatchContext<Node>`, with trait-generated scalar/batch adapters defined in
+[Batched Node Callback Direction](./batched_node_callbacks_direction.md).
 
 A configured node instance may additionally define:
 

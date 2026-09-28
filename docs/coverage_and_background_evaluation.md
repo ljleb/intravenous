@@ -16,29 +16,35 @@ their incremental background-evaluation model, and the executor-side
 storage/publication rules needed to make data at global positions usable by both
 random-access consumers and Sequential inputs during Tick execution.
 
-The intended callback vocabulary is:
+The normalized callback vocabulary is planned to include both scalar and multi-node
+batch operations:
 
 ```cpp
-tick_block(...);                       // Tick execution over Sequential inputs
-tock_coverage(...);                    // one-node background evaluation over coverage
-propagate_forward_coverage(...);       // one-node changed inputs/state -> outputs/coverage
-propagate_reverse_coverage(...);       // one-node required outputs -> required inputs
-```
+tick_block(...);
+tick_block_batch(...);
+skip_block(...);
+skip_block_batch(...);
 
-The `_coverage` callbacks each operate on **one node** even when the supplied
-`Coverage` contains many disjoint regions. This deliberately differs from
-existing names such as `tick_block_batch`, where `batch` means that multiple
-nodes are processed as one compiler/runtime operation. A future multi-node
-background-evaluation interface may therefore use the names:
-
-```cpp
+tock_coverage(...);
 tock_coverage_batch(...);
+propagate_forward_coverage(...);
 propagate_forward_coverage_batch(...);
+propagate_reverse_coverage(...);
 propagate_reverse_coverage_batch(...);
 ```
 
-Those future batch callbacks would process a batch of nodes, each with its own
-coverage/state. They are not the semantics of the current one-node callbacks.
+The checked-in implementation currently exposes the scalar compiler anchors. The
+batch context types, trait normalization, and GraphJit scheduling contract are the
+planned direction specified in
+[Batched Node Callback Direction](./batched_node_callbacks_direction.md). A `_batch`
+operation means **multiple compatible node instances**, not multiple regions of one
+node's `Coverage`. Every batch lane retains its own exact coverage/state/context, and a
+one-lane batch is always legal.
+
+Node authors choose one supported scalar-or-batch implementation shape for an
+operation; the traits layer derives both normalized scalar and batch operations. The
+background scheduler may then use ready-frontier batching without changing the
+transaction's coverage semantics.
 
 The central rules are:
 
@@ -493,8 +499,9 @@ tick pointwise nodes use compiler-generated coverage propagation in the same
 forward/reverse orders.
 
 For every node that declares a computed tock output, an explicit forward-coverage
-implementation (or a future equivalent multi-node/batched implementation) is
-**mandatory**. Coverage is semantic and exact;
+implementation is **mandatory**. Under the planned batch API that implementation may
+be authored in scalar or batched form and is normalized to both forms by the traits
+layer. Coverage is semantic and exact;
 there is no generally correct fallback that can invent it. A framework may still
 generate trivial glue when exact coverage is mechanically declared by another
 static facility, but it must not silently preserve old/empty coverage or substitute
@@ -589,18 +596,22 @@ consumer's `neutral_value`.
 `TockState` is **not** visible here. Dependency requirements may not depend on
 memoization history.
 
-## 10. `tock_coverage()`
+## 10. Tock coverage evaluation callbacks
 
-`tock_coverage()` is the one-node background-evaluation callback for outputs whose
-output production is `TockOutputConfig`. Its context carries requested
-`Coverage` per Tock output; one invocation may therefore
-compute many disjoint regions and several outputs of the same node.
+`tock_coverage()` is the checked-in one-node background-evaluation callback for
+outputs whose production is `TockOutputConfig`. The planned
+`tock_coverage_batch()` form evaluates several compatible nodes as one compiler/runtime
+operation; each lane still carries the exact scalar context for its own node. A
+node's requested `Coverage` is never merged with another lane merely because the
+nodes are batched.
 
-Within one background evaluation transaction, reverse planning first finishes accumulating the final
-requested coverage for every implicated output. Forward evaluation then calls
-`tock_coverage()` **at most once per implicated node for the whole batch**. Requests
-for several outputs, several disjoint regions, and several downstream consumers
-are therefore coalesced before the callback runs.
+Within one background evaluation transaction, reverse planning first finishes
+accumulating the final requested coverage for every implicated output. Forward
+evaluation then executes the normalized Tock operation **at most once per implicated
+node for the whole transaction phase**, either as a scalar callback or as one lane of
+a batch callback. Requests for several outputs, several disjoint regions, and several
+downstream consumers are therefore coalesced before that node participates in the
+operation.
 
 The callback receives only work that needs computation for the target operation:
 
@@ -660,11 +671,12 @@ callbacks are background-only.** Ephemeral retention never grants an audio-threa
 live-pull exception. Eligible pure `tick()` nodes are different: their already-
 generated `tick_block()` implementation may execute during background replay.
 
-The name deliberately does not contain `batch`: this callback still evaluates one
-node. The executor-level transaction is already batched across roots and coalesces
-all work for that node into one invocation. A future `tock_coverage_batch()` would
-be a different ABI optimization that evaluates **multiple nodes** simultaneously,
-with separate coverage and optional acceleration state for each node.
+The scalar name deliberately does not contain `batch`: `tock_coverage()` evaluates
+one node. Executor-level transaction batching across demand roots is a separate
+concept. The planned `tock_coverage_batch()` ABI evaluates **multiple compatible
+nodes** simultaneously, with separate coverage, bindings, and optional acceleration
+state for every lane; see
+[Batched Node Callback Direction](./batched_node_callbacks_direction.md).
 
 ## 11. Batched requested coverage and stored-candidate completion
 
@@ -2064,10 +2076,20 @@ unresolved Random Access evaluation cycles.
 Node/package validation rejects non-static or non-constexpr concrete port schemas
 at **every** construction path (including internal builder paths), malformed
 `TockState`, conflicting callback/production declarations, invalid event
-capacity declarations, and invalid replayability trait declarations. Replayable
-nodes require `tick()` without native `tick_block()`, no `State`, no random-access
-inputs, zero port history/latency and zero internal latency; their replay contract
-also asserts pure deterministic evaluation under a fixed version.
+capacity declarations, and invalid replayability trait declarations. The planned batch
+API additionally rejects ambiguous authored shapes: Tick authors exactly one of
+`tick()`/`tick_block()`/`tick_block_batch()`; a node with Tock outputs authors
+exactly one of `tock_coverage()`/`tock_coverage_batch()`; and skip plus each authored
+propagation direction choose at most one scalar-or-batch form as specified in
+[Batched Node Callback Direction](./batched_node_callbacks_direction.md).
+
+The checked-in replayability validation still requires `tick()` without native
+`tick_block()`, no `State`, no random-access inputs, zero port history/latency and zero
+internal latency. The later batching/replay direction moves that test to the normalized
+`do_tick_block()` semantics so eligible authored `tick_block()` and
+`tick_block_batch()` implementations can participate without source-shape special
+cases; the replay contract still requires pure deterministic evaluation under a fixed
+version.
 
 Whole-project GraphJit validation resolves per-channel connections and semantic
 SCCs, derives contextual replayability and exact available coverage, rejects
@@ -2301,9 +2323,18 @@ recording merely because that planning metadata exists.
    event, detach, activity/TTL and skip semantics. Preserve persisted generated/
    finalized data throughout its covered lifetime; coverage removal remains the only
    semantic deletion condition for persisted output data.
-8. **Optimize only after transition correctness is established.** Refine SIMD/fusion,
-   page placement, transient reuse, storage aliasing/liveness and immutable-value
-   specialization only after graph-version state continuity is covered by tests.
+8. **Add first-class scalar/batch callback normalization and scheduling.** Add the
+   batch context ranges and complete `do_*` scalar/batch helper pairs for Tick, skip,
+   Tock and forward/reverse propagation; retain both callback anchors in package LLVM;
+   classify compatible concrete realizations; and let Tick/background schedulers group
+   ready same-class nodes while retaining scalar fallback. Treat virtual-node member
+   grouping as a discovery hint, not the only batching boundary. The detailed API and
+   invariants are in
+   [Batched Node Callback Direction](./batched_node_callbacks_direction.md).
+9. **Optimize only after transition correctness is established.** Refine batch sizing,
+   cross-node SIMD, fusion, page placement, transient reuse, storage aliasing/liveness
+   and immutable-value specialization only after graph-version state continuity is
+   covered by tests.
 
 A capture sequence is an insertion order, not a global timeline order: seeking may
 append changes at previously processed positions. The processed frontier advances
@@ -2317,8 +2348,11 @@ only on a successful transaction commit.
    production (`TickOutputConfig`/`TockOutputConfig`) and output retention
    (`ephemeral`/`persisted`) are independent declarations.
 3. `tick()` already lowers to an imported, optimizable generated `tick_block()`.
-   A separately declared node trait establishes intrinsic replay eligibility;
-   GraphJit proves contextual replayability through available upstream coverage.
+   The planned batch layer retains `tick()` as a first-class authoring form and
+   normalizes every accepted Tick shape to both `do_tick_block()` and
+   `do_tick_block_batch()`. A separately declared node trait establishes intrinsic
+   replay eligibility; GraphJit proves contextual replayability through available
+   upstream coverage.
 4. An unreproducible Tick/ephemeral source cannot directly satisfy Random Access
    demand. Tick/persisted, replayable Tick, and either Tock output can. Persisted
    outputs use canonical pages; ephemeral Tock/replay results use immutable
@@ -2326,8 +2360,9 @@ only on a successful transaction commit.
    to the consumer callback context.
 5. Tiling preserves per-channel contracts and creates neither an implicit recording
    policy nor an implicit producer.
-6. `tock_coverage()` and authored propagation callbacks run only off the audio
-   thread. A sequential input plays a stale published page as-is and substitutes
+6. `tock_coverage()`/`tock_coverage_batch()` and authored scalar/batched propagation
+   callbacks run only off the audio thread. A sequential input plays a stale published
+   page as-is and substitutes
    **its own** `neutral_value` for a missing page without waiting.
 7. Persisted outputs retain all generated/finalized covered data without automatic
    eviction. Coverage removal alone ends the semantic retention obligation;

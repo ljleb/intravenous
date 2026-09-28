@@ -13,6 +13,7 @@ The primary application-architecture entry points are:
 - [Node Presentation And Manual Controls Direction](./node_presentation_and_manual_controls_direction.md)
 - [System Audio Devices Direction](./system_audio_devices_direction.md)
 - [Graph JIT Direction](./graph_jit_direction.md)
+- [Batched Node Callback Direction](./batched_node_callbacks_direction.md)
 - [DSP Execution And Storage Glossary](./dsp_execution_storage_glossary.md)
 - [Coverage, Random Access, And Background Evaluation](./coverage_and_background_evaluation.md)
 - [Random-Access Port Data, Audio Value Types, And Input Contract Direction](./random_access_port_data_direction.md)

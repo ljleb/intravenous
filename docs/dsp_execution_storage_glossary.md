@@ -78,6 +78,22 @@ Tock is a production contract, not a synonym for random access or persistence.
 A Tock output may be ephemeral or persisted, and may feed either Sequential or
 Random Access inputs.
 
+### Scalar callback / batch callback
+
+A **scalar callback** operates on one configured concrete node instance. A **batch
+callback** operates on one or more compatible instances of the same concrete node
+implementation and resolved callback-facing realization. Each lane retains its own
+node/configuration, state, ports, and, for background work, Coverage.
+
+Batching is an execution optimization, not a different DSP semantic contract. A
+native batch callback must be lane-wise equivalent to the corresponding normalized
+scalar operation, and a batch of size one is always legal. GraphJit may therefore
+split or scalarize a batch candidate when dependency scheduling or the cost model
+prefers it.
+
+The planned callback/range API and trait normalization rules are specified in
+[Batched Node Callback Direction](./batched_node_callbacks_direction.md).
+
 ## Output retention
 
 ### Ephemeral output

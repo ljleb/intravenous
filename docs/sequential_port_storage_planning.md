@@ -132,6 +132,27 @@ Declaration, initialization, and execution contexts should observe that effectiv
 rate: a node in a 2x oversampled region sees 2x the project/device base rate. This is
 necessary for rate-dependent filters and other DSP to remain correct.
 
+### Planned batched Tick callback contract
+
+[Batched Node Callback Direction](./batched_node_callbacks_direction.md) defines the
+first-class `tick_block_batch()`/`skip_block_batch()` API and the normalized trait
+helpers used by GraphJit. Batch compatibility is decided only after pace/size/history/
+latency realization: all lanes in one native Tick batch have the same callback-facing
+resolved realization and therefore the same per-port block extents for the selected
+invocation quantum.
+
+For a node authored as pointwise `tick()`, the traits-generated batch operation is
+sample-major/lane-minor so the inner loop contains independent instances of the same
+pointwise operation. For an authored `tick_block()`, the default batch adapter is an
+ordinary lane loop over `do_tick_block()`. A native `tick_block_batch()` remains legal
+with one lane, so GraphJit always retains scalar fallback without inspecting authored
+callback shape outside the traits layer.
+
+Batch scheduling may prefer to make several same-realization nodes ready before
+executing them together. That scheduling choice must not change storage correctness:
+all normal history, latency, feedback, liveness, and per-port pace dependencies are
+still satisfied before a lane enters the batch.
+
 ## Persistent realtime generation state uses one `NodeStorage` allocation model
 
 Persistent **audio-thread** storage selected by whole-project lowering must feed the
