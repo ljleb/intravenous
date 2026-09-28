@@ -292,12 +292,15 @@ destruction occurs on the audio thread.
 
 ### `NodeStorage`
 
-`NodeStorage` is the canonical fixed-layout storage owned for an executable
-realization. A logical graph revision may briefly have transition and steady
-realizations, each with its own canonical `NodeStorage`. It contains fixed node state
-and compiler-selected persistent regions.
-It is not the owner of dynamically sized persisted-output pages or recording
-capture backlogs.
+`NodeStorage` is the canonical fixed-layout **audio-thread** storage owned for an
+executable realization. A logical graph revision may briefly have transition and
+steady realizations, each with its own canonical `NodeStorage`. It contains realtime
+`State` and compiler-selected persistent regions used by generated audio-thread
+execution, packed for locality and low callback overhead.
+
+It is not the owner of `TockState`, background workspaces, dynamically sized
+persisted-output pages, or recording capture backlogs. `TockState` is separately
+owned background acceleration state and may use dynamic allocation.
 
 ### Persisted page / persisted-page store
 

@@ -488,9 +488,11 @@ graph-JIT generation boundary merely to hide avoidable compiler work.
 
 The executable project itself masquerades as an ordinary zero-input/zero-output
 root node. Its generated declaration operation populates one `NodeLayoutBuilder`;
-the resulting canonical `NodeLayout` covers normal `State`, optional tock-only
-non-semantic `TockState`, and root/compiler-owned persistent or bounded reusable
-regions. There is no parallel graph-kernel storage arena.
+the resulting canonical `NodeLayout` covers realtime `State` plus
+root/compiler-owned persistent regions needed by audio-thread execution. There is
+no parallel graph-kernel realtime-storage arena. Background-only `TockState` and
+background workspaces are executor-owned sidecars rather than part of the packed
+`NodeStorage`.
 
 The root has no Tock output ports and therefore no project-wide
 `tock_coverage()`. Whole-project lowering partitions the background evaluation DAG into weakly connected
@@ -589,8 +591,8 @@ other failure, or stale-base rejection promotes neither.
 - one immutable active `CompiledGraph` generation and optionally one newest
   pending generation;
 - one canonical `NodeStorage` for each retained executable generation;
-- ordinary lifecycle/migration state for `State` and optional tock-only
-  `TockState`;
+- ordinary realtime lifecycle/migration state for `State`;
+- separately owned lifecycle/storage for optional background-only `TockState`;
 - stable canonical persisted-page stores/immutable roots for identifiable
   Tick/persisted and Tock/persisted outputs, with per-generation port mappings;
 - committed per-generation background coverage state separated from a reusable
@@ -804,10 +806,13 @@ The implementation checkpoints now stand as follows:
    `ProjectNodePortMatcher`s against the complete placement map, applies
    sample/event connections, and preserves dangling matchers with diagnostics.
    Structured persistence and JSON-RPC adapters remain follow-up transport work.
-7. **Landed (fixed state + existing `BackgroundEvaluationPlan` foundation):** canonical
-   `NodeLayout`/`NodeStorage` supports non-semantic tock-only `TockState`
-   and compiler-owned raw aligned regions. The current source independently represents
-   output retention and retains stable `BackgroundEvaluationPlan` topology metadata. The final
+7. **Landed, with a planned storage split (fixed state + existing
+   `BackgroundEvaluationPlan` foundation):** the current implementation still
+   places non-semantic tock-only `TockState` in canonical `NodeStorage` alongside
+   compiler-owned raw aligned regions. The target contract moves `TockState` to
+   separately owned background storage so `NodeStorage` remains the packed
+   audio-thread realization. The current source independently represents output
+   retention and retains stable `BackgroundEvaluationPlan` topology metadata. The final
    access/production schema names, replayability trait, background-only tock,
    background evaluation DAG, and new capture/publication execution are
    **target work, not landed**.

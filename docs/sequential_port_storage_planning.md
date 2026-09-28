@@ -62,23 +62,26 @@ materialization when SSA/SROA/loop optimization proves it unnecessary.
 The planner therefore chooses the **minimum correct storage requirement**, not a
 mandatory final machine representation.
 
-## Persistent generation state uses one `NodeStorage` allocation model
+## Persistent realtime generation state uses one `NodeStorage` allocation model
 
-Persistent storage selected by whole-project lowering must feed the existing
-`NodeLayout`/`NodeStorage` machinery rather than create a second persistent
-graph-kernel arena. The generated project behaves as a zero-input, zero-output
-root node whose `declare()` operation declares constituent nodes plus
-root/compiler-owned persistent regions into one `NodeLayoutBuilder`.
-`GraphExecutor` owns the resulting single `NodeStorage`; invocation-local
+Persistent **audio-thread** storage selected by whole-project lowering must feed the
+existing `NodeLayout`/`NodeStorage` machinery rather than create a second persistent
+graph-kernel arena. The generated project behaves as a zero-input, zero-output root
+node whose `declare()` operation declares constituent realtime `State` plus
+root/compiler-owned audio-thread persistent regions into one `NodeLayoutBuilder`.
+`GraphExecutor` owns the resulting single packed `NodeStorage`; invocation-local
 temporaries belong to the generated root's fixed stack frame.
 
-Any project-owned data that must survive from one execution call to another
-belongs in that layout. This includes history/latency carry, full fixed persistent port buffers,
-feedback state, `State`, optional tock-only non-semantic `TockState`, and
-activity state.
+Project-owned data that must survive from one **audio-root execution call** to
+another belongs in that layout. This includes history/latency carry, full fixed
+persistent port buffers selected for realtime access, feedback state, `State`, and
+activity state. Background-only `TockState` does not: it is separately owned by the
+background runtime and may use dynamic allocation. Background workspaces are also
+sidecars even when bounded/reusable.
+
 Invocation-local port temporaries do not acquire persistent ownership merely
-because their maximum size is known: the generated root should reserve them in
-its fixed stack frame, subject to a compile-time stack budget, or choose a full
+because their maximum size is known: the generated root should reserve them in its
+fixed stack frame, subject to a compile-time stack budget, or choose a full
 `NodeStorage` representation for that port group. The audio thread never grows
 either storage class dynamically.
 
@@ -1353,7 +1356,7 @@ transient liveness + reusable-region allocation
         v
 root declaration / canonical NodeLayout planning for required realization(s)
         |
-        | NodeStorage contains only cross-call state;
+        | NodeStorage contains only audio-thread cross-call state;
         | generated root owns fixed transient arenas
         v
 specialized whole-project LLVM realization(s)

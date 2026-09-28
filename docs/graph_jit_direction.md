@@ -66,9 +66,13 @@ immutable retained globals are deduplicated as package import roots, and final
 node configuration globals contain LLVM-relocatable pointers plus byte addends
 (or explicit null pointers). Each primitive invokes its exact accepted
 native `declare_node` callback into the one canonical `NodeLayoutBuilder`.
-`State` and `TockState` are ordinary canonical `NodeStorage` regions:
-generated root operations materialize each reflected callback context from final
-layout offsets and dispatch the selected package LLVM against those live bytes.
+The current lowering implementation still places both `State` and `TockState` in
+the canonical `NodeStorage`. That is now a migration point rather than the target
+contract: `NodeStorage` should contain the packed audio-thread realization, while
+`TockState` moves to separately owned background-thread storage. Generated Tick
+operations should address `State` and other realtime persistent regions by final
+layout offset; generated background roots receive the separately managed
+`TockState` for the implicated node.
 Root execution now uses the connection-aware deterministic SCC/region schedule;
 acyclic regions execute in dependency order and cyclic regions use slice-major
 execution bounded by their derived feedback quantum. Callback imports are grouped
@@ -254,13 +258,14 @@ The remaining port work should preserve these invariants:
   connection copy/materialization between producer and consumer. A later fusion/SSA
   optimization may eliminate even that backing where profitable.
 
-The shell continues to use the generated-root and canonical
+The shell continues to use the generated-root and canonical realtime
 `NodeLayout`/`NodeStorage` contract specified in this document: `CompiledGraph`
-carries the finalized `NodeLayout` plus the generated root `tick_block`, while
-lifecycle remains entirely in ordinary `NodeStorage`. Primitive `skip_block`
-callbacks are internal scheduling tools, not root operations. Whole-project
-lowering must not reintroduce a second node-storage
-layout, a second lifecycle system, or a synthetic project-wide coverage/Tock ABI merely to expose internal Tock outputs.
+carries the finalized `NodeLayout` plus the generated root `tick_block`. Realtime
+state lifecycle stays in `NodeStorage`; background-only lifecycle such as
+`TockState` is owned separately by `GraphExecutor`. Primitive `skip_block` callbacks
+are internal scheduling tools, not root operations. Whole-project lowering must not
+reintroduce a second **realtime** node-storage layout or a synthetic project-wide
+coverage/Tock ABI merely to expose internal Tock outputs.
 
 ### Current connection capability audit
 
@@ -947,60 +952,63 @@ project-wide `tock_coverage()` operation. Internal requestable outputs remain
 addressable through immutable `CompiledGraph` metadata described below; they are
 not exposed by pretending that the zero-port project root has synthetic outputs.
 
-## One canonical fixed-layout `NodeLayout` and `NodeStorage` model
+## One canonical fixed-layout realtime `NodeLayout` and `NodeStorage` model
 
-There is exactly one **fixed-layout** persistent storage model for each executable
+There is exactly one **fixed-layout realtime** storage model for each executable
 realization: the existing `NodeLayout`/`NodeStorage` machinery. A logical graph
 revision may temporarily have both a transition and a steady executable realization,
-but each realization uses this same canonical storage model rather than introducing a
-second kind of state arena. This does not mean every request-sized or dynamically
-growing runtime object belongs in `NodeStorage`.
+but each realization uses this same canonical audio-thread storage model rather than
+introducing a second graph-kernel state arena.
+
+`NodeStorage` is intentionally narrower than "all persistent runtime memory". Its
+job is to pack the structures needed by generated audio-thread execution as tightly
+and access-locally as practical: authored `State`, compiler-selected cross-call
+sample/event carry, feedback/activity state, and other fixed regions the audio root
+actually needs. Request-sized objects, dynamically growing background data,
+persisted-output pages, and `TockState` are not part of this packed realtime arena.
 
 `GraphJit` must not introduce `CompiledGraphNodeStorageLayout`,
-`GraphKernelStorage`, or another parallel fixed state arena. Lowering populates one
-`NodeLayoutBuilder` per executable realization and finalizes it before emitting that
-realization's storage accesses into LLVM. Each completed `NodeLayout` becomes part of
-its `CompiledGraph`, and `GraphExecutor` creates/owns the corresponding `NodeStorage`
-while that realization can be active or is needed for a handoff.
+`GraphKernelStorage`, or another parallel fixed **audio-thread** state arena.
+Lowering populates one `NodeLayoutBuilder` per executable realization and finalizes
+it before emitting realtime storage accesses into LLVM. Each completed `NodeLayout`
+becomes part of its `CompiledGraph`, and `GraphExecutor` creates/owns the
+corresponding `NodeStorage` while that realization can be active or is needed for a
+handoff.
 
-The canonical fixed layout may include `TockState` as well as
-normal `State`, but their semantics differ. `TockState` is Tock-side acceleration state. `State` participates in sequential
-node behavior. `TockState` is optional non-semantic acceleration storage exposed
-only to `tock_coverage()`; tick and propagation callbacks do not receive it.
-Ordinary declaration/lifecycle machinery still owns its construction/migration/
-destruction as fixed node storage, and the executor may reset or duplicate it when
-that does not violate storage-lifecycle constraints because observable Tock-output
-results cannot depend on its contents.
+### `TockState` is background-owned sidecar state
 
-Source introspection publishes symmetric metadata for `State` and
-`TockState`: a Clang nominal type identity (USR), a definition fingerprint,
-size/alignment, and reflected field layout. That exact definition identity is the
-cross-package-generation compatibility boundary for typed state migration. A
-same-process type token remains sufficient when both generations use the exact
-same loaded C++ type, but equal RTTI names or equal byte size alone are not a
-safe hot-reload migration contract.
+`TockState` is Tock/background acceleration state, not realtime node storage. It is
+managed separately from `NodeStorage` and is never addressed by the audio-thread
+root. Ordinary dynamic allocation is allowed inside it. Its internal size may
+therefore follow actual background requirements such as input coverage/content
+without changing `NodeLayout` or forcing a realtime-storage migration.
 
-Fixed-size project-owned memory whose contents must cross an execution call
-should use the same `NodeLayout` / `NodeStorage`, including for example:
+A node may use `initialize()` to set up its instance's `TockState` from configuration
+and resources. Any derived data that depends on current input contents/coverage is
+computed or recomputed by the appropriate background `tock*()` work instead.
+`TockState` remains non-semantic acceleration state: outputs must be correct from a
+freshly initialized instance, and retaining/moving compatible acceleration state
+across realization changes is only an optimization.
 
-- node `State` and `TockState`;
-- history/latency/feedback carry;
-- full fixed persistent sample/event buffers;
-- root/compiler-owned activity state;
-- bounded reusable background-evaluation workspaces; and
-- other fixed-size compiler-selected project regions.
+Source introspection may still publish nominal/definition metadata for `TockState`
+for lifecycle/hot-reload validation, but `TockState` field layout is not a
+`NodeLayout`/`NodeStorage` placement contract. `State` remains the authored typed
+state whose realtime storage relationship is fixed by declaration/layout.
 
-Dynamically sized persisted-output storage is an explicit exception because its
-page/data size follows actual coverage and retained authoritative content rather
-than one fixed `NodeLayout`. Tick/persisted and Tock/persisted outputs use the same
-executor-owned canonical persisted-page store abstraction independent of one JIT
-generation; each `CompiledGraph` supplies immutable port mappings and
-representation facts. `tock/ephemeral` outputs own no persisted result. Outputs
-without stable project identity may use generation-local persisted bindings where
-needed. This is not a second node-state layout system: fixed `State`, optional
-Tock-only `TockState`, and compiler-known bounded regions still have one canonical
-`NodeStorage`, while persisted-page data and request-sized transaction storage
-are executor sidecars.
+Fixed-size project-owned memory whose contents must cross **audio-thread root calls**
+should use the same realtime `NodeLayout` / `NodeStorage`, including for example:
+
+- authored node `State`;
+- history/latency/feedback carry selected for persistent placement;
+- full fixed persistent sample/event buffers selected for realtime access;
+- root/compiler-owned realtime activity state; and
+- other fixed-size compiler-selected regions touched by the audio root.
+
+Background-owned memory is a sidecar even when it happens to have a fixed size.
+Examples include `TockState`, reusable background-evaluation workspaces, transaction
+frames, and dynamically sized persisted-output storage. Persisted output continues
+to use executor-owned stable page stores because its size follows semantic coverage
+and retained authoritative content rather than one realtime `NodeLayout`.
 
 Tick/persisted finalized data satisfies Random Access through the published
 persisted-page snapshot; replayable Tick/ephemeral output can satisfy it through
@@ -1010,19 +1018,20 @@ blocks/logs. In the preliminary implementation those capture blocks are not a
 second Random Access source: newly captured Tick/persisted data becomes visible only
 after publication into the canonical page store.
 
-Invocation-local Tick-execution sample/event buffers occupy compile-time byte ranges in
-the generated root stack. Sample and event ranges are lifetime-packed within
-their data class, then placed as two aligned subranges of one root allocation.
-If the resulting byte count exceeds the configured limit, lowering re-runs
-storage selection so eligible buffers use full `NodeStorage`; if the remaining
+Invocation-local Tick-execution sample/event buffers occupy compile-time byte ranges
+in the generated root stack. Sample and event ranges are lifetime-packed within
+their data class, then placed as two aligned subranges of one root allocation. If
+the resulting byte count exceeds the configured limit, lowering re-runs storage
+selection so eligible **realtime** buffers use full `NodeStorage`; if the remaining
 conversion/merge buffers still do not fit, compilation fails. Execution never
 allocates a replacement dynamically on the audio-thread path.
 
-This gives the whole-project compiler control over storage declaration order.
-The current layout builder packs regions in declaration order while solving
-`initialize_order` separately from dependency information, so lowering can
-co-locate data in approximately the order generated O3 code will access it
-without conflating storage locality with lifecycle ordering.
+This gives the whole-project compiler control over realtime storage declaration
+order. The current layout builder packs regions in declaration order while solving
+`initialize_order` separately from dependency information, so lowering can co-locate
+data in approximately the order generated O3 audio code will access it without
+conflating storage locality with lifecycle ordering. `TockState` placement is not
+part of that optimization problem.
 
 ### No compiler-owned façade initialization path
 
@@ -1055,11 +1064,12 @@ typed authored convenience API.
 
 This is an extension of `NodeLayout`, not a second storage system.
 
-Truly request-sized caller input/output objects need not be embedded in
-`NodeStorage`; their size may not be bounded at graph-compilation time. But if a
-workspace has a known maximum size or is intentionally reusable across queries,
-the compiler should prefer a root-owned `NodeLayout` region rather than a
-separate project scratch allocation.
+Truly request-sized caller input/output objects are not embedded in `NodeStorage`;
+their size may not be bounded at graph-compilation time. Background workspaces also
+remain outside `NodeStorage` even when bounded/reusable: fixed size alone is not a
+reason to pollute the packed audio-thread arena. Realtime compiler-owned workspaces
+that genuinely survive audio-root calls are different and may use ordinary
+`NodeLayout` regions.
 
 ## Port history and latency are node-owned semantic state
 
@@ -1370,7 +1380,7 @@ persisted outputs:
 - active/pending executable generations and canonical `NodeStorage`;
 - graph-revision state reconciliation, including optional transition/steady
   realizations and their safe-boundary activation horizon;
-- optional tock-only `TockState` lifecycle/storage;
+- separately owned tock-only `TockState` lifecycle/storage;
 - stable canonical persisted-page stores/immutable roots for Tick/persisted and
   Tock/persisted outputs;
 - candidate/published semantic versions plus immutable page versions;
@@ -1508,13 +1518,14 @@ resolve generated root/component operations
 CompiledGraph + finalized NodeLayout
 ```
 
-Node storage state, persistent project state, and compiler-selected regions
-whose contents cross calls all become one `NodeLayout`/`NodeStorage`.
-Invocation-local representations instead use the statically packed generated-root
-stack frame. Pure storage analyses may still decide which logical values need
-either kind of region, their size/alignment, liveness, and desirable layout
-before LLVM/declaration generation; they do not create a parallel persistent
-allocation model.
+Realtime node state and compiler-selected audio-thread regions whose contents cross
+audio-root calls become one packed `NodeLayout`/`NodeStorage`. Invocation-local
+realtime representations instead use the statically packed generated-root stack
+frame. Background-owned state (`TockState`, evaluation workspaces, persisted pages,
+etc.) is intentionally outside this realtime allocation model and follows its own
+lifetimes. Pure realtime storage analyses may still decide which logical values need
+stack or `NodeStorage`, their size/alignment, liveness, and desirable layout before
+LLVM/declaration generation; they do not create a parallel realtime state arena.
 
 See [sequential_port_storage_planning.md](./sequential_port_storage_planning.md) for
 the rule that logical connections do not imply buffers, and

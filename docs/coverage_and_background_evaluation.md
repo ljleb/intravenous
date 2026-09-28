@@ -621,14 +621,20 @@ The callback:
 > may not change output values, output coverage, reverse requirements, or any other
 > observable semantics.
 
+`TockState` is background-owned and is not part of packed realtime `NodeStorage`.
+It may use ordinary dynamic allocation. A node may set up configuration/resource-
+dependent acceleration data in `initialize()`, but anything derived from current
+input contents or coverage belongs in the appropriate background `tock*()` work and
+may be resized/recomputed there.
+
 A correct node must therefore produce the same result from a freshly initialized
-`TockState`. The executor is free to serialize access, duplicate state per
-worker, discard/reinitialize it, or otherwise manage acceleration state without
-changing semantics. One mutable `TockState` instance must not be concurrently
-mutated by overlapping tock executions unless the node's own state representation
-makes that safe. All tock execution is background-only. GraphExecutor may serialize, duplicate
-or reset its acceleration state without introducing any audio-thread lock, live
-callback, or ephemeral-output exception.
+`TockState`. The executor is free to serialize access, duplicate state per worker,
+discard/reinitialize it, or otherwise manage acceleration state without changing
+semantics. One mutable `TockState` instance must not be concurrently mutated by
+overlapping tock executions unless the node's own state representation makes that
+safe. All tock execution is background-only. GraphExecutor may serialize,
+duplicate, retain, move, or reset compatible acceleration state without introducing
+any audio-thread lock, live callback, or ephemeral-output exception.
 
 Successful tock completion is transactional. For samples, every requested covered
 sample/channel of every requested output is completely initialized. For events,
@@ -1036,15 +1042,17 @@ dynamically sized persisted-output data is **not** part of that fixed layout and
 should not be owned merely by one JIT generation when the output has stable project
 identity.
 
-`NodeStorage` contains storage whose shape is known when the `CompiledGraph` is
-built, including:
+`NodeStorage` is the packed fixed-layout **audio-thread** realization. It contains
+realtime storage whose shape is known when the `CompiledGraph` is built, including:
 
 - sequential `State`;
-- optional `TockState`, which is non-semantic `tock_coverage()` acceleration
-  state only;
-- compiler-owned bounded persistent regions;
-- bounded reusable workspaces where useful; and
+- compiler-owned realtime persistent regions; and
 - Tick carry/history/feedback storage selected for persistent placement.
+
+`TockState` is deliberately outside `NodeStorage`. GraphExecutor/background runtime
+owns it as per-node background acceleration state, and it may contain dynamically
+allocated structures. Reusable background workspaces are likewise background
+sidecars rather than `NodeStorage` merely because they happen to be bounded.
 
 `TockState` is not an authoritative persisted-output store and is not shared with
 `tick_block()` or propagation callbacks. A node's observable behavior must remain
@@ -1275,8 +1283,9 @@ new machine code for a stable retained node is not by itself semantic creation.
 
 For a new node with Tock outputs (`tock/ephemeral` or `tock/persisted`):
 
-1. ordinary node configuration/resources and optional `TockState` are
-   initialized;
+1. ordinary node configuration/resources and optional background `TockState` are
+   initialized; `initialize()` may establish configuration/resource-dependent
+   acceleration state, but not input-content-derived results;
 2. current random-access-input coverages are available once upstream coverage is known;
 3. `propagate_forward_coverage()` runs with a node-created/local-change cause and
    may have zero changed random-access-input regions; and

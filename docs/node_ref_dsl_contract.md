@@ -143,3 +143,11 @@ That change preserves the source-facing DSL but changes the live compatibility
 rule: different `GraphBuilder`/`SubgraphBuilder` views over one session become
 compatible, while refs from different sessions remain invalid. `ConfiguredGraph`
 continues to contain no live refs.
+
+The planned backend-node event model adds one further requirement: a `NodeRef`
+captured while authoring a module must carry/read the stable virtual/semantic
+identity of that authored node so a later module event handler can use the
+captured ref as a semantic dispatch target without dereferencing a stale
+builder/session pointer. Runtime event dispatch consumes that semantic identity,
+not the builder-time façade. See
+[Node Interaction And Presentation Communication Direction](./node_interaction_and_presentation_communication_direction.md).
