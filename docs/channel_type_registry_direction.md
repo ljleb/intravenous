@@ -64,3 +64,24 @@ traits.  It must, however, require deliberate conversion definitions for every
 supported semantic pair.  Registry-generated validation should make a missing
 non-identity conversion a compile-time error rather than inventing a channel
 order or reduction.
+
+
+## FFT blocks use the existing audio channel registry
+
+The planned continuous audio value-type extension initially adds FFT blocks alongside
+scalar `iv::Sample`. Both are audio-domain values and continue to use the existing
+`ChannelTypeId`/channel-member registry. The registered value type determines whether
+that channel model applies; this does **not** make channel layout a universal property
+of every future application value type.
+
+For FFT data, the canonical representation is planar by channel: a stereo FFT stream
+has one FFT block for the left channel and one for the right channel. GraphBuilder's
+existing channel tiling remains applicable to spectral nodes, so a tiled stereo node
+may still lower to one concrete mono spectral node per channel member. The initial FFT
+contract does not add a frequency-interleaved layout alternative.
+
+Channel conversion over FFT blocks remains aliasing or linear arithmetic over
+corresponding frequency values. Because the FFT is linear, legal channel reductions
+such as stereo averaging have the same mathematical meaning before or after the FFT
+(up to floating-point reassociation). GraphJit may exploit that fact as an
+optimization; it must not change the authored channel semantics.

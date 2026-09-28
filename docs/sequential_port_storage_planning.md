@@ -4,7 +4,7 @@ _Status: current design direction for whole-project Tick execution and sequentia
 
 
 > **Planned random-access representation change:**
-> [Random-Access Port Data And Sample Input Contract Direction](./random_access_port_data_direction.md)
+> [Random-Access Port Data, Audio Value Types, And Input Contract Direction](./random_access_port_data_direction.md)
 > supersedes this document's persisted-page assumptions for random-access sample data.
 > The target representation is Region/Coverage with contiguous storage per Region,
 > while this document still describes the checked-in page-based implementation and
@@ -69,6 +69,58 @@ materialization when SSA/SROA/loop optimization proves it unnecessary.
 
 The planner therefore chooses the **minimum correct storage requirement**, not a
 mandatory final machine representation.
+
+### Planned pace-aware `tick_block()` contract
+
+The checked-in Tick path still assumes one common block size across every sequential
+sample input/output. Planned port pacing removes that assumption.
+
+Port pace is resolved by GraphJit from the node's `constrain_ports()` relations and
+graph connections before storage planning. It is an exact relative transport count,
+not resampling. A rate-changing node may therefore consume and produce different
+numbers of values in one logical invocation.
+
+The specialized `TickBlockContext<Node>` should expose the resolved amount per port:
+
+```cpp
+auto input_count  = ctx.input<"in">().block_size();
+auto output_count = ctx.output<"out">().block_size();
+```
+
+The corresponding block/span accessor covers that same number of transported values.
+For scalar `Sample`, this is the number of samples. For a future FFT-block port,
+`block_size()` is the number of FFT blocks while `size()` is the number of frequency
+values in each block.
+
+Examples:
+
+```text
+2x oversampler
+    input.block_size()  = N
+    output.block_size() = 2N
+
+STFT with hop 512
+    audio_input.block_size() = 512K
+    fft_output.block_size()  = K
+```
+
+GraphJit chooses a legal logical invocation quantum and computes these counts from
+resolved pace ratios. It must preserve exact global-index correspondence across root
+callback subdivision; pace arithmetic should therefore remain exact rather than
+floating-point. Resampling remains explicit DSP and is not implied by pace.
+
+A node defining pointwise `tick()` may be lowered only when the configured graph
+revision resolves its relevant sequential ports to a compatible equal pace. That
+legality check belongs to graph compilation because constructor/configuration and
+surrounding graph constraints can affect the result. Failure rejects the new revision
+and reports a diagnostic rather than requiring source introspection to reject the C++
+definition. Nodes that can legitimately operate with heterogeneous paces should
+implement native adaptive `tick_block()`.
+
+Resolved pace domains also determine each node's effective local sample rate.
+Declaration, initialization, and execution contexts should observe that effective
+rate: a node in a 2x oversampled region sees 2x the project/device base rate. This is
+necessary for rate-dependent filters and other DSP to remain correct.
 
 ## Persistent realtime generation state uses one `NodeStorage` allocation model
 

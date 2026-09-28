@@ -116,19 +116,17 @@ So the intended split is:
 
 ## Time and rate model
 
-Not all lanes are expected to run at the same sample rate or block size in the future.
+> **Superseded rate-model note:** this document's former power-of-two lane-rate assumptions are no
+> longer the active DSP-port direction. The current planned model is documented in
+> [Graph JIT Direction](../graph_jit_direction.md#planned-port-size-and-pace-constraint-analysis)
+> and [Sequential Port Storage And Connection Planning](../sequential_port_storage_planning.md#planned-pace-aware-tick_block-contract).
 
-Assumptions:
-
-- the rate ratio between any two lanes is always a power of 2
-- some lanes may process faster or slower than others
-- not all lanes need to advance at the same time
-- graph inputs, graph outputs, and lane connections may eventually run at over-
-  or under-sampled rates relative to one another
-
-This means the runtime should be designed around a shared time protocol, not around lockstep advancement of every lane.
-The API shape should leave room for timeline-owned scheduling, rate conversion,
-and block-size adaptation rather than assuming one global realtime lane format.
+Active GraphJit planning treats port pace as an exact graph constraint. Inputs and
+outputs may consume/produce different exact quantities per logical node step, and the
+resolved pace domains determine each node's effective local sample rate. Pacing is
+separate from resampling. This preserves the useful goal of globally exact indexing
+for over/under-sampled regions without retaining this historical document's lane
+ownership model or power-of-two-only restriction.
 
 ## Paused / playing behavior
 

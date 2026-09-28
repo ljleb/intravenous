@@ -1,4 +1,4 @@
-# Random-Access Port Data And Sample Input Contract Direction
+# Random-Access Port Data, Audio Value Types, And Input Contract Direction
 
 _Status: planned port-contract and storage direction. This document supersedes the
 page-based random-access sample representation and the requirement that `Coverage`
@@ -13,14 +13,19 @@ Related documents:
 - [DSP Execution And Storage Glossary](./dsp_execution_storage_glossary.md)
 - [Node Interaction And Presentation Communication Direction](./node_interaction_and_presentation_communication_direction.md)
 
-This direction has two goals:
+This direction has four goals:
 
-1. make random-access sample data directly usable by algorithms that require
-   contiguous buffers, without a page iterator or per-sample accessor in the authored
-   node API; and
+1. make random-access audio data directly usable by algorithms that require
+   contiguous buffers, without a page iterator or per-value accessor in the authored
+   node API;
 2. make the authored port configuration types express only valid contracts, while
    preserving the useful separation between input access, output production,
-   retention, channel layout, and data kind.
+   retention, channel layout, and data kind;
+3. extend continuous audio ports beyond scalar `iv::Sample` through the same style of
+   closed registered type system already used for event and channel types, initially
+   adding an FFT-block value type; and
+4. make constructor-dependent value size and port pacing graph-resolved realization
+   facts so GraphJit knows exact storage requirements before lowering.
 
 ## 1. Random-access sample data is Region or Coverage
 
@@ -83,6 +88,30 @@ those Regions as separate contributions and is free to process them in that form
 Accordingly, `Coverage` is no longer adequately described as merely a canonical set
 of covered positions. Region decomposition and multiplicity can matter because a
 Sequential consumer combines overlapping contributions.
+
+### Coverage ordering is an optional contract
+
+A Coverage may additionally promise that its Regions are already sorted. Sorting is
+not inherent to every Coverage because producers and consumers that do not need it
+should not pay for it. The canonical sorted order is:
+
+```text
+primary:   lowest logical start index first
+secondary: largest Region size first for equal starts
+```
+
+Equivalently, equal-start Regions are ordered by descending end position. Exact
+duplicates need no stable relative order. Sortedness does **not** imply disjointness,
+normalization, merging, or uniqueness: overlapping and duplicate Regions remain valid
+contributions.
+
+A single Region trivially satisfies a sorted-Coverage requirement. A consumer that
+accepts unordered Coverage accepts either form. A consumer that requires sorted
+Coverage may receive a naturally sorted producer directly; several individually
+sorted fan-in producers can be combined with a k-way merge of Region descriptors
+without copying their sample/audio backing. An unordered producer feeding a sorted
+consumer requires descriptor sorting, but still does not require sample-value
+materialization merely to establish order.
 
 ## 3. Sequential sample inputs define reduction semantics
 
@@ -206,7 +235,161 @@ still require an explicit recording/persistence policy before it can satisfy arb
 random-access lifetime requirements. The Region/Coverage distinction adds a
 contiguity requirement; it does not erase the existing access/lifetime requirement.
 
-## 6. Sample port config types should make invalid states unrepresentable
+## 6. Continuous audio values use a closed registered type system
+
+Continuous audio ports should not be permanently hard-wired to `iv::Sample`. The
+application should use the same closed-registry/plugin pattern already used for event
+types and channel types: adding a supported transported value type adds one deliberate
+registry case together with its storage semantics and legal conversions.
+
+The initial scope is intentionally audio-only:
+
+```text
+Sample
+FFTBlock
+```
+
+Image/video values are explicitly deferred. They should not force premature answers
+about image pacing, pixel layouts, channel semantics, or GraphJit video-kernel
+optimization while the audio system is still being completed.
+
+Connections require a defined conversion between their registered value types. The
+conversion relation must remain coherent under composition: if values of `A` and `C`
+can both convert to `B`, both may contribute to one `B` input; if more than one path
+can convert one source type to one target type, those paths must not create
+path-dependent semantics. A semantic transform such as waveform <-> FFT is a DSP
+node, not an implicit type conversion.
+
+Sparse isolated values do not require a fourth continuous-data representation. If a
+node needs sparse sample/value occurrences, define an event type carrying the value
+and use the existing event-time/index semantics.
+
+Procedural/randomly addressable computation likewise does not require another access
+form. The existing constrained replayable-Tick mechanism is the current way to
+recompute eligible sequential producers for arbitrary requested coverage. A possible
+future `tack()`/`tack_block()` split may make replayability explicit, but it is not the
+current direction.
+
+### Type-dependent `size()` is a realization fact
+
+Each registered continuous value type has a fixed rank known from its type definition,
+but its concrete dimensions may be realization-dependent. Call this property simply
+**size** rather than introducing a universal `format` object.
+
+For the initial types:
+
+```text
+Sample
+    scalar; no dynamic dimensions
+
+FFTBlock
+    rank 1
+    size = number of frequency-domain values in one block
+```
+
+Do not generate a distinct C++/registry type for every FFT size. `FFTBlock` remains
+one registered value type; a particular graph realization resolves, for example,
+`size() == 2048`. The type implementation/GraphJit may still specialize kernels for a
+finite set of useful FFT sizes internally without making those specializations part
+of port type identity.
+
+The resolved size must be known **before** GraphJit chooses transient stack backing,
+aliases representations, or promotes large values to fixed persistent realtime
+storage. A graph revision with an unresolved or contradictory required size fails
+before lowering rather than falling back to audio-thread dynamic allocation.
+
+### Static port shape and instance-dependent constraints stay separate
+
+`inputs()` and `outputs()` remain `static constexpr`. They define the stable authored
+interface shape that lets the framework instantiate concrete specialized context
+classes for `tick*()`, `tock*()`, declaration, and port-constraint callbacks. Node
+callbacks should therefore be concrete functions, not `auto&` function templates.
+
+A configured node instance may additionally define:
+
+```cpp
+void constrain_ports(ConstrainPortsContext<MyNode>& ctx) const;
+```
+
+This phase contributes constraints over the statically known ports without changing
+port count, names, registered value types, or callback context shape.
+
+For example, an FFT node may anchor the size selected by its constructor:
+
+```cpp
+void FFT::constrain_ports(ConstrainPortsContext<FFT>& ctx) const
+{
+    ctx.equal(ctx.output<"spectrum">().size(), fft_size_);
+}
+```
+
+A size-preserving spectral processor does not need the FFT size repeated in its
+constructor:
+
+```cpp
+void SpectralGain::constrain_ports(
+    ConstrainPortsContext<SpectralGain>& ctx) const
+{
+    ctx.equal(
+        ctx.input<"in">().size(),
+        ctx.output<"out">().size());
+}
+```
+
+`ctx.equal(...)` is variadic and accepts constraint variables and constants. A node
+with two inputs and two outputs can express one equivalence class directly:
+
+```cpp
+ctx.equal(
+    ctx.input<"a">().size(),
+    ctx.input<"b">().size(),
+    ctx.output<"x">().size(),
+    ctx.output<"y">().size(),
+    fft_size_);
+```
+
+If one call contains different constants, the constraint context can reject it
+immediately. Contradictions that only become visible after graph connections and
+other nodes' constraints are joined are graph-compilation errors. The initial solver
+may be mostly equality classes plus constants; the mechanism deliberately leaves
+room for registered type-specific constraints later when a real use case requires
+them.
+
+After the graph-wide solve, `declare()` observes concrete resolved sizes through its
+specialized context, for example:
+
+```cpp
+auto const fft_size = ctx.input<"in">().size();
+ctx.local_array<&State::scratch>(fft_size);
+```
+
+`declare()` consumes the solved result; it should not both create an unresolved size
+relationship and depend on that same relationship having already been solved.
+
+The same `constrain_ports()` phase also contributes exact per-port `pace()`
+constraints. Pace resolution, effective local sample rate, `tick()` legality, and
+per-port `tick_block()` sizes are specified in
+[Graph JIT Direction](./graph_jit_direction.md#planned-port-size-and-pace-constraint-analysis)
+and [Sequential Port Storage And Connection Planning](./sequential_port_storage_planning.md#planned-pace-aware-tick_block-contract).
+
+### FFT blocks keep the existing audio channel model
+
+`ChannelTypeId` remains meaningful for both scalar sample streams and FFT-block
+streams. The project does not need to make channel layout a universal property of all
+future registered value types merely to support FFT data.
+
+A stereo FFT is naturally represented as one planar FFT block per channel. GraphBuilder
+may continue using its existing channel-type tiling machinery, so ordinary tiled
+spectral nodes operate as one concrete channel member per tile. No alternate
+frequency-interleaved FFT representation is required for the initial design.
+
+Existing channel conversions remain aliasing or linear operations applied over the
+FFT values/bins. In particular, averaging two FFT blocks is equivalent to FFT of the
+averaged time-domain samples, apart from floating-point reassociation details. This
+preserves room for GraphJit to move/fuse legal linear channel operations around FFT
+boundaries when profitable without changing authored semantics.
+
+## 7. Sample port config types should make invalid states unrepresentable
 
 The current `InputConfig` representation combines a sample/event `kind` variant with
 an independent `InputAccessConfig`. That cross-product becomes undesirable once only
@@ -227,8 +410,12 @@ struct SequentialSampleInputConfig {
     SampleCombineValuesFn combine_values;
 };
 
+enum class CoverageOrdering { unspecified, sorted };
+
 struct RegionSampleInputConfig {};
-struct CoverageSampleInputConfig {};
+struct CoverageSampleInputConfig {
+    CoverageOrdering ordering = CoverageOrdering::unspecified;
+};
 
 using SampleInputAccessConfig = std::variant<
     SequentialSampleInputConfig,
@@ -269,7 +456,9 @@ struct TickOutputConfig {
 };
 
 struct RegionTockOutputConfig {};
-struct CoverageTockOutputConfig {};
+struct CoverageTockOutputConfig {
+    CoverageOrdering ordering = CoverageOrdering::unspecified;
+};
 
 using SampleOutputProductionConfig = std::variant<
     TickOutputConfig,
@@ -287,10 +476,12 @@ struct SampleOutputConfig {
 `OutputRetention::{ephemeral,persisted}` remains an independent axis. Both Region and
 Coverage Tock outputs may be ephemeral or persisted.
 
-The exact final naming of the empty Region/Coverage alternative structs can change,
-but the type separation is the intended contract.
+The exact final naming of the Region/Coverage alternatives and ordering enum can
+change, but the type separation is the intended contract. A Coverage input uses the
+ordering property as a consumer requirement; a Coverage producer uses it as a producer
+guarantee.
 
-## 7. Sequential combine helpers select the operation statically
+## 8. Sequential combine helpers select the operation statically
 
 Authored node helpers should make `combine_values` a template-selected operation,
 while the materialized config contains the raw function pointer expected by generated
@@ -324,7 +515,7 @@ Frontend/reflection metadata does not need to serialize or expose the executable
 function pointer. It needs the scalar metadata (`default_value`, `min`, `max`, etc.)
 that is semantically useful outside the generated DSP module.
 
-## 8. Persisted and ephemeral random-access sample data stop using pages
+## 9. Persisted and ephemeral random-access sample data stop using pages
 
 The target architecture should remove page-based sample storage for Tock-generated
 and other random-access sample data.
@@ -350,7 +541,7 @@ persisted page store is still an implementation-design problem. This direction o
 requires that its node-facing/random-access semantic unit is Region/Coverage rather
 than fixed pages.
 
-## 9. Region count is evaluation data, not realtime layout data
+## 10. Region count is evaluation data, not realtime layout data
 
 The number of Regions in a Coverage is not assumed to be available during
 `declare()` and should not become a `NodeLayout` sizing input merely to support
@@ -371,7 +562,7 @@ coverage/content changes
 
 This does not change `NodeLayout` or force `NodeStorage` replacement.
 
-## 10. Migration boundary from the checked-in implementation
+## 11. Migration boundary from the checked-in implementation
 
 The current repository still contains page-backed persisted/random-access sample
 storage and APIs designed around disjoint canonical Coverage. Those are implementation

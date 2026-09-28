@@ -4,7 +4,7 @@ _Status: current design direction for synchronous whole-project graph compilatio
 
 
 > **Planned random-access representation change:**
-> [Random-Access Port Data And Sample Input Contract Direction](./random_access_port_data_direction.md)
+> [Random-Access Port Data, Audio Value Types, And Input Contract Direction](./random_access_port_data_direction.md)
 > supersedes page-backed random-access sample storage and disjoint-Coverage assumptions
 > in this document. Existing page-store discussion should be read as an implementation
 > checkpoint until GraphJit/runtime lowering migrates to contiguous Region/Coverage
@@ -225,6 +225,116 @@ unequal-latency alignment, and migration. This does not reintroduce connection
 helper nodes. External boundaries remain capability-gated rather than being
 approximated with transient storage.
 
+### Planned port-size and pace constraint analysis
+
+The next port-generalization step should add graph-wide constraints over the static
+port schemas before storage planning. `inputs()` and `outputs()` remain
+`static constexpr`, so GraphJit/source introspection knows the exact port names,
+registered value types, access/production contracts, and specialized context shapes.
+A configured node instance may contribute constructor-dependent relationships through
+one concrete callback:
+
+```cpp
+void constrain_ports(ConstrainPortsContext<MyNode>& ctx) const;
+```
+
+The initial continuous audio value registry contains scalar `Sample` and a one-
+dimensional `FFTBlock`. Each registered type defines the rank and storage meaning of
+its `size()`; `Sample` has no dynamic dimension while `FFTBlock::size()` is the number
+of frequency values in one transported FFT block. GraphJit must resolve every required
+size before transient-arena packing, alias selection, persistent-realtime placement,
+or LLVM lowering.
+
+`ConstrainPortsContext` exposes only constraint expressions, not solved realization
+values. The principal primitive is variadic equality:
+
+```cpp
+ctx.equal(
+    ctx.input<"a">().size(),
+    ctx.input<"b">().size(),
+    ctx.output<"x">().size(),
+    ctx.output<"y">().size(),
+    configured_fft_size);
+```
+
+Different constants in one local equality are an immediate configuration error.
+Conflicts or unresolved variables that appear only after connection/type-conversion
+constraints are joined reject the graph revision during compilation. Ordinary
+spectral processors can therefore equate input/output FFT sizes and inherit one
+upstream/downstream anchor instead of storing the FFT size in every node constructor.
+`declare()` runs after resolution and may read concrete `ctx.input<...>().size()` /
+`ctx.output<...>().size()` values when sizing `State` storage.
+
+The same constraint phase owns **port pace**. Pace is an exact relative quantity of
+transported values per local logical node step; it is not sample-rate conversion and
+must not imply interpolation/filtering. Inputs and outputs may have different paces,
+which represents FFT hop ratios and over/under-sampled graph regions without helper
+nodes. Equality is again variadic, for example:
+
+```cpp
+ctx.equal(
+    ctx.input<"a">().pace(),
+    ctx.input<"b">().pace(),
+    ctx.output<"out">().pace());
+```
+
+A rate-changing node may bind different ports to different exact quantities, for
+example:
+
+```cpp
+ctx.equal(ctx.input<"in">().pace(), 1);
+ctx.equal(ctx.output<"out">().pace(), 2);
+```
+
+or an STFT may bind its scalar input pace to a configured hop size and its FFT output
+pace to one. Pace arithmetic/normalization should use exact integer/rational
+relationships rather than floating-point rates so callback subdivision cannot
+accumulate index drift.
+Connections join those relations across the graph; the resolved result defines exact
+global-index mappings and node execution-rate domains.
+
+`ctx.sample_rate` is **not** available as a resolved number in `constrain_ports()`.
+The node's effective sample rate depends on the very pace-domain solve being
+constructed there. After resolution, declaration/initialization/execution contexts
+may expose `ctx.sample_rate`, meaning the node's **effective local sample rate**. A
+node running in a 2x oversampled region of a 48 kHz project must observe 96 kHz so
+filters, oscillators, time constants, and other rate-dependent DSP remain correct.
+This effective rate is distinct from per-port pace: an ordinary downstream filter may
+have pace 1 on every port while its whole node executes in a 2x sample-rate domain.
+
+Pacing and resampling remain separate operations. Pacing establishes how exact global
+indices and transported-value counts correspond between rate domains. A resampler is
+explicit DSP that computes new values. Future non-audio work may build on the same exact index-domain machinery, but
+image/video value types and video-specific scheduling are out of scope for the
+initial audio implementation.
+
+A configured realization that defines pointwise `tick()` is legal only when the
+relevant sequential Tick ports resolve to one compatible pace. This is a graph-
+compilation check, not necessarily a source-introspection error: if a newly requested
+revision resolves a `tick()` node to incompatible paces, compilation fails, the UI
+receives the diagnostic, and the previous active revision remains untouched. A node
+whose valid configurations can require heterogeneous paces should author adaptive
+`tick_block()` instead.
+
+For native `tick_block()`, block extent becomes a **per-port** resolved quantity.
+The specialized context should expose, for example:
+
+```cpp
+auto in_frames  = ctx.input<"in">().block_size();
+auto out_frames = ctx.output<"out">().block_size();
+```
+
+`block_size()` counts transported values participating in this invocation. It is not
+the same as type-dependent `size()`: an FFT output may have `size() == 2048` and
+`block_size() == 4`, meaning four FFT values, each containing 2048 frequency values.
+GraphJit chooses a legal logical invocation quantum and derives every port's
+`block_size()` from its resolved pace. An oversampler may consume `N` input values and
+produce `2N`; an STFT may consume `512K` scalar samples and produce `K` FFT blocks.
+
+The checked-in lowering currently assumes one common `block_size` for every
+sequential sample port. That is an implementation checkpoint superseded by this
+planned pace-aware contract.
+
 ### Tick/Sequential port realization rules
 
 The remaining port work should preserve these invariants:
@@ -444,10 +554,13 @@ when the callback returns. A node that implements only `tick()` is executed by
 `do_tick_block()` as one-sample context per frame, advancing input/output
 cursors after every call. Primitive maximum-block slicing reconstructs the same
 facades at each slice index, so authored-latency revision must remain valid across
-both slice and root-call boundaries. Well-formed Tick nodes publish exactly
-one sample frame per output per `tick()`, or `block_size` frames per output per
-`tick_block()`; release execution does not maintain a redundant production-count
-check.
+both slice and root-call boundaries. The checked-in implementation currently publishes exactly one sample frame per output
+per `tick()`, or one common `block_size` per output per `tick_block()`. The planned
+pace-aware contract above supersedes that equal-block assumption: pointwise `tick()`
+is valid only for a realization whose relevant ports resolve to equal pace, while
+native `tick_block()` consumes/produces each port's resolved per-port `block_size()`.
+Release execution still need not maintain a redundant dynamic production-count check
+once GraphJit has proven and lowered those counts.
 
 `skip_block()` uses the same block anchoring. A custom skip callback owns its own
 output semantics; when one is absent the generic helper generates silence for

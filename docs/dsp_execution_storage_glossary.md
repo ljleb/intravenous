@@ -4,7 +4,7 @@ _Status: normative terminology for current DSP, GraphJit, coverage, storage, and
 
 
 > **Planned terminology change:**
-> [Random-Access Port Data And Sample Input Contract Direction](./random_access_port_data_direction.md)
+> [Random-Access Port Data, Audio Value Types, And Input Contract Direction](./random_access_port_data_direction.md)
 > introduces Region versus Coverage random-access sample forms and allows Coverage
 > Regions to overlap. Where this glossary describes Coverage as only a set/canonical
 > union of positions, the planned Region/Coverage contract takes precedence for the
@@ -102,6 +102,52 @@ Use **persistent** separately for ordinary storage lifetime or placement, such a
 persistent `NodeStorage`, a persistent ring, or a persistent compiler service.
 Do not use **persistent** as a synonym for the authored `persisted` output-retention
 contract.
+
+## Port value size and pacing
+
+### Port value size
+
+A port value's **size** is the registered value-type-specific fixed-rank extent of one
+transported value in the active realization. Scalar `Sample` has no dynamic extent;
+an FFT block has one dimension whose resolved value is its frequency-value count.
+Size is structural realization data and must be resolved before GraphJit chooses
+storage or lowers code.
+
+Do not use **size** to mean the number of transported values in one `tick_block()`
+invocation; that quantity is the port's block size.
+
+### Port pace
+
+A port's **pace** is the exact relative quantity of transported values consumed or
+produced per local logical node step. Different ports of one node may have different
+paces. Pace establishes execution/index-domain relationships; it does not perform
+resampling or otherwise compute new signal values.
+
+Pace is a graph-resolved realization fact contributed through port constraints and
+connections. Exact integer/rational relationships should be preserved so different
+callback subdivision choices cannot accumulate timing/index drift.
+
+### Per-port block size
+
+A port's **block size** is the number of transported values presented to or produced by
+that port during one `tick_block()` invocation. Under heterogeneous pacing there is no
+single node-wide block size. The specialized Tick-block context exposes the resolved
+count per port.
+
+For an FFT-block port, `size() == 2048` and `block_size() == 4` means four transported
+FFT blocks, each containing 2048 frequency values.
+
+### Effective local sample rate
+
+A node's **effective local sample rate** is the sample rate of its resolved execution
+rate domain, exposed after pace analysis to declaration/initialization/execution
+contexts. It is not a constant available during `constrain_ports()` because the
+constraint solve determines the domain itself. A node in a 2x oversampled region of a
+48 kHz project observes 96 kHz.
+
+Use **pace** for relative per-port transport quantities and **effective local sample
+rate** for the physical/audio rate seen by the node. They are related by graph
+analysis but are not synonyms.
 
 ## Graph relations and execution structures
 

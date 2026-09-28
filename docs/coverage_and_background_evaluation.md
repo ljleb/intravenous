@@ -4,7 +4,7 @@
 
 
 > **Planned random-access representation change:**
-> [Random-Access Port Data And Sample Input Contract Direction](./random_access_port_data_direction.md)
+> [Random-Access Port Data, Audio Value Types, And Input Contract Direction](./random_access_port_data_direction.md)
 > supersedes this document where it requires disjoint/canonical `Coverage` regions,
 > page-backed random-access sample storage, or page-oriented node access. The target
 > API uses contiguous Region/Coverage sample views; Coverage regions may overlap. The
@@ -950,6 +950,13 @@ replayable; the same gain fed by recorded data can be. A retained published tick
 output terminates traversal even if its original producer cannot replay. Replay
 uses isolated invocation-local scratch, immutable configuration and a canonical
 block-position/alignment contract; it cannot mutate shared live execution state.
+
+This replay mechanism is also the current answer for procedural values that can be
+cheaply recomputed at arbitrary positions: they remain eligible constrained Tick
+nodes rather than introducing a fourth Region/Coverage/Sequential access form. A
+future explicit `tack()`/`tack_block()` callback family has been considered as a way
+to make replayability first-class while returning `tick()` to foreground-only
+semantics, but it is deliberately **not** current direction.
 
 ## 14. Persisted pages share the canonical whole-graph block quantum
 
