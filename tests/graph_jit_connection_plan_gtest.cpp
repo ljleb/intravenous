@@ -2201,14 +2201,11 @@ TEST(GraphJitConnectionPlan, MixedTickAndTockEventFanInPlansPerSource)
         0.75);
 
     auto const& tick_runtime = plan->background.tick_runtime;
-    ASSERT_EQ(tick_runtime.sequential_event_inputs.size(), 1u);
-    auto const& binding = tick_runtime.sequential_event_inputs.front();
-    ASSERT_EQ(binding.storage.size(), 1u);
-    EXPECT_EQ(binding.storage.front(), materialization.output);
+    EXPECT_TRUE(tick_runtime.sequential_event_inputs.empty());
     auto const sink_node =
         *plan->background.bundle_to_background_node[sink_handle];
     EXPECT_EQ(
-        tick_runtime.nodes[sink_node].sequential_event_count, 1u);
+        tick_runtime.nodes[sink_node].sequential_event_count, 0u);
 }
 
 TEST(GraphJitConnectionPlan, PersistedTickToRandomAccessUsesStoredBoundary)

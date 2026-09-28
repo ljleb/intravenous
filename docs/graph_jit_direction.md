@@ -944,8 +944,10 @@ This is a hint, not a hard constraint. Use your own good judgement if ever in do
     thread, pins one published root for the complete generated-root call, and keeps
     that pin in a non-copyable `TickInvocationFrame`; neither the frame owner nor the
     store crosses the generated ABI. Immutable per-node dynamic Sequential and Random
-    Access sample/event slot ranges have now landed; Random Access lowering is active
-    while Sequential lowering and binding remain outstanding. The realization-owned workspace
+    Access sample/event slot ranges have now landed. Random Access lowering is active,
+    and Sequential lowering now overlays compact dynamic slots onto each imported
+    primitive's complete stack-local input-binding array so unaffected and mixed live
+    inputs remain intact. Sequential callback binding remains outstanding. The realization-owned workspace
     resolves persisted identities and allocates its address-stable view arrays off the
     audio thread; published roots retain precomputed exact output coverage, so callback
     binding only retargets direct persisted-page views to the one pinned snapshot.

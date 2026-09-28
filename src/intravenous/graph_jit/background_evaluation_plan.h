@@ -490,11 +490,11 @@ struct TickRandomAccessBindingPlan {
 };
 
 // One Tick-root Sequential input whose current-block storage is supplied by
-// background evaluation rather than only the ordinary realtime graph.
-// Persisted pages and immutable Tick materializations can be selected at the
-// callback boundary; a current_tick candidate denotes a generated-root
-// composition with live Tick sources. The consuming port retains its own
-// sample neutral value.
+// background evaluation rather than the ordinary realtime graph. Persisted
+// pages and immutable Tick materializations are selected at the callback
+// boundary. Mixed current_tick composites remain generated-root operations and
+// therefore do not occupy these external binding slots. The consuming port
+// retains its own sample neutral value.
 struct TickSequentialBindingPlan {
     BackgroundPortIndex port = 0;
     std::vector<PortStorageIndex> storage{};

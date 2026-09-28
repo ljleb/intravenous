@@ -1714,8 +1714,6 @@ std::expected<void, std::string> validate_tick_runtime_plan(
             if (storage >= plan.storage.ports.size()
                 || plan.storage.ports[storage].kind != kind
                 || (plan.storage.ports[storage].storage
-                        != PortStorageKind::current_tick
-                    && plan.storage.ports[storage].storage
                         != PortStorageKind::persisted_pages
                     && plan.storage.ports[storage].storage
                         != PortStorageKind::tick_sequential
@@ -1835,9 +1833,7 @@ std::expected<void, std::string> finalize_tick_runtime_plan(
         for (auto const storage : candidates) {
             if (storage >= plan.storage.ports.size()) continue;
             auto const kind = plan.storage.ports[storage].storage;
-            auto const compatible = (sequential
-                    && kind == PortStorageKind::current_tick)
-                || kind == PortStorageKind::persisted_pages
+            auto const compatible = kind == PortStorageKind::persisted_pages
                 || kind == PortStorageKind::tick_random_access
                 || (sequential && kind == PortStorageKind::tick_sequential);
             if (compatible
@@ -1881,6 +1877,39 @@ std::expected<void, std::string> finalize_tick_runtime_plan(
         });
         return result;
     };
+    auto has_current_tick_storage = [&](BackgroundPortPlan const& port) {
+        auto contains_current = [&](std::span<PortStorageIndex const> candidates) {
+            return std::ranges::any_of(candidates, [&](auto const storage) {
+                return storage < plan.storage.ports.size()
+                    && plan.storage.ports[storage].storage
+                        == PortStorageKind::current_tick;
+            });
+        };
+        if (port.kind == PortKind::sample) {
+            for (PortSubsetIndex subset = 0;
+                 subset < plan.sample_target_subsets.size(); ++subset) {
+                if (plan.sample_target_subsets[subset].port
+                        == port.configured_port
+                    && contains_current(
+                        plan.storage.sample_target_storage[subset])) {
+                    return true;
+                }
+            }
+        } else {
+            for (PortSubsetIndex subset = 0;
+                 subset < plan.event_target_subsets.size(); ++subset) {
+                auto const& target = plan.event_target_subsets[subset];
+                if (target.port.bundle
+                            == port.configured_port.node_bundle_handle
+                    && target.port.port == port.configured_port.port_index
+                    && contains_current(
+                        plan.storage.event_target_storage[subset])) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    };
 
     for (BackgroundNodeIndex node = 0; node < plan.nodes.size(); ++node) {
         auto& invocation = runtime.nodes[node];
@@ -1901,6 +1930,7 @@ std::expected<void, std::string> finalize_tick_runtime_plan(
             if (port.tick_sequential_input) {
                 auto storage = storage_for_port(port, true);
                 if (storage.empty()) {
+                    if (has_current_tick_storage(port)) continue;
                     return std::unexpected(
                         "GraphJit Tick Sequential input has no compatible storage");
                 }

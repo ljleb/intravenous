@@ -2266,9 +2266,10 @@ recording merely because that planning metadata exists.
       invocation. Generated code receives neither that owner nor a page-store/executor
       pointer. Immutable compiler slot maps now assign each node's dynamic Sequential
       and Random Access sample/event inputs contiguous kind-specific ranges in the
-      invocation record. Sequential slots retain persisted-page, Tick-materialization
-      and generated-root current-Tick composite candidates; sample neutral values
-      remain properties of their logical input ports.
+      invocation record. Sequential slots retain persisted-page and
+      Tick-materialization candidates; generated-root current-Tick composites remain
+      operations rather than external binding slots. Sample neutral values remain
+      properties of their logical input ports.
       A realization-owned,
       address-stable `TickInvocationWorkspace` resolves persisted identities on the
       control path, and callback binding only retargets its preallocated views to the
@@ -2287,9 +2288,11 @@ recording merely because that planning metadata exists.
       generation and exact persisted-page version. The Tick workspace binds its sample
       and event views only when both coordinates match the independently pinned page
       root, otherwise conservatively exposing empty materialized coverage instead of a
-      mixed-version view. Sequential spans remain empty until the retained slots are
-      consumed by generated lowering and callback binding, including missing-page
-      neutral playback.
+      mixed-version view. Generated lowering now overlays each node's compact
+      Sequential slots onto a stack copy of its complete ordinary input-binding array,
+      preserving unaffected and mixed live inputs. Sequential spans remain empty until
+      callback binding supplies those retained slots, including missing-page neutral
+      playback.
 
    Final commit atomically promotes prepared semantic coverage plus any candidate page
    publication. Step 5 below extends that same boundary with the processed capture

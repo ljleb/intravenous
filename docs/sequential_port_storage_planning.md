@@ -806,7 +806,10 @@ copyable `TickInvocationCall` containing resolved sequential and Random Access v
 spans. The reader slot is registered before realtime execution; constructing the
 per-callback frame performs only the store's bounded atomic pin operation. Neither
 the frame owner, executor nor page store is reachable through the generated ABI.
-The compiler now retains contiguous per-node Random Access sample/event slot ranges.
+The compiler now retains contiguous per-node dynamic Sequential and Random Access
+sample/event slot ranges. Generated Sequential lowering copies the complete ordinary
+input-binding array into the primitive's stack frame and overlays only the retained
+dynamic input ordinals, preserving unaffected and mixed live inputs.
 A realization-owned workspace resolves persisted identities and preallocates every
 view off the audio thread; published snapshots retain exact per-output coverage, and
 the callback only binds direct identity page views to its pinned root. Successful
@@ -816,8 +819,8 @@ advance materialization into logical sample/event input views in one immutable
 without audio-thread ownership release, and no-fail promotion retires its predecessor
 for explicit non-audio reclamation. Its generation and source page version must match
 the realization and callback's independently pinned page root before the workspace
-exposes its coverage. Sequential dynamic slots and missing-page neutral buffers remain
-to be added over this same snapshot rather than being mistaken for ordinary
+exposes its coverage. Sequential callback binding and missing-page neutral buffers
+remain to be added over this same snapshot rather than being mistaken for ordinary
 current-Tick storage.
 
 All backing owners become address-stable before callback frames are built. The

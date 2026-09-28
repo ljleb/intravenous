@@ -56,6 +56,10 @@ struct ReflectedContextByteOffsets {
 };
 
 struct TickInvocationByteOffsets {
+    std::size_t sequential_sample_inputs_data = 0;
+    std::size_t sequential_sample_inputs_size = 0;
+    std::size_t sequential_event_inputs_data = 0;
+    std::size_t sequential_event_inputs_size = 0;
     std::size_t random_access_sample_inputs_data = 0;
     std::size_t random_access_sample_inputs_size = 0;
     std::size_t random_access_event_inputs_data = 0;
@@ -167,6 +171,22 @@ constexpr ReflectedContextByteOffsets reflected_context_byte_offsets() noexcept
 constexpr TickInvocationByteOffsets tick_invocation_byte_offsets() noexcept
 {
     return {
+        .sequential_sample_inputs_data =
+            offsetof(TickInvocationCall, sequential_sample_inputs)
+            + offsetof(
+                ReflectedSpan<ReflectedSampleInputPortBinding const>, pointer),
+        .sequential_sample_inputs_size =
+            offsetof(TickInvocationCall, sequential_sample_inputs)
+            + offsetof(
+                ReflectedSpan<ReflectedSampleInputPortBinding const>, extent),
+        .sequential_event_inputs_data =
+            offsetof(TickInvocationCall, sequential_event_inputs)
+            + offsetof(
+                ReflectedSpan<ReflectedEventInputPortBinding const>, pointer),
+        .sequential_event_inputs_size =
+            offsetof(TickInvocationCall, sequential_event_inputs)
+            + offsetof(
+                ReflectedSpan<ReflectedEventInputPortBinding const>, extent),
         .random_access_sample_inputs_data =
             offsetof(TickInvocationCall, random_access_sample_inputs)
             + offsetof(ReflectedSpan<RandomAccessSampleInputPort const>, pointer),
@@ -1110,6 +1130,97 @@ void store_tick_invocation_span(
             builder, context_storage, context_size_offset, name + ".target.size"));
 }
 
+llvm::Value* overlay_tick_sequential_bindings(
+    llvm::IRBuilder<>& builder,
+    llvm::Value* static_bindings,
+    std::size_t static_binding_count,
+    llvm::Value* invocation,
+    std::size_t invocation_data_offset,
+    std::size_t invocation_size_offset,
+    std::span<TickSequentialBindingPlan const> dynamic_bindings,
+    std::size_t dynamic_begin,
+    std::size_t dynamic_count,
+    BackgroundEvaluationPlan const& background,
+    std::size_t element_size,
+    std::size_t element_alignment,
+    llvm::Twine const& name)
+{
+    auto& context = builder.getContext();
+    auto* byte_type = llvm::Type::getInt8Ty(context);
+    auto* pointer_type = llvm::PointerType::getUnqual(context);
+    auto* size_type = llvm::IntegerType::get(
+        context, static_cast<unsigned>(sizeof(std::size_t) * 8));
+    auto constant = [&](std::size_t value) {
+        return llvm::ConstantInt::get(size_type, value);
+    };
+    auto const alignment = llvm::Align(element_alignment);
+
+    auto* overlaid = builder.CreateAlloca(
+        byte_type,
+        constant(static_binding_count * element_size),
+        name + ".storage");
+    overlaid->setAlignment(alignment);
+    builder.CreateMemCpy(
+        overlaid,
+        alignment,
+        static_bindings,
+        alignment,
+        static_binding_count * element_size);
+
+    auto* source_data_address = byte_offset_pointer(
+        builder,
+        invocation,
+        invocation_data_offset,
+        name + ".source.data");
+    auto* source_size_address = byte_offset_pointer(
+        builder,
+        invocation,
+        invocation_size_offset,
+        name + ".source.size");
+    auto* source_data = builder.CreateLoad(
+        pointer_type, source_data_address, name + ".data");
+    auto* source_size = builder.CreateLoad(
+        size_type, source_size_address, name + ".size");
+    auto* present = builder.CreateAnd(
+        builder.CreateIsNotNull(source_data),
+        builder.CreateICmpUGE(
+            source_size, constant(dynamic_begin + dynamic_count)),
+        name + ".present");
+
+    for (std::size_t slot = 0; slot < dynamic_count; ++slot) {
+        auto const& binding = dynamic_bindings[dynamic_begin + slot];
+        auto const target = background.ports[binding.port]
+                                .configured_port.port_index;
+        auto* invocation_source = builder.CreateInBoundsGEP(
+            byte_type,
+            source_data,
+            constant((dynamic_begin + slot) * element_size),
+            name + ".invocation.binding");
+        auto* static_source = builder.CreateInBoundsGEP(
+            byte_type,
+            static_bindings,
+            constant(target * element_size),
+            name + ".static.binding");
+        auto* selected_source = builder.CreateSelect(
+            present,
+            invocation_source,
+            static_source,
+            name + ".selected.binding");
+        auto* target_binding = builder.CreateInBoundsGEP(
+            byte_type,
+            overlaid,
+            constant(target * element_size),
+            name + ".target.binding");
+        builder.CreateMemCpy(
+            target_binding,
+            alignment,
+            selected_source,
+            alignment,
+            element_size);
+    }
+    return overlaid;
+}
+
 void store_context_span(
     llvm::IRBuilder<>& builder,
     llvm::Value* context_storage,
@@ -1137,6 +1248,7 @@ void emit_primitive_call(
     detail::PrimitiveStoragePlan const& storage,
     EmittedPrimitiveSamplePorts const& sample_ports,
     EmittedPrimitiveEventPorts const& event_ports,
+    BackgroundEvaluationPlan const* tick_background,
     TickNodeInvocationPlan const* tick_invocation,
     llvm::Value* invocation,
     llvm::Value* storage_base,
@@ -1159,12 +1271,31 @@ void emit_primitive_call(
 
     auto const offsets = reflected_context_byte_offsets();
     if (sample_ports.input_count != 0) {
+        auto* bindings = sample_ports.input_bindings;
+        if (tick_background != nullptr && tick_invocation != nullptr
+            && tick_invocation->sequential_sample_count != 0) {
+            auto const call_offsets = tick_invocation_byte_offsets();
+            bindings = overlay_tick_sequential_bindings(
+                builder,
+                bindings,
+                sample_ports.input_count,
+                invocation,
+                call_offsets.sequential_sample_inputs_data,
+                call_offsets.sequential_sample_inputs_size,
+                tick_background->tick_runtime.sequential_sample_inputs,
+                tick_invocation->sequential_sample_begin,
+                tick_invocation->sequential_sample_count,
+                *tick_background,
+                sizeof(ReflectedSampleInputPortBinding),
+                alignof(ReflectedSampleInputPortBinding),
+                "tick.sequential.sample");
+        }
         store_context_span_pointer(
             builder,
             context_storage,
             offsets.sample_input_bindings_data,
             offsets.sample_input_bindings_size,
-            sample_ports.input_bindings,
+            bindings,
             sample_ports.input_count);
     }
     if (sample_ports.output_count != 0) {
@@ -1177,12 +1308,31 @@ void emit_primitive_call(
             sample_ports.output_count);
     }
     if (event_ports.input_count != 0) {
+        auto* bindings = event_ports.input_bindings;
+        if (tick_background != nullptr && tick_invocation != nullptr
+            && tick_invocation->sequential_event_count != 0) {
+            auto const call_offsets = tick_invocation_byte_offsets();
+            bindings = overlay_tick_sequential_bindings(
+                builder,
+                bindings,
+                event_ports.input_count,
+                invocation,
+                call_offsets.sequential_event_inputs_data,
+                call_offsets.sequential_event_inputs_size,
+                tick_background->tick_runtime.sequential_event_inputs,
+                tick_invocation->sequential_event_begin,
+                tick_invocation->sequential_event_count,
+                *tick_background,
+                sizeof(ReflectedEventInputPortBinding),
+                alignof(ReflectedEventInputPortBinding),
+                "tick.sequential.event");
+        }
         store_context_span_pointer(
             builder,
             context_storage,
             offsets.event_input_bindings_data,
             offsets.event_input_bindings_size,
-            event_ports.input_bindings,
+            bindings,
             event_ports.input_count);
     }
     if (event_ports.output_count != 0) {
@@ -1249,6 +1399,7 @@ void emit_sliced_primitive_calls(
     detail::PrimitiveStoragePlan const& storage,
     EmittedPrimitiveSamplePorts const& sample_ports,
     EmittedPrimitiveEventPorts const& event_ports,
+    BackgroundEvaluationPlan const* tick_background,
     TickNodeInvocationPlan const* tick_invocation,
     llvm::Value* invocation,
     llvm::Value* storage_base,
@@ -1288,6 +1439,7 @@ void emit_sliced_primitive_calls(
         storage,
         sample_ports,
         event_ports,
+        tick_background,
         tick_invocation,
         invocation,
         storage_base,
@@ -3448,6 +3600,7 @@ std::expected<void, std::string> emit_execution_step(
         return std::unexpected(
             "GraphJit execution plan references a missing event-port runtime plan");
     }
+    BackgroundEvaluationPlan const* tick_background = nullptr;
     TickNodeInvocationPlan const* tick_bindings = nullptr;
     if (step.configuration_index < plan.imports.primitive_callbacks.size()) {
         auto const bundle = plan.imports
@@ -3460,7 +3613,55 @@ std::expected<void, std::string> emit_execution_step(
                 return std::unexpected(
                     "GraphJit Tick invocation map references a missing node");
             }
+            tick_background = &background;
             tick_bindings = &background.tick_runtime.nodes[node];
+            auto validate_sequential_ordinals = [&](
+                std::span<TickSequentialBindingPlan const> bindings,
+                std::size_t begin,
+                std::size_t count,
+                PortKind kind,
+                std::size_t input_count)
+                -> std::expected<void, std::string> {
+                if (begin > bindings.size()
+                    || count > bindings.size() - begin) {
+                    return std::unexpected(
+                        "GraphJit Tick Sequential binding range is out of bounds");
+                }
+                for (std::size_t slot = begin; slot < begin + count; ++slot) {
+                    auto const port_index = bindings[slot].port;
+                    if (port_index >= background.ports.size()) {
+                        return std::unexpected(
+                            "GraphJit Tick Sequential binding references a missing port");
+                    }
+                    auto const& port = background.ports[port_index];
+                    if (port.node != node || port.kind != kind
+                        || port.configured_port.port_index >= input_count) {
+                        return std::unexpected(
+                            "GraphJit Tick Sequential binding has no matching primitive input");
+                    }
+                }
+                return {};
+            };
+            if (auto valid = validate_sequential_ordinals(
+                    background.tick_runtime.sequential_sample_inputs,
+                    tick_bindings->sequential_sample_begin,
+                    tick_bindings->sequential_sample_count,
+                    PortKind::sample,
+                    sample_bindings.primitives[step.configuration_index]
+                        .input_count);
+                !valid) {
+                return valid;
+            }
+            if (auto valid = validate_sequential_ordinals(
+                    background.tick_runtime.sequential_event_inputs,
+                    tick_bindings->sequential_event_begin,
+                    tick_bindings->sequential_event_count,
+                    PortKind::event,
+                    event_bindings.primitives[step.configuration_index]
+                        .input_count);
+                !valid) {
+                return valid;
+            }
         }
     }
 
@@ -3534,6 +3735,7 @@ std::expected<void, std::string> emit_execution_step(
             plan.declarations.primitive_storage[step.storage_index],
             sample_bindings.primitives[step.configuration_index],
             event_bindings.primitives[step.configuration_index],
+            tick_background,
             tick_bindings,
             invocation,
             realtime_storage.persistent_base,
@@ -3548,6 +3750,7 @@ std::expected<void, std::string> emit_execution_step(
             plan.declarations.primitive_storage[step.storage_index],
             sample_bindings.primitives[step.configuration_index],
             event_bindings.primitives[step.configuration_index],
+            tick_background,
             tick_bindings,
             invocation,
             realtime_storage.persistent_base,
