@@ -127,8 +127,6 @@ The planned config shape is approximately:
 using SampleCombineValuesFn = Sample (*)(Sample, Sample);
 
 struct SequentialSampleInputConfig {
-    std::size_t history = 0;
-
     Sample default_value = 0.0;
     Sample min = -std::numeric_limits<Sample::storage>::infinity();
     Sample max = std::numeric_limits<Sample::storage>::infinity();
@@ -141,8 +139,6 @@ struct SequentialSampleInputConfig {
 The field grouping is intentional:
 
 ```text
-history
-
 default_value
 min
 max
@@ -150,6 +146,10 @@ max
 neutral_value
 combine_values
 ```
+
+Sequential input history is no longer part of this static `constexpr` access config.
+History is a realization-dependent timing requirement contributed by
+`constrain_ports()` after the configured node instance exists.
 
 `default_value`, `min`, and `max` belong together and exist only on Sequential sample
 inputs. They are presentation-relevant scalar metadata: the framework/default
@@ -319,7 +319,7 @@ For example, an FFT node may anchor the size selected by its constructor:
 ```cpp
 void FFT::constrain_ports(ConstrainPortsContext<FFT>& ctx) const
 {
-    ctx.equal(ctx.output<"spectrum">().size(), fft_size_);
+    ctx.output<"spectrum">().size() = fft_size_;
 }
 ```
 
@@ -330,14 +330,15 @@ constructor:
 void SpectralGain::constrain_ports(
     ConstrainPortsContext<SpectralGain>& ctx) const
 {
-    ctx.equal(
-        ctx.input<"in">().size(),
-        ctx.output<"out">().size());
+    ctx.output<"out">().size() = ctx.input<"in">().size();
 }
 ```
 
-`ctx.equal(...)` is variadic and accepts constraint variables and constants. A node
-with two inputs and two outputs can express one equivalence class directly:
+For the common two-sided case, the constraint proxies returned by `size()`, `pace()`,
+`history()`, and `latency()` support assignment as equality shorthand. Assignment adds
+a constraint; it does not mutate an already-resolved port value. `ctx.equal(...)` remains
+the clearer primitive for N-way equality and accepts constraint variables and constants.
+A node with two inputs and two outputs can express one equivalence class directly:
 
 ```cpp
 ctx.equal(
@@ -366,10 +367,15 @@ ctx.local_array<&State::scratch>(fft_size);
 `declare()` consumes the solved result; it should not both create an unresolved size
 relationship and depend on that same relationship having already been solved.
 
-The same `constrain_ports()` phase also contributes exact per-port `pace()`
-constraints. Pace resolution, effective local sample rate, `tick()` legality, and
-per-port `tick_block()` sizes are specified in
-[Graph JIT Direction](./graph_jit_direction.md#planned-port-size-and-pace-constraint-analysis)
+The same `constrain_ports()` phase also contributes exact per-port `pace()`,
+Sequential-input `history()`, and Tick-output `latency()` constraints. These are
+realization facts rather than static port-schema fields. For an overlap FFT configured
+with transform size `N` and hop `H`, a complete-window implementation may constrain
+`input.history() = N - H`; if it does not emit a zero-padded startup frame, it may also
+constrain a positive output latency so the first authored FFT block can be finalized by
+a later invocation. Pace resolution, effective local sample rate, `tick()` legality,
+and per-port `tick_block()` sizes are specified in
+[Graph JIT Direction](./graph_jit_direction.md#planned-port-size-pace-history-and-latency-constraint-analysis)
 and [Sequential Port Storage And Connection Planning](./sequential_port_storage_planning.md#planned-pace-aware-tick_block-contract).
 
 ### FFT blocks keep the existing audio channel model
@@ -400,8 +406,6 @@ The planned sample-input representation is instead approximately:
 
 ```cpp
 struct SequentialSampleInputConfig {
-    std::size_t history = 0;
-
     Sample default_value = 0.0;
     Sample min = -std::numeric_limits<Sample::storage>::infinity();
     Sample max = std::numeric_limits<Sample::storage>::infinity();
@@ -446,14 +450,12 @@ do not acquire sample-only reduction/UI fields merely for symmetry.
 
 ### Sample outputs
 
-Tick history/latency remains meaningful only for Tick production. Tock sample outputs
-select whether their random-access result is one Region or a Coverage:
+Tick history/latency remains meaningful only for Tick production, but it is not part of
+the static `constexpr` output-production config. Tock sample outputs select whether
+their random-access result is one Region or a Coverage:
 
 ```cpp
-struct TickOutputConfig {
-    std::size_t history = 0;
-    std::size_t latency = 0;
-};
+struct TickOutputConfig {};
 
 struct RegionTockOutputConfig {};
 struct CoverageTockOutputConfig {
@@ -472,6 +474,10 @@ struct SampleOutputConfig {
     OutputRetention retention = OutputRetention::ephemeral;
 };
 ```
+
+A configured Tick node contributes its required output `history()` and `latency()` in
+`constrain_ports()`. This allows constructor values and graph-resolved port sizes/paces
+to determine the temporal window without changing the static callback shape.
 
 `OutputRetention::{ephemeral,persisted}` remains an independent axis. Both Region and
 Coverage Tock outputs may be ephemeral or persisted.

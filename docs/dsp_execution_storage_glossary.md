@@ -34,7 +34,8 @@ None of these terms implies either of the other axes.
 ### Sequential input / sequential consumption
 
 A **Sequential** input consumes a bounded ordered window associated with ordinary
-block execution. Its authored contract may include finite history.
+block execution. Its configured realization may require finite history resolved through
+port constraints.
 
 Use **sequential consumption** when the sentence is about the consumer behavior,
 not the output that happens to feed it.
@@ -136,6 +137,12 @@ count per port.
 
 For an FFT-block port, `size() == 2048` and `block_size() == 4` means four transported
 FFT blocks, each containing 2048 frequency values.
+
+A Sequential input's **history-inclusive block** is the contiguous view consisting of
+its resolved history immediately followed by the current block. The provisional API
+name is `block_extended()`. It is a Sequential view, not a Region or Coverage;
+GraphJit may alias existing storage or materialize the finite view when contiguity
+requires it.
 
 ### Effective local sample rate
 
@@ -478,7 +485,7 @@ partitioning for correctness and coalescing for efficiency are separate stages.
 
 **Node-owned port state** is the semantic history/latency state of a surviving
 concrete node's ports across graph revisions. A Sequential input owns its resolved
-history; a Tick output owns its authored history and latency/future window. This is
+history; a Tick output owns its resolved history and latency/future window. This is
 an **as-if private state** rule: storage lowering may alias or share the data with
 producer timelines or other representations, but graph replacement must preserve the
 same observable state that private node-local storage would have preserved.

@@ -225,7 +225,7 @@ unequal-latency alignment, and migration. This does not reintroduce connection
 helper nodes. External boundaries remain capability-gated rather than being
 approximated with transient storage.
 
-### Planned port-size and pace constraint analysis
+### Planned port-size, pace, history, and latency constraint analysis
 
 The next port-generalization step should add graph-wide constraints over the static
 port schemas before storage planning. `inputs()` and `outputs()` remain
@@ -246,7 +246,16 @@ size before transient-arena packing, alias selection, persistent-realtime placem
 or LLVM lowering.
 
 `ConstrainPortsContext` exposes only constraint expressions, not solved realization
-values. The principal primitive is variadic equality:
+values. For ordinary two-sided constraints, assignment is shorthand for equality:
+
+```cpp
+ctx.output<"spectrum">().size() = configured_fft_size;
+ctx.output<"out">().size() = ctx.input<"in">().size();
+```
+
+The left-hand side is a constraint proxy; this syntax adds an equality relation rather
+than mutating a resolved value. The explicit `ctx.equal(...)` primitive remains
+variadic for larger equivalence classes:
 
 ```cpp
 ctx.equal(
@@ -257,7 +266,9 @@ ctx.equal(
     configured_fft_size);
 ```
 
-Different constants in one local equality are an immediate configuration error.
+Different constants in one local equality are an immediate configuration error. The
+same applies when repeated assignment/equality constraints bind one local variable to
+different constants.
 Conflicts or unresolved variables that appear only after connection/type-conversion
 constraints are joined reject the graph revision during compilation. Ordinary
 spectral processors can therefore equate input/output FFT sizes and inherit one
@@ -265,8 +276,11 @@ upstream/downstream anchor instead of storing the FFT size in every node constru
 `declare()` runs after resolution and may read concrete `ctx.input<...>().size()` /
 `ctx.output<...>().size()` values when sizing `State` storage.
 
-The same constraint phase owns **port pace**. Pace is an exact relative quantity of
-transported values per local logical node step; it is not sample-rate conversion and
+The same constraint phase owns **port pace, Sequential-input history, and Tick-output
+latency**. None of these belongs in `static constexpr inputs()/outputs()` once it can
+depend on constructor configuration or another resolved port property. Pace is an exact
+relative quantity of transported values per local logical node step; it is not
+sample-rate conversion and
 must not imply interpolation/filtering. Inputs and outputs may have different paces,
 which represents FFT hop ratios and over/under-sampled graph regions without helper
 nodes. Equality is again variadic, for example:
@@ -282,8 +296,8 @@ A rate-changing node may bind different ports to different exact quantities, for
 example:
 
 ```cpp
-ctx.equal(ctx.input<"in">().pace(), 1);
-ctx.equal(ctx.output<"out">().pace(), 2);
+ctx.input<"in">().pace() = 1;
+ctx.output<"out">().pace() = 2;
 ```
 
 or an STFT may bind its scalar input pace to a configured hop size and its FFT output
@@ -292,6 +306,36 @@ relationships rather than floating-point rates so callback subdivision cannot
 accumulate index drift.
 Connections join those relations across the graph; the resolved result defines exact
 global-index mappings and node execution-rate domains.
+
+For a configured overlap FFT with transform length `N` and hop `H`, one ordinary
+complete-window contract is:
+
+```cpp
+auto in = ctx.input<"audio">();
+auto out = ctx.output<"spectrum">();
+
+out.size() = N;
+in.pace() = H;
+out.pace() = 1;
+in.history() = N - H;
+out.latency() = 1; // for N=1024, H=512 and no zero-padded startup frame
+```
+
+The exact latency is part of the node's authored timing semantics, not an automatic FFT
+formula. A node that intentionally treats pre-start history as freshly initialized
+neutral/zero samples may emit an initial zero-padded frame and use zero output latency.
+A node that promises only windows containing real input values must delay finalization
+until enough input has arrived. In the `N=1024`, `H=512` case, the first invocation
+consumes samples `[0,512)` but cannot finalize the first full-real-data FFT; the next
+invocation sees `[0,512)` as history plus `[512,1024)` as the current block and may
+revise/finalize the previous FFT output slot.
+
+Because history and latency are solved realization properties, replacing a configured
+node from an `on_message` handler may change them naturally. Replacing `FFT{1024,512}`
+with another configured FFT causes size/pace/history/latency constraints to be solved
+again, storage to be replanned, and the overlapping still-visible node-owned port state
+to migrate under the ordinary graph-revision rules. No special history/latency mutation
+path is required.
 
 `ctx.sample_rate` is **not** available as a resolved number in `constrain_ports()`.
 The node's effective sample rate depends on the very pace-domain solve being
@@ -330,6 +374,28 @@ the same as type-dependent `size()`: an FFT output may have `size() == 2048` and
 GraphJit chooses a legal logical invocation quantum and derives every port's
 `block_size()` from its resolved pace. An oversampler may consume `N` input values and
 produce `2N`; an STFT may consume `512K` scalar samples and produce `K` FFT blocks.
+
+A Sequential input with history also needs an explicit history-inclusive contiguous view
+for algorithms such as FFTs. A provisional API name is `block_extended()`:
+
+```cpp
+auto current = ctx.input<"audio">().block();
+auto analysis = ctx.input<"audio">().block_extended();
+```
+
+`block()` covers the newly consumed `block_size()` values. `block_extended()` covers
+the immediately preceding resolved `history()` plus the current block. It remains a
+Sequential-input API, not a Region/Coverage view. GraphJit should satisfy the contiguous
+view by directly aliasing suitable producer/ring storage when possible and by
+materializing a transient contiguous buffer only when the selected backing wraps or is
+otherwise non-contiguous. Requesting history therefore does not imply a node-owned
+`State` copy.
+
+For delayed block-valued outputs, the generalized Tick-output facade should preserve the
+existing `OutputPort::update()` semantic: a value within the resolved latency horizon may
+be revised by a later invocation. The exact FFT-block API can be type-specialized, but a
+complete-window FFT with one-block latency must be able to replace/finalize the
+provisional output block authored by the preceding call.
 
 The checked-in lowering currently assumes one common `block_size` for every
 sequential sample port. That is an implementation checkpoint superseded by this
@@ -1194,7 +1260,7 @@ that genuinely survive audio-root calls are different and may use ordinary
 
 ## Port history and latency are node-owned semantic state
 
-Port history and latency are authored **effect requirements**, not declarations that a
+Port history and latency are configured/resolved **effect requirements**, not declarations that a
 particular connection buffer must exist. Their graph-revision semantics must be
 observationally equivalent to a simple conceptual implementation in which each
 concrete node privately owns its port-related state alongside its authored `State`:
@@ -1203,8 +1269,8 @@ concrete node privately owns its port-related state alongside its authored `Stat
 concrete node
     +-- authored State
     +-- each Sequential input's resolved history
-    +-- each Tick output's authored history
-    `-- each Tick output's authored latency/future window
+    +-- each Tick output's resolved history
+    `-- each Tick output's resolved latency/future window
 ```
 
 The storage planner remains free to alias several of those conceptual states onto one
@@ -1232,8 +1298,8 @@ fan-in: if C previously observed an `A+B` composition and the new graph supplies
 `A+D`, its still-visible history remains the old resolved `A+B` values until they age
 out.
 
-Likewise, a surviving output owns its authored history and latency/future state.
-Changing consumers must not discard that state. When an authored history/latency
+Likewise, a surviving output owns its resolved history and latency/future state.
+Changing consumers must not discard that state. When a resolved history/latency
 extent itself changes, migration preserves the intersection of the old valid semantic
 range with the new required range; newly exposed range receives the normal fresh-state
 initialization semantics, and no-longer-observable range may be discarded. storage

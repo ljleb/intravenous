@@ -118,7 +118,7 @@ So the intended split is:
 
 > **Superseded rate-model note:** this document's former power-of-two lane-rate assumptions are no
 > longer the active DSP-port direction. The current planned model is documented in
-> [Graph JIT Direction](../graph_jit_direction.md#planned-port-size-and-pace-constraint-analysis)
+> [Graph JIT Direction](../graph_jit_direction.md#planned-port-size-pace-history-and-latency-constraint-analysis)
 > and [Sequential Port Storage And Connection Planning](../sequential_port_storage_planning.md#planned-pace-aware-tick_block-contract).
 
 Active GraphJit planning treats port pace as an exact graph constraint. Inputs and

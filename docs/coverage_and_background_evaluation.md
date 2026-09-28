@@ -860,17 +860,12 @@ The port schema has independent input access, output production, and output
 retention. Data properties remain separate for samples and events:
 
 ```cpp
-struct SequentialInputConfig {
-    std::size_t history = 0;
-};
+struct SequentialInputConfig {};
 struct RandomAccessInputConfig {};
 using InputAccessConfig =
     std::variant<SequentialInputConfig, RandomAccessInputConfig>;
 
-struct TickOutputConfig {
-    std::size_t history = 0;
-    std::size_t latency = 0;
-};
+struct TickOutputConfig {};
 struct TockOutputConfig {};
 using OutputProductionConfig =
     std::variant<TickOutputConfig, TockOutputConfig>;
@@ -888,8 +883,11 @@ struct OutputConfig {
 };
 ```
 
-These are abbreviated sketches of the current public schema: `InputConfig` and
-`OutputConfig` retain their sample/event data properties and identities.
+These are abbreviated target-schema sketches. The checked-in implementation still stores
+Sequential history and Tick output history/latency in the static configs; the planned
+constraint model moves those extents into per-instance `constrain_ports()` realization
+constraints while retaining the access/production alternatives shown here. `InputConfig`
+and `OutputConfig` retain their sample/event data properties and identities.
 Input access, output production and output retention are independent in reflection,
 configured-graph serialization and the compiler record interface. GraphJit classifies
 per-channel compatibility and delivery using those orthogonal contracts; execution of
@@ -908,7 +906,7 @@ serialization. No persisted page is evicted for memory pressure, age, inactivity
 invalidation, or lack of readers. Retained pages are removed only when output
 coverage ceases to include them; old storage versions are freed only after their
 pins are released. A persisted tick output becomes subject to that guarantee when
-its history/latency contract makes a position final. An author opting into
+its resolved history/latency contract makes a position final. An author opting into
 persistence also opts into potentially unbounded memory use; the compiler does not
 invent an eviction or recording policy to cap it. Backing storage (RAM, file,
 mmap, etc.) is an implementation choice that must preserve this guarantee.
@@ -926,7 +924,7 @@ A node opts into the intrinsic replay **type trait** by declaring
 `iv::details::intrinsically_replayable_v<Node>` is the validated compiler-facing
 value; it is not a port field or an additional DSP callback. An opted-in node must define the
 existing `tick()` but **not** its own native `tick_block()`, have no `State`, no
-random-access inputs, no input/output history, no input/output latency, and zero
+random-access inputs, resolved zero input/output history and latency, and zero
 internal latency. Its tick computation must be deterministic and side-effect-free
 under one immutable semantic/configuration version, declared inputs, and absolute
 sample position; no mutable external or live-only resource may affect its result.

@@ -92,6 +92,16 @@ For scalar `Sample`, this is the number of samples. For a future FFT-block port,
 `block_size()` is the number of FFT blocks while `size()` is the number of frequency
 values in each block.
 
+A Sequential input whose resolved history is nonzero should additionally provide a
+contiguous history-inclusive block view, provisionally named `block_extended()`.
+`block()` contains only the newly consumed `block_size()` values;
+`block_extended()` contains the immediately preceding `history()` followed by that
+current block. This is a Sequential view, not a Region/Coverage object. The planner may
+alias producer/circular storage directly when the requested range is already contiguous,
+or materialize only that finite range into transient storage when wraparound or another
+layout would otherwise make it non-contiguous. Node source does not need to copy overlap
+windows into `State` merely to call a contiguous-buffer FFT library.
+
 Examples:
 
 ```text
@@ -169,7 +179,8 @@ Node source should not need different `tick_block()` code merely because a port
 uses history or latency.
 
 History/latency analysis determines what values must remain observable and for
-how long. The storage planner then chooses an implementation.
+how long. These extents are resolved realization constraints, not necessarily constants
+in the static port schema. The storage planner then chooses an implementation.
 
 For example, if a stream needs four past samples and a 256-frame current block,
 a legal implementation may be:
@@ -189,17 +200,40 @@ choices rather than by materializing every logical edge.
 The compiler should make that decision from graph facts and a cost model rather
 than exposing a storage choice in the node declaration.
 
+### Overlap FFT startup and output revision
+
+For an FFT window length `N=1024` and hop `H=512`, a complete-window implementation
+needs 512 samples of Sequential input history. The first invocation has only the current
+`[0,512)` samples. There are two valid authored startup semantics:
+
+- **zero/neutral prehistory:** treat `[-512,0)` as freshly initialized input history,
+  compute an initial padded FFT immediately, and require no extra output latency; or
+- **full-real-data startup:** do not finalize an FFT until `[0,1024)` has actually
+  arrived. The first output slot remains provisional/unfulfilled and a one-FFT-block
+  latency lets the next invocation revise/finalize it through the generalized equivalent
+  of `OutputPort::update()`.
+
+The latter has `input.history() = 512` and `output.latency() = 1` for this particular
+`N/H` relationship. The choice is observable node semantics, not a storage-planner
+optimization. Storage planning may still alias the history directly or materialize a
+contiguous `block_extended()` transient as required.
+
+Because these extents are realization constraints, replacing/recreating a node in an
+`on_message` interaction can change them. A successor FFT configuration may therefore
+change size, pace, history, and latency together; graph recompilation replans storage
+and migrates the still-visible overlap of surviving node-owned port state.
+
 ## Port windows are semantically node-owned even when storage is shared
 
-The authored history/latency declarations should be interpreted by an **as-if private
+The configured/resolved history/latency requirements should be interpreted by an **as-if private
 state** rule. For graph-revision semantics, each concrete node behaves as though its
 port windows were ordinary state owned beside its nested `State`:
 
-- a Sequential input owns the resolved values in its declared history window;
-- a Tick output owns the values in its declared history window; and
-- a Tick output owns its already-authored latency/future window.
+- a Sequential input owns the resolved values in its history window;
+- a Tick output owns the values in its resolved history window; and
+- a Tick output owns its already-authored values inside its resolved latency/future window.
 
-This is an effect requirement, not a allocation requirement. The steady
+This is an effect requirement, not an allocation requirement. The steady
 storage planner may satisfy several conceptual port states using one producer ring,
 may let a consumer history view alias producer storage, and may eliminate dedicated
 state entirely when the required values are directly addressable. Those are valid
@@ -893,15 +927,12 @@ Input access, output production and output retention are independent; sample/eve
 data properties remain a separate axis. The **target** declaration shape is:
 
 ```cpp
-struct SequentialInputConfig { std::size_t history = 0; };
+struct SequentialInputConfig {};
 struct RandomAccessInputConfig {};
 using InputAccessConfig =
     std::variant<SequentialInputConfig, RandomAccessInputConfig>;
 
-struct TickOutputConfig {
-    std::size_t history = 0;
-    std::size_t latency = 0;
-};
+struct TickOutputConfig {};
 struct TockOutputConfig {};
 using OutputProductionConfig =
     std::variant<TickOutputConfig, TockOutputConfig>;
@@ -919,9 +950,10 @@ struct OutputConfig {
 };
 ```
 
-The current checked-in C++ API uses these independent names directly.
-`SequentialInputConfig` has the existing finite history contract; `TickOutputConfig`
-has the existing history and latency authoring contract. A random-access input
+The current checked-in C++ API still stores finite history/latency directly in these
+configs; that is an implementation checkpoint. The planned contract keeps the static
+access/production alternatives but contributes Sequential input `history()` and Tick
+output `history()`/`latency()` through the configured node's `constrain_ports()` phase. A random-access input
 can be consumed in either execution callback. A tick-produced output can satisfy
 random-access demand through finalized persisted data or contextually replayable
 computation; a tock-produced output can feed a sequential input if its data is
@@ -937,8 +969,9 @@ after readers unpin them. Memory growth is the graph author's retention choice.
 `InputConfig` / `OutputConfig` independently carry sample/event data properties
 and the above access/production/retention contracts. Static concrete node types
 have constexpr port schemas. Port history and latency are not duplicated in
-sample or event data properties. The same facts survive `ConfiguredGraph`
-reflection and serialization. Generic input/output mode-conversion helpers may
+sample or event data properties; they are resolved realization facts derived from the
+configured node and graph constraints. The same resolved facts survive the compiled
+realization metadata needed for storage planning and migration. Generic input/output mode-conversion helpers may
 not invent a production callback or input access from the opposite declaration.
 
 For scheduling/storage purposes, a node may have temporal dependencies if it has
@@ -978,7 +1011,7 @@ events and count them, but callers must not depend on that policy. It must never
 grow a buffer or allocate memory on the audio thread.
 
 This sizing rate belongs to the event **output data properties**, not to
-`TickOutputConfig`: history/latency define *when* an output may author data,
+Tick-output resolved history/latency define *when* an output may author or revise data,
 while `max_events_per_index` lets GraphJit determine how much static event
 storage to reserve for the selected temporal representation.
 
