@@ -947,10 +947,16 @@ This is a hint, not a hard constraint. Use your own good judgement if ever in do
     Access sample/event slot ranges have now landed. Random Access lowering is active,
     and Sequential lowering now overlays compact dynamic slots onto each imported
     primitive's complete stack-local input-binding array so unaffected and mixed live
-    inputs remain intact. Sequential callback binding remains outstanding. The realization-owned workspace
+    inputs remain intact. Sequential sample callback binding is active: the
+    realization-owned workspace preallocates one bounded playback ring per external
+    sample slot, copies the callback window plus authored history from the coherent
+    materialization/page root, and preserves each logical input's neutral value for
+    missing frames. Sequential event callback binding remains outstanding. The
+    realization-owned workspace
     resolves persisted identities and allocates its address-stable view arrays off the
-    audio thread; published roots retain precomputed exact output coverage, so callback
-    binding only retargets direct persisted-page views to the one pinned snapshot.
+    audio thread; published roots retain precomputed exact output coverage, so Random
+    Access callback binding only retargets direct persisted-page views to the one
+    pinned snapshot.
     Background transactions now freeze compiler-routed derived/fan-in/converted and
     ephemeral Random Access results, together with direct background-only Sequential
     materializations, into an immutable `TickMaterializationSnapshot`. Mixed
@@ -960,8 +966,8 @@ This is a hint, not a hard constraint. Use your own good judgement if ever in do
     explicitly off the audio thread. `TickInvocationFrame` pins both roots for the
     callback, and materialized bindings are accepted only when the snapshot's
     generation and recorded page version match the active realization and pinned page
-    root. The retained Sequential binding slots must next be consumed by generated
-    lowering and callback binding, including each sample input's own neutral fallback.
+    root. The retained Sequential event slots must next receive their bounded callback
+    binding; sample slots and their per-input neutral fallback are now supplied.
     Final commit
     advances prepared coverage, page publication and any capture frontier together;
     every failure advances none. Background ephemeral Random Access may use

@@ -206,9 +206,12 @@ struct BackgroundPortPlan {
     bool persisted_tick_output = false;
     bool replayed_tick_output = false;
 
-    // Sample-input neutral values are retained for later missing-page playback
-    // lowering. Event inputs use absence-of-events as their neutral value.
+    // Sample-input neutral values are retained for missing-page playback at the
+    // Tick invocation boundary. Event inputs use absence-of-events as neutral.
     Sample sample_neutral_value{};
+    // Authored Sequential-input history retained for callback-window playback.
+    // Random Access inputs leave this at zero.
+    std::size_t sequential_history = 0;
 
     // Output-only. Input ports have no retention contract.
     std::optional<OutputRetention> retention{};

@@ -11,8 +11,9 @@
 namespace iv {
 
 // Control-path allocation and identity resolution for the fixed Tick binding
-// slots retained by one CompiledGraph generation. Its arrays remain
-// address-stable for the realization's lifetime.
+// slots retained by one CompiledGraph generation. Its arrays and bounded
+// Sequential playback rings remain address-stable for the realization's
+// lifetime.
 class TickInvocationWorkspace {
     class Impl;
     std::unique_ptr<Impl> impl_{};
@@ -20,12 +21,15 @@ class TickInvocationWorkspace {
     friend class TickInvocationFrame;
     [[nodiscard]] graph_jit::TickInvocationCall bind(
         PersistedPageStore::Snapshot const& published,
-        TickMaterializationSnapshot const& materialized) noexcept;
+        TickMaterializationSnapshot const& materialized,
+        SampleIndex sample_index,
+        std::size_t block_size) noexcept;
 
 public:
     TickInvocationWorkspace(
         graph_jit::BackgroundEvaluationPlan const& plan,
-        std::uint64_t generation);
+        std::uint64_t generation,
+        std::size_t maximum_block_size = 1);
     ~TickInvocationWorkspace();
 
     TickInvocationWorkspace(TickInvocationWorkspace const&) = delete;
@@ -33,13 +37,15 @@ public:
     TickInvocationWorkspace(TickInvocationWorkspace&&) = delete;
     TickInvocationWorkspace& operator=(TickInvocationWorkspace&&) = delete;
 
+    [[nodiscard]] std::size_t sequential_sample_count() const noexcept;
     [[nodiscard]] std::size_t random_access_sample_count() const noexcept;
     [[nodiscard]] std::size_t random_access_event_count() const noexcept;
 };
 
 // Callback-scoped owner for the narrow generated Tick invocation record.
-// Construction performs only the bounded atomic pin operations of the two
-// reader slots; both slots are registered by GraphExecutor on the control path.
+// Construction performs the bounded atomic pin operations of the two reader
+// slots and refreshes preallocated Sequential playback storage for the requested
+// callback window; both slots are registered by GraphExecutor on the control path.
 class TickInvocationFrame {
     PersistedPageStore::ReaderPin published_pages_{};
     TickMaterializationStore::ReaderPin materialized_storage_{};
@@ -49,7 +55,9 @@ public:
     explicit TickInvocationFrame(
         PersistedPageStore::ReaderSlot& page_reader,
         TickMaterializationStore::ReaderSlot& materialization_reader,
-        TickInvocationWorkspace& workspace) noexcept;
+        TickInvocationWorkspace& workspace,
+        SampleIndex sample_index = 0,
+        std::size_t block_size = 0) noexcept;
 
     TickInvocationFrame(TickInvocationFrame const&) = delete;
     TickInvocationFrame& operator=(TickInvocationFrame const&) = delete;

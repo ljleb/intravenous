@@ -144,6 +144,44 @@ iv::graph_jit::BackgroundEvaluationPlan direct_tick_sample_plan()
     return plan;
 }
 
+iv::graph_jit::BackgroundEvaluationPlan sequential_tick_sample_plan()
+{
+    auto plan = direct_tick_sample_plan();
+    auto& input = plan.ports[1];
+    input.random_access_input = false;
+    input.tick_sequential_input = true;
+    input.sample_neutral_value = -0.25f;
+    input.sequential_history = 2;
+
+    auto& storage = plan.storage.ports[0];
+    storage.storage = iv::graph_jit::PortStorageKind::tick_sequential;
+    storage.output_port.reset();
+    plan.storage.direct_samples[0].delivery =
+        iv::graph_jit::PlannedDeliveryMechanism::tock_to_sequential;
+    plan.tick_runtime.random_access_sample_inputs.clear();
+    plan.tick_runtime.sequential_sample_inputs = {{
+        .port = 1,
+        .storage = {0},
+    }};
+    plan.tick_runtime.nodes[1] = {
+        .sequential_sample_begin = 0,
+        .sequential_sample_count = 1,
+    };
+    return plan;
+}
+
+iv::Sample sequential_sample_at(
+    iv::ReflectedSampleInputPortBinding const& binding,
+    iv::SampleIndex index,
+    std::size_t channel = 0)
+{
+    auto const& selected = binding.storage.channels[channel];
+    auto const frame = static_cast<std::size_t>(
+        (index - selected.frame_delay) & (selected.frame_capacity - 1));
+    auto const* values = reinterpret_cast<iv::Sample const*>(selected.storage);
+    return values[frame * selected.frame_stride];
+}
+
 iv::graph_jit::BackgroundEvaluationPlan direct_tick_event_plan()
 {
     using namespace iv::graph_jit;
@@ -264,6 +302,51 @@ TEST(PersistedPageStore, TickInvocationFrameBindsPublishedRandomAccessSamples)
     EXPECT_EQ(inputs[0].coverage(), (iv::Coverage{{{0, 4}}}));
     EXPECT_FLOAT_EQ(inputs[0].at(0).value, 10.0f);
     EXPECT_FLOAT_EQ(inputs[0].at(3).value, 13.0f);
+}
+
+TEST(PersistedPageStore, TickFrameCopiesSequentialMaterializationAndUsesNeutral)
+{
+    auto plan = sequential_tick_sample_plan();
+    iv::PersistedPageStore pages;
+    auto page_reader = pages.register_reader();
+    iv::TickMaterializationStore materializations;
+    auto materialization_reader = materializations.register_reader();
+    ASSERT_EQ(materializations.promote(
+        std::make_unique<iv::TickMaterializationSnapshot>(
+            3,
+            1,
+            iv::PersistedPageSnapshotVersion{},
+            std::vector<iv::TickMaterializedSampleInput>{
+                {
+                    .port = 1,
+                    .coverage = iv::Coverage{{{4, 7}}},
+                    .layout = plan.ports[1].sample_layout,
+                    .channels = {0},
+                    .values = {40.0f, 50.0f, 60.0f},
+                },
+            },
+            std::vector<iv::TickMaterializedEventInput>{})),
+        1u);
+
+    iv::TickInvocationWorkspace workspace{plan, 3, 4};
+    EXPECT_EQ(workspace.sequential_sample_count(), 1u);
+    iv::TickInvocationFrame frame{
+        page_reader,
+        materialization_reader,
+        workspace,
+        5,
+        3};
+    auto const inputs = static_cast<
+        std::span<iv::ReflectedSampleInputPortBinding const>>(
+        frame.call().sequential_sample_inputs);
+    ASSERT_EQ(inputs.size(), 1u);
+    EXPECT_EQ(inputs[0].history, 2u);
+    EXPECT_EQ(inputs[0].storage.frame_capacity, 8u);
+    EXPECT_FLOAT_EQ(sequential_sample_at(inputs[0], 3), -0.25f);
+    EXPECT_FLOAT_EQ(sequential_sample_at(inputs[0], 4), 40.0f);
+    EXPECT_FLOAT_EQ(sequential_sample_at(inputs[0], 5), 50.0f);
+    EXPECT_FLOAT_EQ(sequential_sample_at(inputs[0], 6), 60.0f);
+    EXPECT_FLOAT_EQ(sequential_sample_at(inputs[0], 7), -0.25f);
 }
 
 TEST(PersistedPageStore, TickSampleViewsFollowOnePinnedRootAndPackedPageCoverage)

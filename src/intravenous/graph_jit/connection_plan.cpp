@@ -1482,16 +1482,19 @@ std::expected<void, std::string> populate_background_topology(
         EventTypeId event_type = EventTypeId::empty;
         double max_events_per_index = 0.0;
         Sample neutral{};
+        std::size_t sequential_history = 0;
         if (direction == PortDirection::input) {
             if (port.port_kind == PortKind::sample) {
                 auto const config = graph.node_bundles.resolve_sample_input(port).config;
                 name = config.name;
                 sample_layout = config.channel_layout;
                 neutral = config.neutral_value;
+                sequential_history = port_history_or_zero(config);
             } else {
                 auto const config = graph.node_bundles.resolve_event_input(port).config;
                 name = config.name;
                 event_type = config.type;
+                sequential_history = port_history_or_zero(config);
             }
         } else {
             if (port.port_kind == PortKind::sample) {
@@ -1540,6 +1543,7 @@ std::expected<void, std::string> populate_background_topology(
             .persisted_tick_output = roles.persisted_tick_output,
             .replayed_tick_output = roles.replayed_tick_output,
             .sample_neutral_value = neutral,
+            .sequential_history = sequential_history,
             .retention = retention,
             .stable_identity = std::move(stable_output),
             .sample_layout = sample_layout,

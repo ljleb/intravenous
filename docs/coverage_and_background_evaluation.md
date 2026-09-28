@@ -2258,7 +2258,8 @@ recording merely because that planning metadata exists.
       exposes this end-to-end operation and no propagation-only compatibility API; and
    6. **In progress:** complete Tick-time dynamic bindings with
       `TickMaterializationSnapshot` playback and per-input neutral values for genuinely
-      missing sequential data. The generated Tick root's final ABI accepts one
+      missing sequential data. The sample half is operational; bounded Sequential
+      event playback remains. The generated Tick root's final ABI accepts one
       `TickInvocationCall` containing only resolved sequential and Random Access view
       spans. `GraphExecutor` registers both reader slots on the control path and constructs
       a non-copyable callback-scoped `TickInvocationFrame`; that owner acquires one
@@ -2272,8 +2273,9 @@ recording merely because that planning metadata exists.
       properties of their logical input ports.
       A realization-owned,
       address-stable `TickInvocationWorkspace` resolves persisted identities on the
-      control path, and callback binding only retargets its preallocated views to the
-      pinned root. Published snapshots precompute exact per-output coverage metadata,
+      control path. Random Access callback binding only retargets its preallocated
+      views to the pinned root, while Sequential sample binding refreshes its bounded
+      preallocated rings. Published snapshots precompute exact per-output coverage metadata,
       so direct identity sample/event page views require no callback-time allocation or
       coverage construction; generated lowering passes the corresponding node-local
       subspans to imported Tick wrappers. Successful background transactions now also
@@ -2288,11 +2290,15 @@ recording merely because that planning metadata exists.
       generation and exact persisted-page version. The Tick workspace binds its sample
       and event views only when both coordinates match the independently pinned page
       root, otherwise conservatively exposing empty materialized coverage instead of a
-      mixed-version view. Generated lowering now overlays each node's compact
+      mixed-version view. Sequential sample slots own preallocated power-of-two rings
+      sized from the specialization's maximum block size plus authored history. The
+      callback fills only the bounded requested window from coherent materialization
+      or direct page data and leaves absent frames at that logical input's neutral
+      value, without allocation. Generated lowering now overlays each node's compact
       Sequential slots onto a stack copy of its complete ordinary input-binding array,
-      preserving unaffected and mixed live inputs. Sequential spans remain empty until
-      callback binding supplies those retained slots, including missing-page neutral
-      playback.
+      preserving unaffected and mixed live inputs. Sequential sample spans are now
+      supplied by callback binding; Sequential event spans remain empty until the next
+      bounded-storage slice lands.
 
    Final commit atomically promotes prepared semantic coverage plus any candidate page
    publication. Step 5 below extends that same boundary with the processed capture

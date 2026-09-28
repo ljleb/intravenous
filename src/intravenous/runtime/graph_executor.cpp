@@ -18,7 +18,8 @@ GraphExecutor::Realization::Realization(
         graph->specialization.sample_rate)
     , tick_invocation(
         graph->background_evaluation_plan,
-        graph->project_generation)
+        graph->project_generation,
+        graph->specialization.block_size)
 {}
 
 GraphExecutor::GraphExecutor(ResourceContext resources)
@@ -138,7 +139,9 @@ void GraphExecutor::tick_block(std::size_t sample_index, std::size_t block_size)
     TickInvocationFrame invocation{
         tick_page_reader_,
         tick_materialization_reader_,
-        realization.tick_invocation};
+        realization.tick_invocation,
+        sample_index,
+        block_size};
     realization.graph->root_operations.tick_block(
         realization.storage.buffer().data(),
         &invocation.call(),

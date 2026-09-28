@@ -804,7 +804,8 @@ owns the callback-scoped published-page pin and selected
 `TickMaterializationSnapshot`, while generated code receives only a trivially
 copyable `TickInvocationCall` containing resolved sequential and Random Access view
 spans. The reader slot is registered before realtime execution; constructing the
-per-callback frame performs only the store's bounded atomic pin operation. Neither
+per-callback frame performs the store's bounded atomic pin operation and bounded
+refreshes of preallocated Sequential playback storage. Neither
 the frame owner, executor nor page store is reachable through the generated ABI.
 The compiler now retains contiguous per-node dynamic Sequential and Random Access
 sample/event slot ranges. Generated Sequential lowering copies the complete ordinary
@@ -812,16 +813,21 @@ input-binding array into the primitive's stack frame and overlays only the retai
 dynamic input ordinals, preserving unaffected and mixed live inputs.
 A realization-owned workspace resolves persisted identities and preallocates every
 view off the audio thread; published snapshots retain exact per-output coverage, and
-the callback only binds direct identity page views to its pinned root. Successful
+the callback binds direct identity Random Access page views to its pinned root.
+External Sequential sample slots now also own fixed power-of-two playback rings sized
+from the compiled maximum block size plus the consuming input's history. At the root
+boundary the callback performs a bounded copy of the requested window from a coherent
+Tick materialization (or direct persisted page identity), leaving genuinely missing
+frames at that input's own neutral value; it does not allocate or expose a runtime
+owner through the generated ABI. Successful
 background transactions now freeze storage requiring conversion, fan-in or ephemeral
 advance materialization into logical sample/event input views in one immutable
 `TickMaterializationSnapshot`. A dedicated raw-pointer reader slot pins that snapshot
 without audio-thread ownership release, and no-fail promotion retires its predecessor
 for explicit non-audio reclamation. Its generation and source page version must match
 the realization and callback's independently pinned page root before the workspace
-exposes its coverage. Sequential callback binding and missing-page neutral buffers
-remain to be added over this same snapshot rather than being mistaken for ordinary
-current-Tick storage.
+exposes its coverage. Sequential event callback binding remains to be added over this
+same snapshot rather than being mistaken for ordinary current-Tick storage.
 
 All backing owners become address-stable before callback frames are built. The
 immutable plan retains the replay slot and applicable maximum block size; the
