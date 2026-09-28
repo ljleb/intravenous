@@ -976,9 +976,13 @@ This is a hint, not a hard constraint. Use your own good judgement if ever in do
     transaction-local page-backed materialization; Tick-time ephemeral Random Access
     must be materialized before the callback. Playback never blocks, reclaims retired
     storage or invokes Tock.
-18. **Enable shared Tick capture and explicit recording.** Define the shared capture
-    metadata/pool, provision slabs off the audio thread, and capture Tick/persisted or
-    explicit-recorder blocks at production/finalization time. Consume fixed capture
+18. **In progress: enable shared Tick capture and explicit recording.** The executor-
+    side capture transport now has interned output handles, aligned append-only slab
+    provisioning, a lock-free audio-thread free-block path, monotonic seal order,
+    immutable fixed-cutoff batches, commit-only frontier advancement and callback-safe
+    deferred recycling. It does not yet receive compiler-selected root operations.
+    Bind Tick/persisted and explicit-recorder blocks at production/finalization time,
+    then consume fixed capture
     prefixes through the background transaction, publish into the canonical page store,
     and reclaim blocks only with callback-boundary-safe ownership. A same-Tick recent-
     capture Random Access overlay remains a later optional experiment.

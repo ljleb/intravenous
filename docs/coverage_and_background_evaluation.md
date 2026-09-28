@@ -2311,9 +2311,21 @@ recording merely because that planning metadata exists.
    retired snapshot. This checkpoint does not add a `ProjectGraph` or application-
    module bridge; that wiring follows only after the executor transaction boundary is
    complete and tested.
-5. **Make capture-backed Tick persistence and explicit recording operational.**
-   Define the shared capture ABI/pool; implement independent capture-allocator slab
-   provisioning and audio-thread-safe capture at production/finalization time. Use it
+5. **In progress: make capture-backed Tick persistence and explicit recording
+   operational.** The shared runtime transport now interns persisted output identities
+   off the audio thread and owns append-only slabs of uniform, aligned capture blocks.
+   Provisioning publishes initialized blocks to a lock-free single-audio-consumer free
+   pool. One callback scope can acquire, fill and seal sample/event records without
+   allocation or locking; sealing assigns the executor-wide insertion sequence and
+   appends to the immutable log. Background code can fix `[begin, cutoff)` once,
+   iterate exactly that batch, advance the processed frontier only on commit, and
+   recycle committed blocks only outside an active root callback. The queue retains
+   one consumer-sentinel block until a later record is committed, which is an internal
+   ownership detail rather than record loss.
+
+   Next, bind that transport to compiler-selected Tick/persisted outputs and explicit
+   recorder bridges at their production/finalization points, then consume the fixed
+   batch through `BackgroundEvaluationTransaction`. Use it
    for Tick/persisted staging and explicit recorder bridges as appropriate. Consume
    fixed capture-sequence snapshots through the background transaction, publish into
    the canonical page store, and reclaim only with callback-boundary-safe ownership.

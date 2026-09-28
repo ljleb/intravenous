@@ -843,6 +843,15 @@ The remaining cost-model work is primarily alias-versus-materialize comparison,
 weight calibration, and making stack-pressure promotion choose more selectively
 when several different storage moves can satisfy the same budget.
 
+The next persistence front now has its executor-side transport foundation. A shared
+`TickCaptureStore` interns canonical output identities on the control path, provisions
+aligned slab blocks independently of background evaluation, and exposes only bounded
+lock-free acquire/seal operations inside one audio callback scope. Sealed records form
+one monotonic insertion sequence; a background pass fixes one immutable prefix and
+advances its processed frontier only on explicit commit. Committed blocks are recycled
+only after the active root callback ends. Compiler-selected capture operations and
+transaction/page-store consumption remain the next slices.
+
 The heuristic may consider:
 
 - block size;

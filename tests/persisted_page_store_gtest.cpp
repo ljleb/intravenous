@@ -1,4 +1,5 @@
 #include <intravenous/runtime/persisted_page_store.h>
+#include <intravenous/runtime/tick_capture_store.h>
 #include <intravenous/runtime/tick_invocation_frame.h>
 
 #include <gtest/gtest.h>
@@ -621,6 +622,152 @@ TEST(PersistedPageStore, TickFrameBindsOneCoherentMaterializationSnapshot)
         incoherent.call().random_access_sample_inputs);
     ASSERT_EQ(incoherent_inputs.size(), 1u);
     EXPECT_TRUE(incoherent_inputs[0].coverage().empty());
+}
+
+TEST(TickCaptureStore, FixesSequenceCutoffAndRecyclesAfterCallback)
+{
+    iv::TickCaptureStore captures{256};
+    auto const samples = captures.register_output(
+        local_output(iv::PortKind::sample, 0));
+    auto const events = captures.register_output(
+        local_output(iv::PortKind::event, 1));
+    captures.provision(3);
+    EXPECT_EQ(captures.free_block_count(), 3u);
+
+    iv::TickCaptureStore::Batch first_batch;
+    {
+        auto callback = captures.begin_callback();
+        ASSERT_TRUE(callback);
+        auto nested_callback = captures.begin_callback();
+        EXPECT_FALSE(nested_callback);
+
+        auto sample_writer = captures.acquire();
+        ASSERT_TRUE(sample_writer);
+        auto* sample_values = reinterpret_cast<iv::Sample*>(
+            sample_writer.payload().data());
+        sample_values[0] = 10.0f;
+        sample_values[1] = 11.0f;
+        ASSERT_TRUE(sample_writer.seal_samples(
+            samples,
+            1200,
+            2,
+            iv::mono_planar_channel_layout));
+
+        auto event_writer = captures.acquire();
+        ASSERT_TRUE(event_writer);
+        auto* event_values = reinterpret_cast<iv::TimedEvent*>(
+            event_writer.payload().data());
+        event_values[0] = {
+            .time = 1201,
+            .value = iv::TriggerEvent{},
+        };
+        ASSERT_TRUE(event_writer.seal_events(
+            events,
+            1200,
+            2,
+            iv::EventTypeId::trigger,
+            1));
+
+        first_batch = captures.snapshot_pending();
+        EXPECT_EQ(first_batch.begin(), 0u);
+        EXPECT_EQ(first_batch.cutoff(), 2u);
+        EXPECT_EQ(first_batch.size(), 2u);
+
+        auto later = captures.acquire();
+        ASSERT_TRUE(later);
+        auto* later_values = reinterpret_cast<iv::Sample*>(
+            later.payload().data());
+        later_values[0] = 40.0f;
+        ASSERT_TRUE(later.seal_samples(
+            samples,
+            400,
+            1,
+            iv::mono_planar_channel_layout));
+        EXPECT_EQ(captures.published_sequence(), 3u);
+
+        std::vector<iv::CaptureSequence> sequences;
+        first_batch.for_each([&](iv::TickCaptureRecordView const& record) {
+            sequences.push_back(record.sequence);
+            ASSERT_NE(record.output, nullptr);
+            if (record.sequence == 0) {
+                EXPECT_EQ(*record.output, samples.output());
+                EXPECT_EQ(record.begin, 1200u);
+                EXPECT_EQ(record.sample_count, 2u);
+                EXPECT_EQ(
+                    record.payload_kind,
+                    iv::TickCapturePayloadKind::samples);
+                auto const* values = reinterpret_cast<iv::Sample const*>(
+                    record.payload.data());
+                EXPECT_FLOAT_EQ(values[0], 10.0f);
+                EXPECT_FLOAT_EQ(values[1], 11.0f);
+            } else {
+                EXPECT_EQ(*record.output, events.output());
+                EXPECT_EQ(record.event_count, 1u);
+                auto const* values = reinterpret_cast<iv::TimedEvent const*>(
+                    record.payload.data());
+                EXPECT_EQ(values[0].time, 1201u);
+            }
+        });
+        EXPECT_EQ(sequences,
+            (std::vector<iv::CaptureSequence>{0, 1}));
+
+        ASSERT_TRUE(captures.commit(std::move(first_batch)));
+        EXPECT_EQ(captures.processed_sequence(), 2u);
+        EXPECT_EQ(captures.retired_block_count(), 1u);
+        EXPECT_EQ(captures.reclaim_committed(), 0u);
+    }
+
+    EXPECT_EQ(captures.reclaim_committed(), 1u);
+    EXPECT_EQ(captures.free_block_count(), 1u);
+
+    auto second_batch = captures.snapshot_pending();
+    EXPECT_EQ(second_batch.begin(), 2u);
+    EXPECT_EQ(second_batch.cutoff(), 3u);
+    ASSERT_TRUE(captures.commit(std::move(second_batch)));
+    EXPECT_EQ(captures.reclaim_committed(), 1u);
+    // The queue retains its current consumer sentinel until a later record is
+    // committed, so two of the three blocks are immediately reusable here.
+    EXPECT_EQ(captures.free_block_count(), 2u);
+}
+
+TEST(TickCaptureStore, FailedBatchAndAbandonedWriterPreserveState)
+{
+    iv::TickCaptureStore captures{64};
+    auto const samples = captures.register_output(
+        local_output(iv::PortKind::sample, 0));
+    captures.provision(2);
+
+    {
+        auto callback = captures.begin_callback();
+        ASSERT_TRUE(callback);
+        {
+            auto abandoned = captures.acquire();
+            ASSERT_TRUE(abandoned);
+            EXPECT_EQ(captures.free_block_count(), 1u);
+        }
+        EXPECT_EQ(captures.free_block_count(), 2u);
+
+        auto writer = captures.acquire();
+        ASSERT_TRUE(writer);
+        auto* values = reinterpret_cast<iv::Sample*>(
+            writer.payload().data());
+        values[0] = 3.0f;
+        ASSERT_TRUE(writer.seal_samples(
+            samples,
+            8,
+            1,
+            iv::mono_planar_channel_layout));
+    }
+
+    {
+        auto failed_transaction = captures.snapshot_pending();
+        EXPECT_EQ(failed_transaction.begin(), 0u);
+        EXPECT_EQ(failed_transaction.cutoff(), 1u);
+    }
+    EXPECT_EQ(captures.processed_sequence(), 0u);
+    auto retry = captures.snapshot_pending();
+    EXPECT_EQ(retry.begin(), 0u);
+    EXPECT_EQ(retry.cutoff(), 1u);
 }
 
 TEST(PersistedPageStore, PublishesSampleAndEventPagesAsOneImmutableRoot)
