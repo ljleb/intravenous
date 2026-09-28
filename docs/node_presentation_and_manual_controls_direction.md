@@ -56,9 +56,9 @@ not a width x height Cartesian product.
 There is no required left-anchor rule. Presentation layout is responsible for
 responding to the supplied mode and available host geometry.
 
-## Presentation interaction state outlives React components
+## Presentation interaction state outlives Vue components
 
-An active gesture must not be owned by the React component that happened to
+An active gesture must not be owned by the Vue component that happened to
 render the control when the gesture began.
 
 A longer-lived presentation interaction context retains at least:
@@ -77,7 +77,7 @@ occur without cancelling an active scrub merely because a component remounted:
 - crossing a display-mode threshold;
 - selecting another presentation profile;
 - hiding/replacing the concrete knob widget;
-- rerendering/remounting React components;
+- rerendering/remounting Vue components;
 - publishing a new project realization that preserves the semantic target.
 
 When a new project revision publishes, both ordinary presentation hosts and
