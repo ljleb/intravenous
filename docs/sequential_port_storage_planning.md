@@ -16,6 +16,7 @@ Related documents:
 - [graph_jit_direction.md](./graph_jit_direction.md)
 - [builder_lowering_pipeline_design.md](./historical/builder_lowering_pipeline_design.md)
 - [coverage_and_background_evaluation.md](./coverage_and_background_evaluation.md)
+- [realtime_background_execution_and_queues.md](./realtime_background_execution_and_queues.md)
 - [intravenous-llvm-hot-reload-and-whole-graph-design.md](./historical/intravenous-llvm-hot-reload-and-whole-graph-design.md)
 
 ## Core rule: a connection is not a buffer
@@ -160,7 +161,7 @@ existing `NodeLayout`/`NodeStorage` machinery rather than create a second persis
 graph-kernel arena. The generated project behaves as a zero-input, zero-output root
 node whose `declare()` operation declares constituent realtime `State` plus
 root/compiler-owned audio-thread persistent regions into one `NodeLayoutBuilder`.
-`GraphExecutor` owns the resulting single packed `NodeStorage`; invocation-local
+`RealtimeGraphExecutor` owns the resulting single packed realtime `NodeStorage`; invocation-local
 temporaries belong to the generated root's fixed stack frame.
 
 Project-owned data that must survive from one **audio-root execution call** to
@@ -752,7 +753,7 @@ direct-view, conversion, projection, fan-in and deterministic event-merge operat
 plus dense replay invocation slots and compiled maximum-block constraints. Those
 records are validated for storage-index compatibility, unique operation placement,
 dependency order, persisted identity and replay binding/block constraints. The
-schedule is a compiler fact. `GraphExecutor` and its storage realization must not
+schedule is a compiler fact. `RealtimeGraphExecutor` and its storage realization must not
 rebuild it by walking `ConfiguredGraph`, compiler objects, or connection topology.
 
 The generated background evaluation root remains responsible for the static node
@@ -760,7 +761,7 @@ order. Around each applicable node it invokes narrow prepare/finalize hooks carr
 the executor-owned `BackgroundEvaluationCall`. A hook receives only an opaque,
 address-stable transaction-local operation frame. It may execute the operations
 already assigned to that point and install/validate explicit source and destination
-views; it never receives `GraphExecutor*`, a page-store pointer, or the transaction
+views; it never receives an executor pointer, a page-store pointer, or the transaction
 coordinator itself. This keeps materialization implementation in small reusable
 runtime operations without turning generated code into a route to executor internals.
 Background realization reuses/factors the existing event conversion and stable merge
@@ -843,53 +844,57 @@ The remaining cost-model work is primarily alias-versus-materialize comparison,
 weight calibration, and making stack-pressure promotion choose more selectively
 when several different storage moves can satisfy the same budget.
 
-The next persistence front now has its executor-side transport foundation. A shared
-`TickCaptureStore` issues kind-typed store-local output handles, provisions aligned
-slab blocks independently of background evaluation, and exposes only bounded lock-free
-whole-record reserve/write/seal operations inside one audio callback scope. Retention-
-specific identity is deliberately layered above that transport: the executor-lived
-`PersistedTickCaptureRegistry` interns canonical `PersistedOutputId` values and maps
-them to generic capture handles. An explicit recorder can own an equivalent mapping
-to its authored retained destination without becoming a persisted-page output.
-Sealed records form
-one monotonic insertion sequence; a background pass fixes one immutable prefix and
-advances its processed frontier only on explicit commit. Non-audio reclamation may
-recycle older retired blocks concurrently, but defers records at or beyond the active
-root callback's starting sequence. The immutable Tick runtime plan now assigns
-typed sample/event capture slots to each Tick/persisted logical output and retains
-contiguous per-node ranges. `TickInvocationCall` exposes those slots only as an opaque
-context plus a narrow typed callback; generated code cannot recover an executor,
-capture store, persisted identity or transaction owner. The executor now owns one
-generation-independent `TickCaptureStore` and one persisted-capture registry whose
-entries outlive individual realizations. Realization construction resolves those slots
-into address-stable operations after registering each canonical persisted identity
-through that adapter. Each capture binding retains the maximum block passed to its
-operation and the maximum number of times it can run in one root callback. Ordinary
-and primitive-internally sliced steps retain one enclosing invocation; a cyclic SCC
-retains its slice quantum and `ceil(root maximum / quantum)` invocations. Realization
-Sizing sums the physical blocks for every retained invocation, including history and
-latency in each slice window, producing `C`: maximum capture blocks consumed by one
-callback. `C` is not the operational reserve. Staging takes the larger active/pending
-`C` and derives the allocator low watermark `L`, refill target `H`, and slab granularity
-`G`. An executor-owned non-audio worker receives immutable policy snapshots after
-staging and activation, allocates only below `L`, and refills toward `H` with one
-`G`-rounded slab while sealed backlog is still pending. The same worker returns
-committed capture blocks to the free pool independently of allocation.
-The current allocator uses fixed 64 KiB blocks. A `TickInvocationFrame` holds the
-store's callback scope while sample/event operations
-copy the complete authored `[block-history, block-end+latency)` mutation window.
-Each sample window or event sequence becomes one logical record and one sequence
-entry, backed by as many fixed-size payload blocks as required; an empty event window
-is represented by an explicit zero-payload record. Reservation is all-or-nothing and
-only the completed record head is published, so a fixed background snapshot cannot
-bisect a capture. The transport also supports a distinct zero-payload `void_value`
-record for either output kind; it identifies an authoritative range erasure without
-conflating that erasure with an ordinary empty event record. Generated lowering now resolves each logical capture slot
-to its compact reflected output binding and invokes the opaque operation after the
-producer's full post-operation sequence. Primitive-internal slicing captures the
-complete enclosing window once, while SCC execution captures each finalized semantic
-slice. Invocation-local recording-output disposition, explicit recorder binding, and
-transaction/page-store consumption remain the next slices.
+The next persistence front now has its realtime-to-background transport direction.
+Dynamically accumulating Tick-produced work uses producer-specific provisioned SPSC
+queues rather than a recording-specific shared capture log. Queue blocks are
+power-of-two-capacity segments supplied ahead of demand by non-app-module
+`AsyncCapacityManager` infrastructure.
+
+`RealtimeGraphExecutor` owns producer endpoints and realtime realization/binding.
+`BackgroundGraphExecutor` owns the corresponding consumer queues and background work.
+They share no mutable executor state.
+
+The immutable Tick runtime plan still determines exactly where a Tick/persisted or
+recording-capable logical output becomes final and how much provisioned storage one
+worst-case pass can require. That graph-derived structural bound is `C`. Each producer
+advertises `C/L/H/G` to the capacity manager; `C` validates/derives policy while
+steady provisioning primarily uses the low watermark `L`, refill target `H`, and
+allocation/segment granularity `G`, with `C << L < H`.
+
+Generated code receives only compact runtime-resolved producer operations. It cannot
+recover either executor, a queue owner, persisted identity, capacity manager or
+background transaction owner.
+
+During realtime execution, a producer takes only already-provisioned blocks. Where
+layout permits, sample/event output writes directly into those blocks. Otherwise the
+runtime performs the bounded copy required when the final authored
+`[block-history, block-end+latency)` region becomes available. The producer can build
+one or more blocks into a private chain using ordinary stores.
+
+At the realtime pass boundary, the complete initialized chain is published through
+the `RealtimeGraphExecutor -> BackgroundGraphExecutor` bridge. Passing `(first,last)`
+lets the background-side event handler append it to that producer's SPSC queue with
+one cheap publication/pointer operation. The handler does not synchronously run
+background evaluation.
+
+Recording output disposition is fixed and invocation-local:
+
+```text
+untouched -> publish nothing; preserve prior RAM recording
+written   -> publish payload; overwrite addressed range
+voided    -> publish explicit erase for addressed range
+```
+
+`write_void()` is mutually exclusive with an ordinary write for the same logical
+block. A Tick/persisted event window containing zero events is ordinary authoritative
+empty event data, not a recording void.
+
+Before background execution, `BackgroundGraphExecutor` independently pins one finite
+`(first,last)` prefix from every relevant producer queue. There is intentionally no
+atomic cross-queue snapshot. Once selected, those terminal blocks define immutable
+work even while producers append later chains. If cross-queue atomic visibility is
+ever required, that feature must receive an explicit design rather than changing the
+generic queue semantics.
 
 The heuristic may consider:
 
@@ -1124,116 +1129,55 @@ retains per-source channel capabilities and does not create a producer or record
 `tock_coverage()` and its propagation callbacks are **never executed on the audio
 thread**. For persisted data, the preliminary implementation pins the selected
 published page snapshot at the Tick callback boundary. Both Sequential page playback
-and Tick-time Random Access use that immutable snapshot; pending candidate pages and
-newly sealed Tick capture blocks are invisible until a successor page version is
-published and a later callback selects it. An existing stale or invalidated published
+and Tick-time Random Access use that immutable snapshot; pending candidate pages and newly queued realtime-produced blocks are
+invisible until a successor persisted-state/page version is published and a later
+callback selects it. An existing stale or invalidated published
 page is read as-is, while a genuinely missing Sequential page produces that input's
 own `neutral_value`. Playback does not block or synchronously generate missing pages.
 
-Tick capture is the important cross-thread lifetime bridge. The same allocator-managed
-capture-block infrastructure can serve both an explicit recording bridge and
-Tick/persisted output staging. A recording bridge consumes ordinary sequential data
-and exposes a RAM-backed Random Access recording. An ordinary write overwrites the
-addressed timeline range, leaving the recording output untouched preserves existing
-data there, and `write_void()` authoritatively erases the range. A Tick/persisted
-producer uses capture to move newly finalized Tick data toward the canonical persisted-
-page store without allocating on the audio thread.
+Provisioned producer queues are the cross-thread lifetime bridge. The same generic
+queue/capacity infrastructure serves explicit recording and Tick/persisted staging.
+A recording bridge consumes ordinary sequential data and exposes a RAM-backed Random
+Access recording. An ordinary write overwrites the addressed timeline range, leaving
+the output untouched preserves existing data there, and `write_void()` authoritatively
+erases the range. Tick/persisted production uses its own producer queue to move
+finalized data toward canonical persisted storage without allocating on the realtime
+thread.
 
-When layout permits, the producer may write directly into a pre-provisioned capture
-block; otherwise the generated path performs a bounded copy at the production/finalization
-point. Capture does not wait for the end of the root Tick callback. Each capture
-record carries at least:
+Where layout permits, the producer writes directly into queue blocks. The completed
+producer-private chain is published at the realtime pass boundary; there is no global
+capture insertion sequence required by the queue transport. Domain-specific ordering
+is preserved by each producer's SPSC stream.
 
-```text
-CaptureSequence
-OutputPortId
-GlobalBlockPosition
-data block
-```
+Capacity is dynamically extensible through the async capacity manager rather than a
+fixed guessed duration. The realtime producer consumes only already-assigned blocks.
+Only the producer advertises `C/L/H/G`; the background consumer neither knows nor
+updates those values. Slow background work increases pending block ownership and may
+cause the manager to provision more blocks, subject only to real memory limits.
 
-`CaptureSequence` is monotonically increasing insertion order in the executor's
-shared Tick-capture log. `OutputPortId` identifies the capture-backed output whose
-value/coverage is affected, and `GlobalBlockPosition` identifies where that change
-belongs. Global positions need not increase with sequence: seeking during playback
-may append a new capture for an earlier position, and consecutive captures may
-belong to different outputs.
+If mandatory work cannot acquire enough ready blocks, the missing write is a sticky
+retention/recording failure. Later replenishment cannot recreate that work and does
+not turn the failure into an allowed drop.
 
-Capture capacity is slab-backed and dynamically extensible; the effective number of
-recent/pending blocks is determined by allocator supply and background progress, not
-by a fixed guessed duration such as one second. The audio thread only consumes
-already-provisioned free blocks. A separate **capture allocator** maintains low/high
-free-block watermarks by allocating reasonably sized slabs independently of background
-evaluation. The graph-derived maximum blocks per callback `C` is only the structural
-unit used to size a much larger latency-tolerant `L` and `H`; slab granularity `G`
-amortizes allocation. Slow background work therefore increases the sealed-but-
-unpublished backlog rather than overflowing a compiler-planned staging ring.
+`BackgroundGraphExecutor` independently pins one finite prefix from each relevant
+producer queue before a background pass. End discovery occurs during work selection;
+a remembered terminal block, not `next == nullptr` during execution, defines where
+that workload stops. Blocks appended after the remembered terminal are later work.
+No atomic relationship is required between prefixes selected from different queues.
 
-If a logical capture cannot reserve all of its physical blocks, it publishes no
-partial record and the transport permanently latches an insufficient-free-blocks
-failure. Reservation outside an active capture callback is latched separately. The
-owning executor exposes both facts to non-audio control code. Replenishing the free
-capture-block reserve enables later reservations but does not erase the failure for
-the missed record; Tick/persisted retention has already lost that window.
+Selected recording/Tick-persisted items become ordinary exact invalidation roots.
+Reverse planning and `tock_coverage()` then run normally for affected downstream
+nodes/page domains. Queue insertion itself is **not** persisted-state/page publication.
 
-A block acquired, written, or made readable during one root `tick_block()` callback
-is not returned to the audio-thread free pool during that callback. Background work
-may mark it reclaimable, but actual free-pool reuse is handed off at a callback
-boundary after all audio-thread views from that epoch are dead. This rule permits
-capture blocks to be shared safely by persistence and, in a later optimization,
-recent same-Tick Random Access.
+The canonical persisted-page store or RAM recording owns the published
+representation. A candidate may copy from queue payload blocks or adopt compatible
+storage when ownership rules permit. Released/reclaimable blocks return through the
+non-realtime capacity manager; the background consumer never splices them directly
+into a realtime producer's reserve.
 
-The background worker snapshots a fixed contiguous **capture-sequence prefix** at the
-start of each propagation/tock pass. Contiguous here refers only to insertion
-sequence; the selected records may cover arbitrary ports and nonmonotonic global
-positions. Captures published after the snapshot cutoff are excluded from the
-running pass and belong to a later pass.
-
-The selected records are coalesced into exact changed coverage keyed by output port
-and start the normal forward-coverage propagation machinery. Reverse planning and
-`tock_coverage()` then run normally for all affected nodes and page domains. The
-background evaluation transaction builds candidate persisted pages and atomically
-publishes one new page version. Capture insertion itself is **not** page
-publication and does not advance the page version.
-
-The canonical persisted-page store owns the published representation. A candidate
-may copy from capture blocks or, when storage layout/ownership permits, adopt their
-data without changing the page-store abstraction. If a candidate copies, the
-capture block becomes reclaimable once no background ownership remains; if the page
-store adopts the data, ownership transfers and that storage block is no longer a
-free capture block until the published page version itself can release it. In either
-case, a block that was visible during the current audio callback cannot return to the
-audio-thread free pool until a callback boundary. If work is cancelled or rejected
-as stale, the processed capture frontier does not advance and the corresponding
-blocks remain available for a later transaction.
-
-The preliminary Random Access implementation does not search these recent capture
-blocks. A future optional optimization may treat sealed Tick/persisted captures newer
-than the pinned published snapshot as a recent overlay, allowing a later Tick node
-to Random-Access newly finalized data in the same callback. That requires an explicit
-same-Tick producer dependency plus a lookup branch between recent blocks and
-published pages (or an ordered two-source merge for events). It must not be enabled
-implicitly until those visibility/version rules are implemented and tested.
-
-Changing the root block size is a quiescent storage-layout transition, not a
-semantic invalidation. Persisted output values are losslessly
-repartitioned as needed, a replacement GraphJit generation receives the new
-canonical layout, and publication switches only after migration completes.
-Semantic versioning and storage layout generation remain distinct.
-
-Persistence does not alter `tick_block()`'s legal history/latency writes: only
-finalized positions acquire the retention obligation. Those finalized published
-positions may be read by random-access inputs **directly**, without forcing a
-recording bridge or a tock implementation. An explicit recorder remains necessary
-for an unreproducible ephemeral tick source.
-
-Persistent stored sample data may be dense or coverage-packed. Stored event
-data are packed ordered events; event fan-in order is deterministic by
-absolute sample index, stable source/connection index, then producer-local
-order. Combined live event-buffer capacities must account for all incoming
-`max_events_per_index` bounds.
-
-See [coverage_and_background_evaluation.md](./coverage_and_background_evaluation.md) for the normative coverage propagation,
-background evaluation, and publication semantics.
+The preliminary Random Access implementation does not search pending queue blocks. A
+future optional recent-data overlay would require explicit same-Tick visibility and
+dependency/version rules; it is not baseline behavior.
 
 ## Event storage planning mirrors sample storage planning where possible
 
@@ -1380,7 +1324,7 @@ or materialization storage while every producer respects its declaration is a
 GraphJIT sizing bug, not a producer overflow.
 
 Executor/device telemetry should remain separate when those layers land:
-GraphExecutor can count deadline misses, while the audio-device boundary can
+`RealtimeGraphExecutor` can count deadline misses, while the audio-device boundary can
 count actual input overruns/output underruns. Those conditions have different
 causes and should not be collapsed into the event-output overflow metric.
 
@@ -1489,7 +1433,7 @@ The transition realization is required only when the final steady plan cannot it
 represent inherited node-owned state. It may add compact carries, composed-history
 materializations, or other bounded temporary storage. Those requirements have a
 finite semantic range for ordinary history/latency and therefore an absolute expiry
-position. GraphExecutor may translate that to a known block count for a fixed block
+position. `RealtimeGraphExecutor` may translate that to a known block count for a fixed block
 size, but the semantic handoff is at the first legal root callback boundary at or
 after the expiry position.
 

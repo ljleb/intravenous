@@ -73,7 +73,7 @@ exact transitive provider dependencies did not change is a later optimization pa
 not a prerequisite for the application architecture.
 
 A later builder-level redesign must not be confused with that near-term cache
-optimization work. Once GraphJit and GraphExecutor have fully landed, the project
+optimization work. Once GraphJit and the realtime/background executors have fully landed, the project
 will first run a substantial optimization/profiling iteration over the current
 configuration/build path. The next GraphBuilder API step after that measured
 optimization pass is the same-session scoped construction model in

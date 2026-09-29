@@ -10,7 +10,7 @@ This document supplements [graph_builder.md](./historical/graph_builder.md),
 and [project_graph_application_architecture.md](./project_graph_application_architecture.md).
 
 The implemented live-child/frozen-child importer described here is the current
-checkpoint. The planned post-GraphJit/GraphExecutor builder redesign is documented
+checkpoint. The planned post-GraphJit/executor builder redesign is documented
 in [scoped_graph_builder_and_subgraph_closure_direction.md](./scoped_graph_builder_and_subgraph_closure_direction.md).
 That later design keeps direct `ConfiguredGraph` import, but replaces newly
 constructed live child graphs with zero-copy same-`BuilderSession` nested-scope

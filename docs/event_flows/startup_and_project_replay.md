@@ -15,14 +15,16 @@ flowchart TD
     NI["NodeInstances"]
     GC["GraphConnections"]
     GJ["GraphJit"]
-    GE["GraphExecutor"]
+    RGE["RealtimeGraphExecutor"]
+    BGE["BackgroundGraphExecutor"]
 
     SRC --> PP
     PP -->|"one normalized replay batch"| PG
     PG -->|"1. replace/update desired instance batch; populate root builder"| NI
     PG -->|"2. replace/update desired connection batch; apply against complete embeddings"| GC
     PG -->|"3. current complete/partial ConfiguredGraph ⇄ synchronous CompiledGraph"| GJ
-    PG -->|"4. compiled current generation"| GE
+    PG -->|"4a. compiled current realtime generation"| RGE
+    PG -->|"4b. compiled current background generation/state"| BGE
 ```
 
 `ProjectPersistence` reconstructs persistent data but does not become the owner
@@ -54,7 +56,8 @@ flowchart TD
     NI["NodeInstances"]
     GC["GraphConnections"]
     GJ["GraphJit"]
-    GE["GraphExecutor"]
+    RGE["RealtimeGraphExecutor"]
+    BGE["BackgroundGraphExecutor"]
 
     PW -->|"1. build initial package subset ⇄ revisions + dependencies + diagnostics"| PJ
     PW -->|"2. detected declarations + complete build results"| PD
@@ -63,7 +66,8 @@ flowchart TD
     PG -->|"1. reconfigure/embed all stored requested instances"| NI
     PG -->|"2. re-resolve/apply all stored project connections"| GC
     PG -->|"3. populated ConfiguredGraph ⇄ synchronous CompiledGraph"| GJ
-    PG -->|"4. compiled successor generation"| GE
+    PG -->|"4a. compiled successor realtime generation"| RGE
+    PG -->|"4b. compiled successor background generation/state"| BGE
 ```
 
 `PackageWatcher` updates its dependency-watch state from the synchronous

@@ -133,7 +133,7 @@ match.
 ## Planned post-runtime ownership migration
 
 The contracts above describe the current implementation, where a live ref is tied
-to one `GraphBuilder` façade. After GraphJit and GraphExecutor are complete and the
+to one `GraphBuilder` façade. After GraphJit and the realtime/background executors are complete and the
 planned optimization/profiling pass has established the builder-performance
 baseline, live-reference ownership is planned to move from `GraphBuilder*` to
 `BuilderSession*`. See

@@ -37,7 +37,7 @@ Do **not** persist derived graph/execution state such as:
 - local-to-parent embedding maps;
 - concrete builder-local node/port/channel handles;
 - resolved connection channel ids;
-- `GraphJit` compiled kernels/ORC resources or `GraphExecutor` pending/active runtime state;
+- `GraphJit` compiled kernels/ORC resources or realtime/background executor runtime state;
 - volatile hardware audio-device objects/bindings.
 
 ## Node configuration expressions
@@ -155,4 +155,4 @@ saved atomically rather than writing after every UI gesture.
 A save collection procedure should ask each owning app module for its normalized
 persistent contribution. `ProjectGraph` contributes its current project-owned
 node-instance declarations and connection declarations; it must not expose
-`NodeInstances` caches, `GraphJit` compiled generations, or `GraphExecutor` runtime state as persistence.
+`NodeInstances` caches, `GraphJit` compiled generations, or realtime/background executor runtime state as persistence.

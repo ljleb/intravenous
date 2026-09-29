@@ -28,7 +28,7 @@ The fronts below follow five rules:
    callback choices.
 3. **Keep project intent distinct from derived runtime state.** Configuration source,
    connections, semantic node events, and persistence belong to the control plane;
-   GraphJit/GraphExecutor artifacts do not.
+   GraphJit and executor runtime artifacts do not.
 4. **Land correctness before optimization.** Revision continuity, transactionality,
    and semantic delivery must not depend on a later batching/fusion/PGO pass.
 5. **Prefer explicit integration contracts over shared ownership.** A team may add a
@@ -185,21 +185,25 @@ front 3 when practical, but do not merge the ownership of the two fronts.
 Detailed direction:
 [Coverage And Background Evaluation](./coverage_and_background_evaluation.md).
 
-## Front 5: Tick capture and explicit recording
+## Front 5: realtime-produced queues and explicit recording
 
 **Primary ownership:** realtime-safe production of persisted/background-visible data
-from Tick execution.
+from realtime execution and its ownership transfer to background work.
 
 This front owns:
 
-- pre-provisioned capture slabs/pools;
-- audio-thread-safe capture metadata publication;
-- Tick-persisted output capture;
-- explicit recorder capture;
-- fixed capture-sequence snapshots for a background transaction;
-- publication into the canonical random-access persistence representation;
-- transactional capture-frontier advancement;
-- reclamation after all readers/transactions release captured data.
+- producer-specific provisioned SPSC queues backed by power-of-two blocks;
+- `AsyncCapacityManager` provisioning/reclamation and producer `C/L/H/G` policy;
+- direct sample/event production into provisioned blocks where layout permits;
+- cheap complete-chain publication at realtime pass boundaries;
+- Tick-persisted output handoff;
+- explicit recorder handoff with fixed untouched/write/`write_void()` semantics;
+- independent finite-prefix pinning by `BackgroundGraphExecutor`;
+- publication into the canonical random-access persistence representation; and
+- release/reclamation of completed prefixes after successful domain commit.
+
+There is intentionally no atomic snapshot across different producer queues. If a
+future semantic requirement needs one, stop and design that requirement explicitly.
 
 Prefer integrating with the Region/Coverage target of front 3 rather than deepening a
 page-only API that is already planned for replacement.
@@ -227,7 +231,7 @@ This front owns:
 
 This is correctness work, not an optimization pass.
 
-**Dependencies:** current GraphExecutor infrastructure; consumes front 1's solved
+**Dependencies:** current executor infrastructure; consumes front 1's solved
 realization and front 3's final persistence representation as those land.
 
 ## Front 7: remaining GraphJit and node execution semantics
@@ -264,12 +268,18 @@ runtime path.
 
 This front owns:
 
-- construction and lifetime of `GraphExecutor` in the application;
-- compiled-generation staging and activation;
-- audio callback routing through `GraphExecutor::tick_block()`;
-- background worker/evaluation lifecycle;
-- retired generation/snapshot reclamation scheduling;
-- executor shutdown and application error propagation;
+- construction and lifetime of `RealtimeGraphExecutor` and `BackgroundGraphExecutor`;
+- direct `ProjectGraph` bridges to both executors after successful `GraphJit`;
+- realtime compiled-generation staging, state migration and pass-boundary activation;
+- audio callback routing through `RealtimeGraphExecutor`;
+- `BackgroundGraphExecutor` worker/evaluation lifecycle and independently pinned
+  producer queues;
+- `AsyncCapacityManager`-style provisioning/reclamation for producer-specific
+  power-of-two queue blocks;
+- realtime-to-background produced-chain publication and background-to-realtime
+  immutable persisted-state publication;
+- retired generation/snapshot/queue-block reclamation scheduling;
+- executor/capacity-manager shutdown and application error propagation;
 - stable logical system-audio device bindings;
 - ordinary project graph input/output nodes using those bindings;
 - silence/discard behavior when a persisted logical device cannot currently resolve;
@@ -399,7 +409,7 @@ This front owns:
 - preserving direct frozen `ConfiguredGraph` import;
 - equivalent cache-hit/cache-miss semantics.
 
-This front remains deliberately gated until GraphJit/GraphExecutor have become the
+This front remains deliberately gated until GraphJit plus the two executor modules have become the
 normal path and the current builder/configuration path has been profiled.
 
 ## Front 13: source introspection and semantic node interaction
@@ -553,7 +563,7 @@ for every neighboring project to finish:
    ownership/versioning interfaces; fronts 4/5/6 stop depending on authored page
    semantics.
 4. **Execution checkpoint:** fronts 4/6/7 provide enough correctness for front 8 to make
-   GraphExecutor the normal application path.
+   `RealtimeGraphExecutor` and `BackgroundGraphExecutor` the normal application path.
 5. **Configuration-value checkpoint:** front 9 publishes the restricted parser plus
    typed/structured value representation; fronts 10/13 share it for persistence and
    replacement.

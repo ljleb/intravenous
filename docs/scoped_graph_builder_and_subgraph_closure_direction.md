@@ -1,7 +1,7 @@
 # Scoped GraphBuilder And SubgraphClosure Direction
 
-_Status: post-GraphJit/GraphExecutor direction only. Do not begin this API/state
-migration until GraphJit and GraphExecutor have landed as the stable execution
+_Status: post-GraphJit/executor direction only. Do not begin this API/state
+migration until GraphJit plus the realtime/background executors have landed as the stable execution
 path and a substantial profiling/optimization iteration has been completed over
 the then-current graph configuration/build pipeline. After that optimization
 pass, this GraphBuilder API/state migration is the next planned builder-level
@@ -32,7 +32,7 @@ This work is deliberately deferred.
 
 The required order is:
 
-1. finish GraphJit and GraphExecutor as the normal whole-project execution path;
+1. finish GraphJit plus the realtime/background executors as the normal whole-project execution path;
 2. run a substantial optimization/profiling iteration over that landed runtime
    and the current configuration/build pipeline, including cache behavior and
    builder/module-build costs;
@@ -383,7 +383,7 @@ deferred builder work
 "resolve when embedded into builder/session X"
 ```
 
-This keeps GraphJit, GraphExecutor, connection planning, storage planning, binary
+This keeps GraphJit, the realtime/background executors, connection planning, storage planning, binary
 archive support, and other post-configuration systems unaware of construction-
 time closure/capture mechanics.
 
@@ -758,7 +758,7 @@ part of semantic identity.
 
 ## Migration outline after the sequencing gate
 
-Once GraphJit/GraphExecutor are complete and the required large optimization pass
+Once GraphJit/executor are complete and the required large optimization pass
 has established the performance baseline, the intended builder migration order is:
 
 1. introduce session-level live-ref identity and remove dependence on
@@ -808,4 +808,4 @@ This direction is complete when all of the following are true:
 - higher-order `SubgraphClosure` arguments can be invoked repeatedly in deeper
   scopes without foreign/deferred graph references;
 - `ConfiguredGraph` remains completely closed and requires no awareness of this
-  construction mechanism from GraphJit or GraphExecutor.
+  construction mechanism from GraphJit or the executor modules.

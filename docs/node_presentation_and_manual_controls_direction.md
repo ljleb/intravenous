@@ -7,12 +7,12 @@
 > This document remains the home for display modes, interaction lifetime,
 > persistent manual controls, and control/JIT-specialization direction.
 
-_Status: follow-on direction after the core GraphJit/GraphExecutor path is stable.
+_Status: follow-on direction after the core GraphJit/executor path is stable.
 The scoped GraphBuilder identity work in
 [scoped_graph_builder_and_subgraph_closure_direction.md](./scoped_graph_builder_and_subgraph_closure_direction.md)
 provides the nested semantic identities used by source focus and presentation
 rebinding. Manual-control JIT specialization also depends on the final GraphJit /
-GraphExecutor realization-switching contract. This is not an instruction to pull
+`RealtimeGraphExecutor` realization-switching contract. This is not an instruction to pull
 UI/control work ahead of those runtime and builder milestones._
 
 This document consolidates the planned node-presentation, interaction-lifetime,
@@ -130,7 +130,7 @@ old state as the new type".
 Leaf state migration remains subject to compatible generated/native state
 identity and migration rules. Module state reconciliation recursively uses its
 stable virtual/concrete child identities. Node-owned input-history and
-output-history/latency semantics remain governed by GraphJit/GraphExecutor state
+output-history/latency semantics remain governed by GraphJit/executor state
 reconciliation, not by presentation ownership.
 
 Presentations simply rebind to the newly published compatible realization.
@@ -273,7 +273,7 @@ exact dynamic-input set / settled specialization values
 
 Stale-result rejection therefore follows the same exact-generation principle as
 other GraphJit work. Control hover/scrub state may request compilation, but it
-never directly activates stale native code; GraphExecutor still owns safe
+never directly activates stale native code; `RealtimeGraphExecutor` still owns safe
 activation of an already-compiled compatible realization/variant.
 
 ## Relationship to project persistence
@@ -297,7 +297,7 @@ current UI interaction.
 
 This work follows the runtime and builder prerequisites rather than leading them:
 
-1. finish GraphJit and GraphExecutor;
+1. finish GraphJit plus the realtime/background executors;
 2. perform the planned large optimization/profiling iteration;
 3. perform the scoped GraphBuilder/session-identity migration where required for
    stable nested virtual identities;
@@ -305,7 +305,7 @@ This work follows the runtime and builder prerequisites rather than leading them
 5. add persistent manual values/participation policy to project state;
 6. add long-lived gesture contexts and scrub-only interpolation;
 7. add predictive dynamic-input specialization on top of the settled GraphJit
-   value-specialization/GraphExecutor activation machinery;
+   value-specialization/`RealtimeGraphExecutor` activation machinery;
 8. profile before adding recent-variant caches or more elaborate hover policies.
 
 The key architectural boundary is that presentations and manual controls consume

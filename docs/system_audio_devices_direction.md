@@ -83,6 +83,6 @@ applicable as an internal `SystemAudioDevices` concern:
 - hardware callback sizes may not equal project graph block size;
 - device disappearance/reappearance must not corrupt graph state.
 
-How `GraphExecutor` chooses its pacing policy is an execution design detail, but
+How `RealtimeGraphExecutor` chooses its pacing policy is an execution design detail, but
 hardware-device synchronization should not leak into `ProjectGraph`,
 `NodeInstances`, or `GraphConnections`.

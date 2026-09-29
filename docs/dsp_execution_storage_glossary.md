@@ -260,35 +260,44 @@ A **background worker** is a runtime worker that performs such work. The semanti
 term is background evaluation; the number or implementation of worker threads is a
 runtime choice unless a document states otherwise.
 
-### Capture allocator
+### Async capacity manager
 
-The **capture allocator** is the non-audio-thread provisioning role that maintains
-the free-block reserve for the shared Tick-capture pool. Explicit recording and
-Tick/persisted staging may consume blocks from the same pool. Provisioning is
-independent of background-evaluation progress; a slow background worker increases
-the sealed/pending backlog rather than changing the audio-thread allocation rules.
-`GraphExecutor` owns the maintenance worker that performs this role. Staging creates
-the initial reserve synchronously, then staging/activation publish immutable policy
-snapshots to the worker; the worker never discovers policy by reading mutable graph-
-realization selection concurrently. It also reclaims committed capture blocks as an
-operation separate from allocation.
-The maximum blocks per callback (`C`) covers every capture invocation that can seal before the
-callback ends. For a producer in a cyclic SCC this means every semantic slice, not one
-root-sized record; each slice independently includes its authored history and latency
-window.
+The **async capacity manager** is non-app-module runtime infrastructure that
+provisions and reclaims fixed-capacity blocks for producer-specific SPSC queues. It
+runs off the realtime path and is independent of background-evaluation progress. A
+slow background worker increases pending queue ownership rather than changing the
+producer's no-allocation rule.
 
-`C` is a graph-derived structural bound, not the operational reserve. The allocator's
-low watermark (`L`) covers tolerated allocator unavailability plus safety margin; its
-high watermark (`H`) is the refill target; and its slab granularity (`G`) amortizes
-allocation. The intended relationship is `C << L < H`. Below `L`, maintenance allocates
-one slab whose size is `H - free` rounded upward to `G`; at or above `L`, it allocates
-nothing. Sealed, pending and retired blocks do not count as free reserve, so sustained
-backlog can grow append-only slab capacity independently of capture-record reclamation.
-The observable free count is claimable-block credit: a producer publishes an
-initialized block before releasing one credit, and the audio consumer claims credit
-before removing a block. A concurrent observation may therefore undercount reachable
-blocks, which can only trigger an early refill, but it must never overstate what the
-audio callback can reserve.
+Only a queue producer advertises its capacity requirement:
+
+```text
+C = maximum producer burst that must fit without provisioning
+L = low free-capacity watermark
+H = refill target
+G = allocation/segment granularity
+```
+
+`C` is a producer-derived structural bound used to derive/validate policy. `L` covers
+tolerated provisioner unavailability plus safety margin, `H` provides refill
+hysteresis/headroom, and `G` amortizes allocation in whole power-of-two-capacity
+segments. The intended relationship is `C << L < H`. Queue consumers do not know or
+participate in this policy.
+
+The manager may keep ready blocks preassigned to each producer. Queue users do not
+require one shared atomic logical size. Reclamation follows completed background work
+and returns blocks to the manager, which later makes them producer-ready again.
+
+### Realtime / background executors
+
+`RealtimeGraphExecutor` owns realtime mutable execution state, active/pending
+realtime generations, pass-boundary activation, and realtime producer endpoints.
+
+`BackgroundGraphExecutor` owns its worker thread, background mutable evaluation
+state, independently queued producer inputs, persisted-data computation/publication,
+and immutable persisted-state versions returned to realtime.
+
+The two executors share no mutable state object. Cross-boundary data is immutable
+after publication or ownership-transferred by pointer.
 
 ## Coverage and change propagation
 
@@ -376,9 +385,9 @@ evaluation against one coherent semantic/page-version view. When persisted state
 changed, the same transaction completes and publishes the corresponding candidate.
 
 Forward/reverse propagation produces **prepared coverage**. It is not authoritative
-until final commit atomically promotes that coverage together with the successor page
-snapshot and any processed capture frontier. Failure, cancellation, or stale-base
-rejection promotes none of them.
+until final commit promotes that coverage together with the successor persisted-state/
+page snapshot and the domain-specific release of selected producer-queue prefixes.
+Failure, cancellation, or stale-base rejection promotes none of that committed state.
 
 This term describes atomic evaluation/publication semantics; it does not imply a
 database transaction implementation.
@@ -495,74 +504,70 @@ by Tick production and read by same-Tick Sequential consumers after the required
 same-Tick dependency has executed. It is not a published persisted snapshot and is
 never the baseline backing for a Random Access input.
 
-### Capture block / capture record / capture log
+### Provisioned queue block / produced block chain / pinned prefix
 
-A **capture block** is pre-provisioned storage that lets Tick-produced data escape the
-ordinary current-block lifetime without request-sized audio-thread allocation. The
-same allocator-managed block mechanism serves explicit recording and Tick/persisted
-staging. It is an allocator unit, not a log entry.
+A **provisioned queue block** is fixed-capacity storage supplied ahead of producer
+demand by the async capacity manager. Queue block capacities are powers of two. The
+producer can use the block directly for sample/event payloads rather than first
+writing another dynamically retained buffer and copying it into transport storage.
 
-A **capture record** is one semantic capture and one insertion-sequence entry. It has
-one record head and owns as many capture blocks as its complete payload requires.
-Its output handle is a kind-typed, store-local transport identity, not a
-`PersistedOutputId`. Executor-lived retention adapters map handles to canonical
-persisted destinations or, for an authored recorder, to that recorder's retained
-representation. This lets both uses share allocation and ordering without conflating
-their retention semantics.
-Reservation is all-or-nothing, and only the completed record head is sealed into the
-log; individual payload blocks are never independently published. For an explicit
-recording output, invocation-local disposition distinguishes three cases: an untouched
-output creates no record and preserves prior RAM recording; an ordinarily written
-output creates a payload record and overwrites the addressed range; `write_void()`
-creates a void record and erases the addressed range. This disposition records what
-the node did through its ordinary output facade; it is not a discretionary recorder
-policy. The shared transport represents the erasure explicitly as
-`TickCapturePayloadKind::void_value`; it is a zero-payload sequence entry carrying an
-output handle and exact range. A Tick/persisted event record with zero events remains
-an ordinary payload record authoritatively containing an empty event window, not a
-recorder void. When layout permits
-and the captured region is already final under the Tick history/latency contract, the
-record's payload storage may simultaneously be the producer's current Tick data: Tick
-writes it once, same-Tick Sequential consumers read it after the producer executes,
-and background persistence later consumes/adopts it. Otherwise the generated path
-performs a bounded copy into the reserved record when the region becomes final.
+A **produced block chain** is one or more fully initialized producer-private blocks
+linked together before publication. The producer preferably passes both the first and
+last block to the consumer-side app-module handler. Publishing the chain is one cheap
+queue insertion/pointer operation; individual entries inside the private chain do not
+require atomic publication.
 
-A **capture-record reservation failure** is sticky transport state indicating either
-that record reservation was attempted outside an active capture callback or that the
-free capture-block pool could not satisfy the complete record. Replenishment permits
-later reservations but cannot recreate the missed record, so it does not clear the
-failure. Tick/persisted treats this state as a broken retention guarantee; an explicit
-recorder likewise reports a failed/incomplete recording because a written block was
-not captured. Resource exhaustion never authorizes intentional capture loss.
+A **pinned queue prefix** is the finite `(first,last)` block range selected by
+`BackgroundGraphExecutor` before one background workload begins. Later insertion may
+link new blocks after `last`, but the selected workload still ends at the remembered
+`last`; background execution does not discover more work while processing the pinned
+prefix.
 
-A sealed capture record is immutable. Blocks reserved, written, or exposed during
-one root `tick_block()` callback remain stable until that callback
-boundary; they may be marked reclaimable earlier by another thread, but they are not
-returned to the audio-thread free-block pool during the callback.
+Different producer queues are pinned independently. There is deliberately no atomic
+relationship between the prefixes selected from different queues. An item published
+concurrently with workload selection may belong to either the current or a later
+background pass. If a future feature requires atomic visibility across queues, that
+requirement must be designed explicitly rather than added implicitly to the queue
+primitive.
 
-The **capture log** is the append-only sequence of sealed capture records awaiting
-background consumption/publication. In the preliminary implementation, Random Access
-reads do **not** consult this log: persisted data becomes Random-Access-visible only
-through a published persisted-page version. After commit, copied capture-record
-blocks may become reclaimable once callback/background ownership is gone; data
-adopted by the page store instead transfers ownership to the published page version.
+For an explicit recording output, invocation-local disposition distinguishes three
+cases: an untouched output publishes nothing and preserves the prior RAM recording;
+an ordinarily written output publishes payload data that overwrites the addressed
+range; `write_void()` publishes an explicit authoritative erase for that range. This
+is fixed recording semantics, not recorder policy. A Tick/persisted empty event block
+remains an ordinary authoritative empty event payload rather than a recorder void.
+
+A **queue-capacity failure** means a producer could not obtain already-provisioned
+blocks for work that semantically had to be published. Later replenishment cannot
+recreate the missed work. Tick/persisted therefore treats such a miss as a broken
+retention guarantee, and recording treats it as an incomplete recording; resource
+exhaustion never authorizes intentional loss.
+
+Queue-block ownership follows:
+
+```text
+AsyncCapacityManager -> producer -> BackgroundGraphExecutor -> AsyncCapacityManager
+```
+
+The background consumer does not splice released blocks directly into a realtime
+producer's reserve. It releases completed prefixes to non-realtime reclamation, and
+the capacity manager owns recycling/reassignment.
 
 ### Published-snapshot Random Access
 
 The preliminary Random Access implementation reads one immutable selected/pinned
 published representation. For persisted outputs that representation is the
-persisted-page snapshot. Pending candidates, current Tick buffers, and sealed but
-unpublished Tick capture records do not extend Random Access coverage or visibility.
+persisted-page snapshot. Pending candidates, current Tick buffers, and pending realtime-produced queue blocks do not extend Random Access coverage or visibility.
 A Tick callback therefore cannot observe a newly produced Tick/persisted block until
 a successor page version containing it has been published and a later callback/read
 context selects that version.
 
-A future optimization may overlay a bounded recent set of sealed Tick capture records
-on top of the published persisted-page snapshot so a later node in the **same Tick**
-can Random-Access newly finalized recorded data. That optimization requires a
+A future optimization may overlay a bounded recent set of newly produced queue
+payloads on top of the published persisted-page snapshot so a later node in the
+**same Tick** can Random-Access newly finalized data. That optimization requires a
 same-Tick producer-to-consumer dependency, a source-selection branch (published page
-versus recent capture block; ordered merge for events), and callback-boundary-safe
-reclamation. It is deliberately not part of the preliminary implementation.
+versus recent queued payload; ordered merge for events), and pass-boundary-safe
+ownership/reclamation. It is deliberately not part of the preliminary implementation.
 
 ### Port atom / incidence partition
 
@@ -601,7 +606,7 @@ A **steady realization** is the compiled realization used after all transition-o
 state has expired.
 
 Both represent the same logical graph revision. GraphJit should compile both in the
-original rebuild when both are necessary; `GraphExecutor` activates the transition
+original rebuild when both are necessary; `RealtimeGraphExecutor` activates the transition
 form at the splice and later reconciles currently evolved state into the already-
 compiled steady form at a safe root callback boundary. Expiry is defined by absolute
 semantic positions/ranges, even if a fixed-block implementation also precomputes the

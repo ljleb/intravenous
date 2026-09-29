@@ -41,7 +41,7 @@ experiment would need:
 - `PackageDefinitions` and `NodeDefinitions` publish immutable accepted revisions;
 - `GraphJit` owns independently releasable compiled project generations and their
   ORC lifetime;
-- `GraphExecutor` owns pending/active generations, state migration, and explicit
+- `RealtimeGraphExecutor` owns pending/active realtime generations, state migration, and explicit
   safe-boundary activation;
 - an older package/compiled generation remains alive while any retained graph state
   can still call into it.
@@ -135,11 +135,11 @@ For an eligible fresh identity:
    residency is insufficient because a paused, disconnected, or silent module
    may provide little representative training.
 4. Once the training policy says the profile is useful, capture the raw
-   profile at a quiescent `GraphExecutor` safe boundary.
+   profile at a quiescent `RealtimeGraphExecutor` safe boundary.
 5. Perform raw-profile file I/O, `llvm-profdata merge`, and the profile-use
    build on the module build service, never on a task worker.
 6. Load and validate the candidate through the ordinary source-triggered reload path.
-7. At a `GraphExecutor` safe boundary, migrate state and activate the candidate.
+7. At a `RealtimeGraphExecutor` safe boundary, migrate state and activate the candidate.
 8. Retain the training binary until both graph retirement and any final
    profile capture are complete.
 
@@ -213,12 +213,12 @@ modules already establish the boundaries that a future PGO experiment must respe
   revisions and must reject results for obsolete source identities;
 - `GraphJit` consumes one exact accepted definition world and produces an
   independently releasable compiled project generation;
-- `GraphExecutor` owns safe generation activation, state migration, and retirement
+- `RealtimeGraphExecutor` owns safe generation activation, state migration, and retirement
   timing; it must not run compilers, merge profiles, or own profile-cache policy.
 
 Any future policy object should remain outside those modules unless its responsibility
 is already part of their contract. In particular, training budgets, cooldowns,
-profile retention, and promotion decisions do not belong in `GraphExecutor` or the
+profile retention, and promotion decisions do not belong in `RealtimeGraphExecutor` or the
 definition stores.
 
 ## Custom CMake Contract

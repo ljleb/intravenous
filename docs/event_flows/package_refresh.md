@@ -20,7 +20,8 @@ flowchart TD
     NI["NodeInstances"]
     GC["GraphConnections"]
     GJ["GraphJit"]
-    GE["GraphExecutor"]
+    RGE["RealtimeGraphExecutor"]
+    BGE["BackgroundGraphExecutor"]
 
     PW -->|"1. complete build subset ⇄ revisions + dependencies + diagnostics"| PJ
     PW -->|"2. declarations + removals + complete build results"| PD
@@ -30,7 +31,8 @@ flowchart TD
     PG -->|"1. reconfigure/embed complete desired node batch against exactly this snapshot"| NI
     PG -->|"2. re-resolve/apply complete desired connection batch"| GC
     PG -->|"3. successor ConfiguredGraph ⇄ synchronous CompiledGraph"| GJ
-    PG -->|"4. compiled successor generation"| GE
+    PG -->|"4a. compiled successor realtime generation"| RGE
+    PG -->|"4b. compiled successor background generation/state"| BGE
 ```
 
 The numeric labels on sibling edges are orchestration order inside their parent;

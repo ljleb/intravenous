@@ -16,8 +16,10 @@ Startup must keep three states separate:
   be built from available definitions;
 - **compiled project graph** — the immutable `CompiledGraph` synchronously
   produced by `GraphJit` from that configured generation;
-- **active execution** — the executable generation/current mutable storage owned
-  by `GraphExecutor`.
+- **active realtime execution** — the executable generation/current mutable storage
+  owned by `RealtimeGraphExecutor`;
+- **background execution/persisted state** — the desired/committed background
+  generation and immutable persisted state owned by `BackgroundGraphExecutor`.
 
 Project load reconstructs desired state. It does not require every IV package to
 be compiled first, and it does not require audio execution to be active.
@@ -44,8 +46,8 @@ be compiled first, and it does not require audio execution to be active.
 10. `ProjectGraph` orchestrates reconstruction using the desired instances owned
     by `NodeInstances` and desired connections owned by `GraphConnections` against
     the new immutable definitions snapshot, synchronously compiles the resulting
-    root graph through `GraphJit`, and submits the compiled successor to
-    `GraphExecutor`.
+    root graph through `GraphJit`, and offers the compiled successor independently to
+    `RealtimeGraphExecutor` and `BackgroundGraphExecutor`.
 
 ## Valid initialized state before package realization
 
@@ -63,8 +65,10 @@ valid:
 - `GraphConnections` reports dangling unresolved matchers rather than deleting
   requested connections;
 - the current root `ConfiguredGraph` may therefore be partial or empty;
-- `GraphExecutor` may have no active generation or may run the latest complete
-  generation available under the chosen execution policy.
+- `RealtimeGraphExecutor` may have no active realtime generation or may run the
+  latest complete generation available under the chosen execution policy;
+- `BackgroundGraphExecutor` may independently have no pending work yet or retain the
+  latest coherent background/persisted state.
 
 ## Package filesystem activity starts its own package transaction
 
@@ -96,9 +100,12 @@ can only become input to a later root-build transaction.
 Whole-project `GraphJit` compilation is synchronous inside the `ProjectGraph`
 rebuild transaction. It uses exactly the configured graph/provider generation
 produced by that transaction and returns one immutable `CompiledGraph` before
-`ProjectGraph` calls `GraphExecutor`.
+`ProjectGraph` notifies either executor. `ProjectGraph` then offers that immutable
+generation once to `RealtimeGraphExecutor` and once to `BackgroundGraphExecutor` as
+sibling child operations of the same root-build cause.
 
-Receiving that compiled generation does not mutate an active audio pass. The
-active generation remains immutable for the duration of a complete pass, and a
-completed successor can replace it only at a safe boundary after the current
-pass finishes.
+Receiving that compiled generation does not mutate an active realtime pass. The
+realtime generation remains immutable for the duration of a complete pass, and a
+completed successor can replace it only at a safe boundary after the current pass
+finishes. Background generation/state updates affect pending/desired background work
+and do not alter a workload already selected by the background worker.

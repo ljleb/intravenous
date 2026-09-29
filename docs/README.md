@@ -14,6 +14,7 @@ The primary application-architecture entry points are:
 - [Node Presentation And Manual Controls Direction](./node_presentation_and_manual_controls_direction.md)
 - [System Audio Devices Direction](./system_audio_devices_direction.md)
 - [Graph JIT Direction](./graph_jit_direction.md)
+- [Realtime / Background Execution And Provisioned Queues](./realtime_background_execution_and_queues.md)
 - [Batched Node Callback Direction](./batched_node_callbacks_direction.md)
 - [DSP Execution And Storage Glossary](./dsp_execution_storage_glossary.md)
 - [Coverage, Random Access, And Background Evaluation](./coverage_and_background_evaluation.md)
