@@ -729,6 +729,7 @@ public:
     std::vector<EventCaptureSlot> event_capture_slots{};
     std::vector<graph_jit::TickSampleCaptureOperation> sample_captures{};
     std::vector<graph_jit::TickEventCaptureOperation> event_captures{};
+    PersistedTickCaptureRegistry* persisted_captures = nullptr;
     TickCaptureStore* capture_store = nullptr;
     std::size_t capture_blocks = 0;
     std::uint64_t generation = 0;
@@ -738,8 +739,11 @@ public:
         graph_jit::BackgroundEvaluationPlan const& plan,
         std::uint64_t selected_generation,
         std::size_t selected_maximum_block_size,
-        TickCaptureStore* selected_capture_store)
-        : capture_store(selected_capture_store)
+        PersistedTickCaptureRegistry* selected_captures)
+        : persisted_captures(selected_captures)
+        , capture_store(selected_captures
+              ? &selected_captures->capture_store()
+              : nullptr)
         , generation(selected_generation)
         , maximum_block_size(selected_maximum_block_size)
     {
@@ -959,7 +963,7 @@ public:
             auto& selected = sample_capture_slots[slot];
             selected = SampleCaptureSlot{
                 .store = capture_store,
-                .output = capture_store->register_output(capture_output_id(
+                .output = persisted_captures->register_output(capture_output_id(
                     plan, planned.port, selected_generation)),
                 .layout = port.sample_layout,
                 .history = port.output_history,
@@ -1014,7 +1018,7 @@ public:
             auto& selected = event_capture_slots[slot];
             selected = EventCaptureSlot{
                 .store = capture_store,
-                .output = capture_store->register_output(capture_output_id(
+                .output = persisted_captures->register_output(capture_output_id(
                     plan, planned.port, selected_generation)),
                 .type = port.event_type,
                 .history = port.output_history,
@@ -1168,7 +1172,7 @@ TickInvocationWorkspace::TickInvocationWorkspace(
     graph_jit::BackgroundEvaluationPlan const& plan,
     std::uint64_t generation,
     std::size_t maximum_block_size,
-    TickCaptureStore* captures)
+    PersistedTickCaptureRegistry* captures)
     : impl_(std::make_unique<Impl>(
         plan, generation, maximum_block_size, captures))
 {}

@@ -2,7 +2,7 @@
 
 #include <intravenous/graph_jit/tick_invocation_call.h>
 #include <intravenous/runtime/persisted_page_store.h>
-#include <intravenous/runtime/tick_capture_store.h>
+#include <intravenous/runtime/persisted_tick_capture_registry.h>
 #include <intravenous/runtime/tick_materialization_snapshot.h>
 
 #include <cstddef>
@@ -32,7 +32,7 @@ public:
         graph_jit::BackgroundEvaluationPlan const& plan,
         std::uint64_t generation,
         std::size_t maximum_block_size = 1,
-        TickCaptureStore* captures = nullptr);
+        PersistedTickCaptureRegistry* captures = nullptr);
     ~TickInvocationWorkspace();
 
     TickInvocationWorkspace(TickInvocationWorkspace const&) = delete;

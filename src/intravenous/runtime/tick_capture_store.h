@@ -1,6 +1,7 @@
 #pragma once
 
-#include <intravenous/runtime/persisted_page_store.h>
+#include <intravenous/channel_layout.h>
+#include <intravenous/ports.h>
 
 #include <cstddef>
 #include <cstdint>
@@ -56,18 +57,21 @@ public:
     [[nodiscard]] bool copy_to(std::span<std::byte> destination) const noexcept;
 };
 
-// Control-path-interned identity. Generated/audio code treats this as an opaque
-// token and never copies the string-bearing persisted identity behind it.
+// Store-local identity for one capture-backed output. Generated/audio code treats
+// this as an opaque token; retention-specific identities live in registries above
+// the shared transport.
 class TickCaptureOutputHandle {
     friend class TickCaptureStore;
 
     TickCaptureStore const* owner_ = nullptr;
-    PersistedOutputId const* output_ = nullptr;
+    std::uint64_t id_ = 0;
+    PortKind kind_ = PortKind::sample;
 
     TickCaptureOutputHandle(
         TickCaptureStore const& owner,
-        PersistedOutputId const& output) noexcept
-        : owner_(&owner), output_(&output)
+        std::uint64_t id,
+        PortKind kind) noexcept
+        : owner_(&owner), id_(id), kind_(kind)
     {}
 
 public:
@@ -75,17 +79,19 @@ public:
 
     [[nodiscard]] explicit operator bool() const noexcept
     {
-        return owner_ != nullptr && output_ != nullptr;
+        return owner_ != nullptr && id_ != 0;
     }
 
-    [[nodiscard]] PersistedOutputId const& output() const noexcept;
+    [[nodiscard]] PortKind kind() const noexcept { return kind_; }
+
+    bool operator==(TickCaptureOutputHandle const&) const = default;
 };
 
 static_assert(std::is_trivially_copyable_v<TickCaptureOutputHandle>);
 
 struct TickCaptureRecordView {
     CaptureSequence sequence = 0;
-    PersistedOutputId const* output = nullptr;
+    TickCaptureOutputHandle output{};
     SampleIndex begin = 0;
     std::size_t sample_count = 0;
     TickCapturePayloadKind payload_kind = TickCapturePayloadKind::samples;
@@ -252,8 +258,7 @@ public:
     TickCaptureStore(TickCaptureStore&&) = delete;
     TickCaptureStore& operator=(TickCaptureStore&&) = delete;
 
-    [[nodiscard]] TickCaptureOutputHandle register_output(
-        PersistedOutputId output);
+    [[nodiscard]] TickCaptureOutputHandle register_output(PortKind kind);
 
     // Adds one append-only slab and publishes all of its blocks to the audio
     // thread only after their payload addresses and capacities are final.

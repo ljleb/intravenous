@@ -5,6 +5,7 @@
 #include <intravenous/runtime/background_coverage_propagation.h>
 #include <intravenous/runtime/graph_jit.h>
 #include <intravenous/runtime/persisted_page_store.h>
+#include <intravenous/runtime/persisted_tick_capture_registry.h>
 #include <intravenous/runtime/tick_capture_store.h>
 #include <intravenous/runtime/tick_invocation_frame.h>
 
@@ -43,7 +44,7 @@ class GraphExecutor {
         Realization(
             std::shared_ptr<CompiledGraph const> graph,
             ResourceContext const& resources,
-            TickCaptureStore& captures);
+            PersistedTickCaptureRegistry& captures);
     };
 
     static constexpr std::size_t tick_capture_payload_capacity = 64 * 1024;
@@ -57,6 +58,9 @@ class GraphExecutor {
     // One generation-independent log. Large finalized windows are split across
     // fixed-size blocks, so staging a graph never replaces this owner.
     TickCaptureStore tick_captures_{tick_capture_payload_capacity};
+    // Retention-specific identity lives above the generic transport and remains
+    // resolvable after the realization which produced a pending record retires.
+    PersistedTickCaptureRegistry persisted_tick_captures_{tick_captures_};
     // Registered off the audio thread. Each tick_block() acquires one bounded
     // callback-scoped pin from this slot before entering generated code.
     PersistedPageStore::ReaderSlot tick_page_reader_{};

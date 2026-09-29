@@ -482,6 +482,11 @@ staging. It is an allocator unit, not a log entry.
 
 A **capture record** is one semantic capture and one insertion-sequence entry. It has
 one record head and owns as many capture blocks as its complete payload requires.
+Its output handle is a kind-typed, store-local transport identity, not a
+`PersistedOutputId`. Executor-lived retention adapters map handles to canonical
+persisted destinations or, for an authored recorder, to that recorder's retained
+representation. This lets both uses share allocation and ordering without conflating
+their retention semantics.
 Reservation is all-or-nothing, and only the completed record head is sealed into the
 log; individual payload blocks are never independently published. A recorder may also
 choose not to create a record at all, which consumes neither blocks nor a sequence

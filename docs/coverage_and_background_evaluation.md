@@ -2363,8 +2363,12 @@ recording merely because that planning metadata exists.
    module bridge; that wiring follows only after the executor transaction boundary is
    complete and tested.
 5. **In progress: make capture-backed Tick persistence and explicit recording
-   operational.** The shared runtime transport now interns persisted output identities
-   off the audio thread and owns append-only slabs of uniform, aligned capture blocks.
+   operational.** The shared runtime transport now issues kind-typed, store-local opaque
+   output handles and owns append-only slabs of uniform, aligned capture blocks. It has
+   no persisted-page or recorder-retention identity. An executor-lived
+   `PersistedTickCaptureRegistry` separately interns `PersistedOutputId` values and maps
+   them to those handles; a future explicit-recorder registry can map the same transport
+   handles to its own authored destinations without pretending they are persisted outputs.
    Provisioning publishes initialized blocks to a lock-free single-audio-consumer free
    pool. One callback scope can reserve, fill and seal sample/event records without
    allocation or locking. Reservation is all-or-nothing; a record owns one or more
@@ -2383,8 +2387,9 @@ recording merely because that planning metadata exists.
    resolved typed operations containing an opaque context and a narrow capture
    callback. It never carries `GraphExecutor*`, `TickCaptureStore*`, persisted
    identities or transaction ownership into generated code. The executor now owns one
-   generation-independent capture store and passes it only to realization construction.
-   Each address-stable Tick workspace interns its planned output identities, binds its
+   generation-independent capture store and persisted-capture registry and passes only
+   that narrow adapter to realization construction. Each address-stable Tick workspace
+   registers its planned persisted output identities through the adapter, binds its
    sample/event operation arrays, and calculates the fixed-block reserve for one
    maximum-size callback. Staging provisions that reserve off the audio thread. The
    current store policy uses 64 KiB payload blocks, but allocator blocks are not log

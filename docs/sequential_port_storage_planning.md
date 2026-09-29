@@ -844,9 +844,13 @@ weight calibration, and making stack-pressure promotion choose more selectively
 when several different storage moves can satisfy the same budget.
 
 The next persistence front now has its executor-side transport foundation. A shared
-`TickCaptureStore` interns canonical output identities on the control path, provisions
-aligned slab blocks independently of background evaluation, and exposes only bounded
-lock-free whole-record reserve/write/seal operations inside one audio callback scope.
+`TickCaptureStore` issues kind-typed store-local output handles, provisions aligned
+slab blocks independently of background evaluation, and exposes only bounded lock-free
+whole-record reserve/write/seal operations inside one audio callback scope. Retention-
+specific identity is deliberately layered above that transport: the executor-lived
+`PersistedTickCaptureRegistry` interns canonical `PersistedOutputId` values and maps
+them to generic capture handles. An explicit recorder can own an equivalent mapping
+to its authored retained destination without becoming a persisted-page output.
 Sealed records form
 one monotonic insertion sequence; a background pass fixes one immutable prefix and
 advances its processed frontier only on explicit commit. Non-audio reclamation may
@@ -856,8 +860,10 @@ typed sample/event capture slots to each Tick/persisted logical output and retai
 contiguous per-node ranges. `TickInvocationCall` exposes those slots only as an opaque
 context plus a narrow typed callback; generated code cannot recover an executor,
 capture store, persisted identity or transaction owner. The executor now owns one
-generation-independent `TickCaptureStore`, and realization construction resolves those
-slots into address-stable operations after interning each canonical output identity.
+generation-independent `TickCaptureStore` and one persisted-capture registry whose
+entries outlive individual realizations. Realization construction resolves those slots
+into address-stable operations after registering each canonical persisted identity
+through that adapter.
 It also provisions enough fixed 64 KiB blocks for one maximum-size callback. A
 `TickInvocationFrame` holds the store's callback scope while sample/event operations
 copy the complete authored `[block-history, block-end+latency)` mutation window.

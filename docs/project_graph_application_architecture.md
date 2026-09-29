@@ -629,6 +629,10 @@ pool but retain their authored recording semantics. Capture records are
 pre-publication/background inputs, not a second retained-data representation. A page
 candidate may copy or adopt compatible capture data, but Random Access and
 persisted Sequential playback use the canonical published page abstraction.
+Accordingly, the shared capture store carries only a kind-typed opaque output handle.
+An executor-lived persisted-capture registry maps that handle to `PersistedOutputId`;
+an explicit recorder uses its own retention-specific mapping rather than masquerading
+as a persisted output.
 
 Executable-generation reconciliation treats genuinely new semantic nodes as node
 creation events. Outputs participating in background coverage propagation establish

@@ -386,7 +386,8 @@ TEST(TickCaptureStore, TickInvocationFrameBindsAndScopesSampleCapture)
     iv::TickMaterializationStore materializations;
     auto materialization_reader = materializations.register_reader();
     iv::TickCaptureStore captures{2 * sizeof(iv::Sample)};
-    iv::TickInvocationWorkspace workspace{plan, 3, 4, &captures};
+    iv::PersistedTickCaptureRegistry capture_outputs{captures};
+    iv::TickInvocationWorkspace workspace{plan, 3, 4, &capture_outputs};
     EXPECT_EQ(workspace.capture_block_reserve(), 3u);
     captures.provision(workspace.capture_block_reserve());
 
@@ -425,6 +426,9 @@ TEST(TickCaptureStore, TickInvocationFrameBindsAndScopesSampleCapture)
     ASSERT_EQ(batch.size(), 1u);
     std::vector<iv::Sample> captured;
     batch.for_each([&](iv::TickCaptureRecordView const& record) {
+        auto const* output = capture_outputs.persisted_output(record.output);
+        ASSERT_NE(output, nullptr);
+        EXPECT_EQ(*output, local_output(iv::PortKind::sample, 0));
         EXPECT_EQ(record.payload_kind,
             iv::TickCapturePayloadKind::samples);
         EXPECT_EQ(record.sample_count, 6u);
@@ -578,7 +582,8 @@ TEST(TickCaptureStore, TickInvocationFrameBindsAndScopesEventCapture)
     iv::TickMaterializationStore materializations;
     auto materialization_reader = materializations.register_reader();
     iv::TickCaptureStore captures{sizeof(iv::TimedEvent)};
-    iv::TickInvocationWorkspace workspace{plan, 3, 4, &captures};
+    iv::PersistedTickCaptureRegistry capture_outputs{captures};
+    iv::TickInvocationWorkspace workspace{plan, 3, 4, &capture_outputs};
     EXPECT_EQ(workspace.capture_block_reserve(), 8u);
     captures.provision(workspace.capture_block_reserve());
 
@@ -620,6 +625,9 @@ TEST(TickCaptureStore, TickInvocationFrameBindsAndScopesEventCapture)
     ASSERT_EQ(batch.size(), 1u);
     std::vector<iv::EventTime> captured;
     batch.for_each([&](iv::TickCaptureRecordView const& record) {
+        auto const* output = capture_outputs.persisted_output(record.output);
+        ASSERT_NE(output, nullptr);
+        EXPECT_EQ(*output, local_output(iv::PortKind::event, 0));
         EXPECT_EQ(record.payload_kind,
             iv::TickCapturePayloadKind::events);
         ASSERT_EQ(record.event_count, 2u);
@@ -781,10 +789,8 @@ TEST(PersistedPageStore, TickFrameBindsOneCoherentMaterializationSnapshot)
 TEST(TickCaptureStore, FixesSequenceCutoffAndRecyclesAfterCallback)
 {
     iv::TickCaptureStore captures{256};
-    auto const samples = captures.register_output(
-        local_output(iv::PortKind::sample, 0));
-    auto const events = captures.register_output(
-        local_output(iv::PortKind::event, 1));
+    auto const samples = captures.register_output(iv::PortKind::sample);
+    auto const events = captures.register_output(iv::PortKind::event);
     captures.provision(3);
     EXPECT_EQ(captures.free_block_count(), 3u);
 
@@ -841,9 +847,9 @@ TEST(TickCaptureStore, FixesSequenceCutoffAndRecyclesAfterCallback)
         std::vector<iv::CaptureSequence> sequences;
         first_batch.for_each([&](iv::TickCaptureRecordView const& record) {
             sequences.push_back(record.sequence);
-            ASSERT_NE(record.output, nullptr);
+            ASSERT_TRUE(record.output);
             if (record.sequence == 0) {
-                EXPECT_EQ(*record.output, samples.output());
+                EXPECT_EQ(record.output, samples);
                 EXPECT_EQ(record.begin, 1200u);
                 EXPECT_EQ(record.sample_count, 2u);
                 EXPECT_EQ(
@@ -854,7 +860,7 @@ TEST(TickCaptureStore, FixesSequenceCutoffAndRecyclesAfterCallback)
                 EXPECT_FLOAT_EQ(values[0], 10.0f);
                 EXPECT_FLOAT_EQ(values[1], 11.0f);
             } else {
-                EXPECT_EQ(*record.output, events.output());
+                EXPECT_EQ(record.output, events);
                 EXPECT_EQ(record.event_count, 1u);
                 auto const values = capture_payload_as<iv::TimedEvent>(record);
                 ASSERT_EQ(values.size(), 1u);
@@ -883,12 +889,31 @@ TEST(TickCaptureStore, FixesSequenceCutoffAndRecyclesAfterCallback)
     EXPECT_EQ(captures.free_block_count(), 2u);
 }
 
+TEST(PersistedTickCaptureRegistry, InternsMappingsAboveGenericTransport)
+{
+    iv::TickCaptureStore captures{64};
+    iv::PersistedTickCaptureRegistry registry{captures};
+    auto const output = stable_output(iv::PortKind::sample, "recorded");
+
+    auto const first = registry.register_output(output);
+    auto const repeated = registry.register_output(output);
+    EXPECT_EQ(first, repeated);
+    EXPECT_EQ(first.kind(), iv::PortKind::sample);
+    EXPECT_EQ(registry.size(), 1u);
+    auto const* resolved = registry.persisted_output(first);
+    ASSERT_NE(resolved, nullptr);
+    EXPECT_EQ(*resolved, output);
+
+    iv::TickCaptureStore other_captures{64};
+    auto const foreign = other_captures.register_output(iv::PortKind::sample);
+    EXPECT_EQ(registry.persisted_output(foreign), nullptr);
+}
+
 TEST(TickCaptureStore, PublishesOneLogicalRecordBackedByMultipleBlocks)
 {
     // Deliberately split the second event across the physical-block boundary.
     iv::TickCaptureStore captures{sizeof(iv::TimedEvent) + 1};
-    auto const events = captures.register_output(
-        local_output(iv::PortKind::event, 2));
+    auto const events = captures.register_output(iv::PortKind::event);
     captures.provision(2);
 
     {
@@ -940,8 +965,7 @@ TEST(TickCaptureStore, PublishesOneLogicalRecordBackedByMultipleBlocks)
 TEST(TickCaptureStore, PublishesIntentionalEmptyEventRecord)
 {
     iv::TickCaptureStore captures{64};
-    auto const events = captures.register_output(
-        local_output(iv::PortKind::event, 2));
+    auto const events = captures.register_output(iv::PortKind::event);
     captures.provision(1);
 
     auto callback = captures.begin_callback();
@@ -969,8 +993,7 @@ TEST(TickCaptureStore, PublishesIntentionalEmptyEventRecord)
 TEST(TickCaptureStore, FailedBatchAndAbandonedWriterPreserveState)
 {
     iv::TickCaptureStore captures{64};
-    auto const samples = captures.register_output(
-        local_output(iv::PortKind::sample, 0));
+    auto const samples = captures.register_output(iv::PortKind::sample);
     captures.provision(2);
 
     {

@@ -8,7 +8,6 @@
 #include <mutex>
 #include <stdexcept>
 #include <utility>
-#include <variant>
 #include <vector>
 
 namespace iv {
@@ -57,7 +56,7 @@ struct TickCaptureStore::Block {
     // The remaining fields are meaningful only on a published record head.
     std::size_t record_payload_size = 0;
     CaptureSequence sequence = 0;
-    PersistedOutputId const* output = nullptr;
+    TickCaptureOutputHandle output{};
     SampleIndex begin = 0;
     std::size_t sample_count = 0;
     TickCapturePayloadKind payload_kind = TickCapturePayloadKind::samples;
@@ -102,8 +101,8 @@ public:
     std::size_t payload_capacity = 0;
     std::size_t payload_stride = 0;
     std::mutex control_mutex{};
-    std::vector<std::unique_ptr<PersistedOutputId const>> outputs{};
     std::vector<Slab> slabs{};
+    std::uint64_t next_output_id = 1;
 
     std::atomic<Block*> free_head{nullptr};
     std::atomic<std::size_t> free_count{0};
@@ -128,7 +127,7 @@ public:
         block.retired_next = nullptr;
         block.segment_size = 0;
         block.record_payload_size = 0;
-        block.output = nullptr;
+        block.output = {};
         block.sample_count = 0;
         block.event_count = 0;
         auto* head = free_head.load(std::memory_order_relaxed);
@@ -201,32 +200,23 @@ bool TickCapturePayloadView::copy_to(
     return offset == size_;
 }
 
-PersistedOutputId const& TickCaptureOutputHandle::output() const noexcept
-{
-    assert(output_ != nullptr);
-    return *output_;
-}
-
 TickCaptureStore::TickCaptureStore(std::size_t block_payload_capacity)
     : impl_(std::make_unique<Impl>(block_payload_capacity))
 {}
 
 TickCaptureStore::~TickCaptureStore() = default;
 
-TickCaptureOutputHandle TickCaptureStore::register_output(
-    PersistedOutputId output)
+TickCaptureOutputHandle TickCaptureStore::register_output(PortKind kind)
 {
-    std::scoped_lock lock(impl_->control_mutex);
-    auto const found = std::ranges::find_if(
-        impl_->outputs,
-        [&](auto const& candidate) { return *candidate == output; });
-    if (found != impl_->outputs.end()) {
-        return {*this, **found};
+    if (kind != PortKind::sample && kind != PortKind::event) {
+        throw std::invalid_argument(
+            "Tick capture output must be a sample or event port");
     }
-    auto stored = std::make_unique<PersistedOutputId const>(std::move(output));
-    auto const* result = stored.get();
-    impl_->outputs.push_back(std::move(stored));
-    return {*this, *result};
+    std::scoped_lock lock(impl_->control_mutex);
+    if (impl_->next_output_id == 0) {
+        throw std::length_error("Tick capture output identity space exhausted");
+    }
+    return {*this, impl_->next_output_id++, kind};
 }
 
 void TickCaptureStore::provision(std::size_t block_count)
@@ -345,8 +335,8 @@ bool TickCaptureStore::seal_samples(
     std::size_t sample_count,
     ChannelLayout layout) noexcept
 {
-    if (output.owner_ != this || output.output_ == nullptr
-        || persisted_output_kind(*output.output_) != PortKind::sample
+    if (output.owner_ != this || output.id_ == 0
+        || output.kind_ != PortKind::sample
         || sample_count == 0
         || !is_valid_channel_type(layout.channel_type)
         || !is_valid_sample_stream_layout(layout.sample_layout)
@@ -367,7 +357,7 @@ bool TickCaptureStore::seal_samples(
         return false;
     }
 
-    head.output = output.output_;
+    head.output = output;
     head.begin = begin;
     head.sample_count = sample_count;
     head.payload_kind = TickCapturePayloadKind::samples;
@@ -393,8 +383,8 @@ bool TickCaptureStore::seal_events(
     EventTypeId type,
     std::size_t event_count) noexcept
 {
-    if (output.owner_ != this || output.output_ == nullptr
-        || persisted_output_kind(*output.output_) != PortKind::event
+    if (output.owner_ != this || output.id_ == 0
+        || output.kind_ != PortKind::event
         || sample_count == 0 || type >= EventTypeId::count
         || sample_count > std::numeric_limits<SampleIndex>::max() - begin
         || event_count > std::numeric_limits<std::size_t>::max()
@@ -446,7 +436,7 @@ bool TickCaptureStore::seal_events(
         previous = event;
     }
 
-    head.output = output.output_;
+    head.output = output;
     head.begin = begin;
     head.sample_count = sample_count;
     head.payload_kind = TickCapturePayloadKind::events;
