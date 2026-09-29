@@ -516,9 +516,11 @@ output creates no record and preserves prior RAM recording; an ordinarily writte
 output creates a payload record and overwrites the addressed range; `write_void()`
 creates a void record and erases the addressed range. This disposition records what
 the node did through its ordinary output facade; it is not a discretionary recorder
-policy. A Tick/persisted event record with zero events remains an ordinary payload
-record authoritatively containing an empty event window, not a recorder void. When
-layout permits
+policy. The shared transport represents the erasure explicitly as
+`TickCapturePayloadKind::void_value`; it is a zero-payload sequence entry carrying an
+output handle and exact range. A Tick/persisted event record with zero events remains
+an ordinary payload record authoritatively containing an empty event window, not a
+recorder void. When layout permits
 and the captured region is already final under the Tick history/latency contract, the
 record's payload storage may simultaneously be the producer's current Tick data: Tick
 writes it once, same-Tick Sequential consumers read it after the producer executes,

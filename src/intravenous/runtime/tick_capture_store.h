@@ -17,6 +17,7 @@ using CaptureSequence = std::uint64_t;
 enum class TickCapturePayloadKind : std::uint8_t {
     samples,
     events,
+    void_value,
 };
 
 class TickCaptureStore;
@@ -140,6 +141,7 @@ class TickCaptureStore {
     std::unique_ptr<Impl> impl_{};
 
     void abandon_record(Block& head) noexcept;
+    [[nodiscard]] bool publish_record(Block& head) noexcept;
     [[nodiscard]] TickCaptureRecordView view(Block const& head) const noexcept;
     [[nodiscard]] bool seal_samples(
         Block& head,
@@ -154,6 +156,11 @@ class TickCaptureStore {
         std::size_t sample_count,
         EventTypeId type,
         std::size_t event_count) noexcept;
+    [[nodiscard]] bool seal_void(
+        Block& head,
+        TickCaptureOutputHandle output,
+        SampleIndex begin,
+        std::size_t sample_count) noexcept;
     void end_callback() noexcept;
 
 public:
@@ -203,6 +210,12 @@ public:
             std::size_t sample_count,
             EventTypeId type,
             std::size_t event_count) noexcept;
+        // Seals an authoritative erasure of one sample/event output range. The
+        // reserved record must have a zero-byte payload.
+        [[nodiscard]] bool seal_void(
+            TickCaptureOutputHandle output,
+            SampleIndex begin,
+            std::size_t sample_count) noexcept;
     };
 
     class CallbackScope {

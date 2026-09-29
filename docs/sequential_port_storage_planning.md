@@ -875,20 +875,21 @@ callback. `C` is not the operational reserve. Staging takes the larger active/pe
 staging and activation, allocates only below `L`, and refills toward `H` with one
 `G`-rounded slab while sealed backlog is still pending. The same worker returns
 committed capture blocks to the free pool independently of allocation.
-The current allocator uses
-fixed 64 KiB blocks. A
-`TickInvocationFrame` holds the store's callback scope while sample/event operations
+The current allocator uses fixed 64 KiB blocks. A `TickInvocationFrame` holds the
+store's callback scope while sample/event operations
 copy the complete authored `[block-history, block-end+latency)` mutation window.
 Each sample window or event sequence becomes one logical record and one sequence
 entry, backed by as many fixed-size payload blocks as required; an empty event window
 is represented by an explicit zero-payload record. Reservation is all-or-nothing and
 only the completed record head is published, so a fixed background snapshot cannot
-bisect a capture. Generated lowering now resolves each logical capture slot
+bisect a capture. The transport also supports a distinct zero-payload `void_value`
+record for either output kind; it identifies an authoritative range erasure without
+conflating that erasure with an ordinary empty event record. Generated lowering now resolves each logical capture slot
 to its compact reflected output binding and invokes the opaque operation after the
 producer's full post-operation sequence. Primitive-internal slicing captures the
 complete enclosing window once, while SCC execution captures each finalized semantic
-slice. Explicit recorder binding and transaction/page-store consumption remain the
-next slice.
+slice. Invocation-local recording-output disposition, explicit recorder binding, and
+transaction/page-store consumption remain the next slices.
 
 The heuristic may consider:
 

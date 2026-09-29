@@ -2519,9 +2519,18 @@ recording merely because that planning metadata exists.
    retired-snapshot operation now reclaims only persisted-page and Tick-materialization
    snapshot owners; capture-block reclamation has one production owner.
 
-   Next, implement the output disposition and void-record form, bind explicit recorder
-   bridges at their authored production/finalization points, and consume fixed capture-
-   sequence snapshots through `BackgroundEvaluationTransaction`.
+   The capture transport now has an explicit `void_value` record kind. A void record
+   requires a zero-byte reservation, carries the output handle and exact timeline
+   range, consumes one insertion sequence, and otherwise has no sample layout, event
+   type or event count. Sample and event handles can both be voided. Sample/event
+   payload sealing and void sealing share one sequence-publication implementation, so
+   fixed-prefix ordering cannot distinguish their physical construction. Ordinary
+   zero-event records remain `events`, not `void_value`.
+
+   Next, implement invocation-local output disposition and `write_void()` on ordinary
+   output facades, then bind explicit recorder bridges at their authored production/
+   finalization points and consume fixed capture-sequence snapshots through
+   `BackgroundEvaluationTransaction`.
    Publish Tick/persisted captures into the canonical page store and recorder captures
    into the recorder's RAM Random Access representation, then advance the capture
    frontier only with transaction commit. The recent-capture Random Access overlay

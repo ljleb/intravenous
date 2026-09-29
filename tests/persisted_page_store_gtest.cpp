@@ -1085,6 +1085,77 @@ TEST(TickCaptureStore, PublishesIntentionalEmptyEventRecord)
     });
 }
 
+TEST(TickCaptureStore, PublishesVoidRecordsAsAuthoritativeErasures)
+{
+    iv::TickCaptureStore captures{64};
+    auto const samples = captures.register_output(iv::PortKind::sample);
+    auto const events = captures.register_output(iv::PortKind::event);
+    captures.allocate_free_block_slab(4);
+
+    auto callback = captures.begin_callback();
+    ASSERT_TRUE(callback);
+
+    auto sample_void = captures.reserve_record(0);
+    ASSERT_TRUE(sample_void);
+    ASSERT_TRUE(sample_void.seal_void(samples, 100, 8));
+
+    auto event_void = captures.reserve_record(0);
+    ASSERT_TRUE(event_void);
+    ASSERT_TRUE(event_void.seal_void(events, 200, 4));
+
+    auto empty_events = captures.reserve_record(0);
+    ASSERT_TRUE(empty_events);
+    ASSERT_TRUE(empty_events.seal_events(
+        events,
+        300,
+        4,
+        iv::EventTypeId::trigger,
+        0));
+
+    {
+        auto invalid_void = captures.reserve_record(1);
+        ASSERT_TRUE(invalid_void);
+        std::array<std::byte, 1> payload{};
+        ASSERT_TRUE(invalid_void.append(payload));
+        EXPECT_FALSE(invalid_void.seal_void(samples, 400, 4));
+    }
+    EXPECT_EQ(captures.free_block_count(), 1u);
+
+    auto batch = captures.snapshot_pending();
+    ASSERT_EQ(batch.size(), 3u);
+    std::array<bool, 3> seen{};
+    batch.for_each([&](iv::TickCaptureRecordView const& record) {
+        ASSERT_LT(record.sequence, seen.size());
+        seen[record.sequence] = true;
+        EXPECT_TRUE(record.payload.empty());
+        EXPECT_EQ(record.event_count, 0u);
+        if (record.sequence == 0) {
+            EXPECT_EQ(record.output, samples);
+            EXPECT_EQ(record.begin, 100u);
+            EXPECT_EQ(record.sample_count, 8u);
+            EXPECT_EQ(
+                record.payload_kind,
+                iv::TickCapturePayloadKind::void_value);
+        } else if (record.sequence == 1) {
+            EXPECT_EQ(record.output, events);
+            EXPECT_EQ(record.begin, 200u);
+            EXPECT_EQ(record.sample_count, 4u);
+            EXPECT_EQ(
+                record.payload_kind,
+                iv::TickCapturePayloadKind::void_value);
+        } else {
+            // An ordinary Tick/persisted event record containing no events is
+            // authoritative event data, not a recorder erasure.
+            EXPECT_EQ(record.output, events);
+            EXPECT_EQ(record.begin, 300u);
+            EXPECT_EQ(record.payload_kind,
+                iv::TickCapturePayloadKind::events);
+            EXPECT_EQ(record.event_type, iv::EventTypeId::trigger);
+        }
+    });
+    EXPECT_EQ(seen, (std::array<bool, 3>{true, true, true}));
+}
+
 TEST(TickCaptureStore, LatchesCaptureRecordReservationFailures)
 {
     iv::TickCaptureStore captures{64};

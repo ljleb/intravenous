@@ -1074,9 +1074,15 @@ This is a hint, not a hard constraint. Use your own good judgement if ever in do
     unexpected worker failures are sticky control-path diagnostics distinct from the
     sticky failure of an individual audio-thread record reservation.
 
-    Next add output disposition and the void-record form, bind explicit-recorder blocks
-    at their authored bridge points, and consume fixed capture prefixes through the
-    background transaction. Publish Tick/persisted captures into
+    The transport now seals an explicit zero-payload `void_value` record for either a
+    sample or event output handle. It carries the erased timeline range and participates
+    in the same insertion sequence as payload records. Ordinary zero-event capture
+    remains an `events` record, so authoritative empty event data is not conflated with
+    recorder erasure.
+
+    Next add invocation-local output disposition and `write_void()` to ordinary output
+    facades, bind explicit-recorder blocks at their authored bridge points, and consume
+    fixed capture prefixes through the background transaction. Publish Tick/persisted captures into
     the canonical page store and recorder captures into the recorder's RAM Random
     Access representation, then advance the capture frontier only with transaction
     commit. A same-Tick recent-capture Random Access overlay remains a later optional

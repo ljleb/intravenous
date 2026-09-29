@@ -390,6 +390,23 @@ void TickCaptureStore::abandon_record(Block& head) noexcept
     }
 }
 
+bool TickCaptureStore::publish_record(Block& head) noexcept
+{
+    if (impl_->next_sequence
+        == std::numeric_limits<CaptureSequence>::max()) {
+        return false;
+    }
+    for (auto* block = &head; block; block = block->payload_next) {
+        block->sequence = impl_->next_sequence;
+    }
+    head.sealed_next.store(nullptr, std::memory_order_relaxed);
+    impl_->audio_tail->sealed_next.store(&head, std::memory_order_release);
+    impl_->audio_tail = &head;
+    ++impl_->next_sequence;
+    impl_->published.store(impl_->next_sequence, std::memory_order_release);
+    return true;
+}
+
 TickCaptureRecordView TickCaptureStore::view(Block const& head) const noexcept
 {
     return {
@@ -430,8 +447,7 @@ bool TickCaptureStore::seal_samples(
         return false;
     }
     auto const bytes = values * sizeof(Sample);
-    if (bytes != head.record_payload_size
-        || impl_->next_sequence == std::numeric_limits<CaptureSequence>::max()) {
+    if (bytes != head.record_payload_size) {
         return false;
     }
 
@@ -442,15 +458,7 @@ bool TickCaptureStore::seal_samples(
     head.sample_layout = layout;
     head.event_type = EventTypeId::empty;
     head.event_count = 0;
-    for (auto* block = &head; block; block = block->payload_next) {
-        block->sequence = impl_->next_sequence;
-    }
-    head.sealed_next.store(nullptr, std::memory_order_relaxed);
-    impl_->audio_tail->sealed_next.store(&head, std::memory_order_release);
-    impl_->audio_tail = &head;
-    ++impl_->next_sequence;
-    impl_->published.store(impl_->next_sequence, std::memory_order_release);
-    return true;
+    return publish_record(head);
 }
 
 bool TickCaptureStore::seal_events(
@@ -470,8 +478,7 @@ bool TickCaptureStore::seal_events(
         return false;
     }
     auto const bytes = event_count * sizeof(TimedEvent);
-    if (bytes != head.record_payload_size
-        || impl_->next_sequence == std::numeric_limits<CaptureSequence>::max()) {
+    if (bytes != head.record_payload_size) {
         return false;
     }
 
@@ -521,15 +528,31 @@ bool TickCaptureStore::seal_events(
     head.sample_layout = {};
     head.event_type = type;
     head.event_count = event_count;
-    for (auto* block = &head; block; block = block->payload_next) {
-        block->sequence = impl_->next_sequence;
+    return publish_record(head);
+}
+
+bool TickCaptureStore::seal_void(
+    Block& head,
+    TickCaptureOutputHandle output,
+    SampleIndex begin,
+    std::size_t sample_count) noexcept
+{
+    if (output.owner_ != this || output.id_ == 0
+        || (output.kind_ != PortKind::sample
+            && output.kind_ != PortKind::event)
+        || sample_count == 0 || head.record_payload_size != 0
+        || sample_count > std::numeric_limits<SampleIndex>::max() - begin) {
+        return false;
     }
-    head.sealed_next.store(nullptr, std::memory_order_relaxed);
-    impl_->audio_tail->sealed_next.store(&head, std::memory_order_release);
-    impl_->audio_tail = &head;
-    ++impl_->next_sequence;
-    impl_->published.store(impl_->next_sequence, std::memory_order_release);
-    return true;
+
+    head.output = output;
+    head.begin = begin;
+    head.sample_count = sample_count;
+    head.payload_kind = TickCapturePayloadKind::void_value;
+    head.sample_layout = {};
+    head.event_type = EventTypeId::empty;
+    head.event_count = 0;
+    return publish_record(head);
 }
 
 TickCaptureStore::Batch TickCaptureStore::snapshot_pending() noexcept
@@ -746,6 +769,23 @@ bool TickCaptureStore::RecordWriter::seal_events(
         || written_ != head_->record_payload_size
         || !store_->seal_events(
             *head_, output, begin, sample_count, type, event_count)) {
+        return false;
+    }
+    store_ = nullptr;
+    head_ = nullptr;
+    write_block_ = nullptr;
+    write_block_offset_ = 0;
+    written_ = 0;
+    return true;
+}
+
+bool TickCaptureStore::RecordWriter::seal_void(
+    TickCaptureOutputHandle output,
+    SampleIndex begin,
+    std::size_t sample_count) noexcept
+{
+    if (!store_ || !head_ || written_ != 0
+        || !store_->seal_void(*head_, output, begin, sample_count)) {
         return false;
     }
     store_ = nullptr;
