@@ -2360,23 +2360,40 @@ recording merely because that planning metadata exists.
    allocation or locking; sealing assigns the executor-wide insertion sequence and
    appends to the immutable log. Background code can fix `[begin, cutoff)` once,
    iterate exactly that batch, advance the processed frontier only on commit, and
-   recycle committed blocks only outside an active root callback. The queue retains
-   one consumer-sentinel block until a later record is committed, which is an internal
-   ownership detail rather than record loss.
+   recycle committed blocks only on the non-audio path. Reclamation records the active
+   callback's starting sequence and never recycles a block from that callback before
+   it ends; older retired blocks may safely return to the lock-free pool concurrently.
+   The queue retains one consumer-sentinel block until a later record is committed,
+   which is an internal ownership detail rather than record loss.
 
    The immutable Tick runtime plan now selects every Tick/persisted logical output,
    separates sample and event capture slots, and retains contiguous ranges for each
    producing node. The callback invocation ABI is defined to carry only runtime-
    resolved typed operations containing an opaque context and a narrow capture
    callback. It never carries `GraphExecutor*`, `TickCaptureStore*`, persisted
-   identities or transaction ownership into generated code. Workspaces already size
-   these stable slot arrays;
-   their callbacks remain null until the next realization slice binds them.
+   identities or transaction ownership into generated code. The executor now owns one
+   generation-independent capture store and passes it only to realization construction.
+   Each address-stable Tick workspace interns its planned output identities, binds its
+   sample/event operation arrays, and calculates the fixed-block reserve for one
+   maximum-size callback. Staging provisions that reserve off the audio thread. The
+   current store policy uses 64 KiB payload blocks; larger sample windows and event
+   sequences are split into ordered records rather than requiring a generation-sized
+   allocation.
 
-   Next, resolve the planned slots against the shared capture transport and have
-   lowering invoke them at the exact output-finalization point. Bind explicit recorder
-   bridges at their authored production/finalization points, then consume the fixed
-   batch through `BackgroundEvaluationTransaction`. Use it
+   `TickInvocationFrame` now holds one capture callback scope for the complete root
+   invocation. Bound sample operations validate the finalized reflected binding and
+   copy the complete authored `[block-history, block-end+latency)` window, preserving
+   its channel layout while splitting at block boundaries. Event operations validate
+   the final bounded/ring representation, retain sorted events from that same window,
+   and seal an empty record when the finalized window contains no events. The generated
+   ABI still sees only opaque runtime-resolved operations. Explicit non-audio executor
+   reclamation now also returns eligible committed capture blocks without crossing the
+   active callback's sequence boundary.
+
+   Next, have lowering invoke each already-bound operation at the exact output-
+   finalization point. Bind explicit recorder bridges at their authored production/
+   finalization points, then consume the fixed batch through
+   `BackgroundEvaluationTransaction`. Use it
    for Tick/persisted staging and explicit recorder bridges as appropriate. Consume
    fixed capture-sequence snapshots through the background transaction, publish into
    the canonical page store, and reclaim only with callback-boundary-safe ownership.

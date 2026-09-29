@@ -219,9 +219,10 @@ public:
     [[nodiscard]] Batch snapshot_pending() noexcept;
     [[nodiscard]] bool commit(Batch&& batch) noexcept;
 
-    // Returns committed blocks to the free pool only outside an active root
-    // callback. The queue's current consumer sentinel is deliberately retained
-    // until a later record is committed.
+    // Returns committed blocks to the free pool on the non-audio path. Blocks
+    // sealed at or after the active callback's starting sequence remain retired
+    // until a later call. The queue's current consumer sentinel is deliberately
+    // retained until a later record is committed.
     [[nodiscard]] std::size_t reclaim_committed() noexcept;
 
     [[nodiscard]] std::size_t block_payload_capacity() const noexcept;

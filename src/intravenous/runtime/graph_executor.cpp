@@ -9,7 +9,8 @@ namespace iv {
 
 GraphExecutor::Realization::Realization(
     std::shared_ptr<CompiledGraph const> compiled_graph,
-    ResourceContext const& resources)
+    ResourceContext const& resources,
+    TickCaptureStore& captures)
     : graph(std::move(compiled_graph))
     , storage(graph->node_layout.create_storage(resources))
     , coverage(graph->background_evaluation_plan.accumulators.output_change_count)
@@ -19,7 +20,8 @@ GraphExecutor::Realization::Realization(
     , tick_invocation(
         graph->background_evaluation_plan,
         graph->project_generation,
-        graph->specialization.block_size)
+        graph->specialization.block_size,
+        &captures)
 {}
 
 GraphExecutor::GraphExecutor(ResourceContext resources)
@@ -57,7 +59,10 @@ GraphExecutorStageResult GraphExecutor::stage(
 
     auto const index = active_ ? 1 - *active_ : std::size_t{0};
     pending_.reset();
-    realizations_[index].emplace(std::move(compiled_graph), resources_);
+    realizations_[index].emplace(
+        std::move(compiled_graph), resources_, tick_captures_);
+    tick_captures_.provision(
+        realizations_[index]->tick_invocation.capture_block_reserve());
     if (!active_) {
         realizations_[index]->storage.initialize();
         realizations_[index]->initialized = true;
@@ -125,6 +130,7 @@ GraphExecutorReclaimedSnapshots GraphExecutor::reclaim_retired_snapshots()
     return {
         .persisted_pages = persisted_pages_.reclaim_retired(),
         .tick_materializations = tick_materializations_.reclaim_retired(),
+        .tick_captures = tick_captures_.reclaim_committed(),
     };
 }
 

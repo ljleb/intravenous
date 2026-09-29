@@ -4,6 +4,8 @@
 
 #include <gtest/gtest.h>
 
+#include <array>
+#include <cstddef>
 #include <cstdint>
 #include <stdexcept>
 #include <type_traits>
@@ -83,6 +85,8 @@ iv::graph_jit::BackgroundEvaluationPlan direct_tick_sample_plan()
             .kind = iv::PortKind::sample,
             .direction = PortDirection::output,
             .persisted_tick_output = true,
+            .output_history = 1,
+            .output_latency = 1,
             .retention = iv::OutputRetention::persisted,
             .sample_layout = {
                 .channel_type = iv::ChannelTypeId::mono,
@@ -202,7 +206,12 @@ iv::graph_jit::BackgroundEvaluationPlan direct_tick_event_plan()
             .configured_port = {0, iv::PortKind::event, 0},
             .kind = iv::PortKind::event,
             .direction = PortDirection::output,
+            .persisted_tick_output = true,
+            .output_history = 1,
+            .output_latency = 1,
+            .retention = iv::OutputRetention::persisted,
             .event_type = iv::EventTypeId::trigger,
+            .max_events_per_index = 1.0,
         },
         BackgroundPortPlan{
             .node = 1,
@@ -232,8 +241,12 @@ iv::graph_jit::BackgroundEvaluationPlan direct_tick_event_plan()
         .port = 1,
         .storage = {0},
     }};
+    plan.tick_runtime.event_captures = {{.port = 0}};
     plan.tick_runtime.nodes = {
-        TickNodeInvocationPlan{},
+        TickNodeInvocationPlan{
+            .event_capture_begin = 0,
+            .event_capture_count = 1,
+        },
         TickNodeInvocationPlan{
             .random_access_event_begin = 0,
             .random_access_event_count = 1,
@@ -351,6 +364,66 @@ TEST(PersistedPageStore, TickInvocationFrameBindsPublishedRandomAccessSamples)
     EXPECT_EQ(inputs[0].coverage(), (iv::Coverage{{{0, 4}}}));
     EXPECT_FLOAT_EQ(inputs[0].at(0).value, 10.0f);
     EXPECT_FLOAT_EQ(inputs[0].at(3).value, 13.0f);
+}
+
+TEST(TickCaptureStore, TickInvocationFrameBindsAndScopesSampleCapture)
+{
+    auto plan = direct_tick_sample_plan();
+    iv::PersistedPageStore pages;
+    auto page_reader = pages.register_reader();
+    iv::TickMaterializationStore materializations;
+    auto materialization_reader = materializations.register_reader();
+    iv::TickCaptureStore captures{2 * sizeof(iv::Sample)};
+    iv::TickInvocationWorkspace workspace{plan, 3, 4, &captures};
+    EXPECT_EQ(workspace.capture_block_reserve(), 3u);
+    captures.provision(workspace.capture_block_reserve());
+
+    std::array<iv::Sample, 8> source{
+        10.0f, 11.0f, 12.0f, 13.0f,
+        14.0f, 15.0f, 16.0f, 17.0f};
+    iv::ReflectedSampleOutputPortBinding binding{
+        .storage = {
+            .frame_capacity = source.size(),
+            .storage_latency = 0,
+            .channel_layout = iv::mono_planar_channel_layout,
+        },
+        .history = 1,
+        .latency = 1,
+    };
+    binding.storage.channels[0] = {
+        .storage = reinterpret_cast<std::byte*>(source.data()),
+        .frame_capacity = source.size(),
+        .frame_stride = 1,
+        .frame_delay = 0,
+    };
+
+    {
+        iv::TickInvocationFrame frame{
+            page_reader, materialization_reader, workspace, 8, 4};
+        ASSERT_EQ(frame.call().sample_captures.size(), 1u);
+        auto const& operation = frame.call().sample_captures.data()[0];
+        ASSERT_NE(operation.context, nullptr);
+        ASSERT_NE(operation.capture, nullptr);
+        operation.capture(operation.context, &binding, 8, 4);
+        EXPECT_EQ(captures.published_sequence(), 3u);
+        EXPECT_EQ(captures.reclaim_committed(), 0u);
+    }
+
+    auto batch = captures.snapshot_pending();
+    ASSERT_EQ(batch.size(), 3u);
+    std::vector<iv::Sample> captured;
+    batch.for_each([&](iv::TickCaptureRecordView const& record) {
+        EXPECT_EQ(record.payload_kind,
+            iv::TickCapturePayloadKind::samples);
+        EXPECT_EQ(record.sample_count, 2u);
+        auto const* values = reinterpret_cast<iv::Sample const*>(
+            record.payload.data());
+        captured.insert(
+            captured.end(), values, values + record.sample_count);
+    });
+    EXPECT_EQ(captured,
+        (std::vector<iv::Sample>{
+            17.0f, 10.0f, 11.0f, 12.0f, 13.0f, 14.0f}));
 }
 
 TEST(PersistedPageStore, TickFrameCopiesSequentialMaterializationAndUsesNeutral)
@@ -485,6 +558,66 @@ TEST(PersistedPageStore, TickEventViewsVisitAcrossPinnedPagesInTimeOrder)
         times.push_back(event.time);
     });
     EXPECT_EQ(times, (std::vector<iv::EventTime>{2, 4, 7}));
+}
+
+TEST(TickCaptureStore, TickInvocationFrameBindsAndScopesEventCapture)
+{
+    auto plan = direct_tick_event_plan();
+    iv::PersistedPageStore pages;
+    auto page_reader = pages.register_reader();
+    iv::TickMaterializationStore materializations;
+    auto materialization_reader = materializations.register_reader();
+    iv::TickCaptureStore captures{sizeof(iv::TimedEvent)};
+    iv::TickInvocationWorkspace workspace{plan, 3, 4, &captures};
+    EXPECT_EQ(workspace.capture_block_reserve(), 8u);
+    captures.provision(workspace.capture_block_reserve());
+
+    struct EventStorage {
+        std::size_t count = 0;
+        std::array<iv::TimedEvent, 8> events{};
+    } source{
+        .count = 2,
+        .events = {{
+            {.time = 8, .value = iv::TriggerEvent{}},
+            {.time = 10, .value = iv::TriggerEvent{}},
+        }},
+    };
+    iv::ReflectedEventOutputPortBinding binding{
+        .storage = {
+            .storage = reinterpret_cast<std::byte*>(&source),
+            .count_offset = offsetof(EventStorage, count),
+            .events_offset = offsetof(EventStorage, events),
+            .event_capacity = source.events.size(),
+            .type = iv::EventTypeId::trigger,
+        },
+        .source_type = iv::EventTypeId::trigger,
+        .history = 1,
+        .latency = 1,
+    };
+
+    {
+        iv::TickInvocationFrame frame{
+            page_reader, materialization_reader, workspace, 8, 4};
+        ASSERT_EQ(frame.call().event_captures.size(), 1u);
+        auto const& operation = frame.call().event_captures.data()[0];
+        ASSERT_NE(operation.context, nullptr);
+        ASSERT_NE(operation.capture, nullptr);
+        operation.capture(operation.context, &binding, 8, 4);
+        EXPECT_EQ(captures.published_sequence(), 2u);
+    }
+
+    auto batch = captures.snapshot_pending();
+    ASSERT_EQ(batch.size(), 2u);
+    std::vector<iv::EventTime> captured;
+    batch.for_each([&](iv::TickCaptureRecordView const& record) {
+        EXPECT_EQ(record.payload_kind,
+            iv::TickCapturePayloadKind::events);
+        ASSERT_EQ(record.event_count, 1u);
+        captured.push_back(
+            reinterpret_cast<iv::TimedEvent const*>(
+                record.payload.data())->time);
+    });
+    EXPECT_EQ(captured, (std::vector<iv::EventTime>{8, 10}));
 }
 
 TEST(PersistedPageStore, TickFrameCopiesBoundedSequentialEvents)

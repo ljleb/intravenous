@@ -124,7 +124,7 @@ struct PersistedTickEventSource {
                 .type = iv::EventTypeId::trigger,
                 .max_events_per_index = 0.25,
             },
-            {},
+            iv::TickOutputConfig{.history = 3, .latency = 2},
             iv::OutputRetention::persisted)};
     }
 
@@ -389,7 +389,8 @@ struct OutputAccessRetentionModes {
                 "realtime_ephemeral", {}, {},
                 iv::OutputRetention::ephemeral),
             iv::tick_sample_output(
-                "realtime_persisted", {}, {},
+                "realtime_persisted", {},
+                iv::TickOutputConfig{.history = 3, .latency = 2},
                 iv::OutputRetention::persisted),
             iv::tock_sample_output(
                 "background_ephemeral", {},
@@ -2266,6 +2267,8 @@ TEST(GraphJitConnectionPlan, PersistedTickToRandomAccessUsesStoredBoundary)
     ASSERT_NE(port, plan->background.ports.end());
     EXPECT_TRUE(port->persisted_tick_output);
     EXPECT_FALSE(port->replayed_tick_output);
+    EXPECT_EQ(port->output_history, 3u);
+    EXPECT_EQ(port->output_latency, 2u);
 
     auto const source_subset = std::ranges::find_if(
         plan->background.sample_source_subsets,
@@ -2354,6 +2357,8 @@ TEST(GraphJitConnectionPlan, PlansTypedCaptureForPersistedTickEvents)
     EXPECT_EQ(captured.kind, PortKind::event);
     EXPECT_TRUE(captured.persisted_tick_output);
     EXPECT_EQ(captured.event_type, EventTypeId::trigger);
+    EXPECT_EQ(captured.output_history, 3u);
+    EXPECT_EQ(captured.output_latency, 2u);
     auto const& invocation = runtime.nodes[source_node];
     EXPECT_EQ(invocation.sample_capture_count, 0u);
     EXPECT_EQ(invocation.event_capture_begin, 0u);

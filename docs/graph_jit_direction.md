@@ -1019,8 +1019,19 @@ This is a hint, not a hard constraint. Use your own good judgement if ever in do
     deferred recycling. Immutable planning now assigns typed sample/event capture
     slots to Tick/persisted outputs, retains contiguous per-node ranges, and carries
     only opaque-context narrow callbacks through the generated-root invocation ABI;
-    no executor or store owner enters generated code. The realization still needs to
-    resolve those slots and lowering still needs to invoke them at the exact output-
+    no executor or store owner enters generated code. The executor now owns one shared,
+    generation-independent capture store. Realization construction interns every
+    planned output identity, binds address-stable typed operations, sizes one maximum-
+    callback reserve, and provisions it off the audio thread. One callback scope spans
+    each `TickInvocationFrame`. Sample and event operations validate the finalized
+    reflected binding and capture the complete authored
+    `[block-history, block-end+latency)` window; data that does not fit one fixed 64 KiB
+    transport block is emitted as ordered records, and empty event windows still seal
+    an explicit record. Explicit executor reclamation now includes committed blocks on
+    the non-audio path while deferring every record at or beyond the active callback's
+    starting sequence.
+
+    Lowering still needs to invoke those bound operations at each exact output-
     finalization point. Then bind explicit-recorder blocks at their authored bridge
     points and consume fixed capture
     prefixes through the background transaction, publish into the canonical page store,

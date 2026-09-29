@@ -2,6 +2,7 @@
 
 #include <intravenous/graph_jit/tick_invocation_call.h>
 #include <intravenous/runtime/persisted_page_store.h>
+#include <intravenous/runtime/tick_capture_store.h>
 #include <intravenous/runtime/tick_materialization_snapshot.h>
 
 #include <cstddef>
@@ -19,6 +20,7 @@ class TickInvocationWorkspace {
     std::unique_ptr<Impl> impl_{};
 
     friend class TickInvocationFrame;
+    [[nodiscard]] TickCaptureStore::CallbackScope begin_capture() noexcept;
     [[nodiscard]] graph_jit::TickInvocationCall bind(
         PersistedPageStore::Snapshot const& published,
         TickMaterializationSnapshot const& materialized,
@@ -29,7 +31,8 @@ public:
     TickInvocationWorkspace(
         graph_jit::BackgroundEvaluationPlan const& plan,
         std::uint64_t generation,
-        std::size_t maximum_block_size = 1);
+        std::size_t maximum_block_size = 1,
+        TickCaptureStore* captures = nullptr);
     ~TickInvocationWorkspace();
 
     TickInvocationWorkspace(TickInvocationWorkspace const&) = delete;
@@ -43,6 +46,9 @@ public:
     [[nodiscard]] std::size_t random_access_event_count() const noexcept;
     [[nodiscard]] std::size_t sample_capture_count() const noexcept;
     [[nodiscard]] std::size_t event_capture_count() const noexcept;
+    // Minimum number of fixed-size capture blocks needed to retain one maximum-
+    // size callback when every planned output uses its full mutation window.
+    [[nodiscard]] std::size_t capture_block_reserve() const noexcept;
 };
 
 // Callback-scoped owner for the narrow generated Tick invocation record.
@@ -52,6 +58,7 @@ public:
 class TickInvocationFrame {
     PersistedPageStore::ReaderPin published_pages_{};
     TickMaterializationStore::ReaderPin materialized_storage_{};
+    TickCaptureStore::CallbackScope capture_scope_{};
     graph_jit::TickInvocationCall call_{};
 
 public:

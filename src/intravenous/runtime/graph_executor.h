@@ -5,6 +5,7 @@
 #include <intravenous/runtime/background_coverage_propagation.h>
 #include <intravenous/runtime/graph_jit.h>
 #include <intravenous/runtime/persisted_page_store.h>
+#include <intravenous/runtime/tick_capture_store.h>
 #include <intravenous/runtime/tick_invocation_frame.h>
 
 #include <array>
@@ -23,6 +24,7 @@ enum class GraphExecutorStageResult : std::uint8_t {
 struct GraphExecutorReclaimedSnapshots {
     std::size_t persisted_pages = 0;
     std::size_t tick_materializations = 0;
+    std::size_t tick_captures = 0;
 };
 
 // Mutable runtime owner for immutable CompiledGraph generations. Staging and
@@ -40,8 +42,11 @@ class GraphExecutor {
 
         Realization(
             std::shared_ptr<CompiledGraph const> graph,
-            ResourceContext const& resources);
+            ResourceContext const& resources,
+            TickCaptureStore& captures);
     };
+
+    static constexpr std::size_t tick_capture_payload_capacity = 64 * 1024;
 
     ResourceContext resources_{};
     // Executor-level and deliberately outside either generation realization.
@@ -49,6 +54,9 @@ class GraphExecutor {
     // canonical sample/event authority rather than migrate page ownership.
     PersistedPageStore persisted_pages_{};
     TickMaterializationStore tick_materializations_{};
+    // One generation-independent log. Large finalized windows are split across
+    // fixed-size blocks, so staging a graph never replaces this owner.
+    TickCaptureStore tick_captures_{tick_capture_payload_capacity};
     // Registered off the audio thread. Each tick_block() acquires one bounded
     // callback-scoped pin from this slot before entering generated code.
     PersistedPageStore::ReaderSlot tick_page_reader_{};

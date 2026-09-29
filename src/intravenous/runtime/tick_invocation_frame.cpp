@@ -58,6 +58,53 @@ bool target_subset_matches_event(
         && target.port == port.port_index;
 }
 
+PersistedOutputId capture_output_id(
+    graph_jit::BackgroundEvaluationPlan const& plan,
+    graph_jit::BackgroundPortIndex port,
+    std::uint64_t generation)
+{
+    if (port >= plan.ports.size()) {
+        throw std::invalid_argument(
+            "Tick capture binding references a missing logical port");
+    }
+    auto const& output = plan.ports[port];
+    if (output.stable_identity) return *output.stable_identity;
+    return GenerationLocalPersistedOutputId{
+        .generation = generation,
+        .port = port,
+        .kind = output.kind,
+    };
+}
+
+[[nodiscard]] std::size_t checked_capture_window_size(
+    std::size_t maximum_block_size,
+    std::size_t history,
+    std::size_t latency)
+{
+    if (history > std::numeric_limits<std::size_t>::max()
+            - maximum_block_size
+        || latency > std::numeric_limits<std::size_t>::max()
+                - maximum_block_size - history) {
+        throw std::length_error("Tick capture window is too large");
+    }
+    return history + maximum_block_size + latency;
+}
+
+[[nodiscard]] std::size_t capture_block_count(
+    std::size_t value_count,
+    std::size_t value_size,
+    std::size_t block_payload_capacity)
+{
+    if (value_size == 0 || block_payload_capacity < value_size) {
+        throw std::length_error(
+            "Tick capture block cannot hold one output value");
+    }
+    auto const values_per_block = block_payload_capacity / value_size;
+    return std::max<std::size_t>(
+        1, value_count / values_per_block
+            + static_cast<std::size_t>(value_count % values_per_block != 0));
+}
+
 template<class Binding>
 std::optional<PersistedOutputId> direct_persisted_sample_output(
     graph_jit::BackgroundEvaluationPlan const& plan,
@@ -148,6 +195,177 @@ std::optional<PersistedOutputId> direct_persisted_event_output(
 
 class TickInvocationWorkspace::Impl {
 public:
+    struct SampleCaptureSlot {
+        TickCaptureStore* store = nullptr;
+        TickCaptureOutputHandle output{};
+        ChannelLayout layout{};
+        std::size_t history = 0;
+        std::size_t latency = 0;
+
+        void capture(
+            ReflectedSampleOutputPortBinding const& binding,
+            SampleIndex sample_index,
+            std::size_t block_size) noexcept
+        {
+            if (!store || binding.storage.channel_layout != layout
+                || binding.history != history || binding.latency != latency
+                || binding.storage.frame_capacity == 0
+                || !std::has_single_bit(binding.storage.frame_capacity)
+                || binding.storage.storage_latency
+                    >= binding.storage.frame_capacity) {
+                return;
+            }
+            auto const channels = channel_count(layout);
+            if (channels == 0 || channels > maximum_supported_channel_count
+                || channels > std::numeric_limits<std::size_t>::max()
+                        / sizeof(Sample)) {
+                return;
+            }
+            auto const bytes_per_frame = channels * sizeof(Sample);
+            auto const frames_per_block =
+                store->block_payload_capacity() / bytes_per_frame;
+            if (frames_per_block == 0) return;
+            for (std::size_t channel = 0; channel < channels; ++channel) {
+                auto const& source = binding.storage.channels[channel];
+                if (!source.storage || source.frame_capacity == 0
+                    || !std::has_single_bit(source.frame_capacity)
+                    || source.frame_stride == 0
+                    || source.frame_delay >= source.frame_capacity
+                    || binding.storage.storage_latency
+                        >= source.frame_capacity) {
+                    return;
+                }
+            }
+
+            auto const window = realtime_port_window(
+                sample_index, block_size, history, latency);
+            auto begin = window.begin;
+            while (begin < window.end) {
+                auto const remaining = window.end - begin;
+                auto const count = static_cast<std::size_t>(std::min<SampleIndex>(
+                    remaining, frames_per_block));
+                auto writer = store->acquire();
+                if (!writer) return;
+                auto* destination = reinterpret_cast<Sample*>(
+                    writer.payload().data());
+                for (std::size_t frame = 0; frame < count; ++frame) {
+                    auto const absolute = begin
+                        + static_cast<SampleIndex>(frame);
+                    for (std::size_t channel = 0; channel < channels; ++channel) {
+                        auto const& source = binding.storage.channels[channel];
+                        auto const logical = absolute
+                            + static_cast<SampleIndex>(
+                                binding.storage.storage_latency);
+                        auto const delayed = logical
+                            - static_cast<SampleIndex>(source.frame_delay);
+                        auto const source_frame = static_cast<std::size_t>(
+                            delayed & (source.frame_capacity - 1));
+                        auto const destination_index = layout.sample_layout
+                                == SampleStreamLayout::planar
+                            ? channel * count + frame
+                            : frame * channels + channel;
+                        destination[destination_index] =
+                            reinterpret_cast<Sample const*>(source.storage)[
+                                source_frame * source.frame_stride];
+                    }
+                }
+                if (!writer.seal_samples(output, begin, count, layout)) return;
+                begin += static_cast<SampleIndex>(count);
+            }
+        }
+    };
+
+    struct EventCaptureSlot {
+        TickCaptureStore* store = nullptr;
+        TickCaptureOutputHandle output{};
+        EventTypeId type = EventTypeId::empty;
+        std::size_t history = 0;
+        std::size_t latency = 0;
+
+        void capture(
+            ReflectedEventOutputPortBinding const& binding,
+            SampleIndex sample_index,
+            std::size_t block_size) noexcept
+        {
+            auto const& storage = binding.storage;
+            if (!store || storage.storage == nullptr || storage.type != type
+                || binding.history != history || binding.latency != latency
+                || storage.event_capacity == 0
+                || !std::has_single_bit(storage.event_capacity)) {
+                return;
+            }
+            auto const events_per_block =
+                store->block_payload_capacity() / sizeof(TimedEvent);
+            if (events_per_block == 0) return;
+            auto const window = realtime_port_window(
+                sample_index, block_size, history, latency);
+            auto const window_size = window.end - window.begin;
+            auto const selected_window_size =
+                static_cast<std::size_t>(window_size);
+            if (selected_window_size == 0
+                || static_cast<SampleIndex>(selected_window_size)
+                    != window_size) {
+                return;
+            }
+
+            auto const* events = reinterpret_cast<TimedEvent const*>(
+                storage.storage + storage.events_offset);
+            std::size_t read = 0;
+            std::size_t write = *reinterpret_cast<std::size_t const*>(
+                storage.storage + storage.count_offset);
+            if (storage.persistent_ring) {
+                read = *reinterpret_cast<std::size_t const*>(
+                    storage.storage + storage.read_index_offset);
+                write = *reinterpret_cast<std::size_t const*>(
+                    storage.storage + storage.write_index_offset);
+            }
+            if (write < read) return;
+            auto const available = std::min(
+                write - read, storage.event_capacity);
+
+            TickCaptureStore::Writer writer{};
+            TimedEvent* destination = nullptr;
+            std::size_t destination_count = 0;
+            bool sealed_any = false;
+            auto seal = [&]() noexcept {
+                if (!writer) return false;
+                auto const sealed = writer.seal_events(
+                    output,
+                    window.begin,
+                    selected_window_size,
+                    type,
+                    destination_count);
+                sealed_any = sealed_any || sealed;
+                destination = nullptr;
+                destination_count = 0;
+                return sealed;
+            };
+
+            for (std::size_t index = 0; index < available; ++index) {
+                auto const& event = events[
+                    (read + index) & (storage.event_capacity - 1)];
+                auto const time = static_cast<SampleIndex>(event.time);
+                if (time < window.begin) continue;
+                if (time >= window.end) break;
+                if (!writer) {
+                    writer = store->acquire();
+                    if (!writer) return;
+                    destination = reinterpret_cast<TimedEvent*>(
+                        writer.payload().data());
+                }
+                destination[destination_count++] = event;
+                if (destination_count == events_per_block && !seal()) return;
+            }
+            if (writer) {
+                static_cast<void>(seal());
+            } else if (!sealed_any) {
+                writer = store->acquire();
+                if (!writer) return;
+                static_cast<void>(seal());
+            }
+        }
+    };
+
     struct SequentialSampleSlot {
         graph_jit::BackgroundPortIndex port = 0;
         std::optional<PersistedOutputId> output{};
@@ -480,16 +698,22 @@ public:
     std::vector<EventSlot> event_slots{};
     std::vector<RandomAccessSampleInputPort> sample_views{};
     std::vector<RandomAccessEventInputPort> event_views{};
+    std::vector<SampleCaptureSlot> sample_capture_slots{};
+    std::vector<EventCaptureSlot> event_capture_slots{};
     std::vector<graph_jit::TickSampleCaptureOperation> sample_captures{};
     std::vector<graph_jit::TickEventCaptureOperation> event_captures{};
+    TickCaptureStore* capture_store = nullptr;
+    std::size_t capture_blocks = 0;
     std::uint64_t generation = 0;
     std::size_t maximum_block_size = 0;
 
     Impl(
         graph_jit::BackgroundEvaluationPlan const& plan,
         std::uint64_t selected_generation,
-        std::size_t selected_maximum_block_size)
-        : generation(selected_generation)
+        std::size_t selected_maximum_block_size,
+        TickCaptureStore* selected_capture_store)
+        : capture_store(selected_capture_store)
+        , generation(selected_generation)
         , maximum_block_size(selected_maximum_block_size)
     {
         if (maximum_block_size == 0) {
@@ -505,6 +729,8 @@ public:
         event_slots.resize(runtime.random_access_event_inputs.size());
         sample_views.resize(sample_slots.size());
         event_views.resize(event_slots.size());
+        sample_capture_slots.resize(runtime.sample_captures.size());
+        event_capture_slots.resize(runtime.event_captures.size());
         sample_captures.resize(runtime.sample_captures.size());
         event_captures.resize(runtime.event_captures.size());
 
@@ -678,6 +904,131 @@ public:
                 },
             };
         }
+
+        auto add_capture_blocks = [&](std::size_t count) {
+            if (count > std::numeric_limits<std::size_t>::max()
+                    - capture_blocks) {
+                throw std::length_error(
+                    "Tick capture callback reserve is too large");
+            }
+            capture_blocks += count;
+        };
+        for (std::size_t slot = 0;
+             slot < sample_capture_slots.size(); ++slot) {
+            auto const& planned = runtime.sample_captures[slot];
+            if (planned.port >= plan.ports.size()) {
+                throw std::invalid_argument(
+                    "Tick sample capture references a missing logical port");
+            }
+            auto const& port = plan.ports[planned.port];
+            if (port.kind != PortKind::sample
+                || port.direction != graph_jit::PortDirection::output
+                || !port.persisted_tick_output
+                || port.retention != OutputRetention::persisted) {
+                throw std::invalid_argument(
+                    "Tick sample capture references a non-persisted output");
+            }
+            if (!capture_store) continue;
+            auto& selected = sample_capture_slots[slot];
+            selected = SampleCaptureSlot{
+                .store = capture_store,
+                .output = capture_store->register_output(capture_output_id(
+                    plan, planned.port, selected_generation)),
+                .layout = port.sample_layout,
+                .history = port.output_history,
+                .latency = port.output_latency,
+            };
+            sample_captures[slot] = {
+                .context = &selected,
+                .capture = +[](
+                    void* opaque,
+                    ReflectedSampleOutputPortBinding const* output,
+                    std::size_t sample_index,
+                    std::size_t block_size) noexcept {
+                    if (!output) return;
+                    static_cast<SampleCaptureSlot*>(opaque)->capture(
+                        *output,
+                        static_cast<SampleIndex>(sample_index),
+                        block_size);
+                },
+            };
+            auto const window = checked_capture_window_size(
+                maximum_block_size,
+                port.output_history,
+                port.output_latency);
+            auto const channels = channel_count(port.sample_layout);
+            if (channels == 0
+                || channels > std::numeric_limits<std::size_t>::max()
+                        / sizeof(Sample)) {
+                throw std::length_error(
+                    "Tick sample capture layout is too large");
+            }
+            add_capture_blocks(capture_block_count(
+                window,
+                channels * sizeof(Sample),
+                capture_store->block_payload_capacity()));
+        }
+        for (std::size_t slot = 0;
+             slot < event_capture_slots.size(); ++slot) {
+            auto const& planned = runtime.event_captures[slot];
+            if (planned.port >= plan.ports.size()) {
+                throw std::invalid_argument(
+                    "Tick event capture references a missing logical port");
+            }
+            auto const& port = plan.ports[planned.port];
+            if (port.kind != PortKind::event
+                || port.direction != graph_jit::PortDirection::output
+                || !port.persisted_tick_output
+                || port.retention != OutputRetention::persisted) {
+                throw std::invalid_argument(
+                    "Tick event capture references a non-persisted output");
+            }
+            if (!capture_store) continue;
+            auto& selected = event_capture_slots[slot];
+            selected = EventCaptureSlot{
+                .store = capture_store,
+                .output = capture_store->register_output(capture_output_id(
+                    plan, planned.port, selected_generation)),
+                .type = port.event_type,
+                .history = port.output_history,
+                .latency = port.output_latency,
+            };
+            event_captures[slot] = {
+                .context = &selected,
+                .capture = +[](
+                    void* opaque,
+                    ReflectedEventOutputPortBinding const* output,
+                    std::size_t sample_index,
+                    std::size_t block_size) noexcept {
+                    if (!output) return;
+                    static_cast<EventCaptureSlot*>(opaque)->capture(
+                        *output,
+                        static_cast<SampleIndex>(sample_index),
+                        block_size);
+                },
+            };
+            auto const window = checked_capture_window_size(
+                maximum_block_size,
+                port.output_history,
+                port.output_latency);
+            auto const event_capacity = event_sequence_capacity_for_sample_span(
+                port.max_events_per_index, window);
+            if (!event_capacity) {
+                throw std::length_error(
+                    "Tick event capture capacity is too large");
+            }
+            add_capture_blocks(capture_block_count(
+                *event_capacity,
+                sizeof(TimedEvent),
+                capture_store->block_payload_capacity()));
+        }
+    }
+
+    [[nodiscard]] TickCaptureStore::CallbackScope begin_capture() noexcept
+    {
+        return capture_store
+            ? capture_store->begin_callback()
+            : TickCaptureStore::CallbackScope{};
     }
 
     graph_jit::TickInvocationCall bind(
@@ -789,8 +1140,10 @@ public:
 TickInvocationWorkspace::TickInvocationWorkspace(
     graph_jit::BackgroundEvaluationPlan const& plan,
     std::uint64_t generation,
-    std::size_t maximum_block_size)
-    : impl_(std::make_unique<Impl>(plan, generation, maximum_block_size))
+    std::size_t maximum_block_size,
+    TickCaptureStore* captures)
+    : impl_(std::make_unique<Impl>(
+        plan, generation, maximum_block_size, captures))
 {}
 
 TickInvocationWorkspace::~TickInvocationWorkspace() = default;
@@ -825,6 +1178,17 @@ std::size_t TickInvocationWorkspace::event_capture_count() const noexcept
     return impl_->event_captures.size();
 }
 
+std::size_t TickInvocationWorkspace::capture_block_reserve() const noexcept
+{
+    return impl_->capture_blocks;
+}
+
+TickCaptureStore::CallbackScope
+TickInvocationWorkspace::begin_capture() noexcept
+{
+    return impl_->begin_capture();
+}
+
 graph_jit::TickInvocationCall TickInvocationWorkspace::bind(
     PersistedPageStore::Snapshot const& published,
     TickMaterializationSnapshot const& materialized,
@@ -842,6 +1206,7 @@ TickInvocationFrame::TickInvocationFrame(
     std::size_t block_size) noexcept
     : published_pages_(page_reader.pin())
     , materialized_storage_(materialization_reader.pin())
+    , capture_scope_(workspace.begin_capture())
     , call_(workspace.bind(
         published_pages_.snapshot(),
         materialized_storage_.snapshot(),

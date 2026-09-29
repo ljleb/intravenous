@@ -848,14 +848,21 @@ The next persistence front now has its executor-side transport foundation. A sha
 aligned slab blocks independently of background evaluation, and exposes only bounded
 lock-free acquire/seal operations inside one audio callback scope. Sealed records form
 one monotonic insertion sequence; a background pass fixes one immutable prefix and
-advances its processed frontier only on explicit commit. Committed blocks are recycled
-only after the active root callback ends. The immutable Tick runtime plan now assigns
+advances its processed frontier only on explicit commit. Non-audio reclamation may
+recycle older retired blocks concurrently, but defers records at or beyond the active
+root callback's starting sequence. The immutable Tick runtime plan now assigns
 typed sample/event capture slots to each Tick/persisted logical output and retains
 contiguous per-node ranges. `TickInvocationCall` exposes those slots only as an opaque
 context plus a narrow typed callback; generated code cannot recover an executor,
-capture store, persisted identity or transaction owner. Runtime resolution of those
-slots, generated invocation at the exact output-finalization point, and transaction/
-page-store consumption remain the next slices.
+capture store, persisted identity or transaction owner. The executor now owns one
+generation-independent `TickCaptureStore`, and realization construction resolves those
+slots into address-stable operations after interning each canonical output identity.
+It also provisions enough fixed 64 KiB blocks for one maximum-size callback. A
+`TickInvocationFrame` holds the store's callback scope while sample/event operations
+copy the complete authored `[block-history, block-end+latency)` mutation window.
+Windows larger than one block are emitted as ordered chunks, and an empty event window
+is represented explicitly. Generated invocation at the exact output-finalization
+point, followed by transaction/page-store consumption, remains the next slice.
 
 The heuristic may consider:
 

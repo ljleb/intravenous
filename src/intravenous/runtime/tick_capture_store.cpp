@@ -64,10 +64,16 @@ struct TickCaptureStore::Block {
 
 class TickCaptureStore::Impl {
 public:
+    enum class AccessState : std::uint8_t {
+        idle,
+        starting,
+        callback,
+    };
+
     static_assert(std::atomic<Block*>::is_always_lock_free);
     static_assert(std::atomic<CaptureSequence>::is_always_lock_free);
     static_assert(std::atomic<std::size_t>::is_always_lock_free);
-    static_assert(std::atomic<bool>::is_always_lock_free);
+    static_assert(std::atomic<AccessState>::is_always_lock_free);
 
     struct Slab {
         std::unique_ptr<Block[]> blocks{};
@@ -97,7 +103,8 @@ public:
 
     std::atomic<Block*> free_head{nullptr};
     std::atomic<std::size_t> free_count{0};
-    std::atomic<bool> callback_active{false};
+    std::atomic<AccessState> access_state{AccessState::idle};
+    std::atomic<CaptureSequence> callback_begin{0};
 
     std::unique_ptr<Block> sentinel{};
     Block* audio_tail = nullptr;
@@ -231,25 +238,33 @@ void TickCaptureStore::provision(std::size_t block_count)
 
 TickCaptureStore::CallbackScope TickCaptureStore::begin_callback() noexcept
 {
-    bool expected = false;
-    if (!impl_->callback_active.compare_exchange_strong(
-            expected,
-            true,
+    auto expected = Impl::AccessState::idle;
+    if (!impl_->access_state.compare_exchange_strong(
+            expected, Impl::AccessState::starting,
             std::memory_order_acq_rel,
             std::memory_order_relaxed)) {
         return {};
     }
+    impl_->callback_begin.store(
+        impl_->published.load(std::memory_order_acquire),
+        std::memory_order_relaxed);
+    impl_->access_state.store(
+        Impl::AccessState::callback, std::memory_order_release);
     return CallbackScope{*this};
 }
 
 void TickCaptureStore::end_callback() noexcept
 {
-    impl_->callback_active.store(false, std::memory_order_release);
+    impl_->access_state.store(
+        Impl::AccessState::idle, std::memory_order_release);
 }
 
 TickCaptureStore::Writer TickCaptureStore::acquire() noexcept
 {
-    if (!impl_->callback_active.load(std::memory_order_relaxed)) return {};
+    if (impl_->access_state.load(std::memory_order_relaxed)
+        != Impl::AccessState::callback) {
+        return {};
+    }
     auto* block = impl_->pop_free();
     return block ? Writer{*this, *block} : Writer{};
 }
@@ -398,10 +413,16 @@ bool TickCaptureStore::commit(Batch&& batch) noexcept
 
 std::size_t TickCaptureStore::reclaim_committed() noexcept
 {
-    if (impl_->callback_active.load(std::memory_order_acquire)) return 0;
     std::scoped_lock lock(impl_->control_mutex);
+    auto const state = impl_->access_state.load(std::memory_order_acquire);
+    auto const cutoff = state == Impl::AccessState::idle
+        ? std::numeric_limits<CaptureSequence>::max()
+        : state == Impl::AccessState::callback
+            ? impl_->callback_begin.load(std::memory_order_relaxed)
+            : CaptureSequence{0};
     std::size_t reclaimed = 0;
-    while (impl_->retired_head) {
+    while (impl_->retired_head
+        && impl_->retired_head->sequence < cutoff) {
         auto* block = impl_->retired_head;
         impl_->retired_head = block->retired_next;
         if (!impl_->retired_head) impl_->retired_tail = nullptr;
