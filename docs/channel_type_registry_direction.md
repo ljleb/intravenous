@@ -68,11 +68,12 @@ order or reduction.
 
 ## FFT blocks use the existing audio channel registry
 
-The planned continuous audio value-type extension initially adds FFT blocks alongside
-scalar `iv::Sample`. Both are audio-domain values and continue to use the existing
-`ChannelTypeId`/channel-member registry. The registered value type determines whether
-that channel model applies; this does **not** make channel layout a universal property
-of every future application value type.
+The planned continuous value-type extension registers `GlobalIndex` in addition to
+audio-domain `iv::Sample` and `FFTBlock`. The audio-domain `Sample`/`FFTBlock` values
+continue to use the existing `ChannelTypeId`/channel-member registry. `GlobalIndex` is
+a scalar sample-coordinate value and does not require changing the channel registry.
+The registered value type determines whether the channel model applies; this does
+**not** make channel layout a universal property of every application value type.
 
 For FFT data, the canonical representation is planar by channel: a stereo FFT stream
 has one FFT block for the left channel and one for the right channel. GraphBuilder's

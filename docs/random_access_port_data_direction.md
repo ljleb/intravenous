@@ -265,30 +265,42 @@ still require an explicit recording/persistence policy before it can satisfy arb
 random-access lifetime requirements. The Region/Coverage distinction adds a
 contiguity requirement; it does not erase the existing access/lifetime requirement.
 
-## 6. Continuous audio values use a closed registered type system
+## 6. Continuous port values use a closed registered type system
 
-Continuous audio ports should not be permanently hard-wired to `iv::Sample`. The
+Continuous ports should not be permanently hard-wired to `iv::Sample`. The
 application should use the same closed-registry/plugin pattern already used for event
 types and channel types: adding a supported transported value type adds one deliberate
-registry case together with its storage semantics and legal conversions.
+registry case together with its storage semantics and any deliberately supported
+conversion semantics.
 
-The initial scope is intentionally audio-only:
+The initial extension remains deliberately narrow:
 
 ```text
 Sample
+GlobalIndex
 FFTBlock
 ```
 
+`GlobalIndex` is a scalar fixed-point coordinate in the global sample-index domain.
+It is data transported at ordinary integer global positions; it does **not** replace
+the integer global index used to locate graph data itself. Its representation retains
+the full integer global-sample-index width and adds 64 fractional bits, so fractional
+sample positions do not sacrifice the existing global-index range.
+
 Image/video values are explicitly deferred. They should not force premature answers
 about image pacing, pixel layouts, channel semantics, or GraphJit video-kernel
-optimization while the audio system is still being completed.
+optimization while the audio system is still being completed. `GlobalIndex` is not an
+audio amplitude type, but it belongs in the same transported-value registry because it
+uses the same port/storage/lowering machinery.
 
-Connections require a defined conversion between their registered value types. The
-conversion relation must remain coherent under composition: if values of `A` and `C`
-can both convert to `B`, both may contribute to one `B` input; if more than one path
-can convert one source type to one target type, those paths must not create
-path-dependent semantics. A semantic transform such as waveform <-> FFT is a DSP
-node, not an implicit type conversion.
+The initial direction does **not** add implicit conversions between registered value
+types. A direct connection requires the source and target to resolve to the same value
+type. When a representation change is useful, an explicit conversion/DSP node owns its
+rounding, overflow, precision and other semantic choices. This is intentionally
+conservative: a one-way implicit conversion such as `Sample -> GlobalIndex` can be
+added later without changing either type's representation if experience shows that it
+is universally useful. A semantic transform such as waveform <-> FFT remains a DSP
+node rather than an implicit type conversion.
 
 Sparse isolated values do not require a fourth continuous-data representation. If a
 node needs sparse sample/value occurrences, define an event type carrying the value
@@ -296,7 +308,7 @@ and use the existing event-time/index semantics.
 
 Procedural/randomly addressable computation likewise does not require another access
 form. The existing constrained replayable-Tick mechanism is the current way to
-recompute eligible sequential producers for arbitrary requested coverage. A possible
+recompute eligible Tick producers for arbitrary requested coverage. A possible
 future `tack()`/`tack_block()` split may make replayability explicit, but it is not the
 current direction.
 
@@ -310,6 +322,9 @@ For the initial types:
 
 ```text
 Sample
+    scalar; no dynamic dimensions
+
+GlobalIndex
     scalar; no dynamic dimensions
 
 FFTBlock
@@ -332,8 +347,11 @@ before lowering rather than falling back to audio-thread dynamic allocation.
 
 `inputs()` and `outputs()` remain `static constexpr`. They define the stable authored
 interface shape that lets the framework instantiate concrete specialized context
-classes for `tick*()`, `tock*()`, declaration, and port-constraint callbacks. Node
-callbacks should therefore be concrete functions, not `auto&` function templates.
+classes for `tick*()`, `tock*()`, declaration, and port-constraint callbacks. A port
+schema may declare either one registered value type or a **closed finite set** of
+supported value types. The set is static even when the realized member is not.
+
+Node callbacks therefore remain concrete functions, not `auto&` function templates.
 The planned scalar/batch callback forms remain concrete as well: batch callbacks use
 typed range contexts such as `TickBlockBatchContext<Node>` and
 `TockCoverageBatchContext<Node>`, with trait-generated scalar/batch adapters defined in
@@ -346,7 +364,24 @@ void constrain_ports(ConstrainPortsContext<MyNode>& ctx) const;
 ```
 
 This phase contributes constraints over the statically known ports without changing
-port count, names, registered value types, or callback context shape.
+port count, names, each port's declared finite value-type set, or callback context
+shape. In addition to size/pace/history/latency/order constraints, a multi-type port
+has a value-type constraint variable whose domain is exactly its declared set.
+
+Direct connectivity equates source and target value type. Two ports whose declared
+sets overlap can therefore propagate a selected type through graph connectivity. A
+node can relate several of its own ports in `constrain_ports()` in the same way:
+
+```cpp
+ctx.equal(
+    ctx.input<"in">().value_type(),
+    ctx.output<"out">().value_type());
+```
+
+An instance may also anchor one alternative from configuration. The graph-wide solve
+intersects all such finite domains and equalities. An empty intersection is a graph
+constraint error; a value-type variable that is still ambiguous when lowering needs a
+constructor/UI/module choice rather than an arbitrary compiler-selected default.
 
 For example, an FFT node may anchor the size selected by its constructor:
 
@@ -401,6 +436,37 @@ ctx.local_array<&State::scratch>(fft_size);
 `declare()` consumes the solved result; it should not both create an unresolved size
 relationship and depend on that same relationship having already been solved.
 
+### Multi-type buffer access is explicit and specializes away
+
+A port that declares exactly one value type keeps the ordinary concrete typed buffer
+API. It should not acquire a variant-like interface merely because some other ports
+support alternatives.
+
+A port whose static schema declares more than one value type instead exposes explicit
+type discrimination and typed access for only those declared alternatives, for
+example:
+
+```cpp
+auto out = ctx.output<"out">();
+
+if (out.is<iv::Sample>()) {
+    auto samples = out.as<iv::Sample>();
+    // ...
+} else {
+    auto positions = out.as<iv::GlobalIndex>();
+    // ...
+}
+```
+
+`is<T>()` / `as<T>()` are available only on a multi-type port, and only for `T` in
+that port's declared finite set. By storage planning and LLVM lowering, however, every
+realized port has exactly one selected concrete type. GraphJit makes that selection a
+static constant in the generated realization so ordinary constant propagation and
+dead-code elimination remove the unused authored branches. There is no per-value or
+per-callback runtime variant dispatch requirement, and storage planning never allocates
+an abstract union buffer: it sees the selected type's concrete element size, alignment,
+rank and other storage semantics.
+
 The same `constrain_ports()` phase also contributes exact per-port `pace()`,
 Sequential-input `history()`, Tick-output `latency()`, and Coverage `ordering()`
 constraints. These are realization facts rather than static port-schema fields.
@@ -412,8 +478,39 @@ with transform size `N` and hop `H`, a complete-window implementation may constr
 constrain a positive output latency so the first authored FFT block can be finalized by
 a later invocation. Pace resolution, effective local sample rate, `tick()` legality,
 and per-port `tick_block()` sizes are specified in
-[Graph JIT Direction](./graph_jit_direction.md#planned-port-size-pace-history-and-latency-constraint-analysis)
+[Graph JIT Direction](./graph_jit_direction.md#planned-value-type-port-size-pace-history-latency-and-coverage-ordering-constraint-analysis)
 and [Sequential Port Storage And Connection Planning](./sequential_port_storage_planning.md#planned-pace-aware-tick_block-contract).
+
+### `GlobalIndex` enables explicit coordinate sampling without changing pace
+
+`GlobalIndex` values make fractional/random source addressing ordinary graph data.
+A canonical resampler shape is:
+
+```text
+positions : Sequential GlobalIndex
+source    : Random Access Sample
+output    : Tick/ephemeral Sample
+```
+
+For each output position, the node samples `source` at the corresponding fractional
+`GlobalIndex`, using the node's explicitly defined interpolation and out-of-coverage
+policy. The position stream may increase, decrease, repeat, jump or otherwise warp
+time. A rate/BPM signal can therefore feed an integral-like node that produces
+`GlobalIndex`; negative rate naturally produces decreasing coordinates. Stutters,
+scrubbing, variable-speed playback and granular/time-warping structures can be built
+from the same coordinate interface.
+
+This does not redefine port `pace()`. Pace still states an exact transport-rate
+relationship and performs no resampling. `GlobalIndex` is instead a value whose
+meaning is a coordinate used by nodes that explicitly choose to sample another input.
+
+Curve authoring should likewise keep curve definition separate from evaluated value
+representation. One curve clip/event representation may be sampled/evaluated into
+either `Sample` or `GlobalIndex`. That can initially be exposed through separate
+concrete evaluator nodes hidden behind one module/presentation choice, or through one
+evaluator whose output declares `{Sample, GlobalIndex}` and resolves its selected type
+from graph constraints. The curve editing/clip machinery itself need not be duplicated
+solely because the eventual dense value type differs.
 
 ### FFT blocks keep the existing audio channel model
 

@@ -120,7 +120,29 @@ persistent `NodeStorage`, a persistent ring, or a persistent compiler service.
 Do not use **persistent** as a synonym for the authored `persisted` output-retention
 contract.
 
-## Port value size and pacing
+## Port value type, size and pacing
+
+### Registered continuous value type
+
+A port's **registered continuous value type** determines the representation and
+storage semantics of one transported dense value. The registry is closed/explicit in
+the same architectural sense as the event- and channel-type registries. The planned
+initial set includes scalar `Sample`, scalar `GlobalIndex`, and `FFTBlock`.
+
+A static port schema may declare one concrete value type or a closed finite set of
+supported value types. A multi-type port's selected member is resolved by graph
+constraints before storage planning/LLVM lowering; it is not a per-value runtime tag.
+Direct connections initially require equal resolved value types. Explicit DSP or
+conversion nodes perform representation changes unless a future design deliberately
+adds an implicit conversion.
+
+### GlobalIndex
+
+`GlobalIndex` is a scalar fixed-point value representing a fractional coordinate in
+the global sample-index domain. It retains the full integer global-index width and adds
+64 fractional bits. A `GlobalIndex` transported at integer graph position `p` is still
+data located at `p`; its numeric value may point somewhere else and is interpreted as
+a coordinate only by nodes that explicitly use it that way, such as a resampler.
 
 ### Port value size
 
@@ -269,10 +291,11 @@ completion operation requires to be available or computed.
 
 ### Changed region
 
-A **changed region** is an exact region whose semantic value or coverage may have
-changed. Forward propagation preserves exact changed regions; stored page
-invalidation must not widen downstream semantic change merely because a whole page
-becomes locally invalid.
+A **changed region** is a sound region superset whose semantic value or coverage may
+have changed. It may be exact, but exactness is an optimization rather than a semantic
+requirement. Every actually affected position must be included. Stored-page
+invalidation must not widen the already-reported downstream semantic change merely
+because a whole page becomes locally invalid.
 
 ### Invalidation
 
@@ -285,18 +308,21 @@ layout or allocation changes.
 
 ### Forward coverage propagation
 
-**Forward coverage propagation** maps current input coverage, exact changed input
-regions, and semantic/configuration change causes to output coverage and exact
-changed output regions.
+**Forward coverage propagation** maps current input coverage, changed-input
+may-change regions, and semantic/configuration change causes to exact output coverage
+and a sound may-change superset for output values. It may conservatively over-report
+affected positions but must never under-report them.
 
 For authored Tock nodes this is provided by `propagate_forward_coverage()`; eligible
-Tick replay uses compiler-generated propagation where the mapping is statically
-known.
+Tick replay uses compiler-generated propagation where the mapping is mechanically
+known and authored background propagation where a non-pointwise Random Access
+dependency requires it.
 
 ### Reverse coverage propagation
 
 **Reverse coverage propagation** maps requested output coverage to required input
-coverage. It is value-blind under the current design.
+coverage. It is a sound may-read upper bound and is value-blind under the current
+design; conservative over-request is legal while under-request is a correctness error.
 
 For authored Tock nodes this is provided by `propagate_reverse_coverage()`; eligible
 Tick replay uses compiler-generated propagation.
@@ -306,7 +332,10 @@ Tick replay uses compiler-generated propagation.
 **Replay** is background recomputation of an eligible Tick implementation using its
 already generated/imported `tick_block()` wrapper. Intrinsic replayability is a node
 trait; contextual replayability additionally depends on the whole upstream graph and
-available data.
+available data. Random Access inputs do not inherently prevent replayability: they are
+dependencies that must be resolved to immutable addressable views before the replay
+invocation. The audio-thread Tick path likewise sees only already-prepared Random
+Access views and never runs Tock or request-driven materialization.
 
 ### Persisted Tick boundary
 

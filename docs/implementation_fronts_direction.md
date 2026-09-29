@@ -49,12 +49,16 @@ This front owns:
 - Sequential-input `history()` constraints;
 - Tick-output `latency()` constraints;
 - Coverage ordering/sortedness constraints;
+- finite registered value-type alternatives and value-type equality constraints;
 - connection-generated constraints between producer and consumer ports;
 - conflict and unresolved-property diagnostics;
 - effective local sample-rate domains after pace resolution;
 - per-port Tick block extents;
 - Sequential `block_extended()` realization;
-- the initial continuous-value registry, including `Sample` and `FFTBlock`;
+- the initial continuous-value registry, including `Sample`, `GlobalIndex` and
+  `FFTBlock`;
+- realization-time selection of one concrete type for multi-type ports before storage
+  planning/lowering;
 - graph-resolved FFT dimensions and storage-size information;
 - the planned type-safe sample/event port-config representation;
 - Sequential `neutral_value` / `combine_values` semantics where they affect

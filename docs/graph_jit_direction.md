@@ -234,12 +234,13 @@ unequal-latency alignment, and migration. This does not reintroduce connection
 helper nodes. External boundaries remain capability-gated rather than being
 approximated with transient storage.
 
-### Planned port-size, pace, history, latency, and Coverage-ordering constraint analysis
+### Planned value-type, port-size, pace, history, latency, and Coverage-ordering constraint analysis
 
 The next port-generalization step should add graph-wide constraints over the static
 port schemas before storage planning. `inputs()` and `outputs()` remain
 `static constexpr`, so GraphJit/source introspection knows the exact port names,
-registered value types, access/production contracts, and specialized context shapes.
+each port's closed finite set of supported registered value types,
+access/production contracts, and specialized context shapes.
 A configured node instance may contribute constructor-dependent relationships through
 one concrete callback:
 
@@ -247,12 +248,34 @@ one concrete callback:
 void constrain_ports(ConstrainPortsContext<MyNode>& ctx) const;
 ```
 
-The initial continuous audio value registry contains scalar `Sample` and a one-
-dimensional `FFTBlock`. Each registered type defines the rank and storage meaning of
-its `size()`; `Sample` has no dynamic dimension while `FFTBlock::size()` is the number
-of frequency values in one transported FFT block. GraphJit must resolve every required
-size before transient-arena packing, alias selection, persistent-realtime placement,
-or LLVM lowering.
+The initial continuous value registry contains scalar `Sample`, scalar `GlobalIndex`
+and one-dimensional `FFTBlock`. `GlobalIndex` is the fractional global-sample
+coordinate type; it retains the full integer global-index width plus 64 fractional
+bits. Each registered type defines the rank and storage meaning of its `size()`;
+`Sample` and `GlobalIndex` have no dynamic dimension while `FFTBlock::size()` is the
+number of frequency values in one transported FFT block.
+
+A port may statically declare either one registered value type or a finite set such as
+`{Sample, GlobalIndex}`. The selected member is a graph-realization fact, not a runtime
+per-value tag. Direct connections contribute equality between the source and target
+value-type variables, so connectivity intersects/propagates their finite domains.
+`constrain_ports()` may relate value types across a node in the same way:
+
+```cpp
+ctx.equal(
+    ctx.input<"in">().value_type(),
+    ctx.output<"out">().value_type());
+```
+
+An instance may also anchor one alternative from constructor/module configuration.
+Empty intersections and still-ambiguous required value types reject the graph revision;
+GraphJit does not silently select a preferred type. The initial design also performs no
+implicit conversion between distinct registered value types: an explicit conversion or
+DSP node is required when source and target types differ.
+
+GraphJit must resolve both selected value type and every required type-dependent size
+before transient-arena packing, alias selection, persistent-realtime placement, or
+LLVM lowering.
 
 `ConstrainPortsContext` exposes only constraint expressions, not solved realization
 values. For ordinary two-sided constraints, assignment is shorthand for equality:
@@ -278,12 +301,21 @@ ctx.equal(
 Different constants in one local equality are an immediate configuration error. The
 same applies when repeated assignment/equality constraints bind one local variable to
 different constants.
-Conflicts or unresolved variables that appear only after connection/type-conversion
+Conflicts or unresolved variables that appear only after connection/value-type
 constraints are joined reject the graph revision during compilation. Ordinary
 spectral processors can therefore equate input/output FFT sizes and inherit one
 upstream/downstream anchor instead of storing the FFT size in every node constructor.
 `declare()` runs after resolution and may read concrete `ctx.input<...>().size()` /
 `ctx.output<...>().size()` values when sizing `State` storage.
+
+For callback code, single-type ports retain their ordinary concrete typed buffer API.
+Only ports whose static schema lists more than one value type expose explicit
+`is<T>()` / `as<T>()` accessors, and only for alternatives declared by that port. The
+resolved value type is emitted as a static constant in the generated realization.
+Authored branches that cover the finite alternatives can therefore be folded and the
+unused paths removed by ordinary LLVM constant propagation/dead-code elimination.
+Storage planning never allocates a runtime variant buffer: after the solve it sees the
+selected concrete type's element size, alignment, rank and storage semantics.
 
 The same constraint phase owns **port pace, Sequential-input history, Tick-output
 latency, and Coverage ordering/sortedness**. None of these belongs in
@@ -870,13 +902,17 @@ This is a hint, not a hard constraint. Use your own good judgement if ever in do
     while Tock materialization/materialization and persisted Tick boundaries are retained
     as background facts. Unreproducible Tick/ephemeral -> RandomAccess demand is the
     remaining connection-level rejection and requires explicit recording.
-16. **Landed: replayability trait and contextual replay planning.** The trait opts in
-    an existing `tick()`-only node with no `State`, random-access inputs, history or
-    latency and a fixed-version pure/deterministic contract. GraphJit retains the
-    generated `tick_block()` import, proves upstream availability through ordinary
-    Sequential dependencies, stops at persisted boundaries, rejects replay cycles
-    and records generated pointwise F/R plus background replay ordering. Contextual
-    replayability remains a per-path compiler fact, not an output config field.
+16. **Landed checkpoint: replayability trait and contextual replay planning.** The
+    checked-in trait currently opts in an existing `tick()`-only node with no `State`,
+    no Random Access inputs, history or latency and a fixed-version pure/deterministic
+    contract. GraphJit retains the generated `tick_block()` import, proves upstream
+    availability through ordinary Sequential dependencies, stops at persisted
+    boundaries, rejects replay cycles and records generated pointwise F/R plus
+    background replay ordering. The target contract removes only the Random Access
+    prohibition: such inputs become ordinary prepared replay dependencies, with
+    authored conservative F/R where their address mapping is not mechanically
+    pointwise. Contextual replayability remains a per-path compiler fact, not an
+    output config field.
 17. **In progress: subset-based storage inference and ordinary background evaluation.**
     Exact source/target port-atom incidence partitioning, capability joins, and
     immutable storage planning have landed. Source representations now
@@ -1467,12 +1503,21 @@ require materialized data. Tock/persisted uses the same canonical page read path
 Tick/persisted. Per-channel tiling preserves each member's contract without implicit
 retention.
 
-The checked-in replayability node type trait validates eligible `tick()`-only nodes:
-no native `tick_block()`, no `State`, random-access inputs, history, or latency, plus a
-fixed-version pure/deterministic replay contract. GraphJit reuses the **existing**
-generated and LLVM-imported `tick_block()` wrapper in background evaluation. Its
-static same-position temporal dependencies admit compiler-generated F/R; upstream
-availability determines whether each particular output can actually replay.
+The checked-in replayability node type trait is still an implementation checkpoint:
+it accepts eligible `tick()`-only nodes with no native `tick_block()`, no `State`, no
+Random Access inputs, no history/latency, plus a fixed-version pure/deterministic replay
+contract. The target semantic rule removes the Random Access prohibition. A Random
+Access input is a declared replay dependency that background planning must satisfy
+before invoking the Tick wrapper; it is not hidden state and does not by itself make
+the computation unreplayable.
+
+GraphJit reuses the **existing** generated and LLVM-imported `tick_block()` wrapper in
+background evaluation. Mechanically same-position dependencies admit compiler-generated
+F/R. A replayable Tick node with non-pointwise Random Access addressing participates in
+the same background forward/reverse dependency framework as authored Tock planning;
+its callbacks may conservatively request/invalidate complete potentially relevant
+coverage when a tighter value-blind bound is unavailable. Upstream availability then
+determines whether each particular output can actually replay.
 
 The planned batch normalization removes the callback-spelling restriction from the
 long-term replay model. Replay eligibility should be stated against normalized
@@ -1491,6 +1536,15 @@ pressure, age or invalidation. All persisted outputs use the canonical persisted
 store; recomputed/finalized pages replace old published versions atomically. Coverage
 removal alone ends the retention obligation, and old storage versions remain until
 reader pins are released.
+
+The same preparation rule applies to Tick nodes with Random Access inputs, including
+replayable ones. Before the generated root enters an audio-thread `tick_block()`
+invocation, every Random Access port is already bound to its callback-pinned persisted
+or `TickMaterializationSnapshot` Region/Coverage view. Tick execution performs no Tock
+work, dependency discovery, request-driven materialization, or waiting. During
+background replay, the transaction may recursively run required Tock/replay work, but
+it completes and installs the planned immutable Random Access views **before** invoking
+the imported Tick wrapper.
 
 Storage selection is performed over **overlapping port subsets**, not
 one connection at a time. GraphJit partitions source/target channel incidence into
