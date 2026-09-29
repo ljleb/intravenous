@@ -73,6 +73,7 @@ class GraphExecutor {
 
     [[nodiscard]] Realization& active_realization();
     [[nodiscard]] Realization const& active_realization() const;
+    [[nodiscard]] std::size_t tick_capture_reserve_target() const noexcept;
 
 public:
     explicit GraphExecutor(ResourceContext resources = {});
@@ -106,6 +107,11 @@ public:
     // Explicit non-audio reclamation for immutable roots retired by successful
     // background publication. A live callback pin always defers its owner.
     [[nodiscard]] GraphExecutorReclaimedSnapshots reclaim_retired_snapshots();
+
+    // Non-audio allocator maintenance. Restores the free capture-block reserve
+    // required by the active/pending realizations without waiting for capture
+    // consumption or reclamation. Returns the number of blocks added.
+    [[nodiscard]] std::size_t maintain_tick_capture_reserve();
 
     // Executes only the already-active realization. Generation activation is
     // deliberately never hidden in this audio-thread entry point.

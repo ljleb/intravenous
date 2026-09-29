@@ -267,6 +267,15 @@ the free-block reserve for the shared Tick-capture pool. Explicit recording and
 Tick/persisted staging may consume blocks from the same pool. Provisioning is
 independent of background-evaluation progress; a slow background worker increases
 the sealed/pending backlog rather than changing the audio-thread allocation rules.
+The minimum callback reserve covers every capture invocation that can seal before the
+callback ends. For a producer in a cyclic SCC this means every semantic slice, not one
+root-sized record; each slice independently includes its authored history and latency
+window.
+
+Reserve maintenance is target-based: it adds only the difference between the desired
+free count and the currently free blocks. Sealed, pending and retired blocks do not
+count as free reserve, so sustained backlog can grow append-only slab capacity. Merely
+staging another graph with the same requirement does not add another reserve.
 
 ## Coverage and change propagation
 

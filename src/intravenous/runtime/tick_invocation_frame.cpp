@@ -944,6 +944,27 @@ public:
             }
             capture_blocks += count;
         };
+        auto add_capture_reserve = [&](auto const& planned,
+                                       std::size_t blocks_per_invocation) {
+            if (planned.maximum_block_size == 0
+                || planned.maximum_block_size > maximum_block_size
+                || planned.maximum_invocations_per_callback == 0
+                || planned.maximum_invocations_per_callback
+                    != std::size_t{1} + (maximum_block_size - 1)
+                        / planned.maximum_block_size) {
+                throw std::invalid_argument(
+                    "Tick capture has inconsistent callback invocation bounds");
+            }
+            if (blocks_per_invocation
+                > std::numeric_limits<std::size_t>::max()
+                    / planned.maximum_invocations_per_callback) {
+                throw std::length_error(
+                    "Tick capture callback reserve is too large");
+            }
+            add_capture_blocks(
+                blocks_per_invocation
+                * planned.maximum_invocations_per_callback);
+        };
         for (std::size_t slot = 0;
              slot < sample_capture_slots.size(); ++slot) {
             auto const& planned = runtime.sample_captures[slot];
@@ -984,7 +1005,7 @@ public:
                 },
             };
             auto const window = checked_capture_window_size(
-                maximum_block_size,
+                planned.maximum_block_size,
                 port.output_history,
                 port.output_latency);
             auto const channels = channel_count(port.sample_layout);
@@ -994,10 +1015,12 @@ public:
                 throw std::length_error(
                     "Tick sample capture layout is too large");
             }
-            add_capture_blocks(capture_block_count(
-                window,
-                channels * sizeof(Sample),
-                capture_store->block_payload_capacity()));
+            add_capture_reserve(
+                planned,
+                capture_block_count(
+                    window,
+                    channels * sizeof(Sample),
+                    capture_store->block_payload_capacity()));
         }
         for (std::size_t slot = 0;
              slot < event_capture_slots.size(); ++slot) {
@@ -1039,7 +1062,7 @@ public:
                 },
             };
             auto const window = checked_capture_window_size(
-                maximum_block_size,
+                planned.maximum_block_size,
                 port.output_history,
                 port.output_latency);
             auto const event_capacity = event_sequence_capacity_for_sample_span(
@@ -1048,10 +1071,12 @@ public:
                 throw std::length_error(
                     "Tick event capture capacity is too large");
             }
-            add_capture_blocks(capture_block_count(
-                *event_capacity,
-                sizeof(TimedEvent),
-                capture_store->block_payload_capacity()));
+            add_capture_reserve(
+                planned,
+                capture_block_count(
+                    *event_capacity,
+                    sizeof(TimedEvent),
+                    capture_store->block_payload_capacity()));
         }
     }
 

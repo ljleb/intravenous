@@ -1118,6 +1118,47 @@ TEST(GraphJitConnectionPlan, DerivesSampleDetachExecutionRegion)
     EXPECT_LT(position(second_handle), position(first_handle));
 }
 
+TEST(GraphJitConnectionPlan, RetainsPersistedCaptureSccInvocationBounds)
+{
+    using namespace iv;
+    GraphBuilder graph;
+    auto persisted = details::configure_concrete_node<PersistedTickPass>(graph);
+    auto ordinary = details::configure_concrete_node<PlainSamplePass>(graph);
+    auto const persisted_handle = persisted.node_bundle_handle();
+    persisted(ordinary);
+    ordinary(static_cast<SamplePortRef>(persisted).detach(6));
+    graph.outputs();
+
+    auto configured = std::move(graph).finish();
+    auto plan = graph_jit::detail::build_connection_analysis_plan(configured, 64);
+    ASSERT_TRUE(plan.has_value()) << (plan ? std::string{} : plan.error());
+
+    ASSERT_LT(persisted_handle, plan->schedule.bundle_to_region.size());
+    ASSERT_TRUE(plan->schedule.bundle_to_region[persisted_handle]);
+    auto const& region = plan->schedule.regions[
+        *plan->schedule.bundle_to_region[persisted_handle]];
+    ASSERT_TRUE(region.cyclic);
+    EXPECT_EQ(region.maximum_block_size, 4u);
+
+    ASSERT_LT(
+        persisted_handle,
+        plan->background.bundle_to_background_node.size());
+    ASSERT_TRUE(
+        plan->background.bundle_to_background_node[persisted_handle]);
+    auto const node =
+        *plan->background.bundle_to_background_node[persisted_handle];
+    ASSERT_LT(node, plan->background.tick_runtime.nodes.size());
+    auto const& invocation = plan->background.tick_runtime.nodes[node];
+    ASSERT_EQ(invocation.sample_capture_count, 1u);
+    ASSERT_LT(
+        invocation.sample_capture_begin,
+        plan->background.tick_runtime.sample_captures.size());
+    auto const& capture = plan->background.tick_runtime.sample_captures[
+        invocation.sample_capture_begin];
+    EXPECT_EQ(capture.maximum_block_size, 4u);
+    EXPECT_EQ(capture.maximum_invocations_per_callback, 16u);
+}
+
 TEST(GraphJitConnectionPlan, SampleDetachInitialValueOverrideWins)
 {
     using namespace iv;
@@ -1501,6 +1542,13 @@ TEST(GraphJitConnectionPlan, RetainsCompleteBackgroundTopologyAndRetention)
     EXPECT_EQ(
         plan.ports[plan.tick_runtime.sample_captures.front().port].name,
         "realtime_persisted");
+    EXPECT_EQ(
+        plan.tick_runtime.sample_captures.front().maximum_block_size,
+        64u);
+    EXPECT_EQ(
+        plan.tick_runtime.sample_captures.front()
+            .maximum_invocations_per_callback,
+        1u);
     ASSERT_NE(background_ephemeral, nullptr);
     ASSERT_NE(background_persisted, nullptr);
     ASSERT_NE(background_persisted_events, nullptr);
@@ -2296,6 +2344,13 @@ TEST(GraphJitConnectionPlan, PersistedTickToRandomAccessUsesStoredBoundary)
     EXPECT_EQ(tick_runtime.sample_captures.front().port,
         static_cast<graph_jit::BackgroundPortIndex>(
             std::distance(plan->background.ports.begin(), port)));
+    EXPECT_EQ(
+        tick_runtime.sample_captures.front().maximum_block_size,
+        64u);
+    EXPECT_EQ(
+        tick_runtime.sample_captures.front()
+            .maximum_invocations_per_callback,
+        1u);
     auto const& source_invocation = tick_runtime.nodes[source_node];
     EXPECT_EQ(source_invocation.sample_capture_begin, 0u);
     EXPECT_EQ(source_invocation.sample_capture_count, 1u);
@@ -2327,6 +2382,13 @@ TEST(GraphJitConnectionPlan, PersistedTickToRandomAccessUsesStoredBoundary)
     auto const capture_validated =
         graph_jit::detail::validate_tick_runtime_plan(malformed);
     EXPECT_FALSE(capture_validated.has_value());
+
+    malformed = plan->background;
+    malformed.tick_runtime.sample_captures.front()
+        .maximum_invocations_per_callback = 0;
+    auto const invocation_bounds_validated =
+        graph_jit::detail::validate_tick_runtime_plan(malformed);
+    EXPECT_FALSE(invocation_bounds_validated.has_value());
 }
 
 TEST(GraphJitConnectionPlan, PlansTypedCaptureForPersistedTickEvents)
@@ -2359,6 +2421,10 @@ TEST(GraphJitConnectionPlan, PlansTypedCaptureForPersistedTickEvents)
     EXPECT_EQ(captured.event_type, EventTypeId::trigger);
     EXPECT_EQ(captured.output_history, 3u);
     EXPECT_EQ(captured.output_latency, 2u);
+    EXPECT_EQ(runtime.event_captures.front().maximum_block_size, 64u);
+    EXPECT_EQ(
+        runtime.event_captures.front().maximum_invocations_per_callback,
+        1u);
     auto const& invocation = runtime.nodes[source_node];
     EXPECT_EQ(invocation.sample_capture_count, 0u);
     EXPECT_EQ(invocation.event_capture_begin, 0u);

@@ -1738,7 +1738,9 @@ std::expected<void, std::string> validate_tick_runtime_plan(
         if (port.node != node || port.kind != kind
             || port.direction != PortDirection::output
             || !port.persisted_tick_output
-            || port.retention != OutputRetention::persisted) {
+            || port.retention != OutputRetention::persisted
+            || binding.maximum_block_size == 0
+            || binding.maximum_invocations_per_callback == 0) {
             return std::unexpected(
                 "GraphJit Tick capture does not match its persisted output");
         }
@@ -1887,8 +1889,14 @@ std::expected<void, std::string> validate_tick_runtime_plan(
 }
 
 std::expected<void, std::string> finalize_tick_runtime_plan(
-    BackgroundEvaluationPlan& plan)
+    BackgroundEvaluationPlan& plan,
+    SchedulePlan const& schedule,
+    std::size_t maximum_block_size)
 {
+    if (maximum_block_size == 0) {
+        return std::unexpected(
+            "GraphJit Tick runtime maximum block size is zero");
+    }
     auto& runtime = plan.tick_runtime;
     runtime = {};
     runtime.nodes.resize(plan.nodes.size());
@@ -1977,6 +1985,44 @@ std::expected<void, std::string> finalize_tick_runtime_plan(
         return false;
     };
 
+    struct CaptureInvocationShape {
+        std::size_t maximum_block_size = 0;
+        std::size_t maximum_invocations = 0;
+    };
+    auto capture_invocation_shape = [&](BackgroundNodeIndex node)
+        -> std::expected<CaptureInvocationShape, std::string> {
+        if (node >= plan.nodes.size()) {
+            return std::unexpected(
+                "GraphJit Tick capture references a missing node");
+        }
+        auto const bundle = plan.nodes[node].bundle;
+        if (bundle >= schedule.bundle_to_region.size()
+            || !schedule.bundle_to_region[bundle]
+            || *schedule.bundle_to_region[bundle] >= schedule.regions.size()) {
+            return std::unexpected(
+                "GraphJit Tick capture has no execution region");
+        }
+        auto const& region = schedule.regions[
+            *schedule.bundle_to_region[bundle]];
+        if (!region.cyclic) {
+            return CaptureInvocationShape{
+                .maximum_block_size = maximum_block_size,
+                .maximum_invocations = 1,
+            };
+        }
+        if (region.maximum_block_size == 0
+            || region.scc_feedback_latency == 0) {
+            return std::unexpected(
+                "GraphJit Tick capture has invalid SCC slice semantics");
+        }
+        return CaptureInvocationShape{
+            .maximum_block_size = std::min(
+                maximum_block_size, region.maximum_block_size),
+            .maximum_invocations = std::size_t{1}
+                + (maximum_block_size - 1) / region.maximum_block_size,
+        };
+    };
+
     for (BackgroundNodeIndex node = 0; node < plan.nodes.size(); ++node) {
         auto& invocation = runtime.nodes[node];
         invocation.sequential_sample_begin =
@@ -2044,7 +2090,14 @@ std::expected<void, std::string> finalize_tick_runtime_plan(
             }
             auto const& port = plan.ports[port_index];
             if (!port.persisted_tick_output) continue;
-            TickCaptureBindingPlan capture{.port = port_index};
+            auto const shape = capture_invocation_shape(node);
+            if (!shape) return std::unexpected(std::move(shape.error()));
+            TickCaptureBindingPlan capture{
+                .port = port_index,
+                .maximum_block_size = shape->maximum_block_size,
+                .maximum_invocations_per_callback =
+                    shape->maximum_invocations,
+            };
             if (port.kind == PortKind::sample) {
                 runtime.sample_captures.push_back(capture);
                 ++invocation.sample_capture_count;

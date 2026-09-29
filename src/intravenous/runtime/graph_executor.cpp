@@ -2,6 +2,7 @@
 
 #include <intravenous/node/layout.h>
 
+#include <algorithm>
 #include <stdexcept>
 #include <utility>
 
@@ -42,6 +43,22 @@ GraphExecutor::Realization const& GraphExecutor::active_realization() const
     return *realizations_[*active_];
 }
 
+std::size_t GraphExecutor::tick_capture_reserve_target() const noexcept
+{
+    std::size_t target = 0;
+    if (active_) {
+        target = realizations_[*active_]
+            ->tick_invocation.capture_block_reserve();
+    }
+    if (pending_) {
+        target = std::max(
+            target,
+            realizations_[*pending_]
+                ->tick_invocation.capture_block_reserve());
+    }
+    return target;
+}
+
 GraphExecutorStageResult GraphExecutor::stage(
     std::shared_ptr<CompiledGraph const> compiled_graph)
 {
@@ -61,8 +78,12 @@ GraphExecutorStageResult GraphExecutor::stage(
     pending_.reset();
     realizations_[index].emplace(
         std::move(compiled_graph), resources_, persisted_tick_captures_);
-    tick_captures_.provision(
+    auto const reserve_target = std::max(
+        active_ ? active_realization().tick_invocation.capture_block_reserve()
+                : std::size_t{0},
         realizations_[index]->tick_invocation.capture_block_reserve());
+    static_cast<void>(
+        tick_captures_.ensure_free_block_reserve(reserve_target));
     if (!active_) {
         realizations_[index]->storage.initialize();
         realizations_[index]->initialized = true;
@@ -132,6 +153,12 @@ GraphExecutorReclaimedSnapshots GraphExecutor::reclaim_retired_snapshots()
         .tick_materializations = tick_materializations_.reclaim_retired(),
         .tick_captures = tick_captures_.reclaim_committed(),
     };
+}
+
+std::size_t GraphExecutor::maintain_tick_capture_reserve()
+{
+    return tick_captures_.ensure_free_block_reserve(
+        tick_capture_reserve_target());
 }
 
 void GraphExecutor::tick_block(std::size_t sample_index, std::size_t block_size)

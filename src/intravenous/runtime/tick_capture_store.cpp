@@ -219,9 +219,14 @@ TickCaptureOutputHandle TickCaptureStore::register_output(PortKind kind)
     return {*this, impl_->next_output_id++, kind};
 }
 
-void TickCaptureStore::provision(std::size_t block_count)
+std::size_t TickCaptureStore::ensure_free_block_reserve(
+    std::size_t target_free_blocks)
 {
-    if (block_count == 0) return;
+    if (target_free_blocks == 0) return 0;
+    std::scoped_lock lock(impl_->control_mutex);
+    auto const available = impl_->free_count.load(std::memory_order_acquire);
+    if (available >= target_free_blocks) return 0;
+    auto const block_count = target_free_blocks - available;
     if (block_count > std::numeric_limits<std::size_t>::max()
             / impl_->payload_stride) {
         throw std::length_error("Tick capture slab is too large");
@@ -238,12 +243,12 @@ void TickCaptureStore::provision(std::size_t block_count)
             slab.payload.get() + index * impl_->payload_stride;
     }
 
-    std::scoped_lock lock(impl_->control_mutex);
     impl_->slabs.push_back(std::move(slab));
     auto& published = impl_->slabs.back();
     for (std::size_t index = 0; index < published.block_count; ++index) {
         impl_->push_free(published.blocks[index]);
     }
+    return block_count;
 }
 
 TickCaptureStore::CallbackScope TickCaptureStore::begin_callback() noexcept

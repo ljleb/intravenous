@@ -260,9 +260,11 @@ public:
 
     [[nodiscard]] TickCaptureOutputHandle register_output(PortKind kind);
 
-    // Adds one append-only slab and publishes all of its blocks to the audio
-    // thread only after their payload addresses and capacities are final.
-    void provision(std::size_t block_count);
+    // Adds only the deficit needed to reach the requested free-block reserve.
+    // The new append-only slab is published to the audio thread only after all
+    // payload addresses and capacities are final. Returns blocks added.
+    [[nodiscard]] std::size_t ensure_free_block_reserve(
+        std::size_t target_free_blocks);
 
     [[nodiscard]] CallbackScope begin_callback() noexcept;
     // Reserves every physical block for one logical payload or returns an empty

@@ -1024,8 +1024,15 @@ This is a hint, not a hard constraint. Use your own good judgement if ever in do
     separately interns `PersistedOutputId` values and maps them to generic handles; its
     entries outlive the producing realization. Realization construction registers
     every planned persisted output through that adapter, binds address-stable typed
-    operations, sizes one maximum-callback reserve, and provisions it off the audio
-    thread. One callback scope spans
+    operations, and sizes one maximum-callback reserve. Each binding retains its
+    maximum operation block and maximum invocations per callback: one enclosing
+    invocation for ordinary/primitive-internally sliced execution, or every
+    `ceil(root maximum / SCC quantum)` semantic slice for a cyclic SCC. The reserve
+    includes the complete history/current/latency window of every invocation and is
+    maintained as a free-block target off the audio thread. Staging ensures the larger
+    active/pending target and adds only the measured deficit; an explicit non-audio
+    executor maintenance call can restore the target while capture backlog remains
+    pending. Reclamation remains separate. One callback scope spans
     each `TickInvocationFrame`. Sample and event operations validate the finalized
     reflected binding and capture the complete authored
     `[block-history, block-end+latency)` window. Each window is one logical record and

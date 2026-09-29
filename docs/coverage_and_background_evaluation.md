@@ -1862,6 +1862,12 @@ enough to amortize allocation cost but small enough to provision promptly,
 splits/reuses them as capture blocks, and publishes those free blocks for audio-thread
 consumption. Recording and Tick/persisted staging may draw from the same pool; their
 semantic policies differ, not their need for pre-provisioned audio-thread-safe blocks.
+The store operation is target-based rather than additive: it observes the current free
+count and adds only the deficit. Repeated realization staging therefore does not append
+the same reserve again while sufficient free capacity already exists. The executor
+exposes this operation through a non-audio maintenance entry point so an allocator
+worker can restore the target even while sealed backlog remains unconsumed; capture
+reclamation is a separate operation.
 
 Provisioning is independent of background evaluation. If the background DAG takes
 four seconds, forty seconds, or longer, sealed blocks may accumulate in ordinary
@@ -2391,7 +2397,15 @@ recording merely because that planning metadata exists.
    that narrow adapter to realization construction. Each address-stable Tick workspace
    registers its planned persisted output identities through the adapter, binds its
    sample/event operation arrays, and calculates the fixed-block reserve for one
-   maximum-size callback. Staging provisions that reserve off the audio thread. The
+   maximum-size callback. The immutable binding retains both the maximum block seen by
+   the capture operation and its maximum invocations per root callback. An ordinary or
+   primitive-internally sliced step reserves one enclosing window; a cyclic SCC reserves
+   every possible semantic-slice window, including each slice's history and latency.
+   Staging ensures that summed free-block target off the audio thread, using the larger
+   requirement while active and pending realizations coexist. Repeated staging adds
+   only a measured deficit rather than another complete reserve. The executor also
+   exposes explicit non-audio reserve maintenance so pending backlog can cause slab
+   growth independently of reclamation or background-evaluation completion. The
    current store policy uses 64 KiB payload blocks, but allocator blocks are not log
    records. Every complete sample window or event sequence is one logical capture,
    one sequence entry and one published record head backed by as many blocks as its

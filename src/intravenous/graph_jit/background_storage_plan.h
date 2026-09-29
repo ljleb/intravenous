@@ -25,7 +25,9 @@ std::expected<void, std::string> validate_background_runtime_plan(
 // over the same immutable storage plan. Runtime realization never rediscovers
 // topology.
 std::expected<void, std::string> finalize_tick_runtime_plan(
-    BackgroundEvaluationPlan& plan);
+    BackgroundEvaluationPlan& plan,
+    SchedulePlan const& schedule,
+    std::size_t maximum_block_size);
 
 std::expected<void, std::string> validate_tick_runtime_plan(
     BackgroundEvaluationPlan const& plan);

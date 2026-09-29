@@ -863,8 +863,16 @@ capture store, persisted identity or transaction owner. The executor now owns on
 generation-independent `TickCaptureStore` and one persisted-capture registry whose
 entries outlive individual realizations. Realization construction resolves those slots
 into address-stable operations after registering each canonical persisted identity
-through that adapter.
-It also provisions enough fixed 64 KiB blocks for one maximum-size callback. A
+through that adapter. Each capture binding retains the maximum block passed to its
+operation and the maximum number of times it can run in one root callback. Ordinary
+and primitive-internally sliced steps retain one enclosing invocation; a cyclic SCC
+retains its slice quantum and `ceil(root maximum / quantum)` invocations. Realization
+sizing sums the physical blocks for every retained invocation, including history and
+latency in each slice window. Staging requests the larger active/pending free-block
+target and the store adds only its current deficit, so repeated staging does not append
+another complete reserve. A separate non-audio executor maintenance entry point can
+restore that target while sealed backlog is still pending. The current allocator uses
+fixed 64 KiB blocks. A
 `TickInvocationFrame` holds the store's callback scope while sample/event operations
 copy the complete authored `[block-history, block-end+latency)` mutation window.
 Each sample window or event sequence becomes one logical record and one sequence

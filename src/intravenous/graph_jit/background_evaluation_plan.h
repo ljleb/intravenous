@@ -517,6 +517,11 @@ struct TickSequentialBindingPlan {
 // lets each node retain contiguous ranges without exposing an executor/store.
 struct TickCaptureBindingPlan {
     BackgroundPortIndex port = 0;
+    // Maximum block passed to this capture operation. Ordinary execution
+    // captures once with the root block; cyclic SCC execution captures once
+    // per semantic slice with the SCC quantum.
+    std::size_t maximum_block_size = 0;
+    std::size_t maximum_invocations_per_callback = 0;
 };
 
 // Contiguous ranges in TickInvocationCall's kind-specific arrays. Input ranges
