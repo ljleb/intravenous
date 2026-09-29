@@ -1146,6 +1146,96 @@ void store_tick_invocation_span(
             builder, context_storage, context_size_offset, name + ".target.size"));
 }
 
+void emit_tick_capture_call(
+    llvm::IRBuilder<>& builder,
+    llvm::Value* invocation,
+    std::size_t invocation_data_offset,
+    std::size_t invocation_size_offset,
+    std::size_t operation_index,
+    std::size_t operation_size,
+    std::size_t operation_context_offset,
+    std::size_t operation_callback_offset,
+    llvm::Value* output_binding,
+    llvm::Value* sample_index,
+    llvm::Value* block_size,
+    llvm::Twine const& name)
+{
+    auto& context = builder.getContext();
+    auto* function = builder.GetInsertBlock()->getParent();
+    auto* byte_type = llvm::Type::getInt8Ty(context);
+    auto* pointer_type = llvm::PointerType::getUnqual(context);
+    auto* size_type = llvm::IntegerType::get(
+        context, static_cast<unsigned>(sizeof(std::size_t) * 8));
+    auto constant = [&](std::size_t value) {
+        return llvm::ConstantInt::get(size_type, value);
+    };
+
+    auto* source_data = builder.CreateLoad(
+        pointer_type,
+        byte_offset_pointer(
+            builder, invocation, invocation_data_offset, name + ".span.data"),
+        name + ".data");
+    auto* source_size = builder.CreateLoad(
+        size_type,
+        byte_offset_pointer(
+            builder, invocation, invocation_size_offset, name + ".span.size"),
+        name + ".size");
+    auto* operation_present = builder.CreateAnd(
+        builder.CreateIsNotNull(source_data),
+        builder.CreateICmpUGT(
+            source_size, constant(operation_index), name + ".index.present"),
+        name + ".present");
+
+    auto* operation_block = llvm::BasicBlock::Create(
+        context, name + ".operation", function);
+    auto* call_block = llvm::BasicBlock::Create(
+        context, name + ".call", function);
+    auto* continuation = llvm::BasicBlock::Create(
+        context, name + ".end", function);
+    builder.CreateCondBr(operation_present, operation_block, continuation);
+
+    builder.SetInsertPoint(operation_block);
+    auto* operation = builder.CreateInBoundsGEP(
+        byte_type,
+        source_data,
+        constant(operation_index * operation_size),
+        name + ".operation.ptr");
+    auto* opaque_context = builder.CreateLoad(
+        pointer_type,
+        byte_offset_pointer(
+            builder,
+            operation,
+            operation_context_offset,
+            name + ".context.ptr"),
+        name + ".context");
+    auto* callback = builder.CreateLoad(
+        pointer_type,
+        byte_offset_pointer(
+            builder,
+            operation,
+            operation_callback_offset,
+            name + ".callback.ptr"),
+        name + ".callback");
+    auto* callable = builder.CreateAnd(
+        builder.CreateIsNotNull(opaque_context),
+        builder.CreateIsNotNull(callback),
+        name + ".callable");
+    builder.CreateCondBr(callable, call_block, continuation);
+
+    builder.SetInsertPoint(call_block);
+    auto* callback_type = llvm::FunctionType::get(
+        llvm::Type::getVoidTy(context),
+        {pointer_type, pointer_type, size_type, size_type},
+        false);
+    builder.CreateCall(
+        callback_type,
+        callback,
+        {opaque_context, output_binding, sample_index, block_size});
+    builder.CreateBr(continuation);
+
+    builder.SetInsertPoint(continuation);
+}
+
 llvm::Value* overlay_tick_sequential_bindings(
     llvm::IRBuilder<>& builder,
     llvm::Value* static_bindings,
@@ -3584,6 +3674,166 @@ std::expected<void, std::string> emit_event_operations(
     return {};
 }
 
+std::expected<void, std::string> emit_tick_capture_operations(
+    llvm::IRBuilder<>& builder,
+    BackgroundEvaluationPlan const& background,
+    BackgroundNodeIndex node,
+    TickNodeInvocationPlan const& invocation_plan,
+    detail::PrimitiveSamplePortPlan const& sample_plan,
+    EmittedPrimitiveSamplePorts const& sample_bindings,
+    detail::PrimitiveEventPortPlan const& event_plan,
+    EmittedPrimitiveEventPorts const& event_bindings,
+    llvm::Value* invocation,
+    llvm::Value* sample_index,
+    llvm::Value* block_size)
+{
+    auto validate_range = [](
+        std::size_t begin,
+        std::size_t count,
+        std::size_t size,
+        std::string_view kind) -> std::expected<void, std::string> {
+        if (begin > size || count > size - begin) {
+            return std::unexpected(
+                "GraphJit Tick " + std::string(kind)
+                + " capture range is out of bounds");
+        }
+        return {};
+    };
+    if (auto valid = validate_range(
+            invocation_plan.sample_capture_begin,
+            invocation_plan.sample_capture_count,
+            background.tick_runtime.sample_captures.size(),
+            "sample");
+        !valid) {
+        return valid;
+    }
+    if (auto valid = validate_range(
+            invocation_plan.event_capture_begin,
+            invocation_plan.event_capture_count,
+            background.tick_runtime.event_captures.size(),
+            "event");
+        !valid) {
+        return valid;
+    }
+
+    auto compact_output_index = [node, &background](
+        auto const& outputs,
+        TickCaptureBindingPlan const& capture,
+        PortKind kind,
+        std::size_t emitted_count)
+        -> std::expected<std::size_t, std::string> {
+        if (capture.port >= background.ports.size()) {
+            return std::unexpected(
+                "GraphJit Tick capture references a missing logical port");
+        }
+        auto const& port = background.ports[capture.port];
+        auto const authored = port.configured_port.port_index;
+        if (port.node != node || port.kind != kind
+            || port.direction != PortDirection::output
+            || !port.persisted_tick_output
+            || port.retention != OutputRetention::persisted
+            || authored >= outputs.size() || !outputs[authored].realtime) {
+            return std::unexpected(
+                "GraphJit Tick capture has no matching realtime output");
+        }
+        auto const compact = static_cast<std::size_t>(std::ranges::count_if(
+            outputs.begin(),
+            outputs.begin() + static_cast<std::ptrdiff_t>(authored),
+            [](auto const& output) { return output.realtime; }));
+        if (compact >= emitted_count) {
+            return std::unexpected(
+                "GraphJit Tick capture lost its reflected output binding");
+        }
+        return compact;
+    };
+
+    auto const call_offsets = tick_invocation_byte_offsets();
+    auto* byte_type = llvm::Type::getInt8Ty(builder.getContext());
+    auto* size_type = llvm::IntegerType::get(
+        builder.getContext(),
+        static_cast<unsigned>(sizeof(std::size_t) * 8));
+    auto constant = [&](std::size_t value) {
+        return llvm::ConstantInt::get(size_type, value);
+    };
+
+    for (std::size_t offset = 0;
+         offset < invocation_plan.sample_capture_count; ++offset) {
+        auto const slot = invocation_plan.sample_capture_begin + offset;
+        auto const& capture = background.tick_runtime.sample_captures[slot];
+        auto binding = compact_output_index(
+            sample_plan.outputs,
+            capture,
+            PortKind::sample,
+            sample_bindings.output_count);
+        if (!binding) return std::unexpected(std::move(binding.error()));
+        if (sample_bindings.output_bindings == nullptr
+            || *binding > std::numeric_limits<std::size_t>::max()
+                    / sizeof(ReflectedSampleOutputPortBinding)
+            || slot > std::numeric_limits<std::size_t>::max()
+                    / sizeof(TickSampleCaptureOperation)) {
+            return std::unexpected(
+                "GraphJit Tick sample capture binding is too large");
+        }
+        auto* output = builder.CreateInBoundsGEP(
+            byte_type,
+            sample_bindings.output_bindings,
+            constant(*binding * sizeof(ReflectedSampleOutputPortBinding)),
+            "tick.capture.sample.output");
+        emit_tick_capture_call(
+            builder,
+            invocation,
+            call_offsets.sample_captures_data,
+            call_offsets.sample_captures_size,
+            slot,
+            sizeof(TickSampleCaptureOperation),
+            offsetof(TickSampleCaptureOperation, context),
+            offsetof(TickSampleCaptureOperation, capture),
+            output,
+            sample_index,
+            block_size,
+            "tick.capture.sample");
+    }
+
+    for (std::size_t offset = 0;
+         offset < invocation_plan.event_capture_count; ++offset) {
+        auto const slot = invocation_plan.event_capture_begin + offset;
+        auto const& capture = background.tick_runtime.event_captures[slot];
+        auto binding = compact_output_index(
+            event_plan.outputs,
+            capture,
+            PortKind::event,
+            event_bindings.output_count);
+        if (!binding) return std::unexpected(std::move(binding.error()));
+        if (event_bindings.output_bindings == nullptr
+            || *binding > std::numeric_limits<std::size_t>::max()
+                    / sizeof(ReflectedEventOutputPortBinding)
+            || slot > std::numeric_limits<std::size_t>::max()
+                    / sizeof(TickEventCaptureOperation)) {
+            return std::unexpected(
+                "GraphJit Tick event capture binding is too large");
+        }
+        auto* output = builder.CreateInBoundsGEP(
+            byte_type,
+            event_bindings.output_bindings,
+            constant(*binding * sizeof(ReflectedEventOutputPortBinding)),
+            "tick.capture.event.output");
+        emit_tick_capture_call(
+            builder,
+            invocation,
+            call_offsets.event_captures_data,
+            call_offsets.event_captures_size,
+            slot,
+            sizeof(TickEventCaptureOperation),
+            offsetof(TickEventCaptureOperation, context),
+            offsetof(TickEventCaptureOperation, capture),
+            output,
+            sample_index,
+            block_size,
+            "tick.capture.event");
+    }
+    return {};
+}
+
 std::expected<void, std::string> emit_execution_step(
     llvm::Module& module,
     llvm::IRBuilder<>& builder,
@@ -3618,6 +3868,7 @@ std::expected<void, std::string> emit_execution_step(
     }
     BackgroundEvaluationPlan const* tick_background = nullptr;
     TickNodeInvocationPlan const* tick_bindings = nullptr;
+    std::optional<BackgroundNodeIndex> tick_node{};
     if (step.configuration_index < plan.imports.primitive_callbacks.size()) {
         auto const bundle = plan.imports
             .primitive_callbacks[step.configuration_index].bundle;
@@ -3631,6 +3882,7 @@ std::expected<void, std::string> emit_execution_step(
             }
             tick_background = &background;
             tick_bindings = &background.tick_runtime.nodes[node];
+            tick_node = node;
             auto validate_sequential_ordinals = [&](
                 std::span<TickSequentialBindingPlan const> bindings,
                 std::size_t begin,
@@ -3851,6 +4103,27 @@ std::expected<void, std::string> emit_execution_step(
             false);
         if (!committed) {
             return std::unexpected(std::move(committed.error()));
+        }
+    }
+    // Capture only after every operation assigned to this producer step has
+    // finalized its authored output window. SCC execution reaches this point
+    // once per semantic slice; ordinary primitive-internal slicing reaches it
+    // once for the complete enclosing step.
+    if (tick_background != nullptr && tick_bindings != nullptr && tick_node) {
+        auto captured = emit_tick_capture_operations(
+            builder,
+            *tick_background,
+            *tick_node,
+            *tick_bindings,
+            plan.sample_ports.primitives[step.configuration_index],
+            sample_bindings.primitives[step.configuration_index],
+            plan.event_ports.primitives[step.configuration_index],
+            event_bindings.primitives[step.configuration_index],
+            invocation,
+            sample_index,
+            block_size);
+        if (!captured) {
+            return std::unexpected(std::move(captured.error()));
         }
     }
     return {};

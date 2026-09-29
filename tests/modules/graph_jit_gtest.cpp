@@ -25,6 +25,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
@@ -77,6 +78,7 @@ constexpr char graph_jit_converted_event_fanout_module_id[] = "iv.test.graph_jit
 constexpr char graph_jit_retained_event_module_id[] = "iv.test.graph_jit.state_context.retained_event_module";
 constexpr char graph_jit_persistent_event_ring_module_id[] = "iv.test.graph_jit.state_context.persistent_event_ring_module";
 constexpr char graph_jit_retained_converted_event_fanout_module_id[] = "iv.test.graph_jit.state_context.retained_converted_event_fanout_module";
+constexpr char graph_jit_tick_capture_module_id[] = "iv.test.graph_jit.state_context.tick_capture_module";
 constexpr char graph_jit_sample_feedback_a_id[] = "iv.test.graph_jit.state_context.sample_feedback_a";
 constexpr char graph_jit_sample_feedback_b_id[] = "iv.test.graph_jit.state_context.sample_feedback_b";
 constexpr char graph_jit_multi_branch_sample_feedback_id[] = "iv.test.graph_jit.state_context.multi_branch_sample_feedback";
@@ -154,6 +156,98 @@ struct BackgroundExecutionCapture {
     iv::Coverage changed{};
     std::vector<std::pair<iv::SampleIndex, float>> samples{};
 };
+
+struct GeneratedTickCaptureProbe {
+    std::size_t sample_calls = 0;
+    std::size_t event_calls = 0;
+    std::size_t sample_index = 0;
+    std::size_t block_size = 0;
+    std::size_t sample_history = 0;
+    std::size_t sample_latency = 0;
+    float first_sample = 0.0f;
+    float last_sample = 0.0f;
+    std::size_t event_history = 0;
+    std::size_t event_latency = 0;
+    std::size_t event_count = 0;
+    std::uint64_t first_event_time = 0;
+};
+
+void capture_generated_tick_samples(
+    void* opaque,
+    iv::ReflectedSampleOutputPortBinding const* output,
+    std::size_t sample_index,
+    std::size_t block_size) noexcept
+{
+    auto& probe = *static_cast<GeneratedTickCaptureProbe*>(opaque);
+    ++probe.sample_calls;
+    probe.sample_index = sample_index;
+    probe.block_size = block_size;
+    if (!output || block_size == 0) return;
+    probe.sample_history = output->history;
+    probe.sample_latency = output->latency;
+    auto const& storage = output->storage;
+    if (storage.channel_layout.channel_type != iv::ChannelTypeId::mono
+        || storage.frame_capacity == 0
+        || !std::has_single_bit(storage.frame_capacity)) {
+        return;
+    }
+    auto read = [&](std::size_t index) {
+        auto const& channel = storage.channels[0];
+        if (!channel.storage || channel.frame_capacity == 0
+            || !std::has_single_bit(channel.frame_capacity)
+            || channel.frame_stride == 0
+            || channel.frame_delay >= channel.frame_capacity) {
+            return 0.0f;
+        }
+        auto const logical = static_cast<iv::SampleIndex>(index)
+            + static_cast<iv::SampleIndex>(storage.storage_latency);
+        auto const delayed = logical
+            - static_cast<iv::SampleIndex>(channel.frame_delay);
+        auto const frame = static_cast<std::size_t>(
+            delayed & (channel.frame_capacity - 1));
+        return static_cast<float>(
+            reinterpret_cast<iv::Sample const*>(channel.storage)[
+                frame * channel.frame_stride]);
+    };
+    // Output latency extends the mutation window; it does not shift the
+    // absolute positions written by push().
+    probe.first_sample = read(sample_index);
+    probe.last_sample = read(sample_index + block_size - 1);
+}
+
+void capture_generated_tick_events(
+    void* opaque,
+    iv::ReflectedEventOutputPortBinding const* output,
+    std::size_t,
+    std::size_t) noexcept
+{
+    auto& probe = *static_cast<GeneratedTickCaptureProbe*>(opaque);
+    ++probe.event_calls;
+    if (!output) return;
+    probe.event_history = output->history;
+    probe.event_latency = output->latency;
+    auto const& storage = output->storage;
+    if (!storage.storage || storage.event_capacity == 0
+        || !std::has_single_bit(storage.event_capacity)) {
+        return;
+    }
+    std::size_t read = 0;
+    auto write = *reinterpret_cast<std::size_t const*>(
+        storage.storage + storage.count_offset);
+    if (storage.persistent_ring) {
+        read = *reinterpret_cast<std::size_t const*>(
+            storage.storage + storage.read_index_offset);
+        write = *reinterpret_cast<std::size_t const*>(
+            storage.storage + storage.write_index_offset);
+    }
+    if (write < read) return;
+    probe.event_count = std::min(write - read, storage.event_capacity);
+    if (probe.event_count == 0) return;
+    auto const* events = reinterpret_cast<iv::TimedEvent const*>(
+        storage.storage + storage.events_offset);
+    probe.first_event_time = events[
+        read & (storage.event_capacity - 1)].time;
+}
 
 void capture_background_coverage(
     void* opaque, iv::Coverage const& coverage)
@@ -2868,6 +2962,44 @@ struct RevisingSampleSource {
     }
 };
 
+struct TickCaptureSource {
+    static constexpr auto inputs()
+    {
+        return std::array<iv::InputConfig, 0>{};
+    }
+
+    static constexpr auto outputs()
+    {
+        return std::array{
+            iv::tick_sample_output(
+                "samples",
+                {},
+                {.history = 2, .latency = 1},
+                iv::OutputRetention::persisted),
+            iv::tick_event_output(
+                "events",
+                iv::EventOutputProperties{
+                    .type = iv::EventTypeId::trigger,
+                    .max_events_per_index = 0.25,
+                },
+                iv::TickOutputConfig{.history = 2, .latency = 1},
+                iv::OutputRetention::persisted),
+        };
+    }
+
+    void tick_block(iv::TickBlockContext<TickCaptureSource> const& ctx) const
+    {
+        for (std::size_t i = 0; i < ctx.block_size; ++i) {
+            ctx.outputs[0].push(
+                static_cast<iv::Sample>(ctx.index + i) + iv::Sample{0.5f});
+        }
+        if (ctx.block_size > 3) {
+            ctx.event_outputs[0].push(
+                iv::TriggerEvent{}, 3, ctx.index, ctx.block_size);
+        }
+    }
+};
+
 struct PersistentRevisingSampleSource {
     static constexpr auto inputs()
     {
@@ -4955,6 +5087,12 @@ void disconnected_sample_output_module(iv::GraphBuilder& graph)
     graph.outputs();
 }
 
+void tick_capture_module(iv::GraphBuilder& graph)
+{
+    (void)graph.node<"iv.test.graph_jit.state_context.tick_capture_source">();
+    graph.outputs();
+}
+
 void direct_sample_module(iv::GraphBuilder& graph)
 {
     auto source = graph.node<"iv.test.graph_jit.state_context.sample_ramp_source">();
@@ -5182,6 +5320,7 @@ IV_NODE("iv.test.graph_jit.state_context.pointer_configured", PointerConfiguredP
 IV_NODE("iv.test.graph_jit.state_context.limited_block", LimitedBlockProbe);
 IV_NODE("iv.test.graph_jit.state_context.sample_ramp_source", SampleRampSource);
 IV_NODE("iv.test.graph_jit.state_context.revising_sample_source", RevisingSampleSource);
+IV_NODE("iv.test.graph_jit.state_context.tick_capture_source", TickCaptureSource);
 IV_NODE("iv.test.graph_jit.state_context.persistent_revising_sample_source", PersistentRevisingSampleSource);
 IV_NODE("iv.test.graph_jit.state_context.tick_fallback_sample_source", TickFallbackSampleSource);
 IV_NODE("iv.test.graph_jit.state_context.limited_sample_ramp_source", LimitedSampleRampSource);
@@ -5244,6 +5383,7 @@ IV_MODULE("iv.test.graph_jit.state_context.skippable_pair_module", skippable_pai
 IV_MODULE("iv.test.graph_jit.state_context.limited_block_module", limited_block_module);
 IV_MODULE("iv.test.graph_jit.state_context.disconnected_sample_input_module", disconnected_sample_input_module);
 IV_MODULE("iv.test.graph_jit.state_context.disconnected_sample_output_module", disconnected_sample_output_module);
+IV_MODULE("iv.test.graph_jit.state_context.tick_capture_module", tick_capture_module);
 IV_MODULE("iv.test.graph_jit.state_context.direct_sample_module", direct_sample_module);
 IV_MODULE("iv.test.graph_jit.state_context.transient_sample_module", transient_sample_module);
 IV_MODULE("iv.test.graph_jit.state_context.reused_sample_arena_module", reused_sample_arena_module);
@@ -6928,6 +7068,60 @@ TEST_F(GraphJitRuntimeFixture, DisconnectedSampleOutputKeepsDeclaredHistory)
         storage.buffer().data(), &empty_tick_invocation, 64, 64);
     EXPECT_EQ(state->calls, 2u);
     EXPECT_FLOAT_EQ(state->previous_output, 63.0f);
+}
+
+TEST_F(GraphJitRuntimeFixture, GeneratedRootInvokesPersistedTickCaptures)
+{
+    auto compiled = compile(graph_jit_tick_capture_module_id, 220);
+    ASSERT_TRUE(compiled.succeeded())
+        << (compiled.diagnostics.empty()
+                ? ""
+                : compiled.diagnostics.front().message);
+    auto const& background =
+        compiled.compiled_graph->background_evaluation_plan;
+    ASSERT_EQ(background.tick_runtime.sample_captures.size(), 1u);
+    ASSERT_EQ(background.tick_runtime.event_captures.size(), 1u);
+    ASSERT_EQ(background.tick_runtime.nodes.size(), 1u);
+    EXPECT_EQ(background.tick_runtime.nodes[0].sample_capture_begin, 0u);
+    EXPECT_EQ(background.tick_runtime.nodes[0].sample_capture_count, 1u);
+    EXPECT_EQ(background.tick_runtime.nodes[0].event_capture_begin, 0u);
+    EXPECT_EQ(background.tick_runtime.nodes[0].event_capture_count, 1u);
+
+    auto storage = compiled.compiled_graph->node_layout.create_storage(resources);
+    storage.initialize();
+    GeneratedTickCaptureProbe probe{};
+    std::array sample_captures{
+        iv::graph_jit::TickSampleCaptureOperation{
+            .context = &probe,
+            .capture = &capture_generated_tick_samples,
+        },
+    };
+    std::array event_captures{
+        iv::graph_jit::TickEventCaptureOperation{
+            .context = &probe,
+            .capture = &capture_generated_tick_events,
+        },
+    };
+    iv::graph_jit::TickInvocationCall invocation{
+        .sample_captures = sample_captures,
+        .event_captures = event_captures,
+    };
+
+    compiled.compiled_graph->root_operations.tick_block(
+        storage.buffer().data(), &invocation, 64, 64);
+
+    EXPECT_EQ(probe.sample_calls, 1u);
+    EXPECT_EQ(probe.event_calls, 1u);
+    EXPECT_EQ(probe.sample_index, 64u);
+    EXPECT_EQ(probe.block_size, 64u);
+    EXPECT_EQ(probe.sample_history, 2u);
+    EXPECT_EQ(probe.sample_latency, 1u);
+    EXPECT_FLOAT_EQ(probe.first_sample, 64.5f);
+    EXPECT_FLOAT_EQ(probe.last_sample, 127.5f);
+    EXPECT_EQ(probe.event_history, 2u);
+    EXPECT_EQ(probe.event_latency, 1u);
+    EXPECT_EQ(probe.event_count, 1u);
+    EXPECT_EQ(probe.first_event_time, 67u);
 }
 
 TEST_F(GraphJitRuntimeFixture, DirectSampleStorage)

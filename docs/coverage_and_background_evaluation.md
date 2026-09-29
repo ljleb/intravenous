@@ -2386,13 +2386,17 @@ recording merely because that planning metadata exists.
    its channel layout while splitting at block boundaries. Event operations validate
    the final bounded/ring representation, retain sorted events from that same window,
    and seal an empty record when the finalized window contains no events. The generated
-   ABI still sees only opaque runtime-resolved operations. Explicit non-audio executor
-   reclamation now also returns eligible committed capture blocks without crossing the
-   active callback's sequence boundary.
+   ABI still sees only opaque runtime-resolved operations. Lowering now maps each
+   planned logical capture slot back to the producer's compact reflected sample/event
+   output binding and invokes the matching operation after that producer step's full
+   post-operation sequence. An acyclic or primitive-internally sliced step captures
+   its complete enclosing window once; an SCC step captures once per finalized
+   semantic slice. Missing, short or null operation entries remain legal no-op
+   bindings. Explicit non-audio executor reclamation now also returns eligible
+   committed capture blocks without crossing the active callback's sequence boundary.
 
-   Next, have lowering invoke each already-bound operation at the exact output-
-   finalization point. Bind explicit recorder bridges at their authored production/
-   finalization points, then consume the fixed batch through
+   Next, bind explicit recorder bridges at their authored production/finalization
+   points, then consume the fixed batch through
    `BackgroundEvaluationTransaction`. Use it
    for Tick/persisted staging and explicit recorder bridges as appropriate. Consume
    fixed capture-sequence snapshots through the background transaction, publish into

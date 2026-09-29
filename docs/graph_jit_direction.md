@@ -1029,11 +1029,14 @@ This is a hint, not a hard constraint. Use your own good judgement if ever in do
     transport block is emitted as ordered records, and empty event windows still seal
     an explicit record. Explicit executor reclamation now includes committed blocks on
     the non-audio path while deferring every record at or beyond the active callback's
-    starting sequence.
+    starting sequence. Lowering maps each planned logical capture slot to its compact
+    reflected output binding and invokes the opaque operation after the producer's
+    complete post-operation sequence. Ordinary and primitive-internally sliced steps
+    capture one complete enclosing window; SCC execution captures each finalized
+    semantic slice separately. Missing, short or null operation entries are legal
+    no-ops.
 
-    Lowering still needs to invoke those bound operations at each exact output-
-    finalization point. Then bind explicit-recorder blocks at their authored bridge
-    points and consume fixed capture
+    Next bind explicit-recorder blocks at their authored bridge points and consume fixed capture
     prefixes through the background transaction, publish into the canonical page store,
     and reclaim blocks only with callback-boundary-safe ownership. A same-Tick recent-
     capture Random Access overlay remains a later optional experiment.

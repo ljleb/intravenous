@@ -861,8 +861,12 @@ It also provisions enough fixed 64 KiB blocks for one maximum-size callback. A
 `TickInvocationFrame` holds the store's callback scope while sample/event operations
 copy the complete authored `[block-history, block-end+latency)` mutation window.
 Windows larger than one block are emitted as ordered chunks, and an empty event window
-is represented explicitly. Generated invocation at the exact output-finalization
-point, followed by transaction/page-store consumption, remains the next slice.
+is represented explicitly. Generated lowering now resolves each logical capture slot
+to its compact reflected output binding and invokes the opaque operation after the
+producer's full post-operation sequence. Primitive-internal slicing captures the
+complete enclosing window once, while SCC execution captures each finalized semantic
+slice. Explicit recorder binding and transaction/page-store consumption remain the
+next slice.
 
 The heuristic may consider:
 
