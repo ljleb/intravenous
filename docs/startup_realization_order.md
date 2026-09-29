@@ -46,8 +46,9 @@ be compiled first, and it does not require audio execution to be active.
 10. `ProjectGraph` orchestrates reconstruction using the desired instances owned
     by `NodeInstances` and desired connections owned by `GraphConnections` against
     the new immutable definitions snapshot, synchronously compiles the resulting
-    root graph through `GraphJit`, and offers the compiled successor independently to
-    `RealtimeGraphExecutor` and `BackgroundGraphExecutor`.
+    root graph through `GraphJit`, stages the compiled successor in
+    `BackgroundGraphExecutor` first, and only after background preparation succeeds
+    stages the corresponding realtime half in `RealtimeGraphExecutor`.
 
 ## Valid initialized state before package realization
 
@@ -100,12 +101,22 @@ can only become input to a later root-build transaction.
 Whole-project `GraphJit` compilation is synchronous inside the `ProjectGraph`
 rebuild transaction. It uses exactly the configured graph/provider generation
 produced by that transaction and returns one immutable `CompiledGraph` before
-`ProjectGraph` notifies either executor. `ProjectGraph` then offers that immutable
-generation once to `RealtimeGraphExecutor` and once to `BackgroundGraphExecutor` as
-sibling child operations of the same root-build cause.
+`ProjectGraph` notifies either executor. `ProjectGraph` first stages the background
+half in `BackgroundGraphExecutor`. That call prepares generation-specific input queues,
+stable-identity/route metadata, and an allocation-free cutover publication object/reference.
+Only after it succeeds does `ProjectGraph` stage the corresponding realtime half in
+`RealtimeGraphExecutor`. The calls remain sibling child operations of the same
+root-build cause.
 
-Receiving that compiled generation does not mutate an active realtime pass. The
-realtime generation remains immutable for the duration of a complete pass, and a
-completed successor can replace it only at a safe boundary after the current pass
-finishes. Background generation/state updates affect pending/desired background work
-and do not alter a workload already selected by the background worker.
+Staging does not mutate an active realtime pass or a workload already selected by the
+background worker. At a later legal realtime pass boundary, realtime publishes all
+final old-generation chains, synchronously publishes the prepared generation cutover
+to `BackgroundGraphExecutor`, and then swaps its active realtime generation. The
+background handler only exposes the prepared cutover to its worker; it does not
+allocate or execute background work synchronously. Background may lag, finish old-
+generation selected work, drain the now-closed old-generation queues, and perform the
+prepared migration before interpreting new-generation inputs.
+
+See
+[realtime_background_execution_and_queues.md](./realtime_background_execution_and_queues.md)
+for the normative hot-reload protocol.

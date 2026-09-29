@@ -227,6 +227,10 @@ This front owns:
   one steady-state layout;
 - transition expiry horizons and switch to the final realization;
 - compatible persisted random-access rebinding;
+- paired realtime/background generation identity and stable route/destination identity;
+- producer/destination disappearance semantics for queued recording/persisted data;
+- ordered old-generation drain + prepared background migration across realtime cutover;
+- generation-compatible persisted-state publication; and
 - generation reconciliation and stale-generation rejection/reclamation rules.
 
 This is correctness work, not an optimization pass.
@@ -269,8 +273,15 @@ runtime path.
 This front owns:
 
 - construction and lifetime of `RealtimeGraphExecutor` and `BackgroundGraphExecutor`;
-- direct `ProjectGraph` bridges to both executors after successful `GraphJit`;
-- realtime compiled-generation staging, state migration and pass-boundary activation;
+- direct `ProjectGraph` bridges that stage `BackgroundGraphExecutor` first and
+  `RealtimeGraphExecutor` second after successful `GraphJit`;
+- paired-generation staging with all cutover allocation completed off realtime;
+- realtime-authoritative pass-boundary cutover: final old-generation chain publication,
+  allocation-free ordered cutover publication to background, then realtime swap;
+- background completion of already-selected old-generation work, closed old-generation
+  queue drain, and prepared migration before consuming new-generation queues;
+- preservation of multiple ordered cutovers while background lags;
+- realtime compiled-generation state migration and pass-boundary activation;
 - audio callback routing through `RealtimeGraphExecutor`;
 - `BackgroundGraphExecutor` worker/evaluation lifecycle and independently pinned
   producer queues;

@@ -553,6 +553,31 @@ The background consumer does not splice released blocks directly into a realtime
 producer's reserve. It releases completed prefixes to non-realtime reclamation, and
 the capacity manager owns recycling/reassignment.
 
+### Graph-generation cutover / closed producer queue
+
+A **graph-generation cutover** is the authoritative realtime pass-boundary transition
+from one paired realtime/background graph generation to the next. Background staging
+happens first; the realtime boundary later publishes final old-generation chains,
+publishes an already-prepared allocation-free cutover to `BackgroundGraphExecutor`,
+and swaps the active realtime realization.
+
+A **closed producer queue** is an old-generation queue after that cutover. No producer
+can append further items to it, so it has a finite tail even though the background
+worker may not have drained it yet. The worker may finish old-generation selected work
+and drain closed old-generation queues before applying the prepared background
+migration. No global atomic snapshot across those queues is implied.
+
+Queued data is always interpreted by the generation that produced it. Stable logical
+identity controls whether retained recording/persisted state survives the transition;
+generation-local compiled indices do not. A disappeared producer stops future writes
+without erasing a surviving destination, while a disappeared destination is retired
+after remaining old-generation work is interpreted under the old graph.
+
+A **generation-compatible persisted-state version** is an immutable background
+publication tagged/bound to the graph generation whose realtime bindings may consume
+it. A late final old-generation version is transition input for background migration,
+not a version that can become active in a newer realtime generation.
+
 ### Published-snapshot Random Access
 
 The preliminary Random Access implementation reads one immutable selected/pinned

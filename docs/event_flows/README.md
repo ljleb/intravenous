@@ -17,9 +17,10 @@ The diagrams describe **control flow**. Data may travel in either direction
 along an event/request edge. In particular, `ProjectGraph` may pass a mutable
 root builder to `NodeInstances`/`GraphConnections`, receive embedding maps or
 diagnostics back, synchronously exchange a completed graph for a `CompiledGraph`
-with `GraphJit`, and finally offer that result independently to
-`RealtimeGraphExecutor` and `BackgroundGraphExecutor` without creating reverse
-control-flow edges.
+with `GraphJit`, and finally stage that result first in `BackgroundGraphExecutor` and then in
+`RealtimeGraphExecutor` without creating reverse control-flow edges. The later
+realtime-pass cutover and background-completion publications are separate source
+invocations documented in the executor-exchange flow.
 
 Future sources such as undo/redo, presentation-driven structural changes,
 project save collection, and UI-only presentation settings should be designed

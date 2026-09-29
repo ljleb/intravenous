@@ -103,6 +103,14 @@ A useful mental model: each event propagation carries an implicit cause token.
 The tree constraint says: for each source and each cause, no module processes
 that cause twice.
 
+A concrete execution example is the static bridge cycle between
+`RealtimeGraphExecutor` and `BackgroundGraphExecutor`. A realtime pass-boundary
+producer publication or generation cutover is one source invocation with
+`RealtimeGraphExecutor -> BackgroundGraphExecutor`. A later completed persisted-state
+publication is a different source invocation with
+`BackgroundGraphExecutor -> RealtimeGraphExecutor`. Neither direction nests the other
+for the same cause, so the static cycle does not violate the tree constraint.
+
 ### Raising multiple events from one member
 
 A module member may raise as many events as it needs. Raising several events is

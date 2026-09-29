@@ -21,16 +21,18 @@ flowchart TD
     PG -->|"1. complete requested instance batch + one definitions snapshot; root builder ⇄ embedding map"| NI
     PG -->|"2. complete requested connection batch; root builder + embedding map ⇄ diagnostics"| GC
     PG -->|"3. completed ConfiguredGraph ⇄ synchronous CompiledGraph"| GJ
-    PG -->|"4a. compiled successor realtime generation"| RGE
-    PG -->|"4b. compiled successor background generation/state"| BGE
+    PG -->|"4a. stage compiled successor background generation/state"| BGE
+    PG -->|"4b. stage compiled successor realtime generation after background preparation"| RGE
 ```
 
 `NodeInstances`, `GraphConnections`, `GraphJit`, `RealtimeGraphExecutor`, and
 `BackgroundGraphExecutor` are sibling children of `ProjectGraph` for this cause.
 The labels specify orchestration order inside one `ProjectGraph` handler. After the
 synchronous `GraphJit` request returns one immutable `CompiledGraph`, `ProjectGraph`
-may offer that generation independently to both executors without making either
-executor the parent of the other.
+stages its background half first. Only after `BackgroundGraphExecutor` has prepared
+the generation/cutover resources does `ProjectGraph` stage the corresponding realtime
+half. Both remain sibling child operations; the ordering does not make either executor
+the parent of the other.
 
 ## Data movement
 
@@ -58,9 +60,10 @@ resolvable cross-node connection to the same root builder.
 
 `ProjectGraph` then finishes the root builder, synchronously asks `GraphJit` to
 compile that exact `ConfiguredGraph`/definition generation into one immutable
-`CompiledGraph`, and finally offers the compiled successor to both
-`RealtimeGraphExecutor` and `BackgroundGraphExecutor` according to their separate
-execution-state needs.
+`CompiledGraph`, and then stages the compiled successor in `BackgroundGraphExecutor` first and
+`RealtimeGraphExecutor` second. Actual logical activation is deferred until a later
+realtime pass boundary, where realtime publishes an allocation-free prepared cutover
+to background before swapping to the successor realtime generation.
 
 ## Failure semantics
 
@@ -73,8 +76,10 @@ silently deleting the requested node or its dangling project connections.
 
 The root-build transaction, including `GraphJit`, is synchronous with the
 mutation handler. A JSON-RPC result may therefore include graph-JIT diagnostics.
-It still does not wait for activation of the compiled successor, which
-occurs only at a legal `RealtimeGraphExecutor` pass boundary.
+It still does not wait for activation of the compiled successor. Background staging
+prepares the successor first; logical cutover occurs only at a legal
+`RealtimeGraphExecutor` pass boundary and is published to `BackgroundGraphExecutor`
+as a separate source invocation.
 
 ## Derived read models and notifications
 

@@ -23,8 +23,8 @@ flowchart TD
     PG -->|"1. replace/update desired instance batch; populate root builder"| NI
     PG -->|"2. replace/update desired connection batch; apply against complete embeddings"| GC
     PG -->|"3. current complete/partial ConfiguredGraph ⇄ synchronous CompiledGraph"| GJ
-    PG -->|"4a. compiled current realtime generation"| RGE
-    PG -->|"4b. compiled current background generation/state"| BGE
+    PG -->|"4a. stage compiled current background generation/state"| BGE
+    PG -->|"4b. stage compiled current realtime generation after background preparation"| RGE
 ```
 
 `ProjectPersistence` reconstructs persistent data but does not become the owner
@@ -66,8 +66,8 @@ flowchart TD
     PG -->|"1. reconfigure/embed all stored requested instances"| NI
     PG -->|"2. re-resolve/apply all stored project connections"| GC
     PG -->|"3. populated ConfiguredGraph ⇄ synchronous CompiledGraph"| GJ
-    PG -->|"4a. compiled successor realtime generation"| RGE
-    PG -->|"4b. compiled successor background generation/state"| BGE
+    PG -->|"4a. stage compiled successor background generation/state"| BGE
+    PG -->|"4b. stage compiled successor realtime generation after background preparation"| RGE
 ```
 
 `PackageWatcher` updates its dependency-watch state from the synchronous
@@ -85,4 +85,7 @@ ordering requires that separation.
 Within one package-source cause, `PackageWatcher` invokes `PackageJit` at most
 once for the complete build subset and then invokes `PackageDefinitions` exactly
 once with the completed package transaction. Whole-project `GraphJit` compilation
-is likewise synchronous inside the later `ProjectGraph` transaction.
+is likewise synchronous inside the later `ProjectGraph` transaction. For every
+successful generation, `ProjectGraph` stages `BackgroundGraphExecutor` before
+`RealtimeGraphExecutor`; this ordering prepares the paired runtime generation but does
+not itself activate it.

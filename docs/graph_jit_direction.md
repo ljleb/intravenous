@@ -1745,7 +1745,8 @@ supersede either pending form without requiring a second compilation for the old
 
 `BackgroundGraphExecutor` owns:
 
-- the newest desired background generation/state supplied by `ProjectGraph`;
+- staged/current background generations supplied by `ProjectGraph`, plus ordered
+  prepared cutovers actually published by realtime;
 - separately owned Tock-only `TockState` lifecycle/storage;
 - stable canonical persisted-page stores/immutable roots for Tick/persisted and
   Tock/persisted outputs;
@@ -1762,6 +1763,11 @@ relevant producer queue and selects exact immutable/versioned non-queue inputs. 
 selection is the workload. New queue data or graph/control updates may arrive while it
 runs, but they cannot modify the selected work. There is intentionally no global
 atomic snapshot across queues.
+
+A successor background generation staged by `ProjectGraph` is not selectable merely
+because staging completed. The worker advances to it only after the corresponding
+realtime cutover arrives and all required old-generation work/migration has been
+completed.
 
 Final background commit promotes prepared semantic coverage and any successor
 persisted-state/page version corresponding to the selected workload, or promotes none
@@ -1787,8 +1793,24 @@ automatically resampled/remapped; an explicit sampler/resampler performs that DS
 original timing must be preserved.
 
 Receiving a new executable generation never mutates an in-progress realtime pass or a
-background workload already selected. Each executor absorbs the update into pending/
-desired state appropriate to its own domain.
+background workload already selected. A successful compile defines one logical
+generation shared by the realtime/background halves. `ProjectGraph` stages the
+background half first so its generation-specific queues, stable-identity/route bindings,
+and cutover-publication resources are prepared before the realtime half becomes
+activatable.
+
+Actual cutover is realtime-authoritative. At a legal pass boundary,
+`RealtimeGraphExecutor` publishes all final old-generation producer chains, publishes
+the already-prepared `N -> N+1` cutover to `BackgroundGraphExecutor` with bounded
+allocation-free pointer operations, and then swaps its active realtime realization.
+The background worker may still finish selected N work and drain the now-closed N
+queues before applying the prepared migration and interpreting N+1 inputs. Data is
+always interpreted by the generation that produced it; stable logical identity, not
+generation-local compiled indices, determines retained-state survival. Ordered
+cutovers that actually occurred are never collapsed merely because background lags.
+
+The complete protocol is normative in
+[realtime_background_execution_and_queues.md](./realtime_background_execution_and_queues.md).
 
 ## Failure semantics
 
@@ -1804,6 +1826,12 @@ In that case:
 
 Desired graph revision and active executable revision are therefore distinct
 state even though compilation itself is synchronous.
+
+Runtime staging after a successful compile is also transactional with respect to
+activation. `ProjectGraph` stages background first. If that fails, realtime is not
+staged. If background staging succeeds but realtime staging fails, no cutover occurs;
+the staged background target has never become semantically active and may be reclaimed
+or superseded off realtime. The previous active generation continues in either case.
 
 ## Compiler pipeline
 

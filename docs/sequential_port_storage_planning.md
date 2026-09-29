@@ -896,6 +896,14 @@ work even while producers append later chains. If cross-queue atomic visibility 
 ever required, that feature must receive an explicit design rather than changing the
 generic queue semantics.
 
+Producer endpoints are generation-specific for hot reload. At a realtime generation
+cutover, the old pass publishes its final chains before the prepared cutover is
+published; afterward only new-generation endpoints are used. Old-generation queues
+therefore become closed finite inputs. Background may finish/drain them under the old
+graph before applying the prepared state migration and consuming new-generation
+queues. This preserves recording/persistence meaning when a producer or destination
+disappears and does not require an atomic snapshot across queues.
+
 The heuristic may consider:
 
 - block size;

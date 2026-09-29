@@ -31,12 +31,14 @@ flowchart TD
     PG -->|"1. reconfigure/embed complete desired node batch against exactly this snapshot"| NI
     PG -->|"2. re-resolve/apply complete desired connection batch"| GC
     PG -->|"3. successor ConfiguredGraph ⇄ synchronous CompiledGraph"| GJ
-    PG -->|"4a. compiled successor realtime generation"| RGE
-    PG -->|"4b. compiled successor background generation/state"| BGE
+    PG -->|"4a. stage compiled successor background generation/state"| BGE
+    PG -->|"4b. stage compiled successor realtime generation after background preparation"| RGE
 ```
 
 The numeric labels on sibling edges are orchestration order inside their parent;
-they do not make the sibling modules call one another.
+they do not make the sibling modules call one another. Background staging is first so
+all generation-specific queues, target-generation bindings, and cutover resources exist before
+the realtime successor can become activatable.
 
 ## PackageWatcher transaction
 

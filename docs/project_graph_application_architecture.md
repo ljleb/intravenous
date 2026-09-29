@@ -193,10 +193,12 @@ Its root-build procedure is always batched:
 4. finish the root builder into one `ConfiguredGraph`;
 5. invoke `GraphJit` exactly once to synchronously compile that graph into one
    immutable `CompiledGraph`;
-6. offer that immutable generation once to `RealtimeGraphExecutor` so it can stage
-   the realtime successor;
-7. offer the same immutable generation once to `BackgroundGraphExecutor` so it can
-   update its desired background generation/state.
+6. stage that immutable generation once in `BackgroundGraphExecutor`, which prepares
+   the background successor, generation-specific queues/bindings, target-generation identity/route metadata,
+   and allocation-free cutover-publication resources;
+7. only after background staging succeeds, stage the same generation once in
+   `RealtimeGraphExecutor`, passing/identifying the prepared cutover so the realtime
+   successor can later become activatable.
 
 The downstream modules are siblings in the propagation tree. Their numeric
 order above is execution order inside one `ProjectGraph` handler, not a
@@ -537,7 +539,7 @@ tick output provides it by background recomputation. A tock output can feed eith
 input access mode. Its output receives a transaction-local addressable materialization for a
 downstream random-access input when ephemeral; persisted output uses retained
 published storage. An **unreproducible ephemeral tick** source needs an
-explicit authored recording-policy node before random-access demand. Tiling retains
+explicit authored recording bridge/node before random-access demand. Tiling retains
 individual channel capabilities and adds no implicit recorder.
 
 `tock_coverage()` and tock propagation/evaluation are background-only. Audio-thread
@@ -620,8 +622,8 @@ synchronously run background evaluation.
 `BackgroundGraphExecutor` owns all mutable state for background evaluation and its
 worker thread. It keeps at least:
 
-- the newest desired background `CompiledGraph` generation/state supplied by
-  `ProjectGraph`;
+- staged/current background `CompiledGraph` generations supplied by `ProjectGraph`,
+  plus ordered prepared cutovers that have actually been published by realtime;
 - separately owned lifecycle/storage for optional background-only `TockState`;
 - stable canonical persisted-page stores/immutable roots for Tick/persisted and
   Tock/persisted outputs, with generation-specific bindings onto stable identities;
@@ -644,6 +646,10 @@ next background pass. If a future feature requires cross-queue atomic visibility
 must stop and receive an explicit design rather than adding implicit global locking or
 snapshot synchronization.
 
+A `ProjectGraph`-staged successor generation is not ordinary immediately selectable
+background desired state. The worker continues interpreting inputs under its current
+generation until the corresponding realtime cutover has actually been published.
+
 Once selected, a background workload is fixed. The worker performs coverage
 propagation, Tock/replay work, materialization, persisted-page candidate construction,
 and final validation against exactly that workload. Later queue appends and later
@@ -661,6 +667,48 @@ When a transaction produces a new coherent persisted-state/page version,
 bridge to `RealtimeGraphExecutor`. That asynchronous completion starts a new app-module
 source invocation. The realtime handler stores the pointer as pending; it does not
 synchronously affect the active pass.
+
+### Paired-generation hot reload
+
+One successful `GraphJit` result defines one logical graph generation with a realtime
+half and a background half. `ProjectGraph` stages the background half first. Background
+staging allocates/prepares generation-specific queues, stable-identity/route bindings,
+and an allocation-free cutover publication object/reference. Only after that
+preparation succeeds does `ProjectGraph` stage the corresponding realtime half.
+
+Staging does not activate either half. The authoritative generation cutover happens at
+a later realtime pass boundary. `RealtimeGraphExecutor` first publishes every final
+old-generation producer chain completed by the pass, then synchronously publishes the
+already-prepared `N -> N+1` cutover to `BackgroundGraphExecutor`, then swaps its active
+realtime realization. The background-side handler only links/publishes that prepared
+cutover for its worker and returns; it performs no dynamic allocation or background
+evaluation.
+
+The background worker may lag. Work already selected under generation N remains
+immutable and completes under N. The cutover closes generation-N producer endpoints,
+so their queues have finite tails. Background drains/finalizes remaining N work,
+performs the prepared N->N+1 persisted-state migration, and only then interprets N+1
+queued data under the N+1 graph. There is no global atomic snapshot across queues.
+
+This makes replacement order semantically irrelevant after staging. Old-generation
+data is always interpreted using old-generation routes. A disappeared producer simply
+stops producing after the boundary and does not erase surviving recorded state. A
+disappeared destination accepts its remaining old-generation work before being retired
+during migration. Stable logical identity, never generation-local slot/index reuse,
+determines which retained data survives.
+
+Persisted-state versions published back to realtime identify the generation with which
+they are compatible. A final N result completed after realtime switched to N+1 is an
+input to the background N->N+1 transition, not a version that may become active in the
+N+1 realtime graph. Compatible versions are stored pending by realtime and applied only
+at legal pass boundaries. A successor that was merely staged but never activated may
+be superseded without creating a semantic generation boundary. Once realtime actually
+cuts over, however, that cutover must remain ordered while background lags and cannot
+be collapsed to a latest-generation pointer.
+
+See
+[realtime_background_execution_and_queues.md](./realtime_background_execution_and_queues.md)
+for the normative cutover and ownership protocol.
 
 ### Provisioned queues and capacity management
 

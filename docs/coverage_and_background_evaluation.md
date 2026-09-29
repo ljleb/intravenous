@@ -1764,6 +1764,35 @@ Queue blocks are transaction-input storage, not a published output view. Coverag
 Tock callbacks never observe blocks outside the selected prefixes, and queue insertion
 never changes a workload already being executed.
 
+### Generation cutover and queued data
+
+Realtime/background hot reload does not reinterpret queued data under a newer graph.
+Producer endpoints/queues are generation-specific by default. At the authoritative
+realtime pass-boundary cutover, realtime first publishes all final old-generation
+chains, then publishes the already-prepared generation cutover, then begins using only
+new-generation producer endpoints. The old queues are therefore closed and have finite
+tails.
+
+The background worker may continue executing previously selected old-generation work
+after realtime has switched. It drains/finalizes the closed old-generation inputs and
+applies the prepared persisted-state migration before interpreting new-generation
+items. This does not require a global atomic snapshot across queues.
+
+Stable logical output identity controls retained-state survival. If a recording
+producer disappears but its destination survives, the final old-generation recording
+is preserved and no later writes arrive. If the destination disappears, remaining
+old-generation writes are still valid old-generation work and the retained destination
+is retired during the background generation transition. Installation order therefore
+does not determine whether a queued write is retained or discarded.
+
+Persisted-state versions published to realtime identify the graph generation with
+which they are compatible. A late final old-generation version is background transition
+input, not a version that may be installed into the newer realtime generation.
+
+See
+[realtime_background_execution_and_queues.md](./realtime_background_execution_and_queues.md)
+for the normative cutover protocol.
+
 ## 23. Complete persisted outputs and backing storage
 
 The persisted-page store is canonical for both Tick/persisted and Tock/persisted
