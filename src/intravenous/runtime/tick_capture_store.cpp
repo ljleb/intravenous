@@ -143,24 +143,51 @@ public:
             &block,
             std::memory_order_release,
             std::memory_order_relaxed));
-        free_count.fetch_add(1, std::memory_order_relaxed);
+
+        // free_count is reservable-block credit, not an independently sampled
+        // description of free_head. Publishing the block happens first; the
+        // release increment makes that publication visible before a consumer
+        // can successfully claim its credit. This permits a temporary
+        // undercount while a producer is between the two operations, but never
+        // an overcount that could hide reserve depletion from the allocator.
+        free_count.fetch_add(1, std::memory_order_release);
     }
 
     [[nodiscard]] Block* pop_free() noexcept
     {
+        auto credit = free_count.load(std::memory_order_acquire);
+        while (credit != 0
+            && !free_count.compare_exchange_weak(
+                credit,
+                credit - 1,
+                std::memory_order_acq_rel,
+                std::memory_order_acquire)) {
+        }
+        if (credit == 0) return nullptr;
+
+        // A claimed credit corresponds to a block published before the release
+        // increment above. There is one audio-thread consumer, so producers may
+        // add newer blocks but cannot remove the credited block.
         auto* head = free_head.load(std::memory_order_acquire);
-        while (head != nullptr
-            && !free_head.compare_exchange_weak(
-                head,
-                head->free_next,
-                std::memory_order_acquire,
-                std::memory_order_relaxed)) {
+        for (;;) {
+            assert(head != nullptr);
+            if (head == nullptr) {
+                // Keep the already-claimed credit consumed if the invariant is
+                // violated in a release build. Undercounting can provoke an
+                // unnecessary refill; restoring credit without a reachable
+                // block would make the allocator's safety signal overstate what
+                // the audio thread can reserve.
+                return nullptr;
+            }
+            if (free_head.compare_exchange_weak(
+                    head,
+                    head->free_next,
+                    std::memory_order_acquire,
+                    std::memory_order_relaxed)) {
+                head->free_next = nullptr;
+                return head;
+            }
         }
-        if (head) {
-            head->free_next = nullptr;
-            free_count.fetch_sub(1, std::memory_order_relaxed);
-        }
-        return head;
     }
 
     void retire(Block& block) noexcept
@@ -589,7 +616,7 @@ std::size_t TickCaptureStore::block_payload_capacity() const noexcept
 
 std::size_t TickCaptureStore::free_block_count() const noexcept
 {
-    return impl_->free_count.load(std::memory_order_relaxed);
+    return impl_->free_count.load(std::memory_order_acquire);
 }
 
 std::size_t TickCaptureStore::retired_block_count() const noexcept

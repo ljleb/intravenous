@@ -1034,8 +1034,12 @@ This is a hint, not a hard constraint. Use your own good judgement if ever in do
     larger low watermark `L`, refill target `H`, and slab granularity `G`, with
     `C << L < H`. Staging uses the larger active/pending `C`; an explicit non-audio
     executor maintenance call allocates only below `L` and refills toward `H` in one
-    `G`-rounded slab while capture backlog remains pending. Capture-record reclamation remains separate. One callback scope spans
-    each `TickInvocationFrame`. Sample and event operations validate the finalized
+    `G`-rounded slab while capture backlog remains pending. Free-block publication
+    releases claimable credit only after the initialized block is reachable; the
+    single audio consumer claims credit before removing its block. Watermark reads may
+    therefore undercount a concurrent publication but cannot transiently overstate
+    blocks available for capture. Capture-record reclamation remains separate. One
+    callback scope spans each `TickInvocationFrame`. Sample and event operations validate the finalized
     reflected binding and capture the complete authored
     `[block-history, block-end+latency)` window. Each window is one logical record and
     one capture-sequence entry, backed by as many fixed-size payload blocks as needed;
@@ -1055,10 +1059,23 @@ This is a hint, not a hard constraint. Use your own good judgement if ever in do
     to non-audio control code; later free-block provisioning cannot clear a failure for
     an already missed Tick/persisted record.
 
-    Next bind explicit-recorder blocks at their authored bridge points and consume fixed capture
-    prefixes through the background transaction, publish into the canonical page store,
-    and reclaim blocks only with callback-boundary-safe ownership. A same-Tick recent-
-    capture Random Access overlay remains a later optional experiment.
+    The explicit recorder has fixed RAM overwrite semantics rather than configurable
+    append/backend/capacity/overrun policy. Its planned output disposition is reset to
+    `untouched` for each invocation; ordinary output mutation marks it `written`, and
+    `write_void()` marks it `voided`. Generated capture will publish no record for
+    `untouched`, a payload record for `written`, and an explicit range-erasing void
+    record for `voided`. Resource exhaustion is a recording failure, never permission
+    to drop a written block.
+
+    Next give the non-audio runtime worker ownership of periodic reserve maintenance
+    and committed-block reclamation; today only the executor operations and initial
+    staging call exist. Then add output disposition and the void-record form, bind
+    explicit-recorder blocks at their authored bridge points, and consume fixed capture
+    prefixes through the background transaction. Publish Tick/persisted captures into
+    the canonical page store and recorder captures into the recorder's RAM Random
+    Access representation, then advance the capture frontier only with transaction
+    commit. A same-Tick recent-capture Random Access overlay remains a later optional
+    experiment.
 19. **Generation reconciliation.** Rebind compatible stable persisted stores across
     generations. Persisted generated/finalized data remains retained throughout its
     covered lifetime; coverage removal is the only semantic deletion condition.

@@ -1112,9 +1112,10 @@ the callback; that materialization is not persisted output data.
 
 **The only implicit-storage connection that is forbidden** is an unreproducible
 tick/ephemeral source directly feeding random-access demand, whether the input is
-used by tick or tock. It requires an authored recording node that selects its own
-retention/lifetime policy. All other source/input combinations are access-compatible,
-subject to dependency availability, coverage, and execution scheduling. A tile
+used by tick or tock. It requires authored Tick persistence or an explicit recording
+node. The recording node has fixed RAM overwrite semantics rather than an author-
+selected backend/lifetime/overrun policy. All other source/input combinations are
+access-compatible, subject to dependency availability, coverage, and execution scheduling. A tile
 retains per-source channel capabilities and does not create a producer or recorder.
 
 `tock_coverage()` and its propagation callbacks are **never executed on the audio
@@ -1129,9 +1130,11 @@ own `neutral_value`. Playback does not block or synchronously generate missing p
 Tick capture is the important cross-thread lifetime bridge. The same allocator-managed
 capture-block infrastructure can serve both an explicit recording bridge and
 Tick/persisted output staging. A recording bridge consumes ordinary sequential data
-and exposes retained/background-computable output according to its authored policy;
-a Tick/persisted producer uses capture to move newly finalized Tick data toward the
-canonical persisted-page store without allocating on the audio thread.
+and exposes a RAM-backed Random Access recording. An ordinary write overwrites the
+addressed timeline range, leaving the recording output untouched preserves existing
+data there, and `write_void()` authoritatively erases the range. A Tick/persisted
+producer uses capture to move newly finalized Tick data toward the canonical persisted-
+page store without allocating on the audio thread.
 
 When layout permits, the producer may write directly into a pre-provisioned capture
 block; otherwise the generated path performs a bounded copy at the production/finalization

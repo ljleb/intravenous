@@ -315,6 +315,9 @@ public:
     [[nodiscard]] std::size_t reclaim_committed() noexcept;
 
     [[nodiscard]] std::size_t block_payload_capacity() const noexcept;
+    // Returns currently claimable free-block credits. Concurrent publication
+    // may temporarily undercount reachable blocks, but the value never counts a
+    // block before the audio thread can reserve it.
     [[nodiscard]] std::size_t free_block_count() const noexcept;
     [[nodiscard]] std::size_t retired_block_count() const noexcept;
     [[nodiscard]] CaptureSequence processed_sequence() const noexcept;

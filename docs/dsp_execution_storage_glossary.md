@@ -279,6 +279,11 @@ allocation. The intended relationship is `C << L < H`. Below `L`, maintenance al
 one slab whose size is `H - free` rounded upward to `G`; at or above `L`, it allocates
 nothing. Sealed, pending and retired blocks do not count as free reserve, so sustained
 backlog can grow append-only slab capacity independently of capture-record reclamation.
+The observable free count is claimable-block credit: a producer publishes an
+initialized block before releasing one credit, and the audio consumer claims credit
+before removing a block. A concurrent observation may therefore undercount reachable
+blocks, which can only trigger an early refill, but it must never overstate what the
+audio callback can reserve.
 
 ## Coverage and change propagation
 
@@ -500,10 +505,15 @@ persisted destinations or, for an authored recorder, to that recorder's retained
 representation. This lets both uses share allocation and ordering without conflating
 their retention semantics.
 Reservation is all-or-nothing, and only the completed record head is sealed into the
-log; individual payload blocks are never independently published. A recorder may also
-choose not to create a record at all, which consumes neither blocks nor a sequence
-entry. This is distinct from an intentional zero-payload record that authoritatively
-records an empty output/window. When layout permits
+log; individual payload blocks are never independently published. For an explicit
+recording output, invocation-local disposition distinguishes three cases: an untouched
+output creates no record and preserves prior RAM recording; an ordinarily written
+output creates a payload record and overwrites the addressed range; `write_void()`
+creates a void record and erases the addressed range. This disposition records what
+the node did through its ordinary output facade; it is not a discretionary recorder
+policy. A Tick/persisted event record with zero events remains an ordinary payload
+record authoritatively containing an empty event window, not a recorder void. When
+layout permits
 and the captured region is already final under the Tick history/latency contract, the
 record's payload storage may simultaneously be the producer's current Tick data: Tick
 writes it once, same-Tick Sequential consumers read it after the producer executes,
@@ -515,7 +525,8 @@ that record reservation was attempted outside an active capture callback or that
 free capture-block pool could not satisfy the complete record. Replenishment permits
 later reservations but cannot recreate the missed record, so it does not clear the
 failure. Tick/persisted treats this state as a broken retention guarantee; an explicit
-recorder may apply its separately authored failure policy.
+recorder likewise reports a failed/incomplete recording because a written block was
+not captured. Resource exhaustion never authorizes intentional capture loss.
 
 A sealed capture record is immutable. Blocks reserved, written, or exposed during
 one root `tick_block()` callback remain stable until that callback
@@ -596,7 +607,7 @@ from the active transition realization, not from its pending steady successor.
 
 Use **live source** only when the relevant property is that historical values are
 not inherently reproducible from retained data. An unreproducible ephemeral Tick
-source needs authored persistence or an explicit recording policy before it can
+source needs authored persistence or an explicit recording node before it can
 satisfy historical Random Access demand.
 
 Do not use **live** as a synonym for Tick, Sequential, or audio-thread execution.

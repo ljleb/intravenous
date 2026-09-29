@@ -71,7 +71,7 @@ The central rules are:
 > ephemeral addressable materialization), a Tick/persisted output's published pages,
 > or a contextually replayable Tick output. An unreproducible Tick/ephemeral output
 > cannot directly satisfy random-access demand: the DSP author must select persistence
-> or place a recording node with an explicit retention policy. The restriction
+> or place an explicit recording node at the authored boundary. The restriction
 > prevents **implicit recording**, not a technically impossible connection. The
 > preliminary Tick-time Random Access path reads only a pinned published/materialized
 > immutable view; it never aliases current mutable Tick output.
@@ -106,11 +106,13 @@ The central rules are:
 > reclaimed only after their readers release them. Unbounded memory use is an
 > explicit consequence of the author's persistence declaration.
 
-> An explicit recording node captures otherwise unreproducible sequential data at
-> its production point into already-provisioned slab-backed storage. Each background
-> pass snapshots a fixed capture-sequence prefix; captures enter ordinary exact
-> invalidation, reverse planning, background computation, and one atomic page-version
-> publication. The capture log is temporary transaction input, not persisted pages.
+> An explicit recording node captures each block actually written to its recording
+> output into already-provisioned slab-backed storage. Leaving the output untouched
+> preserves previously recorded RAM data at that timeline position; `write_void()`
+> records an authoritative erasure. Each background pass snapshots a fixed capture-
+> sequence prefix; captures enter ordinary exact invalidation, reverse planning,
+> background computation, and one atomic publication. The capture log is temporary
+> transaction input, not the recorder's Random Access representation.
 
 This is an incremental coverage-evaluation model integrated with Tick execution,
 not a second audio-thread scheduler and not a storage class.
@@ -1363,13 +1365,15 @@ non-pointwise Random Access dependency without acquiring a Tock output or
 random-access coverage as its finalized values are published, whether or not
 its producer is replayable.
 
-An explicit recorder output begins with whatever exact coverage its authored
-semantics establish from captured records/restored retained state. Tick capture itself
-does not publish output coverage. When a background transaction snapshots new
-capture records, their `(OutputPortId, GlobalBlockPosition)` identities establish exact
-changed/added coverage for recorder outputs. For Tick/persisted outputs, the same
-fixed capture snapshot supplies finalized regions to candidate persisted pages; only
-page publication extends the Random-Access-visible retained snapshot.
+A new explicit recorder output begins with empty coverage. A compatible recorder
+that survives graph replacement retains its already-published RAM representation.
+Tick capture itself does not publish output coverage. When a background transaction
+snapshots new capture records, payload records establish exact changed/added coverage
+and void records remove exact coverage at their `(OutputPortId,
+GlobalBlockPosition)` ranges. The absence of a record leaves recorder coverage and
+values unchanged. For Tick/persisted outputs, the same fixed capture snapshot supplies
+finalized regions to candidate persisted pages; only page publication extends the
+Random-Access-visible retained snapshot.
 
 A retained stable node does not republish/recompute all coverage merely because a
 new `CompiledGraph` generation was JIT-compiled. Compatible stored state and
@@ -1448,9 +1452,9 @@ Captures appended while propagation or tock is running are not added to the curr
 batch even if they target earlier global positions; they wait for the next pass.
 
 The selected capture records start ordinary forward invalidation. The bridge's
-`tock_coverage()` then materializes the bridge output required by the selected
-retention policy from those captured data as part of the same reverse/tock
-transaction as downstream work.
+background operation then applies payload overwrites and explicit void erasures to
+the candidate RAM recording as part of the same reverse/tock transaction as
+downstream work.
 Only the final transaction commit publishes a new page version.
 
 External reads have a correspondingly closed entry-point set: application/UI
@@ -1526,7 +1530,7 @@ These are connection permissions, not guarantees of audio-thread scheduling:
 
 | Source output | Sequential input | Random Access input |
 | --- | --- | --- |
-| Tick/ephemeral, unreproducible for demanded coverage | allowed | explicit persistence/recording policy required |
+| Tick/ephemeral, unreproducible for demanded coverage | allowed | authored Tick persistence or an explicit recording node required |
 | Tick/ephemeral, contextually replayable | allowed | allowed by background replay into an addressable materialization |
 | Tick/persisted | allowed from the current Tick representation | allowed through the selected published persisted-page snapshot |
 | Tock/ephemeral | allowed with a materialized sequential/addressable window | allowed with transaction-local materialization in background or materialized addressable data for Tick use |
@@ -1552,12 +1556,13 @@ require it. Every tock callback, forward/reverse propagation callback, and page
 recomputation runs off the audio thread.
 
 An explicit recording node is required where an unreproducible ephemeral tick
-stream must supply historical random-access demand. The author selects the
-recording semantics (for example an in-memory temporary buffer or file-backed
-recording), including its capacity/lifetime and behavior when capture outruns
-processing. GraphJit does not insert an implicit generic recorder. An independently
-authored `tick/persisted` output already has an explicit persistence obligation;
-its finalized published data needs no separate recorder.
+stream must supply historical random-access demand. Its semantics are fixed: output
+writes overwrite the RAM recording at their timeline range, leaving an output
+untouched preserves any previous recording there, and `write_void()` erases the
+range authoritatively. Seeking changes the addressed timeline position, not those
+rules. GraphJit does not insert an implicit generic recorder. An independently
+authored `tick/persisted` output already has an explicit persistence obligation; its
+finalized published data needs no separate recorder.
 
 ### Storage requirements are inferred over overlapping port subsets
 
@@ -1708,16 +1713,31 @@ struct CapturedRecord {
     CaptureSequence sequence;
     OutputPortId output_port;
     GlobalBlockPosition position;
-    SegmentedPayload payload; // one or more allocator blocks
+    CapturePayloadKind kind;  // samples, events, or void value
+    SegmentedPayload payload; // zero or more allocator blocks
 };
 ```
 
-A capture opportunity does not itself require a record. An explicit recording port
-may decline to record; that performs no reservation, consumes no sequence number and
-changes no retained state. A zero-payload record is different: it is an intentional,
-authoritative empty value for a named output/window. In particular, a persisted event
-output seals such a record when its finalized window contains no events so publication
-can replace any older events in that window with emptiness.
+Every recording-capable output has invocation-local disposition that is reset before
+its node invocation:
+
+```text
+untouched -> publish no capture record; preserve recorded RAM at the range
+written   -> publish a payload record; overwrite recorded RAM at the range
+voided    -> publish a void record; erase recorded RAM at the range
+```
+
+Ordinary output-authoring operations mark the output `written`; `write_void()` marks
+it `voided`. Writing and voiding the same logical block are mutually exclusive.
+This is observed state of ordinary port authoring, not a recorder policy and not a
+second node callback API. An untouched output performs no reservation and consumes no
+sequence number. A void record has no data payload but owns a record head so it can
+identify the erased range and participate in sequence ordering.
+
+A zero-event payload record is distinct from both an untouched recording output and
+a void record. Tick/persisted event staging seals an ordinary event record with zero
+events when its finalized window is authoritatively empty, so publication replaces
+any older events in that window with emptiness.
 
 `sequence` is the monotonic insertion order of the executor's shared Tick-capture
 log and is assigned once per logical capture, irrespective of its physical block
@@ -1762,8 +1782,10 @@ That batch is immutable. A capture appended after `cutoff` belongs to the next p
 even if its `GlobalBlockPosition` is numerically earlier than positions in the
 current pass.
 
-The worker converts the fixed records into changed/added `Coverage` keyed by
-`OutputPortId`. Those output changes are ordinary invalidation roots. From
+The worker applies recording payloads as overwrites and recording void records as
+erasures, in sequence order. It converts their exact changed/added/removed ranges
+into `Coverage` changes keyed by `OutputPortId`. Those output changes are ordinary
+invalidation roots. From
 that point forward there is no bridge-specific downstream scheduler: normal
 `propagate_forward_coverage()` determines downstream changed coverage, normal
 reverse planning determines the exact input coverage required by implicated nodes,
@@ -1856,7 +1878,8 @@ control code reads that state through the owning executor. A later allocator pas
 restore free capacity, but it cannot clear the failure: the record for the already
 missed window was never published. For Tick/persisted capture, that means the declared
 retention guarantee has been broken and must be surfaced as a runtime fault. An
-explicit recorder may define its own authored response to the same transport fact.
+explicit recorder likewise enters a failed/incomplete state; it never treats resource
+exhaustion as permission to drop a written block.
 
 Only the audio-thread path consumes blocks from the free-capacity pool. The allocator
 never takes a free block back from underneath it. A capture block that participated
@@ -1892,13 +1915,17 @@ ordinary consumption does not cause one tiny allocation per callback. The curren
 executor defaults derive `L = 64C`, `H = 128C`, and `G = 64` blocks; these are allocator
 policy rather than graph semantics and can be configured independently.
 
-Recording and Tick/persisted staging may draw from the same pool; their semantic
-policies differ, not their need for pre-provisioned audio-thread-safe blocks. The
-executor exposes reserve maintenance through a non-audio entry point so an allocator
-worker can replenish free blocks while sealed backlog remains unconsumed. The audio
-thread need only change observable atomic free capacity; it does not allocate or need
-to wake the allocator directly. Capture-record reclamation is a separate operation and
-can only increase free capacity relative to the safety calculation.
+Recording and Tick/persisted staging may draw from the same pool; their destination
+representations differ, not their need for pre-provisioned audio-thread-safe blocks.
+The executor exposes reserve maintenance through a non-audio entry point so an
+allocator worker can replenish free blocks while sealed backlog remains unconsumed.
+The audio thread first claims one available-block credit and then removes the
+corresponding published block; a producer publishes a fully initialized free block
+before releasing its credit. Consequently, the observable credit count may temporarily
+understate reachable free blocks but never overstates blocks the audio thread can
+reserve. The audio thread does not allocate or need to wake the allocator directly.
+Capture-record reclamation is a separate operation and can only increase free capacity
+relative to the safety calculation.
 
 Provisioning is independent of background evaluation. If the background DAG takes
 four seconds, forty seconds, or longer, sealed blocks may accumulate in ordinary
@@ -2436,11 +2463,20 @@ recording merely because that planning metadata exists.
    Staging takes the larger active/pending `C`, derives allocator watermarks `L` and
    `H`, and performs initial non-audio maintenance. Later maintenance allocates only
    below `L` and refills toward `H` in `G`-rounded slabs, so pending backlog can cause
-   capacity growth independently of capture-record reclamation or background-evaluation completion. The
+   capacity growth independently of capture-record reclamation or background-
+   evaluation completion.
+   A free block is published before its claimable credit is released; the single audio
+   consumer claims that credit before removing the block. The allocator may therefore
+   observe a safe temporary undercount, never a transient count larger than the number
+   of blocks the callback can reserve. The
    current store policy uses 64 KiB payload blocks, but allocator blocks are not log
    records. Every complete sample window or event sequence is one logical capture,
    one sequence entry and one published record head backed by as many blocks as its
-   payload requires. A fixed background prefix therefore cannot bisect a capture.
+   payload requires. A fixed background prefix therefore cannot bisect a capture. The
+   64 KiB uniform block and `H = 128C` defaults are provisional: because even an empty
+   record currently consumes a full block, their product can create a large baseline
+   reserve. Before finalizing allocator defaults, measure the graph-derived `C` values
+   and consider separating small record descriptors from size-classed payload storage.
 
    `TickInvocationFrame` now holds one capture callback scope for the complete root
    invocation. Bound sample operations validate the finalized reflected binding and
@@ -2462,13 +2498,24 @@ recording merely because that planning metadata exists.
    reserve does not clear those flags because it cannot recreate a missed persisted
    record.
 
-   Next, bind explicit recorder bridges at their authored production/finalization
-   points, then consume the fixed batch through
-   `BackgroundEvaluationTransaction`. Use it
-   for Tick/persisted staging and explicit recorder bridges as appropriate. Consume
-   fixed capture-sequence snapshots through the background transaction, publish into
-   the canonical page store, and reclaim only with callback-boundary-safe ownership.
-   The recent-capture Random Access overlay remains a later optional experiment.
+   The explicit recorder's remaining semantics are fixed rather than policy-driven.
+   Per-invocation output disposition distinguishes `untouched`, `written`, and
+   `voided`: no record preserves the RAM recording, a payload record overwrites its
+   addressed range, and a void record erases its addressed range. `write_void()` is an
+   ordinary output-facade operation, mutually exclusive with ordinary writes in the
+   same logical block. Resource exhaustion makes the recording incomplete; it never
+   authorizes intentional loss.
+
+   Next, give the non-audio runtime worker ownership of periodic reserve maintenance
+   and committed-block reclamation; the executor entry points currently have no
+   continuous production caller. Then implement the output disposition and void-
+   record form, bind explicit recorder bridges at their authored production/
+   finalization points, and consume fixed capture-sequence snapshots through
+   `BackgroundEvaluationTransaction`.
+   Publish Tick/persisted captures into the canonical page store and recorder captures
+   into the recorder's RAM Random Access representation, then advance the capture
+   frontier only with transaction commit. The recent-capture Random Access overlay
+   remains a later optional experiment.
 6. **Implement concrete-node port-state continuity and graph-revision transitions.**
    Before optimization, define port history/latency exactly as if each surviving
    concrete node privately owned that state. Carry stable user-instance/virtual-member/
