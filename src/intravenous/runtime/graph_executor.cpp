@@ -3,6 +3,7 @@
 #include <intravenous/node/layout.h>
 
 #include <algorithm>
+#include <limits>
 #include <stdexcept>
 #include <utility>
 
@@ -25,11 +26,22 @@ GraphExecutor::Realization::Realization(
         &captures)
 {}
 
-GraphExecutor::GraphExecutor(ResourceContext resources)
+GraphExecutor::GraphExecutor(
+    ResourceContext resources,
+    TickCaptureAllocatorConfig tick_capture_allocator)
     : resources_(std::move(resources))
+    , tick_capture_allocator_(tick_capture_allocator)
     , tick_page_reader_(persisted_pages_.register_reader())
     , tick_materialization_reader_(tick_materializations_.register_reader())
-{}
+{
+    if (tick_capture_allocator_.low_watermark_callbacks == 0
+        || tick_capture_allocator_.high_watermark_callbacks
+            <= tick_capture_allocator_.low_watermark_callbacks
+        || tick_capture_allocator_.slab_allocation_granularity == 0) {
+        throw std::invalid_argument(
+            "GraphExecutor has an invalid Tick capture allocator policy");
+    }
+}
 
 GraphExecutor::Realization& GraphExecutor::active_realization()
 {
@@ -43,20 +55,46 @@ GraphExecutor::Realization const& GraphExecutor::active_realization() const
     return *realizations_[*active_];
 }
 
-std::size_t GraphExecutor::tick_capture_reserve_target() const noexcept
+std::size_t GraphExecutor::maximum_capture_blocks_per_callback() const noexcept
 {
-    std::size_t target = 0;
+    std::size_t maximum = 0;
     if (active_) {
-        target = realizations_[*active_]
-            ->tick_invocation.capture_block_reserve();
+        maximum = realizations_[*active_]
+            ->tick_invocation.maximum_capture_blocks_per_callback();
     }
     if (pending_) {
-        target = std::max(
-            target,
+        maximum = std::max(
+            maximum,
             realizations_[*pending_]
-                ->tick_invocation.capture_block_reserve());
+                ->tick_invocation.maximum_capture_blocks_per_callback());
     }
-    return target;
+    return maximum;
+}
+
+TickCaptureReservePolicy GraphExecutor::tick_capture_reserve_policy(
+    std::size_t maximum_blocks_per_callback) const
+{
+    if (maximum_blocks_per_callback == 0) {
+        return {
+            .slab_allocation_granularity =
+                tick_capture_allocator_.slab_allocation_granularity,
+        };
+    }
+    if (maximum_blocks_per_callback
+            > std::numeric_limits<std::size_t>::max()
+                / tick_capture_allocator_.high_watermark_callbacks) {
+        throw std::length_error(
+            "Tick capture allocator watermarks are too large");
+    }
+    return {
+        .maximum_blocks_per_callback = maximum_blocks_per_callback,
+        .low_watermark = maximum_blocks_per_callback
+            * tick_capture_allocator_.low_watermark_callbacks,
+        .high_watermark = maximum_blocks_per_callback
+            * tick_capture_allocator_.high_watermark_callbacks,
+        .slab_allocation_granularity =
+            tick_capture_allocator_.slab_allocation_granularity,
+    };
 }
 
 GraphExecutorStageResult GraphExecutor::stage(
@@ -78,12 +116,15 @@ GraphExecutorStageResult GraphExecutor::stage(
     pending_.reset();
     realizations_[index].emplace(
         std::move(compiled_graph), resources_, persisted_tick_captures_);
-    auto const reserve_target = std::max(
-        active_ ? active_realization().tick_invocation.capture_block_reserve()
+    auto const maximum_blocks_per_callback = std::max(
+        active_ ? active_realization().tick_invocation
+                      .maximum_capture_blocks_per_callback()
                 : std::size_t{0},
-        realizations_[index]->tick_invocation.capture_block_reserve());
+        realizations_[index]->tick_invocation
+            .maximum_capture_blocks_per_callback());
     static_cast<void>(
-        tick_captures_.ensure_free_block_reserve(reserve_target));
+        tick_captures_.maintain_free_block_reserve(
+            tick_capture_reserve_policy(maximum_blocks_per_callback)));
     if (!active_) {
         realizations_[index]->storage.initialize();
         realizations_[index]->initialized = true;
@@ -157,8 +198,15 @@ GraphExecutorReclaimedSnapshots GraphExecutor::reclaim_retired_snapshots()
 
 std::size_t GraphExecutor::maintain_tick_capture_reserve()
 {
-    return tick_captures_.ensure_free_block_reserve(
-        tick_capture_reserve_target());
+    auto const maximum = maximum_capture_blocks_per_callback();
+    return tick_captures_.maintain_free_block_reserve(
+        tick_capture_reserve_policy(maximum));
+}
+
+TickCaptureReservationFailures
+GraphExecutor::tick_capture_reservation_failures() const noexcept
+{
+    return tick_captures_.reservation_failures();
 }
 
 void GraphExecutor::tick_block(std::size_t sample_index, std::size_t block_size)

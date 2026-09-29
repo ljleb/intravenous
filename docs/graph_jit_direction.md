@@ -1024,15 +1024,17 @@ This is a hint, not a hard constraint. Use your own good judgement if ever in do
     separately interns `PersistedOutputId` values and maps them to generic handles; its
     entries outlive the producing realization. Realization construction registers
     every planned persisted output through that adapter, binds address-stable typed
-    operations, and sizes one maximum-callback reserve. Each binding retains its
+    operations, and computes `C`, the maximum capture-block consumption of one
+    callback. Each binding retains its
     maximum operation block and maximum invocations per callback: one enclosing
     invocation for ordinary/primitive-internally sliced execution, or every
     `ceil(root maximum / SCC quantum)` semantic slice for a cyclic SCC. The reserve
-    includes the complete history/current/latency window of every invocation and is
-    maintained as a free-block target off the audio thread. Staging ensures the larger
-    active/pending target and adds only the measured deficit; an explicit non-audio
-    executor maintenance call can restore the target while capture backlog remains
-    pending. Reclamation remains separate. One callback scope spans
+    includes the complete history/current/latency window of every invocation. `C` is a
+    structural lower bound, not the allocator reserve. The allocator derives a much
+    larger low watermark `L`, refill target `H`, and slab granularity `G`, with
+    `C << L < H`. Staging uses the larger active/pending `C`; an explicit non-audio
+    executor maintenance call allocates only below `L` and refills toward `H` in one
+    `G`-rounded slab while capture backlog remains pending. Capture-record reclamation remains separate. One callback scope spans
     each `TickInvocationFrame`. Sample and event operations validate the finalized
     reflected binding and capture the complete authored
     `[block-history, block-end+latency)` window. Each window is one logical record and
@@ -1047,7 +1049,11 @@ This is a hint, not a hard constraint. Use your own good judgement if ever in do
     complete post-operation sequence. Ordinary and primitive-internally sliced steps
     capture one complete enclosing window; SCC execution captures each finalized
     semantic slice separately. Missing, short or null operation entries are legal
-    no-ops.
+    no-ops. The capture store now permanently latches record reservations attempted
+    outside an active capture callback and record reservations rejected for
+    insufficient free capture blocks. `GraphExecutor` exposes both transport failures
+    to non-audio control code; later free-block provisioning cannot clear a failure for
+    an already missed Tick/persisted record.
 
     Next bind explicit-recorder blocks at their authored bridge points and consume fixed capture
     prefixes through the background transaction, publish into the canonical page store,

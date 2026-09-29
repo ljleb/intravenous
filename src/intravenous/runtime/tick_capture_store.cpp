@@ -67,6 +67,9 @@ struct TickCaptureStore::Block {
 
 class TickCaptureStore::Impl {
 public:
+    static constexpr std::uint32_t reservation_outside_callback = 1u << 0;
+    static constexpr std::uint32_t insufficient_free_blocks = 1u << 1;
+
     enum class AccessState : std::uint8_t {
         idle,
         starting,
@@ -76,6 +79,7 @@ public:
     static_assert(std::atomic<Block*>::is_always_lock_free);
     static_assert(std::atomic<CaptureSequence>::is_always_lock_free);
     static_assert(std::atomic<std::size_t>::is_always_lock_free);
+    static_assert(std::atomic<std::uint32_t>::is_always_lock_free);
     static_assert(std::atomic<AccessState>::is_always_lock_free);
 
     struct Slab {
@@ -106,6 +110,7 @@ public:
 
     std::atomic<Block*> free_head{nullptr};
     std::atomic<std::size_t> free_count{0};
+    std::atomic<std::uint32_t> reservation_failure_bits{0};
     std::atomic<AccessState> access_state{AccessState::idle};
     std::atomic<CaptureSequence> callback_begin{0};
 
@@ -169,6 +174,33 @@ public:
         retired_tail = &block;
         retired_count.fetch_add(1, std::memory_order_relaxed);
     }
+
+    void allocate_slab(std::size_t block_count)
+    {
+        if (block_count == 0) return;
+        if (block_count > std::numeric_limits<std::size_t>::max()
+                / payload_stride) {
+            throw std::length_error("Tick capture slab is too large");
+        }
+
+        Slab slab{
+            .blocks = std::make_unique<Block[]>(block_count),
+            .payload = std::make_unique<std::byte[]>(
+                block_count * payload_stride),
+            .block_count = block_count,
+        };
+        for (std::size_t index = 0; index < block_count; ++index) {
+            slab.blocks[index].payload =
+                slab.payload.get() + index * payload_stride;
+        }
+
+        slabs.push_back(std::move(slab));
+        auto& published_slab = slabs.back();
+        for (std::size_t index = 0;
+             index < published_slab.block_count; ++index) {
+            push_free(published_slab.blocks[index]);
+        }
+    }
 };
 
 void TickCapturePayloadView::for_each_segment(
@@ -219,35 +251,43 @@ TickCaptureOutputHandle TickCaptureStore::register_output(PortKind kind)
     return {*this, impl_->next_output_id++, kind};
 }
 
-std::size_t TickCaptureStore::ensure_free_block_reserve(
-    std::size_t target_free_blocks)
+void TickCaptureStore::allocate_free_block_slab(std::size_t block_count)
 {
-    if (target_free_blocks == 0) return 0;
+    std::scoped_lock lock(impl_->control_mutex);
+    impl_->allocate_slab(block_count);
+}
+
+std::size_t TickCaptureStore::maintain_free_block_reserve(
+    TickCaptureReservePolicy policy)
+{
+    if (policy.maximum_blocks_per_callback == 0) {
+        if (policy.low_watermark != 0 || policy.high_watermark != 0) {
+            throw std::invalid_argument(
+                "Empty Tick capture policy has non-empty watermarks");
+        }
+        return 0;
+    }
+    if (policy.low_watermark < policy.maximum_blocks_per_callback
+        || policy.high_watermark <= policy.low_watermark
+        || policy.slab_allocation_granularity == 0) {
+        throw std::invalid_argument(
+            "Tick capture reserve policy has invalid C/L/H/G bounds");
+    }
+
     std::scoped_lock lock(impl_->control_mutex);
     auto const available = impl_->free_count.load(std::memory_order_acquire);
-    if (available >= target_free_blocks) return 0;
-    auto const block_count = target_free_blocks - available;
-    if (block_count > std::numeric_limits<std::size_t>::max()
-            / impl_->payload_stride) {
-        throw std::length_error("Tick capture slab is too large");
-    }
+    if (available >= policy.low_watermark) return 0;
 
-    Impl::Slab slab{
-        .blocks = std::make_unique<Block[]>(block_count),
-        .payload = std::make_unique<std::byte[]>(
-            block_count * impl_->payload_stride),
-        .block_count = block_count,
-    };
-    for (std::size_t index = 0; index < block_count; ++index) {
-        slab.blocks[index].payload =
-            slab.payload.get() + index * impl_->payload_stride;
+    auto const deficit = policy.high_watermark - available;
+    auto const remainder = deficit % policy.slab_allocation_granularity;
+    auto const rounding = remainder == 0
+        ? std::size_t{0}
+        : policy.slab_allocation_granularity - remainder;
+    if (deficit > std::numeric_limits<std::size_t>::max() - rounding) {
+        throw std::length_error("Tick capture reserve slab is too large");
     }
-
-    impl_->slabs.push_back(std::move(slab));
-    auto& published = impl_->slabs.back();
-    for (std::size_t index = 0; index < published.block_count; ++index) {
-        impl_->push_free(published.blocks[index]);
-    }
+    auto const block_count = deficit + rounding;
+    impl_->allocate_slab(block_count);
     return block_count;
 }
 
@@ -279,6 +319,9 @@ TickCaptureStore::RecordWriter TickCaptureStore::reserve_record(
 {
     if (impl_->access_state.load(std::memory_order_relaxed)
         != Impl::AccessState::callback) {
+        impl_->reservation_failure_bits.fetch_or(
+            Impl::reservation_outside_callback,
+            std::memory_order_release);
         return {};
     }
     auto const block_count = payload_size == 0
@@ -291,6 +334,9 @@ TickCaptureStore::RecordWriter TickCaptureStore::reserve_record(
         auto* block = impl_->pop_free();
         if (!block) {
             if (head) abandon_record(*head);
+            impl_->reservation_failure_bits.fetch_or(
+                Impl::insufficient_free_blocks,
+                std::memory_order_release);
             return {};
         }
         block->segment_size = std::min(remaining, impl_->payload_capacity);
@@ -559,6 +605,19 @@ CaptureSequence TickCaptureStore::processed_sequence() const noexcept
 CaptureSequence TickCaptureStore::published_sequence() const noexcept
 {
     return impl_->published.load(std::memory_order_acquire);
+}
+
+TickCaptureReservationFailures TickCaptureStore::reservation_failures()
+    const noexcept
+{
+    auto const bits = impl_->reservation_failure_bits.load(
+        std::memory_order_acquire);
+    return {
+        .attempted_outside_callback =
+            (bits & Impl::reservation_outside_callback) != 0,
+        .insufficient_free_blocks =
+            (bits & Impl::insufficient_free_blocks) != 0,
+    };
 }
 
 TickCaptureStore::RecordWriter::~RecordWriter()

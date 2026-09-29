@@ -101,6 +101,31 @@ struct TickCaptureRecordView {
     TickCapturePayloadView payload{};
 };
 
+// Sticky transport failures observed while attempting to reserve one complete
+// capture record. A true member means at least one such failure has occurred
+// during this store's lifetime; later provisioning cannot repair the record
+// that was not captured.
+struct TickCaptureReservationFailures {
+    bool attempted_outside_callback = false;
+    bool insufficient_free_blocks = false;
+
+    [[nodiscard]] bool any() const noexcept
+    {
+        return attempted_outside_callback || insufficient_free_blocks;
+    }
+};
+
+// Non-audio capture allocator policy. maximum_blocks_per_callback (C) is a
+// graph-derived structural bound. low_watermark (L), high_watermark (H), and
+// slab_allocation_granularity (G) are operational allocator policy, with
+// C <= L < H and G > 0.
+struct TickCaptureReservePolicy {
+    std::size_t maximum_blocks_per_callback = 0;
+    std::size_t low_watermark = 0;
+    std::size_t high_watermark = 0;
+    std::size_t slab_allocation_granularity = 1;
+};
+
 // Executor-owned slab-backed transport between generated Tick production and a
 // background transaction. Provisioning and identity registration are control-
 // path operations. reserve_record()/RecordWriter::seal_*() and CallbackScope
@@ -260,11 +285,15 @@ public:
 
     [[nodiscard]] TickCaptureOutputHandle register_output(PortKind kind);
 
-    // Adds only the deficit needed to reach the requested free-block reserve.
-    // The new append-only slab is published to the audio thread only after all
-    // payload addresses and capacities are final. Returns blocks added.
-    [[nodiscard]] std::size_t ensure_free_block_reserve(
-        std::size_t target_free_blocks);
+    // Allocator primitive: appends exactly one slab and publishes its blocks
+    // only after all payload addresses and capacities are final.
+    void allocate_free_block_slab(std::size_t block_count);
+
+    // Allocator policy operation: does nothing at or above L; below L, appends
+    // one G-rounded slab that restores free capacity to at least H. Returns the
+    // number of capture blocks added.
+    [[nodiscard]] std::size_t maintain_free_block_reserve(
+        TickCaptureReservePolicy policy);
 
     [[nodiscard]] CallbackScope begin_callback() noexcept;
     // Reserves every physical block for one logical payload or returns an empty
@@ -290,6 +319,8 @@ public:
     [[nodiscard]] std::size_t retired_block_count() const noexcept;
     [[nodiscard]] CaptureSequence processed_sequence() const noexcept;
     [[nodiscard]] CaptureSequence published_sequence() const noexcept;
+    [[nodiscard]] TickCaptureReservationFailures reservation_failures()
+        const noexcept;
 };
 
 static_assert(std::is_nothrow_destructible_v<TickCaptureStore::RecordWriter>);

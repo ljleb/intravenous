@@ -396,10 +396,9 @@ TEST(TickCaptureStore, TickInvocationFrameBindsAndScopesSampleCapture)
     iv::TickCaptureStore captures{2 * sizeof(iv::Sample)};
     iv::PersistedTickCaptureRegistry capture_outputs{captures};
     iv::TickInvocationWorkspace workspace{plan, 3, 4, &capture_outputs};
-    EXPECT_EQ(workspace.capture_block_reserve(), 3u);
-    ASSERT_EQ(
-        captures.ensure_free_block_reserve(workspace.capture_block_reserve()),
-        workspace.capture_block_reserve());
+    EXPECT_EQ(workspace.maximum_capture_blocks_per_callback(), 3u);
+    captures.allocate_free_block_slab(
+        workspace.maximum_capture_blocks_per_callback());
 
     std::array<iv::Sample, 8> source{
         10.0f, 11.0f, 12.0f, 13.0f,
@@ -464,7 +463,7 @@ TEST(TickCaptureStore, CaptureReserveCountsEveryPlannedInvocation)
     // Each two-frame SCC slice captures history + slice + latency = four
     // samples, requiring two physical blocks. Two slices may be sealed before
     // the callback ends, so all four blocks must be available concurrently.
-    EXPECT_EQ(workspace.capture_block_reserve(), 4u);
+    EXPECT_EQ(workspace.maximum_capture_blocks_per_callback(), 4u);
 }
 
 TEST(PersistedPageStore, TickFrameCopiesSequentialMaterializationAndUsesNeutral)
@@ -611,10 +610,9 @@ TEST(TickCaptureStore, TickInvocationFrameBindsAndScopesEventCapture)
     iv::TickCaptureStore captures{sizeof(iv::TimedEvent)};
     iv::PersistedTickCaptureRegistry capture_outputs{captures};
     iv::TickInvocationWorkspace workspace{plan, 3, 4, &capture_outputs};
-    EXPECT_EQ(workspace.capture_block_reserve(), 8u);
-    ASSERT_EQ(
-        captures.ensure_free_block_reserve(workspace.capture_block_reserve()),
-        workspace.capture_block_reserve());
+    EXPECT_EQ(workspace.maximum_capture_blocks_per_callback(), 8u);
+    captures.allocate_free_block_slab(
+        workspace.maximum_capture_blocks_per_callback());
 
     struct EventStorage {
         std::size_t count = 0;
@@ -820,7 +818,7 @@ TEST(TickCaptureStore, FixesSequenceCutoffAndRecyclesAfterCallback)
     iv::TickCaptureStore captures{256};
     auto const samples = captures.register_output(iv::PortKind::sample);
     auto const events = captures.register_output(iv::PortKind::event);
-    ASSERT_EQ(captures.ensure_free_block_reserve(3), 3u);
+    captures.allocate_free_block_slab(3);
     EXPECT_EQ(captures.free_block_count(), 3u);
 
     iv::TickCaptureStore::Batch first_batch;
@@ -918,36 +916,72 @@ TEST(TickCaptureStore, FixesSequenceCutoffAndRecyclesAfterCallback)
     EXPECT_EQ(captures.free_block_count(), 2u);
 }
 
-TEST(TickCaptureStore, MaintainsAFreeBlockTargetWithoutRepeatedGrowth)
+TEST(TickCaptureStore, ReplenishesBetweenWatermarksInRoundedSlabs)
 {
-    iv::TickCaptureStore captures{2 * sizeof(iv::Sample)};
+    iv::TickCaptureStore captures{sizeof(iv::Sample)};
     auto const samples = captures.register_output(iv::PortKind::sample);
+    auto const policy = iv::TickCaptureReservePolicy{
+        .maximum_blocks_per_callback = 1,
+        .low_watermark = 3,
+        .high_watermark = 5,
+        .slab_allocation_granularity = 4,
+    };
 
-    EXPECT_EQ(captures.ensure_free_block_reserve(3), 3u);
-    EXPECT_EQ(captures.free_block_count(), 3u);
-    EXPECT_EQ(captures.ensure_free_block_reserve(3), 0u);
-    EXPECT_EQ(captures.ensure_free_block_reserve(2), 0u);
-    EXPECT_EQ(captures.free_block_count(), 3u);
+    // Five blocks are needed to reach H, rounded into one eight-block slab.
+    EXPECT_EQ(captures.maintain_free_block_reserve(policy), 8u);
+    EXPECT_EQ(captures.free_block_count(), 8u);
+    EXPECT_EQ(captures.maintain_free_block_reserve(policy), 0u);
 
-    {
+    for (std::size_t index = 0; index < 6; ++index) {
         auto callback = captures.begin_callback();
         ASSERT_TRUE(callback);
-        auto writer = captures.reserve_record(3 * sizeof(iv::Sample));
+        auto writer = captures.reserve_record(sizeof(iv::Sample));
         ASSERT_TRUE(writer);
-        std::array<iv::Sample, 3> values{1.0f, 2.0f, 3.0f};
-        ASSERT_TRUE(writer.append(std::as_bytes(std::span{values})));
+        auto const value = iv::Sample{static_cast<float>(index + 1)};
+        ASSERT_TRUE(writer.append(
+            std::as_bytes(std::span{&value, std::size_t{1}})));
         ASSERT_TRUE(writer.seal_samples(
             samples,
-            0,
-            values.size(),
+            static_cast<iv::SampleIndex>(index),
+            1,
             iv::mono_planar_channel_layout));
     }
 
-    // The pending two-block record is backlog, not part of the free reserve.
-    EXPECT_EQ(captures.free_block_count(), 1u);
-    EXPECT_EQ(captures.ensure_free_block_reserve(3), 2u);
-    EXPECT_EQ(captures.free_block_count(), 3u);
-    EXPECT_EQ(captures.ensure_free_block_reserve(3), 0u);
+    // The pending six-block record is backlog, not free capacity. Falling below
+    // L replenishes toward H with one G-rounded four-block slab.
+    EXPECT_EQ(captures.free_block_count(), 2u);
+    EXPECT_EQ(captures.maintain_free_block_reserve(policy), 4u);
+    EXPECT_EQ(captures.free_block_count(), 6u);
+    EXPECT_EQ(captures.maintain_free_block_reserve(policy), 0u);
+}
+
+TEST(TickCaptureStore, RejectsInvalidReserveWatermarks)
+{
+    iv::TickCaptureStore captures{sizeof(iv::Sample)};
+    EXPECT_THROW(
+        static_cast<void>(captures.maintain_free_block_reserve({
+            .maximum_blocks_per_callback = 2,
+            .low_watermark = 1,
+            .high_watermark = 3,
+            .slab_allocation_granularity = 1,
+        })),
+        std::invalid_argument);
+    EXPECT_THROW(
+        static_cast<void>(captures.maintain_free_block_reserve({
+            .maximum_blocks_per_callback = 1,
+            .low_watermark = 2,
+            .high_watermark = 2,
+            .slab_allocation_granularity = 1,
+        })),
+        std::invalid_argument);
+    EXPECT_THROW(
+        static_cast<void>(captures.maintain_free_block_reserve({
+            .maximum_blocks_per_callback = 1,
+            .low_watermark = 2,
+            .high_watermark = 3,
+            .slab_allocation_granularity = 0,
+        })),
+        std::invalid_argument);
 }
 
 TEST(PersistedTickCaptureRegistry, InternsMappingsAboveGenericTransport)
@@ -975,7 +1009,7 @@ TEST(TickCaptureStore, PublishesOneLogicalRecordBackedByMultipleBlocks)
     // Deliberately split the second event across the physical-block boundary.
     iv::TickCaptureStore captures{sizeof(iv::TimedEvent) + 1};
     auto const events = captures.register_output(iv::PortKind::event);
-    ASSERT_EQ(captures.ensure_free_block_reserve(2), 2u);
+    captures.allocate_free_block_slab(2);
 
     {
         auto callback = captures.begin_callback();
@@ -1027,7 +1061,7 @@ TEST(TickCaptureStore, PublishesIntentionalEmptyEventRecord)
 {
     iv::TickCaptureStore captures{64};
     auto const events = captures.register_output(iv::PortKind::event);
-    ASSERT_EQ(captures.ensure_free_block_reserve(1), 1u);
+    captures.allocate_free_block_slab(1);
 
     auto callback = captures.begin_callback();
     ASSERT_TRUE(callback);
@@ -1051,11 +1085,43 @@ TEST(TickCaptureStore, PublishesIntentionalEmptyEventRecord)
     });
 }
 
+TEST(TickCaptureStore, LatchesCaptureRecordReservationFailures)
+{
+    iv::TickCaptureStore captures{64};
+    EXPECT_FALSE(captures.reservation_failures().any());
+
+    EXPECT_FALSE(captures.reserve_record(1));
+    auto failures = captures.reservation_failures();
+    EXPECT_TRUE(failures.attempted_outside_callback);
+    EXPECT_FALSE(failures.insufficient_free_blocks);
+
+    captures.allocate_free_block_slab(1);
+    {
+        auto callback = captures.begin_callback();
+        ASSERT_TRUE(callback);
+        // Two payload blocks are required, but only one is free. The partial
+        // reservation is returned and the failed record remains unpublished.
+        EXPECT_FALSE(captures.reserve_record(65));
+        EXPECT_EQ(captures.free_block_count(), 1u);
+        EXPECT_EQ(captures.published_sequence(), 0u);
+    }
+
+    failures = captures.reservation_failures();
+    EXPECT_TRUE(failures.attempted_outside_callback);
+    EXPECT_TRUE(failures.insufficient_free_blocks);
+
+    // Provisioning enough blocks for later records cannot recreate the record
+    // whose reservation failed, so both failure flags remain latched.
+    captures.allocate_free_block_slab(1);
+    EXPECT_TRUE(captures.reservation_failures().attempted_outside_callback);
+    EXPECT_TRUE(captures.reservation_failures().insufficient_free_blocks);
+}
+
 TEST(TickCaptureStore, FailedBatchAndAbandonedWriterPreserveState)
 {
     iv::TickCaptureStore captures{64};
     auto const samples = captures.register_output(iv::PortKind::sample);
-    ASSERT_EQ(captures.ensure_free_block_reserve(2), 2u);
+    captures.allocate_free_block_slab(2);
 
     {
         auto callback = captures.begin_callback();

@@ -46,10 +46,11 @@ public:
     [[nodiscard]] std::size_t random_access_event_count() const noexcept;
     [[nodiscard]] std::size_t sample_capture_count() const noexcept;
     [[nodiscard]] std::size_t event_capture_count() const noexcept;
-    // Minimum number of fixed-size capture blocks needed to retain one maximum-
-    // size callback, including every planned SCC-slice invocation and its full
-    // mutation window.
-    [[nodiscard]] std::size_t capture_block_reserve() const noexcept;
+    // Maximum number of fixed-size capture blocks one maximum-size callback can
+    // consume, including every planned SCC-slice invocation and mutation window.
+    // This is structural quantity C, not the allocator's operational reserve.
+    [[nodiscard]] std::size_t maximum_capture_blocks_per_callback()
+        const noexcept;
 };
 
 // Callback-scoped owner for the narrow generated Tick invocation record.

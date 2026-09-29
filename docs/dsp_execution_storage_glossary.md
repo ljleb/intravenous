@@ -267,15 +267,18 @@ the free-block reserve for the shared Tick-capture pool. Explicit recording and
 Tick/persisted staging may consume blocks from the same pool. Provisioning is
 independent of background-evaluation progress; a slow background worker increases
 the sealed/pending backlog rather than changing the audio-thread allocation rules.
-The minimum callback reserve covers every capture invocation that can seal before the
+The maximum blocks per callback (`C`) covers every capture invocation that can seal before the
 callback ends. For a producer in a cyclic SCC this means every semantic slice, not one
 root-sized record; each slice independently includes its authored history and latency
 window.
 
-Reserve maintenance is target-based: it adds only the difference between the desired
-free count and the currently free blocks. Sealed, pending and retired blocks do not
-count as free reserve, so sustained backlog can grow append-only slab capacity. Merely
-staging another graph with the same requirement does not add another reserve.
+`C` is a graph-derived structural bound, not the operational reserve. The allocator's
+low watermark (`L`) covers tolerated allocator unavailability plus safety margin; its
+high watermark (`H`) is the refill target; and its slab granularity (`G`) amortizes
+allocation. The intended relationship is `C << L < H`. Below `L`, maintenance allocates
+one slab whose size is `H - free` rounded upward to `G`; at or above `L`, it allocates
+nothing. Sealed, pending and retired blocks do not count as free reserve, so sustained
+backlog can grow append-only slab capacity independently of capture-record reclamation.
 
 ## Coverage and change propagation
 
@@ -506,6 +509,13 @@ record's payload storage may simultaneously be the producer's current Tick data:
 writes it once, same-Tick Sequential consumers read it after the producer executes,
 and background persistence later consumes/adopts it. Otherwise the generated path
 performs a bounded copy into the reserved record when the region becomes final.
+
+A **capture-record reservation failure** is sticky transport state indicating either
+that record reservation was attempted outside an active capture callback or that the
+free capture-block pool could not satisfy the complete record. Replenishment permits
+later reservations but cannot recreate the missed record, so it does not clear the
+failure. Tick/persisted treats this state as a broken retention guarantee; an explicit
+recorder may apply its separately authored failure policy.
 
 A sealed capture record is immutable. Blocks reserved, written, or exposed during
 one root `tick_block()` callback remain stable until that callback

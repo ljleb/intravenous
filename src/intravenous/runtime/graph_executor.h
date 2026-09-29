@@ -28,6 +28,15 @@ struct GraphExecutorReclaimedSnapshots {
     std::size_t tick_captures = 0;
 };
 
+// Converts graph-derived maximum callback consumption C into allocator
+// watermarks. Defaults retain 64 worst-case callbacks below L and refill toward
+// 128 callbacks, allocating slabs in multiples of 64 capture blocks.
+struct TickCaptureAllocatorConfig {
+    std::size_t low_watermark_callbacks = 64;
+    std::size_t high_watermark_callbacks = 128;
+    std::size_t slab_allocation_granularity = 64;
+};
+
 // Mutable runtime owner for immutable CompiledGraph generations. Staging and
 // activation are control-path operations: callers must activate only at a legal
 // whole-root boundary with no concurrent tick_block() invocation. The realtime
@@ -50,6 +59,7 @@ class GraphExecutor {
     static constexpr std::size_t tick_capture_payload_capacity = 64 * 1024;
 
     ResourceContext resources_{};
+    TickCaptureAllocatorConfig tick_capture_allocator_{};
     // Executor-level and deliberately outside either generation realization.
     // Compatible generations will rebind their persisted ports into this one
     // canonical sample/event authority rather than migrate page ownership.
@@ -73,10 +83,15 @@ class GraphExecutor {
 
     [[nodiscard]] Realization& active_realization();
     [[nodiscard]] Realization const& active_realization() const;
-    [[nodiscard]] std::size_t tick_capture_reserve_target() const noexcept;
+    [[nodiscard]] std::size_t
+    maximum_capture_blocks_per_callback() const noexcept;
+    [[nodiscard]] TickCaptureReservePolicy tick_capture_reserve_policy(
+        std::size_t maximum_blocks_per_callback) const;
 
 public:
-    explicit GraphExecutor(ResourceContext resources = {});
+    explicit GraphExecutor(
+        ResourceContext resources = {},
+        TickCaptureAllocatorConfig tick_capture_allocator = {});
     ~GraphExecutor() = default;
 
     GraphExecutor(GraphExecutor const&) = delete;
@@ -108,10 +123,16 @@ public:
     // background publication. A live callback pin always defers its owner.
     [[nodiscard]] GraphExecutorReclaimedSnapshots reclaim_retired_snapshots();
 
-    // Non-audio allocator maintenance. Restores the free capture-block reserve
-    // required by the active/pending realizations without waiting for capture
-    // consumption or reclamation. Returns the number of blocks added.
+    // Non-audio allocator maintenance. Uses the active/pending maximum callback
+    // consumption C and configured L/H/G policy to replenish one rounded slab
+    // only after free capture blocks fall below L. Returns blocks added.
     [[nodiscard]] std::size_t maintain_tick_capture_reserve();
+
+    // Sticky failures to reserve complete Tick capture records. In particular,
+    // insufficient_free_blocks means at least one required Tick/persisted
+    // capture may have been lost and later reserve maintenance cannot repair it.
+    [[nodiscard]] TickCaptureReservationFailures
+    tick_capture_reservation_failures() const noexcept;
 
     // Executes only the already-active realization. Generation activation is
     // deliberately never hidden in this audio-thread entry point.

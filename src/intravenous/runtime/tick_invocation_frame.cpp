@@ -731,7 +731,7 @@ public:
     std::vector<graph_jit::TickEventCaptureOperation> event_captures{};
     PersistedTickCaptureRegistry* persisted_captures = nullptr;
     TickCaptureStore* capture_store = nullptr;
-    std::size_t capture_blocks = 0;
+    std::size_t maximum_capture_blocks = 0;
     std::uint64_t generation = 0;
     std::size_t maximum_block_size = 0;
 
@@ -938,11 +938,11 @@ public:
 
         auto add_capture_blocks = [&](std::size_t count) {
             if (count > std::numeric_limits<std::size_t>::max()
-                    - capture_blocks) {
+                    - maximum_capture_blocks) {
                 throw std::length_error(
                     "Tick capture callback reserve is too large");
             }
-            capture_blocks += count;
+            maximum_capture_blocks += count;
         };
         auto add_capture_reserve = [&](auto const& planned,
                                        std::size_t blocks_per_invocation) {
@@ -1234,9 +1234,10 @@ std::size_t TickInvocationWorkspace::event_capture_count() const noexcept
     return impl_->event_captures.size();
 }
 
-std::size_t TickInvocationWorkspace::capture_block_reserve() const noexcept
+std::size_t TickInvocationWorkspace::maximum_capture_blocks_per_callback()
+    const noexcept
 {
-    return impl_->capture_blocks;
+    return impl_->maximum_capture_blocks;
 }
 
 TickCaptureStore::CallbackScope

@@ -1849,6 +1849,15 @@ persistable Tick block becomes eligible for capture it:
    sequence on the logical record head; and
 4. seals/publishes the immutable record to the Tick capture log.
 
+Capture-record reservation failure is observable state, not the absence of a capture
+request. The store permanently latches whether a reservation was attempted outside an
+active capture callback or could not obtain enough free capture blocks. Non-audio
+control code reads that state through the owning executor. A later allocator pass may
+restore free capacity, but it cannot clear the failure: the record for the already
+missed window was never published. For Tick/persisted capture, that means the declared
+retention guarantee has been broken and must be surfaced as a runtime fault. An
+explicit recorder may define its own authored response to the same transport fact.
+
 Only the audio-thread path consumes blocks from the free-capacity pool. The allocator
 never takes a free block back from underneath it. A capture block that participated
 in the current root callback remains stable through that callback boundary even if
@@ -1856,18 +1865,40 @@ background work determines earlier that it is otherwise reclaimable.
 
 ### 24.2 Slab provisioning
 
-A dedicated capture allocator keeps free capture capacity near a configured target
-for the shared Tick-capture pool/log. It allocates append-only slabs in units large
-enough to amortize allocation cost but small enough to provision promptly,
-splits/reuses them as capture blocks, and publishes those free blocks for audio-thread
-consumption. Recording and Tick/persisted staging may draw from the same pool; their
-semantic policies differ, not their need for pre-provisioned audio-thread-safe blocks.
-The store operation is target-based rather than additive: it observes the current free
-count and adds only the deficit. Repeated realization staging therefore does not append
-the same reserve again while sufficient free capacity already exists. The executor
-exposes this operation through a non-audio maintenance entry point so an allocator
-worker can restore the target even while sealed backlog remains unconsumed; capture
-reclamation is a separate operation.
+A dedicated capture allocator maintains a latency-tolerant free reserve for the shared
+Tick-capture pool/log. Four quantities remain distinct:
+
+```text
+C = maximum capture blocks one worst-case audio callback can consume
+L = low watermark that triggers non-audio replenishment
+H = high watermark toward which replenishment refills
+G = slab-allocation granularity in capture blocks
+```
+
+`C` is a structural property of the active/pending graph realization, including every
+capture operation and possible SCC-slice invocation. It is only the absolute minimum
+safe callback unit; it is not the allocator's steady-state reserve. `L` is sized from
+the maximum capture-block consumption rate, the allocator's tolerated detection and
+scheduling delay, and a safety margin. `H` provides hysteresis and allocation
+amortization. The intended relationship is `C << L < H`, while `G > 0` is chosen so
+one allocation adds a reasonably large contiguous slab.
+
+When free capacity is at least `L`, maintenance allocates nothing. When it falls below
+`L`, the allocator computes `H - free`, rounds that quantity upward to a multiple of
+`G`, allocates one append-only slab, and publishes its initialized blocks to the audio
+thread. Rounding may deliberately overshoot `H`. Repeated realization staging therefore
+does not append capacity while the pool remains in its normal operating range, and
+ordinary consumption does not cause one tiny allocation per callback. The current
+executor defaults derive `L = 64C`, `H = 128C`, and `G = 64` blocks; these are allocator
+policy rather than graph semantics and can be configured independently.
+
+Recording and Tick/persisted staging may draw from the same pool; their semantic
+policies differ, not their need for pre-provisioned audio-thread-safe blocks. The
+executor exposes reserve maintenance through a non-audio entry point so an allocator
+worker can replenish free blocks while sealed backlog remains unconsumed. The audio
+thread need only change observable atomic free capacity; it does not allocate or need
+to wake the allocator directly. Capture-record reclamation is a separate operation and
+can only increase free capacity relative to the safety calculation.
 
 Provisioning is independent of background evaluation. If the background DAG takes
 four seconds, forty seconds, or longer, sealed blocks may accumulate in ordinary
@@ -2396,16 +2427,16 @@ recording merely because that planning metadata exists.
    generation-independent capture store and persisted-capture registry and passes only
    that narrow adapter to realization construction. Each address-stable Tick workspace
    registers its planned persisted output identities through the adapter, binds its
-   sample/event operation arrays, and calculates the fixed-block reserve for one
-   maximum-size callback. The immutable binding retains both the maximum block seen by
+   sample/event operation arrays, and calculates `C`, the maximum fixed-block
+   consumption of one maximum-size callback. The immutable binding retains both the
+   maximum block seen by
    the capture operation and its maximum invocations per root callback. An ordinary or
    primitive-internally sliced step reserves one enclosing window; a cyclic SCC reserves
    every possible semantic-slice window, including each slice's history and latency.
-   Staging ensures that summed free-block target off the audio thread, using the larger
-   requirement while active and pending realizations coexist. Repeated staging adds
-   only a measured deficit rather than another complete reserve. The executor also
-   exposes explicit non-audio reserve maintenance so pending backlog can cause slab
-   growth independently of reclamation or background-evaluation completion. The
+   Staging takes the larger active/pending `C`, derives allocator watermarks `L` and
+   `H`, and performs initial non-audio maintenance. Later maintenance allocates only
+   below `L` and refills toward `H` in `G`-rounded slabs, so pending backlog can cause
+   capacity growth independently of capture-record reclamation or background-evaluation completion. The
    current store policy uses 64 KiB payload blocks, but allocator blocks are not log
    records. Every complete sample window or event sequence is one logical capture,
    one sequence entry and one published record head backed by as many blocks as its
@@ -2425,6 +2456,11 @@ recording merely because that planning metadata exists.
    semantic slice. Missing, short or null operation entries remain legal no-op
    bindings. Explicit non-audio executor reclamation now also returns eligible
    committed capture blocks without crossing the active callback's sequence boundary.
+   Failed logical-record reservations now latch executor-lifetime transport state:
+   reservation outside an active capture callback and exhaustion of free capture
+   blocks are independently observable through `GraphExecutor`. Restoring the free
+   reserve does not clear those flags because it cannot recreate a missed persisted
+   record.
 
    Next, bind explicit recorder bridges at their authored production/finalization
    points, then consume the fixed batch through

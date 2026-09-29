@@ -867,11 +867,13 @@ through that adapter. Each capture binding retains the maximum block passed to i
 operation and the maximum number of times it can run in one root callback. Ordinary
 and primitive-internally sliced steps retain one enclosing invocation; a cyclic SCC
 retains its slice quantum and `ceil(root maximum / quantum)` invocations. Realization
-sizing sums the physical blocks for every retained invocation, including history and
-latency in each slice window. Staging requests the larger active/pending free-block
-target and the store adds only its current deficit, so repeated staging does not append
-another complete reserve. A separate non-audio executor maintenance entry point can
-restore that target while sealed backlog is still pending. The current allocator uses
+Sizing sums the physical blocks for every retained invocation, including history and
+latency in each slice window, producing `C`: maximum capture blocks consumed by one
+callback. `C` is not the operational reserve. Staging takes the larger active/pending
+`C` and derives the allocator low watermark `L`, refill target `H`, and slab granularity
+`G`. A separate non-audio executor maintenance entry point allocates only below `L`
+and refills toward `H` with one `G`-rounded slab while sealed backlog is still pending.
+The current allocator uses
 fixed 64 KiB blocks. A
 `TickInvocationFrame` holds the store's callback scope while sample/event operations
 copy the complete authored `[block-history, block-end+latency)` mutation window.
@@ -1153,10 +1155,19 @@ belong to different outputs.
 Capture capacity is slab-backed and dynamically extensible; the effective number of
 recent/pending blocks is determined by allocator supply and background progress, not
 by a fixed guessed duration such as one second. The audio thread only consumes
-already-provisioned free blocks. A separate **capture allocator** maintains a target
-free-block reserve by allocating reasonably sized slabs independently of background
-evaluation. Slow background work therefore increases the sealed-but-unpublished
-backlog rather than overflowing a compiler-planned staging ring.
+already-provisioned free blocks. A separate **capture allocator** maintains low/high
+free-block watermarks by allocating reasonably sized slabs independently of background
+evaluation. The graph-derived maximum blocks per callback `C` is only the structural
+unit used to size a much larger latency-tolerant `L` and `H`; slab granularity `G`
+amortizes allocation. Slow background work therefore increases the sealed-but-
+unpublished backlog rather than overflowing a compiler-planned staging ring.
+
+If a logical capture cannot reserve all of its physical blocks, it publishes no
+partial record and the transport permanently latches an insufficient-free-blocks
+failure. Reservation outside an active capture callback is latched separately. The
+owning executor exposes both facts to non-audio control code. Replenishing the free
+capture-block reserve enables later reservations but does not erase the failure for
+the missed record; Tick/persisted retention has already lost that window.
 
 A block acquired, written, or made readable during one root `tick_block()` callback
 is not returned to the audio-thread free pool during that callback. Background work
