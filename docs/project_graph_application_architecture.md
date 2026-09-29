@@ -651,7 +651,7 @@ pages even when out of date, and substitutes the consuming Sequential input's
 `neutral_value` for missing pages. Tick-time Random Access uses the same selected
 immutable published snapshot available at callback entry in the preliminary implementation. It never
 invokes Tock, allocates on a page miss, or waits for replacement. Pending page
-candidates and newly sealed Tick-capture blocks do not become visible mid-callback.
+candidates and newly sealed Tick-capture records do not become visible mid-callback.
 A background pass uses only the capture-sequence prefix fixed at its start; later
 captures cannot enter that pass.
 

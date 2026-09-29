@@ -13,6 +13,24 @@ namespace {
 
 Coverage const empty_tick_coverage{};
 
+[[nodiscard]] bool capture_event_matches_type(
+    EventTypeId type, Event const& event) noexcept
+{
+    switch (type) {
+    case EventTypeId::empty:
+        return std::holds_alternative<EmptyEvent>(event);
+    case EventTypeId::trigger:
+        return std::holds_alternative<TriggerEvent>(event);
+    case EventTypeId::boundary:
+        return std::holds_alternative<BoundaryEvent>(event);
+    case EventTypeId::midi:
+        return std::holds_alternative<MidiEvent>(event);
+    case EventTypeId::count:
+        break;
+    }
+    return false;
+}
+
 [[nodiscard]] std::size_t coverage_sample_count(
     Coverage const& coverage) noexcept
 {
@@ -95,14 +113,15 @@ PersistedOutputId capture_output_id(
     std::size_t value_size,
     std::size_t block_payload_capacity)
 {
-    if (value_size == 0 || block_payload_capacity < value_size) {
-        throw std::length_error(
-            "Tick capture block cannot hold one output value");
+    if (value_size == 0 || block_payload_capacity == 0
+        || value_count > std::numeric_limits<std::size_t>::max()
+                / value_size) {
+        throw std::length_error("Tick capture payload is too large");
     }
-    auto const values_per_block = block_payload_capacity / value_size;
+    auto const bytes = value_count * value_size;
     return std::max<std::size_t>(
-        1, value_count / values_per_block
-            + static_cast<std::size_t>(value_count % values_per_block != 0));
+        1, bytes / block_payload_capacity
+            + static_cast<std::size_t>(bytes % block_payload_capacity != 0));
 }
 
 template<class Binding>
@@ -222,9 +241,6 @@ public:
                 return;
             }
             auto const bytes_per_frame = channels * sizeof(Sample);
-            auto const frames_per_block =
-                store->block_payload_capacity() / bytes_per_frame;
-            if (frames_per_block == 0) return;
             for (std::size_t channel = 0; channel < channels; ++channel) {
                 auto const& source = binding.storage.channels[channel];
                 if (!source.storage || source.frame_capacity == 0
@@ -239,39 +255,52 @@ public:
 
             auto const window = realtime_port_window(
                 sample_index, block_size, history, latency);
-            auto begin = window.begin;
-            while (begin < window.end) {
-                auto const remaining = window.end - begin;
-                auto const count = static_cast<std::size_t>(std::min<SampleIndex>(
-                    remaining, frames_per_block));
-                auto writer = store->acquire();
-                if (!writer) return;
-                auto* destination = reinterpret_cast<Sample*>(
-                    writer.payload().data());
-                for (std::size_t frame = 0; frame < count; ++frame) {
-                    auto const absolute = begin
-                        + static_cast<SampleIndex>(frame);
-                    for (std::size_t channel = 0; channel < channels; ++channel) {
-                        auto const& source = binding.storage.channels[channel];
-                        auto const logical = absolute
-                            + static_cast<SampleIndex>(
-                                binding.storage.storage_latency);
-                        auto const delayed = logical
-                            - static_cast<SampleIndex>(source.frame_delay);
-                        auto const source_frame = static_cast<std::size_t>(
-                            delayed & (source.frame_capacity - 1));
-                        auto const destination_index = layout.sample_layout
-                                == SampleStreamLayout::planar
-                            ? channel * count + frame
-                            : frame * channels + channel;
-                        destination[destination_index] =
-                            reinterpret_cast<Sample const*>(source.storage)[
-                                source_frame * source.frame_stride];
+            auto const window_size = window.end - window.begin;
+            auto const selected_count = static_cast<std::size_t>(window_size);
+            if (selected_count == 0
+                || static_cast<SampleIndex>(selected_count) != window_size
+                || selected_count > std::numeric_limits<std::size_t>::max()
+                        / bytes_per_frame) {
+                return;
+            }
+            auto writer = store->reserve_record(
+                selected_count * bytes_per_frame);
+            if (!writer) return;
+            auto append_sample = [&](std::size_t frame, std::size_t channel) {
+                auto const absolute = window.begin
+                    + static_cast<SampleIndex>(frame);
+                auto const& source = binding.storage.channels[channel];
+                auto const logical = absolute
+                    + static_cast<SampleIndex>(
+                        binding.storage.storage_latency);
+                auto const delayed = logical
+                    - static_cast<SampleIndex>(source.frame_delay);
+                auto const source_frame = static_cast<std::size_t>(
+                    delayed & (source.frame_capacity - 1));
+                auto const value =
+                    reinterpret_cast<Sample const*>(source.storage)[
+                        source_frame * source.frame_stride];
+                return writer.append(
+                    std::as_bytes(std::span{&value, std::size_t{1}}));
+            };
+            if (layout.sample_layout == SampleStreamLayout::planar) {
+                for (std::size_t channel = 0; channel < channels; ++channel) {
+                    for (std::size_t frame = 0;
+                         frame < selected_count; ++frame) {
+                        if (!append_sample(frame, channel)) return;
                     }
                 }
-                if (!writer.seal_samples(output, begin, count, layout)) return;
-                begin += static_cast<SampleIndex>(count);
+            } else {
+                for (std::size_t frame = 0;
+                     frame < selected_count; ++frame) {
+                    for (std::size_t channel = 0;
+                         channel < channels; ++channel) {
+                        if (!append_sample(frame, channel)) return;
+                    }
+                }
             }
+            static_cast<void>(writer.seal_samples(
+                output, window.begin, selected_count, layout));
         }
     };
 
@@ -294,9 +323,6 @@ public:
                 || !std::has_single_bit(storage.event_capacity)) {
                 return;
             }
-            auto const events_per_block =
-                store->block_payload_capacity() / sizeof(TimedEvent);
-            if (events_per_block == 0) return;
             auto const window = realtime_port_window(
                 sample_index, block_size, history, latency);
             auto const window_size = window.end - window.begin;
@@ -323,46 +349,47 @@ public:
             auto const available = std::min(
                 write - read, storage.event_capacity);
 
-            TickCaptureStore::Writer writer{};
-            TimedEvent* destination = nullptr;
-            std::size_t destination_count = 0;
-            bool sealed_any = false;
-            auto seal = [&]() noexcept {
-                if (!writer) return false;
-                auto const sealed = writer.seal_events(
-                    output,
-                    window.begin,
-                    selected_window_size,
-                    type,
-                    destination_count);
-                sealed_any = sealed_any || sealed;
-                destination = nullptr;
-                destination_count = 0;
-                return sealed;
-            };
-
+            std::size_t selected_begin = available;
+            std::size_t selected_count = 0;
+            EventTime previous = 0;
+            bool first_selected = true;
             for (std::size_t index = 0; index < available; ++index) {
                 auto const& event = events[
                     (read + index) & (storage.event_capacity - 1)];
                 auto const time = static_cast<SampleIndex>(event.time);
                 if (time < window.begin) continue;
                 if (time >= window.end) break;
-                if (!writer) {
-                    writer = store->acquire();
-                    if (!writer) return;
-                    destination = reinterpret_cast<TimedEvent*>(
-                        writer.payload().data());
+                if (!capture_event_matches_type(type, event.value)
+                    || (!first_selected && event.time < previous)) {
+                    return;
                 }
-                destination[destination_count++] = event;
-                if (destination_count == events_per_block && !seal()) return;
+                if (first_selected) selected_begin = index;
+                previous = event.time;
+                first_selected = false;
+                ++selected_count;
             }
-            if (writer) {
-                static_cast<void>(seal());
-            } else if (!sealed_any) {
-                writer = store->acquire();
-                if (!writer) return;
-                static_cast<void>(seal());
+            if (selected_count > std::numeric_limits<std::size_t>::max()
+                    / sizeof(TimedEvent)) {
+                return;
             }
+            auto writer = store->reserve_record(
+                selected_count * sizeof(TimedEvent));
+            if (!writer) return;
+            for (std::size_t offset = 0; offset < selected_count; ++offset) {
+                auto const index = selected_begin + offset;
+                auto const& event = events[
+                    (read + index) & (storage.event_capacity - 1)];
+                if (!writer.append(
+                        std::as_bytes(std::span{&event, std::size_t{1}}))) {
+                    return;
+                }
+            }
+            static_cast<void>(writer.seal_events(
+                output,
+                window.begin,
+                selected_window_size,
+                type,
+                selected_count));
         }
     };
 

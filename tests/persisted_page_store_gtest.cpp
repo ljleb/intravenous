@@ -42,6 +42,18 @@ iv::PersistedOutputId local_output(
     };
 }
 
+template<class T>
+std::vector<T> capture_payload_as(iv::TickCaptureRecordView const& record)
+{
+    if (record.payload.size() % sizeof(T) != 0) return {};
+    std::vector<T> result(record.payload.size() / sizeof(T));
+    if (!record.payload.copy_to(
+            std::as_writable_bytes(std::span{result}))) {
+        return {};
+    }
+    return result;
+}
+
 iv::PersistedSamplePage sample_page(
     iv::PersistedOutputId output,
     float first)
@@ -405,21 +417,19 @@ TEST(TickCaptureStore, TickInvocationFrameBindsAndScopesSampleCapture)
         ASSERT_NE(operation.context, nullptr);
         ASSERT_NE(operation.capture, nullptr);
         operation.capture(operation.context, &binding, 8, 4);
-        EXPECT_EQ(captures.published_sequence(), 3u);
+        EXPECT_EQ(captures.published_sequence(), 1u);
         EXPECT_EQ(captures.reclaim_committed(), 0u);
     }
 
     auto batch = captures.snapshot_pending();
-    ASSERT_EQ(batch.size(), 3u);
+    ASSERT_EQ(batch.size(), 1u);
     std::vector<iv::Sample> captured;
     batch.for_each([&](iv::TickCaptureRecordView const& record) {
         EXPECT_EQ(record.payload_kind,
             iv::TickCapturePayloadKind::samples);
-        EXPECT_EQ(record.sample_count, 2u);
-        auto const* values = reinterpret_cast<iv::Sample const*>(
-            record.payload.data());
-        captured.insert(
-            captured.end(), values, values + record.sample_count);
+        EXPECT_EQ(record.sample_count, 6u);
+        auto const values = capture_payload_as<iv::Sample>(record);
+        captured.insert(captured.end(), values.begin(), values.end());
     });
     EXPECT_EQ(captured,
         (std::vector<iv::Sample>{
@@ -603,19 +613,19 @@ TEST(TickCaptureStore, TickInvocationFrameBindsAndScopesEventCapture)
         ASSERT_NE(operation.context, nullptr);
         ASSERT_NE(operation.capture, nullptr);
         operation.capture(operation.context, &binding, 8, 4);
-        EXPECT_EQ(captures.published_sequence(), 2u);
+        EXPECT_EQ(captures.published_sequence(), 1u);
     }
 
     auto batch = captures.snapshot_pending();
-    ASSERT_EQ(batch.size(), 2u);
+    ASSERT_EQ(batch.size(), 1u);
     std::vector<iv::EventTime> captured;
     batch.for_each([&](iv::TickCaptureRecordView const& record) {
         EXPECT_EQ(record.payload_kind,
             iv::TickCapturePayloadKind::events);
-        ASSERT_EQ(record.event_count, 1u);
-        captured.push_back(
-            reinterpret_cast<iv::TimedEvent const*>(
-                record.payload.data())->time);
+        ASSERT_EQ(record.event_count, 2u);
+        for (auto const& event : capture_payload_as<iv::TimedEvent>(record)) {
+            captured.push_back(event.time);
+        }
     });
     EXPECT_EQ(captured, (std::vector<iv::EventTime>{8, 10}));
 }
@@ -785,26 +795,25 @@ TEST(TickCaptureStore, FixesSequenceCutoffAndRecyclesAfterCallback)
         auto nested_callback = captures.begin_callback();
         EXPECT_FALSE(nested_callback);
 
-        auto sample_writer = captures.acquire();
+        auto sample_writer = captures.reserve_record(2 * sizeof(iv::Sample));
         ASSERT_TRUE(sample_writer);
-        auto* sample_values = reinterpret_cast<iv::Sample*>(
-            sample_writer.payload().data());
-        sample_values[0] = 10.0f;
-        sample_values[1] = 11.0f;
+        std::array<iv::Sample, 2> sample_values{10.0f, 11.0f};
+        ASSERT_TRUE(sample_writer.append(
+            std::as_bytes(std::span{sample_values})));
         ASSERT_TRUE(sample_writer.seal_samples(
             samples,
             1200,
             2,
             iv::mono_planar_channel_layout));
 
-        auto event_writer = captures.acquire();
+        auto event_writer = captures.reserve_record(sizeof(iv::TimedEvent));
         ASSERT_TRUE(event_writer);
-        auto* event_values = reinterpret_cast<iv::TimedEvent*>(
-            event_writer.payload().data());
-        event_values[0] = {
+        std::array<iv::TimedEvent, 1> event_values{{{
             .time = 1201,
             .value = iv::TriggerEvent{},
-        };
+        }}};
+        ASSERT_TRUE(event_writer.append(
+            std::as_bytes(std::span{event_values})));
         ASSERT_TRUE(event_writer.seal_events(
             events,
             1200,
@@ -817,11 +826,11 @@ TEST(TickCaptureStore, FixesSequenceCutoffAndRecyclesAfterCallback)
         EXPECT_EQ(first_batch.cutoff(), 2u);
         EXPECT_EQ(first_batch.size(), 2u);
 
-        auto later = captures.acquire();
+        auto later = captures.reserve_record(sizeof(iv::Sample));
         ASSERT_TRUE(later);
-        auto* later_values = reinterpret_cast<iv::Sample*>(
-            later.payload().data());
-        later_values[0] = 40.0f;
+        std::array<iv::Sample, 1> later_values{40.0f};
+        ASSERT_TRUE(later.append(
+            std::as_bytes(std::span{later_values})));
         ASSERT_TRUE(later.seal_samples(
             samples,
             400,
@@ -840,15 +849,15 @@ TEST(TickCaptureStore, FixesSequenceCutoffAndRecyclesAfterCallback)
                 EXPECT_EQ(
                     record.payload_kind,
                     iv::TickCapturePayloadKind::samples);
-                auto const* values = reinterpret_cast<iv::Sample const*>(
-                    record.payload.data());
+                auto const values = capture_payload_as<iv::Sample>(record);
+                ASSERT_EQ(values.size(), 2u);
                 EXPECT_FLOAT_EQ(values[0], 10.0f);
                 EXPECT_FLOAT_EQ(values[1], 11.0f);
             } else {
                 EXPECT_EQ(*record.output, events.output());
                 EXPECT_EQ(record.event_count, 1u);
-                auto const* values = reinterpret_cast<iv::TimedEvent const*>(
-                    record.payload.data());
+                auto const values = capture_payload_as<iv::TimedEvent>(record);
+                ASSERT_EQ(values.size(), 1u);
                 EXPECT_EQ(values[0].time, 1201u);
             }
         });
@@ -874,6 +883,89 @@ TEST(TickCaptureStore, FixesSequenceCutoffAndRecyclesAfterCallback)
     EXPECT_EQ(captures.free_block_count(), 2u);
 }
 
+TEST(TickCaptureStore, PublishesOneLogicalRecordBackedByMultipleBlocks)
+{
+    // Deliberately split the second event across the physical-block boundary.
+    iv::TickCaptureStore captures{sizeof(iv::TimedEvent) + 1};
+    auto const events = captures.register_output(
+        local_output(iv::PortKind::event, 2));
+    captures.provision(2);
+
+    {
+        auto callback = captures.begin_callback();
+        ASSERT_TRUE(callback);
+        auto writer = captures.reserve_record(2 * sizeof(iv::TimedEvent));
+        ASSERT_TRUE(writer);
+        EXPECT_EQ(captures.free_block_count(), 0u);
+        EXPECT_EQ(captures.published_sequence(), 0u);
+        EXPECT_TRUE(captures.snapshot_pending().empty());
+
+        std::array<iv::TimedEvent, 2> captured{{
+            {.time = 4, .value = iv::TriggerEvent{}},
+            {.time = 6, .value = iv::TriggerEvent{}},
+        }};
+        ASSERT_TRUE(writer.append(
+            std::as_bytes(std::span{captured})));
+        ASSERT_TRUE(writer.seal_events(
+            events,
+            4,
+            4,
+            iv::EventTypeId::trigger,
+            2));
+
+        EXPECT_EQ(captures.published_sequence(), 1u);
+        auto complete = captures.snapshot_pending();
+        ASSERT_EQ(complete.size(), 1u);
+        std::size_t segment_count = 0;
+        complete.for_each([&](iv::TickCaptureRecordView const& record) {
+            EXPECT_EQ(record.sequence, 0u);
+            EXPECT_EQ(record.event_count, 2u);
+            record.payload.for_each_segment(
+                [&](std::span<std::byte const>) { ++segment_count; });
+            auto const values = capture_payload_as<iv::TimedEvent>(record);
+            ASSERT_EQ(values.size(), 2u);
+            EXPECT_EQ(values[0].time, 4u);
+            EXPECT_EQ(values[1].time, 6u);
+        });
+        EXPECT_EQ(segment_count, 2u);
+
+        ASSERT_TRUE(captures.commit(std::move(complete)));
+        EXPECT_EQ(captures.retired_block_count(), 1u);
+        EXPECT_EQ(captures.reclaim_committed(), 0u);
+    }
+    EXPECT_EQ(captures.reclaim_committed(), 1u);
+    EXPECT_EQ(captures.free_block_count(), 1u);
+}
+
+TEST(TickCaptureStore, PublishesIntentionalEmptyEventRecord)
+{
+    iv::TickCaptureStore captures{64};
+    auto const events = captures.register_output(
+        local_output(iv::PortKind::event, 2));
+    captures.provision(1);
+
+    auto callback = captures.begin_callback();
+    ASSERT_TRUE(callback);
+    auto writer = captures.reserve_record(0);
+    ASSERT_TRUE(writer);
+    ASSERT_TRUE(writer.seal_events(
+        events,
+        4,
+        4,
+        iv::EventTypeId::trigger,
+        0));
+
+    EXPECT_EQ(captures.published_sequence(), 1u);
+    auto batch = captures.snapshot_pending();
+    ASSERT_EQ(batch.size(), 1u);
+    batch.for_each([&](iv::TickCaptureRecordView const& record) {
+        EXPECT_EQ(record.payload_kind,
+            iv::TickCapturePayloadKind::events);
+        EXPECT_EQ(record.event_count, 0u);
+        EXPECT_TRUE(record.payload.empty());
+    });
+}
+
 TEST(TickCaptureStore, FailedBatchAndAbandonedWriterPreserveState)
 {
     iv::TickCaptureStore captures{64};
@@ -885,17 +977,40 @@ TEST(TickCaptureStore, FailedBatchAndAbandonedWriterPreserveState)
         auto callback = captures.begin_callback();
         ASSERT_TRUE(callback);
         {
-            auto abandoned = captures.acquire();
+            auto abandoned = captures.reserve_record(65);
             ASSERT_TRUE(abandoned);
-            EXPECT_EQ(captures.free_block_count(), 1u);
+            EXPECT_EQ(captures.free_block_count(), 0u);
         }
         EXPECT_EQ(captures.free_block_count(), 2u);
+        EXPECT_EQ(captures.published_sequence(), 0u);
+        EXPECT_TRUE(captures.snapshot_pending().empty());
 
-        auto writer = captures.acquire();
+        {
+            auto incomplete = captures.reserve_record(2 * sizeof(iv::Sample));
+            ASSERT_TRUE(incomplete);
+            std::array<iv::Sample, 1> partial{2.0f};
+            ASSERT_TRUE(incomplete.append(
+                std::as_bytes(std::span{partial})));
+            EXPECT_EQ(incomplete.written_size(), sizeof(iv::Sample));
+            EXPECT_FALSE(incomplete.seal_samples(
+                samples,
+                8,
+                2,
+                iv::mono_planar_channel_layout));
+        }
+        EXPECT_EQ(captures.free_block_count(), 2u);
+        EXPECT_EQ(captures.published_sequence(), 0u);
+
+        auto unavailable = captures.reserve_record(129);
+        EXPECT_FALSE(unavailable);
+        EXPECT_EQ(captures.free_block_count(), 2u);
+        EXPECT_EQ(captures.published_sequence(), 0u);
+
+        auto writer = captures.reserve_record(sizeof(iv::Sample));
         ASSERT_TRUE(writer);
-        auto* values = reinterpret_cast<iv::Sample*>(
-            writer.payload().data());
-        values[0] = 3.0f;
+        std::array<iv::Sample, 1> values{3.0f};
+        ASSERT_TRUE(writer.append(
+            std::as_bytes(std::span{values})));
         ASSERT_TRUE(writer.seal_samples(
             samples,
             8,

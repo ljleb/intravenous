@@ -846,7 +846,8 @@ when several different storage moves can satisfy the same budget.
 The next persistence front now has its executor-side transport foundation. A shared
 `TickCaptureStore` interns canonical output identities on the control path, provisions
 aligned slab blocks independently of background evaluation, and exposes only bounded
-lock-free acquire/seal operations inside one audio callback scope. Sealed records form
+lock-free whole-record reserve/write/seal operations inside one audio callback scope.
+Sealed records form
 one monotonic insertion sequence; a background pass fixes one immutable prefix and
 advances its processed frontier only on explicit commit. Non-audio reclamation may
 recycle older retired blocks concurrently, but defers records at or beyond the active
@@ -860,8 +861,11 @@ slots into address-stable operations after interning each canonical output ident
 It also provisions enough fixed 64 KiB blocks for one maximum-size callback. A
 `TickInvocationFrame` holds the store's callback scope while sample/event operations
 copy the complete authored `[block-history, block-end+latency)` mutation window.
-Windows larger than one block are emitted as ordered chunks, and an empty event window
-is represented explicitly. Generated lowering now resolves each logical capture slot
+Each sample window or event sequence becomes one logical record and one sequence
+entry, backed by as many fixed-size payload blocks as required; an empty event window
+is represented by an explicit zero-payload record. Reservation is all-or-nothing and
+only the completed record head is published, so a fixed background snapshot cannot
+bisect a capture. Generated lowering now resolves each logical capture slot
 to its compact reflected output binding and invokes the opaque operation after the
 producer's full post-operation sequence. Primitive-internal slicing captures the
 complete enclosing window once, while SCC execution captures each finalized semantic

@@ -473,41 +473,49 @@ by Tick production and read by same-Tick Sequential consumers after the required
 same-Tick dependency has executed. It is not a published persisted snapshot and is
 never the baseline backing for a Random Access input.
 
-### Capture block / capture log
+### Capture block / capture record / capture log
 
 A **capture block** is pre-provisioned storage that lets Tick-produced data escape the
 ordinary current-block lifetime without request-sized audio-thread allocation. The
 same allocator-managed block mechanism serves explicit recording and Tick/persisted
-staging. When layout permits and the captured region is already final under the Tick
-history/latency contract, the capture block may simultaneously be the producer's
-current Tick data: Tick writes it once, same-Tick Sequential consumers read it
-after the producer executes, and background persistence later consumes/adopts it.
-Otherwise the generated path performs a bounded copy into a capture block when the
-region becomes final.
+staging. It is an allocator unit, not a log entry.
 
-A sealed capture block is immutable. A block that was acquired, written, or exposed
-during one root `tick_block()` callback remains stable until that callback
-boundary; it may be marked reclaimable earlier by another thread, but it is not
+A **capture record** is one semantic capture and one insertion-sequence entry. It has
+one record head and owns as many capture blocks as its complete payload requires.
+Reservation is all-or-nothing, and only the completed record head is sealed into the
+log; individual payload blocks are never independently published. A recorder may also
+choose not to create a record at all, which consumes neither blocks nor a sequence
+entry. This is distinct from an intentional zero-payload record that authoritatively
+records an empty output/window. When layout permits
+and the captured region is already final under the Tick history/latency contract, the
+record's payload storage may simultaneously be the producer's current Tick data: Tick
+writes it once, same-Tick Sequential consumers read it after the producer executes,
+and background persistence later consumes/adopts it. Otherwise the generated path
+performs a bounded copy into the reserved record when the region becomes final.
+
+A sealed capture record is immutable. Blocks reserved, written, or exposed during
+one root `tick_block()` callback remain stable until that callback
+boundary; they may be marked reclaimable earlier by another thread, but they are not
 returned to the audio-thread free-block pool during the callback.
 
 The **capture log** is the append-only sequence of sealed capture records awaiting
 background consumption/publication. In the preliminary implementation, Random Access
 reads do **not** consult this log: persisted data becomes Random-Access-visible only
-through a published persisted-page version. After commit, copied capture blocks may
-become reclaimable once callback/background ownership is gone; a data adopted by
-the page store instead transfers ownership to the published page version.
+through a published persisted-page version. After commit, copied capture-record
+blocks may become reclaimable once callback/background ownership is gone; data
+adopted by the page store instead transfers ownership to the published page version.
 
 ### Published-snapshot Random Access
 
 The preliminary Random Access implementation reads one immutable selected/pinned
 published representation. For persisted outputs that representation is the
 persisted-page snapshot. Pending candidates, current Tick buffers, and sealed but
-unpublished Tick capture blocks do not extend Random Access coverage or visibility.
+unpublished Tick capture records do not extend Random Access coverage or visibility.
 A Tick callback therefore cannot observe a newly produced Tick/persisted block until
 a successor page version containing it has been published and a later callback/read
 context selects that version.
 
-A future optimization may overlay a bounded recent set of sealed Tick capture blocks
+A future optimization may overlay a bounded recent set of sealed Tick capture records
 on top of the published persisted-page snapshot so a later node in the **same Tick**
 can Random-Access newly finalized recorded data. That optimization requires a
 same-Tick producer-to-consumer dependency, a source-selection branch (published page

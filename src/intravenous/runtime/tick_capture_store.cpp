@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cassert>
+#include <cstring>
 #include <limits>
 #include <mutex>
 #include <stdexcept>
@@ -48,10 +49,13 @@ namespace {
 struct TickCaptureStore::Block {
     Block* free_next = nullptr;
     std::atomic<Block*> sealed_next{nullptr};
+    Block* payload_next = nullptr;
     Block* retired_next = nullptr;
     std::byte* payload = nullptr;
-    std::size_t payload_capacity = 0;
-    std::size_t payload_size = 0;
+    std::size_t segment_size = 0;
+
+    // The remaining fields are meaningful only on a published record head.
+    std::size_t record_payload_size = 0;
     CaptureSequence sequence = 0;
     PersistedOutputId const* output = nullptr;
     SampleIndex begin = 0;
@@ -119,11 +123,14 @@ public:
 
     void push_free(Block& block) noexcept
     {
+        block.sealed_next.store(nullptr, std::memory_order_relaxed);
+        block.payload_next = nullptr;
+        block.retired_next = nullptr;
+        block.segment_size = 0;
+        block.record_payload_size = 0;
         block.output = nullptr;
-        block.payload_size = 0;
         block.sample_count = 0;
         block.event_count = 0;
-        block.retired_next = nullptr;
         auto* head = free_head.load(std::memory_order_relaxed);
         do {
             block.free_next = head;
@@ -163,22 +170,36 @@ public:
         retired_tail = &block;
         retired_count.fetch_add(1, std::memory_order_relaxed);
     }
-
-    [[nodiscard]] TickCaptureRecordView view(Block const& block) const noexcept
-    {
-        return {
-            .sequence = block.sequence,
-            .output = block.output,
-            .begin = block.begin,
-            .sample_count = block.sample_count,
-            .payload_kind = block.payload_kind,
-            .sample_layout = block.sample_layout,
-            .event_type = block.event_type,
-            .event_count = block.event_count,
-            .payload = {block.payload, block.payload_size},
-        };
-    }
 };
+
+void TickCapturePayloadView::for_each_segment(
+    void* data, VisitSegment visitor) const
+{
+    if (!first_ || !visitor) return;
+    auto const* block = static_cast<TickCaptureStore::Block const*>(first_);
+    auto remaining = size_;
+    while (block && remaining != 0) {
+        auto const count = std::min(block->segment_size, remaining);
+        visitor(data, std::span<std::byte const>{block->payload, count});
+        remaining -= count;
+        block = block->payload_next;
+    }
+}
+
+bool TickCapturePayloadView::copy_to(
+    std::span<std::byte> destination) const noexcept
+{
+    if (destination.size() != size_ || (!first_ && size_ != 0)) return false;
+    auto const* block = static_cast<TickCaptureStore::Block const*>(first_);
+    std::size_t offset = 0;
+    while (block && offset != size_) {
+        auto const count = std::min(block->segment_size, size_ - offset);
+        std::memcpy(destination.data() + offset, block->payload, count);
+        offset += count;
+        block = block->payload_next;
+    }
+    return offset == size_;
+}
 
 PersistedOutputId const& TickCaptureOutputHandle::output() const noexcept
 {
@@ -225,7 +246,6 @@ void TickCaptureStore::provision(std::size_t block_count)
     for (std::size_t index = 0; index < block_count; ++index) {
         slab.blocks[index].payload =
             slab.payload.get() + index * impl_->payload_stride;
-        slab.blocks[index].payload_capacity = impl_->payload_capacity;
     }
 
     std::scoped_lock lock(impl_->control_mutex);
@@ -259,23 +279,67 @@ void TickCaptureStore::end_callback() noexcept
         Impl::AccessState::idle, std::memory_order_release);
 }
 
-TickCaptureStore::Writer TickCaptureStore::acquire() noexcept
+TickCaptureStore::RecordWriter TickCaptureStore::reserve_record(
+    std::size_t payload_size) noexcept
 {
     if (impl_->access_state.load(std::memory_order_relaxed)
         != Impl::AccessState::callback) {
         return {};
     }
-    auto* block = impl_->pop_free();
-    return block ? Writer{*this, *block} : Writer{};
+    auto const block_count = payload_size == 0
+        ? std::size_t{1}
+        : std::size_t{1} + (payload_size - 1) / impl_->payload_capacity;
+    Block* head = nullptr;
+    Block* tail = nullptr;
+    auto remaining = payload_size;
+    for (std::size_t index = 0; index < block_count; ++index) {
+        auto* block = impl_->pop_free();
+        if (!block) {
+            if (head) abandon_record(*head);
+            return {};
+        }
+        block->segment_size = std::min(remaining, impl_->payload_capacity);
+        block->payload_next = nullptr;
+        if (tail) {
+            tail->payload_next = block;
+        } else {
+            head = block;
+        }
+        tail = block;
+        remaining -= block->segment_size;
+    }
+    head->record_payload_size = payload_size;
+    return {*this, *head};
 }
 
-void TickCaptureStore::abandon(Block& block) noexcept
+void TickCaptureStore::abandon_record(Block& head) noexcept
 {
-    impl_->push_free(block);
+    auto* block = &head;
+    while (block) {
+        auto* next = block->payload_next;
+        impl_->push_free(*block);
+        block = next;
+    }
+}
+
+TickCaptureRecordView TickCaptureStore::view(Block const& head) const noexcept
+{
+    return {
+        .sequence = head.sequence,
+        .output = head.output,
+        .begin = head.begin,
+        .sample_count = head.sample_count,
+        .payload_kind = head.payload_kind,
+        .sample_layout = head.sample_layout,
+        .event_type = head.event_type,
+        .event_count = head.event_count,
+        .payload = TickCapturePayloadView{
+            &head, head.record_payload_size},
+    };
 }
 
 bool TickCaptureStore::seal_samples(
-    Block& block,
+    Block& head,
     TickCaptureOutputHandle output,
     SampleIndex begin,
     std::size_t sample_count,
@@ -298,30 +362,31 @@ bool TickCaptureStore::seal_samples(
         return false;
     }
     auto const bytes = values * sizeof(Sample);
-    if (bytes > block.payload_capacity
+    if (bytes != head.record_payload_size
         || impl_->next_sequence == std::numeric_limits<CaptureSequence>::max()) {
         return false;
     }
 
-    block.output = output.output_;
-    block.begin = begin;
-    block.sample_count = sample_count;
-    block.payload_kind = TickCapturePayloadKind::samples;
-    block.sample_layout = layout;
-    block.event_type = EventTypeId::empty;
-    block.event_count = 0;
-    block.payload_size = bytes;
-    block.sequence = impl_->next_sequence;
-    block.sealed_next.store(nullptr, std::memory_order_relaxed);
-    impl_->audio_tail->sealed_next.store(&block, std::memory_order_release);
-    impl_->audio_tail = &block;
+    head.output = output.output_;
+    head.begin = begin;
+    head.sample_count = sample_count;
+    head.payload_kind = TickCapturePayloadKind::samples;
+    head.sample_layout = layout;
+    head.event_type = EventTypeId::empty;
+    head.event_count = 0;
+    for (auto* block = &head; block; block = block->payload_next) {
+        block->sequence = impl_->next_sequence;
+    }
+    head.sealed_next.store(nullptr, std::memory_order_relaxed);
+    impl_->audio_tail->sealed_next.store(&head, std::memory_order_release);
+    impl_->audio_tail = &head;
     ++impl_->next_sequence;
     impl_->published.store(impl_->next_sequence, std::memory_order_release);
     return true;
 }
 
 bool TickCaptureStore::seal_events(
-    Block& block,
+    Block& head,
     TickCaptureOutputHandle output,
     SampleIndex begin,
     std::size_t sample_count,
@@ -337,33 +402,63 @@ bool TickCaptureStore::seal_events(
         return false;
     }
     auto const bytes = event_count * sizeof(TimedEvent);
-    if (bytes > block.payload_capacity
+    if (bytes != head.record_payload_size
         || impl_->next_sequence == std::numeric_limits<CaptureSequence>::max()) {
         return false;
     }
+
+    auto const* read_block = &head;
+    std::size_t read_block_offset = 0;
+    auto read = [&](std::span<std::byte> destination) {
+        std::size_t copied = 0;
+        while (read_block && copied != destination.size()) {
+            auto const count = std::min(
+                read_block->segment_size - read_block_offset,
+                destination.size() - copied);
+            std::memcpy(
+                destination.data() + copied,
+                read_block->payload + read_block_offset,
+                count);
+            copied += count;
+            read_block_offset += count;
+            if (read_block_offset == read_block->segment_size) {
+                read_block = read_block->payload_next;
+                read_block_offset = 0;
+            }
+        }
+        return copied == destination.size();
+    };
+
     auto const end = begin + static_cast<SampleIndex>(sample_count);
-    auto const* events = reinterpret_cast<TimedEvent const*>(block.payload);
+    TimedEvent previous{};
     for (std::size_t index = 0; index < event_count; ++index) {
-        auto const time = static_cast<SampleIndex>(events[index].time);
-        if (time < begin || time >= end
-            || !event_matches_type(type, events[index].value)
-            || (index != 0 && events[index].time < events[index - 1].time)) {
+        TimedEvent event{};
+        if (!read(std::as_writable_bytes(
+                std::span{&event, std::size_t{1}}))) {
             return false;
         }
+        auto const time = static_cast<SampleIndex>(event.time);
+        if (time < begin || time >= end
+            || !event_matches_type(type, event.value)
+            || (index != 0 && event.time < previous.time)) {
+            return false;
+        }
+        previous = event;
     }
 
-    block.output = output.output_;
-    block.begin = begin;
-    block.sample_count = sample_count;
-    block.payload_kind = TickCapturePayloadKind::events;
-    block.sample_layout = {};
-    block.event_type = type;
-    block.event_count = event_count;
-    block.payload_size = bytes;
-    block.sequence = impl_->next_sequence;
-    block.sealed_next.store(nullptr, std::memory_order_relaxed);
-    impl_->audio_tail->sealed_next.store(&block, std::memory_order_release);
-    impl_->audio_tail = &block;
+    head.output = output.output_;
+    head.begin = begin;
+    head.sample_count = sample_count;
+    head.payload_kind = TickCapturePayloadKind::events;
+    head.sample_layout = {};
+    head.event_type = type;
+    head.event_count = event_count;
+    for (auto* block = &head; block; block = block->payload_next) {
+        block->sequence = impl_->next_sequence;
+    }
+    head.sealed_next.store(nullptr, std::memory_order_relaxed);
+    impl_->audio_tail->sealed_next.store(&head, std::memory_order_release);
+    impl_->audio_tail = &head;
     ++impl_->next_sequence;
     impl_->published.store(impl_->next_sequence, std::memory_order_release);
     return true;
@@ -404,7 +499,20 @@ bool TickCaptureStore::commit(Batch&& batch) noexcept
             std::memory_order_acquire);
         auto* previous = impl_->consumer_head;
         impl_->consumer_head = next;
-        if (previous != impl_->sentinel.get()) impl_->retire(*previous);
+        if (previous != impl_->sentinel.get()) {
+            for (auto* block = previous; block; block = block->payload_next) {
+                impl_->retire(*block);
+            }
+        }
+    }
+    if (impl_->consumer_head != impl_->sentinel.get()) {
+        auto* payload = std::exchange(
+            impl_->consumer_head->payload_next, nullptr);
+        while (payload) {
+            auto* next = payload->payload_next;
+            impl_->retire(*payload);
+            payload = next;
+        }
     }
     impl_->processed = batch.cutoff_;
     batch = {};
@@ -458,70 +566,112 @@ CaptureSequence TickCaptureStore::published_sequence() const noexcept
     return impl_->published.load(std::memory_order_acquire);
 }
 
-TickCaptureStore::Writer::~Writer()
+TickCaptureStore::RecordWriter::~RecordWriter()
 {
     reset();
 }
 
-TickCaptureStore::Writer::Writer(Writer&& other) noexcept
+TickCaptureStore::RecordWriter::RecordWriter(RecordWriter&& other) noexcept
     : store_(std::exchange(other.store_, nullptr))
-    , block_(std::exchange(other.block_, nullptr))
+    , head_(std::exchange(other.head_, nullptr))
+    , write_block_(std::exchange(other.write_block_, nullptr))
+    , write_block_offset_(std::exchange(other.write_block_offset_, 0))
+    , written_(std::exchange(other.written_, 0))
 {}
 
-TickCaptureStore::Writer& TickCaptureStore::Writer::operator=(
-    Writer&& other) noexcept
+TickCaptureStore::RecordWriter& TickCaptureStore::RecordWriter::operator=(
+    RecordWriter&& other) noexcept
 {
     if (this == &other) return *this;
     reset();
     store_ = std::exchange(other.store_, nullptr);
-    block_ = std::exchange(other.block_, nullptr);
+    head_ = std::exchange(other.head_, nullptr);
+    write_block_ = std::exchange(other.write_block_, nullptr);
+    write_block_offset_ = std::exchange(other.write_block_offset_, 0);
+    written_ = std::exchange(other.written_, 0);
     return *this;
 }
 
-void TickCaptureStore::Writer::reset() noexcept
+void TickCaptureStore::RecordWriter::reset() noexcept
 {
-    if (store_ && block_) store_->abandon(*block_);
+    if (store_ && head_) store_->abandon_record(*head_);
     store_ = nullptr;
-    block_ = nullptr;
+    head_ = nullptr;
+    write_block_ = nullptr;
+    write_block_offset_ = 0;
+    written_ = 0;
 }
 
-std::span<std::byte> TickCaptureStore::Writer::payload() noexcept
+std::size_t TickCaptureStore::RecordWriter::payload_size() const noexcept
 {
-    return block_
-        ? std::span<std::byte>{block_->payload, block_->payload_capacity}
-        : std::span<std::byte>{};
+    return head_ ? head_->record_payload_size : 0;
 }
 
-bool TickCaptureStore::Writer::seal_samples(
+bool TickCaptureStore::RecordWriter::append(
+    std::span<std::byte const> source) noexcept
+{
+    if (!head_ || written_ > head_->record_payload_size
+        || source.size() > head_->record_payload_size - written_) {
+        return false;
+    }
+    std::size_t copied = 0;
+    while (write_block_ && copied != source.size()) {
+        auto const count = std::min(
+            write_block_->segment_size - write_block_offset_,
+            source.size() - copied);
+        std::memcpy(
+            write_block_->payload + write_block_offset_,
+            source.data() + copied,
+            count);
+        copied += count;
+        write_block_offset_ += count;
+        if (write_block_offset_ == write_block_->segment_size) {
+            write_block_ = write_block_->payload_next;
+            write_block_offset_ = 0;
+        }
+    }
+    written_ += copied;
+    return copied == source.size();
+}
+
+bool TickCaptureStore::RecordWriter::seal_samples(
     TickCaptureOutputHandle output,
     SampleIndex begin,
     std::size_t sample_count,
     ChannelLayout layout) noexcept
 {
-    if (!store_ || !block_
+    if (!store_ || !head_
+        || written_ != head_->record_payload_size
         || !store_->seal_samples(
-            *block_, output, begin, sample_count, layout)) {
+            *head_, output, begin, sample_count, layout)) {
         return false;
     }
     store_ = nullptr;
-    block_ = nullptr;
+    head_ = nullptr;
+    write_block_ = nullptr;
+    write_block_offset_ = 0;
+    written_ = 0;
     return true;
 }
 
-bool TickCaptureStore::Writer::seal_events(
+bool TickCaptureStore::RecordWriter::seal_events(
     TickCaptureOutputHandle output,
     SampleIndex begin,
     std::size_t sample_count,
     EventTypeId type,
     std::size_t event_count) noexcept
 {
-    if (!store_ || !block_
+    if (!store_ || !head_
+        || written_ != head_->record_payload_size
         || !store_->seal_events(
-            *block_, output, begin, sample_count, type, event_count)) {
+            *head_, output, begin, sample_count, type, event_count)) {
         return false;
     }
     store_ = nullptr;
-    block_ = nullptr;
+    head_ = nullptr;
+    write_block_ = nullptr;
+    write_block_offset_ = 0;
+    written_ = 0;
     return true;
 }
 
@@ -575,7 +725,7 @@ void TickCaptureStore::Batch::for_each(
     auto* current = first_;
     for (auto sequence = begin_; sequence < cutoff_; ++sequence) {
         if (!current || current->sequence != sequence) return;
-        auto const record = store_->impl_->view(*current);
+        auto const record = store_->view(*current);
         visitor(data, record);
         current = current->sealed_next.load(std::memory_order_acquire);
     }

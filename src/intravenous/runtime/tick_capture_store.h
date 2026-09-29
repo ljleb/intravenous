@@ -20,6 +20,42 @@ enum class TickCapturePayloadKind : std::uint8_t {
 
 class TickCaptureStore;
 
+// Read-only logical payload backed by one or more store blocks. Physical block
+// boundaries are deliberately hidden from record ordering and identity.
+class TickCapturePayloadView {
+    friend class TickCaptureStore;
+
+    void const* first_ = nullptr;
+    std::size_t size_ = 0;
+
+    TickCapturePayloadView(void const* first, std::size_t size) noexcept
+        : first_(first), size_(size)
+    {}
+
+public:
+    using VisitSegment = void(*)(void*, std::span<std::byte const>);
+
+    TickCapturePayloadView() = default;
+
+    [[nodiscard]] bool empty() const noexcept { return size_ == 0; }
+    [[nodiscard]] std::size_t size() const noexcept { return size_; }
+
+    void for_each_segment(void* data, VisitSegment visitor) const;
+
+    template<class Fn>
+    void for_each_segment(Fn&& fn) const
+    {
+        using Function = std::remove_reference_t<Fn>;
+        for_each_segment(
+            std::addressof(fn),
+            +[](void* opaque, std::span<std::byte const> segment) {
+                (*static_cast<Function*>(opaque))(segment);
+            });
+    }
+
+    [[nodiscard]] bool copy_to(std::span<std::byte> destination) const noexcept;
+};
+
 // Control-path-interned identity. Generated/audio code treats this as an opaque
 // token and never copies the string-bearing persisted identity behind it.
 class TickCaptureOutputHandle {
@@ -56,28 +92,32 @@ struct TickCaptureRecordView {
     ChannelLayout sample_layout{};
     EventTypeId event_type = EventTypeId::empty;
     std::size_t event_count = 0;
-    std::span<std::byte const> payload{};
+    TickCapturePayloadView payload{};
 };
 
 // Executor-owned slab-backed transport between generated Tick production and a
 // background transaction. Provisioning and identity registration are control-
-// path operations. acquire()/Writer::seal_*() and CallbackScope destruction are
-// the only audio-thread operations and perform no allocation, locking or owner
-// destruction.
+// path operations. reserve_record()/RecordWriter::seal_*() and CallbackScope
+// destruction are the only audio-thread operations and perform no allocation,
+// locking or owner destruction. One logical record may own several physical
+// blocks, but only its head participates in the published sequence.
 class TickCaptureStore {
+    friend class TickCapturePayloadView;
+
     struct Block;
     class Impl;
     std::unique_ptr<Impl> impl_{};
 
-    void abandon(Block& block) noexcept;
+    void abandon_record(Block& head) noexcept;
+    [[nodiscard]] TickCaptureRecordView view(Block const& head) const noexcept;
     [[nodiscard]] bool seal_samples(
-        Block& block,
+        Block& head,
         TickCaptureOutputHandle output,
         SampleIndex begin,
         std::size_t sample_count,
         ChannelLayout layout) noexcept;
     [[nodiscard]] bool seal_events(
-        Block& block,
+        Block& head,
         TickCaptureOutputHandle output,
         SampleIndex begin,
         std::size_t sample_count,
@@ -86,31 +126,40 @@ class TickCaptureStore {
     void end_callback() noexcept;
 
 public:
-    class Writer {
+    class RecordWriter {
         friend class TickCaptureStore;
 
         TickCaptureStore* store_ = nullptr;
-        Block* block_ = nullptr;
+        Block* head_ = nullptr;
+        Block* write_block_ = nullptr;
+        std::size_t write_block_offset_ = 0;
+        std::size_t written_ = 0;
 
-        Writer(TickCaptureStore& store, Block& block) noexcept
-            : store_(&store), block_(&block)
+        RecordWriter(TickCaptureStore& store, Block& head) noexcept
+            : store_(&store), head_(&head), write_block_(&head)
         {}
         void reset() noexcept;
 
     public:
-        Writer() = default;
-        ~Writer();
-        Writer(Writer const&) = delete;
-        Writer& operator=(Writer const&) = delete;
-        Writer(Writer&& other) noexcept;
-        Writer& operator=(Writer&& other) noexcept;
+        RecordWriter() = default;
+        ~RecordWriter();
+        RecordWriter(RecordWriter const&) = delete;
+        RecordWriter& operator=(RecordWriter const&) = delete;
+        RecordWriter(RecordWriter&& other) noexcept;
+        RecordWriter& operator=(RecordWriter&& other) noexcept;
 
         [[nodiscard]] explicit operator bool() const noexcept
         {
-            return block_ != nullptr;
+            return head_ != nullptr;
         }
 
-        [[nodiscard]] std::span<std::byte> payload() noexcept;
+        [[nodiscard]] std::size_t payload_size() const noexcept;
+        [[nodiscard]] std::size_t written_size() const noexcept
+        {
+            return written_;
+        }
+        [[nodiscard]] bool append(
+            std::span<std::byte const> source) noexcept;
 
         [[nodiscard]] bool seal_samples(
             TickCaptureOutputHandle output,
@@ -211,7 +260,11 @@ public:
     void provision(std::size_t block_count);
 
     [[nodiscard]] CallbackScope begin_callback() noexcept;
-    [[nodiscard]] Writer acquire() noexcept;
+    // Reserves every physical block for one logical payload or returns an empty
+    // writer without changing published state. A zero-byte record still owns a
+    // head block so it can carry metadata and participate in sequence order.
+    [[nodiscard]] RecordWriter reserve_record(
+        std::size_t payload_size) noexcept;
 
     // Background/control path. snapshot_pending() fixes one immutable sequence
     // cutoff. Only commit() advances the processed frontier; destroying a batch
@@ -232,7 +285,7 @@ public:
     [[nodiscard]] CaptureSequence published_sequence() const noexcept;
 };
 
-static_assert(std::is_nothrow_destructible_v<TickCaptureStore::Writer>);
+static_assert(std::is_nothrow_destructible_v<TickCaptureStore::RecordWriter>);
 static_assert(std::is_nothrow_destructible_v<TickCaptureStore::CallbackScope>);
 
 } // namespace iv

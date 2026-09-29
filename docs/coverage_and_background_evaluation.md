@@ -432,7 +432,7 @@ these classes:
 1. **node-local semantic mutation**: an application/UI operation changes node
    state, configuration, or a resource according to that node type's own semantic
    rules;
-2. **Tick-capture snapshot**: a fixed prefix of newly sealed capture blocks changes
+2. **Tick-capture snapshot**: a fixed prefix of newly sealed capture records changes
    one or more capture-backed outputs at their recorded global positions. This covers
    explicit recorder outputs and Tick/persisted staging; capture insertion itself is
    not persisted-page publication;
@@ -1181,9 +1181,9 @@ shared Tick-capture log/pool for persistence staging and explicit recording
 The capture log is append-only by insertion sequence while outstanding, slab-backed,
 and independently provisioned from background-evaluation progress. Tick/persisted
 production uses it to move finalized Tick values toward the canonical page store
-without requiring a Tock callback. When layout permits, one capture block may also be
-the current Tick data read by same-Tick Sequential consumers; this is storage
-coalescing of capabilities, not a second persistence format.
+without requiring a Tock callback. When layout permits, a capture record's payload
+storage may also be the current Tick data read by same-Tick Sequential consumers;
+this is storage coalescing of capabilities, not a second persistence format.
 
 ## 17. Background evaluation transaction workspace
 
@@ -1389,7 +1389,7 @@ persisted roots/pages behind the executor's versioning rules.
 The architectural invalidation-root set is deliberately closed:
 
 - node-local semantic state/resource mutation;
-- a fixed snapshot of newly sealed Tick-capture blocks (including recorder and
+- a fixed snapshot of newly sealed Tick-capture records (including recorder and
   Tick/persisted staging records);
 - graph semantic configuration/topology/implementation change; and
 - project sample-rate change.
@@ -1651,7 +1651,7 @@ Random Access rule. A Tick callback selects/pins its immutable persisted-page vi
 the callback boundary. For a Tick/persisted producer, a block produced or captured
 earlier in that same callback is therefore still invisible to Random Access even if
 its eventual page position is already known. Pending candidate pages and sealed
-capture blocks do not extend the selected view's coverage.
+capture records do not extend the selected view's coverage.
 
 A later page-version publication makes those positions available to a subsequent
 callback/read context. Publication occurring concurrently with a callback does not
@@ -1699,23 +1699,33 @@ The shared Tick-capture transport accepts any Tick-produced data whose lifetime
 must escape ordinary current-block execution. Explicit recorder bridges use it for
 otherwise unreproducible sequential data; Tick/persisted outputs use it to stage
 finalized data for canonical page publication. Capture occurs at the producer/
-finalization point, not at the end of the whole root callback. When layout permits,
-the producer writes directly into a pre-provisioned capture block; otherwise the
-generated path performs a bounded copy. The block is sealed as one immutable record:
+finalization point, not at the end of the whole root callback. Before copying, the
+producer reserves every fixed-size payload block required by the capture. Those
+blocks remain one unpublished logical record until the complete payload is sealed:
 
 ```cpp
-struct CapturedBlock {
+struct CapturedRecord {
     CaptureSequence sequence;
     OutputPortId output_port;
     GlobalBlockPosition position;
-    // immutable data owned by capture storage
+    SegmentedPayload payload; // one or more allocator blocks
 };
 ```
 
+A capture opportunity does not itself require a record. An explicit recording port
+may decline to record; that performs no reservation, consumes no sequence number and
+changes no retained state. A zero-payload record is different: it is an intentional,
+authoritative empty value for a named output/window. In particular, a persisted event
+output seals such a record when its finalized window contains no events so publication
+can replace any older events in that window with emptiness.
+
 `sequence` is the monotonic insertion order of the executor's shared Tick-capture
-log. All participating capture-backed outputs share that ordering domain. It does
-not order timeline positions. `output_port` identifies the output whose retained or
-recorded value/coverage is changed by the data. Consecutive records may belong to
+log and is assigned once per logical capture, irrespective of its physical block
+count. Only record heads participate in the log; payload blocks have no independent
+sequence identity and are never individually visible to snapshots. All participating
+capture-backed outputs share that ordering domain. It does not order timeline
+positions. `output_port` identifies the output whose retained or recorded value/
+coverage is changed by the data. Consecutive records may belong to
 different outputs, and seeking while playback/recording is active may append records
 for positions earlier than records that have not yet been consumed by background
 evaluation.
@@ -1791,7 +1801,7 @@ and consumer read path.
 
 ## 24. Tick capture allocation, snapshots, and reclamation
 
-Capture-block provisioning is shared infrastructure for Tick-produced data whose
+Capture-record provisioning is shared infrastructure for Tick-produced data whose
 lifetime must escape ordinary current-block execution. Explicit recording bridges
 use it to make otherwise unreproducible sequential data available to background
 work. Tick/persisted outputs may use the same pool/log to stage finalized Tick data
@@ -1813,7 +1823,7 @@ pre-provisioned free capture blocks
         v
 Tick output production/finalization during tick_block()
         |
-        | direct fill or bounded copy + metadata + seal
+        | reserve all payload blocks + bounded fill + metadata + one seal
         v
 append-only Tick capture log
         |
@@ -1832,11 +1842,11 @@ The audio-thread path does not wait for background evaluation and does not scan 
 graph at the end of `tick_block()`. At the precise point where a recording block or
 persistable Tick block becomes eligible for capture it:
 
-1. consumes one already-provisioned free capture block (or produces directly into
-   such a block when the selected storage layout permits it);
+1. atomically reserves all already-provisioned payload blocks required by one
+   logical capture, returning no blocks and publishing nothing if capacity is short;
 2. copies/finalizes the sample/event data as needed;
 3. writes the stable output identity, global block position, and next capture
-   sequence; and
+   sequence on the logical record head; and
 4. seals/publishes the immutable record to the Tick capture log.
 
 Only the audio-thread path consumes blocks from the free-capacity pool. The allocator
@@ -2356,9 +2366,10 @@ recording merely because that planning metadata exists.
    operational.** The shared runtime transport now interns persisted output identities
    off the audio thread and owns append-only slabs of uniform, aligned capture blocks.
    Provisioning publishes initialized blocks to a lock-free single-audio-consumer free
-   pool. One callback scope can acquire, fill and seal sample/event records without
-   allocation or locking; sealing assigns the executor-wide insertion sequence and
-   appends to the immutable log. Background code can fix `[begin, cutoff)` once,
+   pool. One callback scope can reserve, fill and seal sample/event records without
+   allocation or locking. Reservation is all-or-nothing; a record owns one or more
+   fixed-size payload blocks, while only its head receives an executor-wide insertion
+   sequence and enters the immutable log. Background code can fix `[begin, cutoff)` once,
    iterate exactly that batch, advance the processed frontier only on commit, and
    recycle committed blocks only on the non-audio path. Reclamation records the active
    callback's starting sequence and never recycles a block from that callback before
@@ -2376,14 +2387,15 @@ recording merely because that planning metadata exists.
    Each address-stable Tick workspace interns its planned output identities, binds its
    sample/event operation arrays, and calculates the fixed-block reserve for one
    maximum-size callback. Staging provisions that reserve off the audio thread. The
-   current store policy uses 64 KiB payload blocks; larger sample windows and event
-   sequences are split into ordered records rather than requiring a generation-sized
-   allocation.
+   current store policy uses 64 KiB payload blocks, but allocator blocks are not log
+   records. Every complete sample window or event sequence is one logical capture,
+   one sequence entry and one published record head backed by as many blocks as its
+   payload requires. A fixed background prefix therefore cannot bisect a capture.
 
    `TickInvocationFrame` now holds one capture callback scope for the complete root
    invocation. Bound sample operations validate the finalized reflected binding and
    copy the complete authored `[block-history, block-end+latency)` window, preserving
-   its channel layout while splitting at block boundaries. Event operations validate
+   its channel layout behind one logical record. Event operations validate
    the final bounded/ring representation, retain sorted events from that same window,
    and seal an empty record when the finalized window contains no events. The generated
    ABI still sees only opaque runtime-resolved operations. Lowering now maps each

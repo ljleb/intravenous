@@ -1025,9 +1025,12 @@ This is a hint, not a hard constraint. Use your own good judgement if ever in do
     callback reserve, and provisions it off the audio thread. One callback scope spans
     each `TickInvocationFrame`. Sample and event operations validate the finalized
     reflected binding and capture the complete authored
-    `[block-history, block-end+latency)` window; data that does not fit one fixed 64 KiB
-    transport block is emitted as ordered records, and empty event windows still seal
-    an explicit record. Explicit executor reclamation now includes committed blocks on
+    `[block-history, block-end+latency)` window. Each window is one logical record and
+    one capture-sequence entry, backed by as many fixed-size payload blocks as needed;
+    empty event windows still seal an explicit zero-payload record. Blocks are reserved
+    all-or-nothing before copying and only the completed record head is published, so
+    a fixed snapshot cannot bisect a capture. Explicit executor
+    reclamation now includes committed blocks on
     the non-audio path while deferring every record at or beyond the active callback's
     starting sequence. Lowering maps each planned logical capture slot to its compact
     reflected output binding and invokes the opaque operation after the producer's
