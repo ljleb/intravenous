@@ -1917,8 +1917,11 @@ policy rather than graph semantics and can be configured independently.
 
 Recording and Tick/persisted staging may draw from the same pool; their destination
 representations differ, not their need for pre-provisioned audio-thread-safe blocks.
-The executor exposes reserve maintenance through a non-audio entry point so an
-allocator worker can replenish free blocks while sealed backlog remains unconsumed.
+An executor-owned non-audio maintenance worker replenishes free blocks while sealed
+backlog remains unconsumed and independently returns committed capture blocks to the
+free pool. Graph staging still performs the first refill synchronously, before a new
+realization can become active. Staging and activation publish an immutable `C/L/H/G`
+policy snapshot to the worker; the worker never reads mutable realization selection.
 The audio thread first claims one available-block credit and then removes the
 corresponding published block; a producer publishes a fully initialized free block
 before releasing its credit. Consequently, the observable credit count may temporarily
@@ -2506,12 +2509,19 @@ recording merely because that planning metadata exists.
    same logical block. Resource exhaustion makes the recording incomplete; it never
    authorizes intentional loss.
 
-   Next, give the non-audio runtime worker ownership of periodic reserve maintenance
-   and committed-block reclamation; the executor entry points currently have no
-   continuous production caller. Then implement the output disposition and void-
-   record form, bind explicit recorder bridges at their authored production/
-   finalization points, and consume fixed capture-sequence snapshots through
-   `BackgroundEvaluationTransaction`.
+   The executor now owns the non-audio maintenance worker. Graph staging synchronously
+   establishes the initial reserve and publishes an immutable active/pending
+   `C/L/H/G` policy snapshot; activation republishes the surviving active policy. The
+   worker polls only while capture is possible, replenishes below `L`, and reclaims
+   committed capture blocks independently of allocation. It stops and joins before
+   executor capture storage is destroyed. Allocation and unexpected worker failures
+   latch separately from audio-thread record-reservation failures. The older explicit
+   retired-snapshot operation now reclaims only persisted-page and Tick-materialization
+   snapshot owners; capture-block reclamation has one production owner.
+
+   Next, implement the output disposition and void-record form, bind explicit recorder
+   bridges at their authored production/finalization points, and consume fixed capture-
+   sequence snapshots through `BackgroundEvaluationTransaction`.
    Publish Tick/persisted captures into the canonical page store and recorder captures
    into the recorder's RAM Random Access representation, then advance the capture
    frontier only with transaction commit. The recent-capture Random Access overlay

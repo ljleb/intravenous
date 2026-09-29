@@ -25,7 +25,6 @@ enum class GraphExecutorStageResult : std::uint8_t {
 struct GraphExecutorReclaimedSnapshots {
     std::size_t persisted_pages = 0;
     std::size_t tick_materializations = 0;
-    std::size_t tick_captures = 0;
 };
 
 // Converts graph-derived maximum callback consumption C into allocator
@@ -37,11 +36,28 @@ struct TickCaptureAllocatorConfig {
     std::size_t slab_allocation_granularity = 64;
 };
 
+// Sticky failures of the executor-owned non-audio capture-maintenance worker.
+// Reservation failures are reported separately by TickCaptureStore because they
+// mean a particular audio-thread capture was already lost.
+struct TickCaptureMaintenanceFailures {
+    bool allocation_failed = false;
+    bool unexpected_failure = false;
+
+    [[nodiscard]] bool any() const noexcept
+    {
+        return allocation_failed || unexpected_failure;
+    }
+};
+
 // Mutable runtime owner for immutable CompiledGraph generations. Staging and
 // activation are control-path operations: callers must activate only at a legal
 // whole-root boundary with no concurrent tick_block() invocation. The realtime
 // call itself performs no generation selection, allocation, or lifecycle work.
+// Each executor owns one non-audio worker for capture-block replenishment and
+// committed-block reclamation; destruction stops and joins it before stores die.
 class GraphExecutor {
+    class MaintenanceWorker;
+
     struct Realization {
         std::shared_ptr<CompiledGraph const> graph{};
         NodeStorage storage{};
@@ -80,6 +96,9 @@ class GraphExecutor {
     std::array<std::optional<Realization>, 2> realizations_{};
     std::optional<std::size_t> active_{};
     std::optional<std::size_t> pending_{};
+    // Declared last so its thread stops and joins before any capture-store or
+    // realization state it accesses is destroyed.
+    std::unique_ptr<MaintenanceWorker> maintenance_{};
 
     [[nodiscard]] Realization& active_realization();
     [[nodiscard]] Realization const& active_realization() const;
@@ -87,12 +106,13 @@ class GraphExecutor {
     maximum_capture_blocks_per_callback() const noexcept;
     [[nodiscard]] TickCaptureReservePolicy tick_capture_reserve_policy(
         std::size_t maximum_blocks_per_callback) const;
+    void publish_tick_capture_maintenance_policy();
 
 public:
     explicit GraphExecutor(
         ResourceContext resources = {},
         TickCaptureAllocatorConfig tick_capture_allocator = {});
-    ~GraphExecutor() = default;
+    ~GraphExecutor();
 
     GraphExecutor(GraphExecutor const&) = delete;
     GraphExecutor& operator=(GraphExecutor const&) = delete;
@@ -123,16 +143,17 @@ public:
     // background publication. A live callback pin always defers its owner.
     [[nodiscard]] GraphExecutorReclaimedSnapshots reclaim_retired_snapshots();
 
-    // Non-audio allocator maintenance. Uses the active/pending maximum callback
-    // consumption C and configured L/H/G policy to replenish one rounded slab
-    // only after free capture blocks fall below L. Returns blocks added.
-    [[nodiscard]] std::size_t maintain_tick_capture_reserve();
-
     // Sticky failures to reserve complete Tick capture records. In particular,
     // insufficient_free_blocks means at least one required Tick/persisted
     // capture may have been lost and later reserve maintenance cannot repair it.
     [[nodiscard]] TickCaptureReservationFailures
     tick_capture_reservation_failures() const noexcept;
+
+    // Sticky failures raised when the executor-owned non-audio worker cannot
+    // replenish capture-block storage. These do not imply that a capture was
+    // lost unless tick_capture_reservation_failures() also reports exhaustion.
+    [[nodiscard]] TickCaptureMaintenanceFailures
+    tick_capture_maintenance_failures() const noexcept;
 
     // Executes only the already-active realization. Generation activation is
     // deliberately never hidden in this audio-thread entry point.

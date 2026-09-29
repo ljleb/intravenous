@@ -1032,23 +1032,24 @@ This is a hint, not a hard constraint. Use your own good judgement if ever in do
     includes the complete history/current/latency window of every invocation. `C` is a
     structural lower bound, not the allocator reserve. The allocator derives a much
     larger low watermark `L`, refill target `H`, and slab granularity `G`, with
-    `C << L < H`. Staging uses the larger active/pending `C`; an explicit non-audio
-    executor maintenance call allocates only below `L` and refills toward `H` in one
-    `G`-rounded slab while capture backlog remains pending. Free-block publication
-    releases claimable credit only after the initialized block is reachable; the
+    `C << L < H`. Staging uses the larger active/pending `C` and synchronously creates
+    the initial reserve. An executor-owned non-audio worker receives immutable policy
+    snapshots after staging/activation, allocates only below `L`, and refills toward
+    `H` in one `G`-rounded slab while capture backlog remains pending. Free-block
+    publication releases claimable credit only after the initialized block is reachable; the
     single audio consumer claims credit before removing its block. Watermark reads may
     therefore undercount a concurrent publication but cannot transiently overstate
     blocks available for capture. Capture-record reclamation remains separate. One
-    callback scope spans each `TickInvocationFrame`. Sample and event operations validate the finalized
+    callback scope spans each `TickInvocationFrame`. Sample and event operations
+    validate the finalized
     reflected binding and capture the complete authored
     `[block-history, block-end+latency)` window. Each window is one logical record and
     one capture-sequence entry, backed by as many fixed-size payload blocks as needed;
     empty event windows still seal an explicit zero-payload record. Blocks are reserved
     all-or-nothing before copying and only the completed record head is published, so
-    a fixed snapshot cannot bisect a capture. Explicit executor
-    reclamation now includes committed blocks on
-    the non-audio path while deferring every record at or beyond the active callback's
-    starting sequence. Lowering maps each planned logical capture slot to its compact
+    a fixed snapshot cannot bisect a capture. The maintenance worker reclaims committed
+    blocks while deferring every record at or beyond the active callback's starting
+    sequence. Lowering maps each planned logical capture slot to its compact
     reflected output binding and invokes the opaque operation after the producer's
     complete post-operation sequence. Ordinary and primitive-internally sliced steps
     capture one complete enclosing window; SCC execution captures each finalized
@@ -1067,11 +1068,15 @@ This is a hint, not a hard constraint. Use your own good judgement if ever in do
     record for `voided`. Resource exhaustion is a recording failure, never permission
     to drop a written block.
 
-    Next give the non-audio runtime worker ownership of periodic reserve maintenance
-    and committed-block reclamation; today only the executor operations and initial
-    staging call exist. Then add output disposition and the void-record form, bind
-    explicit-recorder blocks at their authored bridge points, and consume fixed capture
-    prefixes through the background transaction. Publish Tick/persisted captures into
+    The same worker periodically reclaims committed capture blocks independently of
+    replenishment and joins before executor-owned capture storage is destroyed. It
+    sleeps without polling while the published policy has `C = 0`. Allocation and
+    unexpected worker failures are sticky control-path diagnostics distinct from the
+    sticky failure of an individual audio-thread record reservation.
+
+    Next add output disposition and the void-record form, bind explicit-recorder blocks
+    at their authored bridge points, and consume fixed capture prefixes through the
+    background transaction. Publish Tick/persisted captures into
     the canonical page store and recorder captures into the recorder's RAM Random
     Access representation, then advance the capture frontier only with transaction
     commit. A same-Tick recent-capture Random Access overlay remains a later optional

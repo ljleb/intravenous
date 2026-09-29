@@ -267,6 +267,11 @@ the free-block reserve for the shared Tick-capture pool. Explicit recording and
 Tick/persisted staging may consume blocks from the same pool. Provisioning is
 independent of background-evaluation progress; a slow background worker increases
 the sealed/pending backlog rather than changing the audio-thread allocation rules.
+`GraphExecutor` owns the maintenance worker that performs this role. Staging creates
+the initial reserve synchronously, then staging/activation publish immutable policy
+snapshots to the worker; the worker never discovers policy by reading mutable graph-
+realization selection concurrently. It also reclaims committed capture blocks as an
+operation separate from allocation.
 The maximum blocks per callback (`C`) covers every capture invocation that can seal before the
 callback ends. For a producer in a cyclic SCC this means every semantic slice, not one
 root-sized record; each slice independently includes its authored history and latency

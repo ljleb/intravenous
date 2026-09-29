@@ -871,8 +871,10 @@ Sizing sums the physical blocks for every retained invocation, including history
 latency in each slice window, producing `C`: maximum capture blocks consumed by one
 callback. `C` is not the operational reserve. Staging takes the larger active/pending
 `C` and derives the allocator low watermark `L`, refill target `H`, and slab granularity
-`G`. A separate non-audio executor maintenance entry point allocates only below `L`
-and refills toward `H` with one `G`-rounded slab while sealed backlog is still pending.
+`G`. An executor-owned non-audio worker receives immutable policy snapshots after
+staging and activation, allocates only below `L`, and refills toward `H` with one
+`G`-rounded slab while sealed backlog is still pending. The same worker returns
+committed capture blocks to the free pool independently of allocation.
 The current allocator uses
 fixed 64 KiB blocks. A
 `TickInvocationFrame` holds the store's callback scope while sample/event operations
