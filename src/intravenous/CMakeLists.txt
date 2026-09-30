@@ -304,6 +304,7 @@ add_library(intravenous_module_watcher OBJECT
 iv_configure_intravenous_target(intravenous_module_watcher PUBLIC)
 
 add_library(intravenous_graph_jit OBJECT
+    runtime/async_capacity_manager.cpp
     runtime/background_coverage_propagation.cpp
     runtime/background_evaluation_call_frame.cpp
     runtime/background_evaluation_transaction.cpp

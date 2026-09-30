@@ -135,6 +135,9 @@ add_iv_gtest(
     intravenous_graph_executor_tests
     graph_executor_gtest.cpp)
 add_iv_gtest(
+    intravenous_async_capacity_manager_tests
+    async_capacity_manager_gtest.cpp)
+add_iv_gtest(
     intravenous_persisted_page_store_tests
     persisted_page_store_gtest.cpp)
 add_iv_gtest(
