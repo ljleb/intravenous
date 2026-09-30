@@ -2,10 +2,12 @@
 
 #include <gtest/gtest.h>
 
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <stdexcept>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -39,6 +41,17 @@ std::vector<std::uint32_t> values(iv::PinnedBlockPrefix const& prefix)
         result.push_back(read_value(block));
     });
     return result;
+}
+
+template<class Predicate>
+bool eventually(Predicate&& predicate)
+{
+    auto const deadline = std::chrono::steady_clock::now()
+        + std::chrono::seconds{2};
+    while (!predicate() && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds{1});
+    }
+    return predicate();
 }
 
 TEST(AsyncCapacityManager, RefillsBelowLowWatermarkTowardHighWatermark)
@@ -200,6 +213,72 @@ TEST(AsyncCapacityManager, IndependentQueuesPinIndependentPrefixes)
     EXPECT_EQ(
         values(second_pending.pin()),
         (std::vector<std::uint32_t>{2}));
+}
+
+TEST(AsyncCapacityManager, RegisteredProducerIsReplenishedByManagerWorker)
+{
+    iv::ProducerReserve reserve{64};
+    iv::AsyncCapacityManager manager{4};
+    auto registration = manager.register_producer(reserve, policy);
+    ASSERT_TRUE(registration);
+    ASSERT_EQ(reserve.ready_block_count(), 8u);
+
+    auto retained = reserve.acquire(7);
+    ASSERT_TRUE(retained);
+    EXPECT_TRUE(eventually([&] {
+        return reserve.ready_block_count() >= policy.high_watermark;
+    }));
+    EXPECT_FALSE(manager.failures().any());
+}
+
+TEST(AsyncCapacityManager, ManagerWorkerReclaimsSharedReleasedBlockStream)
+{
+    iv::ProducerReserve reserve{64};
+    iv::PendingQueue pending{reserve};
+    iv::AsyncCapacityManager manager{4};
+    auto registration = manager.register_producer(reserve, policy);
+    ASSERT_TRUE(registration);
+
+    auto produced = reserve.acquire(3);
+    ASSERT_TRUE(pending.publish(std::move(produced)));
+    auto selected = pending.pin();
+    ASSERT_TRUE(pending.release(
+        std::move(selected), manager.released_blocks()));
+
+    EXPECT_TRUE(eventually([&] {
+        return reserve.ready_block_count() == 7;
+    }));
+}
+
+TEST(AsyncCapacityManager, RegistrationRemovalStopsReserveMaintenance)
+{
+    iv::ProducerReserve reserve{64};
+    iv::AsyncCapacityManager manager{4};
+    auto registration = manager.register_producer(reserve, policy);
+    ASSERT_TRUE(registration);
+    registration.reset();
+
+    auto const available = reserve.ready_block_count();
+    ASSERT_NE(available, 0u);
+    auto retained = reserve.acquire(available);
+    ASSERT_TRUE(retained);
+    std::this_thread::sleep_for(std::chrono::milliseconds{10});
+    EXPECT_EQ(reserve.ready_block_count(), 0u);
+}
+
+TEST(AsyncCapacityManager, OneReserveCannotHaveTwoManagerRegistrations)
+{
+    iv::ProducerReserve reserve{64};
+    iv::AsyncCapacityManager manager{4};
+    auto registration = manager.register_producer(reserve, policy);
+    ASSERT_TRUE(registration);
+
+    EXPECT_THROW(
+        {
+            auto duplicate = manager.register_producer(reserve, policy);
+            static_cast<void>(duplicate);
+        },
+        std::invalid_argument);
 }
 
 } // namespace

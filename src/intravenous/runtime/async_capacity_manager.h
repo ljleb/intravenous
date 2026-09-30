@@ -1,10 +1,13 @@
 #pragma once
 
 #include <atomic>
+#include <condition_variable>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <mutex>
 #include <span>
+#include <thread>
 #include <type_traits>
 #include <vector>
 
@@ -13,6 +16,7 @@ namespace iv {
 class AsyncCapacityManager;
 class PendingQueue;
 class ProducerReserve;
+class ProducerCapacityRegistration;
 class ReleasedBlockQueue;
 
 // One stable, fixed-capacity unit of realtime-to-background transport. Queue
@@ -245,16 +249,71 @@ struct ProducerCapacityPolicy {
     std::size_t high_watermark = 0;
 };
 
-// Non-realtime owner of allocated block slabs. This first primitive exposes
-// one maintenance operation; the GraphExecutor-owned worker will call it when
-// producer endpoints are integrated into execution generations.
+struct AsyncCapacityManagerFailures {
+    bool allocation_failed = false;
+    bool unexpected_failure = false;
+
+    [[nodiscard]] bool any() const noexcept
+    {
+        return allocation_failed || unexpected_failure;
+    }
+};
+
+// Stable off-realtime registration of one producer reserve and its immutable
+// C/L/H policy. Destroying the registration first removes the reserve from the
+// manager worker, after which the reserve may be destroyed safely.
+class ProducerCapacityRegistration {
+    friend class AsyncCapacityManager;
+
+    AsyncCapacityManager* manager_ = nullptr;
+    ProducerReserve* reserve_ = nullptr;
+    ProducerCapacityPolicy policy_{};
+
+    ProducerCapacityRegistration(
+        AsyncCapacityManager& manager,
+        ProducerReserve& reserve,
+        ProducerCapacityPolicy policy) noexcept;
+
+public:
+    ~ProducerCapacityRegistration();
+
+    ProducerCapacityRegistration(ProducerCapacityRegistration const&) = delete;
+    ProducerCapacityRegistration& operator=(
+        ProducerCapacityRegistration const&) = delete;
+    ProducerCapacityRegistration(ProducerCapacityRegistration&&) = delete;
+    ProducerCapacityRegistration& operator=(
+        ProducerCapacityRegistration&&) = delete;
+};
+
+// Non-realtime owner of allocated block slabs and the worker that replenishes
+// registered producer reserves and reclaims the shared released-block stream.
 class AsyncCapacityManager {
+    friend class ProducerCapacityRegistration;
+
     struct Slab;
+
+    static constexpr std::uint32_t allocation_failure = 1u << 0;
+    static constexpr std::uint32_t unexpected_failure = 1u << 1;
 
     std::size_t slab_block_granularity_ = 0;
     std::vector<std::unique_ptr<Slab>> slabs_{};
+    ReleasedBlockQueue released_blocks_{};
+    std::mutex mutex_{};
+    std::condition_variable wake_{};
+    std::vector<ProducerCapacityRegistration*> registrations_{};
+    std::uint64_t registration_revision_ = 0;
+    std::atomic<std::uint32_t> failure_bits_{0};
+    // Declared last so destruction can stop and join the worker before any
+    // state used by its run loop is destroyed.
+    std::jthread worker_{};
 
     void allocate_slab(ProducerReserve& reserve, std::size_t block_count);
+    [[nodiscard]] std::size_t maintain_locked(
+        ProducerReserve& reserve, ProducerCapacityPolicy policy);
+    [[nodiscard]] std::size_t reclaim_locked(
+        ReleasedBlockQueue& released) noexcept;
+    void unregister(ProducerCapacityRegistration& registration) noexcept;
+    void run(std::stop_token stop) noexcept;
 
 public:
     explicit AsyncCapacityManager(std::size_t slab_block_granularity);
@@ -263,8 +322,22 @@ public:
     AsyncCapacityManager(AsyncCapacityManager const&) = delete;
     AsyncCapacityManager& operator=(AsyncCapacityManager const&) = delete;
 
+    // Synchronously provisions the initial reserve before publishing the
+    // registration to the worker. The returned stable object must not outlive
+    // this manager.
+    [[nodiscard]] std::unique_ptr<ProducerCapacityRegistration>
+    register_producer(
+        ProducerReserve& reserve, ProducerCapacityPolicy policy);
+
+    [[nodiscard]] ReleasedBlockQueue& released_blocks() noexcept
+    {
+        return released_blocks_;
+    }
+
     // Does nothing at or above L. Below L, provisions a whole-granularity slab
-    // sufficient to restore this producer's ready reserve to at least H.
+    // sufficient to restore this producer's ready reserve to at least H. This
+    // synchronous form is a deterministic control/test seam; registered
+    // reserves are maintained automatically by the worker.
     [[nodiscard]] std::size_t maintain(
         ProducerReserve& reserve, ProducerCapacityPolicy policy);
 
@@ -272,6 +345,8 @@ public:
     // worker to the block's owning producer reserve.
     [[nodiscard]] std::size_t reclaim(
         ReleasedBlockQueue& released) noexcept;
+
+    [[nodiscard]] AsyncCapacityManagerFailures failures() const noexcept;
 };
 
 } // namespace iv

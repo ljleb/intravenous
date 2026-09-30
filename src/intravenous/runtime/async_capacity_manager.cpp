@@ -1,8 +1,11 @@
 #include <intravenous/runtime/async_capacity_manager.h>
 
+#include <algorithm>
 #include <bit>
 #include <cassert>
+#include <chrono>
 #include <limits>
+#include <new>
 #include <stdexcept>
 #include <utility>
 
@@ -20,6 +23,22 @@ namespace {
         throw std::length_error("Async capacity slab is too large");
     }
     return count + rounding;
+}
+
+void validate_policy(ProducerCapacityPolicy policy)
+{
+    if (policy.maximum_burst == 0) {
+        if (policy.low_watermark != 0 || policy.high_watermark != 0) {
+            throw std::invalid_argument(
+                "Empty producer capacity policy has non-empty watermarks");
+        }
+        return;
+    }
+    if (policy.low_watermark < policy.maximum_burst
+        || policy.high_watermark <= policy.low_watermark) {
+        throw std::invalid_argument(
+            "Producer capacity policy has invalid C/L/H bounds");
+    }
 }
 
 } // namespace
@@ -317,6 +336,18 @@ struct AsyncCapacityManager::Slab {
     std::size_t block_count = 0;
 };
 
+ProducerCapacityRegistration::ProducerCapacityRegistration(
+    AsyncCapacityManager& manager,
+    ProducerReserve& reserve,
+    ProducerCapacityPolicy policy) noexcept
+    : manager_(&manager), reserve_(&reserve), policy_(policy)
+{}
+
+ProducerCapacityRegistration::~ProducerCapacityRegistration()
+{
+    if (manager_) manager_->unregister(*this);
+}
+
 AsyncCapacityManager::AsyncCapacityManager(
     std::size_t slab_block_granularity)
     : slab_block_granularity_(slab_block_granularity)
@@ -325,9 +356,21 @@ AsyncCapacityManager::AsyncCapacityManager(
         throw std::invalid_argument(
             "Async capacity slab granularity must be a non-zero power of two");
     }
+    worker_ = std::jthread([this](std::stop_token stop) { run(stop); });
 }
 
-AsyncCapacityManager::~AsyncCapacityManager() = default;
+AsyncCapacityManager::~AsyncCapacityManager()
+{
+    worker_.request_stop();
+    wake_.notify_all();
+    if (worker_.joinable()) worker_.join();
+
+    std::scoped_lock lock(mutex_);
+    for (auto* registration : registrations_) {
+        registration->manager_ = nullptr;
+    }
+    registrations_.clear();
+}
 
 void AsyncCapacityManager::allocate_slab(
     ProducerReserve& reserve, std::size_t block_count)
@@ -358,21 +401,11 @@ void AsyncCapacityManager::allocate_slab(
     }
 }
 
-std::size_t AsyncCapacityManager::maintain(
+std::size_t AsyncCapacityManager::maintain_locked(
     ProducerReserve& reserve, ProducerCapacityPolicy policy)
 {
-    if (policy.maximum_burst == 0) {
-        if (policy.low_watermark != 0 || policy.high_watermark != 0) {
-            throw std::invalid_argument(
-                "Empty producer capacity policy has non-empty watermarks");
-        }
-        return 0;
-    }
-    if (policy.low_watermark < policy.maximum_burst
-        || policy.high_watermark <= policy.low_watermark) {
-        throw std::invalid_argument(
-            "Producer capacity policy has invalid C/L/H bounds");
-    }
+    validate_policy(policy);
+    if (policy.maximum_burst == 0) return 0;
 
     auto const available = reserve.ready_block_count();
     if (available >= policy.low_watermark) return 0;
@@ -383,7 +416,116 @@ std::size_t AsyncCapacityManager::maintain(
     return block_count;
 }
 
-std::size_t AsyncCapacityManager::reclaim(
+std::size_t AsyncCapacityManager::maintain(
+    ProducerReserve& reserve, ProducerCapacityPolicy policy)
+{
+    std::scoped_lock lock(mutex_);
+    return maintain_locked(reserve, policy);
+}
+
+std::unique_ptr<ProducerCapacityRegistration>
+AsyncCapacityManager::register_producer(
+    ProducerReserve& reserve, ProducerCapacityPolicy policy)
+{
+    validate_policy(policy);
+    auto registration = std::unique_ptr<ProducerCapacityRegistration>{
+        new ProducerCapacityRegistration{*this, reserve, policy}};
+    {
+        std::scoped_lock lock(mutex_);
+        auto const duplicate = std::find_if(
+            registrations_.begin(), registrations_.end(),
+            [&](auto const* existing) {
+                return existing->reserve_ == &reserve;
+            });
+        if (duplicate != registrations_.end()) {
+            throw std::invalid_argument(
+                "Producer reserve is already registered");
+        }
+        static_cast<void>(maintain_locked(reserve, policy));
+        registrations_.push_back(registration.get());
+        ++registration_revision_;
+    }
+    wake_.notify_one();
+    return registration;
+}
+
+void AsyncCapacityManager::unregister(
+    ProducerCapacityRegistration& registration) noexcept
+{
+    {
+        std::scoped_lock lock(mutex_);
+        // Registration teardown occurs after its realtime/background endpoints
+        // stop publishing. Drain blocks already returned by background while
+        // holding the same mutex that excludes the manager worker.
+        static_cast<void>(reclaim_locked(released_blocks_));
+        auto const found = std::find(
+            registrations_.begin(), registrations_.end(), &registration);
+        if (found != registrations_.end()) registrations_.erase(found);
+        registration.manager_ = nullptr;
+        registration.reserve_ = nullptr;
+        ++registration_revision_;
+    }
+    wake_.notify_one();
+}
+
+void AsyncCapacityManager::run(std::stop_token stop) noexcept
+{
+    static constexpr auto poll_interval = std::chrono::milliseconds{1};
+    static constexpr auto allocation_retry_interval =
+        std::chrono::milliseconds{100};
+
+    std::uint64_t observed_revision = 0;
+    bool allocation_backoff = false;
+    for (;;) {
+        {
+            std::unique_lock lock(mutex_);
+            if (registration_revision_ == observed_revision) {
+                if (registrations_.empty()) {
+                    wake_.wait(lock, [&] {
+                        return stop.stop_requested()
+                            || registration_revision_ != observed_revision;
+                    });
+                } else {
+                    auto const interval = allocation_backoff
+                        ? allocation_retry_interval
+                        : poll_interval;
+                    wake_.wait_for(lock, interval, [&] {
+                        return stop.stop_requested()
+                            || registration_revision_ != observed_revision;
+                    });
+                }
+            }
+            if (stop.stop_requested()) return;
+            observed_revision = registration_revision_;
+
+            if ((failure_bits_.load(std::memory_order_acquire)
+                    & unexpected_failure) == 0) {
+                try {
+                    for (auto const* registration : registrations_) {
+                        static_cast<void>(maintain_locked(
+                            *registration->reserve_, registration->policy_));
+                    }
+                    allocation_backoff = false;
+                } catch (std::bad_alloc const&) {
+                    failure_bits_.fetch_or(
+                        allocation_failure, std::memory_order_release);
+                    allocation_backoff = true;
+                } catch (...) {
+                    failure_bits_.fetch_or(
+                        unexpected_failure, std::memory_order_release);
+                }
+            }
+
+            // Returning committed blocks to their producer reserves is
+            // independent of whether provisioning new storage succeeded. It
+            // stays under the registration mutex so unregister() cannot race
+            // reclamation for a reserve whose lifetime is ending.
+            static_cast<void>(reclaim_locked(released_blocks_));
+        }
+    }
+}
+
+std::size_t AsyncCapacityManager::reclaim_locked(
     ReleasedBlockQueue& released) noexcept
 {
     auto* block = released.take_all();
@@ -397,6 +539,22 @@ std::size_t AsyncCapacityManager::reclaim(
         ++reclaimed;
     }
     return reclaimed;
+}
+
+std::size_t AsyncCapacityManager::reclaim(
+    ReleasedBlockQueue& released) noexcept
+{
+    std::scoped_lock lock(mutex_);
+    return reclaim_locked(released);
+}
+
+AsyncCapacityManagerFailures AsyncCapacityManager::failures() const noexcept
+{
+    auto const bits = failure_bits_.load(std::memory_order_acquire);
+    return {
+        .allocation_failed = (bits & allocation_failure) != 0,
+        .unexpected_failure = (bits & unexpected_failure) != 0,
+    };
 }
 
 } // namespace iv
