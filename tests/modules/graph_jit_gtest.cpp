@@ -9978,10 +9978,11 @@ TEST_F(GraphJitRuntimeFixture, UnequalLatencySampleFeedbackMigratesPopulatedAlig
                 : migrated.diagnostics.front().message);
     auto migrated_storage =
         migrated.compiled_graph->node_layout.create_storage(resources);
-    auto migration = migrated_storage.migration_from(storage);
+    auto migration = migrated_storage.prepare_migration_from(storage);
+    migration.commit();
 
-    // Raw compiler-owned state migrates before activation
-    // and before any realtime callback can observe the new generation.
+    // Raw compiler-owned state is copied when the prepared migration commits
+    // at the activation boundary, before the new generation can observe it.
     auto const migrated_regions =
         sample_feedback_alignment_region(migrated_storage);
     ASSERT_TRUE(migrated_regions.has_value());
@@ -9989,7 +9990,6 @@ TEST_F(GraphJitRuntimeFixture, UnequalLatencySampleFeedbackMigratesPopulatedAlig
         migrated_storage.region_bytes(*migrated_regions);
     ASSERT_EQ(staged_after.size(), staged_snapshot.size());
     EXPECT_TRUE(std::ranges::equal(staged_after, staged_snapshot));
-    migration.commit();
 
     auto* reference_state_before =
         converted_sample_feedback_state(reference_storage);

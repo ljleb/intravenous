@@ -600,12 +600,16 @@ int main()
             8, 4, "graphjit.test.migration");
         auto current_layout = std::move(current_builder).build();
         auto current = current_layout.create_storage(resources);
-        auto migration = current.migration_from(previous);
+        auto migration = current.prepare_migration_from(previous);
+        std::memset(
+            previous.region_bytes(previous_region).data(),
+            0x4d,
+            previous.region_bytes(previous_region).size());
         migration.commit();
         for (auto const byte : current.region_bytes(current_region)) {
             iv::test::require(
-                byte == std::byte{0x7c},
-                "migration should preserve persistent raw storage");
+                byte == std::byte{0x4d},
+                "migration commit should copy the latest persistent raw storage");
         }
     }
 
@@ -932,7 +936,7 @@ int main()
             iv::test::require(
                 reloaded.can_move_from(original, 0, 0),
                 "same reflected TockState definition should remain movable across package generations");
-            auto migration = reloaded.migration_from(original);
+            auto migration = reloaded.prepare_migration_from(original);
             migration.commit();
             auto& reloaded_background =
                 *static_cast<BackgroundLifecycleNode::TockState*>(

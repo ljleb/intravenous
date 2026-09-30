@@ -891,8 +891,10 @@ namespace iv {
         }
     }
 
-    std::unordered_set<std::string> migrate_persistent_raw_regions(
-        NodeStorage& current, NodeStorage const& previous)
+    std::unordered_set<std::string> plan_persistent_raw_region_migration(
+        NodeStorage const& current,
+        NodeStorage const& previous,
+        std::vector<NodeStorage::Migration::RawRegionTransfer>& transfers)
     {
         std::unordered_set<std::string> migrated;
         if (!current.layout || !previous.layout) return migrated;
@@ -925,13 +927,29 @@ namespace iv {
                 || region->alignment != prior->alignment) {
                 continue;
             }
-            if (region->size != 0) {
-                std::memcpy(
-                    current.storage.get() + region->storage_offset,
-                    previous.storage.get() + prior->storage_offset,
-                    region->size);
-            }
+            transfers.push_back({
+                .current_offset = region->storage_offset,
+                .previous_offset = prior->storage_offset,
+                .size = region->size,
+            });
             migrated.insert(identity);
+        }
+        return migrated;
+    }
+
+    std::unordered_set<std::string> migrate_persistent_raw_regions(
+        NodeStorage& current, NodeStorage const& previous)
+    {
+        std::vector<NodeStorage::Migration::RawRegionTransfer> transfers;
+        transfers.reserve(current.layout ? current.layout->regions.size() : 0);
+        auto migrated = plan_persistent_raw_region_migration(
+            current, previous, transfers);
+        for (auto const& transfer : transfers) {
+            if (transfer.size == 0) continue;
+            std::memcpy(
+                current.storage.get() + transfer.current_offset,
+                previous.storage.get() + transfer.previous_offset,
+                transfer.size);
         }
         return migrated;
     }
@@ -1015,7 +1033,7 @@ namespace iv {
     }
 
     NodeStorage::Migration
-    NodeStorage::migration_from(NodeStorage& previous)
+    NodeStorage::prepare_migration_from(NodeStorage& previous)
     {
         if (!layout || !resources || !previous.layout || !previous.resources) {
             throw std::logic_error("node storage migration requires two valid storages");
@@ -1034,7 +1052,7 @@ namespace iv {
         migration.previous_nodes_consumed.assign(
             previous.layout->nodes.size(), false);
         migration.deferred_initialize_nodes.reserve(layout->nodes.size());
-        migration.previous_release_nodes.reserve(previous.layout->nodes.size());
+        migration.raw_region_transfers.reserve(layout->regions.size());
         constructed_nodes.reserve(layout->nodes.size());
         constructed_background_states.reserve(layout->nodes.size());
         initialized_nodes.reserve(layout->nodes.size());
@@ -1104,7 +1122,8 @@ namespace iv {
 
         construct_node_storage_states(*this);
         auto const migrated_raw_regions =
-            migrate_persistent_raw_regions(*this, previous);
+            plan_persistent_raw_region_migration(
+                *this, previous, migration.raw_region_transfers);
         initialize_raw_regions(*this, migrated_raw_regions);
 
         patch_node_storage_regions(*this, [](size_t) { return true; });
@@ -1125,14 +1144,6 @@ namespace iv {
             initialized_nodes.push_back(node);
         }
 
-        for (auto it = previous.initialized_nodes.rbegin();
-             it != previous.initialized_nodes.rend();
-             ++it) {
-            if (*it >= migration.previous_nodes_consumed.size() ||
-                !migration.previous_nodes_consumed[*it]) {
-                migration.previous_release_nodes.push_back(*it);
-            }
-        }
         return migration;
     }
 
@@ -1142,6 +1153,13 @@ namespace iv {
             throw std::logic_error("invalid or already committed node storage migration");
         }
 
+        for (auto const& transfer : raw_region_transfers) {
+            if (transfer.size == 0) continue;
+            std::memcpy(
+                current->storage.get() + transfer.current_offset,
+                previous->storage.get() + transfer.previous_offset,
+                transfer.size);
+        }
         patch_node_storage_imports(*current);
 
         for (auto const node : current->layout->initialize_order) {
@@ -1154,7 +1172,14 @@ namespace iv {
             current->initialized_nodes.push_back(node);
         }
 
-        for (auto const previous_node : previous_release_nodes) {
+        for (auto it = previous->initialized_nodes.rbegin();
+             it != previous->initialized_nodes.rend();
+             ++it) {
+            auto const previous_node = *it;
+            if (previous_node < previous_nodes_consumed.size()
+                && previous_nodes_consumed[previous_node]) {
+                continue;
+            }
             auto const& record = previous->layout->nodes[previous_node];
             if (record.lifecycle.release_fn)
                 record.lifecycle.release_fn(

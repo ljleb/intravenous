@@ -253,7 +253,7 @@ namespace iv {
             NodeStorage const& previous,
             size_t node_index,
             size_t previous_node_index) const;
-        Migration migration_from(NodeStorage& previous);
+        Migration prepare_migration_from(NodeStorage& previous);
         void initialize(NodeStorage const* previous = nullptr);
         void release();
         void destroy_constructed_states();
@@ -262,12 +262,18 @@ namespace iv {
     struct NodeStorage::Migration {
         static constexpr size_t no_node = std::numeric_limits<size_t>::max();
 
+        struct RawRegionTransfer {
+            size_t current_offset = 0;
+            size_t previous_offset = 0;
+            size_t size = 0;
+        };
+
         NodeStorage* current = nullptr;
         NodeStorage* previous = nullptr;
         std::vector<size_t> previous_node_for_current;
         std::vector<bool> previous_nodes_consumed;
         std::vector<size_t> deferred_initialize_nodes;
-        std::vector<size_t> previous_release_nodes;
+        std::vector<RawRegionTransfer> raw_region_transfers;
         bool committed = false;
 
         Migration() = default;

@@ -109,6 +109,8 @@ class GraphExecutor {
         RealtimeGeneration realtime;
         BackgroundGeneration background;
         std::unique_ptr<RealtimePersistedState> initial_persisted_state{};
+        std::optional<NodeStorage::Migration> realtime_migration{};
+        std::optional<NodeStorage::Migration> background_migration{};
         bool realtime_initialized = false;
         bool background_initialized = false;
         std::unique_ptr<ExecutionGeneration> successor_owner{};
@@ -122,8 +124,9 @@ class GraphExecutor {
             RealtimeProducerCapacityConfig const& capacity_policy);
 
         void initialize_first_generation();
-        void migrate_realtime_from(ExecutionGeneration& previous);
-        void migrate_background_from(ExecutionGeneration& previous);
+        void prepare_migration_from(ExecutionGeneration& previous);
+        void commit_realtime_migration();
+        void commit_background_migration();
         void publish_successor(
             std::unique_ptr<ExecutionGeneration> successor);
         [[nodiscard]] ExecutionGeneration* successor() const noexcept;
@@ -180,17 +183,17 @@ public:
     GraphExecutor(GraphExecutor&&) = delete;
     GraphExecutor& operator=(GraphExecutor&&) = delete;
 
-    // Builds a complete pending execution generation without reading mutable
-    // active storage. A newer pending generation supersedes an older pending
-    // generation without disturbing the active one.
+    // Builds a complete pending execution generation and prepares both storage
+    // migrations without copying mutable active state. A newer pending
+    // generation supersedes an older one without disturbing the active one.
     GraphExecutorStageResult stage(
         std::shared_ptr<CompiledGraph const> compiled_graph);
 
-    // At the caller-provided quiescent boundary, migrates realtime state,
-    // closes the predecessor's producer queues, appends the pending generation
-    // to the ordered cutover chain and switches realtime. Background state is
-    // migrated only after those closed queues drain. Returns false when no
-    // generation is pending.
+    // At the caller-provided quiescent boundary, commits the prepared realtime
+    // migration, closes the predecessor's producer queues, appends the pending
+    // generation to the ordered cutover chain and switches realtime.
+    // Background migration commits only after those closed queues drain.
+    // Returns false when no generation is pending.
     bool activate_pending();
 
     [[nodiscard]] std::optional<std::uint64_t> active_generation() const noexcept;

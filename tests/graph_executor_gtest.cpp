@@ -801,7 +801,9 @@ TEST_F(GraphExecutorFixture, IgnoresStaleAndSupersedesOlderPendingGeneration)
         executor.stage(first), iv::GraphExecutorStageResult::ignored_stale);
 }
 
-TEST_F(GraphExecutorFixture, MigratesPersistentNodeStorageBeforeActivation)
+TEST_F(
+    GraphExecutorFixture,
+    PreparesRealtimeMigrationWithoutSnapshottingMutableStorage)
 {
     iv::GraphExecutor executor;
     auto first = compiled_graph(
@@ -812,11 +814,13 @@ TEST_F(GraphExecutorFixture, MigratesPersistentNodeStorageBeforeActivation)
     ASSERT_EQ(
         executor.stage(first), iv::GraphExecutorStageResult::staged);
     ASSERT_TRUE(executor.activate_pending());
-    executor.tick_block(0, 64);
 
     ASSERT_EQ(
         executor.stage(second), iv::GraphExecutorStageResult::staged);
     EXPECT_EQ(executor.active_generation(), 1u);
+    // Migration preparation must not snapshot mutable realtime bytes. The
+    // value written after staging is the value copied at activation.
+    executor.tick_block(0, 64);
     ASSERT_TRUE(executor.activate_pending());
     executor.tick_block(64, 64);
     EXPECT_EQ(migrated_raw_value, 0x5au);
@@ -824,7 +828,7 @@ TEST_F(GraphExecutorFixture, MigratesPersistentNodeStorageBeforeActivation)
 
 TEST_F(
     GraphExecutorFixture,
-    MigratesBackgroundStorageAfterThePredecessorDrains)
+    CommitsPreparedBackgroundMigrationAfterThePredecessorDrains)
 {
     iv::GraphExecutor executor;
     auto first = compiled_graph(
@@ -840,13 +844,15 @@ TEST_F(
 
     ASSERT_EQ(executor.stage(first), iv::GraphExecutorStageResult::staged);
     ASSERT_TRUE(executor.activate_pending());
+    ASSERT_EQ(executor.stage(second), iv::GraphExecutorStageResult::staged);
+    // Background migration is already prepared, but the predecessor remains
+    // live until its work is evaluated and its producer queues are drained.
     auto first_result = executor.evaluate_background({
         .semantic_version = 1,
         .page_width = 16,
     });
     ASSERT_TRUE(first_result.has_value()) << first_result.error();
 
-    ASSERT_EQ(executor.stage(second), iv::GraphExecutorStageResult::staged);
     ASSERT_TRUE(executor.activate_pending());
     auto second_result = executor.evaluate_background({
         .semantic_version = 2,

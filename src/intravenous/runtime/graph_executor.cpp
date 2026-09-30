@@ -165,29 +165,39 @@ void GraphExecutor::ExecutionGeneration::initialize_first_generation()
     background_initialized = true;
 }
 
-void GraphExecutor::ExecutionGeneration::migrate_realtime_from(
+void GraphExecutor::ExecutionGeneration::prepare_migration_from(
     ExecutionGeneration& previous)
 {
-    if (realtime_initialized) {
+    if (realtime_initialized || background_initialized
+        || realtime_migration || background_migration) {
         throw std::logic_error(
-            "GraphExecutor realtime generation is already initialized");
+            "GraphExecutor generation migration is already prepared");
     }
-    auto realtime_migration = realtime.storage.migration_from(
-        previous.realtime.storage);
-    realtime_migration.commit();
+    realtime_migration.emplace(
+        realtime.storage.prepare_migration_from(previous.realtime.storage));
+    background_migration.emplace(
+        background.storage.prepare_migration_from(previous.background.storage));
+}
+
+void GraphExecutor::ExecutionGeneration::commit_realtime_migration()
+{
+    if (realtime_initialized || !realtime_migration) {
+        throw std::logic_error(
+            "GraphExecutor realtime generation migration is not prepared");
+    }
+    realtime_migration->commit();
+    realtime_migration.reset();
     realtime_initialized = true;
 }
 
-void GraphExecutor::ExecutionGeneration::migrate_background_from(
-    ExecutionGeneration& previous)
+void GraphExecutor::ExecutionGeneration::commit_background_migration()
 {
-    if (background_initialized) {
+    if (background_initialized || !background_migration) {
         throw std::logic_error(
-            "GraphExecutor background generation is already initialized");
+            "GraphExecutor background generation migration is not prepared");
     }
-    auto background_migration = background.storage.migration_from(
-        previous.background.storage);
-    background_migration.commit();
+    background_migration->commit();
+    background_migration.reset();
     background_initialized = true;
 }
 
@@ -293,6 +303,8 @@ GraphExecutorStageResult GraphExecutor::stage(
     prepared->prepare_initial_persisted_state(persisted_pages_);
     if (!realtime_active_) {
         prepared->initialize_first_generation();
+    } else {
+        prepared->prepare_migration_from(realtime_execution_generation());
     }
     pending_generation_ = std::move(prepared);
     return GraphExecutorStageResult::staged;
@@ -310,7 +322,7 @@ bool GraphExecutor::activate_pending()
     }
 
     auto& previous = realtime_execution_generation();
-    pending_generation_->migrate_realtime_from(previous);
+    pending_generation_->commit_realtime_migration();
     previous.background.close_inputs();
     auto* next = pending_generation_.get();
     previous.publish_successor(std::move(pending_generation_));
@@ -427,7 +439,7 @@ bool GraphExecutor::advance_background_generation()
         throw std::logic_error(
             "GraphExecutor could not retire drained producer queues");
     }
-    successor->migrate_background_from(previous);
+    successor->commit_background_migration();
 
     auto retired = std::move(generation_chain_);
     generation_chain_ = std::move(retired->successor_owner);
