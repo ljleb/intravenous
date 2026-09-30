@@ -236,6 +236,69 @@ TEST(AsyncCapacityManager, ReleasedBlocksReturnThroughTheCapacityManager)
     EXPECT_EQ(reserve.ready_block_count(), 7u);
 }
 
+TEST(AsyncCapacityManager,
+     ClosedQueueHasAFinalTailAndReleasesItsLastConsumerSentinel)
+{
+    iv::ProducerReserve reserve{64};
+    iv::PendingQueue pending{reserve};
+    iv::ReleasedBlockQueue released;
+    iv::AsyncCapacityManager manager{4};
+    ASSERT_EQ(manager.maintain(reserve, policy), 8u);
+
+    auto final_chain = reserve.acquire(3);
+    ASSERT_TRUE(final_chain);
+    ASSERT_TRUE(pending.publish(std::move(final_chain)));
+    pending.close();
+
+    EXPECT_TRUE(pending.is_closed());
+    EXPECT_FALSE(pending.is_closed_and_drained());
+    EXPECT_FALSE(pending.release_closed_sentinel(released));
+
+    {
+        auto after_close = reserve.acquire(1);
+        ASSERT_TRUE(after_close);
+        EXPECT_FALSE(pending.publish(std::move(after_close)));
+        // Rejected publication leaves the private chain with its producer so
+        // normal chain destruction returns its block to the reserve.
+        EXPECT_TRUE(after_close);
+    }
+
+    auto selected = pending.pin();
+    std::size_t selected_block_count = 0;
+    selected.for_each([&](iv::AsyncQueueBlock const&) {
+        ++selected_block_count;
+    });
+    EXPECT_EQ(selected_block_count, 3u);
+    ASSERT_TRUE(pending.release(std::move(selected), released));
+    EXPECT_TRUE(pending.is_closed_and_drained());
+
+    ASSERT_TRUE(pending.release_closed_sentinel(released));
+    EXPECT_TRUE(pending.pin().empty());
+    EXPECT_EQ(manager.reclaim(released), 3u);
+    EXPECT_EQ(reserve.ready_block_count(), 8u);
+
+    // Queue retirement is idempotent and cannot publish the terminal block a
+    // second time.
+    EXPECT_TRUE(pending.release_closed_sentinel(released));
+    EXPECT_EQ(manager.reclaim(released), 0u);
+}
+
+TEST(AsyncCapacityManager, ClosingAnEmptyQueueNeedsNoBlockReclamation)
+{
+    iv::ProducerReserve reserve{64};
+    iv::PendingQueue pending{reserve};
+    iv::ReleasedBlockQueue released;
+    iv::AsyncCapacityManager manager{4};
+    ASSERT_EQ(manager.maintain(reserve, policy), 8u);
+
+    EXPECT_FALSE(pending.is_closed_and_drained());
+    pending.close();
+    EXPECT_TRUE(pending.is_closed_and_drained());
+    EXPECT_TRUE(pending.release_closed_sentinel(released));
+    EXPECT_EQ(manager.reclaim(released), 0u);
+    EXPECT_EQ(reserve.ready_block_count(), 8u);
+}
+
 TEST(AsyncCapacityManager, HeadroomRemainsUsableWithoutAnotherMaintenancePass)
 {
     iv::ProducerReserve reserve{64};

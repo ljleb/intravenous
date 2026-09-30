@@ -258,6 +258,8 @@ class PendingQueue {
     AsyncQueueBlock* producer_tail_ = nullptr;
     AsyncQueueBlock* consumer_head_ = nullptr;
     std::atomic<AsyncQueueBlock*> published_tail_{nullptr};
+    std::atomic<bool> closed_{false};
+    bool closed_sentinel_released_ = false;
 
 public:
     explicit PendingQueue(ProducerReserve& owner);
@@ -271,6 +273,13 @@ public:
     // One release publication makes every initialized block and private link
     // in chain visible to the background consumer.
     [[nodiscard]] bool publish(ProducedBlockChain&& chain) noexcept;
+
+    // Realtime-generation-cutover operation. The single producer calls close()
+    // only after publishing its final chain. The release/acquire pair makes
+    // closure proof that the queue's published tail is final.
+    void close() noexcept;
+    [[nodiscard]] bool is_closed() const noexcept;
+
     [[nodiscard]] PinnedBlockPrefix pin() noexcept;
 
     // Called only after the domain operation using prefix commits. The final
@@ -278,6 +287,14 @@ public:
     // it releasable.
     [[nodiscard]] bool release(
         PinnedBlockPrefix&& prefix,
+        ReleasedBlockQueue& released) noexcept;
+
+    // Background-only retirement operations. A queue is closed and drained
+    // only when no published block remains beyond its consumer sentinel.
+    // release_closed_sentinel() transfers that final retained block to the
+    // capacity manager; an initially empty queue has no block to transfer.
+    [[nodiscard]] bool is_closed_and_drained() const noexcept;
+    [[nodiscard]] bool release_closed_sentinel(
         ReleasedBlockQueue& released) noexcept;
 };
 

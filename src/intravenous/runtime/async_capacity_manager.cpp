@@ -327,13 +327,19 @@ PendingQueue::PendingQueue(ProducerReserve& owner)
     , published_tail_(sentinel_.get())
 {
     static_assert(std::atomic<AsyncQueueBlock*>::is_always_lock_free);
+    static_assert(std::atomic<bool>::is_always_lock_free);
 }
 
 PendingQueue::~PendingQueue() = default;
 
 bool PendingQueue::publish(ProducedBlockChain&& chain) noexcept
 {
-    if (chain.owner_ != owner_ || !chain.first_ || !chain.last_) return false;
+    // close() and publish() belong to the same producer. Once closure is
+    // published, no chain may become visible under this generation again.
+    if (closed_.load(std::memory_order_relaxed)
+        || chain.owner_ != owner_ || !chain.first_ || !chain.last_) {
+        return false;
+    }
 
     chain.last_->pending_next_.store(nullptr, std::memory_order_relaxed);
     producer_tail_->pending_next_.store(
@@ -345,6 +351,19 @@ bool PendingQueue::publish(ProducedBlockChain&& chain) noexcept
     chain.first_ = nullptr;
     chain.last_ = nullptr;
     return true;
+}
+
+void PendingQueue::close() noexcept
+{
+    // A release after the producer's final published-tail store lets the
+    // background consumer treat an acquired closed state as a finite-tail
+    // guarantee, not merely a momentarily empty observation.
+    closed_.store(true, std::memory_order_release);
+}
+
+bool PendingQueue::is_closed() const noexcept
+{
+    return closed_.load(std::memory_order_acquire);
 }
 
 PinnedBlockPrefix PendingQueue::pin() noexcept
@@ -400,6 +419,32 @@ bool PendingQueue::release(
     consumer_head_ = prefix.last_;
     prefix = {};
     if (released_first) released.publish(*released_first, *released_last);
+    return true;
+}
+
+bool PendingQueue::is_closed_and_drained() const noexcept
+{
+    if (!closed_.load(std::memory_order_acquire)) return false;
+    return published_tail_.load(std::memory_order_acquire) == consumer_head_;
+}
+
+bool PendingQueue::release_closed_sentinel(
+    ReleasedBlockQueue& released) noexcept
+{
+    if (closed_sentinel_released_) return true;
+    if (!is_closed_and_drained()) return false;
+
+    auto* terminal = consumer_head_;
+    if (terminal != sentinel_.get()) {
+        terminal->pending_next_.store(nullptr, std::memory_order_relaxed);
+        terminal->released_next_ = nullptr;
+        released.publish(*terminal, *terminal);
+    }
+
+    producer_tail_ = sentinel_.get();
+    consumer_head_ = sentinel_.get();
+    published_tail_.store(sentinel_.get(), std::memory_order_relaxed);
+    closed_sentinel_released_ = true;
     return true;
 }
 
