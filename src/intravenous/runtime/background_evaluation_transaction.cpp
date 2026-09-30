@@ -2,11 +2,14 @@
 
 #include <intravenous/runtime/background_evaluation_call_frame.h>
 #include <intravenous/runtime/background_storage_realization.h>
+#include <intravenous/runtime/realtime_produced_record.h>
 
 #include <algorithm>
+#include <cstring>
 #include <limits>
 #include <ranges>
 #include <stdexcept>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -19,6 +22,51 @@ namespace {
     return std::ranges::all_of(inner.regions(), [&](IndexRegion region) {
         return outer.contains(region);
     });
+}
+
+[[nodiscard]] std::size_t coverage_sample_count(Coverage const& coverage)
+{
+    std::size_t result = 0;
+    for (auto const region : coverage.regions()) {
+        auto const count = static_cast<std::size_t>(region.end - region.begin);
+        if (count > std::numeric_limits<std::size_t>::max() - result) {
+            throw std::length_error("persisted coverage is too large");
+        }
+        result += count;
+    }
+    return result;
+}
+
+[[nodiscard]] std::optional<std::size_t> packed_frame_offset(
+    Coverage const& domain, SampleIndex sample) noexcept
+{
+    std::size_t offset = 0;
+    for (auto const region : domain.regions()) {
+        if (region.contains(sample)) {
+            return offset + static_cast<std::size_t>(sample - region.begin);
+        }
+        if (sample < region.begin) break;
+        offset += static_cast<std::size_t>(region.end - region.begin);
+    }
+    return std::nullopt;
+}
+
+[[nodiscard]] bool event_matches_type(
+    EventTypeId type, Event const& event) noexcept
+{
+    switch (type) {
+    case EventTypeId::midi:
+        return std::holds_alternative<MidiEvent>(event);
+    case EventTypeId::trigger:
+        return std::holds_alternative<TriggerEvent>(event);
+    case EventTypeId::boundary:
+        return std::holds_alternative<BoundaryEvent>(event);
+    case EventTypeId::empty:
+        return std::holds_alternative<EmptyEvent>(event);
+    case EventTypeId::count:
+        return false;
+    }
+    return false;
 }
 
 [[nodiscard]] Coverage shifted_back(Coverage const& coverage,
@@ -80,6 +128,12 @@ class BackgroundEvaluationTransaction::Impl {
         std::uint64_t page = 0;
     };
 
+    struct ProducedRecord {
+        BackgroundProducedInputRoute route{};
+        RealtimeProducedRecordHeader header{};
+        std::vector<std::byte> payload{};
+    };
+
     CompiledGraph const* graph_ = nullptr;
     std::byte* node_storage_ = nullptr;
     BackgroundCoverageState* coverage_ = nullptr;
@@ -87,10 +141,13 @@ class BackgroundEvaluationTransaction::Impl {
     PersistedPageStore* pages_ = nullptr;
     TickMaterializationStore* materializations_ = nullptr;
     BackgroundEvaluationRequest request_{};
+    std::span<BackgroundProducedInputRoute const> produced_routes_{};
+    std::span<PinnedBlockPrefix const> produced_prefixes_{};
     PersistedPageStore::ReaderSlot reader_{};
     std::optional<PersistedPageStore::ReaderPin> pin_{};
     std::optional<PreparedCoveragePropagation> prepared_{};
     std::vector<PageMutation> page_mutations_{};
+    PersistedPageStore::Snapshot const* working_pages_ = nullptr;
     bool executed_ = false;
 
     void discard_prepared() noexcept
@@ -125,6 +182,396 @@ class BackgroundEvaluationTransaction::Impl {
         }
     }
 
+    [[nodiscard]] std::expected<std::vector<ProducedRecord>, std::string>
+    decode_produced_records() const
+    {
+        if (produced_routes_.size() != produced_prefixes_.size()) {
+            return std::unexpected(
+                "background produced-input routes and prefixes are not aligned");
+        }
+
+        std::vector<ProducedRecord> records;
+        auto const& plan = graph_->background_evaluation_plan;
+        for (std::size_t input = 0; input < produced_routes_.size(); ++input) {
+            auto const& route = produced_routes_[input];
+            auto const& prefix = produced_prefixes_[input];
+            if (route.port >= plan.ports.size()) {
+                return std::unexpected(
+                    "background produced input references a missing port");
+            }
+            auto const& port = plan.ports[route.port];
+            if (port.direction != graph_jit::PortDirection::output
+                || port.kind != route.kind || !port.persisted_tick_output
+                || port.retention != OutputRetention::persisted
+                || persisted_output_kind(route.output) != route.kind) {
+                return std::unexpected(
+                    "background produced input has an incompatible persisted route");
+            }
+
+            bool canonical_route = false;
+            for (graph_jit::PortStorageIndex storage = 0;
+                 storage < plan.storage.ports.size(); ++storage) {
+                auto const& planned = plan.storage.ports[storage];
+                if (planned.storage
+                        != graph_jit::PortStorageKind::persisted_pages
+                    || planned.output_port != route.port
+                    || planned.kind != route.kind) {
+                    continue;
+                }
+                if (persisted_output_id(
+                        plan, storage, graph_->project_generation)
+                    == route.output) {
+                    canonical_route = true;
+                    break;
+                }
+            }
+            if (!canonical_route) {
+                return std::unexpected(
+                    "background produced input has no canonical persisted storage");
+            }
+
+            std::optional<ProducedRecord> current;
+            std::size_t remaining_blocks = 0;
+            bool invalid = false;
+            std::string error;
+            prefix.for_each([&](AsyncQueueBlock const& block) {
+                if (invalid) return;
+                auto bytes = block.used_storage();
+                if (!current) {
+                    if (bytes.size() < sizeof(RealtimeProducedRecordHeader)) {
+                        invalid = true;
+                        error = "realtime-produced record header is incomplete";
+                        return;
+                    }
+                    ProducedRecord record{.route = route};
+                    std::memcpy(
+                        &record.header, bytes.data(), sizeof(record.header));
+                    if (record.header.record_block_count == 0) {
+                        invalid = true;
+                        error = "realtime-produced record has no physical blocks";
+                        return;
+                    }
+                    record.payload.reserve(record.header.payload_size);
+                    bytes = bytes.subspan(sizeof(record.header));
+                    remaining_blocks = record.header.record_block_count;
+                    current.emplace(std::move(record));
+                }
+
+                if (remaining_blocks == 0
+                    || bytes.size()
+                        > current->header.payload_size
+                            - current->payload.size()) {
+                    invalid = true;
+                    error = "realtime-produced record payload exceeds its header";
+                    return;
+                }
+                current->payload.insert(
+                    current->payload.end(), bytes.begin(), bytes.end());
+                --remaining_blocks;
+                if (remaining_blocks != 0) return;
+                if (current->payload.size() != current->header.payload_size) {
+                    invalid = true;
+                    error = "realtime-produced record payload is incomplete";
+                    return;
+                }
+                records.push_back(std::move(*current));
+                current.reset();
+            });
+            if (invalid) return std::unexpected(std::move(error));
+            if (current || remaining_blocks != 0) {
+                return std::unexpected(
+                    "realtime-produced record ends before its declared block count");
+            }
+        }
+        return records;
+    }
+
+    [[nodiscard]] Sample read_existing_sample(
+        PersistedSamplePage const& page,
+        SampleIndex sample,
+        std::size_t channel,
+        std::size_t page_width) const
+    {
+        auto frames = page_width;
+        std::size_t frame = static_cast<std::size_t>(sample % page_width);
+        if (page.packing == PersistedSamplePacking::coverage_packed) {
+            auto const packed = packed_frame_offset(page.domain, sample);
+            if (!packed) {
+                throw std::logic_error(
+                    "persisted sample page is missing selected coverage");
+            }
+            frame = *packed;
+            frames = coverage_sample_count(page.domain);
+        }
+        auto const channels = channel_count(page.layout);
+        auto const offset = page.layout.sample_layout
+                == SampleStreamLayout::planar
+            ? channel * frames + frame
+            : frame * channels + channel;
+        if (offset >= page.values.size()) {
+            throw std::logic_error("persisted sample page payload is incomplete");
+        }
+        return page.values[offset];
+    }
+
+    [[nodiscard]] Sample read_produced_sample(
+        ProducedRecord const& record,
+        SampleIndex sample,
+        std::size_t channel) const
+    {
+        auto const frame = static_cast<std::size_t>(sample - record.header.begin);
+        auto const channels = channel_count(record.header.sample_layout);
+        auto const offset = record.header.sample_layout.sample_layout
+                == SampleStreamLayout::planar
+            ? channel * record.header.sample_count + frame
+            : frame * channels + channel;
+        Sample value{};
+        std::memcpy(
+            &value,
+            record.payload.data() + offset * sizeof(Sample),
+            sizeof(value));
+        return value;
+    }
+
+    [[nodiscard]] std::expected<void, std::string> apply_sample_record(
+        ProducedRecord const& record,
+        PersistedPageStore::Candidate& candidate)
+    {
+        auto const& header = record.header;
+        auto const& port =
+            graph_->background_evaluation_plan.ports[record.route.port];
+        auto const channels = channel_count(header.sample_layout);
+        if (header.payload_kind != RealtimeProducedPayloadKind::samples
+            || record.route.kind != PortKind::sample
+            || header.sample_layout != port.sample_layout
+            || channels == 0
+            || header.sample_count
+                > std::numeric_limits<std::size_t>::max() / channels
+            || header.sample_count * channels
+                > std::numeric_limits<std::size_t>::max() / sizeof(Sample)
+            || header.payload_size
+                != header.sample_count * channels * sizeof(Sample)
+            || header.sample_count == 0
+            || header.begin > std::numeric_limits<SampleIndex>::max()
+                    - header.sample_count) {
+            return std::unexpected(
+                "realtime-produced sample record has invalid metadata");
+        }
+
+        auto const end = header.begin
+            + static_cast<SampleIndex>(header.sample_count);
+        auto const width = candidate.page_width();
+        auto page = static_cast<std::uint64_t>(header.begin / width);
+        auto const last = static_cast<std::uint64_t>((end - 1) / width);
+        for (;; ++page) {
+            auto const page_begin = static_cast<SampleIndex>(page * width);
+            auto const page_end = saturating_sample_index_add(
+                page_begin, static_cast<SampleIndex>(width));
+            auto const overwrite = IndexRegion{
+                std::max(header.begin, page_begin), std::min(end, page_end)};
+            auto const* existing = candidate.working_snapshot()
+                .find_sample_page(record.route.output, page);
+            if (existing && existing->layout != header.sample_layout) {
+                return std::unexpected(
+                    "realtime-produced sample layout disagrees with persisted pages");
+            }
+            Coverage domain = existing ? existing->domain : Coverage{};
+            domain.include(overwrite);
+            auto const frames = coverage_sample_count(domain);
+            PersistedSamplePage replacement{
+                .output = record.route.output,
+                .page_index = page,
+                .domain = domain,
+                .layout = header.sample_layout,
+                .packing = PersistedSamplePacking::coverage_packed,
+            };
+            replacement.values.resize(frames * channels);
+            std::size_t packed_frame = 0;
+            for (auto const part : domain.regions()) {
+                for (auto sample = part.begin; sample < part.end;
+                     ++sample, ++packed_frame) {
+                    for (std::size_t channel = 0; channel < channels;
+                         ++channel) {
+                        auto const value = overwrite.contains(sample)
+                            ? read_produced_sample(record, sample, channel)
+                            : read_existing_sample(
+                                  *existing, sample, channel, width);
+                        auto const offset = header.sample_layout.sample_layout
+                                == SampleStreamLayout::planar
+                            ? channel * frames + packed_frame
+                            : packed_frame * channels + channel;
+                        replacement.values[offset] = value;
+                    }
+                }
+            }
+            candidate.put(std::move(replacement));
+            if (page == last) break;
+        }
+        return {};
+    }
+
+    [[nodiscard]] std::expected<void, std::string> apply_event_record(
+        ProducedRecord const& record,
+        PersistedPageStore::Candidate& candidate)
+    {
+        static_assert(std::is_trivially_copyable_v<TimedEvent>);
+        auto const& header = record.header;
+        auto const& port =
+            graph_->background_evaluation_plan.ports[record.route.port];
+        if (header.payload_kind != RealtimeProducedPayloadKind::events
+            || record.route.kind != PortKind::event
+            || header.event_type != port.event_type
+            || header.event_count
+                > std::numeric_limits<std::size_t>::max() / sizeof(TimedEvent)
+            || header.payload_size != header.event_count * sizeof(TimedEvent)
+            || header.sample_count == 0
+            || header.begin > std::numeric_limits<SampleIndex>::max()
+                    - header.sample_count) {
+            return std::unexpected(
+                "realtime-produced event record has invalid metadata");
+        }
+        auto const end = header.begin
+            + static_cast<SampleIndex>(header.sample_count);
+        std::vector<TimedEvent> captured(header.event_count);
+        if (!captured.empty()) {
+            std::memcpy(
+                captured.data(), record.payload.data(), header.payload_size);
+        }
+        EventTime previous = 0;
+        bool first = true;
+        for (auto const& event : captured) {
+            auto const time = static_cast<SampleIndex>(event.time);
+            if (time < header.begin || time >= end
+                || !event_matches_type(header.event_type, event.value)
+                || (!first && event.time < previous)) {
+                return std::unexpected(
+                    "realtime-produced event payload is invalid");
+            }
+            previous = event.time;
+            first = false;
+        }
+
+        auto const width = candidate.page_width();
+        auto page = static_cast<std::uint64_t>(header.begin / width);
+        auto const last = static_cast<std::uint64_t>((end - 1) / width);
+        for (;; ++page) {
+            auto const page_begin = static_cast<SampleIndex>(page * width);
+            auto const page_end = saturating_sample_index_add(
+                page_begin, static_cast<SampleIndex>(width));
+            auto const overwrite = IndexRegion{
+                std::max(header.begin, page_begin), std::min(end, page_end)};
+            auto const* existing = candidate.working_snapshot()
+                .find_event_page(record.route.output, page);
+            if (existing && existing->type != header.event_type) {
+                return std::unexpected(
+                    "realtime-produced event type disagrees with persisted pages");
+            }
+            Coverage domain = existing ? existing->domain : Coverage{};
+            domain.include(overwrite);
+            PersistedEventPage replacement{
+                .output = record.route.output,
+                .page_index = page,
+                .domain = std::move(domain),
+                .type = header.event_type,
+            };
+            if (existing) {
+                for (auto event : existing->events) {
+                    auto const absolute = page_begin
+                        + static_cast<SampleIndex>(event.time);
+                    if (!overwrite.contains(absolute)) {
+                        replacement.events.push_back(std::move(event));
+                    }
+                }
+            }
+            for (auto event : captured) {
+                auto const absolute = static_cast<SampleIndex>(event.time);
+                if (!overwrite.contains(absolute)) continue;
+                event.time = static_cast<EventTime>(absolute - page_begin);
+                replacement.events.push_back(std::move(event));
+            }
+            std::ranges::stable_sort(
+                replacement.events, {}, &TimedEvent::time);
+            candidate.put(std::move(replacement));
+            if (page == last) break;
+        }
+        return {};
+    }
+
+    [[nodiscard]] std::expected<void, std::string> apply_produced_records(
+        std::span<ProducedRecord const> records,
+        PersistedPageStore::Snapshot const& base,
+        PersistedPageStore::Candidate& candidate)
+    {
+        struct Root {
+            BackgroundProducedInputRoute route{};
+            Coverage coverage{};
+            Coverage changed{};
+        };
+        std::vector<Root> roots;
+        for (auto const& record : records) {
+            auto const end = saturating_sample_index_add(
+                record.header.begin, record.header.sample_count);
+            if (end <= record.header.begin) {
+                return std::unexpected(
+                    "realtime-produced record has an invalid timeline window");
+            }
+            auto const changed = IndexRegion{record.header.begin, end};
+            auto found = std::ranges::find_if(roots, [&](Root const& root) {
+                return root.route.port == record.route.port
+                    && root.route.output == record.route.output;
+            });
+            if (found == roots.end()) {
+                Coverage coverage;
+                if (record.route.kind == PortKind::sample) {
+                    auto const& layout = graph_->background_evaluation_plan
+                        .ports[record.route.port].sample_layout;
+                    if (auto const* existing =
+                            base.find_sample_coverage(record.route.output, layout)) {
+                        coverage = *existing;
+                    }
+                } else {
+                    auto const type = graph_->background_evaluation_plan
+                        .ports[record.route.port].event_type;
+                    if (auto const* existing =
+                            base.find_event_coverage(record.route.output, type)) {
+                        coverage = *existing;
+                    }
+                }
+                roots.push_back({
+                    .route = record.route,
+                    .coverage = std::move(coverage),
+                });
+                found = std::prev(roots.end());
+            }
+            found->coverage.include(changed);
+            found->changed.include(changed);
+
+            auto applied = record.route.kind == PortKind::sample
+                ? apply_sample_record(record, candidate)
+                : apply_event_record(record, candidate);
+            if (!applied) return applied;
+        }
+
+        for (auto& root : roots) {
+            auto existing = std::ranges::find_if(
+                request_.coverage.output_changes,
+                [&](OutputCoverageChangeRequest const& change) {
+                    return change.port == root.route.port;
+                });
+            if (existing == request_.coverage.output_changes.end()) {
+                request_.coverage.output_changes.push_back({
+                    .port = root.route.port,
+                    .coverage = std::move(root.coverage),
+                    .changed = std::move(root.changed),
+                });
+            } else {
+                existing->coverage = std::move(root.coverage);
+                existing->changed.include(root.changed);
+            }
+        }
+        return {};
+    }
+
     static void
     expand_output_demand(void* opaque, graph_jit::BackgroundPortIndex port,
                          Coverage const& available, Coverage const& changed,
@@ -132,7 +579,7 @@ class BackgroundEvaluationTransaction::Impl {
     {
         auto& self = *static_cast<Impl*>(opaque);
         auto const& plan = self.graph_->background_evaluation_plan;
-        auto const& snapshot = self.pin_->snapshot();
+        auto const& snapshot = *self.working_pages_;
         auto const width = self.request_.page_width;
         Coverage affected = required | changed;
         if (affected.empty()) return;
@@ -212,7 +659,8 @@ class BackgroundEvaluationTransaction::Impl {
     }
 
     [[nodiscard]] BackgroundStorageSelection storage_selection(
-        BackgroundEvaluationCallFrameSelection const& bindings) const
+        BackgroundEvaluationCallFrameSelection const& bindings,
+        PersistedPageStore::Snapshot const& published) const
     {
         auto const& plan = graph_->background_evaluation_plan;
         BackgroundStorageSelection selection{
@@ -221,7 +669,7 @@ class BackgroundEvaluationTransaction::Impl {
                 std::vector<Coverage>(plan.storage.ports.size()),
             .produce_storage =
                 std::vector<bool>(plan.storage.ports.size(), false),
-            .published = &pin_->snapshot(),
+            .published = &published,
         };
 
         for (graph_jit::BackgroundBindingSlot slot = 0;
@@ -414,6 +862,26 @@ class BackgroundEvaluationTransaction::Impl {
                 "persisted pages must be explicitly repaged before changing "
                 "page width");
         }
+
+        auto decoded = decode_produced_records();
+        if (!decoded) return std::unexpected(std::move(decoded.error()));
+        std::optional<PersistedPageStore::Candidate> candidate;
+        if (!decoded->empty()) {
+            candidate.emplace(pages_->begin_candidate(
+                request_.semantic_version, request_.page_width));
+            if (candidate->base_version() != base.version()) {
+                return BackgroundEvaluationResult{
+                    .status = BackgroundEvaluationStatus::stale_base,
+                };
+            }
+            if (auto applied = apply_produced_records(
+                    *decoded, base, *candidate); !applied) {
+                return std::unexpected(std::move(applied.error()));
+            }
+        }
+        working_pages_ = candidate
+            ? &candidate->working_snapshot()
+            : &base;
         prepared_.emplace(
             propagation_->prepare(graph_->background_operations, node_storage_,
                                   *coverage_, request_.coverage,
@@ -423,7 +891,7 @@ class BackgroundEvaluationTransaction::Impl {
                                   }));
 
         auto binding = binding_selection();
-        auto storage = storage_selection(binding);
+        auto storage = storage_selection(binding, *working_pages_);
         auto realization = std::make_unique<BackgroundStorageRealization>(
             graph_->background_evaluation_plan, std::move(storage));
         if (auto sealed = realization->seal(); !sealed) {
@@ -457,7 +925,6 @@ class BackgroundEvaluationTransaction::Impl {
             return std::unexpected(std::move(sealed.error()));
         }
 
-        std::optional<PersistedPageStore::Candidate> candidate;
         auto const& storage_selection = realization->selection();
         bool has_produced_pages = false;
         for (graph_jit::PortStorageIndex index = 0;
@@ -474,8 +941,10 @@ class BackgroundEvaluationTransaction::Impl {
             }
         }
         if (has_produced_pages || !page_mutations_.empty()) {
-            candidate.emplace(pages_->begin_candidate(
-                request_.semantic_version, request_.page_width));
+            if (!candidate) {
+                candidate.emplace(pages_->begin_candidate(
+                    request_.semantic_version, request_.page_width));
+            }
             if (candidate->base_version() != pin_->snapshot().version()) {
                 discard_prepared();
                 return BackgroundEvaluationResult{
@@ -485,6 +954,7 @@ class BackgroundEvaluationTransaction::Impl {
             for (auto const& mutation : page_mutations_) {
                 candidate->erase_page(mutation.output, mutation.page);
             }
+            working_pages_ = &candidate->working_snapshot();
         }
 
         graph_->background_operations.evaluate(node_storage_, &frame.call());
@@ -547,7 +1017,9 @@ public:
          BackgroundCoverageState& coverage,
          BackgroundPropagationWorkspace& propagation, PersistedPageStore& pages,
          TickMaterializationStore* materializations,
-         BackgroundEvaluationRequest request)
+         BackgroundEvaluationRequest request,
+         std::span<BackgroundProducedInputRoute const> produced_routes = {},
+         std::span<PinnedBlockPrefix const> produced_prefixes = {})
         : graph_(&graph)
         , node_storage_(node_storage)
         , coverage_(&coverage)
@@ -555,6 +1027,8 @@ public:
         , pages_(&pages)
         , materializations_(materializations)
         , request_(std::move(request))
+        , produced_routes_(produced_routes)
+        , produced_prefixes_(produced_prefixes)
     {}
 
     ~Impl()
@@ -607,6 +1081,26 @@ BackgroundEvaluationTransaction::BackgroundEvaluationTransaction(
         pages,
         &materializations,
         std::move(request)))
+{}
+
+BackgroundEvaluationTransaction::BackgroundEvaluationTransaction(
+    CompiledGraph const& graph, std::byte* node_storage,
+    BackgroundCoverageState& coverage,
+    BackgroundPropagationWorkspace& propagation, PersistedPageStore& pages,
+    TickMaterializationStore& materializations,
+    BackgroundEvaluationRequest request,
+    std::span<BackgroundProducedInputRoute const> produced_routes,
+    std::span<PinnedBlockPrefix const> produced_prefixes)
+    : impl_(std::make_unique<Impl>(
+        graph,
+        node_storage,
+        coverage,
+        propagation,
+        pages,
+        &materializations,
+        std::move(request),
+        produced_routes,
+        produced_prefixes))
 {}
 
 BackgroundEvaluationTransaction::~BackgroundEvaluationTransaction() = default;

@@ -78,8 +78,8 @@ GraphExecutor::BackgroundGeneration::BackgroundGeneration(
         auto pending = std::make_unique<PendingQueue>(
             *realtime.producer_reserves[index]);
         input_routes.push_back({
-            .queue = pending.get(),
             .output = requirements[index].output,
+            .port = requirements[index].port,
             .kind = requirements[index].kind,
         });
         pending_inputs.push_back(std::move(pending));
@@ -227,16 +227,45 @@ std::expected<BackgroundEvaluationResult, std::string>
 GraphExecutor::evaluate_background(BackgroundEvaluationRequest request)
 {
     auto& generation = active_execution_generation();
+    auto& background = generation.background;
+    if (!background.input_selection_active) {
+        for (std::size_t index = 0;
+             index < background.pending_inputs.size(); ++index) {
+            background.input_selections[index] =
+                background.pending_inputs[index]->pin();
+        }
+        background.input_selection_active = true;
+    }
     BackgroundEvaluationTransaction transaction{
         *generation.graph,
-        generation.background.storage.buffer().data(),
-        generation.background.coverage,
-        generation.background.propagation,
+        background.storage.buffer().data(),
+        background.coverage,
+        background.propagation,
         persisted_pages_,
         tick_materializations_,
         std::move(request),
+        background.input_routes,
+        background.input_selections,
     };
-    return transaction.execute();
+    auto result = transaction.execute();
+    if (!result || result->status != BackgroundEvaluationStatus::committed) {
+        // Preserve every selected producer-queue prefix exactly as pinned so a
+        // retry cannot accidentally absorb later realtime publications.
+        return result;
+    }
+    for (std::size_t index = 0;
+         index < background.pending_inputs.size(); ++index) {
+        if (background.input_selections[index].empty()) continue;
+        auto const released = background.pending_inputs[index]->release(
+            std::move(background.input_selections[index]),
+            async_capacity_manager_.released_blocks());
+        if (!released) {
+            return std::unexpected(
+                "committed background input prefix could not be released");
+        }
+    }
+    background.input_selection_active = false;
+    return result;
 }
 
 GraphExecutorReclaimedSnapshots GraphExecutor::reclaim_retired_snapshots()

@@ -1,3 +1,4 @@
+#include <intravenous/runtime/background_evaluation_transaction.h>
 #include <intravenous/runtime/persisted_page_store.h>
 #include <intravenous/runtime/realtime_produced_record.h>
 #include <intravenous/runtime/tick_capture_store.h>
@@ -68,6 +69,67 @@ std::vector<std::byte> queued_bytes(iv::PinnedBlockPrefix const& prefix)
             block.used_storage().end());
     });
     return result;
+}
+
+void no_op_background(
+    std::byte*, iv::graph_jit::BackgroundEvaluationCall*)
+{}
+
+iv::CompiledGraph queued_persisted_graph(iv::PortKind kind)
+{
+    using namespace iv::graph_jit;
+    iv::CompiledGraph graph;
+    graph.project_generation = 3;
+    graph.specialization.sample_rate = 48000;
+    graph.specialization.block_size = 4;
+    auto& plan = graph.background_evaluation_plan;
+    plan.nodes = {{
+        .outputs = {0},
+        .accumulators = {
+            .output_change_begin = 0,
+            .output_change_count = 1,
+            .output_requirement_begin = 0,
+            .output_requirement_count = 1,
+        },
+    }};
+    plan.ports = {{
+        .node = 0,
+        .configured_port = {0, kind, 0},
+        .kind = kind,
+        .direction = PortDirection::output,
+        .persisted_tick_output = true,
+        .retention = iv::OutputRetention::persisted,
+        .sample_layout = iv::mono_planar_channel_layout,
+        .event_type = iv::EventTypeId::trigger,
+        .accumulators = {
+            .output_change = 0,
+            .output_requirement = 0,
+        },
+    }};
+    plan.storage.ports = {{
+        .kind = kind,
+        .storage = PortStorageKind::persisted_pages,
+        .source_port = iv::NodeBundlePortId{0, kind, 0},
+        .output_port = 0,
+        .sample_layout = iv::mono_planar_channel_layout,
+        .sample_channels = kind == iv::PortKind::sample
+            ? std::vector<std::size_t>{0}
+            : std::vector<std::size_t>{},
+        .event_type = iv::EventTypeId::trigger,
+    }};
+    plan.runtime.node_operations.resize(1);
+    plan.runtime.node_replay_invocations.resize(1);
+    plan.runtime.port_bindings.resize(1);
+    plan.accumulators = {
+        .output_change_count = 1,
+        .output_requirement_count = 1,
+    };
+    graph.background_operations = {
+        .propagate_forward = &no_op_background,
+        .propagate_reverse = &no_op_background,
+        .evaluate = &no_op_background,
+    };
+    return graph;
 }
 
 iv::PersistedSamplePage sample_page(
@@ -1591,6 +1653,154 @@ TEST(PersistedPageStore, ValidatesTypedPayloadsAgainstTheCanonicalPageDomain)
         {.time = 1, .value = iv::TriggerEvent{}},
     };
     EXPECT_THROW(candidate.put(std::move(unordered)), std::invalid_argument);
+}
+
+TEST(BackgroundEvaluationTransaction,
+     AppliesQueuedSampleOverwriteBeforePublishingItsCandidate)
+{
+    auto graph = queued_persisted_graph(iv::PortKind::sample);
+    iv::BackgroundCoverageState coverage{1};
+    iv::BackgroundPropagationWorkspace propagation{
+        graph.background_evaluation_plan, graph.specialization.sample_rate};
+    iv::PersistedPageStore pages;
+    auto reader = pages.register_reader();
+    iv::TickMaterializationStore materializations;
+    iv::ProducerReserve reserve{iv::realtime_produced_block_storage_size};
+    iv::AsyncCapacityManager manager{1};
+    iv::PendingQueue pending{reserve};
+    ASSERT_EQ(manager.maintain(reserve, {1, 1, 2}), 2u);
+
+    std::array<iv::Sample, 4> values{10.0f, 11.0f, 12.0f, 13.0f};
+    auto chain = reserve.acquire(1);
+    ASSERT_TRUE(chain);
+    auto writer = chain.writer();
+    auto const header = iv::RealtimeProducedRecordHeader{
+        .payload_kind = iv::RealtimeProducedPayloadKind::samples,
+        .record_block_count = 1,
+        .payload_size = sizeof(values),
+        .begin = 2,
+        .sample_count = values.size(),
+        .sample_layout = iv::mono_planar_channel_layout,
+    };
+    ASSERT_TRUE(writer.append(std::as_bytes(std::span{&header, 1u})));
+    ASSERT_TRUE(writer.append(std::as_bytes(std::span{values})));
+    ASSERT_TRUE(pending.publish(std::move(chain)));
+
+    std::array<iv::Sample, 2> overlap{30.0f, 31.0f};
+    auto later_chain = reserve.acquire(1);
+    ASSERT_TRUE(later_chain);
+    auto later_writer = later_chain.writer();
+    auto later_header = header;
+    later_header.payload_size = sizeof(overlap);
+    later_header.begin = 3;
+    later_header.sample_count = overlap.size();
+    ASSERT_TRUE(later_writer.append(
+        std::as_bytes(std::span{&later_header, 1u})));
+    ASSERT_TRUE(later_writer.append(std::as_bytes(std::span{overlap})));
+    ASSERT_TRUE(pending.publish(std::move(later_chain)));
+
+    auto selected = pending.pin();
+    ASSERT_FALSE(selected.empty());
+    std::array routes{iv::BackgroundProducedInputRoute{
+        .output = local_output(iv::PortKind::sample, 0),
+        .port = 0,
+        .kind = iv::PortKind::sample,
+    }};
+    std::array selections{std::move(selected)};
+
+    iv::BackgroundEvaluationTransaction transaction{
+        graph,
+        nullptr,
+        coverage,
+        propagation,
+        pages,
+        materializations,
+        {.semantic_version = 1, .page_width = 4},
+        routes,
+        selections,
+    };
+    auto result = transaction.execute();
+    ASSERT_TRUE(result.has_value()) << result.error();
+    ASSERT_EQ(result->status, iv::BackgroundEvaluationStatus::committed);
+    ASSERT_TRUE(result->published_pages.has_value());
+
+    auto published = reader.pin();
+    auto const output = local_output(iv::PortKind::sample, 0);
+    auto const* first = published->find_sample_page(output, 0);
+    auto const* second = published->find_sample_page(output, 1);
+    ASSERT_NE(first, nullptr);
+    ASSERT_NE(second, nullptr);
+    EXPECT_EQ(first->domain, (iv::Coverage{{{2, 4}}}));
+    EXPECT_EQ(second->domain, (iv::Coverage{{{4, 6}}}));
+    EXPECT_EQ(first->values, (std::vector<iv::Sample>{10.0f, 30.0f}));
+    EXPECT_EQ(second->values, (std::vector<iv::Sample>{31.0f, 13.0f}));
+}
+
+TEST(BackgroundEvaluationTransaction,
+     QueuedEmptyEventWindowAuthoritativelyErasesExistingEvents)
+{
+    auto graph = queued_persisted_graph(iv::PortKind::event);
+    iv::BackgroundCoverageState coverage{1};
+    iv::BackgroundPropagationWorkspace propagation{
+        graph.background_evaluation_plan, graph.specialization.sample_rate};
+    iv::PersistedPageStore pages;
+    auto reader = pages.register_reader();
+    auto const output = local_output(iv::PortKind::event, 0);
+    auto seed = pages.begin_candidate(1, 4);
+    auto page = empty_event_page(output);
+    page.events = {{.time = 1, .value = iv::TriggerEvent{}}};
+    seed.put(std::move(page));
+    ASSERT_EQ(
+        pages.publish(std::move(seed)),
+        iv::PersistedPagePublishResult::published);
+
+    iv::TickMaterializationStore materializations;
+    iv::ProducerReserve reserve{iv::realtime_produced_block_storage_size};
+    iv::AsyncCapacityManager manager{1};
+    iv::PendingQueue pending{reserve};
+    ASSERT_EQ(manager.maintain(reserve, {1, 1, 2}), 2u);
+    auto chain = reserve.acquire(1);
+    ASSERT_TRUE(chain);
+    auto writer = chain.writer();
+    auto const header = iv::RealtimeProducedRecordHeader{
+        .payload_kind = iv::RealtimeProducedPayloadKind::events,
+        .record_block_count = 1,
+        .payload_size = 0,
+        .begin = 0,
+        .sample_count = 4,
+        .event_type = iv::EventTypeId::trigger,
+        .event_count = 0,
+    };
+    ASSERT_TRUE(writer.append(std::as_bytes(std::span{&header, 1u})));
+    ASSERT_TRUE(pending.publish(std::move(chain)));
+    std::array selections{pending.pin()};
+    ASSERT_FALSE(selections[0].empty());
+    std::array routes{iv::BackgroundProducedInputRoute{
+        .output = output,
+        .port = 0,
+        .kind = iv::PortKind::event,
+    }};
+
+    iv::BackgroundEvaluationTransaction transaction{
+        graph,
+        nullptr,
+        coverage,
+        propagation,
+        pages,
+        materializations,
+        {.semantic_version = 2, .page_width = 4},
+        routes,
+        selections,
+    };
+    auto result = transaction.execute();
+    ASSERT_TRUE(result.has_value()) << result.error();
+    ASSERT_EQ(result->status, iv::BackgroundEvaluationStatus::committed);
+
+    auto published = reader.pin();
+    auto const* emptied = published->find_event_page(output, 0);
+    ASSERT_NE(emptied, nullptr);
+    EXPECT_EQ(emptied->domain, (iv::Coverage{{{0, 4}}}));
+    EXPECT_TRUE(emptied->events.empty());
 }
 
 } // namespace

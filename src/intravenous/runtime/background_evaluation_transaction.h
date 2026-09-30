@@ -1,6 +1,7 @@
 #pragma once
 
 #include <intravenous/runtime/background_coverage_propagation.h>
+#include <intravenous/runtime/async_capacity_manager.h>
 #include <intravenous/runtime/graph_jit.h>
 #include <intravenous/runtime/persisted_page_store.h>
 #include <intravenous/runtime/tick_materialization_snapshot.h>
@@ -10,6 +11,7 @@
 #include <expected>
 #include <memory>
 #include <optional>
+#include <span>
 #include <string>
 
 namespace iv {
@@ -35,6 +37,15 @@ struct BackgroundEvaluationResult {
     std::optional<std::uint64_t> promoted_tick_materialization{};
 };
 
+// Generation-local destination metadata aligned with one independently pinned
+// realtime-producer queue. The block prefix remains owned by GraphExecutor and
+// is released only after the transaction reports a committed result.
+struct BackgroundProducedInputRoute {
+    PersistedOutputId output{};
+    graph_jit::BackgroundPortIndex port = 0;
+    PortKind kind = PortKind::sample;
+};
+
 // One complete background operation. The implementation owns its reader pin,
 // prepared semantic candidate, realized storage, invocation frame and any private
 // page candidate until execute() either commits all publishable state or drops it.
@@ -58,6 +69,17 @@ public:
                                     PersistedPageStore& pages,
                                     TickMaterializationStore& materializations,
                                     BackgroundEvaluationRequest request);
+    BackgroundEvaluationTransaction(CompiledGraph const& graph,
+                                    std::byte* node_storage,
+                                    BackgroundCoverageState& coverage,
+                                    BackgroundPropagationWorkspace& propagation,
+                                    PersistedPageStore& pages,
+                                    TickMaterializationStore& materializations,
+                                    BackgroundEvaluationRequest request,
+                                    std::span<BackgroundProducedInputRoute const>
+                                        produced_routes,
+                                    std::span<PinnedBlockPrefix const>
+                                        produced_prefixes);
     ~BackgroundEvaluationTransaction();
 
     BackgroundEvaluationTransaction(BackgroundEvaluationTransaction const&) =

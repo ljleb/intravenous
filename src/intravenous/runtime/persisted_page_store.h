@@ -189,6 +189,11 @@ public:
         [[nodiscard]] PersistedPageSnapshotVersion target_version() const noexcept;
         [[nodiscard]] std::size_t page_width() const noexcept;
 
+        // Read-only access to the transaction-private successor. Background
+        // realizations may consume pages already staged into this candidate;
+        // the snapshot does not become globally visible until publish().
+        [[nodiscard]] Snapshot const& working_snapshot() const;
+
         void put(PersistedSamplePage page);
         void put(PersistedEventPage page);
         void erase_page(

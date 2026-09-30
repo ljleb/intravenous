@@ -281,6 +281,13 @@ std::size_t PersistedPageStore::Candidate::page_width() const noexcept
     return successor_ ? successor_->page_width() : 0;
 }
 
+PersistedPageStore::Snapshot const&
+PersistedPageStore::Candidate::working_snapshot() const
+{
+    if (!successor_) throw std::logic_error("persisted page candidate is empty");
+    return *successor_;
+}
+
 void PersistedPageStore::Candidate::put(PersistedSamplePage page)
 {
     if (!successor_) throw std::logic_error("persisted page candidate is empty");

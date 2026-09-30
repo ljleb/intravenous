@@ -16,6 +16,7 @@ namespace iv {
 
 struct RealtimeProducerRequirement {
     PersistedOutputId output{};
+    graph_jit::BackgroundPortIndex port = 0;
     PortKind kind = PortKind::sample;
     std::size_t maximum_blocks_per_callback = 0;
 };

@@ -74,18 +74,15 @@ class GraphExecutor {
     };
 
     struct BackgroundGeneration {
-        struct InputRoute {
-            PendingQueue* queue = nullptr;
-            PersistedOutputId output{};
-            PortKind kind = PortKind::sample;
-        };
-
         NodeStorage storage{};
         BackgroundCoverageState coverage{};
         BackgroundPropagationWorkspace propagation;
         std::vector<std::unique_ptr<PendingQueue>> pending_inputs{};
-        std::vector<InputRoute> input_routes{};
+        std::vector<BackgroundProducedInputRoute> input_routes{};
         std::vector<PinnedBlockPrefix> input_selections{};
+        // A failed or stale transaction keeps this exact cross-queue set for
+        // retry. Later producer publications remain outside every fixed prefix.
+        bool input_selection_active = false;
 
         BackgroundGeneration(
             CompiledGraph const& graph,

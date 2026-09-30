@@ -1219,6 +1219,7 @@ public:
                     payload_size, realtime_produced_block_storage_size));
             producer_requirements.push_back({
                 .output = output,
+                .port = planned.port,
                 .kind = PortKind::sample,
                 .maximum_blocks_per_callback = required,
             });
@@ -1288,6 +1289,7 @@ public:
                     payload_size, realtime_produced_block_storage_size));
             producer_requirements.push_back({
                 .output = output,
+                .port = planned.port,
                 .kind = PortKind::event,
                 .maximum_blocks_per_callback = required,
             });
