@@ -824,7 +824,7 @@ TEST_F(GraphExecutorFixture, MigratesPersistentNodeStorageBeforeActivation)
 
 TEST_F(
     GraphExecutorFixture,
-    MigratesBackgroundStorageIndependentlyBeforeActivation)
+    MigratesBackgroundStorageAfterThePredecessorDrains)
 {
     iv::GraphExecutor executor;
     auto first = compiled_graph(
@@ -854,6 +854,92 @@ TEST_F(
     });
     ASSERT_TRUE(second_result.has_value()) << second_result.error();
     EXPECT_EQ(migrated_background_raw_value, 0x6bu);
+}
+
+TEST_F(
+    GraphExecutorFixture,
+    RetainsEveryActivatedGenerationUntilBackgroundAdvancesInOrder)
+{
+    iv::GraphExecutor executor;
+    auto first = compiled_graph(
+        1,
+        &observe_first,
+        persistent_raw_layout(first_raw_offset),
+        &write_background_raw_state);
+    auto second = compiled_graph(
+        2,
+        &observe_second,
+        persistent_raw_layout(second_raw_offset),
+        &no_op_background_evaluate);
+    auto third = compiled_graph(
+        3,
+        &observe_second,
+        persistent_raw_layout(second_raw_offset),
+        &observe_background_raw_state);
+
+    ASSERT_EQ(executor.stage(first), iv::GraphExecutorStageResult::staged);
+    ASSERT_TRUE(executor.activate_pending());
+    auto seeded = executor.evaluate_background({
+        .semantic_version = 1,
+        .page_width = 16,
+    });
+    ASSERT_TRUE(seeded.has_value()) << seeded.error();
+
+    ASSERT_EQ(executor.stage(second), iv::GraphExecutorStageResult::staged);
+    ASSERT_TRUE(executor.activate_pending());
+    ASSERT_EQ(executor.stage(third), iv::GraphExecutorStageResult::staged);
+    ASSERT_TRUE(executor.activate_pending());
+
+    EXPECT_EQ(executor.active_generation(), 3u);
+    EXPECT_EQ(executor.background_generation(), 1u);
+
+    auto advanced = executor.evaluate_background({
+        .semantic_version = 3,
+        .page_width = 16,
+    });
+    ASSERT_TRUE(advanced.has_value()) << advanced.error();
+    EXPECT_EQ(executor.background_generation(), 3u);
+    EXPECT_EQ(migrated_background_raw_value, 0x6bu);
+}
+
+TEST_F(
+    GraphExecutorFixture,
+    FinishesAFailedPredecessorWorkloadBeforeEvaluatingItsSuccessor)
+{
+    iv::GraphExecutor executor;
+    auto first = compiled_graph(
+        1,
+        &observe_first,
+        iv::NodeLayoutBuilder(64).build(),
+        &observe_background_evaluate);
+    auto second = compiled_graph(
+        2,
+        &observe_second,
+        iv::NodeLayoutBuilder(64).build(),
+        &observe_background_evaluate);
+
+    ASSERT_EQ(executor.stage(first), iv::GraphExecutorStageResult::staged);
+    ASSERT_TRUE(executor.activate_pending());
+    throw_background_evaluate = true;
+    auto failed = executor.evaluate_background({
+        .semantic_version = 1,
+        .page_width = 16,
+    });
+    ASSERT_FALSE(failed.has_value());
+    EXPECT_EQ(background_evaluate_calls, 1u);
+
+    ASSERT_EQ(executor.stage(second), iv::GraphExecutorStageResult::staged);
+    ASSERT_TRUE(executor.activate_pending());
+    EXPECT_EQ(executor.background_generation(), 1u);
+
+    throw_background_evaluate = false;
+    auto completed = executor.evaluate_background({
+        .semantic_version = 2,
+        .page_width = 16,
+    });
+    ASSERT_TRUE(completed.has_value()) << completed.error();
+    EXPECT_EQ(background_evaluate_calls, 3u);
+    EXPECT_EQ(executor.background_generation(), 2u);
 }
 
 TEST_F(GraphExecutorFixture, RejectsInvalidRequestsAndBlockSizes)

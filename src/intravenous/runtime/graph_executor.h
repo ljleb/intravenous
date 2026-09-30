@@ -10,7 +10,6 @@
 #include <intravenous/runtime/realtime_persisted_state.h>
 #include <intravenous/runtime/tick_invocation_frame.h>
 
-#include <array>
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
@@ -83,13 +82,23 @@ class GraphExecutor {
         std::vector<BackgroundProducedInputRoute> input_routes{};
         std::vector<PinnedBlockPrefix> input_selections{};
         // A failed or stale transaction keeps this exact cross-queue set for
-        // retry. Later producer publications remain outside every fixed prefix.
+        // retry together with the request that selected it. Later producer
+        // publications remain outside every fixed prefix.
         bool input_selection_active = false;
+        std::optional<BackgroundEvaluationRequest> selected_request{};
 
         BackgroundGeneration(
             CompiledGraph const& graph,
             ResourceContext const& resources,
             RealtimeGeneration& realtime);
+
+        void close_inputs() noexcept;
+        void select_inputs(BackgroundEvaluationRequest request);
+        void discard_empty_selection() noexcept;
+        [[nodiscard]] bool has_selected_inputs() const noexcept;
+        [[nodiscard]] bool inputs_closed_and_drained() const noexcept;
+        [[nodiscard]] bool release_closed_input_sentinels(
+            ReleasedBlockQueue& released) noexcept;
     };
 
     // Complete prepared hot-reload unit. Realtime and background currently
@@ -100,7 +109,10 @@ class GraphExecutor {
         RealtimeGeneration realtime;
         BackgroundGeneration background;
         std::unique_ptr<RealtimePersistedState> initial_persisted_state{};
-        bool initialized = false;
+        bool realtime_initialized = false;
+        bool background_initialized = false;
+        std::unique_ptr<ExecutionGeneration> successor_owner{};
+        std::atomic<ExecutionGeneration*> published_successor{nullptr};
 
         ExecutionGeneration(
             std::shared_ptr<CompiledGraph const> graph,
@@ -109,8 +121,12 @@ class GraphExecutor {
             std::atomic<bool>& production_reservation_failed,
             RealtimeProducerCapacityConfig const& capacity_policy);
 
-        void initialize();
-        void migrate_from(ExecutionGeneration& previous);
+        void initialize_first_generation();
+        void migrate_realtime_from(ExecutionGeneration& previous);
+        void migrate_background_from(ExecutionGeneration& previous);
+        void publish_successor(
+            std::unique_ptr<ExecutionGeneration> successor);
+        [[nodiscard]] ExecutionGeneration* successor() const noexcept;
         void prepare_initial_persisted_state(
             PersistedPageStore& pages);
     };
@@ -132,12 +148,26 @@ class GraphExecutor {
     // Executor-lifetime sticky fault: a finalized Tick/persisted record could
     // not acquire its complete generation-local block chain.
     std::atomic<bool> production_reservation_failed_{false};
-    std::array<std::optional<ExecutionGeneration>, 2> generations_{};
-    std::optional<std::size_t> active_{};
-    std::optional<std::size_t> pending_{};
-    [[nodiscard]] ExecutionGeneration& active_execution_generation();
-    [[nodiscard]] ExecutionGeneration const& active_execution_generation()
+    // The owned head is the background-current generation. Embedded successor
+    // owners preserve every actual realtime cutover until background advances.
+    std::unique_ptr<ExecutionGeneration> generation_chain_{};
+    // Realtime may run ahead while background drains closed predecessor queues.
+    ExecutionGeneration* realtime_active_ = nullptr;
+    // This generation has not crossed a realtime boundary and may be replaced.
+    std::unique_ptr<ExecutionGeneration> pending_generation_{};
+
+    [[nodiscard]] ExecutionGeneration& realtime_execution_generation();
+    [[nodiscard]] ExecutionGeneration const& realtime_execution_generation()
         const;
+    [[nodiscard]] ExecutionGeneration& background_execution_generation();
+    [[nodiscard]] ExecutionGeneration const& background_execution_generation()
+        const;
+    [[nodiscard]] std::expected<BackgroundEvaluationResult, std::string>
+    evaluate_generation(
+        ExecutionGeneration& generation,
+        BackgroundEvaluationRequest request,
+        bool publish_realtime_state);
+    [[nodiscard]] bool advance_background_generation();
 
 public:
     explicit GraphExecutor(
@@ -156,18 +186,22 @@ public:
     GraphExecutorStageResult stage(
         std::shared_ptr<CompiledGraph const> compiled_graph);
 
-    // At the caller-provided quiescent boundary, snapshots/migrates the final
-    // active realtime/background state into the corresponding halves of the
-    // pending execution generation and publishes it. Returns false when no
+    // At the caller-provided quiescent boundary, migrates realtime state,
+    // closes the predecessor's producer queues, appends the pending generation
+    // to the ordered cutover chain and switches realtime. Background state is
+    // migrated only after those closed queues drain. Returns false when no
     // generation is pending.
     bool activate_pending();
 
     [[nodiscard]] std::optional<std::uint64_t> active_generation() const noexcept;
     [[nodiscard]] std::optional<std::uint64_t> pending_generation() const noexcept;
+    [[nodiscard]] std::optional<std::uint64_t>
+    background_generation() const noexcept;
     [[nodiscard]] std::shared_ptr<CompiledGraph const> active_graph() const noexcept;
 
-    // Runs one complete prepared/evaluate/publish operation against the active
-    // generation. No propagation-only commit surface is exposed.
+    // Drains activated predecessor generations in order, then runs one complete
+    // prepared/evaluate/publish operation against the background-current
+    // realtime generation. No propagation-only commit surface is exposed.
     [[nodiscard]] std::expected<BackgroundEvaluationResult, std::string>
     evaluate_background(BackgroundEvaluationRequest request);
 
