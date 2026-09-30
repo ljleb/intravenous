@@ -13,26 +13,22 @@ flowchart TD
     NI["NodeInstances"]
     GC["GraphConnections"]
     GJ["GraphJit"]
-    RGE["RealtimeGraphExecutor"]
-    BGE["BackgroundGraphExecutor"]
+    GE["GraphExecutor"]
 
     SRC --> RPC
     RPC -->|"node mutation request ⇄ acceptance / diagnostics"| PG
     PG -->|"1. complete requested instance batch + one definitions snapshot; root builder ⇄ embedding map"| NI
     PG -->|"2. complete requested connection batch; root builder + embedding map ⇄ diagnostics"| GC
     PG -->|"3. completed ConfiguredGraph ⇄ synchronous CompiledGraph"| GJ
-    PG -->|"4a. stage compiled successor background generation/state"| BGE
-    PG -->|"4b. stage compiled successor realtime generation after background preparation"| RGE
+    PG -->|"4. stage one compiled execution generation"| GE
 ```
 
-`NodeInstances`, `GraphConnections`, `GraphJit`, `RealtimeGraphExecutor`, and
-`BackgroundGraphExecutor` are sibling children of `ProjectGraph` for this cause.
-The labels specify orchestration order inside one `ProjectGraph` handler. After the
-synchronous `GraphJit` request returns one immutable `CompiledGraph`, `ProjectGraph`
-stages its background half first. Only after `BackgroundGraphExecutor` has prepared
-the generation/cutover resources does `ProjectGraph` stage the corresponding realtime
-half. Both remain sibling child operations; the ordering does not make either executor
-the parent of the other.
+`NodeInstances`, `GraphConnections`, `GraphJit`, and `GraphExecutor` are sibling
+children of `ProjectGraph` for this cause. The labels specify orchestration order inside
+one `ProjectGraph` handler. After the synchronous `GraphJit` request returns one
+immutable `CompiledGraph`, `ProjectGraph` stages it once in `GraphExecutor`; the
+background-first/realtime-second preparation sequence is entirely internal to that
+module.
 
 ## Data movement
 
@@ -60,10 +56,10 @@ resolvable cross-node connection to the same root builder.
 
 `ProjectGraph` then finishes the root builder, synchronously asks `GraphJit` to
 compile that exact `ConfiguredGraph`/definition generation into one immutable
-`CompiledGraph`, and then stages the compiled successor in `BackgroundGraphExecutor` first and
-`RealtimeGraphExecutor` second. Actual logical activation is deferred until a later
-realtime pass boundary, where realtime publishes an allocation-free prepared cutover
-to background before swapping to the successor realtime generation.
+`CompiledGraph`, and stages the compiled successor once in `GraphExecutor`. Actual
+logical activation is deferred until a later realtime pass boundary, where the internal
+realtime actor publishes the allocation-free prepared cutover to the internal background
+actor before swapping to the successor realtime generation.
 
 ## Failure semantics
 
@@ -76,10 +72,10 @@ silently deleting the requested node or its dangling project connections.
 
 The root-build transaction, including `GraphJit`, is synchronous with the
 mutation handler. A JSON-RPC result may therefore include graph-JIT diagnostics.
-It still does not wait for activation of the compiled successor. Background staging
-prepares the successor first; logical cutover occurs only at a legal
-`RealtimeGraphExecutor` pass boundary and is published to `BackgroundGraphExecutor`
-as a separate source invocation.
+It still does not wait for activation of the compiled successor. `GraphExecutor`
+prepares the background half first internally; logical cutover occurs only at a legal
+`RealtimeExecutor` pass boundary and is an internal actor handoff, not another
+app-module source invocation.
 
 ## Derived read models and notifications
 

@@ -287,17 +287,21 @@ The manager may keep ready blocks preassigned to each producer. Queue users do n
 require one shared atomic logical size. Reclamation follows completed background work
 and returns blocks to the manager, which later makes them producer-ready again.
 
-### Realtime / background executors
+### Graph executor / realtime and background actors
 
-`RealtimeGraphExecutor` owns realtime mutable execution state, active/pending
+`GraphExecutor` is the execution app module. It owns one logical paired execution
+generation and application-facing staging/coordination.
+
+Its internal `RealtimeExecutor` owns realtime mutable execution state, active/pending
 realtime generations, pass-boundary activation, and realtime producer endpoints.
 
-`BackgroundGraphExecutor` owns its worker thread, background mutable evaluation
+Its internal `BackgroundExecutor` owns its worker thread, background mutable evaluation
 state, independently queued producer inputs, persisted-data computation/publication,
 and immutable persisted-state versions returned to realtime.
 
-The two executors share no mutable state object. Cross-boundary data is immutable
-after publication or ownership-transferred by pointer.
+The two actors share no mutable state object. Cross-boundary data is immutable after
+publication or ownership-transferred by pointer. Their handoffs are internal runtime
+communication, not app-module event propagation.
 
 ## Coverage and change propagation
 
@@ -513,12 +517,12 @@ writing another dynamically retained buffer and copying it into transport storag
 
 A **produced block chain** is one or more fully initialized producer-private blocks
 linked together before publication. The producer preferably passes both the first and
-last block to the consumer-side app-module handler. Publishing the chain is one cheap
+last block to the internal consumer-side handoff. Publishing the chain is one cheap
 queue insertion/pointer operation; individual entries inside the private chain do not
 require atomic publication.
 
 A **pinned queue prefix** is the finite `(first,last)` block range selected by
-`BackgroundGraphExecutor` before one background workload begins. Later insertion may
+`BackgroundExecutor` before one background workload begins. Later insertion may
 link new blocks after `last`, but the selected workload still ends at the remembered
 `last`; background execution does not discover more work while processing the pinned
 prefix.
@@ -546,7 +550,7 @@ exhaustion never authorizes intentional loss.
 Queue-block ownership follows:
 
 ```text
-AsyncCapacityManager -> producer -> BackgroundGraphExecutor -> AsyncCapacityManager
+AsyncCapacityManager -> producer -> BackgroundExecutor -> AsyncCapacityManager
 ```
 
 The background consumer does not splice released blocks directly into a realtime
@@ -558,7 +562,7 @@ the capacity manager owns recycling/reassignment.
 A **graph-generation cutover** is the authoritative realtime pass-boundary transition
 from one paired realtime/background graph generation to the next. Background staging
 happens first; the realtime boundary later publishes final old-generation chains,
-publishes an already-prepared allocation-free cutover to `BackgroundGraphExecutor`,
+publishes an already-prepared allocation-free cutover to `BackgroundExecutor`,
 and swaps the active realtime realization.
 
 A **closed producer queue** is an old-generation queue after that cutover. No producer
@@ -631,7 +635,7 @@ A **steady realization** is the compiled realization used after all transition-o
 state has expired.
 
 Both represent the same logical graph revision. GraphJit should compile both in the
-original rebuild when both are necessary; `RealtimeGraphExecutor` activates the transition
+original rebuild when both are necessary; `RealtimeExecutor` activates the transition
 form at the splice and later reconciles currently evolved state into the already-
 compiled steady form at a safe root callback boundary. Expiry is defined by absolute
 semantic positions/ranges, even if a fixed-block implementation also precomputes the

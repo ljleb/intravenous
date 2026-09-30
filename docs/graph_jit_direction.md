@@ -39,8 +39,9 @@ It owns the whole-project LLVM/ORC compilation domain. It does **not** own:
 - safe-point activation/state migration policy.
 
 Those responsibilities remain with `ProjectGraph`, `NodeDefinitions`,
-`NodeInstances`, `GraphConnections`, `RealtimeGraphExecutor`, and
-`BackgroundGraphExecutor` according to the execution domain involved.
+`NodeInstances`, `GraphConnections`, and the `GraphExecutor` app module. Within
+`GraphExecutor`, the internal `RealtimeExecutor` and `BackgroundExecutor` actors own
+their respective runtime domains.
 
 The application boundary should remain LLVM-free. Runtime request/result/event
 types and `CompiledGraph` metadata belong in runtime-facing headers; the concrete
@@ -506,7 +507,7 @@ The shell continues to use the generated-root and canonical realtime
 `NodeLayout`/`NodeStorage` contract specified in this document: `CompiledGraph`
 carries the finalized `NodeLayout` plus the generated root `tick_block`. Realtime
 state lifecycle stays in `NodeStorage`; background-only lifecycle such as
-`TockState` is owned separately by `BackgroundGraphExecutor`. Primitive `skip_block` callbacks
+`TockState` is owned separately by `BackgroundExecutor`. Primitive `skip_block` callbacks
 are internal scheduling tools, not root operations. Whole-project lowering must not
 reintroduce a second **realtime** node-storage layout or a synthetic project-wide
 coverage/Tock ABI merely to expose internal Tock outputs.
@@ -922,8 +923,8 @@ This is a hint, not a hard constraint. Use your own good judgement if ever in do
     direct views stay copy-free, while derived conversion/fan-in templates share only
     under an exact compile-time key, with materialized addressable results subsuming
     otherwise-identical materialized sequential results. The current monolithic executor substrate still owns active/pending `CompiledGraph` +
-    `NodeStorage` realizations pending the split into `RealtimeGraphExecutor` and
-    `BackgroundGraphExecutor`,
+    `NodeStorage` realizations pending the internal decomposition of the `GraphExecutor`
+    app module into `RealtimeExecutor` and `BackgroundExecutor` actors,
     stages pending storage without sampling live state, performs migration at explicit
     quiescent-boundary activation, and keeps activation out of its Tick entry point.
     The executor now also realizes compiler-planned background-evaluation accumulator records as a
@@ -977,9 +978,9 @@ This is a hint, not a hard constraint. Use your own good judgement if ever in do
     or exceeded an event bound. Multi-output replay flushes only each output's selected
     coverage from the node-wide union schedule. Semantic coverage is promoted only
     after any required page publication succeeds. In the target split,
-    `BackgroundGraphExecutor` exposes only that end-to-end operation. The Tick root ABI receives one narrow
+    `BackgroundExecutor` exposes only that end-to-end operation. The Tick root ABI receives one narrow
     callback-scoped invocation record containing only resolved sequential and Random
-    Access views. `RealtimeGraphExecutor` pre-registers its page-reader slot off the realtime
+    Access views. `RealtimeExecutor` pre-registers its page-reader slot off the realtime
     thread, pins one published root for the complete generated-root call, and keeps
     that pin in a non-copyable `TickInvocationFrame`; neither the frame owner nor the
     store crosses the generated ABI. Immutable per-node dynamic Sequential and Random
@@ -1017,8 +1018,8 @@ This is a hint, not a hard constraint. Use your own good judgement if ever in do
     storage or invokes Tock.
 18. **Refactor realtime-produced persistence/recording handoff onto provisioned
     queues and split executor ownership.** The current capture-store implementation is
-    migration substrate. The target runtime uses `RealtimeGraphExecutor` for realtime
-    generation/storage and producer endpoints, `BackgroundGraphExecutor` for the
+    migration substrate. The target runtime uses `RealtimeExecutor` for realtime
+    generation/storage and producer endpoints, `BackgroundExecutor` for the
     worker/background evaluation/persisted-state owner, and non-app-module
     `AsyncCapacityManager` infrastructure for producer-specific queue blocks.
 
@@ -1029,10 +1030,10 @@ This is a hint, not a hard constraint. Use your own good judgement if ever in do
     producer/binding operations; no executor, queue owner or capacity manager enters
     generated code.
 
-    The `RealtimeGraphExecutor -> BackgroundGraphExecutor` app-module handler connects
+    The internal `RealtimeExecutor -> BackgroundExecutor` handoff connects
     each already initialized incoming chain to that producer's SPSC queue with one
     cheap publication/pointer operation. It does not synchronously run background
-    evaluation. `BackgroundGraphExecutor` independently pins one finite `(first,last)`
+    evaluation. `BackgroundExecutor` independently pins one finite `(first,last)`
     prefix from each relevant producer queue when selecting a workload. There is no
     atomic cross-queue snapshot; later arrivals are later work. If cross-queue atomic
     visibility is ever required, stop and design that feature explicitly.
@@ -1046,7 +1047,7 @@ This is a hint, not a hard constraint. Use your own good judgement if ever in do
     Background commit applies exactly the selected queue prefixes, publishes a
     coherent immutable persisted-state/page version when appropriate, and then releases
     completed prefixes through non-realtime reclamation. The published version reaches
-    `RealtimeGraphExecutor` as an immutable pointer and becomes active only at a legal
+    `RealtimeExecutor` as an immutable pointer and becomes active only at a legal
     realtime pass boundary.
 19. **Generation reconciliation.** Rebind compatible stable persisted stores across
     generations. Persisted generated/finalized data remains retained throughout its
@@ -1058,7 +1059,7 @@ This is a hint, not a hard constraint. Use your own good judgement if ever in do
     storage planner aliases or shares it. Carry stable node/virtual-member/port/channel
     identities plus realization metadata across generations, preserve the overlapping
     valid temporal range, and materialize temporary transition state when the new
-    steady representation cannot itself expose inherited values. `RealtimeGraphExecutor`
+    steady representation cannot itself expose inherited values. `RealtimeExecutor`
     activates the transition realization at the graph splice and, when its finite
     inherited-state horizon expires, switches at a safe root boundary to the already
     compiled steady realization. This correctness stage is mandatory before storage or
@@ -1160,7 +1161,7 @@ A single `LLJIT` owned by `GraphJit` may live for the application lifetime. Each
 compiled project generation has independently releasable ORC resources through a
 generation-specific `JITDylib`/`ResourceTracker` lifetime object.
 
-Old and new generations must be able to coexist while `RealtimeGraphExecutor` finishes a
+Old and new generations must be able to coexist while `RealtimeExecutor` finishes a
 pass, materializes `NodeStorage` migration, or retains active/pending generations.
 A `CompiledGraph` therefore pins its code/resource lifetime rather than exposing
 naked function pointers whose lifetime is implicit.
@@ -1279,7 +1280,7 @@ persisted-output pages, and `TockState` are not part of this packed realtime are
 `GraphKernelStorage`, or another parallel fixed **audio-thread** state arena.
 Lowering populates one `NodeLayoutBuilder` per executable realization and finalizes
 it before emitting realtime storage accesses into LLVM. Each completed `NodeLayout`
-becomes part of its `CompiledGraph`, and `RealtimeGraphExecutor` creates/owns the
+becomes part of its `CompiledGraph`, and `RealtimeExecutor` creates/owns the
 corresponding `NodeStorage` while that realization can be active or is needed for a
 handoff.
 
@@ -1442,7 +1443,7 @@ region, a ring range, a channel view into a shared producer representation, or a
 resolved/composed view that has no dedicated steady-state buffer. Any optimization
 that aliases or eliminates a conceptual private port-state buffer must still emit
 enough realization metadata to recover the semantic window during a later graph
-replacement. The realtime kernel never consults the identity map. `RealtimeGraphExecutor`
+replacement. The realtime kernel never consults the identity map. `RealtimeExecutor`
 uses it only when reconciling executable realizations, and may copy/materialize the
 same underlying stored data more than once if several node-owned semantic states
 previously shared it.
@@ -1484,7 +1485,7 @@ may precompute an equivalent block count, but callback count is not the semantic
 coordinate.
 
 Two realizations are not mandatory. If the G1 steady representation can directly
-receive every surviving state piece, `RealtimeGraphExecutor` migrates into it and activates it
+receive every surviving state piece, `RealtimeExecutor` migrates into it and activates it
 without a transition realization. Conversely, state that remains observable
 indefinitely is ordinary G1 state, not transition-only state, and must be represented
 by the steady realization. At the later transition-to-steady handoff, authored `State`
@@ -1592,7 +1593,7 @@ consumers see the canonical persisted-page/recording abstraction rather than a
 separate queue-storage read path.
 
 Background evaluation keeps one generated statically ordered root.
-`BackgroundGraphExecutor` selects and orchestrates each finite workload, while the
+`BackgroundExecutor` selects and orchestrates each finite workload, while the
 generated root owns the compiler-fixed node/materialization order inside that
 workload. `BackgroundEvaluationPlan` retains
 compact runtime binding slots plus each direct/materialization operation's placement
@@ -1711,11 +1712,11 @@ well as tock/persisted outputs; neither is a best-effort cache.
 ## Executor boundaries
 
 GraphJit produces immutable compilation artifacts; mutable runtime ownership is split
-between two peer app modules.
+between two internal execution actors owned by one `GraphExecutor` app module.
 
-### `RealtimeGraphExecutor`
+### `RealtimeExecutor`
 
-`RealtimeGraphExecutor` owns:
+`RealtimeExecutor` owns:
 
 - active/pending executable generations and canonical realtime `NodeStorage`;
 - graph-revision realtime state reconciliation, including transition/steady
@@ -1730,20 +1731,20 @@ Executable replacement must preserve concrete-node-owned port state. Input histo
 belongs to the surviving destination input; output history and authored latency/future
 state belong to the surviving source output. Connection rewiring, fan-in/fanout
 changes, or a different steady storage representation do not themselves reset those
-windows. `RealtimeGraphExecutor` reconciles overlapping valid semantic ranges from the
+windows. `RealtimeExecutor` reconciles overlapping valid semantic ranges from the
 old realization into the new revision, materializing transition-only state when
 necessary even if steady execution normally aliases another representation.
 
 When transition-only state has a finite horizon, GraphJit may provide both a
 transition realization and final steady realization for the same logical revision.
-`RealtimeGraphExecutor` activates the transition form at a legal pass boundary and
+`RealtimeExecutor` activates the transition form at a legal pass boundary and
 switches to the precompiled steady form at the first legal boundary after the final
 transition-only range can no longer be observed. A newer project revision may
 supersede either pending form without requiring a second compilation for the old one.
 
-### `BackgroundGraphExecutor`
+### `BackgroundExecutor`
 
-`BackgroundGraphExecutor` owns:
+`BackgroundExecutor` owns:
 
 - staged/current background generations supplied by `ProjectGraph`, plus ordered
   prepared cutovers actually published by realtime;
@@ -1773,7 +1774,7 @@ Final background commit promotes prepared semantic coverage and any successor
 persisted-state/page version corresponding to the selected workload, or promotes none
 on failure/stale-base rejection. Selected queue prefixes are released only according
 to successful domain commit semantics. A newly published immutable persisted-state
-version is sent by pointer to `RealtimeGraphExecutor`, which stores it pending until a
+version is sent by pointer to `RealtimeExecutor`, which stores it pending until a
 later pass boundary.
 
 Published sample/event pages may share one immutable snapshot root/page version even
@@ -1800,8 +1801,8 @@ and cutover-publication resources are prepared before the realtime half becomes
 activatable.
 
 Actual cutover is realtime-authoritative. At a legal pass boundary,
-`RealtimeGraphExecutor` publishes all final old-generation producer chains, publishes
-the already-prepared `N -> N+1` cutover to `BackgroundGraphExecutor` with bounded
+`RealtimeExecutor` publishes all final old-generation producer chains, publishes
+the already-prepared `N -> N+1` cutover to `BackgroundExecutor` with bounded
 allocation-free pointer operations, and then swaps its active realtime realization.
 The background worker may still finish selected N work and drain the now-closed N
 queues before applying the prepared migration and interpreting N+1 inputs. Data is
@@ -1820,7 +1821,7 @@ still fail during `GraphJit` compilation.
 In that case:
 
 - `ProjectGraph` retains the desired revision and compile diagnostics;
-- neither `RealtimeGraphExecutor` nor `BackgroundGraphExecutor` is given a partial failed generation;
+- neither `RealtimeExecutor` nor `BackgroundExecutor` is given a partial failed generation;
 - the previous complete executable generation may continue running;
 - a later project/definition change retries the entire root-build transaction.
 

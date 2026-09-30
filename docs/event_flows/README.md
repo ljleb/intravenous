@@ -11,16 +11,17 @@ The procedures are:
 - [Package refresh](./package_refresh.md)
 - [User connection mutation](./user_connection_mutation.md)
 - [Startup and project replay](./startup_and_project_replay.md)
-- [Realtime/background executor exchange](./realtime_background_exchange.md)
 
 The diagrams describe **control flow**. Data may travel in either direction
 along an event/request edge. In particular, `ProjectGraph` may pass a mutable
 root builder to `NodeInstances`/`GraphConnections`, receive embedding maps or
 diagnostics back, synchronously exchange a completed graph for a `CompiledGraph`
-with `GraphJit`, and finally stage that result first in `BackgroundGraphExecutor` and then in
-`RealtimeGraphExecutor` without creating reverse control-flow edges. The later
-realtime-pass cutover and background-completion publications are separate source
-invocations documented in the executor-exchange flow.
+with `GraphJit`, and finally stage that result once in `GraphExecutor` without creating
+reverse control-flow edges. `GraphExecutor` internally prepares background execution
+before realtime activation can become eligible. Realtime/background queue publication,
+cutover and persisted-state completion are internal runtime handoffs rather than
+app-module event propagation; see
+[../realtime_background_execution_and_queues.md](../realtime_background_execution_and_queues.md).
 
 Future sources such as undo/redo, presentation-driven structural changes,
 project save collection, and UI-only presentation settings should be designed

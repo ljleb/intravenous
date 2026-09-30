@@ -16,10 +16,10 @@ Startup must keep three states separate:
   be built from available definitions;
 - **compiled project graph** — the immutable `CompiledGraph` synchronously
   produced by `GraphJit` from that configured generation;
-- **active realtime execution** — the executable generation/current mutable storage
-  owned by `RealtimeGraphExecutor`;
-- **background execution/persisted state** — the desired/committed background
-  generation and immutable persisted state owned by `BackgroundGraphExecutor`.
+- **active execution** — the paired executable generation owned by the `GraphExecutor`
+  app module, with realtime mutable storage owned internally by `RealtimeExecutor`;
+- **background execution/persisted state** — the paired background half and immutable
+  persisted state owned internally by `BackgroundExecutor`.
 
 Project load reconstructs desired state. It does not require every IV package to
 be compiled first, and it does not require audio execution to be active.
@@ -46,9 +46,9 @@ be compiled first, and it does not require audio execution to be active.
 10. `ProjectGraph` orchestrates reconstruction using the desired instances owned
     by `NodeInstances` and desired connections owned by `GraphConnections` against
     the new immutable definitions snapshot, synchronously compiles the resulting
-    root graph through `GraphJit`, stages the compiled successor in
-    `BackgroundGraphExecutor` first, and only after background preparation succeeds
-    stages the corresponding realtime half in `RealtimeGraphExecutor`.
+    root graph through `GraphJit`, and stages the compiled successor once in
+    `GraphExecutor`. `GraphExecutor` internally prepares the background half first
+    and only then prepares the matching realtime half.
 
 ## Valid initialized state before package realization
 
@@ -66,10 +66,10 @@ valid:
 - `GraphConnections` reports dangling unresolved matchers rather than deleting
   requested connections;
 - the current root `ConfiguredGraph` may therefore be partial or empty;
-- `RealtimeGraphExecutor` may have no active realtime generation or may run the
-  latest complete generation available under the chosen execution policy;
-- `BackgroundGraphExecutor` may independently have no pending work yet or retain the
-  latest coherent background/persisted state.
+- `GraphExecutor` may have no active execution generation or may run the latest
+  complete generation available under the chosen execution policy;
+- its internal `BackgroundExecutor` may independently have no pending work yet or
+  retain the latest coherent background/persisted state.
 
 ## Package filesystem activity starts its own package transaction
 
@@ -101,21 +101,20 @@ can only become input to a later root-build transaction.
 Whole-project `GraphJit` compilation is synchronous inside the `ProjectGraph`
 rebuild transaction. It uses exactly the configured graph/provider generation
 produced by that transaction and returns one immutable `CompiledGraph` before
-`ProjectGraph` notifies either executor. `ProjectGraph` first stages the background
-half in `BackgroundGraphExecutor`. That call prepares generation-specific input queues,
-stable-identity/route metadata, and an allocation-free cutover publication object/reference.
-Only after it succeeds does `ProjectGraph` stage the corresponding realtime half in
-`RealtimeGraphExecutor`. The calls remain sibling child operations of the same
-root-build cause.
+`ProjectGraph` invokes `GraphExecutor` once. `GraphExecutor` internally prepares the
+background half first: generation-specific input queues, stable-identity/route metadata
+and an allocation-free cutover publication object/reference are prepared before the
+matching realtime half can become activatable.
 
 Staging does not mutate an active realtime pass or a workload already selected by the
-background worker. At a later legal realtime pass boundary, realtime publishes all
-final old-generation chains, synchronously publishes the prepared generation cutover
-to `BackgroundGraphExecutor`, and then swaps its active realtime generation. The
-background handler only exposes the prepared cutover to its worker; it does not
-allocate or execute background work synchronously. Background may lag, finish old-
-generation selected work, drain the now-closed old-generation queues, and perform the
-prepared migration before interpreting new-generation inputs.
+background worker. At a later legal realtime pass boundary, the internal realtime actor
+publishes all final old-generation chains, synchronously publishes the prepared
+generation cutover to the internal background actor, and then swaps its active realtime
+generation. The cutover handoff only exposes the prepared transition to the worker; it
+does not allocate or execute background work synchronously. Background may lag, finish
+old-generation selected work, drain the now-closed old-generation queues, and perform
+the prepared migration before interpreting new-generation inputs. These actor handoffs
+are internal to `GraphExecutor`, not app-module event propagation.
 
 See
 [realtime_background_execution_and_queues.md](./realtime_background_execution_and_queues.md)

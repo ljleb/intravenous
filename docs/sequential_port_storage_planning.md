@@ -161,7 +161,7 @@ existing `NodeLayout`/`NodeStorage` machinery rather than create a second persis
 graph-kernel arena. The generated project behaves as a zero-input, zero-output root
 node whose `declare()` operation declares constituent realtime `State` plus
 root/compiler-owned audio-thread persistent regions into one `NodeLayoutBuilder`.
-`RealtimeGraphExecutor` owns the resulting single packed realtime `NodeStorage`; invocation-local
+`RealtimeExecutor` owns the resulting single packed realtime `NodeStorage`; invocation-local
 temporaries belong to the generated root's fixed stack frame.
 
 Project-owned data that must survive from one **audio-root execution call** to
@@ -753,7 +753,7 @@ direct-view, conversion, projection, fan-in and deterministic event-merge operat
 plus dense replay invocation slots and compiled maximum-block constraints. Those
 records are validated for storage-index compatibility, unique operation placement,
 dependency order, persisted identity and replay binding/block constraints. The
-schedule is a compiler fact. `RealtimeGraphExecutor` and its storage realization must not
+schedule is a compiler fact. `RealtimeExecutor` and its storage realization must not
 rebuild it by walking `ConfiguredGraph`, compiler objects, or connection topology.
 
 The generated background evaluation root remains responsible for the static node
@@ -850,9 +850,10 @@ queues rather than a recording-specific shared capture log. Queue blocks are
 power-of-two-capacity segments supplied ahead of demand by non-app-module
 `AsyncCapacityManager` infrastructure.
 
-`RealtimeGraphExecutor` owns producer endpoints and realtime realization/binding.
-`BackgroundGraphExecutor` owns the corresponding consumer queues and background work.
-They share no mutable executor state.
+`GraphExecutor` is the app module. Its internal `RealtimeExecutor` owns producer
+endpoints and realtime realization/binding; its internal `BackgroundExecutor` owns the
+corresponding consumer queues and background work. The actors share no mutable
+executor state.
 
 The immutable Tick runtime plan still determines exactly where a Tick/persisted or
 recording-capable logical output becomes final and how much provisioned storage one
@@ -872,7 +873,7 @@ runtime performs the bounded copy required when the final authored
 one or more blocks into a private chain using ordinary stores.
 
 At the realtime pass boundary, the complete initialized chain is published through
-the `RealtimeGraphExecutor -> BackgroundGraphExecutor` bridge. Passing `(first,last)`
+the internal `RealtimeExecutor -> BackgroundExecutor` handoff. Passing `(first,last)`
 lets the background-side event handler append it to that producer's SPSC queue with
 one cheap publication/pointer operation. The handler does not synchronously run
 background evaluation.
@@ -889,7 +890,7 @@ voided    -> publish explicit erase for addressed range
 block. A Tick/persisted event window containing zero events is ordinary authoritative
 empty event data, not a recording void.
 
-Before background execution, `BackgroundGraphExecutor` independently pins one finite
+Before background execution, `BackgroundExecutor` independently pins one finite
 `(first,last)` prefix from every relevant producer queue. There is intentionally no
 atomic cross-queue snapshot. Once selected, those terminal blocks define immutable
 work even while producers append later chains. If cross-queue atomic visibility is
@@ -1167,7 +1168,7 @@ If mandatory work cannot acquire enough ready blocks, the missing write is a sti
 retention/recording failure. Later replenishment cannot recreate that work and does
 not turn the failure into an allowed drop.
 
-`BackgroundGraphExecutor` independently pins one finite prefix from each relevant
+`BackgroundExecutor` independently pins one finite prefix from each relevant
 producer queue before a background pass. End discovery occurs during work selection;
 a remembered terminal block, not `next == nullptr` during execution, defines where
 that workload stops. Blocks appended after the remembered terminal are later work.
@@ -1332,7 +1333,7 @@ or materialization storage while every producer respects its declaration is a
 GraphJIT sizing bug, not a producer overflow.
 
 Executor/device telemetry should remain separate when those layers land:
-`RealtimeGraphExecutor` can count deadline misses, while the audio-device boundary can
+`RealtimeExecutor` can count deadline misses, while the audio-device boundary can
 count actual input overruns/output underruns. Those conditions have different
 causes and should not be collapsed into the event-output overflow metric.
 
@@ -1441,7 +1442,7 @@ The transition realization is required only when the final steady plan cannot it
 represent inherited node-owned state. It may add compact carries, composed-history
 materializations, or other bounded temporary storage. Those requirements have a
 finite semantic range for ordinary history/latency and therefore an absolute expiry
-position. `RealtimeGraphExecutor` may translate that to a known block count for a fixed block
+position. `RealtimeExecutor` may translate that to a known block count for a fixed block
 size, but the semantic handoff is at the first legal root callback boundary at or
 after the expiry position.
 

@@ -198,7 +198,7 @@ This front owns:
 - cheap complete-chain publication at realtime pass boundaries;
 - Tick-persisted output handoff;
 - explicit recorder handoff with fixed untouched/write/`write_void()` semantics;
-- independent finite-prefix pinning by `BackgroundGraphExecutor`;
+- independent finite-prefix pinning by `BackgroundExecutor`;
 - publication into the canonical random-access persistence representation; and
 - release/reclamation of completed prefixes after successful domain commit.
 
@@ -272,9 +272,10 @@ runtime path.
 
 This front owns:
 
-- construction and lifetime of `RealtimeGraphExecutor` and `BackgroundGraphExecutor`;
-- direct `ProjectGraph` bridges that stage `BackgroundGraphExecutor` first and
-  `RealtimeGraphExecutor` second after successful `GraphJit`;
+- construction and lifetime of the `GraphExecutor` app module plus its internal
+  `RealtimeExecutor`, `BackgroundExecutor`, and `AsyncCapacityManager`;
+- one `ProjectGraph -> GraphExecutor` staging bridge after successful `GraphJit`;
+  `GraphExecutor` internally prepares `BackgroundExecutor` first and `RealtimeExecutor` second;
 - paired-generation staging with all cutover allocation completed off realtime;
 - realtime-authoritative pass-boundary cutover: final old-generation chain publication,
   allocation-free ordered cutover publication to background, then realtime swap;
@@ -282,8 +283,8 @@ This front owns:
   queue drain, and prepared migration before consuming new-generation queues;
 - preservation of multiple ordered cutovers while background lags;
 - realtime compiled-generation state migration and pass-boundary activation;
-- audio callback routing through `RealtimeGraphExecutor`;
-- `BackgroundGraphExecutor` worker/evaluation lifecycle and independently pinned
+- audio callback routing through `RealtimeExecutor`;
+- `BackgroundExecutor` worker/evaluation lifecycle and independently pinned
   producer queues;
 - `AsyncCapacityManager`-style provisioning/reclamation for producer-specific
   power-of-two queue blocks;
@@ -574,7 +575,7 @@ for every neighboring project to finish:
    ownership/versioning interfaces; fronts 4/5/6 stop depending on authored page
    semantics.
 4. **Execution checkpoint:** fronts 4/6/7 provide enough correctness for front 8 to make
-   `RealtimeGraphExecutor` and `BackgroundGraphExecutor` the normal application path.
+   `GraphExecutor` the normal application path while retaining separate internal realtime/background actors.
 5. **Configuration-value checkpoint:** front 9 publishes the restricted parser plus
    typed/structured value representation; fronts 10/13 share it for persistence and
    replacement.

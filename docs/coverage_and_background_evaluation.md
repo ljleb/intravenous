@@ -676,7 +676,7 @@ A correct node must therefore produce the same result from a freshly initialized
 discard/reinitialize it, or otherwise manage acceleration state without changing
 semantics. One mutable `TockState` instance must not be concurrently mutated by
 overlapping tock executions unless the node's own state representation makes that
-safe. All tock execution is background-only. `BackgroundGraphExecutor` may serialize,
+safe. All tock execution is background-only. `BackgroundExecutor` may serialize,
 duplicate, retain, move, or reset compatible acceleration state without introducing
 any audio-thread lock, live callback, or ephemeral-output exception.
 
@@ -833,7 +833,7 @@ pages are filled from the fixed Tick-capture snapshot instead of traversing the 
 Tick producer.
 
 Complete stored publication does **not** require every transient intermediate or
-all invalid pages to coexist in memory at once. `BackgroundGraphExecutor` may reuse bounded
+all invalid pages to coexist in memory at once. `BackgroundExecutor` may reuse bounded
 transaction storage while honoring the semantic batch. Such chunking must not
 split a node into multiple `tock_coverage()` invocations for the same logical batch;
 if workspace storage cannot hold the node's consolidated requirements, the
@@ -1115,7 +1115,7 @@ realtime storage whose shape is known when the `CompiledGraph` is built, includi
 - compiler-owned realtime persistent regions; and
 - Tick carry/history/feedback storage selected for persistent placement.
 
-`TockState` is deliberately outside realtime `NodeStorage`. `BackgroundGraphExecutor`
+`TockState` is deliberately outside realtime `NodeStorage`. `BackgroundExecutor`
 owns it as per-node background acceleration state, and it may contain dynamically
 allocated structures. Reusable background workspaces are likewise background
 sidecars rather than `NodeStorage` merely because they happen to be bounded.
@@ -1124,7 +1124,7 @@ sidecars rather than `NodeStorage` merely because they happen to be bounded.
 `tick_block()` or propagation callbacks. A node's observable behavior must remain
 correct if its `TockState` is discarded or independently instantiated.
 
-`BackgroundGraphExecutor` instead owns stable persisted-output storage plus
+`BackgroundExecutor` instead owns stable persisted-output storage plus
 per-generation port mappings. Conceptually:
 
 ```cpp
@@ -1201,7 +1201,7 @@ follows:
   committed long-lived semantic coverage baseline for one bound generation;
 - the standalone `BackgroundPropagationWorkspace` owns reusable F/R accumulator
   storage and builds the coverage portions of `BackgroundEvaluationCall`; it has no
-  dependency on `BackgroundGraphExecutor`, persisted pages or materialized storage;
+  dependency on `BackgroundExecutor`, persisted pages or materialized storage;
 - `PreparedCoveragePropagation` owns candidate coverage and exposes immutable exact
   changes/requirements plus the per-node activity selected by successful F/R,
   without mutating the committed baseline;
@@ -1253,7 +1253,7 @@ propagates invalidation but does not schedule data evaluation. The coordinator p
 that immutable activity selection into the transaction-owned call frame before it
 invokes the generated evaluate root.
 
-`BackgroundGraphExecutor` remains the lifetime/orchestration façade for background work: it begins the transaction,
+`BackgroundExecutor` remains the lifetime/orchestration façade for background work: it begins the transaction,
 asks it to evaluate and commits it; page arithmetic, materialization execution and
 callback binding stay in the components above.
 
@@ -1391,7 +1391,7 @@ before publication. A `tock/ephemeral` output has no persisted precomputation ob
 ## 20. Executor-controlled semantic mutation entry points
 
 Any mutation that affects published coverage or persisted-output semantics enters
-through a `BackgroundGraphExecutor`-controlled boundary. Other code must not mutate
+through a `BackgroundExecutor`-controlled boundary. Other code must not mutate
 active persisted roots/pages behind its versioning rules.
 
 The architectural invalidation-root set is deliberately closed:
@@ -1449,7 +1449,7 @@ The node sees the new current input coverage plus that changed region. This may
 overinvalidate unaffected fan-in portions but is finite, simple, and correct.
 
 A recording bridge contributes queued changes differently from an ordinary semantic
-edit. Before the background evaluation pass starts, `BackgroundGraphExecutor`
+edit. Before the background evaluation pass starts, `BackgroundExecutor`
 independently pins a finite prefix from each relevant recording/Tick-persisted
 producer queue. Each prefix is immutable for the selected workload. Blocks appended
 while propagation or Tock is running are not added to the current workload even when
@@ -1467,7 +1467,7 @@ The live `CompiledGraph::tick_block()` reads published/materialized data or supp
 its consuming sequential input's neutral value; it never runs tock.
 Invalid `tock/persisted` page domains are internal materialization
 roots, not a third external caller. The external protocol may combine updates and
-fetches in one request; `BackgroundGraphExecutor` normalizes that shape into mutation roots,
+fetches in one request; `BackgroundExecutor` normalizes that shape into mutation roots,
 demand roots, and one or more legal background evaluation transactions.
 
 ## 21. Semantic versions, page versions, and stale-work rejection
@@ -1730,7 +1730,7 @@ Where layout permits, payload data is written directly into capacity-manager-
 provisioned queue blocks. The producer may link several blocks privately, fully
 initialize their payload/header metadata, and publish the completed chain at a
 realtime pass boundary. Publication transfers the chain to the appropriate producer
-queue in `BackgroundGraphExecutor`; no global capture insertion sequence is required
+queue in `BackgroundExecutor`; no global capture insertion sequence is required
 by the transport itself.
 
 Domain-specific ordering remains explicit where semantics require it. For example,
@@ -1836,13 +1836,13 @@ AsyncCapacityManager
         v
 producer-specific ready reserve
         |
-        | RealtimeGraphExecutor takes blocks without allocation
+        | RealtimeExecutor takes blocks without allocation
         v
 producer-private block chain built during realtime execution
         |
         | one cheap chain publication at a pass boundary
         v
-BackgroundGraphExecutor producer queue
+BackgroundExecutor producer queue
         |
         | independently pin one finite prefix for selected work
         v
@@ -1873,8 +1873,8 @@ During one pass the producer may construct a private chain:
 
 The producer exclusively owns that chain while filling it; payload bytes, used counts,
 and private links are ordinary writes. At the pass boundary it publishes the complete
-chain through the `RealtimeGraphExecutor -> BackgroundGraphExecutor` app-module
-bridge. Passing both the first and last block lets the background-side handler append
+chain through the internal `RealtimeExecutor -> BackgroundExecutor` handoff. Passing
+both the first and last block lets the background-side handoff append
 the chain to that producer's pending queue in constant time.
 
 Recording has fixed semantics:
@@ -1929,7 +1929,7 @@ primarily touch opposite ownership boundaries.
 
 ### 24.3 Publication and background workload selection
 
-Each producer has its own SPSC queue into `BackgroundGraphExecutor`. The producer
+Each producer has its own SPSC queue into `BackgroundExecutor`. The producer
 publishes a complete already-initialized chain in one cheap operation. If the queue is
 empty, publication installs its first block; otherwise the background-side handler
 atomically connects the old pending tail to the incoming chain head and remembers the
@@ -1985,8 +1985,8 @@ selected queue prefixes be released. A failed, cancelled, incomplete or stale
 transaction does not silently consume the pending input required to retry that work.
 
 When a new coherent persisted-state/page version is ready,
-`BackgroundGraphExecutor` publishes one immutable heap-owned version pointer through
-its bridge to `RealtimeGraphExecutor`. The realtime-side handler only stores it as
+`BackgroundExecutor` publishes one immutable heap-owned version pointer through
+the internal handoff to `RealtimeExecutor`. The realtime actor only stores it as
 pending. The active realtime pass continues using its already selected state; the
 new version becomes active at a later legal pass boundary.
 
@@ -1994,7 +1994,7 @@ Released queue blocks return to `AsyncCapacityManager`; the background consumer 
 not splice them directly into a realtime producer's reserve. The ownership cycle is:
 
 ```text
-AsyncCapacityManager -> producer -> BackgroundGraphExecutor -> AsyncCapacityManager
+AsyncCapacityManager -> producer -> BackgroundExecutor -> AsyncCapacityManager
 ```
 
 If a persisted-page implementation can adopt compatible queue payload storage, the
@@ -2044,7 +2044,7 @@ Two valid host-side result models are:
 
 The simplest initial application boundary should prefer owned results. Generated
 internal tock/reverse execution may use borrowed transaction/stored views whose
-lifetime is controlled by `BackgroundGraphExecutor`.
+lifetime is controlled by `BackgroundExecutor`.
 
 ### External version selection and incomplete candidates
 
@@ -2097,7 +2097,7 @@ JIT compilation and semantic invalidation are separate events. Producing a new
 `CompiledGraph` generation does not by itself make any stable persisted output
 stale or revoke its retention guarantee.
 
-`BackgroundGraphExecutor` reconciles old/new background generations using stable concrete-node/output
+`BackgroundExecutor` reconciles old/new background generations using stable concrete-node/output
 identity. Compatible persisted outputs rebind to the existing stable store rather
 than copying data merely because machine code changed.
 
@@ -2132,7 +2132,7 @@ page-store or transaction pointer.
 
 The generated Tick root remains a zero-project-port root but gains an explicit
 invocation frame for dynamic background-derived bindings. GraphJit retains the
-compile-time mapping from node ports to compact frame slots, and `RealtimeGraphExecutor`
+compile-time mapping from node ports to compact frame slots, and `RealtimeExecutor`
 selects one immutable published-page snapshot plus any `TickMaterializationSnapshot`
 at the root boundary. The frame contains views/bindings only, not storage-discovery
 objects or ownership backdoors.
@@ -2165,12 +2165,11 @@ rather than implement dynamic SCC maintenance. A complete Tarjan/Kosaraju-style
 pass is linear, simple, deterministic, and expected to be negligible beside LLVM
 lowering/optimization until profiling proves otherwise.
 
-Execution ownership is split:
-
-`RealtimeGraphExecutor` owns canonical realtime `NodeStorage`, active/pending
+Execution ownership is internal to the `GraphExecutor` app module and split between
+two actors. `RealtimeExecutor` owns canonical realtime `NodeStorage`, active/pending
 realtime generations, pass-boundary activation and realtime queue producer endpoints.
 
-`BackgroundGraphExecutor` owns:
+`BackgroundExecutor` owns:
 
 - stable canonical persisted-page stores/immutable roots for **all persisted
   outputs** (`tick/persisted` and `tock/persisted`), plus per-generation bindings;
@@ -2183,8 +2182,9 @@ realtime generations, pass-boundary activation and realtime queue producer endpo
   selected Tick/persisted queue prefixes; and
 - external Random Access request/change-notification lifetime.
 
-`AsyncCapacityManager` owns non-realtime provisioning/recycling of queue blocks. No
-mutable executor state is jointly owned.
+`AsyncCapacityManager`, also owned by `GraphExecutor` as runtime infrastructure, owns
+non-realtime provisioning/recycling of queue blocks. No mutable state is jointly owned
+between the realtime and background actors.
 
 ## 30. Deliberately open implementation/tuning choices
 
@@ -2397,13 +2397,13 @@ recording merely because that planning metadata exists.
       base's semantic-version monotonicity and nonempty page-layout compatibility and
       revalidates that base as current before promoting semantic coverage. When page
       state does change, successful publication precedes the propagation workspace's
-      non-throwing coverage promotion. `BackgroundGraphExecutor`
+      non-throwing coverage promotion. `BackgroundExecutor`
       exposes this end-to-end operation and no propagation-only compatibility API; and
    6. **Complete:** Tick-time dynamic bindings use
       `TickMaterializationSnapshot` playback and per-input neutral values for genuinely
       missing sequential data. The generated Tick root's final ABI accepts one
       `TickInvocationCall` containing only resolved sequential and Random Access view
-      spans. `RealtimeGraphExecutor` registers both reader slots on the control path and constructs
+      spans. `RealtimeExecutor` registers both reader slots on the control path and constructs
       a non-copyable callback-scoped `TickInvocationFrame`; that owner acquires one
       bounded atomic page-root pin and retains it across the complete generated-root
       invocation. Generated code receives neither that owner nor a page-store/executor
@@ -2460,9 +2460,9 @@ recording merely because that planning metadata exists.
    provisioned SPSC queue described in
    [realtime_background_execution_and_queues.md](./realtime_background_execution_and_queues.md).
 
-   Split the current executor responsibilities into `RealtimeGraphExecutor` and
-   `BackgroundGraphExecutor`. `RealtimeGraphExecutor` owns realtime generation/storage,
-   pass-boundary activation and producer endpoints. `BackgroundGraphExecutor` owns its
+   Keep one `GraphExecutor` app module and split its runtime responsibilities internally
+   into `RealtimeExecutor` and `BackgroundExecutor` actors. `RealtimeExecutor` owns realtime generation/storage, pass-boundary activation and
+   producer endpoints. `BackgroundExecutor` owns its
    worker thread, independently queued inputs, background evaluation state and
    persisted-state publication. They share no mutable execution-state object.
 
@@ -2476,12 +2476,12 @@ recording merely because that planning metadata exists.
    Realtime production should write sample/event data directly into provisioned queue
    blocks wherever layout permits. Build complete chains privately with ordinary
    stores, then publish the chain at a realtime pass boundary. The
-   `RealtimeGraphExecutor -> BackgroundGraphExecutor` app-module handler receives at
+   `RealtimeExecutor -> BackgroundExecutor` internal handoff receives at
    least the first block and preferably `(first,last)`, attaches the chain to that
    producer's pending queue with one cheap publication/pointer operation, and does not
    synchronously run background evaluation.
 
-   `BackgroundGraphExecutor` owns one SPSC queue per producer as needed. Before a
+   `BackgroundExecutor` owns one SPSC queue per producer as needed. Before a
    background pass, independently select a finite `(first,last)` prefix from every
    relevant queue. There is **no** atomic cross-queue snapshot. Publications racing
    selection may be processed either now or in the next pass. If a future semantic
@@ -2493,7 +2493,7 @@ recording merely because that planning metadata exists.
    recording/Tick-persisted payloads, publish the successor persisted state/page
    version, then release the consumed prefixes through non-realtime reclamation.
    Background completion publishes one immutable persisted-state pointer to
-   `RealtimeGraphExecutor`; realtime stores it pending and activates it only at a legal
+   `RealtimeExecutor`; realtime stores it pending and activates it only at a legal
    pass boundary.
 
    Preserve the fixed recording semantics while migrating transport:
@@ -2516,7 +2516,7 @@ recording merely because that planning metadata exists.
    changes, and compact/ring/alias representation changes. When the steady new graph
    cannot directly represent inherited state, compile a transition realization with
    temporary materialized state and a finite absolute-position expiry horizon, plus
-   the final steady realization. `RealtimeGraphExecutor` performs the splice and the later
+   the final steady realization. `RealtimeExecutor` performs the splice and the later
    safe-boundary handoff without requiring another compilation. This stage is a
    correctness prerequisite and does not require first simplifying `NodeStorage`.
 7. **Finish generation reconciliation and remaining authored-node cases.** Rebind

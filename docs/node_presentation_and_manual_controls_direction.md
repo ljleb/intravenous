@@ -12,7 +12,7 @@ The scoped GraphBuilder identity work in
 [scoped_graph_builder_and_subgraph_closure_direction.md](./scoped_graph_builder_and_subgraph_closure_direction.md)
 provides the nested semantic identities used by source focus and presentation
 rebinding. Manual-control JIT specialization also depends on the final GraphJit /
-`RealtimeGraphExecutor` realization-switching contract. This is not an instruction to pull
+`RealtimeExecutor` realization-switching contract. This is not an instruction to pull
 UI/control work ahead of those runtime and builder milestones._
 
 This document consolidates the planned node-presentation, interaction-lifetime,
@@ -273,7 +273,7 @@ exact dynamic-input set / settled specialization values
 
 Stale-result rejection therefore follows the same exact-generation principle as
 other GraphJit work. Control hover/scrub state may request compilation, but it
-never directly activates stale native code; `RealtimeGraphExecutor` still owns safe
+never directly activates stale native code; `RealtimeExecutor` still owns safe
 activation of an already-compiled compatible realization/variant.
 
 ## Relationship to project persistence
@@ -305,7 +305,7 @@ This work follows the runtime and builder prerequisites rather than leading them
 5. add persistent manual values/participation policy to project state;
 6. add long-lived gesture contexts and scrub-only interpolation;
 7. add predictive dynamic-input specialization on top of the settled GraphJit
-   value-specialization/`RealtimeGraphExecutor` activation machinery;
+   value-specialization/`RealtimeExecutor` activation machinery;
 8. profile before adding recent-variant caches or more elaborate hover policies.
 
 The key architectural boundary is that presentations and manual controls consume

@@ -19,16 +19,14 @@ flowchart TD
     NI["NodeInstances"]
     GC["GraphConnections"]
     GJ["GraphJit"]
-    RGE["RealtimeGraphExecutor"]
-    BGE["BackgroundGraphExecutor"]
+    GE["GraphExecutor"]
 
     SRC --> RPC
     RPC -->|"connection mutation request ⇄ acceptance / diagnostics"| PG
     PG -->|"1. embed complete current instance set into fresh root builder"| NI
     PG -->|"2. resolve/apply complete ProjectNodePortMatcher connection batch"| GC
     PG -->|"3. completed ConfiguredGraph ⇄ synchronous CompiledGraph"| GJ
-    PG -->|"4a. stage compiled successor background generation/state"| BGE
-    PG -->|"4b. stage compiled successor realtime generation after background preparation"| RGE
+    PG -->|"4. stage one compiled execution generation"| GE
 ```
 
 ## Why `NodeInstances` still runs
@@ -43,9 +41,10 @@ needs this translation before it can resolve recursive matchers.
 
 There is intentionally no separate incremental connection-only root graph path
 for the initial implementation. After connection application, `ProjectGraph`
-finishes the root graph, synchronously recompiles it through `GraphJit`, and then stages the resulting `CompiledGraph` in `BackgroundGraphExecutor` first and
-`RealtimeGraphExecutor` second. This only prepares a paired generation; actual cutover
-occurs later at a legal realtime pass boundary.
+finishes the root graph, synchronously recompiles it through `GraphJit`, and then stages
+the resulting `CompiledGraph` once in `GraphExecutor`. `GraphExecutor` prepares the
+background half before the realtime half internally; actual cutover occurs later at a
+legal realtime pass boundary.
 
 ## Matcher semantics
 

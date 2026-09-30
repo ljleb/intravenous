@@ -20,8 +20,7 @@ flowchart TD
     NI["NodeInstances"]
     GC["GraphConnections"]
     GJ["GraphJit"]
-    RGE["RealtimeGraphExecutor"]
-    BGE["BackgroundGraphExecutor"]
+    GE["GraphExecutor"]
 
     PW -->|"1. complete build subset ⇄ revisions + dependencies + diagnostics"| PJ
     PW -->|"2. declarations + removals + complete build results"| PD
@@ -31,14 +30,13 @@ flowchart TD
     PG -->|"1. reconfigure/embed complete desired node batch against exactly this snapshot"| NI
     PG -->|"2. re-resolve/apply complete desired connection batch"| GC
     PG -->|"3. successor ConfiguredGraph ⇄ synchronous CompiledGraph"| GJ
-    PG -->|"4a. stage compiled successor background generation/state"| BGE
-    PG -->|"4b. stage compiled successor realtime generation after background preparation"| RGE
+    PG -->|"4. stage one compiled execution generation"| GE
 ```
 
-The numeric labels on sibling edges are orchestration order inside their parent;
-they do not make the sibling modules call one another. Background staging is first so
-all generation-specific queues, target-generation bindings, and cutover resources exist before
-the realtime successor can become activatable.
+The numeric labels on sibling edges are orchestration order inside their parent.
+`GraphExecutor` internally prepares the background half first so generation-specific
+queues, target-generation bindings and cutover resources exist before the matching
+realtime half can become activatable.
 
 ## PackageWatcher transaction
 

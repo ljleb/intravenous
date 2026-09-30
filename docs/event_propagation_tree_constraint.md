@@ -103,13 +103,17 @@ A useful mental model: each event propagation carries an implicit cause token.
 The tree constraint says: for each source and each cause, no module processes
 that cause twice.
 
-A concrete execution example is the static bridge cycle between
-`RealtimeGraphExecutor` and `BackgroundGraphExecutor`. A realtime pass-boundary
-producer publication or generation cutover is one source invocation with
-`RealtimeGraphExecutor -> BackgroundGraphExecutor`. A later completed persisted-state
-publication is a different source invocation with
-`BackgroundGraphExecutor -> RealtimeGraphExecutor`. Neither direction nests the other
-for the same cause, so the static cycle does not violate the tree constraint.
+The tree constraint applies to **application-module event propagation**, not to
+internal actor handoffs inside one module. For example, `GraphExecutor` owns internal
+`RealtimeExecutor` and `BackgroundExecutor` actors that exchange provisioned block
+chains, generation-cutover pointers, and persisted-state pointers in both directions.
+Those handoffs are ordinary internal runtime synchronization and do not add vertices or
+edges to the app-module propagation tree.
+
+App modules themselves may also have bidirectional static bridge relationships. What is
+forbidden is re-entering the same app module twice for one propagated cause. The
+constraint is therefore on each dynamic propagation graph, not on the undirected/static
+module relationship graph.
 
 ### Raising multiple events from one member
 
