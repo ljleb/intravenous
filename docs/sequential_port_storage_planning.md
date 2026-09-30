@@ -823,11 +823,11 @@ frames at that input's own neutral value; it does not allocate or expose a runti
 owner through the generated ABI. Successful
 background transactions now freeze storage requiring conversion, fan-in or ephemeral
 advance materialization into logical sample/event input views in one immutable
-`TickMaterializationSnapshot`. A dedicated raw-pointer reader slot pins that snapshot
-without audio-thread ownership release, and no-fail promotion retires its predecessor
-for explicit non-audio reclamation. Its generation and source page version must match
-the realization and callback's independently pinned page root before the workspace
-exposes its coverage. External Sequential event slots now use the same boundary:
+`TickMaterializationSnapshot`. Background packages that snapshot with its exact
+persisted-page root in one latest-version mailbox owner. Realtime adopts only a
+generation-compatible pair at a pass boundary, and returns the previous owner for
+explicit non-audio reclamation; no callback performs ownership release. External
+Sequential event slots now use the same boundary:
 each owns a fixed bounded sequence sized from its selected aggregate event rate and
 the compiled maximum block size, and callback binding copies only events in the
 requested absolute-time window. A missing event materialization/page produces the

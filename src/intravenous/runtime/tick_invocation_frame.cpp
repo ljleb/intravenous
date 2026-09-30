@@ -1561,10 +1561,27 @@ TickInvocationFrame::TickInvocationFrame(
     std::size_t block_size) noexcept
     : published_pages_(page_reader.pin())
     , materialized_storage_(materialization_reader.pin())
+    , published_pages_view_(&published_pages_.snapshot())
+    , materialized_storage_view_(&materialized_storage_.snapshot())
     , capture_scope_(workspace.begin_capture())
     , call_(workspace.bind(
-        published_pages_.snapshot(),
-        materialized_storage_.snapshot(),
+        *published_pages_view_,
+        *materialized_storage_view_,
+        sample_index,
+        block_size))
+{}
+
+TickInvocationFrame::TickInvocationFrame(
+    RealtimePersistedState const& persisted,
+    TickInvocationWorkspace& workspace,
+    SampleIndex sample_index,
+    std::size_t block_size) noexcept
+    : published_pages_view_(&persisted.pages())
+    , materialized_storage_view_(&persisted.materialization())
+    , capture_scope_(workspace.begin_capture())
+    , call_(workspace.bind(
+        *published_pages_view_,
+        *materialized_storage_view_,
         sample_index,
         block_size))
 {}

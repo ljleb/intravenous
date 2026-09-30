@@ -903,8 +903,15 @@ TEST_F(GraphExecutorFixture, RunsOnlyTheEndToEndBackgroundTransaction)
     EXPECT_TRUE(result->coverage.output_changes.empty());
     EXPECT_FALSE(result->published_pages.has_value());
     EXPECT_EQ(result->promoted_tick_materialization, 1u);
-    EXPECT_EQ(
-        executor.reclaim_retired_snapshots().tick_materializations, 1u);
+    // The store's construction-time empty materialization is not part of the
+    // executor's coherent initial root and can retire immediately.
+    auto const before_adoption = executor.reclaim_retired_snapshots();
+    EXPECT_EQ(before_adoption.realtime_persisted_states, 0u);
+    EXPECT_EQ(before_adoption.tick_materializations, 1u);
+    executor.tick_block(64, 64);
+    auto const reclaimed = executor.reclaim_retired_snapshots();
+    EXPECT_EQ(reclaimed.realtime_persisted_states, 1u);
+    EXPECT_EQ(reclaimed.tick_materializations, 0u);
 }
 
 TEST_F(GraphExecutorFixture, FailedBackgroundEvaluationPublishesNothing)

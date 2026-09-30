@@ -7,6 +7,7 @@
 #include <intravenous/runtime/graph_jit.h>
 #include <intravenous/runtime/persisted_page_store.h>
 #include <intravenous/runtime/realtime_produced_record.h>
+#include <intravenous/runtime/realtime_persisted_state.h>
 #include <intravenous/runtime/tick_invocation_frame.h>
 
 #include <array>
@@ -25,6 +26,7 @@ enum class GraphExecutorStageResult : std::uint8_t {
 };
 
 struct GraphExecutorReclaimedSnapshots {
+    std::size_t realtime_persisted_states = 0;
     std::size_t persisted_pages = 0;
     std::size_t tick_materializations = 0;
 };
@@ -97,6 +99,7 @@ class GraphExecutor {
         std::shared_ptr<CompiledGraph const> graph{};
         RealtimeGeneration realtime;
         BackgroundGeneration background;
+        std::unique_ptr<RealtimePersistedState> initial_persisted_state{};
         bool initialized = false;
 
         ExecutionGeneration(
@@ -108,6 +111,8 @@ class GraphExecutor {
 
         void initialize();
         void migrate_from(ExecutionGeneration& previous);
+        void prepare_initial_persisted_state(
+            PersistedPageStore& pages);
     };
 
     ResourceContext resources_{};
@@ -116,15 +121,14 @@ class GraphExecutor {
     // Compatible generations will rebind their persisted ports into this one
     // canonical sample/event authority rather than migrate page ownership.
     PersistedPageStore persisted_pages_{};
+    // Background publication authority for Tick-visible derived/ephemeral
+    // storage. Realtime never pins this store independently.
     TickMaterializationStore tick_materializations_{};
+    // Owns the one coherent page/materialization pair used by realtime plus
+    // at most the newest pending pair produced by background.
+    RealtimePersistedStateMailbox realtime_persisted_state_{};
     // Generic generation-local producer capacity for Tick/persisted queues.
     AsyncCapacityManager async_capacity_manager_{64};
-    // Registered off the audio thread. Each tick_block() acquires one bounded
-    // callback-scoped pin from this slot before entering generated code.
-    PersistedPageStore::ReaderSlot tick_page_reader_{};
-    // The paired materialization root uses the same non-owning pin protocol;
-    // generation/page-version validation rejects incoherent root pairs.
-    TickMaterializationStore::ReaderSlot tick_materialization_reader_{};
     // Executor-lifetime sticky fault: a finalized Tick/persisted record could
     // not acquire its complete generation-local block chain.
     std::atomic<bool> production_reservation_failed_{false};

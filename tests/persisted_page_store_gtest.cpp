@@ -1,6 +1,7 @@
 #include <intravenous/runtime/background_evaluation_transaction.h>
 #include <intravenous/runtime/persisted_page_store.h>
 #include <intravenous/runtime/realtime_produced_record.h>
+#include <intravenous/runtime/realtime_persisted_state.h>
 #include <intravenous/runtime/tick_capture_store.h>
 #include <intravenous/runtime/tick_invocation_frame.h>
 
@@ -1801,6 +1802,84 @@ TEST(BackgroundEvaluationTransaction,
     ASSERT_NE(emptied, nullptr);
     EXPECT_EQ(emptied->domain, (iv::Coverage{{{0, 4}}}));
     EXPECT_TRUE(emptied->events.empty());
+}
+
+TEST(RealtimePersistedStateMailbox,
+     AdoptsOnlyTheNewestCoherentPageAndMaterializationPair)
+{
+    iv::PersistedPageStore pages;
+    iv::TickMaterializationStore materializations;
+    iv::RealtimePersistedStateMailbox mailbox;
+
+    mailbox.publish(iv::RealtimePersistedState::capture_initial(3, pages));
+    auto const* initial = mailbox.adopt(3);
+    ASSERT_NE(initial, nullptr);
+    EXPECT_EQ(initial->pages().version(), iv::PersistedPageSnapshotVersion{});
+    EXPECT_EQ(initial->materialization().generation(), 3u);
+
+    auto prepare_state = [&] {
+        return iv::RealtimePersistedState::prepare(
+            3, pages, materializations);
+    };
+    auto publish_pair = [&](std::unique_ptr<iv::RealtimePersistedState> state,
+                            std::uint64_t semantic,
+                            float first) {
+        auto candidate = pages.begin_candidate(semantic, 4);
+        candidate.put(sample_page(
+            local_output(iv::PortKind::sample, 0), first));
+        ASSERT_EQ(
+            pages.publish(std::move(candidate)),
+            iv::PersistedPagePublishResult::published);
+        auto const page_version = [&] {
+            auto reader = pages.register_reader();
+            auto pin = reader.pin();
+            return pin->version();
+        }();
+        static_cast<void>(materializations.promote(
+            std::make_unique<iv::TickMaterializationSnapshot>(
+                3,
+                semantic,
+                page_version,
+                std::vector<iv::TickMaterializedSampleInput>{},
+                std::vector<iv::TickMaterializedEventInput>{})));
+        auto captured = state->capture_current();
+        ASSERT_TRUE(captured.has_value()) << captured.error();
+        mailbox.publish(std::move(state));
+    };
+
+    auto second = prepare_state();
+    publish_pair(std::move(second), 1, 10.0f);
+    auto third = prepare_state();
+    publish_pair(std::move(third), 2, 20.0f);
+
+    auto const* adopted = mailbox.adopt(3);
+    ASSERT_NE(adopted, nullptr);
+    EXPECT_EQ(
+        adopted->pages().version(),
+        (iv::PersistedPageSnapshotVersion{.semantic = 2, .page = 2}));
+    EXPECT_EQ(adopted->materialization().pages(), adopted->pages().version());
+    auto const* page = adopted->pages().find_sample_page(
+        local_output(iv::PortKind::sample, 0), 0);
+    ASSERT_NE(page, nullptr);
+    EXPECT_FLOAT_EQ(page->values.front().value, 20.0f);
+
+    EXPECT_EQ(mailbox.reclaim_returned(), 1u);
+    EXPECT_EQ(pages.reclaim_retired(), 2u);
+    EXPECT_EQ(materializations.reclaim_retired(), 2u);
+}
+
+TEST(RealtimePersistedStateMailbox,
+     RejectsAStateForAnotherExecutionGeneration)
+{
+    iv::PersistedPageStore pages;
+    iv::RealtimePersistedStateMailbox mailbox;
+    mailbox.publish(iv::RealtimePersistedState::capture_initial(3, pages));
+    auto const* active = mailbox.adopt(3);
+    ASSERT_NE(active, nullptr);
+
+    mailbox.publish(iv::RealtimePersistedState::capture_initial(4, pages));
+    EXPECT_EQ(mailbox.adopt(3), active);
+    EXPECT_EQ(mailbox.reclaim_returned(), 1u);
 }
 
 } // namespace

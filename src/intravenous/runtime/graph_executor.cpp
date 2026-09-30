@@ -126,13 +126,18 @@ void GraphExecutor::ExecutionGeneration::migrate_from(
     initialized = true;
 }
 
+void GraphExecutor::ExecutionGeneration::prepare_initial_persisted_state(
+    PersistedPageStore& pages)
+{
+    initial_persisted_state = RealtimePersistedState::capture_initial(
+        graph->project_generation, pages);
+}
+
 GraphExecutor::GraphExecutor(
     ResourceContext resources,
     RealtimeProducerCapacityConfig producer_capacity)
     : resources_(std::move(resources))
     , producer_capacity_(producer_capacity)
-    , tick_page_reader_(persisted_pages_.register_reader())
-    , tick_materialization_reader_(tick_materializations_.register_reader())
 {
     if (producer_capacity_.low_watermark_callbacks == 0
         || producer_capacity_.high_watermark_callbacks
@@ -181,6 +186,8 @@ GraphExecutorStageResult GraphExecutor::stage(
         async_capacity_manager_,
         production_reservation_failed_,
         producer_capacity_);
+    generations_[index]->prepare_initial_persisted_state(
+        persisted_pages_);
     if (!active_) {
         generations_[index]->initialize();
     }
@@ -202,6 +209,8 @@ bool GraphExecutor::activate_pending()
     auto const previous = active_;
     active_ = pending_;
     pending_.reset();
+    realtime_persisted_state_.publish(
+        std::move(next.initial_persisted_state));
     if (previous) generations_[*previous].reset();
     return true;
 }
@@ -228,6 +237,12 @@ GraphExecutor::evaluate_background(BackgroundEvaluationRequest request)
 {
     auto& generation = active_execution_generation();
     auto& background = generation.background;
+    // Every allocation/reader registration required by a coherent realtime
+    // root happens before the domain transaction can commit.
+    auto published_state = RealtimePersistedState::prepare(
+        generation.graph->project_generation,
+        persisted_pages_,
+        tick_materializations_);
     if (!background.input_selection_active) {
         for (std::size_t index = 0;
              index < background.pending_inputs.size(); ++index) {
@@ -253,6 +268,12 @@ GraphExecutor::evaluate_background(BackgroundEvaluationRequest request)
         // retry cannot accidentally absorb later realtime publications.
         return result;
     }
+    std::optional<std::string> persisted_state_error;
+    if (auto captured = published_state->capture_current(); !captured) {
+        persisted_state_error.emplace(std::move(captured.error()));
+    } else {
+        realtime_persisted_state_.publish(std::move(published_state));
+    }
     for (std::size_t index = 0;
          index < background.pending_inputs.size(); ++index) {
         if (background.input_selections[index].empty()) continue;
@@ -265,12 +286,17 @@ GraphExecutor::evaluate_background(BackgroundEvaluationRequest request)
         }
     }
     background.input_selection_active = false;
+    if (persisted_state_error) {
+        return std::unexpected(std::move(*persisted_state_error));
+    }
     return result;
 }
 
 GraphExecutorReclaimedSnapshots GraphExecutor::reclaim_retired_snapshots()
 {
+    auto const states = realtime_persisted_state_.reclaim_returned();
     return {
+        .realtime_persisted_states = states,
         .persisted_pages = persisted_pages_.reclaim_retired(),
         .tick_materializations = tick_materializations_.reclaim_retired(),
     };
@@ -303,9 +329,14 @@ void GraphExecutor::tick_block(std::size_t sample_index, std::size_t block_size)
         throw std::invalid_argument(
             "GraphExecutor tick block size is outside the compiled specialization");
     }
+    auto const* persisted = realtime_persisted_state_.adopt(
+        generation.graph->project_generation);
+    if (!persisted) {
+        throw std::logic_error(
+            "GraphExecutor has no compatible realtime persisted state");
+    }
     TickInvocationFrame invocation{
-        tick_page_reader_,
-        tick_materialization_reader_,
+        *persisted,
         generation.realtime.tick_invocation,
         sample_index,
         block_size};

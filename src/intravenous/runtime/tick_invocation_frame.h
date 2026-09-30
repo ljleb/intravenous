@@ -4,6 +4,7 @@
 #include <intravenous/runtime/async_capacity_manager.h>
 #include <intravenous/runtime/persisted_page_store.h>
 #include <intravenous/runtime/persisted_tick_capture_registry.h>
+#include <intravenous/runtime/realtime_persisted_state.h>
 #include <intravenous/runtime/tick_materialization_snapshot.h>
 
 #include <atomic>
@@ -95,12 +96,14 @@ public:
 };
 
 // Callback-scoped owner for the narrow generated Tick invocation record.
-// Construction performs the bounded atomic pin operations of the two reader
-// slots and refreshes preallocated Sequential playback storage for the requested
-// callback window; both slots are registered by GraphExecutor on the control path.
+// GraphExecutor supplies one mailbox-adopted coherent root; direct component
+// callers may instead supply the two pre-registered reader slots. Construction
+// refreshes preallocated Sequential playback storage for the requested window.
 class TickInvocationFrame {
     PersistedPageStore::ReaderPin published_pages_{};
     TickMaterializationStore::ReaderPin materialized_storage_{};
+    PersistedPageStore::Snapshot const* published_pages_view_ = nullptr;
+    TickMaterializationSnapshot const* materialized_storage_view_ = nullptr;
     TickInvocationWorkspace::CaptureScope capture_scope_;
     graph_jit::TickInvocationCall call_{};
 
@@ -108,6 +111,14 @@ public:
     explicit TickInvocationFrame(
         PersistedPageStore::ReaderSlot& page_reader,
         TickMaterializationStore::ReaderSlot& materialization_reader,
+        TickInvocationWorkspace& workspace,
+        SampleIndex sample_index = 0,
+        std::size_t block_size = 0) noexcept;
+
+    // GraphExecutor uses one already-adopted coherent root for the entire
+    // realtime pass. Its mailbox retains the root until a later pass boundary.
+    explicit TickInvocationFrame(
+        RealtimePersistedState const& persisted,
         TickInvocationWorkspace& workspace,
         SampleIndex sample_index = 0,
         std::size_t block_size = 0) noexcept;
@@ -127,13 +138,13 @@ public:
     [[nodiscard]] PersistedPageStore::Snapshot const& published_pages()
         const noexcept
     {
-        return published_pages_.snapshot();
+        return *published_pages_view_;
     }
 
     [[nodiscard]] TickMaterializationSnapshot const& materialized_storage()
         const noexcept
     {
-        return materialized_storage_.snapshot();
+        return *materialized_storage_view_;
     }
 };
 

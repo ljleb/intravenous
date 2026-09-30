@@ -1978,9 +1978,11 @@ remaining old-generation work and is retired during migration.
 ## 25. Random-access event/sample reads from node callbacks
 
 Random-access sample reads address global covered sample positions. Tick/persisted
-and Tock/persisted outputs use the same published persisted-page read path. In the
-preliminary implementation, a Tick callback pins that published snapshot at the
-callback boundary; current Tick buffers, pending candidates, and newly queued realtime blocks are not alternate lookup sources.
+and Tock/persisted outputs use the same published persisted-page read path. At the
+callback boundary, realtime adopts at most the newest generation-compatible mailbox
+root, which already pins one exact persisted-page/Tick-materialization pair. Current
+Tick buffers, pending candidates, and newly queued realtime blocks are not alternate
+lookup sources.
 
 Ephemeral Tock/replay results use immutable addressable materializations instead of
 persisted pages. Background-only consumers may use transaction-local materialization.
@@ -2394,13 +2396,13 @@ recording merely because that planning metadata exists.
       immutable `TickMaterializationSnapshot`. Mixed `current_tick` composites remain
       generated-root work because they also consume live Tick sources. Its promotion is a
       no-fail owner relink after any page publication and before semantic coverage
-      promotion. A separately pre-registered reader slot pins that root for the whole
-      Tick callback without reference counting; retired owners are reclaimed only by
-      an explicit non-audio executor operation. Each snapshot records its compiled
-      generation and exact persisted-page version. The Tick workspace binds its sample
-      and event views only when both coordinates match the independently pinned page
-      root, otherwise conservatively exposing empty materialized coverage instead of a
-      mixed-version view. Sequential sample slots own preallocated power-of-two rings
+      promotion. Background then publishes a mailbox root that pins that materialization
+      together with its exact page root. Realtime adopts the pair at a pass boundary
+      without reference counting; retired pair owners are reclaimed only by an explicit
+      non-audio executor operation. Each snapshot records its compiled generation and
+      exact persisted-page version, and an incoherent pair is rejected before mailbox
+      publication rather than repaired inside a callback. Sequential sample slots own
+      preallocated power-of-two rings
       sized from the specialization's maximum block size plus authored history. The
       callback fills only the bounded requested window from coherent materialization
       or direct page data and leaves absent frames at that logical input's neutral
