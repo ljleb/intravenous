@@ -68,7 +68,7 @@ The core package/project-graph modules are:
 | `NodeInstances` | own desired node-instance state, instantiate one complete batch against exactly one definitions snapshot, and own reusable configured node-instance caches |
 | `GraphConnections` | own desired cross-node connection state, resolve project-wide port matchers against one complete root embedding, and apply those connections |
 | `GraphJit` | synchronously lower, optimize, and ORC-JIT one complete root `ConfiguredGraph` into an immutable `CompiledGraph` generation |
-| `GraphExecutor` | own one logical execution generation, internally coordinate realtime/background actors, realtime mutable node storage, background worker/evaluation state, provisioned producer queues, hot-reload cutover, and immutable persisted-state publication |
+| `GraphExecutor` | own complete prepared execution generations, internal realtime/background actors, producer reserves/background pending queues, async capacity management, hot-reload cutover, and immutable persisted-state publication |
 | `IvModuleSourceIntrospection` | derived source/logical-node read model for module nodes only |
 | `SystemAudioDevices` | own system-audio enumeration, stable logical device bindings, hardware-device lifetime, buffering, and synchronization |
 | `ProjectPersistence` | load/save normalized persistent state without becoming the canonical owner of instance/connection intent |
@@ -192,15 +192,15 @@ Its root-build procedure is always batched:
 4. finish the root builder into one `ConfiguredGraph`;
 5. invoke `GraphJit` exactly once to synchronously compile that graph into one
    immutable `CompiledGraph`;
-6. stage that immutable generation once in `GraphExecutor`. `GraphExecutor` internally
-   prepares the background half first, including generation-specific queues/bindings,
-   target-generation identity/route metadata and allocation-free cutover resources;
-7. only after background preparation succeeds does `GraphExecutor` prepare the matching
-   realtime half and mark the paired successor activatable.
+6. stage that immutable generation once in `GraphExecutor`; `GraphExecutor` constructs one
+   complete `ExecutionGeneration` off-thread containing both actor realizations,
+   generation-specific routes/endpoints, pre-sized background descriptors, migration
+   metadata, producer-reserve requirements and allocation-free cutover linkage;
+7. only after that complete generation object is ready may its pointer become the pending
+   activatable successor.
 
-`GraphExecutor` is one child in the application-event propagation tree. The internal
-background-first/realtime-second preparation order is executor implementation, not
-additional app-module propagation.
+`GraphExecutor` is one child in the application-event propagation tree. Internal actor
+preparation and handoffs are implementation, not additional app-module propagation.
 
 An unavailable definition or temporarily unresolved matcher does not delete the
 corresponding desired state from `NodeInstances` or `GraphConnections`. The
@@ -549,7 +549,7 @@ semantic reason to stop retaining it, while reader-pinned old storage versions
 live until safe reclamation.
 
 The recording bridge remains the explicit solution for unreproducible sequential
-data. Realtime production uses capacity-manager-provisioned SPSC queue blocks and,
+data. Realtime production uses blocks taken from capacity-manager-maintained producer reserves and,
 where layout permits, writes sample/event payloads directly into those blocks. A
 completed producer-private chain is published to `BackgroundExecutor` at a
 realtime pass boundary. Background work independently pins one finite prefix from
@@ -578,61 +578,60 @@ See [graph_jit_direction.md](./graph_jit_direction.md) for the complete root-nod
 
 ## `GraphExecutor` and its internal execution actors
 
-`GraphExecutor` is the single application module for execution. It owns one logical
-execution generation and internally decomposes runtime work into separate actors and
-infrastructure:
+`GraphExecutor` is the single application module for execution. It owns the complete
+prepared execution-generation lifecycle and internally decomposes runtime work into
+separate actors and infrastructure:
 
 ```text
 GraphExecutor
 |- RealtimeExecutor
 |- BackgroundExecutor
 |- AsyncCapacityManager
-`- ProvisionedQueue<T> instances / internal handoff channels
+|- producer reserves / background pending queues
+`- newest-persisted-version mailbox
 ```
 
-The concurrency boundary remains strict even though the app-module boundary is
-collapsed. `RealtimeExecutor` and `BackgroundExecutor` share no mutable executor
-state. Large cross-actor transfers use pointers/ownership transfer to heap-allocated or
-provisioned objects rather than payload copies. The detailed queue/cutover contract is
-normative in
+The concurrency boundary remains strict even though the app-module boundary is one
+module. `RealtimeExecutor` and `BackgroundExecutor` share no mutable executor state.
+Large cross-actor transfers use stable pointers/ownership transfer to already
+allocated objects or blocks rather than payload copies. The normative runtime contract
+is in
 [realtime_background_execution_and_queues.md](./realtime_background_execution_and_queues.md).
 
-`GraphExecutor` itself owns application-facing bridging, paired-generation staging,
-and generation-level coordination. `ProjectGraph` stages one complete immutable
-`CompiledGraph` generation in `GraphExecutor`; callers do not address the internal
-actors separately.
+`GraphExecutor` owns application-facing bridging and generation preparation. One
+successful `GraphJit` result is prepared as one complete `ExecutionGeneration` that
+contains both actor realizations, generation-specific routes/endpoints, migration
+metadata, pre-sized background input/work descriptors, producer-reserve requirements,
+and every object/link needed for an allocation-free realtime cutover. A generation
+pointer becomes pending only after the complete object is ready; there is no externally
+observable "background half staged before realtime half" state.
 
 ### `RealtimeExecutor` internal actor
 
-`RealtimeExecutor` owns the mutable realtime realization of an already compiled
-project generation. It does not own ORC compilation or run background evaluation.
-It keeps at least:
+`RealtimeExecutor` owns the mutable realtime realization of an already prepared
+execution generation. It keeps at least:
 
-- one immutable active `CompiledGraph` generation and optionally one newest pending
-  realtime generation;
-- one canonical realtime `NodeStorage` for each retained executable generation;
-- ordinary realtime lifecycle/migration state for `State` and safe whole-pass
-  transition/steady activation;
-- the active immutable persisted-state/page view selected for the current pass and
-  optionally one newer pending version received internally from `BackgroundExecutor`;
+- the active and optional pending `ExecutionGeneration*` realtime realization;
+- canonical realtime `NodeStorage` and ordinary revision migration/transition state;
+- the active immutable persisted-state/page view selected for the current pass;
+- at most the newest compatible pending persisted-state pointer received from
+  background;
 - address-stable Tick invocation/materialization bindings selected before a pass;
 - producer endpoints for recording, Tick/persisted staging, node/background changes,
   or other dynamically accumulating data that must escape realtime execution; and
 - realtime-visible failure/telemetry state for capacity exhaustion or missed
   mandatory production.
 
-Receiving a compiled successor does not mutate an in-progress realtime pass. Staging
-and all required non-realtime preparation complete first; activation occurs only at a
-legal whole-pass boundary. Likewise, receiving a newer persisted-state version only
-stores a pending immutable pointer. The current pass continues using its already
-selected published state, and the pending version becomes active at a later pass
-boundary.
+Receiving a prepared successor does not mutate an in-progress pass. Activation occurs
+only at a legal whole-pass boundary. Receiving a newer persisted-state version only
+replaces/stores the pending immutable pointer; the current pass continues using its
+already selected view.
 
-Realtime-produced data is handed to the internal background actor through independently
-provisioned SPSC queues. The producer constructs a block chain privately, preferably
-writing audio/events directly into provisioned blocks, and publishes the completed
-chain at a pass boundary. The internal background-side handoff only connects that
-already initialized chain to the producer's pending queue; it does not synchronously
+Realtime producers consume only already-provisioned blocks from producer-specific
+`ProducerReserve`s. They build private chains, preferably writing final audio/event
+payload directly into those blocks, then publish the completed chain at a pass
+boundary. Background-side insertion attaches the already initialized chain to that
+producer's `PendingQueue` with one cheap pointer publication; it does not synchronously
 run background evaluation.
 
 ### `BackgroundExecutor` internal actor
@@ -640,120 +639,109 @@ run background evaluation.
 `BackgroundExecutor` owns all mutable state for background evaluation and its worker
 thread. It keeps at least:
 
-- staged/current background halves of `GraphExecutor` generations plus ordered
-  prepared cutovers actually published by realtime;
+- the current background side of the active execution generation plus ordered actual
+  successor cutovers already performed by realtime;
 - separately owned lifecycle/storage for optional background-only `TockState`;
-- stable canonical persisted-page stores/immutable roots for Tick/persisted and
-  Tock/persisted outputs, with generation-specific bindings onto stable identities;
-- committed per-generation background coverage state separated from reusable
-  propagation/evaluation workspaces;
+- stable canonical persisted-page/recording state and immutable publication roots;
+- committed background coverage state and reusable propagation/evaluation workspaces;
 - transaction-local invocation/materialization frames and private page candidates;
-- one independently pinnable pending queue per producer as required by recording,
-  Tick/persisted staging, node/background changes, or later producer types;
-- exact forward-change transactions, reverse-demand/tock transactions, and complete
-  `tock/persisted` candidate completion; and
-- immutable persisted-state/page versions published internally back to realtime.
+- one independently pinnable `PendingQueue` per producer;
+- pre-sized per-generation descriptors used to remember selected `(first,last)` queue
+  prefixes without dynamically growing a workload container; and
+- exact forward-change, reverse-demand/tock, replay/materialization and persistence
+  commit state.
 
-Incoming queue publications or pending executor updates only change pending/desired
-input and may wake the worker. They do not alter work already selected by the worker.
-Before executing, the worker independently pins one finite prefix from each relevant
-producer queue and selects the exact immutable/versioned non-queue inputs for that
-pass. There is intentionally no atomic snapshot relationship across different queues.
-Items concurrently published during selection may belong to either the current or the
-next background pass. If a future feature requires cross-queue atomic visibility,
-implementation must stop and that requirement must be designed explicitly rather than
-adding implicit global locking or snapshot synchronization.
+Before one background operation starts, the worker independently pins a finite prefix
+from every relevant pending queue and selects the exact immutable/versioned non-queue
+inputs it needs. There is intentionally no atomic snapshot relationship across queues.
+Once selected, later appends and pending-state changes affect only subsequent work.
 
-Once selected, a background workload is fixed. Later queue appends and later pending
-state changes affect only subsequent work. Final background commit is one logical
-publication boundary for the selected work: prepared semantic coverage and, when
-present, the successor immutable persisted-page snapshot advance together, or none
-advances. Completed queue prefixes are released only according to successful domain
-commit semantics. The worker may immediately select another workload when more input
-is already available.
+A successful operation may produce a new coherent immutable persisted-state/page
+version. Background publishes only the newest such pointer through an internal mailbox;
+if several versions are produced before realtime reaches a boundary, intermediate
+pending versions need not be preserved. Superseded pending versions are retired off
+realtime. `RealtimeExecutor` activates the newest compatible pointer only at a later
+pass boundary.
 
-When a transaction produces a new coherent persisted-state/page version,
-`BackgroundExecutor` publishes one immutable heap object/pointer to the internal
-realtime actor. `RealtimeExecutor` stores it as pending; it does not synchronously
-affect the active pass. This handoff is internal executor data flow, not app-module
-event propagation.
+### Execution-generation hot reload
 
-### Paired-generation hot reload
+One successful `GraphJit` result defines one `ExecutionGeneration`. `GraphExecutor`
+constructs it completely off to the side. Anything whose cardinality is known from the
+compiled graph is pre-sized there: producer endpoints, pending-queue descriptors,
+route tables, recording destinations, persisted-output mappings, migration entries,
+and similar topology-derived storage.
 
-One successful `GraphJit` result defines one logical `GraphExecutor` generation with
-a realtime half and a background half. `ProjectGraph` stages that generation once in
-`GraphExecutor`. Internally, background preparation happens first: generation-specific
-queues, stable-identity/route bindings, migration metadata and an allocation-free
-cutover publication object/reference are prepared before the matching realtime half
-can become activatable.
-
-Staging does not activate either half. The authoritative generation cutover happens at
-a later realtime pass boundary. `RealtimeExecutor` first publishes every final
-old-generation producer chain completed by the pass, then publishes the already
-prepared `N -> N+1` cutover to `BackgroundExecutor`, then swaps its active realtime
-realization. This synchronous internal boundary operation is bounded and performs no
-dynamic allocation or background evaluation.
-
-The background worker may lag. Work already selected under generation N remains
-immutable and completes under N. The cutover closes generation-N producer endpoints,
-so their queues have finite tails. Background drains/finalizes remaining N work,
-performs the prepared N->N+1 persisted-state migration, and only then interprets N+1
-queued data under the N+1 graph. There is no global atomic snapshot across queues.
-
-This makes replacement order semantically irrelevant. Old-generation data is always
-interpreted using old-generation routes. A disappeared producer simply stops producing
-after the boundary and does not erase surviving recorded state. A disappeared
-destination accepts its remaining old-generation work before being retired during
-migration. Stable logical identity, never generation-local slot/index reuse, determines
-which retained data survives.
-
-Persisted-state versions identify the generation with which they are compatible. A
-final N result completed after realtime switched to N+1 is an input to the background
-N->N+1 transition, not a version that may become active in the N+1 realtime graph.
-Compatible versions are stored pending by realtime and applied only at legal pass
-boundaries. A successor that was merely staged but never activated may be superseded
-without creating a semantic generation boundary. Once realtime actually cuts over,
-however, that cutover remains ordered while background lags and cannot be collapsed to
-a latest-generation pointer.
-
-### Provisioned queues and capacity management
-
-The dynamically sized cross-thread queues are internal runtime infrastructure, not
-shared actor state. Each queue has one producer and one consumer, uses power-of-two
-fixed-capacity blocks, and is provisioned ahead of producer demand by
-`AsyncCapacityManager`.
-
-Only the producer advertises its capacity requirement:
+The authoritative cutover happens at a realtime pass boundary:
 
 ```text
-C = maximum producer burst that must fit without provisioning
-L = low free-capacity watermark
+1. publish all final generation-N producer chains from the completed pass
+2. publish the already-prepared ExecutionGeneration N+1 pointer as the next cutover
+3. swap RealtimeExecutor active generation N -> N+1
+```
+
+These are bounded pointer/state operations and perform no dynamic allocation or
+background evaluation. A separate dynamically allocated cutover object is unnecessary
+if the generation object itself carries the linkage/background transition metadata.
+Actual cutovers are ordered semantic history; generation objects may form an intrusive
+successor chain while background lags, so N->N+1 is not collapsed merely because N+2
+becomes ready.
+
+After cutover, generation-N producer endpoints are closed and their pending queues have
+finite tails. Background may finish already-selected N work and independently drain
+those finite queues before applying N->N+1 retained-state migration and interpreting
+N+1 data. Old-generation data is always interpreted by old-generation routes.
+
+Stable logical identity controls continuity. If a producer disappears but its recording
+or persisted destination survives, remaining N writes are drained and the retained
+state migrates; the removed producer simply emits nothing in N+1. If a destination
+disappears, remaining N work is still valid N work and the destination is retired by
+migration. Installation order therefore cannot change the result.
+
+### Queues, reserves, and capacity management
+
+The logical SPSC transport is intentionally split by ownership role:
+
+```text
+AsyncCapacityManager -> ProducerReserve -> producer-private chain
+                                           |
+                                           v
+                                   Background PendingQueue
+                                           |
+                                           v
+                                released-block stream
+                                           |
+                                           v
+                                   AsyncCapacityManager
+```
+
+A `ProducerReserve` contains ready blocks preassigned to one producer. A
+`PendingQueue` contains published ordered work for one background consumer. They need
+not be one public container abstraction. Fixed-capacity backing blocks are stable and
+power-of-two-sized; queue users do not require a logical size or contiguous resize.
+
+Only producers define reserve needs:
+
+```text
+C = maximum producer burst that must fit without new provisioning
+L = low ready-capacity watermark
 H = refill target
-G = allocation/segment granularity
 ```
 
-`C` is a producer-derived structural bound used to derive/validate policy; steady
-maintenance primarily uses `L/H/G`. The intended relationship remains `C << L < H`.
-The capacity manager allocates/recycles off the realtime path and may keep ready blocks
-preassigned to each producer. Queue users do not require one shared atomic logical
-size.
+`C` is the graph/producer structural bound used to validate or derive policy. `L`
+covers tolerated capacity-manager scheduling latency plus margin and `H` supplies
+hysteresis/headroom. Allocation/slab granularity is an `AsyncCapacityManager`
+implementation detail rather than a semantic producer parameter. The manager refills
+below `L` toward `H` using its own power-of-two allocation granularity.
 
-Block ownership follows one direction:
+The forward path remains producer-specific. The return path may be one SPSC
+released-block stream because one background worker releases completed blocks and one
+capacity-manager worker reclaims them; block metadata identifies the appropriate
+reserve/type on return.
 
-```text
-AsyncCapacityManager -> producer -> BackgroundExecutor -> AsyncCapacityManager
-```
-
-The producer owns and initializes a private block/chain before publication. The
-consumer owns published blocks until the selected prefix is committed/released. The
-consumer does not splice released blocks directly back into a realtime producer's
-reserve; reclamation/provisioning returns through the capacity manager.
-
-The queue's consumer-side insertion is intentionally cheap. An incoming fully built
-chain is attached by one publication/pointer operation (or installs the first pointer
-when the queue was empty). Background workload selection discovers and remembers the
-currently visible terminal block before execution; later links after that block are
-next-pass work.
+Background workload selection discovers and remembers one terminal block for each
+queue before execution. Later links after that block are next-pass work. If a future
+feature requires atomic visibility across queues, implementation must stop and design
+that requirement explicitly rather than introducing hidden global synchronization.
 
 ### Persisted data and Random Access
 

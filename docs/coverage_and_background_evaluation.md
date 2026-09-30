@@ -106,7 +106,7 @@ The central rules are:
 > reclaimed only after their readers release them. Unbounded memory use is an
 > explicit consequence of the author's persistence declaration.
 
-> An explicit recording node uses already-provisioned queue storage for each block
+> An explicit recording node uses already-provisioned producer-reserve storage for each block
 > actually written to its recording output. Leaving the output untouched preserves
 > previously recorded RAM data at that timeline position; `write_void()` publishes an
 > authoritative erasure. Each background pass independently pins one finite prefix
@@ -1078,7 +1078,7 @@ without audio-thread allocation.
 
 Background evaluation may dynamically commit persisted event data capacity off the
 realtime thread. Tick-produced persisted events and explicit recording use
-producer-specific provisioned queue blocks supplied ahead of demand by the async
+producer-specific reserve blocks supplied ahead of demand by the async
 capacity manager; the realtime path consumes only already-assigned blocks and performs
 no request-sized allocation. A future recent-data overlay could use recent queued event
 payloads in front of published event pages, but the preliminary Random Access path
@@ -1149,7 +1149,7 @@ Ownership rules:
   than copying retained data;
 - anonymous persisted outputs may use generation-local page-store identity;
 - ephemeral outputs own no persisted-page entry to migrate or rebind; and
-- provisioned queue blocks are runtime pre-publication/background inputs and are
+- provisioned blocks are runtime pre-publication/background inputs and are
   not a second published representation.
 
 The canonical store has one immutable published snapshot root spanning all sample
@@ -1181,7 +1181,7 @@ current Tick representation
 canonical persisted-page store for Tick/persisted and Tock/persisted outputs
 transaction-local addressable materialization for background ephemeral Random Access
 materialized sequential/addressable window for ephemeral Tick-time consumption
-producer-specific provisioned SPSC queues for persistence staging and explicit recording
+producer-specific reserve/pending-queue SPSC transports for persistence staging and explicit recording
 ```
 
 These queues are block-backed and provisioned independently of background-evaluation
@@ -1702,7 +1702,7 @@ out-of-coverage arbitrary random-access reads by node code; those remain invalid
 ### Provisioned queue items and explicit recorder bridges
 
 Realtime-produced data whose lifetime must escape ordinary current-block execution
-uses producer-specific provisioned SPSC queues. Explicit recorder bridges use them for
+uses producer-specific producer reserves and background pending queues. Explicit recorder bridges use them for
 otherwise unreproducible sequential data; Tick/persisted outputs use them to stage
 finalized data for canonical page publication. Production occurs at the producer/
 finalization point, not through a graph scan after the whole pass.
@@ -1727,7 +1727,7 @@ producer publishes an ordinary empty event payload so any older events in that w
 are replaced by emptiness.
 
 Where layout permits, payload data is written directly into capacity-manager-
-provisioned queue blocks. The producer may link several blocks privately, fully
+provisioned blocks. The producer may link several blocks privately, fully
 initialize their payload/header metadata, and publish the completed chain at a
 realtime pass boundary. Publication transfers the chain to the appropriate producer
 queue in `BackgroundExecutor`; no global capture insertion sequence is required
@@ -1818,194 +1818,162 @@ whole-block-or-none authoring semantics or require Tock production. Once publish
 Tick- and Tock-produced persisted data use the same page lookup, versioning, pinning,
 and consumer read path.
 
-## 24. Tick capture allocation, snapshots, and reclamation
+## 24. Realtime-produced persistence/recording queues and reclamation
 
-Provisioned SPSC queues are the shared infrastructure for Tick-produced data whose
-lifetime must escape ordinary current-block execution. Explicit recording bridges use
-them to make otherwise unreproducible sequential data available to background work.
-Tick/persisted outputs may use the same mechanism to hand finalized Tick data to the
-canonical persisted-page owner.
+Realtime-produced work whose lifetime escapes the current pass uses the generic
+`GraphExecutor` reserve/queue infrastructure. Explicit recording and Tick/persisted
+staging are important users, but the mechanism is not recording-specific.
 
-Three independently progressing runtime roles prevent arbitrary background latency
-from having to fit inside a fixed realtime staging window:
+The ownership path is:
 
 ```text
 AsyncCapacityManager
         |
-        | provision/recycle power-of-two-capacity blocks
         v
-producer-specific ready reserve
+producer-specific ProducerReserve
         |
-        | RealtimeExecutor takes blocks without allocation
+        | RealtimeExecutor takes already allocated blocks
         v
-producer-private block chain built during realtime execution
+producer-private chain written during realtime execution
         |
-        | one cheap chain publication at a pass boundary
+        | one cheap publication at a pass boundary
         v
-BackgroundExecutor producer queue
+BackgroundExecutor producer-specific PendingQueue
         |
-        | independently pin one finite prefix for selected work
+        | worker independently pins one finite prefix
         v
-background evaluation / page-publication worker
+background evaluation / persisted-state publication
         |
-        | coherent persisted-state/page commit + prefix release
+        | committed blocks enter one released-block stream
         v
-AsyncCapacityManager reclamation/reassignment
+AsyncCapacityManager
 ```
 
-### 24.1 Realtime production
+### 24.1 Direct realtime production
 
-Realtime execution does not wait for background evaluation and does not allocate
-request-sized storage. A producer consumes only blocks already assigned to its ready
-reserve.
+Realtime execution never allocates request-sized storage. A producer consumes only
+blocks already assigned to its reserve.
 
-Where layout permits, sample/event production writes directly into those provisioned
-blocks. This is preferred for recording so audio/events are not first copied into a
-second retained buffer and then copied again into the handoff queue. Where direct
-production is not legal, the generated path performs only the bounded copy required
-at the point the output region becomes final.
+Where layout permits, sample/event output writes directly into those blocks. For
+recording this is the preferred representation: destination/range/disposition metadata
+and the final sample/event payload can live in the queue block itself, avoiding a
+second capture-record/payload layer and a second memory copy. Where direct production
+is not legal, only the bounded copy required when the final authored region becomes
+available is performed.
 
-During one pass the producer may construct a private chain:
+The producer can build one or more blocks privately:
 
 ```text
 [A] -> [B] -> [C] -> null
 ```
 
-The producer exclusively owns that chain while filling it; payload bytes, used counts,
-and private links are ordinary writes. At the pass boundary it publishes the complete
-chain through the internal `RealtimeExecutor -> BackgroundExecutor` handoff. Passing
-both the first and last block lets the background-side handoff append
-the chain to that producer's pending queue in constant time.
+Payload, used counts and private links are ordinary writes while producer-owned. At the
+pass boundary, `(first,last)` is published; background attaches the fully initialized
+chain to that producer's pending queue with one pointer publication.
 
-Recording has fixed semantics:
-
-- ordinary output write -> publish payload that overwrites the addressed RAM recording;
-- untouched output -> publish nothing and preserve previously recorded content; and
-- `write_void()` -> publish an explicit authoritative erase for the addressed range.
-
-A Tick/persisted event window containing zero events is still an ordinary authoritative
-empty event payload. It is not a recording void.
-
-If mandatory work cannot acquire already-provisioned blocks, that is an observable
-retention/recording failure. Later provisioning cannot recreate a missed write, and
-resource exhaustion never authorizes intentional dropping.
-
-### 24.2 Asynchronous capacity provisioning
-
-A non-app-module `AsyncCapacityManager` (provisional name) perpetually maintains
-producer-specific ready capacity and reclaims released blocks off the realtime path.
-Only the producer advertises its requirement:
+Recording semantics remain fixed:
 
 ```text
-C = maximum producer burst that must fit without provisioning
-L = low free-capacity watermark
-H = refill target
-G = allocation/segment granularity
+ordinary write -> publish overwrite data
+untouched      -> publish nothing; preserve prior RAM recording
+write_void()   -> publish explicit authoritative erase
 ```
 
-`C` is a producer-derived structural bound. For graph-generated realtime output it
-must cover the maximum block demand that one worst-case pass can create, including
-all relevant SCC-slice invocations. `C` is used to derive/validate policy; steady
-maintenance primarily uses `L/H/G`.
+A Tick/persisted zero-event window is ordinary authoritative empty event data, not a
+recording void. Failure to obtain mandatory already-provisioned capacity is an
+observable retention/recording failure; later replenishment cannot reconstruct the
+missed write.
 
-`L` covers tolerated allocator/provisioner detection and scheduling delay plus safety
-margin. `H` provides headroom and hysteresis. `G` amortizes allocation in whole
-power-of-two-capacity segments. The intended relationship remains `C << L < H`.
+### 24.2 Capacity policy
 
-When assigned ready capacity remains in its normal range, the manager does nothing.
-Below `L`, it provisions toward `H` in appropriately batched segments. Reclamation is
-independent of provisioning: slow background execution may keep old blocks owned by
-pending/selected work while the manager allocates additional capacity for the
-producer. There is no fixed-duration staging ring whose fullness permits ordinary
-loss.
+`AsyncCapacityManager` runs off realtime and independently of background progress.
+The producer supplies:
 
-No finite policy can guarantee progress if the capacity-manager thread is prevented
-from running indefinitely or the process exhausts addressable RAM. Those are terminal
-resource failures, not normal queue semantics.
+```text
+C = maximum burst that must fit without provisioning
+L = low ready-capacity watermark
+H = refill target
+```
 
-The queue users do not need a shared atomic logical size. The manager may keep its
-own allocation/release accounting and a provisioning tail; the producer and consumer
-primarily touch opposite ownership boundaries.
+For graph-generated realtime work, `C` covers the maximum block demand of one
+worst-case pass. `L` covers tolerated manager detection/scheduling delay plus margin;
+`H` supplies headroom/hysteresis. `C` is used to validate/derive policy. The allocator
+chooses its own power-of-two slab/allocation granularity and refills below `L` toward
+`H`.
 
-### 24.3 Publication and background workload selection
+The queue users do not need a shared atomic logical size. The capacity manager may keep
+its own accounting. Slow background execution may retain old blocks while the manager
+allocates additional reserve; there is no fixed-duration ring whose fullness permits
+ordinary loss.
 
-Each producer has its own SPSC queue into `BackgroundExecutor`. The producer
-publishes a complete already-initialized chain in one cheap operation. If the queue is
-empty, publication installs its first block; otherwise the background-side handler
-atomically connects the old pending tail to the incoming chain head and remembers the
-incoming last block as the new tail.
+### 24.3 Background selection
 
-Publication is atomic from the consumer's perspective, but constructing/filling the
-private producer chain does not require per-entry synchronization.
-
-The background worker does not synchronously execute in the publication handler.
-Publication only changes pending input and may wake the worker.
-
-Before one background pass begins, the worker selects precise finite work. It pins
-each relevant producer queue **independently** by starting at the first unprocessed
-block and discovering/remembering the currently visible terminal block:
+Every producer has its own pending SPSC queue. Before one background operation starts,
+the worker independently discovers and remembers a finite terminal block for every
+queue it chooses to consume:
 
 ```text
 selection:
 
 A -> B -> C -> null
 ^         ^
-first     remembered last
+first     selected last
 
 later publication:
 
 A -> B -> C -> D -> E -> null
           ^
-          selected work still ends here
+          current work still ends here
 ```
 
-End discovery happens once during workload selection. Actual background processing
-uses the remembered `(first,last)` and never follows newly appended work past `last`.
+The selected workload uses pre-sized descriptors owned by the prepared execution
+generation; selecting work does not require dynamically growing a map/vector merely to
+remember queue prefixes.
 
-There is intentionally no atomic snapshot relationship across different queues. A
-publication racing workload selection may enter the current pass for one producer and
-the next pass for another. That is valid. If a future feature needs atomic visibility
-across queues, implementation must stop and design that requirement explicitly rather
-than introducing hidden global synchronization into the queue primitive.
-
-For the selected work, the worker derives the appropriate change/coverage roots,
-performs forward invalidation, reverse planning and Tock/replay/materialization work,
-and prepares one coherent successor persisted state/page version as required. Inputs
-arriving during that execution affect only a later workload.
+There is intentionally no atomic snapshot relationship across queues. A publication
+racing selection may enter the current operation for one producer and the next
+operation for another. If a future feature requires cross-queue atomic visibility, it
+must be designed explicitly rather than adding hidden global synchronization.
 
 ### 24.4 Commit, publication and reclamation
 
-The published persisted-page abstraction owns retained Random Access results. Queue
-blocks are pre-publication/background inputs, not a second retained-data
-representation.
+Queue blocks are background inputs, not a second retained Random Access representation.
+A successful transaction commits the semantic/page result corresponding to its selected
+work. Only after successful domain commit may the selected prefixes be released. A
+failed/cancelled/stale transaction does not silently consume input required for retry.
 
-A successful background transaction commits the semantic/page result corresponding
-to exactly its selected workload. Only after the relevant work commits may its
-selected queue prefixes be released. A failed, cancelled, incomplete or stale
-transaction does not silently consume the pending input required to retry that work.
+Released blocks from all producer queues may enter one SPSC released-block stream from
+the single background worker to `AsyncCapacityManager`. Each block carries enough
+owner/type information for reclamation/reassignment. Background never directly splices
+completed blocks into a realtime reserve.
 
-When a new coherent persisted-state/page version is ready,
-`BackgroundExecutor` publishes one immutable heap-owned version pointer through
-the internal handoff to `RealtimeExecutor`. The realtime actor only stores it as
-pending. The active realtime pass continues using its already selected state; the
-new version becomes active at a later legal pass boundary.
+When background produces a coherent immutable persisted-state/page version, it
+publishes it through a latest-version mailbox to realtime. Intermediate pending
+versions may be superseded before realtime reaches a pass boundary; superseded objects
+are retired off realtime. Realtime activates only the newest compatible pending pointer
+at a legal boundary.
 
-Released queue blocks return to `AsyncCapacityManager`; the background consumer does
-not splice them directly into a realtime producer's reserve. The ownership cycle is:
+If a persisted-page implementation adopts queue payload storage, ownership must still
+be explicit: adopted storage belongs to that immutable page/version until it retires,
+and only non-realtime reclamation can return it to reusable capacity.
 
-```text
-AsyncCapacityManager -> producer -> BackgroundExecutor -> AsyncCapacityManager
-```
+### 24.5 Generation cutover
 
-If a persisted-page implementation can adopt compatible queue payload storage, the
-ownership transfer must still preserve this rule explicitly: the adopted storage is
-then owned by the immutable page version until that version retires, and only
-non-realtime reclamation may eventually return reusable capacity.
+Producer reserves and pending queues are generation-specific. `GraphExecutor`
+constructs one complete `ExecutionGeneration` off-thread, including both actor
+realizations, routes/endpoints, pre-sized work descriptors, migration information and
+reserve requirements.
 
-The preliminary Random Access path reads only published persisted/recording state,
-not pending queue blocks. Keeping queue ownership stable through realtime pass
-boundaries is a prerequisite for any later recent-data overlay experiment, not a
-claim that such an overlay already exists.
+At cutover, realtime publishes final old-generation chains, publishes the prepared
+successor `ExecutionGeneration*`, then swaps active generation. Actual cutovers remain
+ordered while background lags; the generation object itself may carry intrusive
+successor linkage so no cutover allocation is needed at the realtime boundary.
+
+Old-generation producer endpoints are then closed. Their queues have finite tails and
+remain interpreted under the old graph while background finishes/drains them. Stable
+logical identity determines migration: a disappeared producer stops future writes but
+does not erase a surviving recording destination; a disappeared destination accepts
+remaining old-generation work and is retired during migration.
 
 ## 25. Random-access event/sample reads from node callbacks
 
@@ -2174,7 +2142,7 @@ realtime generations, pass-boundary activation and realtime queue producer endpo
 - stable canonical persisted-page stores/immutable roots for **all persisted
   outputs** (`tick/persisted` and `tock/persisted`), plus per-generation bindings;
 - semantic versions plus immutable page versions and candidate/published snapshots;
-- producer-specific pending queues and their consumer-side prefix ownership;
+- producer-specific pending queues and their consumer-side prefix ownership plus pre-sized selection descriptors;
 - transaction workspaces;
 - exact forward mutation/change transactions;
 - reverse demand/Tock transactions;
@@ -2454,59 +2422,51 @@ recording merely because that planning metadata exists.
    retired snapshot. This checkpoint does not add a `ProjectGraph` or application-
    module bridge; that wiring follows only after the executor transaction boundary is
    complete and tested.
-5. **Refactor realtime-produced persistence/recording handoff onto provisioned
-   queues and split execution ownership.** The current capture-store implementation is
-   the migration substrate, but the target transport is the producer-specific
-   provisioned SPSC queue described in
+5. **Refactor realtime-produced persistence/recording handoff onto producer reserves
+   and background pending queues.** The current capture-store implementation is the
+   migration substrate; the target transport is described normatively in
    [realtime_background_execution_and_queues.md](./realtime_background_execution_and_queues.md).
 
-   Keep one `GraphExecutor` app module and split its runtime responsibilities internally
-   into `RealtimeExecutor` and `BackgroundExecutor` actors. `RealtimeExecutor` owns realtime generation/storage, pass-boundary activation and
-   producer endpoints. `BackgroundExecutor` owns its
-   worker thread, independently queued inputs, background evaluation state and
-   persisted-state publication. They share no mutable execution-state object.
+   Keep one `GraphExecutor` app module with internal `RealtimeExecutor` and
+   `BackgroundExecutor` actors and no shared mutable execution-state object. Prepare one
+   complete `ExecutionGeneration` off-thread: both realizations, routes/endpoints,
+   producer reserve requirements, pre-sized background input descriptors, migration
+   metadata and cutover linkage must be ready before its pointer can become pending.
 
-   Replace recording-specific free-pool/log ownership with `AsyncCapacityManager`
-   provisioning of power-of-two queue blocks. Each producer supplies its own
-   `C/L/H/G` requirement; the consumer does not participate in capacity policy. The
-   manager allocates/recycles off realtime and keeps sufficient blocks assigned to the
-   producer. Ownership cycles strictly
-   `manager -> producer -> background -> manager`.
+   Replace recording-specific free-pool/log ownership with producer-specific
+   `ProducerReserve`s maintained by `AsyncCapacityManager` and producer-specific
+   background `PendingQueue`s. Producers supply `C/L/H`; allocation/slab granularity is
+   manager-owned. Where layout permits, realtime writes final sample/event payload
+   directly into reserve blocks, builds chains privately, then publishes `(first,last)`
+   at a pass boundary with one cheap pending-queue attachment.
 
-   Realtime production should write sample/event data directly into provisioned queue
-   blocks wherever layout permits. Build complete chains privately with ordinary
-   stores, then publish the chain at a realtime pass boundary. The
-   `RealtimeExecutor -> BackgroundExecutor` internal handoff receives at
-   least the first block and preferably `(first,last)`, attaches the chain to that
-   producer's pending queue with one cheap publication/pointer operation, and does not
-   synchronously run background evaluation.
+   `BackgroundExecutor` independently pins one finite `(first,last)` prefix per queue
+   into pre-sized descriptors. There is **no** atomic cross-queue snapshot. Once
+   selected, the workload is immutable; later appends or generation/control changes are
+   next-pass work. If a future feature requires atomic visibility across queues, stop
+   and design it explicitly.
 
-   `BackgroundExecutor` owns one SPSC queue per producer as needed. Before a
-   background pass, independently select a finite `(first,last)` prefix from every
-   relevant queue. There is **no** atomic cross-queue snapshot. Publications racing
-   selection may be processed either now or in the next pass. If a future semantic
-   requirement needs cross-queue atomic visibility, stop and design it explicitly;
-   do not add implicit global synchronization to the generic queue.
+   On coherent commit, apply recording/Tick-persisted payloads, publish the successor
+   retained state/page version, and release consumed blocks. One background worker may
+   return completed blocks from all producer queues through one SPSC released-block
+   stream to `AsyncCapacityManager`.
 
-   Once selected, the workload is immutable. Later queue appends and later desired
-   generation/control updates affect only subsequent work. On coherent commit, apply
-   recording/Tick-persisted payloads, publish the successor persisted state/page
-   version, then release the consumed prefixes through non-realtime reclamation.
-   Background completion publishes one immutable persisted-state pointer to
-   `RealtimeExecutor`; realtime stores it pending and activates it only at a legal
-   pass boundary.
+   Background-to-realtime persisted-state delivery is a latest-version mailbox, not a
+   queue: if several compatible immutable versions are ready before realtime reaches a
+   pass boundary, only the newest pending version needs to survive. Superseded pending
+   versions are reclaimed off realtime.
 
-   Preserve the fixed recording semantics while migrating transport:
-   `untouched` publishes nothing and preserves prior RAM recording; ordinary writes
-   overwrite their addressed range; `write_void()` publishes an explicit erase.
-   Resource exhaustion makes mandatory recording/persistence incomplete and never
-   authorizes intentional dropping. A zero-event Tick/persisted payload remains an
-   authoritative empty event payload, not a recording void.
+   Preserve fixed recording semantics while migrating transport: `untouched` publishes
+   nothing and preserves prior RAM recording; ordinary writes overwrite their addressed
+   range; `write_void()` publishes an explicit erase. Resource exhaustion makes
+   mandatory recording/persistence incomplete and never authorizes intentional dropping.
+   A zero-event Tick/persisted payload remains authoritative empty event data, not a
+   recording void.
 
-   Remove transport concepts that only exist to support the old capture log once no
-   caller needs them: global capture insertion sequence/frontier, shared logical queue
-   size, and recording-specific allocator ownership. Keep explicit domain ordering or
-   generation/version identities only where the semantics themselves require them.
+   Remove transport concepts that only supported the old capture log once unused:
+   global capture insertion sequence/frontier, shared logical queue size, separate
+   cutover allocations, and recording-specific allocator ownership. Keep explicit
+   domain ordering or generation/version identities only where semantics require them.
 
 6. **Implement concrete-node port-state continuity and graph-revision transitions.**
    Before optimization, define port history/latency exactly as if each surviving
@@ -2573,8 +2533,7 @@ recording merely because that planning metadata exists.
    propagation.
 9. The background evaluation DAG has no unresolved cycles; feedback in the
    same-Tick scheduling graph retains its separate temporal semantics.
-10. Realtime-produced recording and Tick/persisted data use producer-specific
-    provisioned SPSC queues backed by power-of-two blocks. Producers build chains
+10. Realtime-produced recording and Tick/persisted data use producer-specific reserves and background pending queues backed by power-of-two blocks. Producers build chains
     privately and publish them cheaply at pass boundaries; background independently
     pins one finite prefix per queue. There is no cross-queue atomic snapshot. Queue
     insertion is not persisted-state/page publication, and released blocks return

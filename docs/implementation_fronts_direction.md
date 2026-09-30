@@ -192,13 +192,18 @@ from realtime execution and its ownership transfer to background work.
 
 This front owns:
 
-- producer-specific provisioned SPSC queues backed by power-of-two blocks;
-- `AsyncCapacityManager` provisioning/reclamation and producer `C/L/H/G` policy;
+- producer-specific `ProducerReserve` / background `PendingQueue` transports backed
+  by power-of-two blocks;
+- `AsyncCapacityManager` provisioning/reclamation with producer `C/L/H` reserve policy
+  and manager-owned allocation granularity;
+- one released-block return stream from background to capacity management where
+  practical;
 - direct sample/event production into provisioned blocks where layout permits;
 - cheap complete-chain publication at realtime pass boundaries;
 - Tick-persisted output handoff;
 - explicit recorder handoff with fixed untouched/write/`write_void()` semantics;
 - independent finite-prefix pinning by `BackgroundExecutor`;
+- latest-compatible immutable persisted-state mailbox publication back to realtime;
 - publication into the canonical random-access persistence representation; and
 - release/reclamation of completed prefixes after successful domain commit.
 
@@ -227,7 +232,7 @@ This front owns:
   one steady-state layout;
 - transition expiry horizons and switch to the final realization;
 - compatible persisted random-access rebinding;
-- paired realtime/background generation identity and stable route/destination identity;
+- one complete realtime/background `ExecutionGeneration` identity and stable route/destination identity;
 - producer/destination disappearance semantics for queued recording/persisted data;
 - ordered old-generation drain + prepared background migration across realtime cutover;
 - generation-compatible persisted-state publication; and
@@ -275,8 +280,9 @@ This front owns:
 - construction and lifetime of the `GraphExecutor` app module plus its internal
   `RealtimeExecutor`, `BackgroundExecutor`, and `AsyncCapacityManager`;
 - one `ProjectGraph -> GraphExecutor` staging bridge after successful `GraphJit`;
-  `GraphExecutor` internally prepares `BackgroundExecutor` first and `RealtimeExecutor` second;
-- paired-generation staging with all cutover allocation completed off realtime;
+- complete off-thread construction of one `ExecutionGeneration` containing both actor
+  realizations, routes/endpoints, pre-sized work descriptors, migration data and all
+  cutover resources before its pointer can become pending;
 - realtime-authoritative pass-boundary cutover: final old-generation chain publication,
   allocation-free ordered cutover publication to background, then realtime swap;
 - background completion of already-selected old-generation work, closed old-generation
@@ -286,10 +292,12 @@ This front owns:
 - audio callback routing through `RealtimeExecutor`;
 - `BackgroundExecutor` worker/evaluation lifecycle and independently pinned
   producer queues;
-- `AsyncCapacityManager`-style provisioning/reclamation for producer-specific
-  power-of-two queue blocks;
-- realtime-to-background produced-chain publication and background-to-realtime
-  immutable persisted-state publication;
+- `AsyncCapacityManager` provisioning/reclamation for producer-specific
+  power-of-two blocks, with separate producer reserves/background pending queues and
+  manager-owned allocation granularity;
+- one background-to-capacity-manager released-block stream where practical;
+- realtime-to-background produced-chain publication and a background-to-realtime
+  latest-compatible-persisted-version mailbox;
 - retired generation/snapshot/queue-block reclamation scheduling;
 - executor/capacity-manager shutdown and application error propagation;
 - stable logical system-audio device bindings;

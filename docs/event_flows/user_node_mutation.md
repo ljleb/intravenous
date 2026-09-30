@@ -27,7 +27,7 @@ flowchart TD
 children of `ProjectGraph` for this cause. The labels specify orchestration order inside
 one `ProjectGraph` handler. After the synchronous `GraphJit` request returns one
 immutable `CompiledGraph`, `ProjectGraph` stages it once in `GraphExecutor`; the
-background-first/realtime-second preparation sequence is entirely internal to that
+complete `ExecutionGeneration` preparation is entirely internal to that
 module.
 
 ## Data movement
@@ -58,7 +58,7 @@ resolvable cross-node connection to the same root builder.
 compile that exact `ConfiguredGraph`/definition generation into one immutable
 `CompiledGraph`, and stages the compiled successor once in `GraphExecutor`. Actual
 logical activation is deferred until a later realtime pass boundary, where the internal
-realtime actor publishes the allocation-free prepared cutover to the internal background
+realtime actor publishes the already-prepared successor generation pointer to the internal background
 actor before swapping to the successor realtime generation.
 
 ## Failure semantics
@@ -72,10 +72,9 @@ silently deleting the requested node or its dangling project connections.
 
 The root-build transaction, including `GraphJit`, is synchronous with the
 mutation handler. A JSON-RPC result may therefore include graph-JIT diagnostics.
-It still does not wait for activation of the compiled successor. `GraphExecutor`
-prepares the background half first internally; logical cutover occurs only at a legal
-`RealtimeExecutor` pass boundary and is an internal actor handoff, not another
-app-module source invocation.
+It still does not wait for activation of the compiled successor. `GraphExecutor` prepares one complete `ExecutionGeneration` internally; logical cutover
+occurs only at a legal `RealtimeExecutor` pass boundary and is an internal actor
+handoff, not another app-module source invocation.
 
 ## Derived read models and notifications
 

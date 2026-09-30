@@ -845,8 +845,7 @@ weight calibration, and making stack-pressure promotion choose more selectively
 when several different storage moves can satisfy the same budget.
 
 The next persistence front now has its realtime-to-background transport direction.
-Dynamically accumulating Tick-produced work uses producer-specific provisioned SPSC
-queues rather than a recording-specific shared capture log. Queue blocks are
+Dynamically accumulating Tick-produced work uses producer-specific reserve/pending-queue SPSC transports rather than a recording-specific shared capture log. Queue blocks are
 power-of-two-capacity segments supplied ahead of demand by non-app-module
 `AsyncCapacityManager` infrastructure.
 
@@ -857,10 +856,7 @@ executor state.
 
 The immutable Tick runtime plan still determines exactly where a Tick/persisted or
 recording-capable logical output becomes final and how much provisioned storage one
-worst-case pass can require. That graph-derived structural bound is `C`. Each producer
-advertises `C/L/H/G` to the capacity manager; `C` validates/derives policy while
-steady provisioning primarily uses the low watermark `L`, refill target `H`, and
-allocation/segment granularity `G`, with `C << L < H`.
+worst-case pass can require. That graph-derived structural bound is `C`. Each producer advertises `C/L/H` to the capacity manager; `C` validates/derives policy while steady provisioning uses the low watermark `L` and refill target `H`. Allocation/slab granularity is owned by the capacity manager, with `C << L < H`.
 
 Generated code receives only compact runtime-resolved producer operations. It cannot
 recover either executor, a queue owner, persisted identity, capacity manager or
@@ -898,8 +894,7 @@ ever required, that feature must receive an explicit design rather than changing
 generic queue semantics.
 
 Producer endpoints are generation-specific for hot reload. At a realtime generation
-cutover, the old pass publishes its final chains before the prepared cutover is
-published; afterward only new-generation endpoints are used. Old-generation queues
+cutover, the old pass publishes its final chains before the prepared successor `ExecutionGeneration*` is published; afterward only new-generation endpoints are used. Old-generation queues
 therefore become closed finite inputs. Background may finish/drain them under the old
 graph before applying the prepared state migration and consuming new-generation
 queues. This preserves recording/persistence meaning when a producer or destination
@@ -1144,7 +1139,7 @@ callback selects it. An existing stale or invalidated published
 page is read as-is, while a genuinely missing Sequential page produces that input's
 own `neutral_value`. Playback does not block or synchronously generate missing pages.
 
-Provisioned producer queues are the cross-thread lifetime bridge. The same generic
+Producer reserves plus background pending queues are the cross-thread lifetime bridge. The same generic
 queue/capacity infrastructure serves explicit recording and Tick/persisted staging.
 A recording bridge consumes ordinary sequential data and exposes a RAM-backed Random
 Access recording. An ordinary write overwrites the addressed timeline range, leaving
@@ -1160,8 +1155,7 @@ is preserved by each producer's SPSC stream.
 
 Capacity is dynamically extensible through the async capacity manager rather than a
 fixed guessed duration. The realtime producer consumes only already-assigned blocks.
-Only the producer advertises `C/L/H/G`; the background consumer neither knows nor
-updates those values. Slow background work increases pending block ownership and may
+Only the producer advertises `C/L/H`; allocator slab/allocation granularity is owned by the capacity manager and the background consumer participates in neither policy. Slow background work increases pending block ownership and may
 cause the manager to provision more blocks, subject only to real memory limits.
 
 If mandatory work cannot acquire enough ready blocks, the missing write is a sticky

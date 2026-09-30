@@ -1016,15 +1016,15 @@ This is a hint, not a hard constraint. Use your own good judgement if ever in do
     transaction-local page-backed materialization; Tick-time ephemeral Random Access
     must be materialized before the callback. Playback never blocks, reclaims retired
     storage or invokes Tock.
-18. **Refactor realtime-produced persistence/recording handoff onto provisioned
-    queues and split executor ownership.** The current capture-store implementation is
+18. **Refactor realtime-produced persistence/recording handoff onto producer reserves
+    and background pending queues.** The current capture-store implementation is
     migration substrate. The target runtime uses `RealtimeExecutor` for realtime
     generation/storage and producer endpoints, `BackgroundExecutor` for the
     worker/background evaluation/persisted-state owner, and non-app-module
-    `AsyncCapacityManager` infrastructure for producer-specific queue blocks.
+    `AsyncCapacityManager` infrastructure for producer-specific blocks.
 
-    Each realtime producer advertises `C/L/H/G`; capacity is provisioned ahead of
-    demand in power-of-two blocks. The producer builds complete block chains privately,
+    Each realtime producer advertises `C/L/H`; capacity is provisioned ahead of demand
+    in power-of-two blocks and allocator slab granularity remains manager-internal. The producer builds complete block chains privately,
     writing sample/event data directly into them where layout permits, then publishes
     the chain at a realtime pass boundary. The generated ABI receives only compact
     producer/binding operations; no executor, queue owner or capacity manager enters
@@ -1585,7 +1585,7 @@ same-Tick recent-data overlay is a later optional optimization, not baseline sem
 
 The explicit recording bridge remains for unreproducible sequential sources, but its
 transport is not special-purpose. Tick/persisted staging and recorder outputs use
-producer-specific capacity-manager-provisioned SPSC queues. A background pass
+producer-specific reserve/pending-queue SPSC transports. A background pass
 independently pins one finite prefix per relevant producer queue and commits its
 ordinary background transaction once. The page version advances on commit, not queue
 insertion. A page candidate may copy or adopt compatible queue payload data, but
@@ -1711,106 +1711,96 @@ well as tock/persisted outputs; neither is a best-effort cache.
 
 ## Executor boundaries
 
-GraphJit produces immutable compilation artifacts; mutable runtime ownership is split
-between two internal execution actors owned by one `GraphExecutor` app module.
+GraphJit produces immutable compilation artifacts; mutable runtime ownership lives in
+one `GraphExecutor` app module with two internal execution actors.
+
+One successful compilation is prepared as one complete `ExecutionGeneration` before
+it can become pending. The prepared generation contains the realtime/background
+realizations plus all topology-derived routes, producer endpoints, pre-sized
+background input descriptors, migration metadata, reserve requirements and cutover
+linkage needed by both actors. There is no semantically visible half-staged generation.
 
 ### `RealtimeExecutor`
 
 `RealtimeExecutor` owns:
 
-- active/pending executable generations and canonical realtime `NodeStorage`;
-- graph-revision realtime state reconciliation, including transition/steady
-  realizations and safe-boundary activation;
-- realtime Tick invocation bindings and callback/pass-lifetime immutable persisted/
-  materialization views;
-- realtime producer endpoints backed by provisioned SPSC queue blocks; and
-- pending persisted-state versions received from background, activated only at legal
-  whole-pass boundaries.
+- the active and optional pending `ExecutionGeneration*` realtime realization and
+  canonical realtime `NodeStorage`;
+- graph-revision realtime state reconciliation, transition/steady realizations and
+  safe-boundary activation;
+- callback/pass-lifetime immutable persisted/materialization views;
+- producer-specific `ProducerReserve` endpoints for realtime-to-background work; and
+- at most the newest compatible pending immutable persisted-state pointer from
+  background.
 
 Executable replacement must preserve concrete-node-owned port state. Input history
 belongs to the surviving destination input; output history and authored latency/future
 state belong to the surviving source output. Connection rewiring, fan-in/fanout
 changes, or a different steady storage representation do not themselves reset those
-windows. `RealtimeExecutor` reconciles overlapping valid semantic ranges from the
-old realization into the new revision, materializing transition-only state when
-necessary even if steady execution normally aliases another representation.
+windows. `RealtimeExecutor` reconciles overlapping valid semantic ranges from the old
+realization into the new revision, materializing transition-only state when necessary.
 
-When transition-only state has a finite horizon, GraphJit may provide both a
-transition realization and final steady realization for the same logical revision.
-`RealtimeExecutor` activates the transition form at a legal pass boundary and
-switches to the precompiled steady form at the first legal boundary after the final
-transition-only range can no longer be observed. A newer project revision may
-supersede either pending form without requiring a second compilation for the old one.
+Realtime-produced data uses blocks already provisioned into the producer reserve. The
+producer may write final audio/event payload directly into those blocks, build a
+private chain with ordinary stores, and publish the complete chain at a pass boundary.
+The actor never allocates/resizes/reclaims on the realtime path.
 
 ### `BackgroundExecutor`
 
 `BackgroundExecutor` owns:
 
-- staged/current background generations supplied by `ProjectGraph`, plus ordered
-  prepared cutovers actually published by realtime;
-- separately owned Tock-only `TockState` lifecycle/storage;
-- stable canonical persisted-page stores/immutable roots for Tick/persisted and
-  Tock/persisted outputs;
-- candidate/published semantic/page versions and background reader/version lifetime;
-- independently queued producer inputs from realtime or other producers;
-- committed background coverage state plus reusable propagation/evaluation workspaces;
-- transaction-local materialization/invocation frames;
-- closed invalidation/demand normalization and complete Tock/persisted candidate
-  materialization; and
-- immutable persisted-state/page versions published back to realtime.
+- its worker thread and current background generation;
+- ordered `ExecutionGeneration*` cutovers already performed by realtime;
+- background-only mutable evaluation/Tock state;
+- canonical persisted/recorded state and immutable publication roots;
+- one producer-specific background `PendingQueue` per compiled producer;
+- pre-sized descriptors that remember finite `(first,last)` selected queue prefixes;
+- propagation/evaluation workspaces and transaction-local candidates; and
+- persisted-state version production.
 
-Before one background pass, the worker independently pins a finite prefix from each
-relevant producer queue and selects exact immutable/versioned non-queue inputs. That
-selection is the workload. New queue data or graph/control updates may arrive while it
-runs, but they cannot modify the selected work. There is intentionally no global
-atomic snapshot across queues.
+Each pending queue is pinned independently. There is deliberately no atomic snapshot
+across queues. Once the selected terminal block and immutable non-queue inputs have
+been remembered, current background work is immutable while producers continue
+publishing later chains.
 
-A successor background generation staged by `ProjectGraph` is not selectable merely
-because staging completed. The worker advances to it only after the corresponding
-realtime cutover arrives and all required old-generation work/migration has been
-completed.
+The background-to-realtime result path is a latest-version mailbox, not a queue of
+versions. When several coherent immutable persisted versions are produced before
+realtime reaches a pass boundary, only the newest compatible pending version must be
+retained. Superseded versions are reclaimed off realtime.
 
-Final background commit promotes prepared semantic coverage and any successor
-persisted-state/page version corresponding to the selected workload, or promotes none
-on failure/stale-base rejection. Selected queue prefixes are released only according
-to successful domain commit semantics. A newly published immutable persisted-state
-version is sent by pointer to `RealtimeExecutor`, which stores it pending until a
-later pass boundary.
+### Generation cutover
 
-Published sample/event pages may share one immutable snapshot root/page version even
-when their typed payload implementations differ. Realtime pin acquisition/release and
-`TickMaterializationSnapshot` lifetime management must not allocate, block or reclaim
-the final retired owner on the realtime thread; reclamation remains non-realtime.
+At a legal realtime pass boundary, `RealtimeExecutor` publishes all final old-generation
+chains, publishes the already-prepared successor `ExecutionGeneration*` as an ordered
+cutover, then swaps its active realtime realization. No dynamic allocation is required
+at that boundary.
 
-Stable executable replacement is rebinding rather than automatic semantic
-invalidation. Compatible persisted data survives compatible JIT rebuilds regardless
-of Tick/Tock provenance. Persisted covered data is not evicted merely because it is
-stale or memory use grows. Ephemeral outputs own no persisted output data to rebind.
+Generation objects themselves may carry intrusive successor linkage, avoiding a
+separate cutover allocation. Once an actual cutover occurs it must remain ordered while
+background lags. Old-generation endpoints are then closed, giving their pending queues
+finite tails. Background finishes/drains old-generation work under the old graph,
+applies the prepared stable-identity migration, then consumes new-generation queues.
 
-Changing project sample rate invalidates/repropagates background-computed output
-semantics. `tock/persisted` candidates are recomputed before publication;
-`tock/ephemeral` evaluates under the new rate. Existing tick/persisted samples are not
-automatically resampled/remapped; an explicit sampler/resampler performs that DSP when
-original timing must be preserved.
+A removed producer therefore simply stops producing after the boundary; it does not
+erase retained state at a surviving destination. A removed destination is retired only
+after remaining old-generation work has been interpreted under the old graph. Stable
+logical identity, not installation order or generation-local indices, determines the
+result.
 
-Receiving a new executable generation never mutates an in-progress realtime pass or a
-background workload already selected. A successful compile defines one logical
-generation shared by the realtime/background halves. `ProjectGraph` stages the
-background half first so its generation-specific queues, stable-identity/route bindings,
-and cutover-publication resources are prepared before the realtime half becomes
-activatable.
+### Capacity/reclamation infrastructure
 
-Actual cutover is realtime-authoritative. At a legal pass boundary,
-`RealtimeExecutor` publishes all final old-generation producer chains, publishes
-the already-prepared `N -> N+1` cutover to `BackgroundExecutor` with bounded
-allocation-free pointer operations, and then swaps its active realtime realization.
-The background worker may still finish selected N work and drain the now-closed N
-queues before applying the prepared migration and interpreting N+1 inputs. Data is
-always interpreted by the generation that produced it; stable logical identity, not
-generation-local compiled indices, determines retained-state survival. Ordered
-cutovers that actually occurred are never collapsed merely because background lags.
+`AsyncCapacityManager` owns off-realtime block provisioning/reclamation. Producer
+requirements are expressed by the maximum burst `C`, low ready-capacity watermark `L`
+and refill target `H`; allocator slab granularity is manager-internal. `C` validates or
+derives policy and normal operation maintains ready reserve above `L`, refilling toward
+`H`.
 
-The complete protocol is normative in
+The forward path remains one reserve/pending queue per producer. Because there is one
+background releasing actor and one capacity manager, released blocks from all producer
+queues may share one SPSC return stream. Block metadata identifies which reserve/type
+receives recycled capacity.
+
+The detailed normative contract is in
 [realtime_background_execution_and_queues.md](./realtime_background_execution_and_queues.md).
 
 ## Failure semantics

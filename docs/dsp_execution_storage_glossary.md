@@ -262,35 +262,31 @@ runtime choice unless a document states otherwise.
 
 ### Async capacity manager
 
-The **async capacity manager** is non-app-module runtime infrastructure that
-provisions and reclaims fixed-capacity blocks for producer-specific SPSC queues. It
-runs off the realtime path and is independent of background-evaluation progress. A
-slow background worker increases pending queue ownership rather than changing the
-producer's no-allocation rule.
+The **async capacity manager** is non-app-module runtime infrastructure that provisions
+and reclaims stable fixed-capacity blocks off the realtime path. It is independent of
+background-evaluation progress: a slow background worker increases pending ownership
+rather than changing the producer's no-allocation rule.
 
-Only a queue producer advertises its capacity requirement:
+Each producer has a **producer reserve** of ready blocks. The producer supplies:
 
 ```text
-C = maximum producer burst that must fit without provisioning
-L = low free-capacity watermark
+C = maximum producer burst that must fit without new provisioning
+L = low ready-capacity watermark
 H = refill target
-G = allocation/segment granularity
 ```
 
-`C` is a producer-derived structural bound used to derive/validate policy. `L` covers
-tolerated provisioner unavailability plus safety margin, `H` provides refill
-hysteresis/headroom, and `G` amortizes allocation in whole power-of-two-capacity
-segments. The intended relationship is `C << L < H`. Queue consumers do not know or
-participate in this policy.
+`C` is a structural bound used to derive/validate reserve policy. `L` covers tolerated
+manager detection/scheduling delay plus safety margin and `H` supplies refill
+headroom/hysteresis. Allocation/slab granularity is manager-owned implementation detail,
+not a semantic per-producer parameter. The intended relationship is `C << L < H`.
 
-The manager may keep ready blocks preassigned to each producer. Queue users do not
-require one shared atomic logical size. Reclamation follows completed background work
-and returns blocks to the manager, which later makes them producer-ready again.
+The manager may keep allocation/release accounting private. Queue users do not require
+one shared atomic logical size. Completed blocks return from the single background
+worker through a released-block stream and are reclaimed/reassigned by the manager.
 
 ### Graph executor / realtime and background actors
 
-`GraphExecutor` is the execution app module. It owns one logical paired execution
-generation and application-facing staging/coordination.
+`GraphExecutor` is the execution app module. It owns complete prepared `ExecutionGeneration` objects and application-facing staging/coordination.
 
 Its internal `RealtimeExecutor` owns realtime mutable execution state, active/pending
 realtime generations, pass-boundary activation, and realtime producer endpoints.
@@ -508,24 +504,29 @@ by Tick production and read by same-Tick Sequential consumers after the required
 same-Tick dependency has executed. It is not a published persisted snapshot and is
 never the baseline backing for a Random Access input.
 
-### Provisioned queue block / produced block chain / pinned prefix
+### Producer reserve / pending queue / produced block chain / pinned prefix
 
-A **provisioned queue block** is fixed-capacity storage supplied ahead of producer
-demand by the async capacity manager. Queue block capacities are powers of two. The
-producer can use the block directly for sample/event payloads rather than first
-writing another dynamically retained buffer and copying it into transport storage.
+A **producer reserve** is the producer-facing set/chain of already allocated writable
+blocks assigned by the async capacity manager. Realtime code only acquires from this
+reserve; it does not resize or provision it.
+
+A **pending queue** is the background-facing ordered chain of already published work
+for one producer. Producer reserve and pending queue are two ownership roles of the
+same logical SPSC transport; they need not be one public container object.
+
+Backing block capacities are powers of two. A producer may use a block directly for
+final sample/event payload rather than first writing another retained buffer and copying
+it into transport storage.
 
 A **produced block chain** is one or more fully initialized producer-private blocks
-linked together before publication. The producer preferably passes both the first and
-last block to the internal consumer-side handoff. Publishing the chain is one cheap
-queue insertion/pointer operation; individual entries inside the private chain do not
-require atomic publication.
+linked together before publication. The producer passes both first and last where
+convenient. Publishing the chain is one cheap pointer operation; individual entries
+inside the private chain do not require atomic publication.
 
 A **pinned queue prefix** is the finite `(first,last)` block range selected by
-`BackgroundExecutor` before one background workload begins. Later insertion may
-link new blocks after `last`, but the selected workload still ends at the remembered
-`last`; background execution does not discover more work while processing the pinned
-prefix.
+`BackgroundExecutor` before one background workload begins. Later insertion may link
+new blocks after `last`, but the selected workload still ends at the remembered
+`last`; background execution does not discover more work while processing the prefix.
 
 Different producer queues are pinned independently. There is deliberately no atomic
 relationship between the prefixes selected from different queues. An item published
@@ -547,23 +548,25 @@ recreate the missed work. Tick/persisted therefore treats such a miss as a broke
 retention guarantee, and recording treats it as an incomplete recording; resource
 exhaustion never authorizes intentional loss.
 
-Queue-block ownership follows:
+Block ownership follows:
 
 ```text
-AsyncCapacityManager -> producer -> BackgroundExecutor -> AsyncCapacityManager
+AsyncCapacityManager -> ProducerReserve -> producer-private -> PendingQueue
+                     -> released-block stream -> AsyncCapacityManager
 ```
 
 The background consumer does not splice released blocks directly into a realtime
-producer's reserve. It releases completed prefixes to non-realtime reclamation, and
-the capacity manager owns recycling/reassignment.
+producer reserve. It releases committed blocks to non-realtime reclamation, and the
+capacity manager owns recycling/reassignment.
 
 ### Graph-generation cutover / closed producer queue
 
 A **graph-generation cutover** is the authoritative realtime pass-boundary transition
-from one paired realtime/background graph generation to the next. Background staging
-happens first; the realtime boundary later publishes final old-generation chains,
-publishes an already-prepared allocation-free cutover to `BackgroundExecutor`,
-and swaps the active realtime realization.
+from one complete prepared `ExecutionGeneration` to the next. Both internal actor
+realizations and every required route/reserve/migration resource are prepared before
+the successor pointer becomes pending. The realtime boundary publishes final
+old-generation chains, publishes the already-prepared successor generation pointer to
+`BackgroundExecutor`, and swaps the active realtime realization.
 
 A **closed producer queue** is an old-generation queue after that cutover. No producer
 can append further items to it, so it has a finite tail even though the background
@@ -579,8 +582,11 @@ after remaining old-generation work is interpreted under the old graph.
 
 A **generation-compatible persisted-state version** is an immutable background
 publication tagged/bound to the graph generation whose realtime bindings may consume
-it. A late final old-generation version is transition input for background migration,
-not a version that can become active in a newer realtime generation.
+it. Background publishes these through a latest-version mailbox: if several compatible
+versions are produced before realtime consumes one, only the newest pending version
+must be retained. A late final old-generation version is transition input for
+background migration, not a version that can become active in a newer realtime
+generation.
 
 ### Published-snapshot Random Access
 

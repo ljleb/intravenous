@@ -34,9 +34,10 @@ flowchart TD
 ```
 
 The numeric labels on sibling edges are orchestration order inside their parent.
-`GraphExecutor` internally prepares the background half first so generation-specific
-queues, target-generation bindings and cutover resources exist before the matching
-realtime half can become activatable.
+`GraphExecutor` internally constructs one complete `ExecutionGeneration`; no
+half-prepared successor becomes visible. Generation-specific routes, producer reserves,
+background pending-queue descriptors, migration metadata, and cutover linkage are all
+ready before the generation pointer may become pending.
 
 ## PackageWatcher transaction
 

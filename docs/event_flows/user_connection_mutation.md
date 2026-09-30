@@ -42,9 +42,9 @@ needs this translation before it can resolve recursive matchers.
 There is intentionally no separate incremental connection-only root graph path
 for the initial implementation. After connection application, `ProjectGraph`
 finishes the root graph, synchronously recompiles it through `GraphJit`, and then stages
-the resulting `CompiledGraph` once in `GraphExecutor`. `GraphExecutor` prepares the
-background half before the realtime half internally; actual cutover occurs later at a
-legal realtime pass boundary.
+the resulting `CompiledGraph` once in `GraphExecutor`. `GraphExecutor` prepares one
+complete `ExecutionGeneration` internally; actual cutover occurs later at a legal
+realtime pass boundary.
 
 ## Matcher semantics
 

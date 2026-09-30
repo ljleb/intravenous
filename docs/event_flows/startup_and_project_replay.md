@@ -82,5 +82,7 @@ Within one package-source cause, `PackageWatcher` invokes `PackageJit` at most
 once for the complete build subset and then invokes `PackageDefinitions` exactly
 once with the completed package transaction. Whole-project `GraphJit` compilation
 is likewise synchronous inside the later `ProjectGraph` transaction. For every successful generation, `ProjectGraph` stages `GraphExecutor` once.
-`GraphExecutor` internally prepares the paired background half before the realtime half;
-staging does not itself activate the successor.
+`GraphExecutor` constructs one complete `ExecutionGeneration` off-thread; its pointer is
+not publishable as pending until both internal actor realizations and every route,
+reserve, work-descriptor, migration, and cutover resource are ready. Staging does not
+itself activate the successor.
