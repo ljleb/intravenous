@@ -8,8 +8,15 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <span>
 
 namespace iv {
+
+struct TickCaptureProducerRequirement {
+    PersistedOutputId output{};
+    PortKind kind = PortKind::sample;
+    std::size_t maximum_blocks_per_callback = 0;
+};
 
 // Control-path allocation and identity resolution for the fixed Tick binding
 // slots retained by one CompiledGraph generation. Its arrays and bounded
@@ -51,6 +58,11 @@ public:
     // This is structural quantity C, not the allocator's operational reserve.
     [[nodiscard]] std::size_t maximum_capture_blocks_per_callback()
         const noexcept;
+    // One entry per Tick/persisted producer queue which the prepared execution
+    // generation must provision. Entries are aligned sample-first/event-second
+    // with the workspace's capture-operation slots.
+    [[nodiscard]] std::span<TickCaptureProducerRequirement const>
+    capture_producer_requirements() const noexcept;
 };
 
 // Callback-scoped owner for the narrow generated Tick invocation record.

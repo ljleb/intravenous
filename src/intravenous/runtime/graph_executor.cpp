@@ -126,35 +126,95 @@ public:
     }
 };
 
+namespace {
+
+ProducerCapacityPolicy producer_capacity_policy(
+    std::size_t maximum_blocks_per_callback,
+    TickCaptureAllocatorConfig const& config)
+{
+    if (maximum_blocks_per_callback == 0) return {};
+    if (maximum_blocks_per_callback
+            > std::numeric_limits<std::size_t>::max()
+                / config.high_watermark_callbacks) {
+        throw std::length_error(
+            "Realtime producer capacity watermarks are too large");
+    }
+    return {
+        .maximum_burst = maximum_blocks_per_callback,
+        .low_watermark = maximum_blocks_per_callback
+            * config.low_watermark_callbacks,
+        .high_watermark = maximum_blocks_per_callback
+            * config.high_watermark_callbacks,
+    };
+}
+
+} // namespace
+
 GraphExecutor::RealtimeGeneration::RealtimeGeneration(
     CompiledGraph const& graph,
     ResourceContext const& resources,
-    PersistedTickCaptureRegistry& captures)
+    PersistedTickCaptureRegistry& captures,
+    AsyncCapacityManager& capacity_manager,
+    TickCaptureAllocatorConfig const& capacity_policy)
     : storage(graph.node_layout.create_storage(resources))
     , tick_invocation(
         graph.background_evaluation_plan,
         graph.project_generation,
         graph.specialization.block_size,
         &captures)
-{}
+{
+    auto const requirements = tick_invocation.capture_producer_requirements();
+    producer_reserves.reserve(requirements.size());
+    capacity_registrations.reserve(requirements.size());
+    for (auto const& requirement : requirements) {
+        auto reserve = std::make_unique<ProducerReserve>(
+            GraphExecutor::tick_capture_payload_capacity);
+        auto registration = capacity_manager.register_producer(
+            *reserve,
+            producer_capacity_policy(
+                requirement.maximum_blocks_per_callback, capacity_policy));
+        producer_reserves.push_back(std::move(reserve));
+        capacity_registrations.push_back(std::move(registration));
+    }
+}
 
 GraphExecutor::BackgroundGeneration::BackgroundGeneration(
     CompiledGraph const& graph,
-    ResourceContext const& resources)
+    ResourceContext const& resources,
+    RealtimeGeneration& realtime)
     : storage(graph.node_layout.create_storage(resources))
     , coverage(graph.background_evaluation_plan.accumulators.output_change_count)
     , propagation(
         graph.background_evaluation_plan,
         graph.specialization.sample_rate)
-{}
+{
+    auto const requirements =
+        realtime.tick_invocation.capture_producer_requirements();
+    pending_inputs.reserve(requirements.size());
+    input_routes.reserve(requirements.size());
+    input_selections.resize(requirements.size());
+    for (std::size_t index = 0; index < requirements.size(); ++index) {
+        auto pending = std::make_unique<PendingQueue>(
+            *realtime.producer_reserves[index]);
+        input_routes.push_back({
+            .queue = pending.get(),
+            .output = requirements[index].output,
+            .kind = requirements[index].kind,
+        });
+        pending_inputs.push_back(std::move(pending));
+    }
+}
 
 GraphExecutor::ExecutionGeneration::ExecutionGeneration(
     std::shared_ptr<CompiledGraph const> compiled_graph,
     ResourceContext const& resources,
-    PersistedTickCaptureRegistry& captures)
+    PersistedTickCaptureRegistry& captures,
+    AsyncCapacityManager& capacity_manager,
+    TickCaptureAllocatorConfig const& capacity_policy)
     : graph(std::move(compiled_graph))
-    , realtime(*graph, resources, captures)
-    , background(*graph, resources)
+    , realtime(
+        *graph, resources, captures, capacity_manager, capacity_policy)
+    , background(*graph, resources, realtime)
 {}
 
 void GraphExecutor::ExecutionGeneration::initialize()
@@ -276,7 +336,11 @@ GraphExecutorStageResult GraphExecutor::stage(
     auto const index = active_ ? 1 - *active_ : std::size_t{0};
     pending_.reset();
     generations_[index].emplace(
-        std::move(compiled_graph), resources_, persisted_tick_captures_);
+        std::move(compiled_graph),
+        resources_,
+        persisted_tick_captures_,
+        async_capacity_manager_,
+        tick_capture_allocator_);
     auto const maximum_blocks_per_callback = std::max(
         active_ ? active_execution_generation().realtime.tick_invocation
                       .maximum_capture_blocks_per_callback()
@@ -363,7 +427,14 @@ GraphExecutor::tick_capture_reservation_failures() const noexcept
 TickCaptureMaintenanceFailures
 GraphExecutor::tick_capture_maintenance_failures() const noexcept
 {
-    return maintenance_->failures();
+    auto const capture = maintenance_->failures();
+    auto const generic = async_capacity_manager_.failures();
+    return {
+        .allocation_failed =
+            capture.allocation_failed || generic.allocation_failed,
+        .unexpected_failure =
+            capture.unexpected_failure || generic.unexpected_failure,
+    };
 }
 
 void GraphExecutor::tick_block(std::size_t sample_index, std::size_t block_size)

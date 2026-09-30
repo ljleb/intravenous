@@ -1,6 +1,7 @@
 #pragma once
 
 #include <intravenous/node/resources.h>
+#include <intravenous/runtime/async_capacity_manager.h>
 #include <intravenous/runtime/background_evaluation_transaction.h>
 #include <intravenous/runtime/background_coverage_propagation.h>
 #include <intravenous/runtime/graph_jit.h>
@@ -14,6 +15,7 @@
 #include <cstdint>
 #include <memory>
 #include <optional>
+#include <vector>
 
 namespace iv {
 
@@ -27,18 +29,19 @@ struct GraphExecutorReclaimedSnapshots {
     std::size_t tick_materializations = 0;
 };
 
-// Converts graph-derived maximum callback consumption C into allocator
+// Converts graph-derived maximum callback consumption C into producer reserve
 // watermarks. Defaults retain 64 worst-case callbacks below L and refill toward
-// 128 callbacks, allocating slabs in multiples of 64 capture blocks.
+// 128 callbacks. slab_allocation_granularity remains only for the temporary
+// TickCaptureStore allocator; generic block granularity is manager-internal.
 struct TickCaptureAllocatorConfig {
     std::size_t low_watermark_callbacks = 64;
     std::size_t high_watermark_callbacks = 128;
     std::size_t slab_allocation_granularity = 64;
 };
 
-// Sticky failures of the executor-owned non-audio capture-maintenance worker.
-// Reservation failures are reported separately by TickCaptureStore because they
-// mean a particular audio-thread capture was already lost.
+// Sticky failures of executor-owned non-audio capacity maintenance. Reservation
+// failures are reported separately because they mean a particular realtime
+// capture was already lost.
 struct TickCaptureMaintenanceFailures {
     bool allocation_failed = false;
     bool unexpected_failure = false;
@@ -53,29 +56,46 @@ struct TickCaptureMaintenanceFailures {
 // activation are control-path operations: callers must activate only at a legal
 // whole-root boundary with no concurrent tick_block() invocation. The realtime
 // call itself performs no generation selection, allocation, or lifecycle work.
-// Each executor owns one non-audio worker for capture-block replenishment and
-// committed-block reclamation; destruction stops and joins it before stores die.
+// Executor-owned non-audio capacity workers stop and join before their stores
+// and prepared generations are destroyed.
 class GraphExecutor {
     class MaintenanceWorker;
 
     struct RealtimeGeneration {
         NodeStorage storage{};
         TickInvocationWorkspace tick_invocation;
+        std::vector<std::unique_ptr<ProducerReserve>> producer_reserves{};
+        // Declared after producer_reserves so registrations are removed before
+        // their reserves are destroyed.
+        std::vector<std::unique_ptr<ProducerCapacityRegistration>>
+            capacity_registrations{};
 
         RealtimeGeneration(
             CompiledGraph const& graph,
             ResourceContext const& resources,
-            PersistedTickCaptureRegistry& captures);
+            PersistedTickCaptureRegistry& captures,
+            AsyncCapacityManager& capacity_manager,
+            TickCaptureAllocatorConfig const& capacity_policy);
     };
 
     struct BackgroundGeneration {
+        struct InputRoute {
+            PendingQueue* queue = nullptr;
+            PersistedOutputId output{};
+            PortKind kind = PortKind::sample;
+        };
+
         NodeStorage storage{};
         BackgroundCoverageState coverage{};
         BackgroundPropagationWorkspace propagation;
+        std::vector<std::unique_ptr<PendingQueue>> pending_inputs{};
+        std::vector<InputRoute> input_routes{};
+        std::vector<PinnedBlockPrefix> input_selections{};
 
         BackgroundGeneration(
             CompiledGraph const& graph,
-            ResourceContext const& resources);
+            ResourceContext const& resources,
+            RealtimeGeneration& realtime);
     };
 
     // Complete prepared hot-reload unit. Realtime and background currently
@@ -90,7 +110,9 @@ class GraphExecutor {
         ExecutionGeneration(
             std::shared_ptr<CompiledGraph const> graph,
             ResourceContext const& resources,
-            PersistedTickCaptureRegistry& captures);
+            PersistedTickCaptureRegistry& captures,
+            AsyncCapacityManager& capacity_manager,
+            TickCaptureAllocatorConfig const& capacity_policy);
 
         void initialize();
         void migrate_from(ExecutionGeneration& previous);
@@ -111,6 +133,9 @@ class GraphExecutor {
     // Retention-specific identity lives above the generic transport and remains
     // resolvable after the generation which produced a pending record retires.
     PersistedTickCaptureRegistry persisted_tick_captures_{tick_captures_};
+    // Generic generation-local producer capacity. Tick/persisted producers are
+    // prepared here before their capture callbacks migrate off TickCaptureStore.
+    AsyncCapacityManager async_capacity_manager_{64};
     // Registered off the audio thread. Each tick_block() acquires one bounded
     // callback-scoped pin from this slot before entering generated code.
     PersistedPageStore::ReaderSlot tick_page_reader_{};

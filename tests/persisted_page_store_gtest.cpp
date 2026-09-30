@@ -397,6 +397,14 @@ TEST(TickCaptureStore, TickInvocationFrameBindsAndScopesSampleCapture)
     iv::PersistedTickCaptureRegistry capture_outputs{captures};
     iv::TickInvocationWorkspace workspace{plan, 3, 4, &capture_outputs};
     EXPECT_EQ(workspace.maximum_capture_blocks_per_callback(), 3u);
+    auto const producer_requirements =
+        workspace.capture_producer_requirements();
+    ASSERT_EQ(producer_requirements.size(), 1u);
+    EXPECT_EQ(
+        producer_requirements[0].output,
+        local_output(iv::PortKind::sample, 0));
+    EXPECT_EQ(producer_requirements[0].kind, iv::PortKind::sample);
+    EXPECT_EQ(producer_requirements[0].maximum_blocks_per_callback, 3u);
     captures.allocate_free_block_slab(
         workspace.maximum_capture_blocks_per_callback());
 
@@ -464,6 +472,11 @@ TEST(TickCaptureStore, CaptureReserveCountsEveryPlannedInvocation)
     // samples, requiring two physical blocks. Two slices may be sealed before
     // the callback ends, so all four blocks must be available concurrently.
     EXPECT_EQ(workspace.maximum_capture_blocks_per_callback(), 4u);
+    ASSERT_EQ(workspace.capture_producer_requirements().size(), 1u);
+    EXPECT_EQ(
+        workspace.capture_producer_requirements()[0]
+            .maximum_blocks_per_callback,
+        4u);
 }
 
 TEST(PersistedPageStore, TickFrameCopiesSequentialMaterializationAndUsesNeutral)
@@ -611,6 +624,14 @@ TEST(TickCaptureStore, TickInvocationFrameBindsAndScopesEventCapture)
     iv::PersistedTickCaptureRegistry capture_outputs{captures};
     iv::TickInvocationWorkspace workspace{plan, 3, 4, &capture_outputs};
     EXPECT_EQ(workspace.maximum_capture_blocks_per_callback(), 8u);
+    auto const producer_requirements =
+        workspace.capture_producer_requirements();
+    ASSERT_EQ(producer_requirements.size(), 1u);
+    EXPECT_EQ(
+        producer_requirements[0].output,
+        local_output(iv::PortKind::event, 0));
+    EXPECT_EQ(producer_requirements[0].kind, iv::PortKind::event);
+    EXPECT_EQ(producer_requirements[0].maximum_blocks_per_callback, 8u);
     captures.allocate_free_block_slab(
         workspace.maximum_capture_blocks_per_callback());
 

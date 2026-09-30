@@ -729,6 +729,7 @@ public:
     std::vector<EventCaptureSlot> event_capture_slots{};
     std::vector<graph_jit::TickSampleCaptureOperation> sample_captures{};
     std::vector<graph_jit::TickEventCaptureOperation> event_captures{};
+    std::vector<TickCaptureProducerRequirement> capture_requirements{};
     PersistedTickCaptureRegistry* persisted_captures = nullptr;
     TickCaptureStore* capture_store = nullptr;
     std::size_t maximum_capture_blocks = 0;
@@ -764,6 +765,8 @@ public:
         event_capture_slots.resize(runtime.event_captures.size());
         sample_captures.resize(runtime.sample_captures.size());
         event_captures.resize(runtime.event_captures.size());
+        capture_requirements.reserve(
+            runtime.sample_captures.size() + runtime.event_captures.size());
 
         for (std::size_t slot = 0;
              slot < sequential_sample_slots.size(); ++slot) {
@@ -961,9 +964,10 @@ public:
                 throw std::length_error(
                     "Tick capture callback reserve is too large");
             }
-            add_capture_blocks(
-                blocks_per_invocation
-                * planned.maximum_invocations_per_callback);
+            auto const required = blocks_per_invocation
+                * planned.maximum_invocations_per_callback;
+            add_capture_blocks(required);
+            return required;
         };
         for (std::size_t slot = 0;
              slot < sample_capture_slots.size(); ++slot) {
@@ -981,11 +985,12 @@ public:
                     "Tick sample capture references a non-persisted output");
             }
             if (!capture_store) continue;
+            auto const output = capture_output_id(
+                plan, planned.port, selected_generation);
             auto& selected = sample_capture_slots[slot];
             selected = SampleCaptureSlot{
                 .store = capture_store,
-                .output = persisted_captures->register_output(capture_output_id(
-                    plan, planned.port, selected_generation)),
+                .output = persisted_captures->register_output(output),
                 .layout = port.sample_layout,
                 .history = port.output_history,
                 .latency = port.output_latency,
@@ -1015,12 +1020,17 @@ public:
                 throw std::length_error(
                     "Tick sample capture layout is too large");
             }
-            add_capture_reserve(
+            auto const required = add_capture_reserve(
                 planned,
                 capture_block_count(
                     window,
                     channels * sizeof(Sample),
                     capture_store->block_payload_capacity()));
+            capture_requirements.push_back({
+                .output = output,
+                .kind = PortKind::sample,
+                .maximum_blocks_per_callback = required,
+            });
         }
         for (std::size_t slot = 0;
              slot < event_capture_slots.size(); ++slot) {
@@ -1038,11 +1048,12 @@ public:
                     "Tick event capture references a non-persisted output");
             }
             if (!capture_store) continue;
+            auto const output = capture_output_id(
+                plan, planned.port, selected_generation);
             auto& selected = event_capture_slots[slot];
             selected = EventCaptureSlot{
                 .store = capture_store,
-                .output = persisted_captures->register_output(capture_output_id(
-                    plan, planned.port, selected_generation)),
+                .output = persisted_captures->register_output(output),
                 .type = port.event_type,
                 .history = port.output_history,
                 .latency = port.output_latency,
@@ -1071,12 +1082,17 @@ public:
                 throw std::length_error(
                     "Tick event capture capacity is too large");
             }
-            add_capture_reserve(
+            auto const required = add_capture_reserve(
                 planned,
                 capture_block_count(
                     *event_capacity,
                     sizeof(TimedEvent),
                     capture_store->block_payload_capacity()));
+            capture_requirements.push_back({
+                .output = output,
+                .kind = PortKind::event,
+                .maximum_blocks_per_callback = required,
+            });
         }
     }
 
@@ -1238,6 +1254,12 @@ std::size_t TickInvocationWorkspace::maximum_capture_blocks_per_callback()
     const noexcept
 {
     return impl_->maximum_capture_blocks;
+}
+
+std::span<TickCaptureProducerRequirement const>
+TickInvocationWorkspace::capture_producer_requirements() const noexcept
+{
+    return impl_->capture_requirements;
 }
 
 TickCaptureStore::CallbackScope
