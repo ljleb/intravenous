@@ -305,6 +305,7 @@ TickMaterializationStore::register_reader()
 {
     auto state = std::make_unique<ReaderSlotState>();
     auto* pointer = state.get();
+    std::lock_guard lock{reader_slots_mutex_};
     reader_slots_.push_back(std::move(state));
     return ReaderSlot{*this, *pointer};
 }
@@ -312,6 +313,7 @@ TickMaterializationStore::register_reader()
 void TickMaterializationStore::unregister_reader(
     ReaderSlotState& state) noexcept
 {
+    std::lock_guard lock{reader_slots_mutex_};
     assert(!state.acquiring.load(std::memory_order_seq_cst));
     assert(state.pinned.load(std::memory_order_seq_cst) == nullptr);
     auto const found = std::ranges::find_if(
@@ -324,6 +326,7 @@ void TickMaterializationStore::unregister_reader(
 
 std::size_t TickMaterializationStore::reclaim_retired()
 {
+    std::lock_guard lock{reader_slots_mutex_};
     if (std::ranges::any_of(reader_slots_, [](auto const& slot) {
             return slot->acquiring.load(std::memory_order_seq_cst);
         })) {

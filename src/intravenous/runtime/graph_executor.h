@@ -11,10 +11,13 @@
 #include <intravenous/runtime/tick_invocation_frame.h>
 
 #include <atomic>
+#include <condition_variable>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <mutex>
 #include <optional>
+#include <thread>
 #include <vector>
 
 namespace iv {
@@ -55,8 +58,9 @@ struct RealtimeCapacityMaintenanceFailures {
 // activation are control-path operations: callers must activate only at a legal
 // whole-root boundary with no concurrent tick_block() invocation. The realtime
 // call itself performs no generation selection, allocation, or lifecycle work.
-// The executor-owned non-audio capacity worker stops and joins after prepared
-// generations unregister their producer reserves.
+// The executor-owned background worker stops and destroys its generation chain
+// before the non-audio capacity worker stops, so prepared generations unregister
+// their producer reserves while the capacity manager is still alive.
 class GraphExecutor {
     struct RealtimeGeneration {
         NodeStorage storage{};
@@ -101,9 +105,8 @@ class GraphExecutor {
             ReleasedBlockQueue& released) noexcept;
     };
 
-    // Complete prepared hot-reload unit. Realtime and background currently
-    // execute synchronously, but they never share mutable NodeStorage or
-    // generation-local workspaces.
+    // Complete prepared hot-reload unit. Realtime and the background worker
+    // never share mutable NodeStorage or generation-local workspaces.
     struct ExecutionGeneration {
         std::shared_ptr<CompiledGraph const> graph{};
         RealtimeGeneration realtime;
@@ -134,6 +137,52 @@ class GraphExecutor {
             PersistedPageStore& pages);
     };
 
+    class BackgroundExecutor {
+        using Result =
+            std::expected<BackgroundEvaluationResult, std::string>;
+
+        struct Command {
+            BackgroundEvaluationRequest request{};
+            bool reclaim_snapshots = false;
+            Command* next = nullptr;
+            std::mutex mutex{};
+            std::condition_variable completed{};
+            std::optional<Result> result{};
+            std::optional<GraphExecutorReclaimedSnapshots> reclaimed{};
+            bool done = false;
+        };
+
+        GraphExecutor& owner_;
+        std::unique_ptr<ExecutionGeneration> generation_chain_{};
+        std::atomic<std::uint64_t> current_generation_{0};
+        std::atomic<bool> has_generation_{false};
+        std::mutex commands_mutex_{};
+        std::condition_variable_any commands_changed_{};
+        Command* first_command_ = nullptr;
+        Command* last_command_ = nullptr;
+        bool stopping_ = false;
+        std::jthread worker_{};
+
+        [[nodiscard]] ExecutionGeneration& generation();
+        [[nodiscard]] bool advance_generation();
+        [[nodiscard]] Result execute(BackgroundEvaluationRequest request);
+        void run(std::stop_token stop) noexcept;
+
+    public:
+        explicit BackgroundExecutor(GraphExecutor& owner);
+        ~BackgroundExecutor();
+
+        BackgroundExecutor(BackgroundExecutor const&) = delete;
+        BackgroundExecutor& operator=(BackgroundExecutor const&) = delete;
+
+        void install_first_generation(
+            std::unique_ptr<ExecutionGeneration> generation);
+        [[nodiscard]] std::optional<std::uint64_t>
+        current_generation() const noexcept;
+        [[nodiscard]] Result evaluate(BackgroundEvaluationRequest request);
+        [[nodiscard]] GraphExecutorReclaimedSnapshots reclaim_snapshots();
+    };
+
     ResourceContext resources_{};
     RealtimeProducerCapacityConfig producer_capacity_{};
     // Executor-level and deliberately outside either execution generation.
@@ -151,26 +200,24 @@ class GraphExecutor {
     // Executor-lifetime sticky fault: a finalized Tick/persisted record could
     // not acquire its complete generation-local block chain.
     std::atomic<bool> production_reservation_failed_{false};
-    // The owned head is the background-current generation. Embedded successor
-    // owners preserve every actual realtime cutover until background advances.
-    std::unique_ptr<ExecutionGeneration> generation_chain_{};
     // Realtime may run ahead while background drains closed predecessor queues.
     ExecutionGeneration* realtime_active_ = nullptr;
     // This generation has not crossed a realtime boundary and may be replaced.
     std::unique_ptr<ExecutionGeneration> pending_generation_{};
+    // Declared last so its worker stops and its generation chain is destroyed
+    // before the stores and capacity manager used by those generations.
+    BackgroundExecutor background_executor_;
 
     [[nodiscard]] ExecutionGeneration& realtime_execution_generation();
     [[nodiscard]] ExecutionGeneration const& realtime_execution_generation()
-        const;
-    [[nodiscard]] ExecutionGeneration& background_execution_generation();
-    [[nodiscard]] ExecutionGeneration const& background_execution_generation()
         const;
     [[nodiscard]] std::expected<BackgroundEvaluationResult, std::string>
     evaluate_generation(
         ExecutionGeneration& generation,
         BackgroundEvaluationRequest request,
         bool publish_realtime_state);
-    [[nodiscard]] bool advance_background_generation();
+    [[nodiscard]] GraphExecutorReclaimedSnapshots
+    reclaim_retired_snapshots_on_background();
 
 public:
     explicit GraphExecutor(
@@ -203,14 +250,16 @@ public:
     background_generation() const noexcept;
     [[nodiscard]] std::shared_ptr<CompiledGraph const> active_graph() const noexcept;
 
-    // Drains activated predecessor generations in order, then runs one complete
-    // prepared/evaluate/publish operation against the background-current
-    // realtime generation. No propagation-only commit surface is exposed.
+    // Submits one request to the internal background worker and waits for that
+    // request's exact result. The worker drains activated predecessor
+    // generations in order before evaluating the background-current generation.
+    // No propagation-only commit surface is exposed.
     [[nodiscard]] std::expected<BackgroundEvaluationResult, std::string>
     evaluate_background(BackgroundEvaluationRequest request);
 
-    // Explicit non-audio reclamation for immutable roots retired by successful
-    // background publication. A live callback pin always defers its owner.
+    // Submits explicit reclamation of immutable roots to the background worker
+    // and waits for the reclaimed-owner counts. A live callback pin always
+    // defers its owner.
     [[nodiscard]] GraphExecutorReclaimedSnapshots reclaim_retired_snapshots();
 
     // Sticky failures to reserve complete realtime-produced records. In

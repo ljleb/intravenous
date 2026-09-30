@@ -121,6 +121,17 @@ The worker selects one precise finite workload, executes it, commits or rejects 
 then selects again from the latest pending state. If more data is already available it
 may immediately start the next pass.
 
+An explicit control/test evaluation operation may submit one request and wait for that
+request's exact result, but the submitting thread does not execute the transaction.
+The background worker remains the sole executor and owner of the background generation
+chain, its `NodeStorage`, selected queue prefixes and propagation workspace.
+
+Explicit reclamation of retired persisted-state roots, persisted pages and Tick
+materializations is submitted to that same worker, keeping publication/retired-owner
+mutation single-threaded. Reader-slot registration and unregistration may still occur
+during off-realtime generation staging or destruction, so those registries synchronize
+with background reclamation; realtime root pinning itself remains lock-free.
+
 ## 5. Producer reserve and pending queue are different roles
 
 The runtime's logical SPSC queue is implemented from two ownership-facing pieces:

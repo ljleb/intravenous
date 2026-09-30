@@ -521,12 +521,14 @@ PersistedPageStore::ReaderSlot PersistedPageStore::register_reader()
 {
     auto state = std::make_unique<ReaderSlotState>();
     auto* pointer = state.get();
+    std::lock_guard lock{reader_slots_mutex_};
     reader_slots_.push_back(std::move(state));
     return ReaderSlot{*this, *pointer};
 }
 
 void PersistedPageStore::unregister_reader(ReaderSlotState& state) noexcept
 {
+    std::lock_guard lock{reader_slots_mutex_};
     assert(!state.acquiring.load(std::memory_order_seq_cst));
     assert(state.pinned.load(std::memory_order_seq_cst) == nullptr);
     auto const found = std::ranges::find_if(
@@ -539,6 +541,7 @@ void PersistedPageStore::unregister_reader(ReaderSlotState& state) noexcept
 
 std::size_t PersistedPageStore::reclaim_retired()
 {
+    std::lock_guard lock{reader_slots_mutex_};
     // A reader announces before loading published_. If reclamation observes an
     // acquisition in flight it defers the whole scan; otherwise that reader's
     // later published_ load can only select the current, non-retired root.

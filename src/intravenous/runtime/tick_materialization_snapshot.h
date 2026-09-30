@@ -11,6 +11,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <mutex>
 #include <vector>
 
 namespace iv {
@@ -170,6 +171,7 @@ private:
     std::unique_ptr<TickMaterializationSnapshot> published_owner_{};
     std::atomic<TickMaterializationSnapshot const*> published_{nullptr};
     std::unique_ptr<TickMaterializationSnapshot> retired_{};
+    mutable std::mutex reader_slots_mutex_{};
     std::vector<std::unique_ptr<ReaderSlotState>> reader_slots_{};
     std::uint64_t promotion_sequence_ = 0;
 

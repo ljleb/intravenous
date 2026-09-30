@@ -227,11 +227,162 @@ void GraphExecutor::ExecutionGeneration::prepare_initial_persisted_state(
         graph->project_generation, pages);
 }
 
+GraphExecutor::BackgroundExecutor::BackgroundExecutor(GraphExecutor& owner)
+    : owner_(owner)
+    , worker_([this](std::stop_token stop) { run(stop); })
+{}
+
+GraphExecutor::BackgroundExecutor::~BackgroundExecutor()
+{
+    {
+        std::lock_guard lock{commands_mutex_};
+        stopping_ = true;
+    }
+    worker_.request_stop();
+    commands_changed_.notify_all();
+    if (worker_.joinable()) worker_.join();
+}
+
+void GraphExecutor::BackgroundExecutor::install_first_generation(
+    std::unique_ptr<ExecutionGeneration> prepared)
+{
+    if (!prepared) {
+        throw std::invalid_argument(
+            "BackgroundExecutor cannot install an empty generation");
+    }
+    std::lock_guard lock{commands_mutex_};
+    if (stopping_ || generation_chain_ || first_command_) {
+        throw std::logic_error(
+            "BackgroundExecutor cannot install this first generation");
+    }
+    current_generation_.store(
+        prepared->graph->project_generation, std::memory_order_relaxed);
+    generation_chain_ = std::move(prepared);
+    has_generation_.store(true, std::memory_order_release);
+}
+
+std::optional<std::uint64_t>
+GraphExecutor::BackgroundExecutor::current_generation() const noexcept
+{
+    if (!has_generation_.load(std::memory_order_acquire)) {
+        return std::nullopt;
+    }
+    return current_generation_.load(std::memory_order_acquire);
+}
+
+GraphExecutor::ExecutionGeneration&
+GraphExecutor::BackgroundExecutor::generation()
+{
+    if (!generation_chain_) {
+        throw std::logic_error("BackgroundExecutor has no generation");
+    }
+    return *generation_chain_;
+}
+
+GraphExecutor::BackgroundExecutor::Result
+GraphExecutor::BackgroundExecutor::evaluate(
+    BackgroundEvaluationRequest request)
+{
+    Command command{.request = std::move(request)};
+    {
+        std::lock_guard lock{commands_mutex_};
+        if (stopping_) {
+            return std::unexpected("BackgroundExecutor is stopping");
+        }
+        if (!generation_chain_) {
+            return std::unexpected("BackgroundExecutor has no generation");
+        }
+        if (last_command_) {
+            last_command_->next = &command;
+        } else {
+            first_command_ = &command;
+        }
+        last_command_ = &command;
+    }
+    commands_changed_.notify_one();
+
+    std::unique_lock lock{command.mutex};
+    command.completed.wait(lock, [&] { return command.done; });
+    return std::move(*command.result);
+}
+
+GraphExecutorReclaimedSnapshots
+GraphExecutor::BackgroundExecutor::reclaim_snapshots()
+{
+    Command command{.reclaim_snapshots = true};
+    {
+        std::lock_guard lock{commands_mutex_};
+        if (stopping_) return {};
+        if (last_command_) {
+            last_command_->next = &command;
+        } else {
+            first_command_ = &command;
+        }
+        last_command_ = &command;
+    }
+    commands_changed_.notify_one();
+
+    std::unique_lock lock{command.mutex};
+    command.completed.wait(lock, [&] { return command.done; });
+    return *command.reclaimed;
+}
+
+void GraphExecutor::BackgroundExecutor::run(std::stop_token stop) noexcept
+{
+    for (;;) {
+        Command* command = nullptr;
+        {
+            std::unique_lock lock{commands_mutex_};
+            commands_changed_.wait(
+                lock,
+                stop,
+                [&] { return stopping_ || first_command_ != nullptr; });
+            if (!first_command_) {
+                if (stopping_ || stop.stop_requested()) return;
+                continue;
+            }
+            command = first_command_;
+            first_command_ = command->next;
+            if (!first_command_) last_command_ = nullptr;
+            command->next = nullptr;
+        }
+
+        if (command->reclaim_snapshots) {
+            auto reclaimed = [&] {
+                try {
+                    return owner_.reclaim_retired_snapshots_on_background();
+                } catch (...) {
+                    return GraphExecutorReclaimedSnapshots{};
+                }
+            }();
+            std::lock_guard lock{command->mutex};
+            command->reclaimed.emplace(reclaimed);
+            command->done = true;
+        } else {
+            auto result = [&]() -> Result {
+                try {
+                    return execute(std::move(command->request));
+                } catch (std::exception const& exception) {
+                    return std::unexpected(exception.what());
+                } catch (...) {
+                    return std::unexpected(
+                        "BackgroundExecutor encountered an unknown failure");
+                }
+            }();
+            std::lock_guard lock{command->mutex};
+            command->result.emplace(std::move(result));
+            command->done = true;
+        }
+        command->completed.notify_one();
+    }
+}
+
 GraphExecutor::GraphExecutor(
     ResourceContext resources,
     RealtimeProducerCapacityConfig producer_capacity)
     : resources_(std::move(resources))
     , producer_capacity_(producer_capacity)
+    , background_executor_(*this)
 {
     if (producer_capacity_.low_watermark_callbacks == 0
         || producer_capacity_.high_watermark_callbacks
@@ -259,24 +410,6 @@ GraphExecutor::realtime_execution_generation() const
         throw std::logic_error("GraphExecutor has no realtime generation");
     }
     return *realtime_active_;
-}
-
-GraphExecutor::ExecutionGeneration&
-GraphExecutor::background_execution_generation()
-{
-    if (!generation_chain_) {
-        throw std::logic_error("GraphExecutor has no background generation");
-    }
-    return *generation_chain_;
-}
-
-GraphExecutor::ExecutionGeneration const&
-GraphExecutor::background_execution_generation() const
-{
-    if (!generation_chain_) {
-        throw std::logic_error("GraphExecutor has no background generation");
-    }
-    return *generation_chain_;
 }
 
 GraphExecutorStageResult GraphExecutor::stage(
@@ -319,8 +452,10 @@ bool GraphExecutor::activate_pending()
             throw std::logic_error(
                 "GraphExecutor initial persisted state was not prepared");
         }
-        generation_chain_ = std::move(pending_generation_);
-        realtime_active_ = generation_chain_.get();
+        auto* first = pending_generation_.get();
+        background_executor_.install_first_generation(
+            std::move(pending_generation_));
+        realtime_active_ = first;
         realtime_persisted_state_.activate_generation(
             std::move(realtime_active_->initial_persisted_state));
         return true;
@@ -357,8 +492,7 @@ std::optional<std::uint64_t> GraphExecutor::pending_generation() const noexcept
 std::optional<std::uint64_t>
 GraphExecutor::background_generation() const noexcept
 {
-    if (!generation_chain_) return std::nullopt;
-    return generation_chain_->graph->project_generation;
+    return background_executor_.current_generation();
 }
 
 std::shared_ptr<CompiledGraph const> GraphExecutor::active_graph() const noexcept
@@ -431,9 +565,9 @@ GraphExecutor::evaluate_generation(
     return result;
 }
 
-bool GraphExecutor::advance_background_generation()
+bool GraphExecutor::BackgroundExecutor::advance_generation()
 {
-    auto& previous = background_execution_generation();
+    auto& previous = generation();
     auto* successor = previous.successor();
     if (!successor) return false;
     if (previous.background.input_selection_active
@@ -445,7 +579,7 @@ bool GraphExecutor::advance_background_generation()
             "GraphExecutor cutover ownership disagrees with publication");
     }
     if (!previous.background.release_closed_input_sentinels(
-            async_capacity_manager_.released_blocks())) {
+            owner_.async_capacity_manager_.released_blocks())) {
         throw std::logic_error(
             "GraphExecutor could not retire drained producer queues");
     }
@@ -453,21 +587,26 @@ bool GraphExecutor::advance_background_generation()
 
     auto retired = std::move(generation_chain_);
     generation_chain_ = std::move(retired->successor_owner);
+    current_generation_.store(
+        generation_chain_->graph->project_generation,
+        std::memory_order_release);
     return true;
 }
 
-std::expected<BackgroundEvaluationResult, std::string>
-GraphExecutor::evaluate_background(BackgroundEvaluationRequest request)
+GraphExecutor::BackgroundExecutor::Result
+GraphExecutor::BackgroundExecutor::execute(
+    BackgroundEvaluationRequest request)
 {
     for (;;) {
-        auto& generation = background_execution_generation();
-        if (!generation.successor()) {
-            return evaluate_generation(generation, std::move(request), true);
+        auto& current = generation();
+        if (!current.successor()) {
+            return owner_.evaluate_generation(
+                current, std::move(request), true);
         }
 
-        if (generation.background.input_selection_active) {
-            auto drained = evaluate_generation(
-                generation, {}, false);
+        if (current.background.input_selection_active) {
+            auto drained = owner_.evaluate_generation(
+                current, {}, false);
             if (!drained
                 || drained->status != BackgroundEvaluationStatus::committed) {
                 return drained;
@@ -475,31 +614,38 @@ GraphExecutor::evaluate_background(BackgroundEvaluationRequest request)
             continue;
         }
 
-        generation.background.select_inputs({
+        current.background.select_inputs({
             .semantic_version = request.semantic_version,
             .page_width = request.page_width,
         });
-        if (generation.background.has_selected_inputs()) {
-            auto drained = evaluate_generation(generation, {}, false);
+        if (current.background.has_selected_inputs()) {
+            auto drained = owner_.evaluate_generation(current, {}, false);
             if (!drained
                 || drained->status != BackgroundEvaluationStatus::committed) {
                 return drained;
             }
             continue;
         }
-        generation.background.discard_empty_selection();
-        if (!generation.background.inputs_closed_and_drained()) {
+        current.background.discard_empty_selection();
+        if (!current.background.inputs_closed_and_drained()) {
             return std::unexpected(
                 "GraphExecutor cutover reached a producer queue that is not closed");
         }
-        if (!advance_background_generation()) {
+        if (!advance_generation()) {
             return std::unexpected(
                 "GraphExecutor could not advance a drained generation cutover");
         }
     }
 }
 
-GraphExecutorReclaimedSnapshots GraphExecutor::reclaim_retired_snapshots()
+std::expected<BackgroundEvaluationResult, std::string>
+GraphExecutor::evaluate_background(BackgroundEvaluationRequest request)
+{
+    return background_executor_.evaluate(std::move(request));
+}
+
+GraphExecutorReclaimedSnapshots
+GraphExecutor::reclaim_retired_snapshots_on_background()
 {
     auto const states = realtime_persisted_state_.reclaim_returned();
     return {
@@ -507,6 +653,11 @@ GraphExecutorReclaimedSnapshots GraphExecutor::reclaim_retired_snapshots()
         .persisted_pages = persisted_pages_.reclaim_retired(),
         .tick_materializations = tick_materializations_.reclaim_retired(),
     };
+}
+
+GraphExecutorReclaimedSnapshots GraphExecutor::reclaim_retired_snapshots()
+{
+    return background_executor_.reclaim_snapshots();
 }
 
 RealtimeProductionFailures

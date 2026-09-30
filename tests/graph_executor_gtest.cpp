@@ -11,6 +11,7 @@
 #include <span>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <utility>
 
 namespace {
@@ -31,6 +32,7 @@ unsigned migrated_raw_value = 0;
 unsigned migrated_background_raw_value = 0;
 std::size_t background_evaluate_calls = 0;
 std::byte* background_storage = nullptr;
+std::thread::id background_evaluate_thread{};
 bool throw_background_evaluate = false;
 iv::Coverage persisted_probe_coverage{};
 std::size_t persisted_probe_evaluate_calls = 0;
@@ -173,6 +175,7 @@ void observe_background_evaluate(
     iv::graph_jit::BackgroundEvaluationCall* batch)
 {
     background_storage = storage;
+    background_evaluate_thread = std::this_thread::get_id();
     ++background_evaluate_calls;
     EXPECT_EQ(batch->nodes.size(), 0);
     if (throw_background_evaluate) {
@@ -725,6 +728,7 @@ protected:
         migrated_background_raw_value = 0;
         background_evaluate_calls = 0;
         background_storage = nullptr;
+        background_evaluate_thread = {};
         throw_background_evaluate = false;
         persisted_probe_coverage = iv::Coverage{{{0, 8}}};
         persisted_probe_evaluate_calls = 0;
@@ -981,6 +985,7 @@ TEST_F(GraphExecutorFixture, RunsOnlyTheEndToEndBackgroundTransaction)
     ASSERT_EQ(executor.stage(graph), iv::GraphExecutorStageResult::staged);
     ASSERT_TRUE(executor.activate_pending());
     executor.tick_block(0, 64);
+    auto const caller_thread = std::this_thread::get_id();
     auto result = executor.evaluate_background({
         .semantic_version = 7,
         .page_width = 16,
@@ -992,6 +997,7 @@ TEST_F(GraphExecutorFixture, RunsOnlyTheEndToEndBackgroundTransaction)
     ASSERT_NE(first_tick.storage, nullptr);
     ASSERT_NE(background_storage, nullptr);
     EXPECT_NE(first_tick.storage, background_storage);
+    EXPECT_NE(background_evaluate_thread, caller_thread);
     EXPECT_TRUE(result->coverage.output_changes.empty());
     EXPECT_FALSE(result->published_pages.has_value());
     EXPECT_EQ(result->promoted_tick_materialization, 1u);

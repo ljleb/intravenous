@@ -10,6 +10,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <mutex>
 #include <span>
 #include <variant>
 #include <vector>
@@ -248,7 +249,8 @@ public:
         ReaderSlot& operator=(ReaderSlot&& other) noexcept;
 
         // At most one ReaderPin may be live for a slot. Slot registration,
-        // movement and destruction remain control-thread operations.
+        // movement and destruction remain non-realtime operations; registry
+        // mutation is synchronized with background reclamation.
         [[nodiscard]] ReaderPin pin() noexcept;
     };
 
@@ -256,6 +258,7 @@ private:
     std::unique_ptr<Snapshot const> published_owner_{};
     std::atomic<Snapshot const*> published_{nullptr};
     std::vector<std::unique_ptr<Snapshot const>> retired_{};
+    mutable std::mutex reader_slots_mutex_{};
     std::vector<std::unique_ptr<ReaderSlotState>> reader_slots_{};
 
     void unregister_reader(ReaderSlotState& state) noexcept;
