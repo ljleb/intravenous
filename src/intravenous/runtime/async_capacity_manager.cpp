@@ -4,6 +4,7 @@
 #include <bit>
 #include <cassert>
 #include <chrono>
+#include <cstring>
 #include <limits>
 #include <new>
 #include <stdexcept>
@@ -80,6 +81,24 @@ void ProducedBlockChain::reset() noexcept
     last_ = nullptr;
 }
 
+bool ProducedBlockChain::append(ProducedBlockChain&& other) noexcept
+{
+    if (!other.first_) return true;
+    if (!first_) {
+        owner_ = std::exchange(other.owner_, nullptr);
+        first_ = std::exchange(other.first_, nullptr);
+        last_ = std::exchange(other.last_, nullptr);
+        return true;
+    }
+    if (owner_ != other.owner_) return false;
+    last_->pending_next_.store(other.first_, std::memory_order_relaxed);
+    last_ = other.last_;
+    other.owner_ = nullptr;
+    other.first_ = nullptr;
+    other.last_ = nullptr;
+    return true;
+}
+
 void ProducedBlockChain::for_each(
     void* data,
     void(*visitor)(void*, AsyncQueueBlock&))
@@ -91,6 +110,60 @@ void ProducedBlockChain::for_each(
         if (block == last_) break;
         block = next;
     }
+}
+
+ProducedBlockWriter ProducedBlockChain::writer() noexcept
+{
+    return ProducedBlockWriter{*this};
+}
+
+ProducedBlockWriter::ProducedBlockWriter(ProducedBlockChain& chain) noexcept
+    : current_(chain.first_), last_(chain.last_)
+{
+    for (auto* block = current_; block;) {
+        if (block->storage_size_
+                > std::numeric_limits<std::size_t>::max() - remaining_) {
+            current_ = nullptr;
+            last_ = nullptr;
+            remaining_ = 0;
+            return;
+        }
+        remaining_ += block->storage_size_;
+        if (block == last_) break;
+        block = block->pending_next_.load(std::memory_order_relaxed);
+        if (!block) {
+            current_ = nullptr;
+            last_ = nullptr;
+            remaining_ = 0;
+            return;
+        }
+    }
+}
+
+bool ProducedBlockWriter::append(
+    std::span<std::byte const> bytes) noexcept
+{
+    if (bytes.size() > remaining_) return false;
+    while (!bytes.empty()) {
+        if (!current_) return false;
+        auto const available = current_->storage_size_ - block_offset_;
+        auto const count = std::min(available, bytes.size());
+        std::memcpy(
+            current_->storage_ + block_offset_, bytes.data(), count);
+        block_offset_ += count;
+        current_->used_size_ = std::max(
+            current_->used_size_, block_offset_);
+        written_ += count;
+        remaining_ -= count;
+        bytes = bytes.subspan(count);
+        if (block_offset_ == current_->storage_size_ && !bytes.empty()) {
+            if (current_ == last_) return false;
+            current_ = current_->pending_next_.load(
+                std::memory_order_relaxed);
+            block_offset_ = 0;
+        }
+    }
+    return true;
 }
 
 ProducerReserve::ProducerReserve(std::size_t block_storage_size)

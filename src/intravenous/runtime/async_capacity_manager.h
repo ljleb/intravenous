@@ -15,6 +15,7 @@ namespace iv {
 
 class AsyncCapacityManager;
 class PendingQueue;
+class ProducedBlockWriter;
 class ProducerReserve;
 class ProducerCapacityRegistration;
 class ReleasedBlockQueue;
@@ -28,6 +29,7 @@ class AsyncQueueBlock {
     friend class PendingQueue;
     friend class PinnedBlockPrefix;
     friend class ProducedBlockChain;
+    friend class ProducedBlockWriter;
     friend class ProducerReserve;
     friend class ReleasedBlockQueue;
 
@@ -82,6 +84,7 @@ public:
 // performs no allocation, locking, or owner destruction.
 class ProducedBlockChain {
     friend class PendingQueue;
+    friend class ProducedBlockWriter;
     friend class ProducerReserve;
 
     ProducerReserve* owner_ = nullptr;
@@ -107,6 +110,10 @@ public:
         return first_ != nullptr;
     }
 
+    // Joins another unpublished chain from the same producer reserve without
+    // publishing either chain or allocating linkage storage.
+    [[nodiscard]] bool append(ProducedBlockChain&& other) noexcept;
+
     void for_each(
         void* data,
         void(*visitor)(void*, AsyncQueueBlock&));
@@ -120,6 +127,37 @@ public:
             +[](void* opaque, AsyncQueueBlock& block) {
                 (*static_cast<Function*>(opaque))(block);
             });
+    }
+
+    // Creates one monotonic writer over the private chain. The writer never
+    // rescans earlier blocks as bytes are appended.
+    [[nodiscard]] ProducedBlockWriter writer() noexcept;
+};
+
+// Realtime-only cursor over one unpublished ProducedBlockChain. append() is
+// all-or-nothing for each supplied byte span and advances monotonically across
+// the chain's fixed-capacity blocks.
+class ProducedBlockWriter {
+    AsyncQueueBlock* current_ = nullptr;
+    AsyncQueueBlock* last_ = nullptr;
+    std::size_t block_offset_ = 0;
+    std::size_t remaining_ = 0;
+    std::size_t written_ = 0;
+
+    explicit ProducedBlockWriter(ProducedBlockChain& chain) noexcept;
+    friend class ProducedBlockChain;
+
+public:
+    ProducedBlockWriter() = default;
+
+    [[nodiscard]] bool append(std::span<std::byte const> bytes) noexcept;
+    [[nodiscard]] std::size_t remaining_capacity() const noexcept
+    {
+        return remaining_;
+    }
+    [[nodiscard]] std::size_t bytes_written() const noexcept
+    {
+        return written_;
     }
 };
 

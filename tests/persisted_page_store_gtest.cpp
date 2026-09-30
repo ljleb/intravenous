@@ -1,12 +1,16 @@
 #include <intravenous/runtime/persisted_page_store.h>
+#include <intravenous/runtime/realtime_produced_record.h>
 #include <intravenous/runtime/tick_capture_store.h>
 #include <intravenous/runtime/tick_invocation_frame.h>
 
 #include <gtest/gtest.h>
 
 #include <array>
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
+#include <span>
 #include <stdexcept>
 #include <type_traits>
 #include <utility>
@@ -51,6 +55,18 @@ std::vector<T> capture_payload_as(iv::TickCaptureRecordView const& record)
             std::as_writable_bytes(std::span{result}))) {
         return {};
     }
+    return result;
+}
+
+std::vector<std::byte> queued_bytes(iv::PinnedBlockPrefix const& prefix)
+{
+    std::vector<std::byte> result;
+    prefix.for_each([&](iv::AsyncQueueBlock const& block) {
+        result.insert(
+            result.end(),
+            block.used_storage().begin(),
+            block.used_storage().end());
+    });
     return result;
 }
 
@@ -398,13 +414,13 @@ TEST(TickCaptureStore, TickInvocationFrameBindsAndScopesSampleCapture)
     iv::TickInvocationWorkspace workspace{plan, 3, 4, &capture_outputs};
     EXPECT_EQ(workspace.maximum_capture_blocks_per_callback(), 3u);
     auto const producer_requirements =
-        workspace.capture_producer_requirements();
+        workspace.producer_requirements();
     ASSERT_EQ(producer_requirements.size(), 1u);
     EXPECT_EQ(
         producer_requirements[0].output,
         local_output(iv::PortKind::sample, 0));
     EXPECT_EQ(producer_requirements[0].kind, iv::PortKind::sample);
-    EXPECT_EQ(producer_requirements[0].maximum_blocks_per_callback, 3u);
+    EXPECT_EQ(producer_requirements[0].maximum_blocks_per_callback, 1u);
     captures.allocate_free_block_slab(
         workspace.maximum_capture_blocks_per_callback());
 
@@ -457,6 +473,125 @@ TEST(TickCaptureStore, TickInvocationFrameBindsAndScopesSampleCapture)
             17.0f, 10.0f, 11.0f, 12.0f, 13.0f, 14.0f}));
 }
 
+TEST(TickInvocationWorkspace, TickInvocationFramePublishesQueuedSampleRecord)
+{
+    auto plan = direct_tick_sample_plan();
+    iv::PersistedPageStore pages;
+    auto page_reader = pages.register_reader();
+    iv::TickMaterializationStore materializations;
+    auto materialization_reader = materializations.register_reader();
+    iv::TickInvocationWorkspace workspace{plan, 3, 4};
+    iv::ProducerReserve reserve{iv::realtime_produced_block_storage_size};
+    iv::AsyncCapacityManager manager{1};
+    iv::PendingQueue pending{reserve};
+    std::atomic<bool> reservation_failed{false};
+    ASSERT_EQ(
+        manager.maintain(reserve, {
+            .maximum_burst = 1,
+            .low_watermark = 1,
+            .high_watermark = 2,
+        }),
+        2u);
+    workspace.bind_producer_endpoint(
+        0, reserve, pending, reservation_failed);
+
+    std::array<iv::Sample, 8> source{
+        10.0f, 11.0f, 12.0f, 13.0f,
+        14.0f, 15.0f, 16.0f, 17.0f};
+    iv::ReflectedSampleOutputPortBinding binding{
+        .storage = {
+            .frame_capacity = source.size(),
+            .storage_latency = 0,
+            .channel_layout = iv::mono_planar_channel_layout,
+        },
+        .history = 1,
+        .latency = 1,
+    };
+    binding.storage.channels[0] = {
+        .storage = reinterpret_cast<std::byte*>(source.data()),
+        .frame_capacity = source.size(),
+        .frame_stride = 1,
+        .frame_delay = 0,
+    };
+
+    {
+        iv::TickInvocationFrame frame{
+            page_reader, materialization_reader, workspace, 8, 4};
+        auto const& operation = frame.call().sample_captures.data()[0];
+        ASSERT_NE(operation.context, nullptr);
+        ASSERT_NE(operation.capture, nullptr);
+        operation.capture(operation.context, &binding, 8, 4);
+        EXPECT_TRUE(pending.pin().empty());
+    }
+
+    EXPECT_FALSE(reservation_failed.load());
+    auto selected = pending.pin();
+    ASSERT_FALSE(selected.empty());
+    auto const bytes = queued_bytes(selected);
+    ASSERT_GE(bytes.size(), sizeof(iv::RealtimeProducedRecordHeader));
+    iv::RealtimeProducedRecordHeader header;
+    std::memcpy(&header, bytes.data(), sizeof(header));
+    EXPECT_EQ(header.payload_kind,
+        iv::RealtimeProducedPayloadKind::samples);
+    EXPECT_EQ(header.record_block_count, 1u);
+    EXPECT_EQ(header.payload_size, 6u * sizeof(iv::Sample));
+    EXPECT_EQ(header.begin, 7u);
+    EXPECT_EQ(header.sample_count, 6u);
+    EXPECT_EQ(header.sample_layout, iv::mono_planar_channel_layout);
+
+    std::vector<iv::Sample> captured(header.sample_count);
+    ASSERT_EQ(
+        bytes.size(), sizeof(header) + std::as_bytes(std::span{captured}).size());
+    std::memcpy(
+        captured.data(), bytes.data() + sizeof(header), header.payload_size);
+    EXPECT_EQ(captured,
+        (std::vector<iv::Sample>{
+            17.0f, 10.0f, 11.0f, 12.0f, 13.0f, 14.0f}));
+}
+
+TEST(TickInvocationWorkspace, QueuedSampleReservationFailureIsSticky)
+{
+    auto plan = direct_tick_sample_plan();
+    iv::PersistedPageStore pages;
+    auto page_reader = pages.register_reader();
+    iv::TickMaterializationStore materializations;
+    auto materialization_reader = materializations.register_reader();
+    iv::TickInvocationWorkspace workspace{plan, 3, 4};
+    iv::ProducerReserve empty_reserve{
+        iv::realtime_produced_block_storage_size};
+    iv::PendingQueue pending{empty_reserve};
+    std::atomic<bool> reservation_failed{false};
+    workspace.bind_producer_endpoint(
+        0, empty_reserve, pending, reservation_failed);
+
+    std::array<iv::Sample, 8> source{};
+    iv::ReflectedSampleOutputPortBinding binding{
+        .storage = {
+            .frame_capacity = source.size(),
+            .storage_latency = 0,
+            .channel_layout = iv::mono_planar_channel_layout,
+        },
+        .history = 1,
+        .latency = 1,
+    };
+    binding.storage.channels[0] = {
+        .storage = reinterpret_cast<std::byte*>(source.data()),
+        .frame_capacity = source.size(),
+        .frame_stride = 1,
+        .frame_delay = 0,
+    };
+
+    {
+        iv::TickInvocationFrame frame{
+            page_reader, materialization_reader, workspace, 8, 4};
+        auto const& operation = frame.call().sample_captures.data()[0];
+        operation.capture(operation.context, &binding, 8, 4);
+    }
+
+    EXPECT_TRUE(reservation_failed.load());
+    EXPECT_TRUE(pending.pin().empty());
+}
+
 TEST(TickCaptureStore, CaptureReserveCountsEveryPlannedInvocation)
 {
     auto plan = direct_tick_sample_plan();
@@ -468,15 +603,15 @@ TEST(TickCaptureStore, CaptureReserveCountsEveryPlannedInvocation)
     iv::PersistedTickCaptureRegistry capture_outputs{captures};
     iv::TickInvocationWorkspace workspace{plan, 3, 4, &capture_outputs};
 
-    // Each two-frame SCC slice captures history + slice + latency = four
-    // samples, requiring two physical blocks. Two slices may be sealed before
-    // the callback ends, so all four blocks must be available concurrently.
+    // The legacy adapter needs two tiny physical blocks per SCC slice. The
+    // generation-local queue needs one 64-KiB record block per slice, so its
+    // producer reserve must make two blocks available for the callback.
     EXPECT_EQ(workspace.maximum_capture_blocks_per_callback(), 4u);
-    ASSERT_EQ(workspace.capture_producer_requirements().size(), 1u);
+    ASSERT_EQ(workspace.producer_requirements().size(), 1u);
     EXPECT_EQ(
-        workspace.capture_producer_requirements()[0]
+        workspace.producer_requirements()[0]
             .maximum_blocks_per_callback,
-        4u);
+        2u);
 }
 
 TEST(PersistedPageStore, TickFrameCopiesSequentialMaterializationAndUsesNeutral)
@@ -625,13 +760,13 @@ TEST(TickCaptureStore, TickInvocationFrameBindsAndScopesEventCapture)
     iv::TickInvocationWorkspace workspace{plan, 3, 4, &capture_outputs};
     EXPECT_EQ(workspace.maximum_capture_blocks_per_callback(), 8u);
     auto const producer_requirements =
-        workspace.capture_producer_requirements();
+        workspace.producer_requirements();
     ASSERT_EQ(producer_requirements.size(), 1u);
     EXPECT_EQ(
         producer_requirements[0].output,
         local_output(iv::PortKind::event, 0));
     EXPECT_EQ(producer_requirements[0].kind, iv::PortKind::event);
-    EXPECT_EQ(producer_requirements[0].maximum_blocks_per_callback, 8u);
+    EXPECT_EQ(producer_requirements[0].maximum_blocks_per_callback, 1u);
     captures.allocate_free_block_slab(
         workspace.maximum_capture_blocks_per_callback());
 
@@ -684,6 +819,70 @@ TEST(TickCaptureStore, TickInvocationFrameBindsAndScopesEventCapture)
         }
     });
     EXPECT_EQ(captured, (std::vector<iv::EventTime>{8, 10}));
+}
+
+TEST(TickInvocationWorkspace, QueuedEventCapturePublishesAuthoritativeEmptyRecord)
+{
+    auto plan = direct_tick_event_plan();
+    iv::PersistedPageStore pages;
+    auto page_reader = pages.register_reader();
+    iv::TickMaterializationStore materializations;
+    auto materialization_reader = materializations.register_reader();
+    iv::TickInvocationWorkspace workspace{plan, 3, 4};
+    iv::ProducerReserve reserve{iv::realtime_produced_block_storage_size};
+    iv::AsyncCapacityManager manager{1};
+    iv::PendingQueue pending{reserve};
+    std::atomic<bool> reservation_failed{false};
+    ASSERT_EQ(
+        manager.maintain(reserve, {
+            .maximum_burst = 1,
+            .low_watermark = 1,
+            .high_watermark = 2,
+        }),
+        2u);
+    workspace.bind_producer_endpoint(
+        0, reserve, pending, reservation_failed);
+
+    struct EventStorage {
+        std::size_t count = 0;
+        std::array<iv::TimedEvent, 8> events{};
+    } source;
+    iv::ReflectedEventOutputPortBinding binding{
+        .storage = {
+            .storage = reinterpret_cast<std::byte*>(&source),
+            .count_offset = offsetof(EventStorage, count),
+            .events_offset = offsetof(EventStorage, events),
+            .event_capacity = source.events.size(),
+            .type = iv::EventTypeId::trigger,
+        },
+        .source_type = iv::EventTypeId::trigger,
+        .history = 1,
+        .latency = 1,
+    };
+
+    {
+        iv::TickInvocationFrame frame{
+            page_reader, materialization_reader, workspace, 8, 4};
+        auto const& operation = frame.call().event_captures.data()[0];
+        operation.capture(operation.context, &binding, 8, 4);
+        EXPECT_TRUE(pending.pin().empty());
+    }
+
+    EXPECT_FALSE(reservation_failed.load());
+    auto selected = pending.pin();
+    ASSERT_FALSE(selected.empty());
+    auto const bytes = queued_bytes(selected);
+    ASSERT_EQ(bytes.size(), sizeof(iv::RealtimeProducedRecordHeader));
+    iv::RealtimeProducedRecordHeader header;
+    std::memcpy(&header, bytes.data(), sizeof(header));
+    EXPECT_EQ(header.payload_kind,
+        iv::RealtimeProducedPayloadKind::events);
+    EXPECT_EQ(header.record_block_count, 1u);
+    EXPECT_EQ(header.payload_size, 0u);
+    EXPECT_EQ(header.begin, 7u);
+    EXPECT_EQ(header.sample_count, 6u);
+    EXPECT_EQ(header.event_type, iv::EventTypeId::trigger);
+    EXPECT_EQ(header.event_count, 0u);
 }
 
 TEST(PersistedPageStore, TickFrameCopiesBoundedSequentialEvents)

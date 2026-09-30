@@ -865,8 +865,8 @@ TEST_F(GraphExecutorFixture, RejectsInvalidRequestsAndBlockSizes)
         executor.stage(compiled_graph(1, &observe_first)),
         iv::GraphExecutorStageResult::staged);
     ASSERT_TRUE(executor.activate_pending());
-    EXPECT_FALSE(executor.tick_capture_reservation_failures().any());
-    EXPECT_FALSE(executor.tick_capture_maintenance_failures().any());
+    EXPECT_FALSE(executor.realtime_production_failures().any());
+    EXPECT_FALSE(executor.realtime_capacity_maintenance_failures().any());
     EXPECT_THROW(executor.tick_block(0, 0), std::invalid_argument);
     EXPECT_THROW(executor.tick_block(0, 65), std::invalid_argument);
 }

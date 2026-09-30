@@ -2,11 +2,13 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <stdexcept>
+#include <span>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -94,6 +96,65 @@ TEST(AsyncCapacityManager, PrivateChainIsInvisibleUntilOnePublication)
     ASSERT_TRUE(pending.publish(std::move(chain)));
     auto selected = pending.pin();
     EXPECT_EQ(values(selected), (std::vector<std::uint32_t>{10, 11, 12}));
+}
+
+TEST(AsyncCapacityManager, PrivateChainWriterAdvancesAcrossPhysicalBlocks)
+{
+    iv::ProducerReserve reserve{64};
+    iv::AsyncCapacityManager manager{4};
+    ASSERT_EQ(manager.maintain(reserve, policy), 8u);
+
+    auto chain = reserve.acquire(2);
+    ASSERT_TRUE(chain);
+    auto writer = chain.writer();
+    std::vector<std::byte> first(20, std::byte{0x31});
+    std::vector<std::byte> second(70, std::byte{0x72});
+    EXPECT_TRUE(writer.append(first));
+    EXPECT_TRUE(writer.append(second));
+    EXPECT_EQ(writer.bytes_written(), 90u);
+    EXPECT_EQ(writer.remaining_capacity(), 38u);
+
+    std::vector<std::byte> actual;
+    chain.for_each([&](iv::AsyncQueueBlock const& block) {
+        actual.insert(
+            actual.end(), block.used_storage().begin(), block.used_storage().end());
+    });
+    ASSERT_EQ(actual.size(), 90u);
+    EXPECT_TRUE(std::ranges::all_of(
+        std::span{actual}.first(20),
+        [](std::byte value) { return value == std::byte{0x31}; }));
+    EXPECT_TRUE(std::ranges::all_of(
+        std::span{actual}.subspan(20),
+        [](std::byte value) { return value == std::byte{0x72}; }));
+
+    auto const before_failed_append = writer.bytes_written();
+    std::vector<std::byte> too_large(39);
+    EXPECT_FALSE(writer.append(too_large));
+    EXPECT_EQ(writer.bytes_written(), before_failed_append);
+}
+
+TEST(AsyncCapacityManager, PrivateChainsJoinBeforeOneQueuePublication)
+{
+    iv::ProducerReserve reserve{64};
+    iv::PendingQueue pending{reserve};
+    iv::AsyncCapacityManager manager{4};
+    ASSERT_EQ(manager.maintain(reserve, policy), 8u);
+
+    auto pass = reserve.acquire(1);
+    auto later_in_same_pass = reserve.acquire(2);
+    ASSERT_TRUE(pass);
+    ASSERT_TRUE(later_in_same_pass);
+    pass.for_each([](iv::AsyncQueueBlock& block) { write_value(block, 1); });
+    std::uint32_t next = 2;
+    later_in_same_pass.for_each([&](iv::AsyncQueueBlock& block) {
+        write_value(block, next++);
+    });
+
+    ASSERT_TRUE(pass.append(std::move(later_in_same_pass)));
+    EXPECT_TRUE(pending.pin().empty());
+    ASSERT_TRUE(pending.publish(std::move(pass)));
+    EXPECT_EQ(values(pending.pin()),
+        (std::vector<std::uint32_t>{1, 2, 3}));
 }
 
 TEST(AsyncCapacityManager, AbandonedPrivateChainReturnsToItsProducerReserve)

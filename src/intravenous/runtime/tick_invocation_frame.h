@@ -1,10 +1,12 @@
 #pragma once
 
 #include <intravenous/graph_jit/tick_invocation_call.h>
+#include <intravenous/runtime/async_capacity_manager.h>
 #include <intravenous/runtime/persisted_page_store.h>
 #include <intravenous/runtime/persisted_tick_capture_registry.h>
 #include <intravenous/runtime/tick_materialization_snapshot.h>
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -12,7 +14,7 @@
 
 namespace iv {
 
-struct TickCaptureProducerRequirement {
+struct RealtimeProducerRequirement {
     PersistedOutputId output{};
     PortKind kind = PortKind::sample;
     std::size_t maximum_blocks_per_callback = 0;
@@ -24,10 +26,27 @@ struct TickCaptureProducerRequirement {
 // lifetime.
 class TickInvocationWorkspace {
     class Impl;
+    class CaptureScope {
+        Impl* impl_ = nullptr;
+        TickCaptureStore::CallbackScope legacy_{};
+
+        CaptureScope(
+            Impl& impl,
+            TickCaptureStore::CallbackScope legacy) noexcept;
+        friend class TickInvocationWorkspace;
+
+    public:
+        ~CaptureScope();
+        CaptureScope(CaptureScope const&) = delete;
+        CaptureScope& operator=(CaptureScope const&) = delete;
+        CaptureScope(CaptureScope&&) = delete;
+        CaptureScope& operator=(CaptureScope&&) = delete;
+    };
+
     std::unique_ptr<Impl> impl_{};
 
     friend class TickInvocationFrame;
-    [[nodiscard]] TickCaptureStore::CallbackScope begin_capture() noexcept;
+    [[nodiscard]] CaptureScope begin_capture() noexcept;
     [[nodiscard]] graph_jit::TickInvocationCall bind(
         PersistedPageStore::Snapshot const& published,
         TickMaterializationSnapshot const& materialized,
@@ -53,16 +72,25 @@ public:
     [[nodiscard]] std::size_t random_access_event_count() const noexcept;
     [[nodiscard]] std::size_t sample_capture_count() const noexcept;
     [[nodiscard]] std::size_t event_capture_count() const noexcept;
-    // Maximum number of fixed-size capture blocks one maximum-size callback can
-    // consume, including every planned SCC-slice invocation and mutation window.
-    // This is structural quantity C, not the allocator's operational reserve.
+    // Temporary compatibility count for the legacy TickCaptureStore adapter.
+    // Executor-created workspaces use producer_requirements() instead.
     [[nodiscard]] std::size_t maximum_capture_blocks_per_callback()
         const noexcept;
     // One entry per Tick/persisted producer queue which the prepared execution
     // generation must provision. Entries are aligned sample-first/event-second
-    // with the workspace's capture-operation slots.
-    [[nodiscard]] std::span<TickCaptureProducerRequirement const>
-    capture_producer_requirements() const noexcept;
+    // with the workspace's capture-operation slots and include record-header
+    // bytes plus every planned SCC-slice invocation.
+    [[nodiscard]] std::span<RealtimeProducerRequirement const>
+    producer_requirements() const noexcept;
+
+    // Control-path endpoint binding performed while constructing a complete
+    // execution generation. No generated capture operation becomes callable
+    // until its matching reserve and pending queue have both been installed.
+    void bind_producer_endpoint(
+        std::size_t producer,
+        ProducerReserve& reserve,
+        PendingQueue& pending,
+        std::atomic<bool>& reservation_failed);
 };
 
 // Callback-scoped owner for the narrow generated Tick invocation record.
@@ -72,7 +100,7 @@ public:
 class TickInvocationFrame {
     PersistedPageStore::ReaderPin published_pages_{};
     TickMaterializationStore::ReaderPin materialized_storage_{};
-    TickCaptureStore::CallbackScope capture_scope_{};
+    TickInvocationWorkspace::CaptureScope capture_scope_;
     graph_jit::TickInvocationCall call_{};
 
 public:
