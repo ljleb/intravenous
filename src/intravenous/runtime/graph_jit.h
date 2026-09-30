@@ -73,8 +73,9 @@ struct CompiledGraphRootOperations {
 };
 
 // Background roots consume one executor-owned logical batch. storage_base is
-// the same canonical NodeStorage allocation used by realtime execution and is
-// used only for TockState. Calling these roots is never audio-thread work.
+// the active execution generation's background-owned NodeStorage allocation;
+// it is never the mutable storage used by realtime execution. Calling these
+// roots is never audio-thread work.
 using CompiledGraphBackgroundFunction =
     void (*)(std::byte* storage_base, graph_jit::BackgroundEvaluationCall* batch);
 
@@ -92,9 +93,10 @@ struct CompiledGraphBackgroundOperations {
 };
 
 // One immutable native project generation. GraphJit owns code/layout/planning
-// metadata only; GraphExecutor creates NodeStorage from node_layout and owns all
-// mutable state plus initialize/move/release lifecycle. Generated code remains
-// pinned by code_lifetime.
+// metadata only; GraphExecutor creates the realtime/background NodeStorage
+// instances from node_layout and owns all mutable state plus
+// initialize/move/release lifecycle. Generated code remains pinned by
+// code_lifetime.
 struct CompiledGraph {
     std::uint64_t project_generation = 0;
     std::uint64_t definitions_generation = 0;

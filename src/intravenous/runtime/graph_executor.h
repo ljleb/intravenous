@@ -58,25 +58,49 @@ struct TickCaptureMaintenanceFailures {
 class GraphExecutor {
     class MaintenanceWorker;
 
-    struct Realization {
-        std::shared_ptr<CompiledGraph const> graph{};
+    struct RealtimeGeneration {
+        NodeStorage storage{};
+        TickInvocationWorkspace tick_invocation;
+
+        RealtimeGeneration(
+            CompiledGraph const& graph,
+            ResourceContext const& resources,
+            PersistedTickCaptureRegistry& captures);
+    };
+
+    struct BackgroundGeneration {
         NodeStorage storage{};
         BackgroundCoverageState coverage{};
         BackgroundPropagationWorkspace propagation;
-        TickInvocationWorkspace tick_invocation;
+
+        BackgroundGeneration(
+            CompiledGraph const& graph,
+            ResourceContext const& resources);
+    };
+
+    // Complete prepared hot-reload unit. Realtime and background currently
+    // execute synchronously, but they never share mutable NodeStorage or
+    // generation-local workspaces.
+    struct ExecutionGeneration {
+        std::shared_ptr<CompiledGraph const> graph{};
+        RealtimeGeneration realtime;
+        BackgroundGeneration background;
         bool initialized = false;
 
-        Realization(
+        ExecutionGeneration(
             std::shared_ptr<CompiledGraph const> graph,
             ResourceContext const& resources,
             PersistedTickCaptureRegistry& captures);
+
+        void initialize();
+        void migrate_from(ExecutionGeneration& previous);
     };
 
     static constexpr std::size_t tick_capture_payload_capacity = 64 * 1024;
 
     ResourceContext resources_{};
     TickCaptureAllocatorConfig tick_capture_allocator_{};
-    // Executor-level and deliberately outside either generation realization.
+    // Executor-level and deliberately outside either execution generation.
     // Compatible generations will rebind their persisted ports into this one
     // canonical sample/event authority rather than migrate page ownership.
     PersistedPageStore persisted_pages_{};
@@ -85,7 +109,7 @@ class GraphExecutor {
     // fixed-size blocks, so staging a graph never replaces this owner.
     TickCaptureStore tick_captures_{tick_capture_payload_capacity};
     // Retention-specific identity lives above the generic transport and remains
-    // resolvable after the realization which produced a pending record retires.
+    // resolvable after the generation which produced a pending record retires.
     PersistedTickCaptureRegistry persisted_tick_captures_{tick_captures_};
     // Registered off the audio thread. Each tick_block() acquires one bounded
     // callback-scoped pin from this slot before entering generated code.
@@ -93,15 +117,16 @@ class GraphExecutor {
     // The paired materialization root uses the same non-owning pin protocol;
     // generation/page-version validation rejects incoherent root pairs.
     TickMaterializationStore::ReaderSlot tick_materialization_reader_{};
-    std::array<std::optional<Realization>, 2> realizations_{};
+    std::array<std::optional<ExecutionGeneration>, 2> generations_{};
     std::optional<std::size_t> active_{};
     std::optional<std::size_t> pending_{};
     // Declared last so its thread stops and joins before any capture-store or
-    // realization state it accesses is destroyed.
+    // execution-generation state it accesses is destroyed.
     std::unique_ptr<MaintenanceWorker> maintenance_{};
 
-    [[nodiscard]] Realization& active_realization();
-    [[nodiscard]] Realization const& active_realization() const;
+    [[nodiscard]] ExecutionGeneration& active_execution_generation();
+    [[nodiscard]] ExecutionGeneration const& active_execution_generation()
+        const;
     [[nodiscard]] std::size_t
     maximum_capture_blocks_per_callback() const noexcept;
     [[nodiscard]] TickCaptureReservePolicy tick_capture_reserve_policy(
@@ -119,15 +144,16 @@ public:
     GraphExecutor(GraphExecutor&&) = delete;
     GraphExecutor& operator=(GraphExecutor&&) = delete;
 
-    // Builds a pending runtime realization without reading mutable active
-    // storage. A newer pending generation supersedes an older pending generation
-    // without disturbing the active one.
+    // Builds a complete pending execution generation without reading mutable
+    // active storage. A newer pending generation supersedes an older pending
+    // generation without disturbing the active one.
     GraphExecutorStageResult stage(
         std::shared_ptr<CompiledGraph const> compiled_graph);
 
     // At the caller-provided quiescent boundary, snapshots/migrates the final
-    // active state into the pending realization and publishes it. Returns false
-    // when no generation is pending.
+    // active realtime/background state into the corresponding halves of the
+    // pending execution generation and publishes it. Returns false when no
+    // generation is pending.
     bool activate_pending();
 
     [[nodiscard]] std::optional<std::uint64_t> active_generation() const noexcept;
@@ -155,8 +181,9 @@ public:
     [[nodiscard]] TickCaptureMaintenanceFailures
     tick_capture_maintenance_failures() const noexcept;
 
-    // Executes only the already-active realization. Generation activation is
-    // deliberately never hidden in this audio-thread entry point.
+    // Executes only the realtime half of the already-active generation.
+    // Generation activation is deliberately never hidden in this audio-thread
+    // entry point.
     void tick_block(std::size_t sample_index, std::size_t block_size);
 };
 

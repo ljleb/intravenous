@@ -28,7 +28,9 @@ TickObservation second_tick;
 std::size_t first_raw_offset = 0;
 std::size_t second_raw_offset = 0;
 unsigned migrated_raw_value = 0;
+unsigned migrated_background_raw_value = 0;
 std::size_t background_evaluate_calls = 0;
+std::byte* background_storage = nullptr;
 bool throw_background_evaluate = false;
 iv::Coverage persisted_probe_coverage{};
 std::size_t persisted_probe_evaluate_calls = 0;
@@ -167,14 +169,30 @@ void no_op_background_evaluate(
 {}
 
 void observe_background_evaluate(
-    std::byte*,
+    std::byte* storage,
     iv::graph_jit::BackgroundEvaluationCall* batch)
 {
+    background_storage = storage;
     ++background_evaluate_calls;
     EXPECT_EQ(batch->nodes.size(), 0);
     if (throw_background_evaluate) {
         throw std::runtime_error("background evaluation probe failure");
     }
+}
+
+void write_background_raw_state(
+    std::byte* storage,
+    iv::graph_jit::BackgroundEvaluationCall*)
+{
+    storage[first_raw_offset] = std::byte{0x6b};
+}
+
+void observe_background_raw_state(
+    std::byte* storage,
+    iv::graph_jit::BackgroundEvaluationCall*)
+{
+    migrated_background_raw_value =
+        std::to_integer<unsigned>(storage[second_raw_offset]);
 }
 
 void propagate_persisted_probe_forward(
@@ -666,7 +684,8 @@ iv::graph_jit::BackgroundEvaluationPlan background_mixed_output_plan()
 std::shared_ptr<iv::CompiledGraph const> compiled_graph(
     std::uint64_t generation,
     iv::CompiledGraphBlockFunction tick,
-    iv::NodeLayout layout = iv::NodeLayoutBuilder(64).build())
+    iv::NodeLayout layout = iv::NodeLayoutBuilder(64).build(),
+    iv::CompiledGraphBackgroundFunction background = nullptr)
 {
     auto graph = std::make_shared<iv::CompiledGraph>();
     graph->project_generation = generation;
@@ -674,6 +693,13 @@ std::shared_ptr<iv::CompiledGraph const> compiled_graph(
     graph->specialization.block_size = 64;
     graph->node_layout = std::move(layout);
     graph->root_operations.tick_block = tick;
+    if (background) {
+        graph->background_operations = {
+            .propagate_forward = &no_op_background_evaluate,
+            .propagate_reverse = &no_op_background_evaluate,
+            .evaluate = background,
+        };
+    }
     return graph;
 }
 
@@ -696,7 +722,9 @@ protected:
         first_raw_offset = 0;
         second_raw_offset = 0;
         migrated_raw_value = 0;
+        migrated_background_raw_value = 0;
         background_evaluate_calls = 0;
+        background_storage = nullptr;
         throw_background_evaluate = false;
         persisted_probe_coverage = iv::Coverage{{{0, 8}}};
         persisted_probe_evaluate_calls = 0;
@@ -794,6 +822,40 @@ TEST_F(GraphExecutorFixture, MigratesPersistentNodeStorageBeforeActivation)
     EXPECT_EQ(migrated_raw_value, 0x5au);
 }
 
+TEST_F(
+    GraphExecutorFixture,
+    MigratesBackgroundStorageIndependentlyBeforeActivation)
+{
+    iv::GraphExecutor executor;
+    auto first = compiled_graph(
+        1,
+        &observe_first,
+        persistent_raw_layout(first_raw_offset),
+        &write_background_raw_state);
+    auto second = compiled_graph(
+        2,
+        &observe_second,
+        persistent_raw_layout(second_raw_offset),
+        &observe_background_raw_state);
+
+    ASSERT_EQ(executor.stage(first), iv::GraphExecutorStageResult::staged);
+    ASSERT_TRUE(executor.activate_pending());
+    auto first_result = executor.evaluate_background({
+        .semantic_version = 1,
+        .page_width = 16,
+    });
+    ASSERT_TRUE(first_result.has_value()) << first_result.error();
+
+    ASSERT_EQ(executor.stage(second), iv::GraphExecutorStageResult::staged);
+    ASSERT_TRUE(executor.activate_pending());
+    auto second_result = executor.evaluate_background({
+        .semantic_version = 2,
+        .page_width = 16,
+    });
+    ASSERT_TRUE(second_result.has_value()) << second_result.error();
+    EXPECT_EQ(migrated_background_raw_value, 0x6bu);
+}
+
 TEST_F(GraphExecutorFixture, RejectsInvalidRequestsAndBlockSizes)
 {
     iv::GraphExecutor executor;
@@ -815,7 +877,7 @@ TEST_F(GraphExecutorFixture, RunsOnlyTheEndToEndBackgroundTransaction)
     graph->project_generation = 1;
     graph->specialization.sample_rate = 48000;
     graph->specialization.block_size = 64;
-    graph->node_layout = iv::NodeLayoutBuilder(64).build();
+    graph->node_layout = persistent_raw_layout(first_raw_offset);
     graph->root_operations.tick_block = &observe_first;
     graph->background_operations = {
         .propagate_forward = &no_op_background_evaluate,
@@ -826,6 +888,7 @@ TEST_F(GraphExecutorFixture, RunsOnlyTheEndToEndBackgroundTransaction)
     iv::GraphExecutor executor;
     ASSERT_EQ(executor.stage(graph), iv::GraphExecutorStageResult::staged);
     ASSERT_TRUE(executor.activate_pending());
+    executor.tick_block(0, 64);
     auto result = executor.evaluate_background({
         .semantic_version = 7,
         .page_width = 16,
@@ -834,6 +897,9 @@ TEST_F(GraphExecutorFixture, RunsOnlyTheEndToEndBackgroundTransaction)
     ASSERT_TRUE(result.has_value()) << result.error();
     EXPECT_EQ(result->status, iv::BackgroundEvaluationStatus::committed);
     EXPECT_EQ(background_evaluate_calls, 1);
+    ASSERT_NE(first_tick.storage, nullptr);
+    ASSERT_NE(background_storage, nullptr);
+    EXPECT_NE(first_tick.storage, background_storage);
     EXPECT_TRUE(result->coverage.output_changes.empty());
     EXPECT_FALSE(result->published_pages.has_value());
     EXPECT_EQ(result->promoted_tick_materialization, 1u);

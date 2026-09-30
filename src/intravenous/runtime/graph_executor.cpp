@@ -126,22 +126,55 @@ public:
     }
 };
 
-GraphExecutor::Realization::Realization(
+GraphExecutor::RealtimeGeneration::RealtimeGeneration(
+    CompiledGraph const& graph,
+    ResourceContext const& resources,
+    PersistedTickCaptureRegistry& captures)
+    : storage(graph.node_layout.create_storage(resources))
+    , tick_invocation(
+        graph.background_evaluation_plan,
+        graph.project_generation,
+        graph.specialization.block_size,
+        &captures)
+{}
+
+GraphExecutor::BackgroundGeneration::BackgroundGeneration(
+    CompiledGraph const& graph,
+    ResourceContext const& resources)
+    : storage(graph.node_layout.create_storage(resources))
+    , coverage(graph.background_evaluation_plan.accumulators.output_change_count)
+    , propagation(
+        graph.background_evaluation_plan,
+        graph.specialization.sample_rate)
+{}
+
+GraphExecutor::ExecutionGeneration::ExecutionGeneration(
     std::shared_ptr<CompiledGraph const> compiled_graph,
     ResourceContext const& resources,
     PersistedTickCaptureRegistry& captures)
     : graph(std::move(compiled_graph))
-    , storage(graph->node_layout.create_storage(resources))
-    , coverage(graph->background_evaluation_plan.accumulators.output_change_count)
-    , propagation(
-        graph->background_evaluation_plan,
-        graph->specialization.sample_rate)
-    , tick_invocation(
-        graph->background_evaluation_plan,
-        graph->project_generation,
-        graph->specialization.block_size,
-        &captures)
+    , realtime(*graph, resources, captures)
+    , background(*graph, resources)
 {}
+
+void GraphExecutor::ExecutionGeneration::initialize()
+{
+    realtime.storage.initialize();
+    background.storage.initialize();
+    initialized = true;
+}
+
+void GraphExecutor::ExecutionGeneration::migrate_from(
+    ExecutionGeneration& previous)
+{
+    auto realtime_migration = realtime.storage.migration_from(
+        previous.realtime.storage);
+    auto background_migration = background.storage.migration_from(
+        previous.background.storage);
+    realtime_migration.commit();
+    background_migration.commit();
+    initialized = true;
+}
 
 GraphExecutor::GraphExecutor(
     ResourceContext resources,
@@ -163,30 +196,32 @@ GraphExecutor::GraphExecutor(
 
 GraphExecutor::~GraphExecutor() = default;
 
-GraphExecutor::Realization& GraphExecutor::active_realization()
+GraphExecutor::ExecutionGeneration&
+GraphExecutor::active_execution_generation()
 {
     if (!active_) throw std::logic_error("GraphExecutor has no active generation");
-    return *realizations_[*active_];
+    return *generations_[*active_];
 }
 
-GraphExecutor::Realization const& GraphExecutor::active_realization() const
+GraphExecutor::ExecutionGeneration const&
+GraphExecutor::active_execution_generation() const
 {
     if (!active_) throw std::logic_error("GraphExecutor has no active generation");
-    return *realizations_[*active_];
+    return *generations_[*active_];
 }
 
 std::size_t GraphExecutor::maximum_capture_blocks_per_callback() const noexcept
 {
     std::size_t maximum = 0;
     if (active_) {
-        maximum = realizations_[*active_]
-            ->tick_invocation.maximum_capture_blocks_per_callback();
+        maximum = generations_[*active_]
+            ->realtime.tick_invocation.maximum_capture_blocks_per_callback();
     }
     if (pending_) {
         maximum = std::max(
             maximum,
-            realizations_[*pending_]
-                ->tick_invocation.maximum_capture_blocks_per_callback());
+            generations_[*pending_]
+                ->realtime.tick_invocation.maximum_capture_blocks_per_callback());
     }
     return maximum;
 }
@@ -230,8 +265,8 @@ GraphExecutorStageResult GraphExecutor::stage(
         throw std::invalid_argument("GraphExecutor cannot stage an empty compiled graph");
     }
     auto const newest_generation = pending_
-        ? realizations_[*pending_]->graph->project_generation
-        : active_ ? realizations_[*active_]->graph->project_generation
+        ? generations_[*pending_]->graph->project_generation
+        : active_ ? generations_[*active_]->graph->project_generation
                   : std::uint64_t{0};
     if ((active_ || pending_)
         && compiled_graph->project_generation <= newest_generation) {
@@ -240,20 +275,19 @@ GraphExecutorStageResult GraphExecutor::stage(
 
     auto const index = active_ ? 1 - *active_ : std::size_t{0};
     pending_.reset();
-    realizations_[index].emplace(
+    generations_[index].emplace(
         std::move(compiled_graph), resources_, persisted_tick_captures_);
     auto const maximum_blocks_per_callback = std::max(
-        active_ ? active_realization().tick_invocation
+        active_ ? active_execution_generation().realtime.tick_invocation
                       .maximum_capture_blocks_per_callback()
                 : std::size_t{0},
-        realizations_[index]->tick_invocation
+        generations_[index]->realtime.tick_invocation
             .maximum_capture_blocks_per_callback());
     static_cast<void>(
         tick_captures_.maintain_free_block_reserve(
             tick_capture_reserve_policy(maximum_blocks_per_callback)));
     if (!active_) {
-        realizations_[index]->storage.initialize();
-        realizations_[index]->initialized = true;
+        generations_[index]->initialize();
     }
     pending_ = index;
     publish_tick_capture_maintenance_policy();
@@ -263,21 +297,18 @@ GraphExecutorStageResult GraphExecutor::stage(
 bool GraphExecutor::activate_pending()
 {
     if (!pending_) return false;
-    auto& next = *realizations_[*pending_];
+    auto& next = *generations_[*pending_];
     if (!next.initialized) {
         if (active_) {
-            auto migration = next.storage.migration_from(
-                active_realization().storage);
-            migration.commit();
+            next.migrate_from(active_execution_generation());
         } else {
-            next.storage.initialize();
+            next.initialize();
         }
-        next.initialized = true;
     }
     auto const previous = active_;
     active_ = pending_;
     pending_.reset();
-    if (previous) realizations_[*previous].reset();
+    if (previous) generations_[*previous].reset();
     publish_tick_capture_maintenance_policy();
     return true;
 }
@@ -285,29 +316,29 @@ bool GraphExecutor::activate_pending()
 std::optional<std::uint64_t> GraphExecutor::active_generation() const noexcept
 {
     if (!active_) return std::nullopt;
-    return realizations_[*active_]->graph->project_generation;
+    return generations_[*active_]->graph->project_generation;
 }
 
 std::optional<std::uint64_t> GraphExecutor::pending_generation() const noexcept
 {
     if (!pending_) return std::nullopt;
-    return realizations_[*pending_]->graph->project_generation;
+    return generations_[*pending_]->graph->project_generation;
 }
 
 std::shared_ptr<CompiledGraph const> GraphExecutor::active_graph() const noexcept
 {
-    return active_ ? realizations_[*active_]->graph : nullptr;
+    return active_ ? generations_[*active_]->graph : nullptr;
 }
 
 std::expected<BackgroundEvaluationResult, std::string>
 GraphExecutor::evaluate_background(BackgroundEvaluationRequest request)
 {
-    auto& realization = active_realization();
+    auto& generation = active_execution_generation();
     BackgroundEvaluationTransaction transaction{
-        *realization.graph,
-        realization.storage.buffer().data(),
-        realization.coverage,
-        realization.propagation,
+        *generation.graph,
+        generation.background.storage.buffer().data(),
+        generation.background.coverage,
+        generation.background.propagation,
         persisted_pages_,
         tick_materializations_,
         std::move(request),
@@ -337,20 +368,20 @@ GraphExecutor::tick_capture_maintenance_failures() const noexcept
 
 void GraphExecutor::tick_block(std::size_t sample_index, std::size_t block_size)
 {
-    auto& realization = active_realization();
+    auto& generation = active_execution_generation();
     if (block_size == 0
-        || block_size > realization.graph->specialization.block_size) {
+        || block_size > generation.graph->specialization.block_size) {
         throw std::invalid_argument(
             "GraphExecutor tick block size is outside the compiled specialization");
     }
     TickInvocationFrame invocation{
         tick_page_reader_,
         tick_materialization_reader_,
-        realization.tick_invocation,
+        generation.realtime.tick_invocation,
         sample_index,
         block_size};
-    realization.graph->root_operations.tick_block(
-        realization.storage.buffer().data(),
+    generation.graph->root_operations.tick_block(
+        generation.realtime.storage.buffer().data(),
         &invocation.call(),
         sample_index,
         block_size);
