@@ -63,7 +63,8 @@ GraphExecutor::RealtimeGeneration::RealtimeGeneration(
 GraphExecutor::BackgroundGeneration::BackgroundGeneration(
     CompiledGraph const& graph,
     ResourceContext const& resources,
-    RealtimeGeneration& realtime)
+    RealtimeGeneration& realtime,
+    AsyncWorkSignal& work_signal)
     : storage(graph.node_layout.create_storage(resources))
     , coverage(graph.background_evaluation_plan.accumulators.output_change_count)
     , propagation(
@@ -77,7 +78,7 @@ GraphExecutor::BackgroundGeneration::BackgroundGeneration(
     input_selections.resize(requirements.size());
     for (std::size_t index = 0; index < requirements.size(); ++index) {
         auto pending = std::make_unique<PendingQueue>(
-            *realtime.producer_reserves[index]);
+            *realtime.producer_reserves[index], work_signal);
         input_routes.push_back({
             .output = requirements[index].output,
             .port = requirements[index].port,
@@ -92,21 +93,18 @@ void GraphExecutor::BackgroundGeneration::close_inputs() noexcept
     for (auto& input : pending_inputs) input->close();
 }
 
-void GraphExecutor::BackgroundGeneration::select_inputs(
-    BackgroundEvaluationRequest request)
+void GraphExecutor::BackgroundGeneration::select_inputs()
 {
     if (input_selection_active) return;
     for (std::size_t index = 0; index < pending_inputs.size(); ++index) {
         input_selections[index] = pending_inputs[index]->pin();
     }
-    selected_request.emplace(std::move(request));
     input_selection_active = true;
 }
 
 void GraphExecutor::BackgroundGeneration::discard_empty_selection() noexcept
 {
     if (!input_selection_active || has_selected_inputs()) return;
-    selected_request.reset();
     input_selection_active = false;
 }
 
@@ -140,11 +138,12 @@ GraphExecutor::ExecutionGeneration::ExecutionGeneration(
     ResourceContext const& resources,
     AsyncCapacityManager& capacity_manager,
     std::atomic<bool>& production_reservation_failed,
-    RealtimeProducerCapacityConfig const& capacity_policy)
+    RealtimeProducerCapacityConfig const& capacity_policy,
+    AsyncWorkSignal& background_work_signal)
     : graph(std::move(compiled_graph))
     , realtime(
         *graph, resources, capacity_manager, capacity_policy)
-    , background(*graph, resources, realtime)
+    , background(*graph, resources, realtime, background_work_signal)
 {
     static_assert(std::atomic<ExecutionGeneration*>::is_always_lock_free);
     for (std::size_t producer = 0;
@@ -165,7 +164,7 @@ void GraphExecutor::ExecutionGeneration::initialize_first_generation()
     background_initialized = true;
 }
 
-void GraphExecutor::ExecutionGeneration::prepare_migration_from(
+void GraphExecutor::ExecutionGeneration::prepare_realtime_migration_from(
     ExecutionGeneration& previous)
 {
     if (realtime_initialized || background_initialized
@@ -175,6 +174,15 @@ void GraphExecutor::ExecutionGeneration::prepare_migration_from(
     }
     realtime_migration.emplace(
         realtime.storage.prepare_migration_from(previous.realtime.storage));
+}
+
+void GraphExecutor::ExecutionGeneration::prepare_background_migration_from(
+    ExecutionGeneration& previous)
+{
+    if (background_initialized || background_migration) {
+        throw std::logic_error(
+            "GraphExecutor background generation migration is already prepared");
+    }
     background_migration.emplace(
         background.storage.prepare_migration_from(previous.background.storage));
 }
@@ -239,8 +247,27 @@ GraphExecutor::BackgroundExecutor::~BackgroundExecutor()
         stopping_ = true;
     }
     worker_.request_stop();
-    commands_changed_.notify_all();
+    work_signal_.notify_control();
     if (worker_.joinable()) worker_.join();
+}
+
+AsyncWorkSignal& GraphExecutor::BackgroundExecutor::work_signal() noexcept
+{
+    return work_signal_;
+}
+
+void GraphExecutor::BackgroundExecutor::notify_generation_cutover() noexcept
+{
+    work_signal_.notify_work();
+}
+
+BackgroundExecutionFailures
+GraphExecutor::BackgroundExecutor::failures() const noexcept
+{
+    return {
+        .progress_failed =
+            progress_failed_.load(std::memory_order_acquire),
+    };
 }
 
 void GraphExecutor::BackgroundExecutor::install_first_generation(
@@ -261,6 +288,39 @@ void GraphExecutor::BackgroundExecutor::install_first_generation(
     has_generation_.store(true, std::memory_order_release);
 }
 
+void GraphExecutor::BackgroundExecutor::enqueue(Command& command)
+{
+    {
+        std::lock_guard lock{commands_mutex_};
+        if (stopping_) {
+            throw std::runtime_error("BackgroundExecutor is stopping");
+        }
+        if (last_command_) {
+            last_command_->next = &command;
+        } else {
+            first_command_ = &command;
+        }
+        last_command_ = &command;
+    }
+    work_signal_.notify_control();
+}
+
+void GraphExecutor::BackgroundExecutor::prepare_background_migration(
+    ExecutionGeneration& target,
+    ExecutionGeneration& source)
+{
+    Command command{
+        .kind = CommandKind::prepare_background_migration,
+        .migration_target = &target,
+        .migration_source = &source,
+    };
+    enqueue(command);
+
+    std::unique_lock lock{command.mutex};
+    command.completed.wait(lock, [&] { return command.done; });
+    if (command.exception) std::rethrow_exception(command.exception);
+}
+
 std::optional<std::uint64_t>
 GraphExecutor::BackgroundExecutor::current_generation() const noexcept
 {
@@ -279,48 +339,15 @@ GraphExecutor::BackgroundExecutor::generation()
     return *generation_chain_;
 }
 
-GraphExecutor::BackgroundExecutor::Result
-GraphExecutor::BackgroundExecutor::evaluate(
-    BackgroundEvaluationRequest request)
-{
-    Command command{.request = std::move(request)};
-    {
-        std::lock_guard lock{commands_mutex_};
-        if (stopping_) {
-            return std::unexpected("BackgroundExecutor is stopping");
-        }
-        if (!generation_chain_) {
-            return std::unexpected("BackgroundExecutor has no generation");
-        }
-        if (last_command_) {
-            last_command_->next = &command;
-        } else {
-            first_command_ = &command;
-        }
-        last_command_ = &command;
-    }
-    commands_changed_.notify_one();
-
-    std::unique_lock lock{command.mutex};
-    command.completed.wait(lock, [&] { return command.done; });
-    return std::move(*command.result);
-}
-
 GraphExecutorReclaimedSnapshots
 GraphExecutor::BackgroundExecutor::reclaim_snapshots()
 {
-    Command command{.reclaim_snapshots = true};
-    {
-        std::lock_guard lock{commands_mutex_};
-        if (stopping_) return {};
-        if (last_command_) {
-            last_command_->next = &command;
-        } else {
-            first_command_ = &command;
-        }
-        last_command_ = &command;
+    Command command{.kind = CommandKind::reclaim_snapshots};
+    try {
+        enqueue(command);
+    } catch (...) {
+        return {};
     }
-    commands_changed_.notify_one();
 
     std::unique_lock lock{command.mutex};
     command.completed.wait(lock, [&] { return command.done; });
@@ -329,25 +356,52 @@ GraphExecutor::BackgroundExecutor::reclaim_snapshots()
 
 void GraphExecutor::BackgroundExecutor::run(std::stop_token stop) noexcept
 {
+    // Revision zero means no domain work has been consumed. The worker may be
+    // scheduled for the first time after realtime has already published, so
+    // sampling the current revision here would incorrectly discard that work.
+    std::uint64_t observed_work_revision = 0;
+    auto observed_wake_revision = work_signal_.wake_revision();
     for (;;) {
         Command* command = nullptr;
         {
-            std::unique_lock lock{commands_mutex_};
-            commands_changed_.wait(
-                lock,
-                stop,
-                [&] { return stopping_ || first_command_ != nullptr; });
-            if (!first_command_) {
-                if (stopping_ || stop.stop_requested()) return;
-                continue;
+            std::lock_guard lock{commands_mutex_};
+            if (stopping_ || stop.stop_requested()) return;
+            if (first_command_) {
+                command = first_command_;
+                first_command_ = command->next;
+                if (!first_command_) last_command_ = nullptr;
+                command->next = nullptr;
             }
-            command = first_command_;
-            first_command_ = command->next;
-            if (!first_command_) last_command_ = nullptr;
-            command->next = nullptr;
         }
 
-        if (command->reclaim_snapshots) {
+        if (!command) {
+            auto const current_work_revision = work_signal_.work_revision();
+            if (current_work_revision == observed_work_revision) {
+                auto const current_wake_revision =
+                    work_signal_.wake_revision();
+                if (current_wake_revision != observed_wake_revision) {
+                    observed_wake_revision = current_wake_revision;
+                    continue;
+                }
+                work_signal_.wait(observed_wake_revision);
+                continue;
+            }
+            observed_work_revision = current_work_revision;
+            if (!generation_chain_) continue;
+
+            auto progress = process_available_work_safely();
+            if (!progress
+                || progress->status
+                    != BackgroundEvaluationStatus::committed) {
+                progress_failed_.store(
+                    true, std::memory_order_release);
+                // A pre-commit failure keeps its exact selected queue prefixes.
+                // Wait for a later domain-work notification rather than spin.
+            }
+            continue;
+        }
+
+        if (command->kind == CommandKind::reclaim_snapshots) {
             auto reclaimed = [&] {
                 try {
                     return owner_.reclaim_retired_snapshots_on_background();
@@ -358,19 +412,24 @@ void GraphExecutor::BackgroundExecutor::run(std::stop_token stop) noexcept
             std::lock_guard lock{command->mutex};
             command->reclaimed.emplace(reclaimed);
             command->done = true;
-        } else {
-            auto result = [&]() -> Result {
+        } else if (command->kind
+                   == CommandKind::prepare_background_migration) {
+            auto failure = [&]() -> std::exception_ptr {
                 try {
-                    return execute(std::move(command->request));
-                } catch (std::exception const& exception) {
-                    return std::unexpected(exception.what());
+                    if (!command->migration_target
+                        || !command->migration_source) {
+                        throw std::invalid_argument(
+                            "BackgroundExecutor migration command is incomplete");
+                    }
+                    command->migration_target->prepare_background_migration_from(
+                        *command->migration_source);
+                    return {};
                 } catch (...) {
-                    return std::unexpected(
-                        "BackgroundExecutor encountered an unknown failure");
+                    return std::current_exception();
                 }
             }();
             std::lock_guard lock{command->mutex};
-            command->result.emplace(std::move(result));
+            command->exception = std::move(failure);
             command->done = true;
         }
         command->completed.notify_one();
@@ -392,7 +451,12 @@ GraphExecutor::GraphExecutor(
     }
 }
 
-GraphExecutor::~GraphExecutor() = default;
+GraphExecutor::~GraphExecutor()
+{
+    // A never-activated generation also owns PendingQueues referring to the
+    // background executor's work signal, so retire it before that actor.
+    pending_generation_.reset();
+}
 
 GraphExecutor::ExecutionGeneration&
 GraphExecutor::realtime_execution_generation()
@@ -432,12 +496,16 @@ GraphExecutorStageResult GraphExecutor::stage(
         resources_,
         async_capacity_manager_,
         production_reservation_failed_,
-        producer_capacity_);
+        producer_capacity_,
+        background_executor_.work_signal());
     prepared->prepare_initial_persisted_state(persisted_pages_);
     if (!realtime_active_) {
         prepared->initialize_first_generation();
     } else {
-        prepared->prepare_migration_from(realtime_execution_generation());
+        prepared->prepare_realtime_migration_from(
+            realtime_execution_generation());
+        background_executor_.prepare_background_migration(
+            *prepared, realtime_execution_generation());
     }
     pending_generation_ = std::move(prepared);
     return GraphExecutorStageResult::staged;
@@ -474,6 +542,7 @@ bool GraphExecutor::activate_pending()
         std::move(next->initial_persisted_state));
     previous.publish_successor(std::move(pending_generation_));
     realtime_active_ = next;
+    background_executor_.notify_generation_cutover();
     return true;
 }
 
@@ -503,7 +572,6 @@ std::shared_ptr<CompiledGraph const> GraphExecutor::active_graph() const noexcep
 std::expected<BackgroundEvaluationResult, std::string>
 GraphExecutor::evaluate_generation(
     ExecutionGeneration& generation,
-    BackgroundEvaluationRequest request,
     bool publish_realtime_state)
 {
     auto& background = generation.background;
@@ -516,11 +584,7 @@ GraphExecutor::evaluate_generation(
             persisted_pages_,
             tick_materializations_);
     }
-    background.select_inputs(std::move(request));
-    if (!background.selected_request) {
-        return std::unexpected(
-            "GraphExecutor background selection has no request");
-    }
+    background.select_inputs();
     BackgroundEvaluationTransaction transaction{
         *generation.graph,
         background.storage.buffer().data(),
@@ -528,7 +592,7 @@ GraphExecutor::evaluate_generation(
         background.propagation,
         persisted_pages_,
         tick_materializations_,
-        *background.selected_request,
+        BackgroundTransactionInputs{},
         background.input_routes,
         background.input_selections,
     };
@@ -557,7 +621,6 @@ GraphExecutor::evaluate_generation(
                 "committed background input prefix could not be released");
         }
     }
-    background.selected_request.reset();
     background.input_selection_active = false;
     if (persisted_state_error) {
         return std::unexpected(std::move(*persisted_state_error));
@@ -594,39 +657,42 @@ bool GraphExecutor::BackgroundExecutor::advance_generation()
 }
 
 GraphExecutor::BackgroundExecutor::Result
-GraphExecutor::BackgroundExecutor::execute(
-    BackgroundEvaluationRequest request)
+GraphExecutor::BackgroundExecutor::process_available_work_safely() noexcept
+{
+    try {
+        return process_available_work();
+    } catch (std::exception const& exception) {
+        return std::unexpected(exception.what());
+    } catch (...) {
+        return std::unexpected(
+            "BackgroundExecutor encountered an unknown failure");
+    }
+}
+
+GraphExecutor::BackgroundExecutor::Result
+GraphExecutor::BackgroundExecutor::process_available_work()
 {
     for (;;) {
         auto& current = generation();
-        if (!current.successor()) {
-            return owner_.evaluate_generation(
-                current, std::move(request), true);
-        }
-
-        if (current.background.input_selection_active) {
-            auto drained = owner_.evaluate_generation(
-                current, {}, false);
-            if (!drained
-                || drained->status != BackgroundEvaluationStatus::committed) {
-                return drained;
-            }
-            continue;
-        }
-
-        current.background.select_inputs({
-            .semantic_version = request.semantic_version,
-            .page_width = request.page_width,
-        });
+        current.background.select_inputs();
         if (current.background.has_selected_inputs()) {
-            auto drained = owner_.evaluate_generation(current, {}, false);
-            if (!drained
-                || drained->status != BackgroundEvaluationStatus::committed) {
-                return drained;
+            auto evaluated = owner_.evaluate_generation(
+                current, current.successor() == nullptr);
+            if (!evaluated
+                || evaluated->status != BackgroundEvaluationStatus::committed) {
+                return evaluated;
             }
+            // A publication concurrent with the pinned prefix advanced the
+            // work revision and will schedule another selection. Return after
+            // one current-generation transaction so actor control commands
+            // cannot be starved by a continuously producing realtime thread.
+            if (!current.successor()) return evaluated;
             continue;
         }
         current.background.discard_empty_selection();
+        if (!current.successor()) {
+            return BackgroundEvaluationResult{};
+        }
         if (!current.background.inputs_closed_and_drained()) {
             return std::unexpected(
                 "GraphExecutor cutover reached a producer queue that is not closed");
@@ -636,12 +702,6 @@ GraphExecutor::BackgroundExecutor::execute(
                 "GraphExecutor could not advance a drained generation cutover");
         }
     }
-}
-
-std::expected<BackgroundEvaluationResult, std::string>
-GraphExecutor::evaluate_background(BackgroundEvaluationRequest request)
-{
-    return background_executor_.evaluate(std::move(request));
 }
 
 GraphExecutorReclaimedSnapshots
@@ -677,6 +737,12 @@ GraphExecutor::realtime_capacity_maintenance_failures() const noexcept
         .allocation_failed = generic.allocation_failed,
         .unexpected_failure = generic.unexpected_failure,
     };
+}
+
+BackgroundExecutionFailures
+GraphExecutor::background_execution_failures() const noexcept
+{
+    return background_executor_.failures();
 }
 
 void GraphExecutor::tick_block(std::size_t sample_index, std::size_t block_size)

@@ -14,11 +14,31 @@
 namespace iv {
 
 class AsyncCapacityManager;
+class AsyncWorkSignal;
 class PendingQueue;
 class ProducedBlockWriter;
 class ProducerReserve;
 class ProducerCapacityRegistration;
 class ReleasedBlockQueue;
+
+// Allocation-free wake edge shared by realtime queue producers and one
+// background consumer. The monotonically increasing revision prevents a
+// notification from being lost between observation and atomic wait.
+class AsyncWorkSignal {
+    std::atomic<std::uint64_t> work_revision_{0};
+    std::atomic<std::uint64_t> wake_revision_{0};
+
+public:
+    AsyncWorkSignal() noexcept;
+    AsyncWorkSignal(AsyncWorkSignal const&) = delete;
+    AsyncWorkSignal& operator=(AsyncWorkSignal const&) = delete;
+
+    void notify_work() noexcept;
+    void notify_control() noexcept;
+    [[nodiscard]] std::uint64_t work_revision() const noexcept;
+    [[nodiscard]] std::uint64_t wake_revision() const noexcept;
+    void wait(std::uint64_t observed_wake_revision) const noexcept;
+};
 
 // One stable, fixed-capacity unit of realtime-to-background transport. Queue
 // clients own the bytes and used-size while the block is producer-private or
@@ -254,6 +274,7 @@ public:
 // chains; one background consumer independently pins and releases prefixes.
 class PendingQueue {
     ProducerReserve* owner_ = nullptr;
+    AsyncWorkSignal* work_signal_ = nullptr;
     std::unique_ptr<AsyncQueueBlock> sentinel_{};
     AsyncQueueBlock* producer_tail_ = nullptr;
     AsyncQueueBlock* consumer_head_ = nullptr;
@@ -262,7 +283,7 @@ class PendingQueue {
     bool closed_sentinel_released_ = false;
 
 public:
-    explicit PendingQueue(ProducerReserve& owner);
+    PendingQueue(ProducerReserve& owner, AsyncWorkSignal& work_signal);
     ~PendingQueue();
 
     PendingQueue(PendingQueue const&) = delete;

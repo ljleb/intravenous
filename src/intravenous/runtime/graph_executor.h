@@ -14,6 +14,7 @@
 #include <condition_variable>
 #include <cstddef>
 #include <cstdint>
+#include <exception>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -54,6 +55,18 @@ struct RealtimeCapacityMaintenanceFailures {
     }
 };
 
+// Sticky failure of actor-driven background progress. A pre-commit failure
+// leaves the exact selected producer-queue prefixes pending. A subsequent work
+// notification lets the actor retry that same finite selection.
+struct BackgroundExecutionFailures {
+    bool progress_failed = false;
+
+    [[nodiscard]] bool any() const noexcept
+    {
+        return progress_failed;
+    }
+};
+
 // Mutable runtime owner for immutable CompiledGraph generations. Staging and
 // activation are control-path operations: callers must activate only at a legal
 // whole-root boundary with no concurrent tick_block() invocation. The realtime
@@ -86,18 +99,17 @@ class GraphExecutor {
         std::vector<BackgroundProducedInputRoute> input_routes{};
         std::vector<PinnedBlockPrefix> input_selections{};
         // A failed or stale transaction keeps this exact cross-queue set for
-        // retry together with the request that selected it. Later producer
-        // publications remain outside every fixed prefix.
+        // retry. Later producer publications remain outside every fixed prefix.
         bool input_selection_active = false;
-        std::optional<BackgroundEvaluationRequest> selected_request{};
 
         BackgroundGeneration(
             CompiledGraph const& graph,
             ResourceContext const& resources,
-            RealtimeGeneration& realtime);
+            RealtimeGeneration& realtime,
+            AsyncWorkSignal& work_signal);
 
         void close_inputs() noexcept;
-        void select_inputs(BackgroundEvaluationRequest request);
+        void select_inputs();
         void discard_empty_selection() noexcept;
         [[nodiscard]] bool has_selected_inputs() const noexcept;
         [[nodiscard]] bool inputs_closed_and_drained() const noexcept;
@@ -124,10 +136,12 @@ class GraphExecutor {
             ResourceContext const& resources,
             AsyncCapacityManager& capacity_manager,
             std::atomic<bool>& production_reservation_failed,
-            RealtimeProducerCapacityConfig const& capacity_policy);
+            RealtimeProducerCapacityConfig const& capacity_policy,
+            AsyncWorkSignal& background_work_signal);
 
         void initialize_first_generation();
-        void prepare_migration_from(ExecutionGeneration& previous);
+        void prepare_realtime_migration_from(ExecutionGeneration& previous);
+        void prepare_background_migration_from(ExecutionGeneration& previous);
         void commit_realtime_migration();
         void commit_background_migration();
         void publish_successor(
@@ -141,31 +155,42 @@ class GraphExecutor {
         using Result =
             std::expected<BackgroundEvaluationResult, std::string>;
 
+        enum class CommandKind : std::uint8_t {
+            reclaim_snapshots,
+            prepare_background_migration,
+        };
+
         struct Command {
-            BackgroundEvaluationRequest request{};
-            bool reclaim_snapshots = false;
+            CommandKind kind = CommandKind::reclaim_snapshots;
+            ExecutionGeneration* migration_target = nullptr;
+            ExecutionGeneration* migration_source = nullptr;
             Command* next = nullptr;
             std::mutex mutex{};
             std::condition_variable completed{};
-            std::optional<Result> result{};
             std::optional<GraphExecutorReclaimedSnapshots> reclaimed{};
+            std::exception_ptr exception{};
             bool done = false;
         };
 
         GraphExecutor& owner_;
+        // Declared before the generation chain so every PendingQueue referring
+        // to this signal is destroyed first.
+        AsyncWorkSignal work_signal_{};
         std::unique_ptr<ExecutionGeneration> generation_chain_{};
         std::atomic<std::uint64_t> current_generation_{0};
         std::atomic<bool> has_generation_{false};
         std::mutex commands_mutex_{};
-        std::condition_variable_any commands_changed_{};
         Command* first_command_ = nullptr;
         Command* last_command_ = nullptr;
         bool stopping_ = false;
+        std::atomic<bool> progress_failed_{false};
         std::jthread worker_{};
 
         [[nodiscard]] ExecutionGeneration& generation();
         [[nodiscard]] bool advance_generation();
-        [[nodiscard]] Result execute(BackgroundEvaluationRequest request);
+        [[nodiscard]] Result process_available_work();
+        [[nodiscard]] Result process_available_work_safely() noexcept;
+        void enqueue(Command& command);
         void run(std::stop_token stop) noexcept;
 
     public:
@@ -177,9 +202,14 @@ class GraphExecutor {
 
         void install_first_generation(
             std::unique_ptr<ExecutionGeneration> generation);
+        void prepare_background_migration(
+            ExecutionGeneration& target,
+            ExecutionGeneration& source);
+        void notify_generation_cutover() noexcept;
+        [[nodiscard]] AsyncWorkSignal& work_signal() noexcept;
         [[nodiscard]] std::optional<std::uint64_t>
         current_generation() const noexcept;
-        [[nodiscard]] Result evaluate(BackgroundEvaluationRequest request);
+        [[nodiscard]] BackgroundExecutionFailures failures() const noexcept;
         [[nodiscard]] GraphExecutorReclaimedSnapshots reclaim_snapshots();
     };
 
@@ -214,7 +244,6 @@ class GraphExecutor {
     [[nodiscard]] std::expected<BackgroundEvaluationResult, std::string>
     evaluate_generation(
         ExecutionGeneration& generation,
-        BackgroundEvaluationRequest request,
         bool publish_realtime_state);
     [[nodiscard]] GraphExecutorReclaimedSnapshots
     reclaim_retired_snapshots_on_background();
@@ -250,13 +279,6 @@ public:
     background_generation() const noexcept;
     [[nodiscard]] std::shared_ptr<CompiledGraph const> active_graph() const noexcept;
 
-    // Submits one request to the internal background worker and waits for that
-    // request's exact result. The worker drains activated predecessor
-    // generations in order before evaluating the background-current generation.
-    // No propagation-only commit surface is exposed.
-    [[nodiscard]] std::expected<BackgroundEvaluationResult, std::string>
-    evaluate_background(BackgroundEvaluationRequest request);
-
     // Submits explicit reclamation of immutable roots to the background worker
     // and waits for the reclaimed-owner counts. A live callback pin always
     // defers its owner.
@@ -274,6 +296,10 @@ public:
     // was lost unless realtime_production_failures() also reports exhaustion.
     [[nodiscard]] RealtimeCapacityMaintenanceFailures
     realtime_capacity_maintenance_failures() const noexcept;
+
+    // Sticky failure of queue/cutover-driven background evaluation.
+    [[nodiscard]] BackgroundExecutionFailures
+    background_execution_failures() const noexcept;
 
     // Executes only the realtime half of the already-active generation.
     // Generation activation is deliberately never hidden in this audio-thread

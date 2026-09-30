@@ -5,6 +5,7 @@
 
 #include <gtest/gtest.h>
 
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -29,11 +30,6 @@ TickObservation second_tick;
 std::size_t first_raw_offset = 0;
 std::size_t second_raw_offset = 0;
 unsigned migrated_raw_value = 0;
-unsigned migrated_background_raw_value = 0;
-std::size_t background_evaluate_calls = 0;
-std::byte* background_storage = nullptr;
-std::thread::id background_evaluate_thread{};
-bool throw_background_evaluate = false;
 iv::Coverage persisted_probe_coverage{};
 std::size_t persisted_probe_evaluate_calls = 0;
 bool throw_persisted_probe_evaluate = false;
@@ -170,34 +166,6 @@ void no_op_background_evaluate(
     iv::graph_jit::BackgroundEvaluationCall*)
 {}
 
-void observe_background_evaluate(
-    std::byte* storage,
-    iv::graph_jit::BackgroundEvaluationCall* batch)
-{
-    background_storage = storage;
-    background_evaluate_thread = std::this_thread::get_id();
-    ++background_evaluate_calls;
-    EXPECT_EQ(batch->nodes.size(), 0);
-    if (throw_background_evaluate) {
-        throw std::runtime_error("background evaluation probe failure");
-    }
-}
-
-void write_background_raw_state(
-    std::byte* storage,
-    iv::graph_jit::BackgroundEvaluationCall*)
-{
-    storage[first_raw_offset] = std::byte{0x6b};
-}
-
-void observe_background_raw_state(
-    std::byte* storage,
-    iv::graph_jit::BackgroundEvaluationCall*)
-{
-    migrated_background_raw_value =
-        std::to_integer<unsigned>(storage[second_raw_offset]);
-}
-
 void propagate_persisted_probe_forward(
     std::byte*,
     iv::graph_jit::BackgroundEvaluationCall* batch)
@@ -328,7 +296,7 @@ iv::CompiledGraph persisted_tock_graph()
     iv::CompiledGraph graph;
     graph.project_generation = 1;
     graph.specialization.sample_rate = 48000;
-    graph.specialization.block_size = 64;
+    graph.specialization.block_size = 4;
     graph.background_evaluation_plan = probe_tock_plan(
         iv::OutputRetention::persisted,
         iv::graph_jit::PortStorageKind::persisted_pages);
@@ -725,11 +693,6 @@ protected:
         first_raw_offset = 0;
         second_raw_offset = 0;
         migrated_raw_value = 0;
-        migrated_background_raw_value = 0;
-        background_evaluate_calls = 0;
-        background_storage = nullptr;
-        background_evaluate_thread = {};
-        throw_background_evaluate = false;
         persisted_probe_coverage = iv::Coverage{{{0, 8}}};
         persisted_probe_evaluate_calls = 0;
         throw_persisted_probe_evaluate = false;
@@ -830,129 +793,29 @@ TEST_F(
     EXPECT_EQ(migrated_raw_value, 0x5au);
 }
 
-TEST_F(
-    GraphExecutorFixture,
-    CommitsPreparedBackgroundMigrationAfterThePredecessorDrains)
+TEST_F(GraphExecutorFixture, GenerationCutoverWakesTheBackgroundActor)
 {
     iv::GraphExecutor executor;
-    auto first = compiled_graph(
-        1,
-        &observe_first,
-        persistent_raw_layout(first_raw_offset),
-        &write_background_raw_state);
-    auto second = compiled_graph(
-        2,
-        &observe_second,
-        persistent_raw_layout(second_raw_offset),
-        &observe_background_raw_state);
-
-    ASSERT_EQ(executor.stage(first), iv::GraphExecutorStageResult::staged);
+    ASSERT_EQ(
+        executor.stage(compiled_graph(1, &observe_first)),
+        iv::GraphExecutorStageResult::staged);
     ASSERT_TRUE(executor.activate_pending());
-    ASSERT_EQ(executor.stage(second), iv::GraphExecutorStageResult::staged);
-    // Background migration is already prepared, but the predecessor remains
-    // live until its work is evaluated and its producer queues are drained.
-    auto first_result = executor.evaluate_background({
-        .semantic_version = 1,
-        .page_width = 16,
-    });
-    ASSERT_TRUE(first_result.has_value()) << first_result.error();
-
-    ASSERT_TRUE(executor.activate_pending());
-    auto second_result = executor.evaluate_background({
-        .semantic_version = 2,
-        .page_width = 16,
-    });
-    ASSERT_TRUE(second_result.has_value()) << second_result.error();
-    EXPECT_EQ(migrated_background_raw_value, 0x6bu);
-}
-
-TEST_F(
-    GraphExecutorFixture,
-    RetainsEveryActivatedGenerationUntilBackgroundAdvancesInOrder)
-{
-    iv::GraphExecutor executor;
-    auto first = compiled_graph(
-        1,
-        &observe_first,
-        persistent_raw_layout(first_raw_offset),
-        &write_background_raw_state);
-    auto second = compiled_graph(
-        2,
-        &observe_second,
-        persistent_raw_layout(second_raw_offset),
-        &no_op_background_evaluate);
-    auto third = compiled_graph(
-        3,
-        &observe_second,
-        persistent_raw_layout(second_raw_offset),
-        &observe_background_raw_state);
-
-    ASSERT_EQ(executor.stage(first), iv::GraphExecutorStageResult::staged);
-    ASSERT_TRUE(executor.activate_pending());
-    auto seeded = executor.evaluate_background({
-        .semantic_version = 1,
-        .page_width = 16,
-    });
-    ASSERT_TRUE(seeded.has_value()) << seeded.error();
-
-    ASSERT_EQ(executor.stage(second), iv::GraphExecutorStageResult::staged);
-    ASSERT_TRUE(executor.activate_pending());
-    ASSERT_EQ(executor.stage(third), iv::GraphExecutorStageResult::staged);
+    ASSERT_EQ(
+        executor.stage(compiled_graph(2, &observe_second)),
+        iv::GraphExecutorStageResult::staged);
     ASSERT_TRUE(executor.activate_pending());
 
-    EXPECT_EQ(executor.active_generation(), 3u);
-    EXPECT_EQ(executor.background_generation(), 1u);
-
-    auto advanced = executor.evaluate_background({
-        .semantic_version = 3,
-        .page_width = 16,
-    });
-    ASSERT_TRUE(advanced.has_value()) << advanced.error();
-    EXPECT_EQ(executor.background_generation(), 3u);
-    EXPECT_EQ(migrated_background_raw_value, 0x6bu);
-}
-
-TEST_F(
-    GraphExecutorFixture,
-    FinishesAFailedPredecessorWorkloadBeforeEvaluatingItsSuccessor)
-{
-    iv::GraphExecutor executor;
-    auto first = compiled_graph(
-        1,
-        &observe_first,
-        iv::NodeLayoutBuilder(64).build(),
-        &observe_background_evaluate);
-    auto second = compiled_graph(
-        2,
-        &observe_second,
-        iv::NodeLayoutBuilder(64).build(),
-        &observe_background_evaluate);
-
-    ASSERT_EQ(executor.stage(first), iv::GraphExecutorStageResult::staged);
-    ASSERT_TRUE(executor.activate_pending());
-    throw_background_evaluate = true;
-    auto failed = executor.evaluate_background({
-        .semantic_version = 1,
-        .page_width = 16,
-    });
-    ASSERT_FALSE(failed.has_value());
-    EXPECT_EQ(background_evaluate_calls, 1u);
-
-    ASSERT_EQ(executor.stage(second), iv::GraphExecutorStageResult::staged);
-    ASSERT_TRUE(executor.activate_pending());
-    EXPECT_EQ(executor.background_generation(), 1u);
-
-    throw_background_evaluate = false;
-    auto completed = executor.evaluate_background({
-        .semantic_version = 2,
-        .page_width = 16,
-    });
-    ASSERT_TRUE(completed.has_value()) << completed.error();
-    EXPECT_EQ(background_evaluate_calls, 3u);
+    auto const deadline = std::chrono::steady_clock::now()
+        + std::chrono::seconds{2};
+    while (executor.background_generation() != 2u
+           && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::yield();
+    }
     EXPECT_EQ(executor.background_generation(), 2u);
+    EXPECT_FALSE(executor.background_execution_failures().any());
 }
 
-TEST_F(GraphExecutorFixture, RejectsInvalidRequestsAndBlockSizes)
+TEST_F(GraphExecutorFixture, RejectsInvalidGraphsAndBlockSizes)
 {
     iv::GraphExecutor executor;
     EXPECT_THROW(executor.stage(nullptr), std::invalid_argument);
@@ -965,86 +828,6 @@ TEST_F(GraphExecutorFixture, RejectsInvalidRequestsAndBlockSizes)
     EXPECT_FALSE(executor.realtime_capacity_maintenance_failures().any());
     EXPECT_THROW(executor.tick_block(0, 0), std::invalid_argument);
     EXPECT_THROW(executor.tick_block(0, 65), std::invalid_argument);
-}
-
-TEST_F(GraphExecutorFixture, RunsOnlyTheEndToEndBackgroundTransaction)
-{
-    auto graph = std::make_shared<iv::CompiledGraph>();
-    graph->project_generation = 1;
-    graph->specialization.sample_rate = 48000;
-    graph->specialization.block_size = 64;
-    graph->node_layout = persistent_raw_layout(first_raw_offset);
-    graph->root_operations.tick_block = &observe_first;
-    graph->background_operations = {
-        .propagate_forward = &no_op_background_evaluate,
-        .propagate_reverse = &no_op_background_evaluate,
-        .evaluate = &observe_background_evaluate,
-    };
-
-    iv::GraphExecutor executor;
-    ASSERT_EQ(executor.stage(graph), iv::GraphExecutorStageResult::staged);
-    ASSERT_TRUE(executor.activate_pending());
-    executor.tick_block(0, 64);
-    auto const caller_thread = std::this_thread::get_id();
-    auto result = executor.evaluate_background({
-        .semantic_version = 7,
-        .page_width = 16,
-    });
-
-    ASSERT_TRUE(result.has_value()) << result.error();
-    EXPECT_EQ(result->status, iv::BackgroundEvaluationStatus::committed);
-    EXPECT_EQ(background_evaluate_calls, 1);
-    ASSERT_NE(first_tick.storage, nullptr);
-    ASSERT_NE(background_storage, nullptr);
-    EXPECT_NE(first_tick.storage, background_storage);
-    EXPECT_NE(background_evaluate_thread, caller_thread);
-    EXPECT_TRUE(result->coverage.output_changes.empty());
-    EXPECT_FALSE(result->published_pages.has_value());
-    EXPECT_EQ(result->promoted_tick_materialization, 1u);
-    // The store's construction-time empty materialization is not part of the
-    // executor's coherent initial root and can retire immediately.
-    auto const before_adoption = executor.reclaim_retired_snapshots();
-    EXPECT_EQ(before_adoption.realtime_persisted_states, 0u);
-    EXPECT_EQ(before_adoption.tick_materializations, 1u);
-    executor.tick_block(64, 64);
-    auto const reclaimed = executor.reclaim_retired_snapshots();
-    EXPECT_EQ(reclaimed.realtime_persisted_states, 1u);
-    EXPECT_EQ(reclaimed.tick_materializations, 0u);
-}
-
-TEST_F(GraphExecutorFixture, FailedBackgroundEvaluationPublishesNothing)
-{
-    auto graph = std::make_shared<iv::CompiledGraph>();
-    graph->project_generation = 1;
-    graph->specialization.sample_rate = 48000;
-    graph->specialization.block_size = 64;
-    graph->node_layout = iv::NodeLayoutBuilder(64).build();
-    graph->root_operations.tick_block = &observe_first;
-    graph->background_operations = {
-        .propagate_forward = &no_op_background_evaluate,
-        .propagate_reverse = &no_op_background_evaluate,
-        .evaluate = &observe_background_evaluate,
-    };
-
-    iv::GraphExecutor executor;
-    ASSERT_EQ(executor.stage(graph), iv::GraphExecutorStageResult::staged);
-    ASSERT_TRUE(executor.activate_pending());
-
-    throw_background_evaluate = true;
-    auto failed = executor.evaluate_background({
-        .semantic_version = 7,
-        .page_width = 16,
-    });
-    EXPECT_FALSE(failed.has_value());
-
-    throw_background_evaluate = false;
-    auto retry = executor.evaluate_background({
-        .semantic_version = 7,
-        .page_width = 16,
-    });
-    ASSERT_TRUE(retry.has_value()) << retry.error();
-    EXPECT_FALSE(retry->published_pages.has_value());
-    EXPECT_EQ(background_evaluate_calls, 2u);
 }
 
 TEST_F(
@@ -1067,8 +850,7 @@ TEST_F(
         pages,
         {
             .semantic_version = 7,
-            .page_width = 4,
-            .coverage = {
+            .roots = {
                 .locally_changed_nodes = {0},
                 .output_demands = {{
                     .port = 0,
@@ -1117,8 +899,7 @@ TEST_F(
         pages,
         {
             .semantic_version = 7,
-            .page_width = 4,
-            .coverage = {
+            .roots = {
                 .output_demands = {{
                     .port = 0,
                     .required = iv::Coverage{{{0, 8}}},
@@ -1145,8 +926,7 @@ TEST_F(
         pages,
         {
             .semantic_version = 8,
-            .page_width = 4,
-            .coverage = {.locally_changed_nodes = {0}},
+            .roots = {.locally_changed_nodes = {0}},
         }};
     auto shrink_result = shrink.execute();
     ASSERT_TRUE(shrink_result.has_value()) << shrink_result.error();
@@ -1173,10 +953,9 @@ TEST_F(
         graph.background_evaluation_plan, graph.specialization.sample_rate};
     iv::PersistedPageStore pages;
     auto reader = pages.register_reader();
-    auto const request = iv::BackgroundEvaluationRequest{
+    auto const request = iv::BackgroundTransactionInputs{
         .semantic_version = 7,
-        .page_width = 4,
-        .coverage = {
+        .roots = {
             .locally_changed_nodes = {0},
             .output_demands = {{
                 .port = 0,
@@ -1206,8 +985,7 @@ TEST_F(
         pages,
         {
             .semantic_version = 7,
-            .page_width = 4,
-            .coverage = {
+            .roots = {
                 .output_demands = {{
                     .port = 0,
                     .required = iv::Coverage{{{0, 8}}},
@@ -1239,10 +1017,9 @@ TEST_F(
         graph.background_evaluation_plan, graph.specialization.sample_rate};
     iv::PersistedPageStore pages;
     auto reader = pages.register_reader();
-    auto const request = iv::BackgroundEvaluationRequest{
+    auto const request = iv::BackgroundTransactionInputs{
         .semantic_version = 7,
-        .page_width = 4,
-        .coverage = {
+        .roots = {
             .locally_changed_nodes = {0},
             .output_demands = {{
                 .port = 0,
@@ -1293,8 +1070,7 @@ TEST_F(
         pages,
         {
             .semantic_version = 1,
-            .page_width = 4,
-            .coverage = {
+            .roots = {
                 .output_changes = {
                     {
                         .port = 0,
@@ -1335,10 +1111,9 @@ TEST_F(
         graph.background_evaluation_plan, graph.specialization.sample_rate};
     iv::PersistedPageStore pages;
     auto reader = pages.register_reader();
-    auto const request = iv::BackgroundEvaluationRequest{
+    auto const request = iv::BackgroundTransactionInputs{
         .semantic_version = 7,
-        .page_width = 4,
-        .coverage = {
+        .roots = {
             .locally_changed_nodes = {0},
             .output_demands = {{
                 .port = 0,
@@ -1377,8 +1152,7 @@ TEST_F(
         pages,
         {
             .semantic_version = 99,
-            .page_width = 4,
-            .coverage = {
+            .roots = {
                 .output_demands = {{
                     .port = 0,
                     .required = iv::Coverage{{{0, 8}}},
@@ -1413,8 +1187,7 @@ TEST_F(
         pages,
         {
             .semantic_version = 7,
-            .page_width = 4,
-            .coverage = {
+            .roots = {
                 .locally_changed_nodes = {0},
                 .output_demands = {{
                     .port = 0,
@@ -1446,8 +1219,7 @@ TEST_F(
         pages,
         {
             .semantic_version = 99,
-            .page_width = 4,
-            .coverage = {
+            .roots = {
                 .output_demands = {{
                     .port = 0,
                     .required = iv::Coverage{{{0, 8}}},
@@ -1483,8 +1255,7 @@ TEST_F(
         pages,
         {
             .semantic_version = 7,
-            .page_width = 4,
-            .coverage = {
+            .roots = {
                 .locally_changed_nodes = {0},
                 .output_demands = {{
                     .port = 0,
@@ -1519,8 +1290,7 @@ TEST_F(
         pages,
         {
             .semantic_version = 6,
-            .page_width = 4,
-            .coverage = demand,
+            .roots = demand,
         }};
     auto backwards_result = backwards_semantic.execute();
     ASSERT_FALSE(backwards_result.has_value());
@@ -1528,6 +1298,7 @@ TEST_F(
         backwards_result.error().find("semantic version cannot move backwards"),
         std::string::npos);
 
+    ephemeral_graph.specialization.block_size = 8;
     iv::BackgroundEvaluationTransaction incompatible_page_width{
         ephemeral_graph,
         nullptr,
@@ -1536,8 +1307,7 @@ TEST_F(
         pages,
         {
             .semantic_version = 7,
-            .page_width = 8,
-            .coverage = demand,
+            .roots = demand,
         }};
     auto page_width_result = incompatible_page_width.execute();
     ASSERT_FALSE(page_width_result.has_value());
@@ -1545,7 +1315,8 @@ TEST_F(
         page_width_result.error().find("explicitly repaged"),
         std::string::npos);
 
-    // Neither rejected page-free request reaches evaluation or coverage commit.
+    // Neither rejected page-free transaction reaches evaluation or coverage
+    // commit.
     EXPECT_EQ(persisted_probe_evaluate_calls, 1u);
 }
 

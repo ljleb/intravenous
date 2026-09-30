@@ -546,7 +546,8 @@ TEST(TickInvocationWorkspace, TickInvocationFramePublishesQueuedSampleRecord)
     iv::TickInvocationWorkspace workspace{plan, 3, 4};
     iv::ProducerReserve reserve{iv::realtime_produced_block_storage_size};
     iv::AsyncCapacityManager manager{1};
-    iv::PendingQueue pending{reserve};
+    iv::AsyncWorkSignal work_signal;
+    iv::PendingQueue pending{reserve, work_signal};
     std::atomic<bool> reservation_failed{false};
     ASSERT_EQ(
         manager.maintain(reserve, {
@@ -622,7 +623,8 @@ TEST(TickInvocationWorkspace, QueuedSampleReservationFailureIsSticky)
     iv::TickInvocationWorkspace workspace{plan, 3, 4};
     iv::ProducerReserve empty_reserve{
         iv::realtime_produced_block_storage_size};
-    iv::PendingQueue pending{empty_reserve};
+    iv::AsyncWorkSignal work_signal;
+    iv::PendingQueue pending{empty_reserve, work_signal};
     std::atomic<bool> reservation_failed{false};
     workspace.bind_producer_endpoint(
         0, empty_reserve, pending, reservation_failed);
@@ -894,7 +896,8 @@ TEST(TickInvocationWorkspace, QueuedEventCapturePublishesAuthoritativeEmptyRecor
     iv::TickInvocationWorkspace workspace{plan, 3, 4};
     iv::ProducerReserve reserve{iv::realtime_produced_block_storage_size};
     iv::AsyncCapacityManager manager{1};
-    iv::PendingQueue pending{reserve};
+    iv::AsyncWorkSignal work_signal;
+    iv::PendingQueue pending{reserve, work_signal};
     std::atomic<bool> reservation_failed{false};
     ASSERT_EQ(
         manager.maintain(reserve, {
@@ -1668,7 +1671,8 @@ TEST(BackgroundEvaluationTransaction,
     iv::TickMaterializationStore materializations;
     iv::ProducerReserve reserve{iv::realtime_produced_block_storage_size};
     iv::AsyncCapacityManager manager{1};
-    iv::PendingQueue pending{reserve};
+    iv::AsyncWorkSignal work_signal;
+    iv::PendingQueue pending{reserve, work_signal};
     ASSERT_EQ(manager.maintain(reserve, {1, 1, 2}), 2u);
 
     std::array<iv::Sample, 4> values{10.0f, 11.0f, 12.0f, 13.0f};
@@ -1716,7 +1720,7 @@ TEST(BackgroundEvaluationTransaction,
         propagation,
         pages,
         materializations,
-        {.semantic_version = 1, .page_width = 4},
+        {},
         routes,
         selections,
     };
@@ -1758,7 +1762,8 @@ TEST(BackgroundEvaluationTransaction,
     iv::TickMaterializationStore materializations;
     iv::ProducerReserve reserve{iv::realtime_produced_block_storage_size};
     iv::AsyncCapacityManager manager{1};
-    iv::PendingQueue pending{reserve};
+    iv::AsyncWorkSignal work_signal;
+    iv::PendingQueue pending{reserve, work_signal};
     ASSERT_EQ(manager.maintain(reserve, {1, 1, 2}), 2u);
     auto chain = reserve.acquire(1);
     ASSERT_TRUE(chain);
@@ -1789,7 +1794,7 @@ TEST(BackgroundEvaluationTransaction,
         propagation,
         pages,
         materializations,
-        {.semantic_version = 2, .page_width = 4},
+        {.semantic_version = 2},
         routes,
         selections,
     };

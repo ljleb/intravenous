@@ -12,6 +12,40 @@
 
 namespace iv {
 
+AsyncWorkSignal::AsyncWorkSignal() noexcept
+{
+    static_assert(std::atomic<std::uint64_t>::is_always_lock_free);
+}
+
+void AsyncWorkSignal::notify_work() noexcept
+{
+    work_revision_.fetch_add(1, std::memory_order_release);
+    notify_control();
+}
+
+void AsyncWorkSignal::notify_control() noexcept
+{
+    wake_revision_.fetch_add(1, std::memory_order_release);
+    wake_revision_.notify_one();
+}
+
+std::uint64_t AsyncWorkSignal::work_revision() const noexcept
+{
+    return work_revision_.load(std::memory_order_acquire);
+}
+
+std::uint64_t AsyncWorkSignal::wake_revision() const noexcept
+{
+    return wake_revision_.load(std::memory_order_acquire);
+}
+
+void AsyncWorkSignal::wait(
+    std::uint64_t observed_wake_revision) const noexcept
+{
+    wake_revision_.wait(
+        observed_wake_revision, std::memory_order_acquire);
+}
+
 namespace {
 
 [[nodiscard]] std::size_t rounded_block_count(
@@ -319,8 +353,10 @@ AsyncQueueBlock* ReleasedBlockQueue::take_all() noexcept
     return released_head_.exchange(nullptr, std::memory_order_acquire);
 }
 
-PendingQueue::PendingQueue(ProducerReserve& owner)
+PendingQueue::PendingQueue(
+    ProducerReserve& owner, AsyncWorkSignal& work_signal)
     : owner_(&owner)
+    , work_signal_(&work_signal)
     , sentinel_(std::make_unique<AsyncQueueBlock>())
     , producer_tail_(sentinel_.get())
     , consumer_head_(sentinel_.get())
@@ -350,6 +386,7 @@ bool PendingQueue::publish(ProducedBlockChain&& chain) noexcept
     chain.owner_ = nullptr;
     chain.first_ = nullptr;
     chain.last_ = nullptr;
+    work_signal_->notify_work();
     return true;
 }
 

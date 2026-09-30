@@ -78,10 +78,23 @@ TEST(AsyncCapacityManager, RejectsNonPowerOfTwoBlockAndSlabSizes)
     EXPECT_THROW(iv::AsyncCapacityManager{3}, std::invalid_argument);
 }
 
+TEST(AsyncCapacityManager, ControlWakeDoesNotManufacturePublishedWork)
+{
+    iv::AsyncWorkSignal signal;
+    auto const work = signal.work_revision();
+    auto const wake = signal.wake_revision();
+
+    signal.notify_control();
+
+    EXPECT_EQ(signal.work_revision(), work);
+    EXPECT_EQ(signal.wake_revision(), wake + 1);
+}
+
 TEST(AsyncCapacityManager, PrivateChainIsInvisibleUntilOnePublication)
 {
     iv::ProducerReserve reserve{64};
-    iv::PendingQueue pending{reserve};
+    iv::AsyncWorkSignal work_signal;
+    iv::PendingQueue pending{reserve, work_signal};
     iv::AsyncCapacityManager manager{4};
     ASSERT_EQ(manager.maintain(reserve, policy), 8u);
 
@@ -92,8 +105,11 @@ TEST(AsyncCapacityManager, PrivateChainIsInvisibleUntilOnePublication)
         write_value(block, next++);
     });
 
+    auto const unpublished_revision = work_signal.work_revision();
     EXPECT_TRUE(pending.pin().empty());
+    EXPECT_EQ(work_signal.work_revision(), unpublished_revision);
     ASSERT_TRUE(pending.publish(std::move(chain)));
+    EXPECT_EQ(work_signal.work_revision(), unpublished_revision + 1);
     auto selected = pending.pin();
     EXPECT_EQ(values(selected), (std::vector<std::uint32_t>{10, 11, 12}));
 }
@@ -136,7 +152,8 @@ TEST(AsyncCapacityManager, PrivateChainWriterAdvancesAcrossPhysicalBlocks)
 TEST(AsyncCapacityManager, PrivateChainsJoinBeforeOneQueuePublication)
 {
     iv::ProducerReserve reserve{64};
-    iv::PendingQueue pending{reserve};
+    iv::AsyncWorkSignal work_signal;
+    iv::PendingQueue pending{reserve, work_signal};
     iv::AsyncCapacityManager manager{4};
     ASSERT_EQ(manager.maintain(reserve, policy), 8u);
 
@@ -184,7 +201,8 @@ TEST(AsyncCapacityManager, FailedWholeChainAcquisitionHasNoNetEffect)
 TEST(AsyncCapacityManager, LaterAppendDoesNotExtendPinnedPrefix)
 {
     iv::ProducerReserve reserve{64};
-    iv::PendingQueue pending{reserve};
+    iv::AsyncWorkSignal work_signal;
+    iv::PendingQueue pending{reserve, work_signal};
     iv::ReleasedBlockQueue released;
     iv::AsyncCapacityManager manager{4};
     ASSERT_EQ(manager.maintain(reserve, policy), 8u);
@@ -214,7 +232,8 @@ TEST(AsyncCapacityManager, LaterAppendDoesNotExtendPinnedPrefix)
 TEST(AsyncCapacityManager, ReleasedBlocksReturnThroughTheCapacityManager)
 {
     iv::ProducerReserve reserve{64};
-    iv::PendingQueue pending{reserve};
+    iv::AsyncWorkSignal work_signal;
+    iv::PendingQueue pending{reserve, work_signal};
     iv::ReleasedBlockQueue released;
     iv::AsyncCapacityManager manager{4};
     ASSERT_EQ(manager.maintain(reserve, policy), 8u);
@@ -240,7 +259,8 @@ TEST(AsyncCapacityManager,
      ClosedQueueHasAFinalTailAndReleasesItsLastConsumerSentinel)
 {
     iv::ProducerReserve reserve{64};
-    iv::PendingQueue pending{reserve};
+    iv::AsyncWorkSignal work_signal;
+    iv::PendingQueue pending{reserve, work_signal};
     iv::ReleasedBlockQueue released;
     iv::AsyncCapacityManager manager{4};
     ASSERT_EQ(manager.maintain(reserve, policy), 8u);
@@ -286,7 +306,8 @@ TEST(AsyncCapacityManager,
 TEST(AsyncCapacityManager, ClosingAnEmptyQueueNeedsNoBlockReclamation)
 {
     iv::ProducerReserve reserve{64};
-    iv::PendingQueue pending{reserve};
+    iv::AsyncWorkSignal work_signal;
+    iv::PendingQueue pending{reserve, work_signal};
     iv::ReleasedBlockQueue released;
     iv::AsyncCapacityManager manager{4};
     ASSERT_EQ(manager.maintain(reserve, policy), 8u);
@@ -318,8 +339,9 @@ TEST(AsyncCapacityManager, IndependentQueuesPinIndependentPrefixes)
 {
     iv::ProducerReserve first_reserve{64};
     iv::ProducerReserve second_reserve{64};
-    iv::PendingQueue first_pending{first_reserve};
-    iv::PendingQueue second_pending{second_reserve};
+    iv::AsyncWorkSignal work_signal;
+    iv::PendingQueue first_pending{first_reserve, work_signal};
+    iv::PendingQueue second_pending{second_reserve, work_signal};
     iv::AsyncCapacityManager manager{4};
     ASSERT_EQ(manager.maintain(first_reserve, policy), 8u);
     ASSERT_EQ(manager.maintain(second_reserve, policy), 8u);
@@ -358,7 +380,8 @@ TEST(AsyncCapacityManager, RegisteredProducerIsReplenishedByManagerWorker)
 TEST(AsyncCapacityManager, ManagerWorkerReclaimsSharedReleasedBlockStream)
 {
     iv::ProducerReserve reserve{64};
-    iv::PendingQueue pending{reserve};
+    iv::AsyncWorkSignal work_signal;
+    iv::PendingQueue pending{reserve, work_signal};
     iv::AsyncCapacityManager manager{4};
     auto registration = manager.register_producer(reserve, policy);
     ASSERT_TRUE(registration);

@@ -1253,15 +1253,19 @@ propagates invalidation but does not schedule data evaluation. The coordinator p
 that immutable activity selection into the transaction-owned call frame before it
 invokes the generated evaluate root.
 
-`BackgroundExecutor` remains the lifetime/orchestration façade for background work: it begins the transaction,
-asks it to evaluate and commits it; page arithmetic, materialization execution and
-callback binding stay in the components above.
+`BackgroundExecutor` remains the lifetime/orchestration façade for background work: it
+selects actor-owned inputs, constructs and executes the transaction, and publishes its
+commit; page arithmetic, materialization execution and callback binding stay in the
+components above.
 
 ```cpp
-auto transaction = background_evaluation_.begin(request);
-transaction.evaluate();
-transaction.commit();
+auto selected = select_pending_inputs();
+BackgroundEvaluationTransaction transaction{
+    generation, selected.roots, selected.producer_prefixes};
+auto result = transaction.execute();
 ```
+
+This is actor-internal pseudocode, not a public caller-driven operation.
 
 Tock/ephemeral materialization and all Tock callbacks are scheduled off the audio
 thread. Transaction-local addressable materializations needed by background Random
@@ -1460,6 +1464,18 @@ background operation applies payload overwrites and explicit void erasures to th
 candidate RAM recording as part of the same reverse/Tock transaction as downstream
 work. Only the final transaction commit publishes the coherent successor persisted
 state/page version.
+
+Queue publication itself is a complete background-work trigger. The worker pins the
+available finite prefixes and derives the originating output, covered timeline ranges,
+and changed ranges from the generation-local route plus each record header. Processing
+those prefixes is not gated by an explicit evaluation call, an external coverage
+request, or a previously successful background operation.
+
+`BackgroundExecutor` owns the transaction environment used for that work. Page width is
+the active compiled root block size. Semantic version is selected from the actor-owned
+semantic state. Additional node mutations and external/advance demand are independently
+accumulated actor inputs and may be coalesced with a queue-driven batch; they are not a
+monolithic caller-supplied `BackgroundEvaluationRequest`.
 
 External reads have a correspondingly closed entry-point set: application/UI
 random-access fetches and advance background materialization for sequential playback.

@@ -117,14 +117,53 @@ versions.
 Incoming data may wake the worker, but it never modifies work already selected for the
 current background operation.
 
+Successful publication of a producer chain advances a shared work revision and wakes
+the worker. Publication of an actual generation cutover does the same. Control commands
+use the same allocation-free wait edge but do not advance the work revision, so staging
+or reclamation cannot manufacture a background evaluation and cannot hide a concurrent
+producer publication.
+
 The worker selects one precise finite workload, executes it, commits or rejects it,
 then selects again from the latest pending state. If more data is already available it
 may immediately start the next pass.
 
-An explicit control/test evaluation operation may submit one request and wait for that
-request's exact result, but the submitting thread does not execute the transaction.
 The background worker remains the sole executor and owner of the background generation
-chain, its `NodeStorage`, selected queue prefixes and propagation workspace.
+chain, its `NodeStorage`, selected queue prefixes and propagation workspace. There is no
+caller-driven `evaluate_background(request)` production path and no retained "last
+successful request". Queue consumption must never depend on a prior control call.
+
+Every work source has its own final actor-owned transport and lifetime:
+
+```text
+realtime-produced persisted/recorded data -> producer pending queues
+semantic mutations                         -> background mutation input
+external Random Access demand              -> background demand input
+advance materialization demand             -> background scheduling input
+activated generations                      -> ordered generation chain
+```
+
+When woken, the worker independently pins a finite prefix from each relevant pending
+queue and selects finite inputs from the other sources. Realtime-produced records
+already identify their routed output and global timeline window; decoding them derives
+their exact coverage and changed-coverage roots. No externally supplied evaluation
+request is required to discover or process those records.
+
+Transaction context is actor-owned. Stored-page width comes from the active compiled
+generation's fixed root block size. The target semantic version comes from the
+background actor's selected semantic environment. Mutation and demand roots come from
+the actor's selected inputs. A private transaction-local aggregate may hold those facts,
+but it is not a public execution command and it is never preserved for compatibility.
+
+One transaction executes serially on the background worker. That synchronous
+select/execute/commit operation is intentional; synchronously asking another thread to
+start it and blocking the caller is not.
+
+Implementation proceeds directly toward these ownership boundaries. Transitional
+public drivers, compatibility wrappers, retained request objects, and other code whose
+only purpose is to keep an intermediate revision compiling are forbidden. An
+intermediate revision may instead be temporarily incomplete or fail to compile while a
+self-contained architectural piece is being replaced; code that cannot support the
+final execution model must be deleted rather than disguised as a temporary API.
 
 Explicit reclamation of retired persisted-state roots, persisted pages and Tick
 materializations is submitted to that same worker, keeping publication/retired-owner
@@ -451,6 +490,12 @@ halves, generation-specific routes/endpoints, pre-sized work descriptors, migrat
 metadata, reserve requirements and any storage needed for allocation-free publication.
 Only then can the pointer become the pending generation.
 
+Preparing background-storage migration is itself submitted synchronously to the
+background actor. The staging caller may own the not-yet-published successor object, but
+it never inspects or prepares migration from actor-owned predecessor `NodeStorage`
+concurrently with evaluation. Any preparation failure is therefore still reported and
+the successor discarded before realtime can publish the cutover.
+
 A staged generation is not active merely because preparation completed. A pending
 successor that never activates may be superseded and reclaimed off realtime without
 creating a semantic generation boundary.
@@ -465,6 +510,7 @@ The boundary performs, in order:
 1. publish all final generation-N producer chains from the completed pass
 2. publish the already-prepared ExecutionGeneration N+1 pointer as the next cutover
 3. swap RealtimeExecutor active generation N -> N+1
+4. advance the background work revision and wake the background actor
 ```
 
 These are bounded pointer/state operations and require no dynamic allocation.

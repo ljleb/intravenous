@@ -16,10 +16,13 @@
 
 namespace iv {
 
-struct BackgroundEvaluationRequest {
-    std::uint64_t semantic_version = 0;
-    std::size_t page_width = 4096;
-    CoveragePropagationRequest coverage{};
+// Transaction-local inputs selected by the background actor. Realtime-produced
+// queue records are separate complete inputs and add their own coverage roots.
+// A missing semantic version retains the pinned persisted snapshot's semantic
+// environment.
+struct BackgroundTransactionInputs {
+    std::optional<std::uint64_t> semantic_version{};
+    CoveragePropagationRequest roots{};
 };
 
 enum class BackgroundEvaluationStatus : std::uint8_t {
@@ -61,21 +64,21 @@ public:
                                     BackgroundCoverageState& coverage,
                                     BackgroundPropagationWorkspace& propagation,
                                     PersistedPageStore& pages,
-                                    BackgroundEvaluationRequest request);
+                                    BackgroundTransactionInputs inputs = {});
     BackgroundEvaluationTransaction(CompiledGraph const& graph,
                                     std::byte* node_storage,
                                     BackgroundCoverageState& coverage,
                                     BackgroundPropagationWorkspace& propagation,
                                     PersistedPageStore& pages,
                                     TickMaterializationStore& materializations,
-                                    BackgroundEvaluationRequest request);
+                                    BackgroundTransactionInputs inputs = {});
     BackgroundEvaluationTransaction(CompiledGraph const& graph,
                                     std::byte* node_storage,
                                     BackgroundCoverageState& coverage,
                                     BackgroundPropagationWorkspace& propagation,
                                     PersistedPageStore& pages,
                                     TickMaterializationStore& materializations,
-                                    BackgroundEvaluationRequest request,
+                                    BackgroundTransactionInputs inputs,
                                     std::span<BackgroundProducedInputRoute const>
                                         produced_routes,
                                     std::span<PinnedBlockPrefix const>

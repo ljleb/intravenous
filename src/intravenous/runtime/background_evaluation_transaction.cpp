@@ -140,7 +140,9 @@ class BackgroundEvaluationTransaction::Impl {
     BackgroundPropagationWorkspace* propagation_ = nullptr;
     PersistedPageStore* pages_ = nullptr;
     TickMaterializationStore* materializations_ = nullptr;
-    BackgroundEvaluationRequest request_{};
+    BackgroundTransactionInputs inputs_{};
+    std::uint64_t semantic_version_ = 0;
+    std::size_t page_width_ = 0;
     std::span<BackgroundProducedInputRoute const> produced_routes_{};
     std::span<PinnedBlockPrefix const> produced_prefixes_{};
     PersistedPageStore::ReaderSlot reader_{};
@@ -554,12 +556,12 @@ class BackgroundEvaluationTransaction::Impl {
 
         for (auto& root : roots) {
             auto existing = std::ranges::find_if(
-                request_.coverage.output_changes,
+                inputs_.roots.output_changes,
                 [&](OutputCoverageChangeRequest const& change) {
                     return change.port == root.route.port;
                 });
-            if (existing == request_.coverage.output_changes.end()) {
-                request_.coverage.output_changes.push_back({
+            if (existing == inputs_.roots.output_changes.end()) {
+                inputs_.roots.output_changes.push_back({
                     .port = root.route.port,
                     .coverage = std::move(root.coverage),
                     .changed = std::move(root.changed),
@@ -580,7 +582,7 @@ class BackgroundEvaluationTransaction::Impl {
         auto& self = *static_cast<Impl*>(opaque);
         auto const& plan = self.graph_->background_evaluation_plan;
         auto const& snapshot = *self.working_pages_;
-        auto const width = self.request_.page_width;
+        auto const width = self.page_width_;
         Coverage affected = required | changed;
         if (affected.empty()) return;
 
@@ -843,7 +845,8 @@ class BackgroundEvaluationTransaction::Impl {
             return std::unexpected(
                 "active graph has no complete background operations");
         }
-        if (request_.page_width == 0) {
+        page_width_ = graph_->specialization.block_size;
+        if (page_width_ == 0) {
             return std::unexpected(
                 "background evaluation page width must be nonzero");
         }
@@ -851,12 +854,14 @@ class BackgroundEvaluationTransaction::Impl {
         reader_ = pages_->register_reader();
         pin_.emplace(reader_.pin());
         auto const& base = pin_->snapshot();
-        if (request_.semantic_version < base.version().semantic) {
+        semantic_version_ = inputs_.semantic_version.value_or(
+            base.version().semantic);
+        if (semantic_version_ < base.version().semantic) {
             return std::unexpected(
                 "background evaluation semantic version cannot move backwards");
         }
         if (base.page_width() != 0 &&
-            base.page_width() != request_.page_width &&
+            base.page_width() != page_width_ &&
             (base.sample_page_count() != 0 || base.event_page_count() != 0)) {
             return std::unexpected(
                 "persisted pages must be explicitly repaged before changing "
@@ -868,7 +873,7 @@ class BackgroundEvaluationTransaction::Impl {
         std::optional<PersistedPageStore::Candidate> candidate;
         if (!decoded->empty()) {
             candidate.emplace(pages_->begin_candidate(
-                request_.semantic_version, request_.page_width));
+                semantic_version_, page_width_));
             if (candidate->base_version() != base.version()) {
                 return BackgroundEvaluationResult{
                     .status = BackgroundEvaluationStatus::stale_base,
@@ -884,7 +889,7 @@ class BackgroundEvaluationTransaction::Impl {
             : &base;
         prepared_.emplace(
             propagation_->prepare(graph_->background_operations, node_storage_,
-                                  *coverage_, request_.coverage,
+                                  *coverage_, inputs_.roots,
                                   BackgroundCoverageDemandExpansion{
                                       .data = this,
                                       .expand_output = &expand_output_demand,
@@ -943,7 +948,7 @@ class BackgroundEvaluationTransaction::Impl {
         if (has_produced_pages || !page_mutations_.empty()) {
             if (!candidate) {
                 candidate.emplace(pages_->begin_candidate(
-                    request_.semantic_version, request_.page_width));
+                    semantic_version_, page_width_));
             }
             if (candidate->base_version() != pin_->snapshot().version()) {
                 discard_prepared();
@@ -966,7 +971,7 @@ class BackgroundEvaluationTransaction::Impl {
         if (materializations_) {
             auto frozen = realization->make_tick_materialization_snapshot(
                 graph_->project_generation,
-                request_.semantic_version,
+                semantic_version_,
                 candidate ? candidate->target_version() : base.version());
             if (!frozen) {
                 return std::unexpected(std::move(frozen.error()));
@@ -1017,7 +1022,7 @@ public:
          BackgroundCoverageState& coverage,
          BackgroundPropagationWorkspace& propagation, PersistedPageStore& pages,
          TickMaterializationStore* materializations,
-         BackgroundEvaluationRequest request,
+         BackgroundTransactionInputs inputs,
          std::span<BackgroundProducedInputRoute const> produced_routes = {},
          std::span<PinnedBlockPrefix const> produced_prefixes = {})
         : graph_(&graph)
@@ -1026,7 +1031,7 @@ public:
         , propagation_(&propagation)
         , pages_(&pages)
         , materializations_(materializations)
-        , request_(std::move(request))
+        , inputs_(std::move(inputs))
         , produced_routes_(produced_routes)
         , produced_prefixes_(produced_prefixes)
     {}
@@ -1062,9 +1067,9 @@ BackgroundEvaluationTransaction::BackgroundEvaluationTransaction(
     CompiledGraph const& graph, std::byte* node_storage,
     BackgroundCoverageState& coverage,
     BackgroundPropagationWorkspace& propagation, PersistedPageStore& pages,
-    BackgroundEvaluationRequest request)
+    BackgroundTransactionInputs inputs)
     : impl_(std::make_unique<Impl>(graph, node_storage, coverage, propagation,
-                                   pages, nullptr, std::move(request)))
+                                   pages, nullptr, std::move(inputs)))
 {}
 
 BackgroundEvaluationTransaction::BackgroundEvaluationTransaction(
@@ -1072,7 +1077,7 @@ BackgroundEvaluationTransaction::BackgroundEvaluationTransaction(
     BackgroundCoverageState& coverage,
     BackgroundPropagationWorkspace& propagation, PersistedPageStore& pages,
     TickMaterializationStore& materializations,
-    BackgroundEvaluationRequest request)
+    BackgroundTransactionInputs inputs)
     : impl_(std::make_unique<Impl>(
         graph,
         node_storage,
@@ -1080,7 +1085,7 @@ BackgroundEvaluationTransaction::BackgroundEvaluationTransaction(
         propagation,
         pages,
         &materializations,
-        std::move(request)))
+        std::move(inputs)))
 {}
 
 BackgroundEvaluationTransaction::BackgroundEvaluationTransaction(
@@ -1088,7 +1093,7 @@ BackgroundEvaluationTransaction::BackgroundEvaluationTransaction(
     BackgroundCoverageState& coverage,
     BackgroundPropagationWorkspace& propagation, PersistedPageStore& pages,
     TickMaterializationStore& materializations,
-    BackgroundEvaluationRequest request,
+    BackgroundTransactionInputs inputs,
     std::span<BackgroundProducedInputRoute const> produced_routes,
     std::span<PinnedBlockPrefix const> produced_prefixes)
     : impl_(std::make_unique<Impl>(
@@ -1098,7 +1103,7 @@ BackgroundEvaluationTransaction::BackgroundEvaluationTransaction(
         propagation,
         pages,
         &materializations,
-        std::move(request),
+        std::move(inputs),
         produced_routes,
         produced_prefixes))
 {}
