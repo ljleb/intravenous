@@ -1811,7 +1811,9 @@ TEST(RealtimePersistedStateMailbox,
     iv::TickMaterializationStore materializations;
     iv::RealtimePersistedStateMailbox mailbox;
 
-    mailbox.publish(iv::RealtimePersistedState::capture_initial(3, pages));
+    auto initial_state = iv::RealtimePersistedState::prepare_initial(3, pages);
+    ASSERT_TRUE(initial_state->capture_initial());
+    mailbox.activate_generation(std::move(initial_state));
     auto const* initial = mailbox.adopt(3);
     ASSERT_NE(initial, nullptr);
     EXPECT_EQ(initial->pages().version(), iv::PersistedPageSnapshotVersion{});
@@ -1863,9 +1865,38 @@ TEST(RealtimePersistedStateMailbox,
     ASSERT_NE(page, nullptr);
     EXPECT_FLOAT_EQ(page->values.front().value, 20.0f);
 
-    EXPECT_EQ(mailbox.reclaim_returned(), 1u);
+    // The superseded-but-never-adopted second root and the replaced initial
+    // active root are both destroyed only by explicit off-realtime reclamation.
+    EXPECT_EQ(mailbox.reclaim_returned(), 2u);
     EXPECT_EQ(pages.reclaim_retired(), 2u);
     EXPECT_EQ(materializations.reclaim_retired(), 2u);
+}
+
+TEST(RealtimePersistedStateMailbox,
+     InitialStatePinsPagesAtActivationRatherThanPreparation)
+{
+    iv::PersistedPageStore pages;
+    auto initial_state = iv::RealtimePersistedState::prepare_initial(4, pages);
+
+    auto const output = stable_output(iv::PortKind::sample, "late-page");
+    auto candidate = pages.begin_candidate(7, 4);
+    candidate.put(sample_page(output, 30.0f));
+    ASSERT_EQ(
+        pages.publish(std::move(candidate)),
+        iv::PersistedPagePublishResult::published);
+
+    ASSERT_TRUE(initial_state->capture_initial());
+    EXPECT_FALSE(initial_state->capture_initial());
+    EXPECT_EQ(
+        initial_state->pages().version(),
+        (iv::PersistedPageSnapshotVersion{.semantic = 7, .page = 1}));
+    auto const* page = initial_state->pages().find_sample_page(output, 0);
+    ASSERT_NE(page, nullptr);
+    EXPECT_FLOAT_EQ(page->values.front().value, 30.0f);
+    EXPECT_EQ(initial_state->materialization().generation(), 4u);
+    EXPECT_EQ(
+        initial_state->materialization().pages(),
+        initial_state->pages().version());
 }
 
 TEST(RealtimePersistedStateMailbox,
@@ -1873,13 +1904,43 @@ TEST(RealtimePersistedStateMailbox,
 {
     iv::PersistedPageStore pages;
     iv::RealtimePersistedStateMailbox mailbox;
-    mailbox.publish(iv::RealtimePersistedState::capture_initial(3, pages));
+    auto initial_state = iv::RealtimePersistedState::prepare_initial(3, pages);
+    ASSERT_TRUE(initial_state->capture_initial());
+    mailbox.activate_generation(std::move(initial_state));
     auto const* active = mailbox.adopt(3);
     ASSERT_NE(active, nullptr);
 
-    mailbox.publish(iv::RealtimePersistedState::capture_initial(4, pages));
+    auto successor_state = iv::RealtimePersistedState::prepare_initial(4, pages);
+    ASSERT_TRUE(successor_state->capture_initial());
+    mailbox.publish(std::move(successor_state));
     EXPECT_EQ(mailbox.adopt(3), active);
     EXPECT_EQ(mailbox.reclaim_returned(), 1u);
+}
+
+TEST(RealtimePersistedStateMailbox,
+     GenerationActivationCannotBeDisplacedByLateOldGenerationPublication)
+{
+    iv::PersistedPageStore pages;
+    iv::RealtimePersistedStateMailbox mailbox;
+    auto capture_initial = [&](std::uint64_t generation) {
+        auto state = iv::RealtimePersistedState::prepare_initial(
+            generation, pages);
+        EXPECT_TRUE(state->capture_initial());
+        return state;
+    };
+
+    mailbox.activate_generation(capture_initial(3));
+    mailbox.publish(capture_initial(3));
+    mailbox.activate_generation(capture_initial(4));
+
+    // A background operation selected before cutover may finish afterward.
+    // Its incompatible pending root is rejected without replacing generation
+    // four's directly installed active root.
+    mailbox.publish(capture_initial(3));
+    auto const* active = mailbox.adopt(4);
+    ASSERT_NE(active, nullptr);
+    EXPECT_EQ(active->generation(), 4u);
+    EXPECT_EQ(mailbox.reclaim_returned(), 3u);
 }
 
 } // namespace

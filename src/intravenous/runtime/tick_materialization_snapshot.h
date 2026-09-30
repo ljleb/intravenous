@@ -47,6 +47,7 @@ struct TickMaterializedEventInput {
 // while pages identifies the exact published root against which it was built.
 class TickMaterializationSnapshot {
     friend class TickMaterializationStore;
+    friend class RealtimePersistedState;
 
     std::uint64_t generation_ = 0;
     std::uint64_t semantic_version_ = 0;

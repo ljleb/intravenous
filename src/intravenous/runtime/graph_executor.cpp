@@ -223,7 +223,7 @@ GraphExecutor::ExecutionGeneration::successor() const noexcept
 void GraphExecutor::ExecutionGeneration::prepare_initial_persisted_state(
     PersistedPageStore& pages)
 {
-    initial_persisted_state = RealtimePersistedState::capture_initial(
+    initial_persisted_state = RealtimePersistedState::prepare_initial(
         graph->project_generation, pages);
 }
 
@@ -314,21 +314,31 @@ bool GraphExecutor::activate_pending()
 {
     if (!pending_generation_) return false;
     if (!realtime_active_) {
+        if (!pending_generation_->initial_persisted_state
+            || !pending_generation_->initial_persisted_state->capture_initial()) {
+            throw std::logic_error(
+                "GraphExecutor initial persisted state was not prepared");
+        }
         generation_chain_ = std::move(pending_generation_);
         realtime_active_ = generation_chain_.get();
-        realtime_persisted_state_.publish(
+        realtime_persisted_state_.activate_generation(
             std::move(realtime_active_->initial_persisted_state));
         return true;
     }
 
     auto& previous = realtime_execution_generation();
+    if (!pending_generation_->initial_persisted_state
+        || !pending_generation_->initial_persisted_state->capture_initial()) {
+        throw std::logic_error(
+            "GraphExecutor initial persisted state was not prepared");
+    }
     pending_generation_->commit_realtime_migration();
     previous.background.close_inputs();
     auto* next = pending_generation_.get();
+    realtime_persisted_state_.activate_generation(
+        std::move(next->initial_persisted_state));
     previous.publish_successor(std::move(pending_generation_));
     realtime_active_ = next;
-    realtime_persisted_state_.publish(
-        std::move(next->initial_persisted_state));
     return true;
 }
 

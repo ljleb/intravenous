@@ -51,10 +51,15 @@ public:
         PersistedPageStore& pages,
         TickMaterializationStore& materializations);
 
+    // Allocates/registers the owner of a generation's empty initial
+    // materialization during staging. capture_initial() later pins the newest
+    // canonical page root using no allocation.
     [[nodiscard]] static std::unique_ptr<RealtimePersistedState>
-    capture_initial(
+    prepare_initial(
         std::uint64_t generation,
         PersistedPageStore& pages);
+
+    [[nodiscard]] bool capture_initial() noexcept;
 
     [[nodiscard]] std::expected<void, std::string>
     capture_current();
@@ -89,7 +94,7 @@ class RealtimePersistedStateMailbox {
     RealtimePersistedState* active_ = nullptr;
     std::atomic<RealtimePersistedState*> returned_{nullptr};
 
-    void return_from_realtime(RealtimePersistedState& state) noexcept;
+    void return_for_reclamation(RealtimePersistedState& state) noexcept;
 
 public:
     RealtimePersistedStateMailbox();
@@ -99,9 +104,16 @@ public:
     RealtimePersistedStateMailbox& operator=(
         RealtimePersistedStateMailbox const&) = delete;
 
-    // Background publication replaces and destroys only a still-pending root.
-    // A root already adopted by realtime is never touched here.
+    // Publication replaces a still-pending root and queues the superseded owner
+    // for explicit off-realtime reclamation. A root already adopted by realtime
+    // is never touched here.
     void publish(std::unique_ptr<RealtimePersistedState> state);
+
+    // Realtime-generation-cutover operation. Installs the successor's already
+    // captured initial root directly as active state and returns both the old
+    // active root and any pending old-generation publication for reclamation.
+    void activate_generation(
+        std::unique_ptr<RealtimePersistedState> initial_state);
 
     // Realtime-pass-boundary operation. An incompatible pending root is
     // returned for background destruction and can never replace the active

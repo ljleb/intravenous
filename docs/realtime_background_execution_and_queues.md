@@ -406,11 +406,24 @@ RealtimeExecutor pending mailbox
 ```
 
 If background publishes version B and then C before realtime consumes B, C may replace
-B in the pending mailbox. Superseded pending versions are retired/reclaimed off the
-realtime thread.
+B in the pending mailbox. Replacing a pending version never destroys its owner inline:
+the superseded owner joins the same intrusive return stream used for replaced realtime
+active versions and is destroyed only by explicit off-realtime reclamation.
 
 At a legal realtime pass boundary, realtime takes the newest compatible pending
 pointer and makes it active. The current pass never changes underneath execution.
+
+The initial persisted-state owner for a staged successor is allocated and registers
+its page reader during staging, but it does **not** pin the canonical page root then.
+The cutover pins the newest canonical page root and completes the successor's empty
+generation-local materialization without allocation, then installs that root directly
+as realtime-active state before publishing the successor pointer to the background
+actor, rather than publishing the root through the background mailbox.
+Otherwise an old-generation background commit occurring after staging but before
+cutover would be temporarily hidden by a stale successor root, and a racing late
+old-generation mailbox publication could displace the successor's initial root. Queued
+old-generation work that commits after the cutover still becomes visible through the
+normal generation-aware background migration and mailbox publication path.
 
 Generation compatibility is mandatory: a final old-generation version may be an input
 to background migration, but it cannot become the active persisted view of a newer

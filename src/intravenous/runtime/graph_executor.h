@@ -190,10 +190,11 @@ public:
         std::shared_ptr<CompiledGraph const> compiled_graph);
 
     // At the caller-provided quiescent boundary, commits the prepared realtime
-    // migration, closes the predecessor's producer queues, appends the pending
-    // generation to the ordered cutover chain and switches realtime.
-    // Background migration commits only after those closed queues drain.
-    // Returns false when no generation is pending.
+    // migration, closes the predecessor's producer queues, installs the
+    // successor's prepared initial persisted-state root, appends the pending
+    // generation to the ordered cutover chain and switches realtime. Background
+    // migration commits only after those closed queues drain. Returns false when
+    // no generation is pending.
     bool activate_pending();
 
     [[nodiscard]] std::optional<std::uint64_t> active_generation() const noexcept;

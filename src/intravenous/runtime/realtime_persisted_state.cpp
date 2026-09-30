@@ -36,23 +36,27 @@ std::unique_ptr<RealtimePersistedState> RealtimePersistedState::prepare(
 }
 
 std::unique_ptr<RealtimePersistedState>
-RealtimePersistedState::capture_initial(
+RealtimePersistedState::prepare_initial(
     std::uint64_t generation,
     PersistedPageStore& pages)
 {
     auto state = std::unique_ptr<RealtimePersistedState>{
         new RealtimePersistedState{generation, pages.register_reader()}};
-    state->pages_ = state->page_slot_.pin();
-    auto const version = state->pages_.snapshot().version();
     state->owned_materialization_ =
-        std::make_unique<TickMaterializationSnapshot>(
-            generation,
-            version.semantic,
-            version,
-            std::vector<TickMaterializedSampleInput>{},
-            std::vector<TickMaterializedEventInput>{});
-    state->captured_ = true;
+        std::make_unique<TickMaterializationSnapshot>();
     return state;
+}
+
+bool RealtimePersistedState::capture_initial() noexcept
+{
+    if (captured_ || !owned_materialization_) return false;
+    pages_ = page_slot_.pin();
+    auto const version = pages_.snapshot().version();
+    owned_materialization_->generation_ = generation_;
+    owned_materialization_->semantic_version_ = version.semantic;
+    owned_materialization_->pages_ = version;
+    captured_ = true;
+    return true;
 }
 
 std::expected<void, std::string>
@@ -107,10 +111,30 @@ void RealtimePersistedStateMailbox::publish(
     }
     auto* superseded = pending_.exchange(
         state.release(), std::memory_order_acq_rel);
-    delete superseded;
+    if (superseded) return_for_reclamation(*superseded);
 }
 
-void RealtimePersistedStateMailbox::return_from_realtime(
+void RealtimePersistedStateMailbox::activate_generation(
+    std::unique_ptr<RealtimePersistedState> initial_state)
+{
+    if (!initial_state) {
+        throw std::invalid_argument(
+            "cannot activate an empty realtime persisted state");
+    }
+    if (!initial_state->captured_) {
+        throw std::logic_error(
+            "cannot activate an uncaptured realtime persisted state");
+    }
+    auto* superseded_pending = pending_.exchange(
+        nullptr, std::memory_order_acquire);
+    if (superseded_pending) {
+        return_for_reclamation(*superseded_pending);
+    }
+    if (active_) return_for_reclamation(*active_);
+    active_ = initial_state.release();
+}
+
+void RealtimePersistedStateMailbox::return_for_reclamation(
     RealtimePersistedState& state) noexcept
 {
     auto* head = returned_.load(std::memory_order_relaxed);
@@ -128,11 +152,11 @@ RealtimePersistedState const* RealtimePersistedStateMailbox::adopt(
 {
     auto* selected = pending_.exchange(nullptr, std::memory_order_acquire);
     if (selected && selected->generation() != generation) {
-        return_from_realtime(*selected);
+        return_for_reclamation(*selected);
         selected = nullptr;
     }
     if (selected) {
-        if (active_) return_from_realtime(*active_);
+        if (active_) return_for_reclamation(*active_);
         active_ = selected;
     }
     return active_ && active_->generation() == generation ? active_ : nullptr;
