@@ -360,6 +360,26 @@ struct PersistedRealtimeNode {
     }
 };
 
+struct DispositionNode {
+    bool void_outputs = false;
+
+    static constexpr auto outputs()
+    {
+        return std::array {
+            iv::tick_sample_output("samples"),
+            iv::tick_event_output("events", iv::EventTypeId::trigger),
+        };
+    }
+
+    void tick_block(
+        iv::TickBlockContext<DispositionNode> const& context) const
+    {
+        if (!void_outputs) return;
+        context.output<"samples">().write_void();
+        context.output<"events">().write_void();
+    }
+};
+
 struct MixedAccessIndexNode {
     static constexpr auto inputs()
     {
@@ -531,8 +551,59 @@ TEST(BackgroundDspPorts, PersistedRealtimeOutputsUseOrdinaryTickBindings)
     EXPECT_FLOAT_EQ(sample_storage[130], 2.0f);
     EXPECT_FLOAT_EQ(sample_storage[131], 3.0f);
     EXPECT_EQ(sample_outputs[0].position(), 132u);
+    EXPECT_EQ(sample_outputs[0].disposition(),
+        iv::OutputDisposition::written);
     ASSERT_EQ(event_shared.write_index, 1u);
     EXPECT_EQ(event_storage[0].time, 130u);
+    EXPECT_EQ(event_outputs[0].disposition(),
+        iv::OutputDisposition::written);
+}
+
+TEST(BackgroundDspPorts, ReflectedOutputsExposeFinalInvocationDisposition)
+{
+    std::array<iv::Sample, 8> sample_storage{};
+    std::array<iv::ReflectedSampleOutputPortBinding, 1> sample_bindings{};
+    auto& sample = sample_bindings[0];
+    sample.storage.channels[0] = {
+        .storage = reinterpret_cast<std::byte*>(sample_storage.data()),
+        .frame_capacity = sample_storage.size(),
+    };
+    sample.storage.frame_capacity = sample_storage.size();
+    sample.storage.channel_layout = iv::mono_planar_channel_layout;
+
+    struct EventStorage {
+        std::size_t count = 0;
+        std::array<iv::TimedEvent, 8> events{};
+    } event_storage;
+    std::array<iv::ReflectedEventOutputPortBinding, 1> event_bindings{{{
+        .storage = {
+            .storage = reinterpret_cast<std::byte*>(&event_storage),
+            .count_offset = offsetof(EventStorage, count),
+            .events_offset = offsetof(EventStorage, events),
+            .event_capacity = event_storage.events.size(),
+            .type = iv::EventTypeId::trigger,
+        },
+        .source_type = iv::EventTypeId::trigger,
+    }}};
+    auto context = iv::ReflectedNodeTickContext{
+        .sample_output_bindings = sample_bindings,
+        .event_output_bindings = event_bindings,
+    };
+    auto const operations =
+        iv::details::node_compiler_operations<DispositionNode>();
+
+    sample.disposition = iv::OutputDisposition::written;
+    event_bindings[0].disposition = iv::OutputDisposition::written;
+    DispositionNode untouched;
+    operations.tick_block(&untouched, context, 0, 4);
+    EXPECT_EQ(sample.disposition, iv::OutputDisposition::untouched);
+    EXPECT_EQ(event_bindings[0].disposition,
+        iv::OutputDisposition::untouched);
+
+    DispositionNode voiding{.void_outputs = true};
+    operations.tick_block(&voiding, context, 4, 4);
+    EXPECT_EQ(sample.disposition, iv::OutputDisposition::voided);
+    EXPECT_EQ(event_bindings[0].disposition, iv::OutputDisposition::voided);
 }
 
 TEST(BackgroundDspPorts, BackgroundInputsRemainAvailableFromTickBlock)

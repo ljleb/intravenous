@@ -183,6 +183,7 @@ IV_FORCEINLINE OutputPort reflected_sample_output_port(
         binding.history,
         index,
         binding.latency,
+        &binding.disposition,
     };
 }
 
@@ -341,6 +342,7 @@ IV_FORCEINLINE void initialize_reflected_event_outputs(
             binding.history,
             binding.latency,
             binding.overflow_count,
+            &binding.disposition,
         };
         result.ports[I].begin_block(index, block_size);
     }()), ...);

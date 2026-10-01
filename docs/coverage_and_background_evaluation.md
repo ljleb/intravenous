@@ -2483,6 +2483,13 @@ recording merely because that planning metadata exists.
    A zero-event Tick/persisted payload remains authoritative empty event data, not a
    recording void.
 
+   The ordinary sample/event output facades now implement invocation-local
+   `OutputDisposition`, and reflected output bindings retain the finalized value for
+   generated post-step operations. Empty event iteration remains `untouched`; only a
+   successfully authored event marks `written`. The explicit recorder bridge still
+   needs to translate those finalized dispositions into queue items and committed RAM
+   recording changes.
+
    The remaining authored recorder bridge must reuse this transport. It must not
    recreate a recording-specific allocator/log, global capture insertion
    sequence/frontier, shared logical queue size, separate cutover allocation, or

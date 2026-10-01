@@ -91,6 +91,10 @@ struct ReflectedSampleOutputPortBinding {
     ReflectedSamplePortStorageBinding storage {};
     std::size_t history = 0;
     std::size_t latency = 0;
+    // The imported primitive wrapper resets this before each node invocation.
+    // Ordinary OutputPort authoring updates it in place, and the generated
+    // post-step operation observes the finalized disposition afterward.
+    mutable OutputDisposition disposition = OutputDisposition::untouched;
 };
 
 // Fixed compiler-owned event storage binding. Ordinary bounded sequences
@@ -132,6 +136,9 @@ struct ReflectedEventOutputPortBinding {
     // span several primitive slices; in that case lowering clears the raw
     // sequence once before the producer step and every slice appends.
     bool append_existing = false;
+    // Invocation-local authored state shared by EventOutputPort and the
+    // generated post-step operation.
+    mutable OutputDisposition disposition = OutputDisposition::untouched;
 };
 
 static_assert(std::is_standard_layout_v<ReflectedSampleChannelStorageBinding>);

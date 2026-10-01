@@ -424,6 +424,11 @@ namespace iv::details {
         {
             return Cell(_port, static_channel_index<Type, Channel>());
         }
+
+        constexpr void write_void() const
+        {
+            _port.write_void();
+        }
     };
 
     template<ChannelTypeId Type, SampleStreamLayout Layout>
@@ -534,6 +539,11 @@ namespace iv::details {
         constexpr Axis operator[](size_t frame) const requires (Type != ChannelTypeId::mono && Layout == SampleStreamLayout::interleaved)
         {
             return Axis(_port, frame, _block_size);
+        }
+
+        constexpr void write_void() const
+        {
+            _port.write_void();
         }
     };
 }

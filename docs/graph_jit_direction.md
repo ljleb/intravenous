@@ -1046,6 +1046,14 @@ This is a hint, not a hard constraint. Use your own good judgement if ever in do
     authoritative empty event data. Resource exhaustion is a recording/persistence
     failure and never permission to drop a written block.
 
+    Invocation-local `OutputDisposition` is implemented in the ordinary sample and
+    event output facades and carried by their reflected output bindings. Facade
+    construction resets it to `untouched`, successful ordinary writes mark it
+    `written`, and `write_void()` marks it `voided`; the generated post-step operation
+    can therefore observe authored state without a recorder-specific node API. The
+    remaining work is to bind authored recorder outputs to queue production and RAM
+    recording publication.
+
     Background commit applies exactly the selected queue prefixes, publishes a
     coherent immutable persisted-state/page version when appropriate, and then releases
     completed prefixes through non-realtime reclamation. The published version reaches

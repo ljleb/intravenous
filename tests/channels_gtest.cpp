@@ -108,6 +108,36 @@ TEST(Channels, SamplePortStorageViewConstructsInvocationLocalFacades)
     EXPECT_FLOAT_EQ(block[3], 4.0f);
 }
 
+TEST(Channels, OutputPortReportsOrdinaryWritesAndExplicitVoid)
+{
+    std::array<iv::Sample, 8> samples{};
+    iv::SamplePortStorageView storage{
+        std::span<iv::Sample>{samples},
+        0,
+        iv::mono_planar_channel_layout,
+        samples.size(),
+    };
+    iv::OutputDisposition observed = iv::OutputDisposition::written;
+
+    {
+        iv::OutputPort output(storage, 0, 0, &observed);
+        EXPECT_EQ(output.disposition(), iv::OutputDisposition::untouched);
+        EXPECT_EQ(observed, iv::OutputDisposition::untouched);
+        output.push_block(std::span<iv::Sample const>{});
+        EXPECT_EQ(output.disposition(), iv::OutputDisposition::untouched);
+        output.write_void();
+        EXPECT_EQ(output.disposition(), iv::OutputDisposition::voided);
+        EXPECT_EQ(observed, iv::OutputDisposition::voided);
+    }
+
+    {
+        iv::OutputPort output(storage, 0, 0, &observed);
+        output.write_frame(0, 0, 4.0f);
+        EXPECT_EQ(output.disposition(), iv::OutputDisposition::written);
+        EXPECT_EQ(observed, iv::OutputDisposition::written);
+    }
+}
+
 TEST(Channels, SamplePortStorageViewSupportsIndependentChannelStorage)
 {
     std::array<iv::Sample, 8> left{};

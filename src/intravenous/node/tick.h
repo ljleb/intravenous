@@ -216,6 +216,11 @@ namespace iv {
                     _block_size);
             }
 
+            void write_void() const
+            {
+                _port.write_void();
+            }
+
             operator EventOutputPort&() const { return _port; }
         };
 
