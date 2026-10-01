@@ -165,7 +165,7 @@ namespace {
         void tick(iv::TickSampleContext<AliasedStateNode> const& ctx) const
         {
             auto& state = ctx.state();
-            ctx.outputs[0].push(state.gain);
+            ctx.template output<0>().push(state.gain);
             ++state.phase;
         }
     };
@@ -179,7 +179,7 @@ namespace {
         void tick(iv::TickSampleContext<InheritedStateNode> const& ctx) const
         {
             auto& state = ctx.state();
-            ctx.outputs[0].push(state.gain);
+            ctx.template output<0>().push(state.gain);
             ++state.phase;
         }
     };
@@ -199,7 +199,7 @@ namespace {
 
         void tick(iv::TickSampleContext<ScalarStateNode> const& ctx) const
         {
-            ctx.outputs[0].push(static_cast<float>(ctx.state()));
+            ctx.template output<0>().push(static_cast<float>(ctx.state()));
         }
     };
 
@@ -218,7 +218,7 @@ namespace {
 
         void tick(iv::TickSampleContext<BackgroundStateNode> const& ctx) const
         {
-            ctx.outputs[0].push(0.0f);
+            ctx.template output<0>().push(0.0f);
         }
     };
 

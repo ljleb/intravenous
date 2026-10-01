@@ -352,11 +352,11 @@ struct PersistedRealtimeNode {
     void tick_block(
         iv::TickBlockContext<PersistedRealtimeNode> const& context) const
     {
-        auto samples = context.output<"samples">();
+        auto samples = context.output<0>();
         for (std::size_t i = 0; i < context.block_size; ++i) {
             samples[i] = static_cast<float>(i);
         }
-        context.output<"events">().push(iv::TriggerEvent{}, 2);
+        context.output<1>().push(iv::TriggerEvent{}, 2);
     }
 };
 
@@ -366,8 +366,11 @@ struct DispositionNode {
     static constexpr auto outputs()
     {
         return std::array {
-            iv::tick_sample_output("samples"),
-            iv::tick_event_output("events", iv::EventTypeId::trigger),
+            iv::tick_sample_output(
+                "samples", {}, {}, iv::OutputRetention::persisted),
+            iv::tick_event_output(
+                "events", iv::EventTypeId::trigger, {},
+                iv::OutputRetention::persisted),
         };
     }
 
@@ -377,6 +380,55 @@ struct DispositionNode {
         if (!void_outputs) return;
         context.output<"samples">().write_void();
         context.output<"events">().write_void();
+    }
+};
+
+struct EmptyPersistedEventBlockNode {
+    static constexpr auto outputs()
+    {
+        return std::array {iv::tick_event_output(
+            "events", iv::EventTypeId::trigger, {},
+            iv::OutputRetention::persisted)};
+    }
+
+    void tick_block(
+        iv::TickBlockContext<EmptyPersistedEventBlockNode> const& context) const
+    {
+        context.output<"events">().push_block({});
+    }
+};
+
+struct DefaultSkippedPersistedNode {
+    static constexpr auto outputs()
+    {
+        return std::array {
+            iv::tick_sample_output(
+                "samples", {}, {}, iv::OutputRetention::persisted),
+            iv::tick_event_output(
+                "events", iv::EventTypeId::trigger, {},
+                iv::OutputRetention::persisted),
+        };
+    }
+
+    void tick_block(
+        iv::TickBlockContext<DefaultSkippedPersistedNode> const&) const
+    {}
+};
+
+struct EphemeralOutputNode {
+    static constexpr auto outputs()
+    {
+        return std::array {
+            iv::tick_sample_output("samples"),
+            iv::tick_event_output("events", iv::EventTypeId::trigger),
+        };
+    }
+
+    void tick_block(
+        iv::TickBlockContext<EphemeralOutputNode> const& context) const
+    {
+        context.output<"samples">()[0] = 1.0f;
+        context.output<"events">().push(iv::TriggerEvent{}, 0);
     }
 };
 
@@ -527,20 +579,34 @@ TEST(BackgroundDspPorts, PersistedRealtimeOutputsUseOrdinaryTickBindings)
 {
     std::array<iv::Sample, 256> sample_storage {};
     iv::SharedPortData sample_shared(sample_storage, 0);
-    std::array sample_outputs {iv::OutputPort(sample_shared, 0, 128)};
+    iv::OutputDisposition sample_disposition{};
+    std::array sample_outputs {iv::OutputPort(
+        sample_shared, 0, 128)};
     std::array<iv::TimedEvent, 16> event_storage {};
     iv::EventSharedPortData event_shared {
         event_storage, 0, 0, iv::EventTypeId::trigger,
     };
+    iv::OutputDisposition event_disposition{};
     std::array event_outputs {iv::EventOutputPort(
-        event_shared, iv::EventTypeId::trigger)};
+        event_shared,
+        iv::EventTypeId::trigger,
+        0,
+        0,
+        nullptr)};
+
+    iv::details::TickRecordingBindings<PersistedRealtimeNode> recording{};
+    recording.sample_outputs[0] = &sample_disposition;
+    recording.event_outputs[0] = &event_disposition;
 
     iv::do_tick_block(
         PersistedRealtimeNode{},
         iv::TickBlockContext<PersistedRealtimeNode>{
             iv::TickContext<PersistedRealtimeNode>{
-                .outputs = sample_outputs,
-                .event_outputs = event_outputs,
+                iv::details::TickPortBindings<PersistedRealtimeNode>{
+                    .sample_outputs = sample_outputs,
+                    .event_outputs = event_outputs,
+                    .recording = recording,
+                },
             },
             128,
             4,
@@ -551,12 +617,10 @@ TEST(BackgroundDspPorts, PersistedRealtimeOutputsUseOrdinaryTickBindings)
     EXPECT_FLOAT_EQ(sample_storage[130], 2.0f);
     EXPECT_FLOAT_EQ(sample_storage[131], 3.0f);
     EXPECT_EQ(sample_outputs[0].position(), 132u);
-    EXPECT_EQ(sample_outputs[0].disposition(),
-        iv::OutputDisposition::written);
+    EXPECT_EQ(sample_disposition, iv::OutputDisposition::written);
     ASSERT_EQ(event_shared.write_index, 1u);
     EXPECT_EQ(event_storage[0].time, 130u);
-    EXPECT_EQ(event_outputs[0].disposition(),
-        iv::OutputDisposition::written);
+    EXPECT_EQ(event_disposition, iv::OutputDisposition::written);
 }
 
 TEST(BackgroundDspPorts, ReflectedOutputsExposeFinalInvocationDisposition)
@@ -606,6 +670,143 @@ TEST(BackgroundDspPorts, ReflectedOutputsExposeFinalInvocationDisposition)
     EXPECT_EQ(event_bindings[0].disposition, iv::OutputDisposition::voided);
 }
 
+TEST(BackgroundDspPorts, ExplicitEmptyEventBlockIsAnOrdinaryWrite)
+{
+    struct EventStorage {
+        std::size_t count = 0;
+        std::array<iv::TimedEvent, 8> events{};
+    } storage;
+    std::array<iv::ReflectedEventOutputPortBinding, 1> bindings{{{
+        .storage = {
+            .storage = reinterpret_cast<std::byte*>(&storage),
+            .count_offset = offsetof(EventStorage, count),
+            .events_offset = offsetof(EventStorage, events),
+            .event_capacity = storage.events.size(),
+            .type = iv::EventTypeId::trigger,
+        },
+        .source_type = iv::EventTypeId::trigger,
+    }}};
+    auto const operations =
+        iv::details::node_compiler_operations<EmptyPersistedEventBlockNode>();
+    EmptyPersistedEventBlockNode node;
+
+    operations.tick_block(
+        &node,
+        iv::ReflectedNodeTickContext{.event_output_bindings = bindings},
+        16,
+        4);
+
+    EXPECT_EQ(bindings[0].disposition, iv::OutputDisposition::written);
+    EXPECT_EQ(storage.count, 0u);
+}
+
+TEST(BackgroundDspPorts, GeneratedPersistedSkipOutputsAreOrdinaryWrites)
+{
+    std::array<iv::Sample, 8> samples{};
+    std::array<iv::ReflectedSampleOutputPortBinding, 1> bindings{};
+    bindings[0].storage.channels[0] = {
+        .storage = reinterpret_cast<std::byte*>(samples.data()),
+        .frame_capacity = samples.size(),
+    };
+    bindings[0].storage.frame_capacity = samples.size();
+    bindings[0].storage.channel_layout = iv::mono_planar_channel_layout;
+    struct EventStorage {
+        std::size_t count = 0;
+        std::array<iv::TimedEvent, 8> events{};
+    } event_storage;
+    std::array<iv::ReflectedEventOutputPortBinding, 1> event_bindings{{{
+        .storage = {
+            .storage = reinterpret_cast<std::byte*>(&event_storage),
+            .count_offset = offsetof(EventStorage, count),
+            .events_offset = offsetof(EventStorage, events),
+            .event_capacity = event_storage.events.size(),
+            .type = iv::EventTypeId::trigger,
+        },
+        .source_type = iv::EventTypeId::trigger,
+    }}};
+    auto const operations =
+        iv::details::node_compiler_operations<
+            DefaultSkippedPersistedNode>();
+    DefaultSkippedPersistedNode node;
+
+    operations.skip_block(
+        &node,
+        iv::ReflectedNodeTickContext{
+            .sample_output_bindings = bindings,
+            .event_output_bindings = event_bindings,
+        },
+        0,
+        4);
+
+    EXPECT_EQ(bindings[0].disposition, iv::OutputDisposition::written);
+    EXPECT_EQ(
+        event_bindings[0].disposition, iv::OutputDisposition::written);
+    EXPECT_EQ(event_storage.count, 0u);
+}
+
+TEST(BackgroundDspPorts, EphemeralWritesDoNotObserveOutputDisposition)
+{
+    std::array<iv::Sample, 8> samples{};
+    std::array<iv::ReflectedSampleOutputPortBinding, 1> sample_bindings{};
+    sample_bindings[0].storage.channels[0] = {
+        .storage = reinterpret_cast<std::byte*>(samples.data()),
+        .frame_capacity = samples.size(),
+    };
+    sample_bindings[0].storage.frame_capacity = samples.size();
+    sample_bindings[0].storage.channel_layout =
+        iv::mono_planar_channel_layout;
+    sample_bindings[0].disposition = iv::OutputDisposition::voided;
+
+    struct EventStorage {
+        std::size_t count = 0;
+        std::array<iv::TimedEvent, 8> events{};
+    } events;
+    std::array<iv::ReflectedEventOutputPortBinding, 1> event_bindings{{{
+        .storage = {
+            .storage = reinterpret_cast<std::byte*>(&events),
+            .count_offset = offsetof(EventStorage, count),
+            .events_offset = offsetof(EventStorage, events),
+            .event_capacity = events.events.size(),
+            .type = iv::EventTypeId::trigger,
+        },
+        .source_type = iv::EventTypeId::trigger,
+        .disposition = iv::OutputDisposition::voided,
+    }}};
+    auto const operations =
+        iv::details::node_compiler_operations<EphemeralOutputNode>();
+    EphemeralOutputNode node;
+
+    operations.tick_block(
+        &node,
+        iv::ReflectedNodeTickContext{
+            .sample_output_bindings = sample_bindings,
+            .event_output_bindings = event_bindings,
+        },
+        0,
+        4);
+
+    EXPECT_EQ(
+        sample_bindings[0].disposition, iv::OutputDisposition::voided);
+    EXPECT_EQ(
+        event_bindings[0].disposition, iv::OutputDisposition::voided);
+    EXPECT_FLOAT_EQ(samples[0], 1.0f);
+    EXPECT_EQ(events.count, 1u);
+
+    operations.skip_block(
+        &node,
+        iv::ReflectedNodeTickContext{
+            .sample_output_bindings = sample_bindings,
+            .event_output_bindings = event_bindings,
+        },
+        4,
+        4);
+    EXPECT_EQ(
+        sample_bindings[0].disposition, iv::OutputDisposition::voided);
+    EXPECT_EQ(
+        event_bindings[0].disposition, iv::OutputDisposition::voided);
+    EXPECT_EQ(events.count, 0u);
+}
+
 TEST(BackgroundDspPorts, BackgroundInputsRemainAvailableFromTickBlock)
 {
     std::array<iv::Sample, 8> realtime_samples {
@@ -648,21 +849,23 @@ TEST(BackgroundDspPorts, BackgroundInputsRemainAvailableFromTickBlock)
 
     iv::TickBlockContext<BackgroundInputOnly> context {
         iv::TickContext<BackgroundInputOnly> {
-            .inputs = realtime_inputs,
-            .event_inputs = realtime_event_inputs,
-            .random_access_inputs = random_access_inputs,
-            .random_access_event_inputs = random_access_event_inputs,
+            iv::details::TickPortBindings<BackgroundInputOnly>{
+                .sample_inputs = realtime_inputs,
+                .event_inputs = realtime_event_inputs,
+                .random_access_inputs = random_access_inputs,
+                .random_access_event_inputs = random_access_event_inputs,
+            },
         },
         8,
         8,
     };
 
-    auto samples = context.input<"samples">();
+    auto samples = context.input<0>();
     EXPECT_FLOAT_EQ(static_cast<float>(samples[0]), 10.0f);
     EXPECT_EQ(samples.coverage(), sample_coverage);
     EXPECT_FLOAT_EQ(static_cast<float>(samples.at(2)), 2.0f);
 
-    auto events = context.input<"events">();
+    auto events = context.input<1>();
     auto const current_block = events.events();
     ASSERT_EQ(current_block.size(), 2u);
     EXPECT_EQ(current_block[0].time, 8u);

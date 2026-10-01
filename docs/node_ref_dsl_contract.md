@@ -74,9 +74,10 @@ ref.
 
 GraphBuilder lowers bundle ports to concrete ports only when creating concrete
 edges, detach nodes, public outputs, or execution metadata. Native/tiled
-boundaries use pack/unpack adapters. Matching tiled ports may lower to
-matching mono edges only when their channel types, not merely their widths,
-match.
+boundaries are structural GraphJit routing: channel projection, permutation,
+duplication, composition, and representation conversion lower directly rather than
+through authored `ChannelPack`/`ChannelUnpack` nodes. Matching tiled ports may lower
+to matching mono edges only when their channel types, not merely their widths, match.
 
 ## Expression rules
 

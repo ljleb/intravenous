@@ -145,7 +145,7 @@ namespace iv {
             size_t cursor = 0;
             Sample value = current_frequency(state);
 
-            auto const events = ctx.event_inputs[0].get_block(ctx.index, ctx.block_size);
+            auto const events = ctx.template input<0>().events();
             for (TimedEvent const& event : events) {
                 size_t const event_offset = event.time - ctx.index;
                 size_t const next = std::min(event_offset, ctx.block_size);
@@ -159,7 +159,7 @@ namespace iv {
             }
 
             std::fill(state.block.begin() + static_cast<std::ptrdiff_t>(cursor), state.block.begin() + static_cast<std::ptrdiff_t>(ctx.block_size), value);
-            ctx.outputs[0].push_block(std::span<Sample const>(state.block.data(), ctx.block_size));
+            ctx.template output<0>().push_block(std::span<Sample const>(state.block.data(), ctx.block_size));
         }
     };
 
@@ -213,7 +213,7 @@ namespace iv {
             size_t cursor = 0;
             Sample value = current_gate(state);
 
-            auto const events = ctx.event_inputs[0].get_block(ctx.index, ctx.block_size);
+            auto const events = ctx.template input<0>().events();
             for (TimedEvent const& event : events) {
                 size_t const event_offset = event.time - ctx.index;
                 size_t const next = std::min(event_offset, ctx.block_size);
@@ -227,7 +227,7 @@ namespace iv {
             }
 
             std::fill(state.block.begin() + static_cast<std::ptrdiff_t>(cursor), state.block.begin() + static_cast<std::ptrdiff_t>(ctx.block_size), value);
-            ctx.outputs[0].push_block(std::span<Sample const>(state.block.data(), ctx.block_size));
+            ctx.template output<0>().push_block(std::span<Sample const>(state.block.data(), ctx.block_size));
         }
     };
 
@@ -310,8 +310,8 @@ namespace iv {
 
             auto push_until = [&](size_t until, size_t& cursor) {
                 while (cursor < until) {
-                    ctx.outputs[0].push(state.amplitude);
-                    ctx.outputs[1].push(state.frequency);
+                    ctx.template output<0>().push(state.amplitude);
+                    ctx.template output<1>().push(state.frequency);
                     ++cursor;
                 }
             };
@@ -327,7 +327,8 @@ namespace iv {
                         state.frequency = current_frequency(note, state.pitch_bend);
                         state.amplitude = amplitude;
                         if (assignment_changed) {
-                            ctx.event_outputs[0].push(TriggerEvent {}, event_time, ctx.index, ctx.block_size);
+                            ctx.template output<2>().push(
+                                TriggerEvent {}, event_time - ctx.index);
                         }
                     }
                 }
@@ -343,7 +344,7 @@ namespace iv {
             };
 
             size_t cursor = 0;
-            auto const events = ctx.event_inputs[0].get_block(ctx.index, ctx.block_size);
+            auto const events = ctx.template input<0>().events();
             for (TimedEvent const& event : events) {
                 size_t const event_offset = event.time - ctx.index;
                 size_t const next = std::min(event_offset, ctx.block_size);

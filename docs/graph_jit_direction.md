@@ -1016,7 +1016,7 @@ This is a hint, not a hard constraint. Use your own good judgement if ever in do
     transaction-local page-backed materialization; Tick-time ephemeral Random Access
     must be materialized before the callback. Playback never blocks, reclaims retired
     storage or invokes Tock.
-18. **Tick/persisted transport landed; explicit recording bridge remains.**
+18. **Tick/persisted recording transport and disposition semantics landed.**
     Realtime-produced persistence uses producer reserves and background pending
     queues. The old capture store, capture-output registry, sequence/frontier log and
     `TickInvocationWorkspace` compatibility adapter have been deleted. The runtime uses
@@ -1042,17 +1042,25 @@ This is a hint, not a hard constraint. Use your own good judgement if ever in do
 
     Preserve fixed recorder semantics: `untouched` publishes nothing and preserves the
     prior RAM recording; ordinary writes overwrite the addressed range; `write_void()`
-    publishes an explicit erase. A zero-event Tick/persisted payload remains ordinary
-    authoritative empty event data. Resource exhaustion is a recording/persistence
+    publishes an explicit erase. An explicitly authored zero-event Tick/persisted
+    block remains ordinary authoritative empty event data. Resource exhaustion is a recording/persistence
     failure and never permission to drop a written block.
 
-    Invocation-local `OutputDisposition` is implemented in the ordinary sample and
-    event output facades and carried by their reflected output bindings. Facade
-    construction resets it to `untouched`, successful ordinary writes mark it
-    `written`, and `write_void()` marks it `voided`; the generated post-step operation
-    can therefore observe authored state without a recorder-specific node API. The
-    remaining work is to bind authored recorder outputs to queue production and RAM
-    recording publication.
+    A Tick/persisted output is the recording output; there is no separate recorder
+    port kind, retention mode or runtime policy. An explicit recorder is an ordinary
+    authored node that consumes live Sequential input and writes Tick/persisted output.
+    Invocation-local `OutputDisposition` is implemented only by the statically
+    specialized Tick/persisted sample/event accessors and carried by their reflected
+    output bindings. Ephemeral Tick and Tock output writes perform no disposition
+    update. Reflected invocation-binding construction resets the state to `untouched`,
+    while repeated accessor construction within that invocation preserves it. An
+    ordinary write (including an explicit empty event-block write) marks it `written`,
+    and `write_void()` marks it `voided`; the generated post-step operation can
+    therefore observe authored state without a recorder-specific node API.
+    The low-level generic sample/event port objects carry no disposition pointer or
+    state. Tick disposition covers the entire addressed callback block (one sample for
+    scalar `tick()`); output history/latency does not widen the recorded range. Tock
+    continues to author exact arbitrary coverage.
 
     Background commit applies exactly the selected queue prefixes, publishes a
     coherent immutable persisted-state/page version when appropriate, and then releases
@@ -1060,8 +1068,8 @@ This is a hint, not a hard constraint. Use your own good judgement if ever in do
     `RealtimeExecutor` as an immutable pointer and becomes active only at a legal
     realtime pass boundary.
 
-    The remaining recording work must bind authored recorder bridges to this same
-    transport. It must not reintroduce a recording-specific store or an alternate
+    Remaining recording work stays on the existing Tick/persisted transport. It must
+    not reintroduce a recording-specific store or an alternate
     `TickInvocationWorkspace` construction path.
 19. **Generation reconciliation.** Rebind compatible stable persisted stores across
     generations. Persisted generated/finalized data remains retained throughout its
@@ -1335,11 +1343,10 @@ and retained authoritative content rather than one realtime `NodeLayout`.
 
 Tick/persisted finalized data satisfies Random Access through the published
 persisted-page snapshot; replayable Tick/ephemeral output can satisfy it through
-background replay where upstream data is available. Explicit recording and
-Tick/persisted staging may share executor/runtime-owned slab-backed Tick-capture
-blocks/logs. In the preliminary implementation those capture blocks are not a
-second Random Access source: newly captured Tick/persisted data becomes visible only
-after publication into the canonical page store.
+background replay where upstream data is available. Tick/persisted recording uses
+executor/runtime-owned slab-backed producer reserves and pending queues. Pending queue
+blocks are not a second Random Access source: newly recorded Tick/persisted data
+becomes visible only after publication into the canonical page store.
 
 Invocation-local Tick-execution sample/event buffers occupy compile-time byte ranges
 in the generated root stack. Sample and event ranges are lifetime-packed within
@@ -1597,9 +1604,9 @@ root callback boundary. Newly queued Tick/persisted data from that callback is n
 visible until persisted-state/page publication and a later snapshot selection. A
 same-Tick recent-data overlay is a later optional optimization, not baseline semantics.
 
-The explicit recording bridge remains for unreproducible sequential sources, but its
-transport is not special-purpose. Tick/persisted staging and recorder outputs use
-producer-specific reserve/pending-queue SPSC transports. A background pass
+An explicit recording node for an unreproducible Sequential source authors an ordinary
+Tick/persisted output; it does not introduce another port or transport category.
+Tick/persisted outputs use producer-specific reserve/pending-queue SPSC transports. A background pass
 independently pins one finite prefix per relevant producer queue and commits its
 ordinary background transaction once. The page version advances on commit, not queue
 insertion. A page candidate may copy or adopt compatible queue payload data, but

@@ -362,7 +362,7 @@ struct TockCoverageContext {
     [[nodiscard]] auto input() const
     requires details::has_constexpr_port_configs<Node>
     {
-        static_assert(is_random_access(details::static_input_config<Node, Name>()),
+        static_assert(details::static_input_port_is_random_access<Node, Name>(),
             "TockCoverageContext can only access inputs declared background");
         if constexpr (details::static_input_port_kind<Node, Name>()
             == PortKind::sample) {
@@ -427,7 +427,7 @@ struct PropagateForwardCoverageContext {
     [[nodiscard]] InputCoverageChange const& input() const
     requires details::has_constexpr_port_configs<Node>
     {
-        static_assert(is_random_access(details::static_input_config<Node, Name>()),
+        static_assert(details::static_input_port_is_random_access<Node, Name>(),
             "forward coverage can only inspect background inputs");
         if constexpr (details::static_input_port_kind<Node, Name>()
             == PortKind::sample) {
@@ -502,7 +502,7 @@ struct PropagateReverseCoverageContext {
     [[nodiscard]] InputCoverageRequirement const& input() const
     requires details::has_constexpr_port_configs<Node>
     {
-        static_assert(is_random_access(details::static_input_config<Node, Name>()),
+        static_assert(details::static_input_port_is_random_access<Node, Name>(),
             "reverse coverage can only require background inputs");
         if constexpr (details::static_input_port_kind<Node, Name>()
             == PortKind::sample) {

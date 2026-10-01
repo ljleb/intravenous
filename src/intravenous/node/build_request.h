@@ -139,6 +139,69 @@ template<typename Node>
 inline constexpr std::size_t reflected_event_output_count_v =
     reflected_event_output_count<Node>();
 
+template<typename Node, std::size_t Index>
+consteval bool reflected_sample_output_is_recording()
+{
+    std::size_t tick_sample_index = 0;
+    for (auto const& config : Node::outputs()) {
+        if (!is_sample(config) || !is_tick(config.production)) continue;
+        if (tick_sample_index++ == Index) return is_persisted(config.retention);
+    }
+    throw "reflected Tick sample output index is out of bounds";
+}
+
+template<typename Node, std::size_t Index>
+consteval bool reflected_event_output_is_recording()
+{
+    std::size_t tick_event_index = 0;
+    for (auto const& config : Node::outputs()) {
+        if (is_sample(config) || !is_tick(config.production)) continue;
+        if (tick_event_index++ == Index) return is_persisted(config.retention);
+    }
+    throw "reflected Tick event output index is out of bounds";
+}
+
+template<typename Node, std::size_t... Index>
+IV_FORCEINLINE auto make_tick_recording_bindings(
+    ReflectedNodeTickContext const& ctx,
+    std::index_sequence<Index...>)
+{
+    TickRecordingBindings<Node> result{};
+    (([&] {
+        if constexpr (static_output_port_is_recording_at<Node, Index>()) {
+            if constexpr (static_output_port_kind_at<Node, Index>()
+                == PortKind::sample) {
+                constexpr auto output_index =
+                    static_realtime_sample_output_port_index_at<Node, Index>();
+                constexpr auto recording_index =
+                    static_recording_sample_output_index_at<Node, Index>();
+                result.sample_outputs[recording_index] =
+                    &ctx.sample_output_bindings.pointer[output_index].disposition;
+            } else {
+                constexpr auto output_index =
+                    static_realtime_event_output_port_index_at<Node, Index>();
+                constexpr auto recording_index =
+                    static_recording_event_output_index_at<Node, Index>();
+                result.event_outputs[recording_index] =
+                    &ctx.event_output_bindings.pointer[output_index].disposition;
+            }
+        }
+    }()), ...);
+    return result;
+}
+
+template<typename Node>
+IV_FORCEINLINE auto make_tick_recording_bindings(
+    ReflectedNodeTickContext const& ctx)
+{
+    if constexpr (has_outputs<Node>) {
+        return make_tick_recording_bindings<Node>(
+            ctx, std::make_index_sequence<Node::outputs().size()>{});
+    } else {
+        return TickRecordingBindings<Node>{};
+    }
+}
+
 IV_FORCEINLINE SamplePortStorageView reflected_sample_storage_view(
     ReflectedSamplePortStorageBinding const& binding)
 {
@@ -174,16 +237,19 @@ IV_FORCEINLINE InputPort reflected_sample_input_port(
     };
 }
 
+template<bool Recording>
 IV_FORCEINLINE OutputPort reflected_sample_output_port(
     ReflectedSampleOutputPortBinding const& binding,
     SampleIndex index)
 {
+    if constexpr (Recording) {
+        binding.disposition = OutputDisposition::untouched;
+    }
     return OutputPort{
         reflected_sample_storage_view(binding.storage),
         binding.history,
         index,
         binding.latency,
-        &binding.disposition,
     };
 }
 
@@ -207,7 +273,8 @@ IV_FORCEINLINE auto reflected_sample_outputs(
     std::index_sequence<I...>)
 {
     return std::array<OutputPort, sizeof...(I)>{
-        reflected_sample_output_port(
+        reflected_sample_output_port<
+            reflected_sample_output_is_recording<Node, I>()>(
             ctx.sample_output_bindings.pointer[I],
             index)...
     };
@@ -306,7 +373,7 @@ IV_FORCEINLINE void initialize_reflected_event_inputs(
     }()), ...);
 }
 
-template<std::size_t N, std::size_t... I>
+template<typename Node, std::size_t N, std::size_t... I>
 IV_FORCEINLINE void initialize_reflected_event_outputs(
     ReflectedEventOutputPorts<N>& result,
     ReflectedNodeTickContext const& ctx,
@@ -317,6 +384,11 @@ IV_FORCEINLINE void initialize_reflected_event_outputs(
     static_assert(N == sizeof...(I));
     (([&] {
         auto const& binding = ctx.event_output_bindings.pointer[I];
+        constexpr bool recording =
+            reflected_event_output_is_recording<Node, I>();
+        if constexpr (recording) {
+            binding.disposition = OutputDisposition::untouched;
+        }
         auto* write_index = binding.storage.persistent_ring
             ? reflected_event_write_index(binding.storage)
             : reflected_event_count(binding.storage);
@@ -342,7 +414,6 @@ IV_FORCEINLINE void initialize_reflected_event_outputs(
             binding.history,
             binding.latency,
             binding.overflow_count,
-            &binding.disposition,
         };
         result.ports[I].begin_block(index, block_size);
     }()), ...);
@@ -380,7 +451,7 @@ IV_FORCEINLINE void with_reflected_event_ports(
     ReflectedEventOutputPorts<output_count> outputs;
     initialize_reflected_event_inputs(
         inputs, ctx, std::make_index_sequence<input_count>{});
-    initialize_reflected_event_outputs(
+    initialize_reflected_event_outputs<Node>(
         outputs, ctx, index, block_size,
         std::make_index_sequence<output_count>{});
     std::forward<Fn>(fn)(
@@ -409,15 +480,20 @@ IV_FORCEINLINE void tick_node_block(
                     std::span<EventOutputPort> event_outputs) {
                     do_tick_block(node, TickBlockContext<Node> {
                         TickContext<Node> {
-                            .inputs = inputs,
-                            .outputs = outputs,
-                            .event_inputs = event_inputs,
-                            .event_outputs = event_outputs,
-                            .random_access_inputs = ctx.random_access_inputs,
-                            .random_access_event_inputs = ctx.random_access_event_inputs,
-                            .sample_rate = ctx.sample_rate,
-                            .scc_feedback_latency = ctx.scc_feedback_latency,
-                            .buffer = ctx.state,
+                            TickPortBindings<Node>{
+                                .sample_inputs = inputs,
+                                .sample_outputs = outputs,
+                                .event_inputs = event_inputs,
+                                .event_outputs = event_outputs,
+                                .random_access_inputs = ctx.random_access_inputs,
+                                .random_access_event_inputs =
+                                    ctx.random_access_event_inputs,
+                                .recording =
+                                    make_tick_recording_bindings<Node>(ctx),
+                            },
+                            ctx.sample_rate,
+                            ctx.scc_feedback_latency,
+                            ctx.state,
                         },
                         static_cast<SampleIndex>(index),
                         block_size,
@@ -446,15 +522,20 @@ IV_FORCEINLINE void skip_node_block(
                     std::span<EventOutputPort> event_outputs) {
                     do_skip_block(node, SkipBlockContext<Node> {
                         TickContext<Node> {
-                            .inputs = inputs,
-                            .outputs = outputs,
-                            .event_inputs = event_inputs,
-                            .event_outputs = event_outputs,
-                            .random_access_inputs = ctx.random_access_inputs,
-                            .random_access_event_inputs = ctx.random_access_event_inputs,
-                            .sample_rate = ctx.sample_rate,
-                            .scc_feedback_latency = ctx.scc_feedback_latency,
-                            .buffer = ctx.state,
+                            TickPortBindings<Node>{
+                                .sample_inputs = inputs,
+                                .sample_outputs = outputs,
+                                .event_inputs = event_inputs,
+                                .event_outputs = event_outputs,
+                                .random_access_inputs = ctx.random_access_inputs,
+                                .random_access_event_inputs =
+                                    ctx.random_access_event_inputs,
+                                .recording =
+                                    make_tick_recording_bindings<Node>(ctx),
+                            },
+                            ctx.sample_rate,
+                            ctx.scc_feedback_latency,
+                            ctx.state,
                         },
                         static_cast<SampleIndex>(index),
                         block_size,

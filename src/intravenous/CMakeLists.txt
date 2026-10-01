@@ -226,7 +226,6 @@ add_library(intravenous_graph_builder OBJECT
     module/source_annotations.cpp
     node/config_storage.cpp
     node/layout.cpp
-    node/tick.cpp
 )
 iv_configure_intravenous_target(intravenous_graph_builder PUBLIC)
 

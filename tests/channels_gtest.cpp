@@ -1,5 +1,4 @@
 #include <intravenous/basic_nodes/constant.h>
-#include <intravenous/basic_nodes/routing.h>
 #include <intravenous/dsl.h>
 #include <intravenous/graph/builder.h>
 #include <intravenous/graph/builder/host.hpp>
@@ -21,10 +20,6 @@ static_assert(iv::channel_count(iv::ChannelTypeId::mono) == 1);
 static_assert(iv::channel_count(iv::ChannelTypeId::stereo) == 2);
 static_assert(iv::stereo::left.channel_index == 0);
 static_assert(iv::stereo::right.channel_index == 1);
-static_assert(iv::details::has_constexpr_port_configs<
-    iv::ChannelPack<iv::stereo>>);
-static_assert(iv::details::has_constexpr_port_configs<
-    iv::ChannelUnpack<iv::stereo>>);
 
 struct NamedStereoSource {
     static constexpr auto inputs()
@@ -61,7 +56,7 @@ struct MonoPass {
 
     void tick_block(iv::TickBlockContext<MonoPass> const& ctx) const
     {
-        ctx.outputs[0].push_block(ctx.inputs[0].get_block(ctx.block_size));
+        ctx.template output<0>().push_block(ctx.template input<0>().get_block(ctx.block_size));
     }
 };
 
@@ -106,36 +101,6 @@ TEST(Channels, SamplePortStorageViewConstructsInvocationLocalFacades)
     EXPECT_FLOAT_EQ(block[1], 2.0f);
     EXPECT_FLOAT_EQ(block[2], 3.0f);
     EXPECT_FLOAT_EQ(block[3], 4.0f);
-}
-
-TEST(Channels, OutputPortReportsOrdinaryWritesAndExplicitVoid)
-{
-    std::array<iv::Sample, 8> samples{};
-    iv::SamplePortStorageView storage{
-        std::span<iv::Sample>{samples},
-        0,
-        iv::mono_planar_channel_layout,
-        samples.size(),
-    };
-    iv::OutputDisposition observed = iv::OutputDisposition::written;
-
-    {
-        iv::OutputPort output(storage, 0, 0, &observed);
-        EXPECT_EQ(output.disposition(), iv::OutputDisposition::untouched);
-        EXPECT_EQ(observed, iv::OutputDisposition::untouched);
-        output.push_block(std::span<iv::Sample const>{});
-        EXPECT_EQ(output.disposition(), iv::OutputDisposition::untouched);
-        output.write_void();
-        EXPECT_EQ(output.disposition(), iv::OutputDisposition::voided);
-        EXPECT_EQ(observed, iv::OutputDisposition::voided);
-    }
-
-    {
-        iv::OutputPort output(storage, 0, 0, &observed);
-        output.write_frame(0, 0, 4.0f);
-        EXPECT_EQ(output.disposition(), iv::OutputDisposition::written);
-        EXPECT_EQ(observed, iv::OutputDisposition::written);
-    }
 }
 
 TEST(Channels, SamplePortStorageViewSupportsIndependentChannelStorage)
@@ -220,23 +185,6 @@ TEST(Channels, SamplePortStorageViewSupportsStridedChannelPointers)
     EXPECT_FLOAT_EQ(input.get_frame(0, 1), 205.0f);
     EXPECT_FLOAT_EQ(input.get_frame(2, 0), 107.0f);
     EXPECT_FLOAT_EQ(input.get_frame(2, 1), 207.0f);
-}
-
-TEST(Channels, ChannelPackAndUnpackRetainStaticPortSchemas)
-{
-    auto const pack = iv::ChannelPack<iv::stereo>::inputs();
-    auto const packed = iv::ChannelPack<iv::stereo>::outputs();
-    auto const unpack = iv::ChannelUnpack<iv::stereo>::inputs();
-    auto const unpacked = iv::ChannelUnpack<iv::stereo>::outputs();
-
-    EXPECT_EQ(pack.size(), 2u);
-    EXPECT_EQ(packed.size(), 1u);
-    EXPECT_EQ(unpack.size(), 1u);
-    EXPECT_EQ(unpacked.size(), 2u);
-    EXPECT_EQ(iv::sample_properties(packed.front()).channel_layout.channel_type,
-              iv::ChannelTypeId::stereo);
-    EXPECT_EQ(iv::sample_properties(unpack.front()).channel_layout.channel_type,
-              iv::ChannelTypeId::stereo);
 }
 
 TEST(Channels, SampleRefsExposeOrderedStructuralChannelIdentity)

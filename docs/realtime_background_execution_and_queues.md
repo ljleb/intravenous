@@ -414,8 +414,10 @@ rules, and their reclamation must not fall onto the realtime thread.
 
 ## 13. Recording semantics on the queue transport
 
-Recording is one use of this generic transport. There is one non-configurable recording
-semantic model:
+A Tick/persisted output is the recording output; an explicit recorder is an ordinary
+authored node that consumes a live Sequential input and writes Tick/persisted output.
+There is no separate recorder port kind or retention mode. This generic transport has
+one non-configurable recording semantic model:
 
 ```text
 ordinary write
@@ -438,6 +440,20 @@ preprovisioned capacity is a recording/resource failure.
 Where possible, the DSP writes the recorded sample/event payload directly into the
 provisioned recording block. A `write_void()` block carries the addressed range but no
 payload. An untouched block produces no queue entry at all.
+
+Only the statically specialized Tick/persisted output accessors observe disposition.
+Ephemeral Tick output writes and all Tock output writes execute no disposition update.
+For events, explicitly calling the ordinary block-authoring operation with an empty
+block is a `written` authoritative-empty payload; never calling an authoring operation
+is `untouched`. The generated default skip implementation authors sample silence and
+authoritative-empty event blocks through those same ordinary facades. The generic
+low-level sample/event ports contain no disposition pointer or state.
+
+Disposition is whole-callback-block semantics for Tick/persisted output. A written
+`tick_block()` invocation overwrites its complete addressed block; a voided invocation
+erases that complete block; an untouched invocation publishes no item. Scalar `tick()`
+uses the same rule for its one-sample block. History and latency affect the mutable
+Tick storage window but do not expand a recording item beyond the addressed block.
 
 ## 14. Background -> realtime persisted state is a latest-version mailbox
 

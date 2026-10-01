@@ -159,40 +159,6 @@ TEST(EventOutputPort, ExplicitBlockPushUsesSameWindow)
         iv::TriggerEvent{}, 9, 100, 8), std::logic_error); // end is 109
 }
 
-TEST(EventOutputPort, ReportsOnlyActualWritesAndExplicitVoid)
-{
-    std::array<iv::TimedEvent, 8> storage{};
-    iv::EventSharedPortData shared(
-        storage, 0, 0, iv::EventTypeId::trigger);
-    iv::OutputDisposition observed = iv::OutputDisposition::written;
-    iv::EventOutputPort output(
-        shared,
-        iv::EventTypeId::trigger,
-        0,
-        0,
-        nullptr,
-        &observed);
-
-    output.begin_block(100, 8);
-    output.push_block(iv::BlockView<iv::TimedEvent const>{});
-    EXPECT_EQ(output.disposition(), iv::OutputDisposition::untouched);
-    EXPECT_EQ(observed, iv::OutputDisposition::untouched);
-    output.write_void();
-    EXPECT_EQ(output.disposition(), iv::OutputDisposition::voided);
-    EXPECT_EQ(observed, iv::OutputDisposition::voided);
-    output.end_block();
-
-    output.begin_block(108, 8);
-    EXPECT_EQ(output.disposition(), iv::OutputDisposition::untouched);
-    output.push(iv::TimedEvent{
-        .time = 108,
-        .value = iv::TriggerEvent{},
-    });
-    EXPECT_EQ(output.disposition(), iv::OutputDisposition::written);
-    EXPECT_EQ(observed, iv::OutputDisposition::written);
-    output.end_block();
-}
-
 TEST(EventOutputPort, CountsProducerSequenceOverflowWithoutAllocating)
 {
     std::array<iv::TimedEvent, 16> storage{};

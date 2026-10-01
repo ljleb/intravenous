@@ -286,7 +286,7 @@ public:
 
     // Sticky failures to reserve complete realtime-produced records. In
     // particular, insufficient_reserve_capacity means at least one mandatory
-    // Tick/persisted or recording write was lost and later replenishment cannot
+    // Tick/persisted recording write was lost and later replenishment cannot
     // reconstruct it.
     [[nodiscard]] RealtimeProductionFailures
     realtime_production_failures() const noexcept;

@@ -244,7 +244,7 @@ port metadata.
 ### Audio thread / audio-thread execution
 
 Use **audio thread** only when the scheduling or hard execution constraint actually
-matters: no blocking, no request-sized allocation, pre-provisioned Tick capture,
+matters: no blocking, no request-sized allocation, pre-provisioned Tick recording,
 or safe-boundary publication.
 
 Do not use Tick as a synonym for the audio thread. Tick callbacks may also be reused
@@ -535,12 +535,17 @@ background pass. If a future feature requires atomic visibility across queues, t
 requirement must be designed explicitly rather than added implicitly to the queue
 primitive.
 
-For an explicit recording output, invocation-local disposition distinguishes three
-cases: an untouched output publishes nothing and preserves the prior RAM recording;
+For a Tick/persisted recording output, invocation-local disposition distinguishes
+three cases: an untouched output publishes nothing and preserves the prior RAM recording;
 an ordinarily written output publishes payload data that overwrites the addressed
 range; `write_void()` publishes an explicit authoritative erase for that range. This
-is fixed recording semantics, not recorder policy. A Tick/persisted empty event block
-remains an ordinary authoritative empty event payload rather than a recorder void.
+is fixed recording semantics, not recorder policy. An explicitly authored empty
+Tick/persisted event block remains an ordinary authoritative empty event payload rather
+than a recorder void; merely omitting event output authoring leaves it untouched.
+Disposition covers the entire addressed Tick callback block. A scalar `tick()` block
+contains one sample. Output history/latency may widen the mutable storage window, but
+does not widen the recorded overwrite or erase range. Tock/persisted output instead
+authors exact arbitrary coverage and does not use Tick recording disposition.
 
 A **queue-capacity failure** means a producer could not obtain already-provisioned
 blocks for work that semantically had to be published. Later replenishment cannot

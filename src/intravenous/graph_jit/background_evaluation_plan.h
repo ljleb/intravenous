@@ -214,9 +214,10 @@ struct BackgroundPortPlan {
     // Random Access inputs leave this at zero.
     std::size_t sequential_history = 0;
 
-    // Tick-output mutation window. Persisted capture copies the complete
-    // finalized [block-history, block-end+latency) window, not merely the
-    // nominal current block. Inputs and Tock outputs leave these at zero.
+    // Tick-output storage mutation window. Recording captures the addressed
+    // callback block as one whole authoritative block; history and latency
+    // remain storage/planning facts rather than extending the recorded range.
+    // Inputs and Tock outputs leave these at zero.
     std::size_t output_history = 0;
     std::size_t output_latency = 0;
 

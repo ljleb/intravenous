@@ -18,15 +18,15 @@ namespace iv {
 
         void tick(TickSampleContext<WhackIirThing> const& ctx) const
         {
-            Sample in_dry = ctx.inputs[0].get();
-            Sample in_control = ctx.inputs[1].get();
+            Sample in_dry = ctx.template input<0>().get();
+            Sample in_control = ctx.template input<1>().get();
             Sample alpha = 1 - in_control;
             for (size_t i = 0; i < 4; ++i) {
                 alpha *= alpha;
             }
 
-            auto& out_low = ctx.outputs[0];
-            auto& out_high = ctx.outputs[1];
+            auto out_low = ctx.template output<0>();
+            auto out_high = ctx.template output<1>();
             Sample last_low = out_low.get();
             Sample low = last_low + alpha * (in_dry - last_low);
             out_low.push(low);
@@ -53,10 +53,10 @@ namespace iv {
 
         void tick(TickSampleContext<SimpleIirHighPass> const& ctx) const
         {
-            auto& in = ctx.inputs[0];
-            auto const ctrl = ctx.inputs[1].get();
+            auto in = ctx.template input<0>();
+            auto const ctrl = ctx.template input<1>().get();
             auto const dx = ctx.sample_period();
-            auto& out = ctx.outputs[0];
+            auto out = ctx.template output<0>();
 
             auto const usableMax = std::min<Sample>(FMAX, 0.5f / dx);
             auto const f_c = FMIN * std::pow(usableMax / FMIN, ctrl);
@@ -91,10 +91,10 @@ namespace iv {
 
         void tick(TickSampleContext<SimpleIirLowPass> const& ctx) const
         {
-            auto& in_port = ctx.inputs[0];
-            auto const ctrl = ctx.inputs[1].get();
+            auto in_port = ctx.template input<0>();
+            auto const ctrl = ctx.template input<1>().get();
             auto const dt = ctx.sample_period();
-            auto& out = ctx.outputs[0];
+            auto out = ctx.template output<0>();
 
             auto const usableMax = std::min<Sample>(FMAX, 0.5f / dt);
             auto const f_c = FMIN * std::pow(usableMax / FMIN, ctrl);

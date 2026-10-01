@@ -91,9 +91,11 @@ struct ReflectedSampleOutputPortBinding {
     ReflectedSamplePortStorageBinding storage {};
     std::size_t history = 0;
     std::size_t latency = 0;
-    // The imported primitive wrapper resets this before each node invocation.
-    // Ordinary OutputPort authoring updates it in place, and the generated
-    // post-step operation observes the finalized disposition afterward.
+    // For Tick/persisted outputs only, the imported primitive wrapper resets
+    // this before each node invocation and passes its address only to that
+    // output's statically specialized facade. Ephemeral/Tock output facades
+    // carry no disposition state. The generated post-step operation observes
+    // the finalized value.
     mutable OutputDisposition disposition = OutputDisposition::untouched;
 };
 
@@ -136,8 +138,8 @@ struct ReflectedEventOutputPortBinding {
     // span several primitive slices; in that case lowering clears the raw
     // sequence once before the producer step and every slice appends.
     bool append_existing = false;
-    // Invocation-local authored state shared by EventOutputPort and the
-    // generated post-step operation.
+    // Invocation-local authored state whose address is given only to the
+    // Tick/persisted facade and its generated post-step operation.
     mutable OutputDisposition disposition = OutputDisposition::untouched;
 };
 

@@ -35,7 +35,7 @@ struct CStringConfigNode {
 
     void tick(TickSampleContext<CStringConfigNode> const& ctx) const
     {
-        ctx.outputs[0].push(0.0f);
+        ctx.template output<0>().push(0.0f);
     }
 };
 
@@ -84,7 +84,7 @@ struct StructuredCStringConfigNode {
 
     void tick(TickSampleContext<StructuredCStringConfigNode> const& ctx) const
     {
-        ctx.outputs[0].push(0.0f);
+        ctx.template output<0>().push(0.0f);
     }
 };
 

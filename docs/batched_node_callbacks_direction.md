@@ -144,6 +144,12 @@ public:
         template<fixed_string Name>
         [[nodiscard]] auto output() const;
 
+        template<std::size_t Index>
+        [[nodiscard]] auto input() const;
+
+        template<std::size_t Index>
+        [[nodiscard]] auto output() const;
+
         [[nodiscard]] decltype(auto) state() const
         requires (!std::is_void_v<typename NodeState<Node>::Type>);
     };
@@ -160,6 +166,12 @@ The forwarding accessors are intentionally shaped like `TickBlockContext<Node>`,
 an authored batch implementation does not need a second port vocabulary. `node()`
 provides the configured node instance that would otherwise have been `this` in a
 scalar member callback. `state()` is lane-specific.
+
+`Index` is declaration order across the node's single input or output schema, including
+both sample and event ports. Neither scalar nor batch Tick contexts expose raw public
+sample/event port ranges. Fixed-arity generic algorithms expand the constexpr schema
+indexes at compile time, while reflected port spans remain private implementation
+bindings.
 
 The batch API makes no public promise that node objects, states, port buffers, or lane
 records are contiguous. GraphJit remains free to change their physical layout. An

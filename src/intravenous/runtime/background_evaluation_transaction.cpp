@@ -499,6 +499,144 @@ class BackgroundEvaluationTransaction::Impl {
         return {};
     }
 
+    [[nodiscard]] std::expected<void, std::string> apply_sample_void(
+        ProducedRecord const& record,
+        PersistedPageStore::Candidate& candidate)
+    {
+        auto const& header = record.header;
+        auto const& port =
+            graph_->background_evaluation_plan.ports[record.route.port];
+        if (header.payload_kind != RealtimeProducedPayloadKind::void_value
+            || record.route.kind != PortKind::sample
+            || header.sample_layout != port.sample_layout
+            || header.payload_size != 0 || !record.payload.empty()
+            || header.sample_count == 0
+            || header.begin > std::numeric_limits<SampleIndex>::max()
+                    - header.sample_count) {
+            return std::unexpected(
+                "realtime-produced sample void has invalid metadata");
+        }
+
+        auto const end = header.begin
+            + static_cast<SampleIndex>(header.sample_count);
+        auto const width = candidate.page_width();
+        auto page = static_cast<std::uint64_t>(header.begin / width);
+        auto const last = static_cast<std::uint64_t>((end - 1) / width);
+        auto const channels = channel_count(header.sample_layout);
+        for (;; ++page) {
+            auto const page_begin = static_cast<SampleIndex>(page * width);
+            auto const page_end = saturating_sample_index_add(
+                page_begin, static_cast<SampleIndex>(width));
+            auto const erased = IndexRegion{
+                std::max(header.begin, page_begin), std::min(end, page_end)};
+            auto const* existing = candidate.working_snapshot()
+                .find_sample_page(record.route.output, page);
+            if (existing) {
+                if (existing->layout != header.sample_layout) {
+                    return std::unexpected(
+                        "realtime-produced sample void layout disagrees with persisted pages");
+                }
+                auto domain = existing->domain;
+                domain.exclude(erased);
+                if (domain.empty()) {
+                    candidate.erase_page(record.route.output, page);
+                } else if (domain != existing->domain) {
+                    auto const frames = coverage_sample_count(domain);
+                    PersistedSamplePage replacement{
+                        .output = record.route.output,
+                        .page_index = page,
+                        .domain = domain,
+                        .layout = header.sample_layout,
+                        .packing = PersistedSamplePacking::coverage_packed,
+                    };
+                    replacement.values.resize(frames * channels);
+                    std::size_t packed_frame = 0;
+                    for (auto const part : domain.regions()) {
+                        for (auto sample = part.begin; sample < part.end;
+                             ++sample, ++packed_frame) {
+                            for (std::size_t channel = 0; channel < channels;
+                                 ++channel) {
+                                auto const value = read_existing_sample(
+                                    *existing, sample, channel, width);
+                                auto const offset =
+                                    header.sample_layout.sample_layout
+                                        == SampleStreamLayout::planar
+                                    ? channel * frames + packed_frame
+                                    : packed_frame * channels + channel;
+                                replacement.values[offset] = value;
+                            }
+                        }
+                    }
+                    candidate.put(std::move(replacement));
+                }
+            }
+            if (page == last) break;
+        }
+        return {};
+    }
+
+    [[nodiscard]] std::expected<void, std::string> apply_event_void(
+        ProducedRecord const& record,
+        PersistedPageStore::Candidate& candidate)
+    {
+        auto const& header = record.header;
+        auto const& port =
+            graph_->background_evaluation_plan.ports[record.route.port];
+        if (header.payload_kind != RealtimeProducedPayloadKind::void_value
+            || record.route.kind != PortKind::event
+            || header.event_type != port.event_type
+            || header.payload_size != 0 || !record.payload.empty()
+            || header.event_count != 0 || header.sample_count == 0
+            || header.begin > std::numeric_limits<SampleIndex>::max()
+                    - header.sample_count) {
+            return std::unexpected(
+                "realtime-produced event void has invalid metadata");
+        }
+
+        auto const end = header.begin
+            + static_cast<SampleIndex>(header.sample_count);
+        auto const width = candidate.page_width();
+        auto page = static_cast<std::uint64_t>(header.begin / width);
+        auto const last = static_cast<std::uint64_t>((end - 1) / width);
+        for (;; ++page) {
+            auto const page_begin = static_cast<SampleIndex>(page * width);
+            auto const page_end = saturating_sample_index_add(
+                page_begin, static_cast<SampleIndex>(width));
+            auto const erased = IndexRegion{
+                std::max(header.begin, page_begin), std::min(end, page_end)};
+            auto const* existing = candidate.working_snapshot()
+                .find_event_page(record.route.output, page);
+            if (existing) {
+                if (existing->type != header.event_type) {
+                    return std::unexpected(
+                        "realtime-produced event void type disagrees with persisted pages");
+                }
+                auto domain = existing->domain;
+                domain.exclude(erased);
+                if (domain.empty()) {
+                    candidate.erase_page(record.route.output, page);
+                } else if (domain != existing->domain) {
+                    PersistedEventPage replacement{
+                        .output = record.route.output,
+                        .page_index = page,
+                        .domain = std::move(domain),
+                        .type = header.event_type,
+                    };
+                    for (auto const& event : existing->events) {
+                        auto const absolute = page_begin
+                            + static_cast<SampleIndex>(event.time);
+                        if (!erased.contains(absolute)) {
+                            replacement.events.push_back(event);
+                        }
+                    }
+                    candidate.put(std::move(replacement));
+                }
+            }
+            if (page == last) break;
+        }
+        return {};
+    }
+
     [[nodiscard]] std::expected<void, std::string> apply_produced_records(
         std::span<ProducedRecord const> records,
         PersistedPageStore::Snapshot const& base,
@@ -545,12 +683,24 @@ class BackgroundEvaluationTransaction::Impl {
                 });
                 found = std::prev(roots.end());
             }
-            found->coverage.include(changed);
-            found->changed.include(changed);
+            auto const is_void = record.header.payload_kind
+                == RealtimeProducedPayloadKind::void_value;
+            if (is_void) {
+                auto removed = found->coverage & Coverage{changed};
+                found->coverage.exclude(changed);
+                found->changed.include(removed);
+            } else {
+                found->coverage.include(changed);
+                found->changed.include(changed);
+            }
 
-            auto applied = record.route.kind == PortKind::sample
-                ? apply_sample_record(record, candidate)
-                : apply_event_record(record, candidate);
+            auto applied = is_void
+                ? (record.route.kind == PortKind::sample
+                    ? apply_sample_void(record, candidate)
+                    : apply_event_void(record, candidate))
+                : (record.route.kind == PortKind::sample
+                    ? apply_sample_record(record, candidate)
+                    : apply_event_record(record, candidate));
             if (!applied) return applied;
         }
 

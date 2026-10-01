@@ -11,7 +11,7 @@ struct SamplePeriodSource {
 
     void tick(iv::TickSampleContext<SamplePeriodSource> const& ctx) const
     {
-        ctx.outputs[0].push(ctx.sample_period());
+        ctx.template output<0>().push(ctx.sample_period());
     }
 };
 }

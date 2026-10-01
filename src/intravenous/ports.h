@@ -720,9 +720,10 @@ namespace iv {
     // port facades only require this immutable view of the backing storage.
     // GraphJit therefore treats InputPort/OutputPort as invocation-local API
     // facades reconstructed from compiler-resolved bindings, never as
-    // persistent connection state or NodeStorage-owned objects. An output
-    // binding may retain only the invocation-local authored disposition which
-    // its post-step operation observes after the facade returns.
+    // persistent connection state or NodeStorage-owned objects. A
+    // Tick/persisted output binding may additionally retain invocation-local
+    // authored disposition for its post-step recording operation; ordinary
+    // ephemeral/Tock output writes do not observe it.
     struct SampleChannelStorageView {
         Sample* storage = nullptr;
         size_t frame_capacity = 0;
@@ -991,6 +992,8 @@ namespace iv {
         }
     };
 
+    // Invocation state for a statically known Tick/persisted output binding.
+    // OutputPort and EventOutputPort deliberately neither store nor update it.
     enum class OutputDisposition : std::uint8_t {
         untouched,
         written,
@@ -1005,25 +1008,6 @@ namespace iv {
         size_t _direct_write_extent = 0;
         ChannelLayout _source_layout;
         ChannelConversionPlan _conversion;
-        OutputDisposition _disposition = OutputDisposition::untouched;
-        OutputDisposition* _observed_disposition = nullptr;
-
-        IV_FORCEINLINE constexpr void set_disposition(
-            OutputDisposition disposition)
-        {
-            _disposition = disposition;
-            if (_observed_disposition) {
-                *_observed_disposition = disposition;
-            }
-        }
-
-        IV_FORCEINLINE constexpr void mark_written()
-        {
-            IV_ASSERT(
-                _disposition != OutputDisposition::voided,
-                "an output cannot be written after write_void() in the same invocation");
-            set_disposition(OutputDisposition::written);
-        }
 
         IV_FORCEINLINE constexpr void write_target_frame_at(
             std::span<Sample const> values, size_t frame)
@@ -1045,61 +1029,52 @@ namespace iv {
         explicit OutputPort(
             SamplePortStorageView storage,
             size_t history,
-            SampleIndex index = 0,
-            OutputDisposition* observed_disposition = nullptr
+            SampleIndex index = 0
         ) : OutputPort(
             storage,
             history,
             index,
-            storage.latency,
-            observed_disposition)
+            storage.latency)
         {}
 
         explicit OutputPort(
             SamplePortStorageView storage,
             size_t history,
             SampleIndex index,
-            size_t latency,
-            OutputDisposition* observed_disposition = nullptr
+            size_t latency
         ) :
             _storage(storage),
             _history(history),
             _latency(latency),
             _position(static_cast<size_t>(index & (storage.frame_capacity - 1))),
-            _source_layout(storage.channel_layout),
-            _observed_disposition(observed_disposition)
+            _source_layout(storage.channel_layout)
         {
             IV_ASSERT(is_power_of_2(_storage.frame_capacity), "buffer frame capacity should be a power of 2");
             IV_ASSERT(_latency < _storage.frame_capacity, "output latency must fit its shared ring buffer");
-            set_disposition(OutputDisposition::untouched);
         }
 
         explicit OutputPort(
             SharedPortData& shared_data,
             size_t history,
-            SampleIndex index = 0,
-            OutputDisposition* observed_disposition = nullptr
+            SampleIndex index = 0
         ) :
             OutputPort(
                 SamplePortStorageView{shared_data},
                 history,
-                index,
-                observed_disposition)
+                index)
         {}
 
         explicit OutputPort(
             SharedPortData& shared_data,
             size_t history,
             SampleIndex index,
-            size_t latency,
-            OutputDisposition* observed_disposition = nullptr
+            size_t latency
         ) :
             OutputPort(
                 SamplePortStorageView{shared_data},
                 history,
                 index,
-                latency,
-                observed_disposition)
+                latency)
         {}
 
         explicit OutputPort(
@@ -1107,16 +1082,14 @@ namespace iv {
             size_t history,
             ChannelLayout source_layout,
             ChannelConversionPlan conversion,
-            SampleIndex index = 0,
-            OutputDisposition* observed_disposition = nullptr
+            SampleIndex index = 0
         ) : OutputPort(
             storage,
             history,
             source_layout,
             conversion,
             index,
-            storage.latency,
-            observed_disposition)
+            storage.latency)
         {}
 
         explicit OutputPort(
@@ -1125,22 +1098,19 @@ namespace iv {
             ChannelLayout source_layout,
             ChannelConversionPlan conversion,
             SampleIndex index,
-            size_t latency,
-            OutputDisposition* observed_disposition = nullptr
+            size_t latency
         ) :
             _storage(storage),
             _history(history),
             _latency(latency),
             _position(static_cast<size_t>(index & (storage.frame_capacity - 1))),
             _source_layout(source_layout),
-            _conversion(conversion),
-            _observed_disposition(observed_disposition)
+            _conversion(conversion)
         {
             IV_ASSERT(is_power_of_2(_storage.frame_capacity), "buffer frame capacity should be a power of 2");
             IV_ASSERT(_latency < _storage.frame_capacity, "output latency must fit its shared ring buffer");
             IV_ASSERT(_conversion && _conversion.source == _source_layout, "sample edge conversion source layout does not match output layout");
             IV_ASSERT(_conversion.target == _storage.channel_layout, "sample edge conversion target layout does not match output buffer layout");
-            set_disposition(OutputDisposition::untouched);
         }
 
         explicit OutputPort(
@@ -1148,15 +1118,13 @@ namespace iv {
             size_t history,
             ChannelLayout source_layout,
             ChannelConversionPlan conversion,
-            SampleIndex index = 0,
-            OutputDisposition* observed_disposition = nullptr
+            SampleIndex index = 0
         ) : OutputPort(
             SamplePortStorageView{shared_data},
-            history,
-            source_layout,
-            conversion,
-            index,
-            observed_disposition)
+                history,
+                source_layout,
+                conversion,
+                index)
         {}
 
         explicit OutputPort(
@@ -1165,16 +1133,14 @@ namespace iv {
             ChannelLayout source_layout,
             ChannelConversionPlan conversion,
             SampleIndex index,
-            size_t latency,
-            OutputDisposition* observed_disposition = nullptr
+            size_t latency
         ) : OutputPort(
             SamplePortStorageView{shared_data},
             history,
-            source_layout,
-            conversion,
-            index,
-            latency,
-            observed_disposition)
+                source_layout,
+                conversion,
+                index,
+                latency)
         {}
 
         IV_FORCEINLINE constexpr Sample get(size_t offset = 0, size_t channel = 0) const
@@ -1189,7 +1155,6 @@ namespace iv {
         IV_FORCEINLINE constexpr void write_frame(size_t frame_offset, size_t channel, Sample value)
         {
             IV_ASSERT(_source_layout == _storage.channel_layout, "direct frame writes require matching source and target channel layouts");
-            mark_written();
             size_t const frame = (_position + _storage.latency + frame_offset) & (buffer_size() - 1);
             _storage.sample(frame, channel) = value;
             _direct_write_extent = std::max(_direct_write_extent, frame_offset + 1);
@@ -1243,7 +1208,6 @@ namespace iv {
         IV_FORCEINLINE constexpr void push_frame(std::span<Sample const> source)
         {
             IV_ASSERT(source.size() == channel_count(_source_layout), "output frame does not match source channel layout");
-            mark_written();
             Sample converted[2] {};
             if (_conversion) {
                 _conversion.convert(source.data(), converted, 1);
@@ -1274,7 +1238,6 @@ namespace iv {
         IV_FORCEINLINE constexpr void accumulate_block(std::span<Sample const> samples)
         {
             if (samples.empty()) return;
-            mark_written();
             size_t const start = (
                 _position + _storage.latency + buffer_size() - samples.size()
             ) & (buffer_size() - 1);
@@ -1288,7 +1251,6 @@ namespace iv {
         IV_FORCEINLINE constexpr void accumulate_block(BlockView<Sample const> samples)
         {
             if (samples.empty()) return;
-            mark_written();
             size_t const start = (
                 _position + _storage.latency + buffer_size() - samples.size()
             ) & (buffer_size() - 1);
@@ -1301,7 +1263,6 @@ namespace iv {
         IV_FORCEINLINE constexpr void push_silence(size_t block_size)
         {
             if (block_size == 0) return;
-            mark_written();
             size_t const mask = buffer_size() - 1;
             size_t const start = (_position + _storage.latency) & mask;
             auto const channels = channel_count(_storage.channel_layout);
@@ -1326,7 +1287,6 @@ namespace iv {
         {
             if (offset >= _latency) return;
             IV_ASSERT(source.size() == channel_count(_source_layout), "output frame does not match source channel layout");
-            mark_written();
             Sample converted[2] {};
             std::span<Sample const> target = source;
             if (_conversion) {
@@ -1340,20 +1300,6 @@ namespace iv {
                 _position + _storage.latency + buffer_size() - 1 - offset
             ) & (buffer_size() - 1);
             write_target_frame_at(target, frame);
-        }
-
-        IV_FORCEINLINE constexpr void write_void()
-        {
-            IV_ASSERT(
-                _disposition != OutputDisposition::written,
-                "write_void() cannot follow an ordinary output write in the same invocation");
-            set_disposition(OutputDisposition::voided);
-        }
-
-        [[nodiscard]] IV_FORCEINLINE constexpr OutputDisposition disposition()
-            const noexcept
-        {
-            return _disposition;
         }
 
         IV_FORCEINLINE constexpr size_t position() const
@@ -1503,24 +1449,6 @@ namespace iv {
         bool _has_conversion = false;
         EventConversionPlan _conversion {};
         std::optional<RealtimePortWindow> _active_window {};
-        mutable OutputDisposition _disposition = OutputDisposition::untouched;
-        OutputDisposition* _observed_disposition = nullptr;
-
-        void set_disposition(OutputDisposition disposition) const noexcept
-        {
-            _disposition = disposition;
-            if (_observed_disposition) {
-                *_observed_disposition = disposition;
-            }
-        }
-
-        void mark_written() const
-        {
-            IV_ASSERT(
-                _disposition != OutputDisposition::voided,
-                "an output cannot be written after write_void() in the same invocation");
-            set_disposition(OutputDisposition::written);
-        }
 
         [[nodiscard]] RealtimePortWindow window_for(
             SampleIndex block_index, size_t block_size) const noexcept
@@ -1568,7 +1496,6 @@ namespace iv {
                     record_overflow();
                     return;
                 }
-                mark_written();
                 _shared_data->buffer[
                     _shared_data->write_index
                     & (_shared_data->buffer.size() - 1)] = appended;
@@ -1591,21 +1518,18 @@ namespace iv {
             EventTypeId source_type,
             size_t history = 0,
             size_t latency = 0,
-            std::uint64_t* overflow_count = nullptr,
-            OutputDisposition* observed_disposition = nullptr
+            std::uint64_t* overflow_count = nullptr
         ) :
             _shared_data(&shared_data),
             _source_type(source_type),
             _overflow_count(overflow_count),
             _history(history),
-            _latency(latency),
-            _observed_disposition(observed_disposition)
+            _latency(latency)
         {
             if (_shared_data->type != _source_type) {
                 throw std::logic_error(
                     "event output source type does not match target storage type");
             }
-            set_disposition(OutputDisposition::untouched);
         }
 
         explicit EventOutputPort(
@@ -1614,8 +1538,7 @@ namespace iv {
             EventConversionPlan const& conversion,
             size_t history = 0,
             size_t latency = 0,
-            std::uint64_t* overflow_count = nullptr,
-            OutputDisposition* observed_disposition = nullptr
+            std::uint64_t* overflow_count = nullptr
         ) :
             _shared_data(&shared_data),
             _source_type(source_type),
@@ -1623,20 +1546,17 @@ namespace iv {
             _history(history),
             _latency(latency),
             _has_conversion(true),
-            _conversion(conversion),
-            _observed_disposition(observed_disposition)
+            _conversion(conversion)
         {
             if (_conversion.source_type != _source_type
                 || _conversion.target_type != _shared_data->type) {
                 throw std::logic_error(
                     "event conversion plan does not match output/storage types");
             }
-            set_disposition(OutputDisposition::untouched);
         }
 
         void begin_block(SampleIndex block_index, size_t block_size)
         {
-            set_disposition(OutputDisposition::untouched);
             _active_window = window_for(block_index, block_size);
         }
 
@@ -1702,19 +1622,6 @@ namespace iv {
         void append_block(BlockView<TimedEvent const> events) const
         {
             push_block(events);
-        }
-
-        void write_void() const
-        {
-            IV_ASSERT(
-                _disposition != OutputDisposition::written,
-                "write_void() cannot follow an ordinary output write in the same invocation");
-            set_disposition(OutputDisposition::voided);
-        }
-
-        [[nodiscard]] OutputDisposition disposition() const noexcept
-        {
-            return _disposition;
         }
 
         EventTypeId source_type() const

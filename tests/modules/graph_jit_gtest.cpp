@@ -2932,7 +2932,7 @@ struct SampleRampSource {
     void tick_block(iv::TickBlockContext<SampleRampSource> const& ctx) const
     {
         for (std::size_t i = 0; i < ctx.block_size; ++i) {
-            ctx.outputs[0].push(static_cast<iv::Sample>(ctx.index + i));
+            ctx.template output<0>().push(static_cast<iv::Sample>(ctx.index + i));
         }
     }
 };
@@ -2951,7 +2951,7 @@ struct RevisingSampleSource {
 
     void tick_block(iv::TickBlockContext<RevisingSampleSource> const& ctx) const
     {
-        auto& output = ctx.outputs[0];
+        auto output = ctx.template output<0>();
         for (std::size_t i = 0; i < ctx.block_size; ++i) {
             auto const index = ctx.index + i;
             if (index != 0) {
@@ -2989,13 +2989,13 @@ struct TickCaptureSource {
 
     void tick_block(iv::TickBlockContext<TickCaptureSource> const& ctx) const
     {
+        auto samples = ctx.template output<"samples">();
         for (std::size_t i = 0; i < ctx.block_size; ++i) {
-            ctx.outputs[0].push(
-                static_cast<iv::Sample>(ctx.index + i) + iv::Sample{0.5f});
+            samples[i] =
+                static_cast<iv::Sample>(ctx.index + i) + iv::Sample{0.5f};
         }
         if (ctx.block_size > 3) {
-            ctx.event_outputs[0].push(
-                iv::TriggerEvent{}, 3, ctx.index, ctx.block_size);
+            ctx.template output<"events">().push(iv::TriggerEvent{}, 3);
         }
     }
 };
@@ -3014,7 +3014,7 @@ struct PersistentRevisingSampleSource {
 
     void tick_block(iv::TickBlockContext<PersistentRevisingSampleSource> const& ctx) const
     {
-        auto& output = ctx.outputs[0];
+        auto output = ctx.template output<0>();
         for (std::size_t i = 0; i < ctx.block_size; ++i) {
             auto const index = ctx.index + i;
             if (index != 0) {
@@ -3041,7 +3041,7 @@ struct TickFallbackSampleSource {
 
     void tick(iv::TickSampleContext<TickFallbackSampleSource> const& ctx) const
     {
-        auto& output = ctx.outputs[0];
+        auto output = ctx.template output<0>();
         if (ctx.index != 0) {
             output.update(static_cast<iv::Sample>(100 + ctx.index - 1));
         }
@@ -3065,7 +3065,7 @@ struct LimitedSampleRampSource {
     void tick_block(iv::TickBlockContext<LimitedSampleRampSource> const& ctx) const
     {
         for (std::size_t i = 0; i < ctx.block_size; ++i) {
-            ctx.outputs[0].push(static_cast<iv::Sample>(ctx.index + i));
+            ctx.template output<0>().push(static_cast<iv::Sample>(ctx.index + i));
         }
     }
 };
@@ -3093,7 +3093,7 @@ struct SampleConsumerProbe {
     void tick_block(iv::TickBlockContext<SampleConsumerProbe> const& ctx) const
     {
         auto& state = ctx.state();
-        auto const block = ctx.inputs[0].get_block(ctx.block_size);
+        auto const block = ctx.template input<0>().get_block(ctx.block_size);
         ++state.calls;
         state.last_index = ctx.index;
         state.last_block_size = ctx.block_size;
@@ -3130,7 +3130,7 @@ struct SampleFeedbackA {
     void tick_block(iv::TickBlockContext<SampleFeedbackA> const& ctx) const
     {
         auto& state = ctx.state();
-        auto const input = ctx.inputs[0].get_block(ctx.block_size);
+        auto const input = ctx.template input<0>().get_block(ctx.block_size);
         auto const index = static_cast<std::size_t>(state.calls);
         if (index < state.indices.size()) {
             state.indices[index] = ctx.index;
@@ -3146,7 +3146,7 @@ struct SampleFeedbackA {
         state.scc_feedback_latency = ctx.scc_feedback_latency;
         state.marker = 0x5a11ce01u;
         for (auto const sample : input) {
-            ctx.outputs[0].push(sample + 1.0f);
+            ctx.template output<0>().push(sample + 1.0f);
         }
     }
 };
@@ -3176,7 +3176,7 @@ struct SampleFeedbackB {
     void tick_block(iv::TickBlockContext<SampleFeedbackB> const& ctx) const
     {
         auto& state = ctx.state();
-        auto const input = ctx.inputs[0].get_block(ctx.block_size);
+        auto const input = ctx.template input<0>().get_block(ctx.block_size);
         auto const index = static_cast<std::size_t>(state.calls);
         if (index < state.indices.size()) {
             state.indices[index] = ctx.index;
@@ -3192,7 +3192,7 @@ struct SampleFeedbackB {
         state.scc_feedback_latency = ctx.scc_feedback_latency;
         state.marker = 0x5b22ce02ull;
         for (auto const sample : input) {
-            ctx.outputs[0].push(sample);
+            ctx.template output<0>().push(sample);
         }
     }
 };
@@ -3229,9 +3229,9 @@ struct MultiBranchSampleFeedback {
     void tick_block(iv::TickBlockContext<MultiBranchSampleFeedback> const& ctx) const
     {
         auto& state = ctx.state();
-        auto const fast = ctx.inputs[0].get_block(ctx.block_size);
-        auto const slow = ctx.inputs[1].get_block(ctx.block_size);
-        auto const initialized = ctx.inputs[2].get_block(ctx.block_size);
+        auto const fast = ctx.template input<0>().get_block(ctx.block_size);
+        auto const slow = ctx.template input<1>().get_block(ctx.block_size);
+        auto const initialized = ctx.template input<2>().get_block(ctx.block_size);
         auto const index = static_cast<std::size_t>(state.calls);
         if (index < state.indices.size()) {
             state.indices[index] = ctx.index;
@@ -3249,7 +3249,7 @@ struct MultiBranchSampleFeedback {
         state.scc_feedback_latency = ctx.scc_feedback_latency;
         state.marker = 0x6d756c74u;
         for (auto const sample : fast) {
-            ctx.outputs[0].push(sample + 1.0f);
+            ctx.template output<0>().push(sample + 1.0f);
         }
     }
 };
@@ -3282,14 +3282,14 @@ struct TemporalSampleFeedback {
     void tick_block(iv::TickBlockContext<TemporalSampleFeedback> const& ctx) const
     {
         auto& state = ctx.state();
-        auto const input = ctx.inputs[0].get_block(ctx.block_size);
+        auto const input = ctx.template input<0>().get_block(ctx.block_size);
         auto const index = static_cast<std::size_t>(state.calls);
         if (index < state.indices.size()) {
             state.indices[index] = ctx.index;
             state.block_sizes[index] = ctx.block_size;
-            state.current_inputs[index] = static_cast<float>(ctx.inputs[0].get());
+            state.current_inputs[index] = static_cast<float>(ctx.template input<0>().get());
             state.history_3_inputs[index] =
-                static_cast<float>(ctx.inputs[0].get(3));
+                static_cast<float>(ctx.template input<0>().get(3));
             state.first_inputs[index] = input.empty()
                 ? 0.0f
                 : static_cast<float>(input[0]);
@@ -3301,7 +3301,7 @@ struct TemporalSampleFeedback {
         state.scc_feedback_latency = ctx.scc_feedback_latency;
         state.marker = 0x7e4fba11u;
         for (auto const sample : input) {
-            ctx.outputs[0].push(sample + 1.0f);
+            ctx.template output<0>().push(sample + 1.0f);
         }
     }
 };
@@ -3332,7 +3332,7 @@ struct RevisingSampleFeedback {
         auto const index = static_cast<std::size_t>(state.calls);
         if (index < state.indices.size()) {
             state.indices[index] = ctx.index;
-            auto const block = ctx.inputs[0].get_block(ctx.block_size);
+            auto const block = ctx.template input<0>().get_block(ctx.block_size);
             state.first_inputs[index] = block.empty()
                 ? 0.0f
                 : static_cast<float>(block[0]);
@@ -3343,7 +3343,7 @@ struct RevisingSampleFeedback {
         ++state.calls;
         state.marker = 0x5a17e001u;
 
-        auto& output = ctx.outputs[0];
+        auto output = ctx.template output<0>();
         if (ctx.index == 4) {
             // Frame 3 was authored by the preceding root call and remains
             // revisable because the output declares two frames of latency.
@@ -3391,19 +3391,19 @@ struct ProjectedRevisingSampleFeedback {
             state.indices[index] = ctx.index;
             if (ctx.block_size != 0) {
                 state.first_left[index] =
-                    static_cast<float>(ctx.inputs[0].get_frame(0, 0));
+                    static_cast<float>(ctx.template input<0>().get_frame(0, 0));
                 state.first_right[index] =
-                    static_cast<float>(ctx.inputs[0].get_frame(0, 1));
+                    static_cast<float>(ctx.template input<0>().get_frame(0, 1));
                 state.last_left[index] = static_cast<float>(
-                    ctx.inputs[0].get_frame(ctx.block_size - 1, 0));
+                    ctx.template input<0>().get_frame(ctx.block_size - 1, 0));
                 state.last_right[index] = static_cast<float>(
-                    ctx.inputs[0].get_frame(ctx.block_size - 1, 1));
+                    ctx.template input<0>().get_frame(ctx.block_size - 1, 1));
             }
         }
         ++state.calls;
         state.marker = 0x52e71e55u;
 
-        auto& output = ctx.outputs[0];
+        auto output = ctx.template output<0>();
         if (ctx.index == 4) {
             output.update(iv::Sample{103.0f});
         }
@@ -3450,22 +3450,22 @@ struct ConvertedSampleFeedback {
             state.block_sizes[index] = ctx.block_size;
             if (ctx.block_size != 0) {
                 state.first_left[index] =
-                    static_cast<float>(ctx.inputs[0].get_frame(0, 0));
+                    static_cast<float>(ctx.template input<0>().get_frame(0, 0));
                 state.first_right[index] =
-                    static_cast<float>(ctx.inputs[0].get_frame(0, 1));
+                    static_cast<float>(ctx.template input<0>().get_frame(0, 1));
                 state.last_left[index] = static_cast<float>(
-                    ctx.inputs[0].get_frame(ctx.block_size - 1, 0));
+                    ctx.template input<0>().get_frame(ctx.block_size - 1, 0));
                 state.last_right[index] = static_cast<float>(
-                    ctx.inputs[0].get_frame(ctx.block_size - 1, 1));
+                    ctx.template input<0>().get_frame(ctx.block_size - 1, 1));
             }
         }
         ++state.calls;
         state.scc_feedback_latency = ctx.scc_feedback_latency;
         state.marker = 0xc04e7ed1u;
         for (std::size_t i = 0; i < ctx.block_size; ++i) {
-            auto const left = ctx.inputs[0].get_frame(i, 0);
-            auto const right = ctx.inputs[0].get_frame(i, 1);
-            ctx.outputs[0].push((left + right) * 0.5f + 1.0f);
+            auto const left = ctx.template input<0>().get_frame(i, 0);
+            auto const right = ctx.template input<0>().get_frame(i, 1);
+            ctx.template output<0>().push((left + right) * 0.5f + 1.0f);
         }
     }
 };
@@ -3498,7 +3498,7 @@ struct MonoInterleavedConsumerProbe {
     void tick_block(iv::TickBlockContext<MonoInterleavedConsumerProbe> const& ctx) const
     {
         auto& state = ctx.state();
-        auto const block = ctx.inputs[0].get_block(ctx.block_size);
+        auto const block = ctx.template input<0>().get_block(ctx.block_size);
         ++state.calls;
         state.last_index = ctx.index;
         state.last_block_size = ctx.block_size;
@@ -3534,7 +3534,7 @@ struct StereoRampSource {
                 static_cast<iv::Sample>(ctx.index + i),
                 static_cast<iv::Sample>(ctx.index + i + 1000),
             };
-            ctx.outputs[0].push_frame(frame);
+            ctx.template output<0>().push_frame(frame);
         }
     }
 };
@@ -3576,16 +3576,16 @@ struct StereoPlanarConsumerProbe {
         state.sum_left = 0.0f;
         state.sum_right = 0.0f;
         if (ctx.block_size != 0) {
-            state.first_left = static_cast<float>(ctx.inputs[0].get_frame(0, 0));
-            state.first_right = static_cast<float>(ctx.inputs[0].get_frame(0, 1));
+            state.first_left = static_cast<float>(ctx.template input<0>().get_frame(0, 0));
+            state.first_right = static_cast<float>(ctx.template input<0>().get_frame(0, 1));
             state.last_left = static_cast<float>(
-                ctx.inputs[0].get_frame(ctx.block_size - 1, 0));
+                ctx.template input<0>().get_frame(ctx.block_size - 1, 0));
             state.last_right = static_cast<float>(
-                ctx.inputs[0].get_frame(ctx.block_size - 1, 1));
+                ctx.template input<0>().get_frame(ctx.block_size - 1, 1));
         }
         for (std::size_t i = 0; i < ctx.block_size; ++i) {
-            state.sum_left += static_cast<float>(ctx.inputs[0].get_frame(i, 0));
-            state.sum_right += static_cast<float>(ctx.inputs[0].get_frame(i, 1));
+            state.sum_left += static_cast<float>(ctx.template input<0>().get_frame(i, 0));
+            state.sum_right += static_cast<float>(ctx.template input<0>().get_frame(i, 1));
         }
     }
 };
@@ -3627,16 +3627,16 @@ struct StereoSampleConsumerProbe {
         state.sum_left = 0.0f;
         state.sum_right = 0.0f;
         if (ctx.block_size != 0) {
-            state.first_left = static_cast<float>(ctx.inputs[0].get_frame(0, 0));
-            state.first_right = static_cast<float>(ctx.inputs[0].get_frame(0, 1));
+            state.first_left = static_cast<float>(ctx.template input<0>().get_frame(0, 0));
+            state.first_right = static_cast<float>(ctx.template input<0>().get_frame(0, 1));
             state.last_left = static_cast<float>(
-                ctx.inputs[0].get_frame(ctx.block_size - 1, 0));
+                ctx.template input<0>().get_frame(ctx.block_size - 1, 0));
             state.last_right = static_cast<float>(
-                ctx.inputs[0].get_frame(ctx.block_size - 1, 1));
+                ctx.template input<0>().get_frame(ctx.block_size - 1, 1));
         }
         for (std::size_t i = 0; i < ctx.block_size; ++i) {
-            state.sum_left += static_cast<float>(ctx.inputs[0].get_frame(i, 0));
-            state.sum_right += static_cast<float>(ctx.inputs[0].get_frame(i, 1));
+            state.sum_left += static_cast<float>(ctx.template input<0>().get_frame(i, 0));
+            state.sum_right += static_cast<float>(ctx.template input<0>().get_frame(i, 1));
         }
     }
 };
@@ -3663,10 +3663,10 @@ struct HistoryRampSource {
     {
         auto& state = ctx.state();
         ++state.calls;
-        state.previous_output = static_cast<float>(ctx.outputs[0].get());
+        state.previous_output = static_cast<float>(ctx.template output<0>().get());
         state.marker = 0x91a2b3c4u;
         for (std::size_t i = 0; i < ctx.block_size; ++i) {
-            ctx.outputs[0].push(static_cast<iv::Sample>(ctx.index + i));
+            ctx.template output<0>().push(static_cast<iv::Sample>(ctx.index + i));
         }
     }
 };
@@ -3697,9 +3697,9 @@ struct HistoryConsumerProbe {
         auto& state = ctx.state();
         ++state.calls;
         state.last_index = ctx.index;
-        state.current = static_cast<float>(ctx.inputs[0].get(0));
-        state.history_1 = static_cast<float>(ctx.inputs[0].get(1));
-        state.history_5 = static_cast<float>(ctx.inputs[0].get(5));
+        state.current = static_cast<float>(ctx.template input<0>().get(0));
+        state.history_1 = static_cast<float>(ctx.template input<0>().get(1));
+        state.history_5 = static_cast<float>(ctx.template input<0>().get(5));
         state.marker = 0x5e6f7788u;
     }
 };
@@ -3736,10 +3736,10 @@ struct StereoHistoryConsumerProbe {
         auto& state = ctx.state();
         ++state.calls;
         state.last_index = ctx.index;
-        state.current_left = static_cast<float>(ctx.inputs[0].get(0, 0));
-        state.current_right = static_cast<float>(ctx.inputs[0].get(0, 1));
-        state.history_5_left = static_cast<float>(ctx.inputs[0].get(5, 0));
-        state.history_5_right = static_cast<float>(ctx.inputs[0].get(5, 1));
+        state.current_left = static_cast<float>(ctx.template input<0>().get(0, 0));
+        state.current_right = static_cast<float>(ctx.template input<0>().get(0, 1));
+        state.history_5_left = static_cast<float>(ctx.template input<0>().get(5, 0));
+        state.history_5_right = static_cast<float>(ctx.template input<0>().get(5, 1));
         state.marker = 0xa1b2c3d4e5f60718ull;
     }
 };
@@ -3758,7 +3758,7 @@ struct LargeHistoryRampSource {
     void tick_block(iv::TickBlockContext<LargeHistoryRampSource> const& ctx) const
     {
         for (std::size_t i = 0; i < ctx.block_size; ++i) {
-            ctx.outputs[0].push(static_cast<iv::Sample>(ctx.index + i));
+            ctx.template output<0>().push(static_cast<iv::Sample>(ctx.index + i));
         }
     }
 };
@@ -3788,9 +3788,9 @@ struct LargeHistoryConsumerProbe {
         auto& state = ctx.state();
         ++state.calls;
         state.last_index = ctx.index;
-        state.current = static_cast<float>(ctx.inputs[0].get(0));
-        state.history_1 = static_cast<float>(ctx.inputs[0].get(1));
-        state.history_5000 = static_cast<float>(ctx.inputs[0].get(5000));
+        state.current = static_cast<float>(ctx.template input<0>().get(0));
+        state.history_1 = static_cast<float>(ctx.template input<0>().get(1));
+        state.history_5000 = static_cast<float>(ctx.template input<0>().get(5000));
     }
 };
 
@@ -3814,13 +3814,13 @@ struct FiveSampleDelay {
 
     void tick_block(iv::TickBlockContext<FiveSampleDelay> const& ctx) const
     {
-        auto const input = ctx.inputs[0].get_block(ctx.block_size);
+        auto const input = ctx.template input<0>().get_block(ctx.block_size);
         auto& memory = ctx.state().memory;
         for (std::size_t i = 0; i < ctx.block_size; ++i) {
             auto const index = static_cast<std::size_t>(ctx.index + i);
             auto const delayed = memory[index & 7u];
             memory[(index + 5u) & 7u] = input[i];
-            ctx.outputs[0].push(delayed);
+            ctx.template output<0>().push(delayed);
         }
     }
 };
@@ -3856,8 +3856,8 @@ struct FiveSampleDelay {
     void tick_block(iv::TickBlockContext<LatencyCompensationProbe> const& ctx) const
     {
         auto& state = ctx.state();
-        auto const fast = ctx.inputs[0].get_block(ctx.block_size);
-        auto const slow = ctx.inputs[1].get_block(ctx.block_size);
+        auto const fast = ctx.template input<0>().get_block(ctx.block_size);
+        auto const slow = ctx.template input<1>().get_block(ctx.block_size);
         ++state.calls;
         state.last_index = ctx.index;
         state.last_block_size = ctx.block_size;
@@ -3920,8 +3920,8 @@ struct InterleavedLatencyCompensationProbe {
         iv::TickBlockContext<InterleavedLatencyCompensationProbe> const& ctx) const
     {
         auto& state = ctx.state();
-        auto const fast = ctx.inputs[0].get_block(ctx.block_size);
-        auto const slow = ctx.inputs[1].get_block(ctx.block_size);
+        auto const fast = ctx.template input<0>().get_block(ctx.block_size);
+        auto const slow = ctx.template input<1>().get_block(ctx.block_size);
         ++state.calls;
         state.last_index = ctx.index;
         state.last_block_size = ctx.block_size;
@@ -3979,7 +3979,7 @@ struct DisconnectedSampleInputProbe {
         iv::TickBlockContext<DisconnectedSampleInputProbe> const& ctx) const
     {
         auto& state = ctx.state();
-        auto const& input = ctx.inputs[0];
+        auto input = ctx.template input<0>();
         auto const block = input.get_block(ctx.block_size);
         ++state.calls;
         state.last_index = ctx.index;
@@ -4014,10 +4014,10 @@ struct TriggerEventSource {
     void tick_block(iv::TickBlockContext<TriggerEventSource> const& ctx) const
     {
         if (ctx.block_size == 0) return;
-        ctx.event_outputs[0].push(
-            iv::TriggerEvent{}, 3, ctx.index, ctx.block_size);
-        ctx.event_outputs[0].push(
-            iv::TriggerEvent{}, ctx.block_size - 1, ctx.index, ctx.block_size);
+        ctx.template output<0>().push(
+            iv::TriggerEvent{}, 3);
+        ctx.template output<0>().push(
+            iv::TriggerEvent{}, ctx.block_size - 1);
     }
 };
 
@@ -4048,12 +4048,12 @@ struct MidiEventSource {
         note_on_b.bytes = {0x90, 64, 96};
         note_on_b.size = 3;
 
-        ctx.event_outputs[0].push(
-            note_on_a, 5, ctx.index, ctx.block_size);
-        ctx.event_outputs[0].push(
-            note_off, 9, ctx.index, ctx.block_size);
-        ctx.event_outputs[0].push(
-            note_on_b, 17, ctx.index, ctx.block_size);
+        ctx.template output<0>().push(
+            note_on_a, 5);
+        ctx.template output<0>().push(
+            note_off, 9);
+        ctx.template output<0>().push(
+            note_on_b, 17);
     }
 };
 
@@ -4075,10 +4075,10 @@ struct LimitedTriggerEventSource {
     void tick_block(iv::TickBlockContext<LimitedTriggerEventSource> const& ctx) const
     {
         if (ctx.block_size == 0) return;
-        ctx.event_outputs[0].push(
-            iv::TriggerEvent{}, 3, ctx.index, ctx.block_size);
-        ctx.event_outputs[0].push(
-            iv::TriggerEvent{}, ctx.block_size - 1, ctx.index, ctx.block_size);
+        ctx.template output<0>().push(
+            iv::TriggerEvent{}, 3);
+        ctx.template output<0>().push(
+            iv::TriggerEvent{}, ctx.block_size - 1);
     }
 };
 
@@ -4102,8 +4102,8 @@ struct FanInBurstEventSource {
     {
         if (ctx.block_size == 0) return;
         for (std::size_t i = 0; i < 8; ++i) {
-            ctx.event_outputs[0].push(
-                iv::TriggerEvent{}, 3, ctx.index, ctx.block_size);
+            ctx.template output<0>().push(
+                iv::TriggerEvent{}, 3);
         }
     }
 };
@@ -4128,8 +4128,8 @@ struct FanInSparseEventSource {
     {
         if (ctx.block_size == 0) return;
         for (std::size_t i = 0; i < 4; ++i) {
-            ctx.event_outputs[0].push(
-                iv::TriggerEvent{}, 3, ctx.index, ctx.block_size);
+            ctx.template output<0>().push(
+                iv::TriggerEvent{}, 3);
         }
     }
 };
@@ -4166,7 +4166,7 @@ struct EventFeedbackA {
     {
         auto& state = ctx.state();
         auto const index = static_cast<std::size_t>(state.calls);
-        auto const events = ctx.event_inputs[0].get_block(ctx.index, ctx.block_size);
+        auto const events = ctx.template input<0>().events();
         if (index < state.indices.size()) {
             state.indices[index] = ctx.index;
             state.block_sizes[index] = ctx.block_size;
@@ -4178,8 +4178,8 @@ struct EventFeedbackA {
         state.marker = 0xa11ce001u;
         if (ctx.block_size != 0) {
             auto const offset = std::min<std::size_t>(1, ctx.block_size - 1);
-            ctx.event_outputs[0].push(
-                iv::TriggerEvent{}, offset, ctx.index, ctx.block_size);
+            ctx.template output<0>().push(
+                iv::TriggerEvent{}, offset);
         }
     }
 };
@@ -4208,8 +4208,7 @@ struct RetainedFanInEventFeedbackA {
         auto& state = ctx.state();
         auto const index = static_cast<std::size_t>(state.calls);
         auto const history = ctx.index < 8 ? ctx.index : std::size_t{8};
-        auto const events = ctx.event_inputs[0].get_block(
-            ctx.index - history, ctx.block_size + history);
+        auto const events = ctx.template input<0>().events(ctx.index - history, ctx.block_size + history);
         if (index < state.indices.size()) {
             state.indices[index] = ctx.index;
             state.block_sizes[index] = ctx.block_size;
@@ -4221,8 +4220,8 @@ struct RetainedFanInEventFeedbackA {
         state.marker = 0xa11ce008u;
         if (ctx.block_size != 0) {
             auto const offset = std::min<std::size_t>(1, ctx.block_size - 1);
-            ctx.event_outputs[0].push(
-                iv::TriggerEvent{}, offset, ctx.index, ctx.block_size);
+            ctx.template output<0>().push(
+                iv::TriggerEvent{}, offset);
         }
     }
 };
@@ -4260,7 +4259,7 @@ struct LatentEventFeedbackA {
     {
         auto& state = ctx.state();
         auto const index = static_cast<std::size_t>(state.calls);
-        auto const events = ctx.event_inputs[0].get_block(ctx.index, ctx.block_size);
+        auto const events = ctx.template input<0>().events();
         if (index < state.indices.size()) {
             state.indices[index] = ctx.index;
             state.block_sizes[index] = ctx.block_size;
@@ -4275,8 +4274,8 @@ struct LatentEventFeedbackA {
         // calls these timestamps remain globally nondecreasing; authored latency
         // is a future-publication horizon, not permission to back-fill.
         auto const offset = ctx.block_size + 1;
-        ctx.event_outputs[0].push(
-            iv::TriggerEvent{}, offset, ctx.index, ctx.block_size);
+        ctx.template output<0>().push(
+            iv::TriggerEvent{}, offset);
     }
 };
 
@@ -4313,7 +4312,7 @@ struct PersistentLatentEventFeedbackA {
     {
         auto& state = ctx.state();
         auto const index = static_cast<std::size_t>(state.calls);
-        auto const events = ctx.event_inputs[0].get_block(ctx.index, ctx.block_size);
+        auto const events = ctx.template input<0>().events();
         if (index < state.indices.size()) {
             state.indices[index] = ctx.index;
             state.block_sizes[index] = ctx.block_size;
@@ -4329,8 +4328,8 @@ struct PersistentLatentEventFeedbackA {
         // beyond each SCC slice; latency is permission to publish future events,
         // not permission to insert before the prior publication watermark.
         auto const offset = ctx.block_size + 1;
-        ctx.event_outputs[0].push(
-            iv::TriggerEvent{}, offset, ctx.index, ctx.block_size);
+        ctx.template output<0>().push(
+            iv::TriggerEvent{}, offset);
     }
 };
 
@@ -4356,13 +4355,11 @@ struct PersistentLatentBoundaryEventFeedbackA {
     void tick_block(
         iv::TickBlockContext<PersistentLatentBoundaryEventFeedbackA> const& ctx) const
     {
-        (void)ctx.event_inputs[0].get_block(ctx.index, ctx.block_size);
+        (void)ctx.template input<0>().events();
         auto const offset = ctx.block_size + 1;
-        ctx.event_outputs[0].push(
+        ctx.template output<0>().push(
             iv::BoundaryEvent{.is_begin = true},
-            offset,
-            ctx.index,
-            ctx.block_size);
+            offset);
     }
 };
 
@@ -4390,8 +4387,8 @@ struct EventFeedbackBurstA {
         // Publish the full declared one-sample rate at one timestamp to stress
         // delayed feedback carry across tiny root calls.
         for (std::size_t i = 0; i < 16; ++i) {
-            ctx.event_outputs[0].push(
-                iv::TriggerEvent{}, 0, ctx.index, ctx.block_size);
+            ctx.template output<0>().push(
+                iv::TriggerEvent{}, 0);
         }
     }
 };
@@ -4419,12 +4416,12 @@ struct EventFeedbackFanoutA {
     {
         // Force both explicit feed-forward dependencies to remain observable to
         // the package/JIT interfaces even though this probe only needs to emit.
-        (void)ctx.event_inputs[0].get_block(ctx.index, ctx.block_size);
-        (void)ctx.event_inputs[1].get_block(ctx.index, ctx.block_size);
+        (void)ctx.template input<0>().events();
+        (void)ctx.template input<1>().events();
         if (ctx.block_size == 0) return;
         auto const offset = std::min<std::size_t>(1, ctx.block_size - 1);
-        ctx.event_outputs[0].push(
-            iv::TriggerEvent{}, offset, ctx.index, ctx.block_size);
+        ctx.template output<0>().push(
+            iv::TriggerEvent{}, offset);
     }
 };
 
@@ -4461,7 +4458,7 @@ struct EventFeedbackB {
     {
         auto& state = ctx.state();
         auto const index = static_cast<std::size_t>(state.calls);
-        auto const events = ctx.event_inputs[0].get_block(ctx.index, ctx.block_size);
+        auto const events = ctx.template input<0>().events();
         if (index < state.indices.size()) {
             state.indices[index] = ctx.index;
             state.block_sizes[index] = ctx.block_size;
@@ -4473,8 +4470,8 @@ struct EventFeedbackB {
         state.marker = 0xb22ce002ull;
         if (ctx.block_size != 0) {
             auto const offset = std::min<std::size_t>(2, ctx.block_size - 1);
-            ctx.event_outputs[0].push(
-                iv::TriggerEvent{}, offset, ctx.index, ctx.block_size);
+            ctx.template output<0>().push(
+                iv::TriggerEvent{}, offset);
         }
     }
 };
@@ -4524,10 +4521,8 @@ struct RetainedDualEventFeedbackA {
         auto& state = ctx.state();
         auto const index = static_cast<std::size_t>(state.calls++);
         auto const history = ctx.index < 8 ? ctx.index : std::size_t{8};
-        auto const exact = ctx.event_inputs[0].get_block(
-            ctx.index - history, ctx.block_size + history);
-        auto const converted = ctx.event_inputs[1].get_block(
-            ctx.index - history, ctx.block_size + history);
+        auto const exact = ctx.template input<0>().events(ctx.index - history, ctx.block_size + history);
+        auto const converted = ctx.template input<1>().events(ctx.index - history, ctx.block_size + history);
         if (index < state.indices.size()) {
             state.indices[index] = ctx.index;
             state.block_sizes[index] = ctx.block_size;
@@ -4546,8 +4541,8 @@ struct RetainedDualEventFeedbackA {
         state.scc_feedback_latency = ctx.scc_feedback_latency;
         state.marker = 0xa11ce808u;
         auto const offset = std::min<std::size_t>(1, ctx.block_size - 1);
-        ctx.event_outputs[0].push(
-            iv::TriggerEvent{}, offset, ctx.index, ctx.block_size);
+        ctx.template output<0>().push(
+            iv::TriggerEvent{}, offset);
     }
 };
 
@@ -4579,15 +4574,13 @@ struct DualEventFeedbackB {
 
     void tick_block(iv::TickBlockContext<DualEventFeedbackB> const& ctx) const
     {
-        (void)ctx.event_inputs[0].get_block(ctx.index, ctx.block_size);
+        (void)ctx.template input<0>().events();
         auto const offset = std::min<std::size_t>(2, ctx.block_size - 1);
-        ctx.event_outputs[0].push(
-            iv::TriggerEvent{}, offset, ctx.index, ctx.block_size);
-        ctx.event_outputs[1].push(
+        ctx.template output<0>().push(
+            iv::TriggerEvent{}, offset);
+        ctx.template output<1>().push(
             iv::BoundaryEvent{.is_begin = true},
-            offset,
-            ctx.index,
-            ctx.block_size);
+            offset);
     }
 };
 
@@ -4618,7 +4611,7 @@ struct TriggerEventConsumer {
     void tick_block(iv::TickBlockContext<TriggerEventConsumer> const& ctx) const
     {
         auto& state = ctx.state();
-        auto const events = ctx.event_inputs[0].get_block(ctx.index, ctx.block_size);
+        auto const events = ctx.template input<0>().events();
         ++state.calls;
         state.last_index = ctx.index;
         state.last_block_size = ctx.block_size;
@@ -4668,9 +4661,7 @@ struct RetainedMidiEventConsumer {
         auto const index = state.calls++;
         if (index >= state.indices.size()) return;
         auto const history = ctx.index < 160 ? ctx.index : std::size_t{160};
-        auto const events = ctx.event_inputs[0].get_block(
-            ctx.index - history,
-            ctx.block_size + history);
+        auto const events = ctx.template input<0>().events(ctx.index - history, ctx.block_size + history);
         state.indices[index] = ctx.index;
         state.event_counts[index] = events.size();
         state.midi_counts[index] = 0;
@@ -4706,13 +4697,11 @@ struct BoundaryEventFeedbackA {
 
     void tick_block(iv::TickBlockContext<BoundaryEventFeedbackA> const& ctx) const
     {
-        (void)ctx.event_inputs[0].get_block(ctx.index, ctx.block_size);
+        (void)ctx.template input<0>().events();
         auto const offset = std::min<std::size_t>(1, ctx.block_size - 1);
-        ctx.event_outputs[0].push(
+        ctx.template output<0>().push(
             iv::BoundaryEvent{.is_begin = true},
-            offset,
-            ctx.index,
-            ctx.block_size);
+            offset);
     }
 };
 
@@ -4736,13 +4725,11 @@ struct BoundaryEventFeedbackB {
 
     void tick_block(iv::TickBlockContext<BoundaryEventFeedbackB> const& ctx) const
     {
-        (void)ctx.event_inputs[0].get_block(ctx.index, ctx.block_size);
+        (void)ctx.template input<0>().events();
         auto const offset = std::min<std::size_t>(2, ctx.block_size - 1);
-        ctx.event_outputs[0].push(
+        ctx.template output<0>().push(
             iv::BoundaryEvent{.is_begin = true},
-            offset,
-            ctx.index,
-            ctx.block_size);
+            offset);
     }
 };
 
@@ -4776,7 +4763,7 @@ struct LimitedTriggerEventConsumer {
         auto& state = ctx.state();
         auto const index = state.calls++;
         if (index >= state.indices.size()) return;
-        auto const events = ctx.event_inputs[0].get_block(ctx.index, ctx.block_size);
+        auto const events = ctx.template input<0>().events();
         state.indices[index] = ctx.index;
         state.block_sizes[index] = ctx.block_size;
         state.event_counts[index] = events.size();
@@ -4815,14 +4802,14 @@ struct RetainedTriggerEventSource {
     void tick_block(iv::TickBlockContext<RetainedTriggerEventSource> const& ctx) const
     {
         if (ctx.block_size < 8) return;
-        ctx.event_outputs[0].push(
-            iv::TriggerEvent{}, 5, ctx.index, ctx.block_size);
-        ctx.event_outputs[0].push(
-            iv::TriggerEvent{}, ctx.block_size - 3, ctx.index, ctx.block_size);
+        ctx.template output<0>().push(
+            iv::TriggerEvent{}, 5);
+        ctx.template output<0>().push(
+            iv::TriggerEvent{}, ctx.block_size - 3);
         // Authored output latency permits publishing a future event that must
         // remain visible to the next root invocation.
-        ctx.event_outputs[0].push(
-            iv::TriggerEvent{}, ctx.block_size + 3, ctx.index, ctx.block_size);
+        ctx.template output<0>().push(
+            iv::TriggerEvent{}, ctx.block_size + 3);
     }
 };
 
@@ -4857,9 +4844,7 @@ struct RetainedTriggerEventConsumer {
         auto const index = state.calls++;
         if (index >= state.indices.size()) return;
         auto const history = ctx.index < 8 ? ctx.index : std::size_t{8};
-        auto const events = ctx.event_inputs[0].get_block(
-            ctx.index - history,
-            ctx.block_size + history);
+        auto const events = ctx.template input<0>().events(ctx.index - history, ctx.block_size + history);
         state.indices[index] = ctx.index;
         state.event_counts[index] = events.size();
         if (!events.empty()) {
@@ -4896,8 +4881,8 @@ struct PersistentEventRingSource {
         // Concentrating all events at one timestamp also proves the sizing-rate
         // field is not interpreted as a per-sample runtime limiter.
         for (std::size_t i = 0; i < 32; ++i) {
-            ctx.event_outputs[0].push(
-                iv::TriggerEvent{}, 5, ctx.index, ctx.block_size);
+            ctx.template output<0>().push(
+                iv::TriggerEvent{}, 5);
         }
     }
 };
@@ -4932,9 +4917,7 @@ struct PersistentEventRingConsumer {
         auto const index = state.calls++;
         if (index >= state.indices.size()) return;
         auto const history = ctx.index < 160 ? ctx.index : std::size_t{160};
-        auto const events = ctx.event_inputs[0].get_block(
-            ctx.index - history,
-            ctx.block_size + history);
+        auto const events = ctx.template input<0>().events(ctx.index - history, ctx.block_size + history);
         state.indices[index] = ctx.index;
         state.event_counts[index] = events.size();
         if (!events.empty()) {
@@ -4976,9 +4959,7 @@ struct PersistentEventFeedbackConsumer {
         auto const index = state.calls++;
         if (index >= state.indices.size()) return;
         auto const history = ctx.index < 320 ? ctx.index : std::size_t{320};
-        auto const events = ctx.event_inputs[0].get_block(
-            ctx.index - history,
-            ctx.block_size + history);
+        auto const events = ctx.template input<0>().events(ctx.index - history, ctx.block_size + history);
         state.indices[index] = ctx.index;
         state.event_counts[index] = events.size();
         if (!events.empty()) {
@@ -5002,7 +4983,7 @@ struct PortedProbe {
 
     void tick(iv::TickSampleContext<PortedProbe> const& ctx) const
     {
-        ctx.outputs[0].push(iv::Sample{0.25f});
+        ctx.template output<0>().push(iv::Sample{0.25f});
     }
 };
 

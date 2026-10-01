@@ -98,20 +98,6 @@ PersistedOutputId capture_output_id(
     };
 }
 
-[[nodiscard]] std::size_t checked_capture_window_size(
-    std::size_t maximum_block_size,
-    std::size_t history,
-    std::size_t latency)
-{
-    if (history > std::numeric_limits<std::size_t>::max()
-            - maximum_block_size
-        || latency > std::numeric_limits<std::size_t>::max()
-                - maximum_block_size - history) {
-        throw std::length_error("Tick capture window is too large");
-    }
-    return history + maximum_block_size + latency;
-}
-
 [[nodiscard]] std::size_t capture_block_count(
     std::size_t value_count,
     std::size_t value_size,
@@ -295,6 +281,7 @@ public:
             SampleIndex sample_index,
             std::size_t block_size) noexcept
         {
+            if (binding.disposition == OutputDisposition::untouched) return;
             if (!reserve || !pending
                 || binding.storage.channel_layout != layout
                 || binding.history != history || binding.latency != latency
@@ -324,13 +311,44 @@ public:
             }
 
             auto const window = realtime_port_window(
-                sample_index, block_size, history, latency);
+                sample_index, block_size, 0, 0);
             auto const window_size = window.end - window.begin;
             auto const selected_count = static_cast<std::size_t>(window_size);
             if (selected_count == 0
                 || static_cast<SampleIndex>(selected_count) != window_size
                 || selected_count > std::numeric_limits<std::size_t>::max()
                         / bytes_per_frame) {
+                return;
+            }
+            if (binding.disposition == OutputDisposition::voided) {
+                auto const block_count = queued_record_block_count_noexcept(
+                    0, reserve->block_storage_size());
+                if (block_count == 0) {
+                    fail_queue_reservation();
+                    return;
+                }
+                auto chain = reserve->acquire(block_count);
+                if (!chain) {
+                    fail_queue_reservation();
+                    return;
+                }
+                auto writer = chain.writer();
+                auto const header = RealtimeProducedRecordHeader{
+                    .payload_kind = RealtimeProducedPayloadKind::void_value,
+                    .record_block_count = block_count,
+                    .payload_size = 0,
+                    .begin = window.begin,
+                    .sample_count = selected_count,
+                    .sample_layout = layout,
+                };
+                if (!writer.append(std::as_bytes(
+                        std::span{&header, std::size_t{1}}))) {
+                    fail_queue_reservation();
+                    return;
+                }
+                auto const appended = callback_chain.append(std::move(chain));
+                assert(appended);
+                if (!appended) fail_queue_reservation();
                 return;
             }
             auto append_values = [&](auto& writer) noexcept {
@@ -453,6 +471,7 @@ public:
             SampleIndex sample_index,
             std::size_t block_size) noexcept
         {
+            if (binding.disposition == OutputDisposition::untouched) return;
             auto const& storage = binding.storage;
             if (!reserve || !pending || storage.storage == nullptr
                 || storage.type != type
@@ -462,13 +481,45 @@ public:
                 return;
             }
             auto const window = realtime_port_window(
-                sample_index, block_size, history, latency);
+                sample_index, block_size, 0, 0);
             auto const window_size = window.end - window.begin;
             auto const selected_window_size =
                 static_cast<std::size_t>(window_size);
             if (selected_window_size == 0
                 || static_cast<SampleIndex>(selected_window_size)
                     != window_size) {
+                return;
+            }
+            if (binding.disposition == OutputDisposition::voided) {
+                auto const block_count = queued_record_block_count_noexcept(
+                    0, reserve->block_storage_size());
+                if (block_count == 0) {
+                    fail_queue_reservation();
+                    return;
+                }
+                auto chain = reserve->acquire(block_count);
+                if (!chain) {
+                    fail_queue_reservation();
+                    return;
+                }
+                auto writer = chain.writer();
+                auto const header = RealtimeProducedRecordHeader{
+                    .payload_kind = RealtimeProducedPayloadKind::void_value,
+                    .record_block_count = block_count,
+                    .payload_size = 0,
+                    .begin = window.begin,
+                    .sample_count = selected_window_size,
+                    .event_type = type,
+                    .event_count = 0,
+                };
+                if (!writer.append(std::as_bytes(
+                        std::span{&header, std::size_t{1}}))) {
+                    fail_queue_reservation();
+                    return;
+                }
+                auto const appended = callback_chain.append(std::move(chain));
+                assert(appended);
+                if (!appended) fail_queue_reservation();
                 return;
             }
 
@@ -1148,10 +1199,7 @@ public:
                 .history = port.output_history,
                 .latency = port.output_latency,
             };
-            auto const window = checked_capture_window_size(
-                planned.maximum_block_size,
-                port.output_history,
-                port.output_latency);
+            auto const window = planned.maximum_block_size;
             auto const channels = channel_count(port.sample_layout);
             if (channels == 0
                 || channels > std::numeric_limits<std::size_t>::max()
@@ -1203,10 +1251,7 @@ public:
                 .history = port.output_history,
                 .latency = port.output_latency,
             };
-            auto const window = checked_capture_window_size(
-                planned.maximum_block_size,
-                port.output_history,
-                port.output_latency);
+            auto const window = planned.maximum_block_size;
             auto const event_capacity = event_sequence_capacity_for_sample_span(
                 port.max_events_per_index, window);
             if (!event_capacity) {
