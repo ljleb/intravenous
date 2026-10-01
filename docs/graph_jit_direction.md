@@ -1016,9 +1016,11 @@ This is a hint, not a hard constraint. Use your own good judgement if ever in do
     transaction-local page-backed materialization; Tick-time ephemeral Random Access
     must be materialized before the callback. Playback never blocks, reclaims retired
     storage or invokes Tock.
-18. **Refactor realtime-produced persistence/recording handoff onto producer reserves
-    and background pending queues.** The current capture-store implementation is
-    migration substrate. The target runtime uses `RealtimeExecutor` for realtime
+18. **Tick/persisted transport landed; explicit recording bridge remains.**
+    Realtime-produced persistence uses producer reserves and background pending
+    queues. The old capture store, capture-output registry, sequence/frontier log and
+    `TickInvocationWorkspace` compatibility adapter have been deleted. The runtime uses
+    `RealtimeExecutor` for realtime
     generation/storage and producer endpoints, `BackgroundExecutor` for the
     worker/background evaluation/persisted-state owner, and non-app-module
     `AsyncCapacityManager` infrastructure for producer-specific blocks.
@@ -1049,6 +1051,10 @@ This is a hint, not a hard constraint. Use your own good judgement if ever in do
     completed prefixes through non-realtime reclamation. The published version reaches
     `RealtimeExecutor` as an immutable pointer and becomes active only at a legal
     realtime pass boundary.
+
+    The remaining recording work must bind authored recorder bridges to this same
+    transport. It must not reintroduce a recording-specific store or an alternate
+    `TickInvocationWorkspace` construction path.
 19. **Generation reconciliation.** Rebind compatible stable persisted stores across
     generations. Persisted generated/finalized data remains retained throughout its
     covered lifetime; coverage removal is the only semantic deletion condition.

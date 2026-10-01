@@ -248,8 +248,6 @@ std::optional<PersistedOutputId> direct_persisted_event_output(
 class TickInvocationWorkspace::Impl {
 public:
     struct SampleCaptureSlot {
-        TickCaptureStore* store = nullptr;
-        TickCaptureOutputHandle output{};
         ProducerReserve* reserve = nullptr;
         PendingQueue* pending = nullptr;
         std::atomic<bool>* reservation_failed = nullptr;
@@ -297,7 +295,7 @@ public:
             SampleIndex sample_index,
             std::size_t block_size) noexcept
         {
-            if ((!store && (!reserve || !pending))
+            if (!reserve || !pending
                 || binding.storage.channel_layout != layout
                 || binding.history != history || binding.latency != latency
                 || binding.storage.frame_capacity == 0
@@ -375,49 +373,39 @@ public:
             };
 
             auto const payload_size = selected_count * bytes_per_frame;
-            if (reserve && pending) {
-                auto const block_count = queued_record_block_count_noexcept(
-                    payload_size, reserve->block_storage_size());
-                if (block_count == 0) {
-                    fail_queue_reservation();
-                    return;
-                }
-                auto chain = reserve->acquire(block_count);
-                if (!chain) {
-                    fail_queue_reservation();
-                    return;
-                }
-                auto writer = chain.writer();
-                auto const header = RealtimeProducedRecordHeader{
-                    .payload_kind = RealtimeProducedPayloadKind::samples,
-                    .record_block_count = block_count,
-                    .payload_size = payload_size,
-                    .begin = window.begin,
-                    .sample_count = selected_count,
-                    .sample_layout = layout,
-                };
-                if (!writer.append(std::as_bytes(
-                        std::span{&header, std::size_t{1}}))
-                    || !append_values(writer)) {
-                    fail_queue_reservation();
-                    return;
-                }
-                auto const appended = callback_chain.append(std::move(chain));
-                assert(appended);
-                if (!appended) fail_queue_reservation();
+            auto const block_count = queued_record_block_count_noexcept(
+                payload_size, reserve->block_storage_size());
+            if (block_count == 0) {
+                fail_queue_reservation();
                 return;
             }
-
-            auto writer = store->reserve_record(payload_size);
-            if (!writer || !append_values(writer)) return;
-            static_cast<void>(writer.seal_samples(
-                output, window.begin, selected_count, layout));
+            auto chain = reserve->acquire(block_count);
+            if (!chain) {
+                fail_queue_reservation();
+                return;
+            }
+            auto writer = chain.writer();
+            auto const header = RealtimeProducedRecordHeader{
+                .payload_kind = RealtimeProducedPayloadKind::samples,
+                .record_block_count = block_count,
+                .payload_size = payload_size,
+                .begin = window.begin,
+                .sample_count = selected_count,
+                .sample_layout = layout,
+            };
+            if (!writer.append(std::as_bytes(
+                    std::span{&header, std::size_t{1}}))
+                || !append_values(writer)) {
+                fail_queue_reservation();
+                return;
+            }
+            auto const appended = callback_chain.append(std::move(chain));
+            assert(appended);
+            if (!appended) fail_queue_reservation();
         }
     };
 
     struct EventCaptureSlot {
-        TickCaptureStore* store = nullptr;
-        TickCaptureOutputHandle output{};
         ProducerReserve* reserve = nullptr;
         PendingQueue* pending = nullptr;
         std::atomic<bool>* reservation_failed = nullptr;
@@ -466,7 +454,7 @@ public:
             std::size_t block_size) noexcept
         {
             auto const& storage = binding.storage;
-            if ((!store && (!reserve || !pending)) || storage.storage == nullptr
+            if (!reserve || !pending || storage.storage == nullptr
                 || storage.type != type
                 || binding.history != history || binding.latency != latency
                 || storage.event_capacity == 0
@@ -536,48 +524,36 @@ public:
                 return true;
             };
             auto const payload_size = selected_count * sizeof(TimedEvent);
-            if (reserve && pending) {
-                auto const block_count = queued_record_block_count_noexcept(
-                    payload_size, reserve->block_storage_size());
-                if (block_count == 0) {
-                    fail_queue_reservation();
-                    return;
-                }
-                auto chain = reserve->acquire(block_count);
-                if (!chain) {
-                    fail_queue_reservation();
-                    return;
-                }
-                auto writer = chain.writer();
-                auto const header = RealtimeProducedRecordHeader{
-                    .payload_kind = RealtimeProducedPayloadKind::events,
-                    .record_block_count = block_count,
-                    .payload_size = payload_size,
-                    .begin = window.begin,
-                    .sample_count = selected_window_size,
-                    .event_type = type,
-                    .event_count = selected_count,
-                };
-                if (!writer.append(std::as_bytes(
-                        std::span{&header, std::size_t{1}}))
-                    || !append_values(writer)) {
-                    fail_queue_reservation();
-                    return;
-                }
-                auto const appended = callback_chain.append(std::move(chain));
-                assert(appended);
-                if (!appended) fail_queue_reservation();
+            auto const block_count = queued_record_block_count_noexcept(
+                payload_size, reserve->block_storage_size());
+            if (block_count == 0) {
+                fail_queue_reservation();
                 return;
             }
-
-            auto writer = store->reserve_record(payload_size);
-            if (!writer || !append_values(writer)) return;
-            static_cast<void>(writer.seal_events(
-                output,
-                window.begin,
-                selected_window_size,
-                type,
-                selected_count));
+            auto chain = reserve->acquire(block_count);
+            if (!chain) {
+                fail_queue_reservation();
+                return;
+            }
+            auto writer = chain.writer();
+            auto const header = RealtimeProducedRecordHeader{
+                .payload_kind = RealtimeProducedPayloadKind::events,
+                .record_block_count = block_count,
+                .payload_size = payload_size,
+                .begin = window.begin,
+                .sample_count = selected_window_size,
+                .event_type = type,
+                .event_count = selected_count,
+            };
+            if (!writer.append(std::as_bytes(
+                    std::span{&header, std::size_t{1}}))
+                || !append_values(writer)) {
+                fail_queue_reservation();
+                return;
+            }
+            auto const appended = callback_chain.append(std::move(chain));
+            assert(appended);
+            if (!appended) fail_queue_reservation();
         }
     };
 
@@ -919,20 +895,14 @@ public:
     std::vector<graph_jit::TickEventCaptureOperation> event_captures{};
     std::vector<RealtimeProducerRequirement> producer_requirements{};
     std::vector<std::uint8_t> producer_bounds_compatible{};
-    TickCaptureStore* capture_store = nullptr;
-    std::size_t maximum_capture_blocks = 0;
     std::uint64_t generation = 0;
     std::size_t maximum_block_size = 0;
 
     Impl(
         graph_jit::BackgroundEvaluationPlan const& plan,
         std::uint64_t selected_generation,
-        std::size_t selected_maximum_block_size,
-        PersistedTickCaptureRegistry* selected_captures)
-        : capture_store(selected_captures
-              ? &selected_captures->capture_store()
-              : nullptr)
-        , generation(selected_generation)
+        std::size_t selected_maximum_block_size)
+        : generation(selected_generation)
         , maximum_block_size(selected_maximum_block_size)
     {
         if (maximum_block_size == 0) {
@@ -1128,14 +1098,6 @@ public:
             };
         }
 
-        auto add_capture_blocks = [&](std::size_t count) {
-            if (count > std::numeric_limits<std::size_t>::max()
-                    - maximum_capture_blocks) {
-                throw std::length_error(
-                    "Tick capture callback reserve is too large");
-            }
-            maximum_capture_blocks += count;
-        };
         auto capture_requirement = [&](auto const& planned,
                                        std::size_t blocks_per_invocation) {
             if (planned.maximum_block_size == 0
@@ -1178,10 +1140,6 @@ public:
             }
             auto const bounds_compatible =
                 capture_bounds_match_workspace(planned);
-            if (capture_store && !bounds_compatible) {
-                throw std::invalid_argument(
-                    "Tick capture has inconsistent callback invocation bounds");
-            }
             auto const output = capture_output_id(
                 plan, planned.port, selected_generation);
             auto& selected = sample_capture_slots[slot];
@@ -1190,11 +1148,6 @@ public:
                 .history = port.output_history,
                 .latency = port.output_latency,
             };
-            if (capture_store) {
-                selected.store = capture_store;
-                selected.output = selected_captures->register_output(output);
-                sample_captures[slot] = selected.operation();
-            }
             auto const window = checked_capture_window_size(
                 planned.maximum_block_size,
                 port.output_history,
@@ -1224,14 +1177,6 @@ public:
                 .maximum_blocks_per_callback = required,
             });
             producer_bounds_compatible.push_back(bounds_compatible);
-            if (capture_store) {
-                add_capture_blocks(capture_requirement(
-                    planned,
-                    capture_block_count(
-                        window,
-                        bytes_per_frame,
-                        capture_store->block_payload_capacity())));
-            }
         }
         for (std::size_t slot = 0;
              slot < event_capture_slots.size(); ++slot) {
@@ -1250,10 +1195,6 @@ public:
             }
             auto const bounds_compatible =
                 capture_bounds_match_workspace(planned);
-            if (capture_store && !bounds_compatible) {
-                throw std::invalid_argument(
-                    "Tick capture has inconsistent callback invocation bounds");
-            }
             auto const output = capture_output_id(
                 plan, planned.port, selected_generation);
             auto& selected = event_capture_slots[slot];
@@ -1262,11 +1203,6 @@ public:
                 .history = port.output_history,
                 .latency = port.output_latency,
             };
-            if (capture_store) {
-                selected.store = capture_store;
-                selected.output = selected_captures->register_output(output);
-                event_captures[slot] = selected.operation();
-            }
             auto const window = checked_capture_window_size(
                 planned.maximum_block_size,
                 port.output_history,
@@ -1294,14 +1230,6 @@ public:
                 .maximum_blocks_per_callback = required,
             });
             producer_bounds_compatible.push_back(bounds_compatible);
-            if (capture_store) {
-                add_capture_blocks(capture_requirement(
-                    planned,
-                    capture_block_count(
-                        *event_capacity,
-                        sizeof(TimedEvent),
-                        capture_store->block_payload_capacity())));
-            }
         }
     }
 
@@ -1325,7 +1253,6 @@ public:
         }
         if (producer < sample_capture_slots.size()) {
             auto& selected = sample_capture_slots[producer];
-            selected.store = nullptr;
             selected.reserve = &reserve;
             selected.pending = &pending;
             selected.reservation_failed = &reservation_failed;
@@ -1334,7 +1261,6 @@ public:
         }
         auto const event = producer - sample_capture_slots.size();
         auto& selected = event_capture_slots[event];
-        selected.store = nullptr;
         selected.reserve = &reserve;
         selected.pending = &pending;
         selected.reservation_failed = &reservation_failed;
@@ -1349,13 +1275,6 @@ public:
         for (auto& selected : event_capture_slots) {
             selected.publish_callback_chain();
         }
-    }
-
-    [[nodiscard]] TickCaptureStore::CallbackScope begin_legacy_capture() noexcept
-    {
-        return capture_store
-            ? capture_store->begin_callback()
-            : TickCaptureStore::CallbackScope{};
     }
 
     graph_jit::TickInvocationCall bind(
@@ -1467,18 +1386,15 @@ public:
 TickInvocationWorkspace::TickInvocationWorkspace(
     graph_jit::BackgroundEvaluationPlan const& plan,
     std::uint64_t generation,
-    std::size_t maximum_block_size,
-    PersistedTickCaptureRegistry* captures)
+    std::size_t maximum_block_size)
     : impl_(std::make_unique<Impl>(
-        plan, generation, maximum_block_size, captures))
+        plan, generation, maximum_block_size))
 {}
 
 TickInvocationWorkspace::~TickInvocationWorkspace() = default;
 
-TickInvocationWorkspace::CaptureScope::CaptureScope(
-    Impl& impl,
-    TickCaptureStore::CallbackScope legacy) noexcept
-    : impl_(&impl), legacy_(std::move(legacy))
+TickInvocationWorkspace::CaptureScope::CaptureScope(Impl& impl) noexcept
+    : impl_(&impl)
 {}
 
 TickInvocationWorkspace::CaptureScope::~CaptureScope()
@@ -1516,12 +1432,6 @@ std::size_t TickInvocationWorkspace::event_capture_count() const noexcept
     return impl_->event_captures.size();
 }
 
-std::size_t TickInvocationWorkspace::maximum_capture_blocks_per_callback()
-    const noexcept
-{
-    return impl_->maximum_capture_blocks;
-}
-
 std::span<RealtimeProducerRequirement const>
 TickInvocationWorkspace::producer_requirements() const noexcept
 {
@@ -1541,7 +1451,7 @@ void TickInvocationWorkspace::bind_producer_endpoint(
 TickInvocationWorkspace::CaptureScope
 TickInvocationWorkspace::begin_capture() noexcept
 {
-    return CaptureScope{*impl_, impl_->begin_legacy_capture()};
+    return CaptureScope{*impl_};
 }
 
 graph_jit::TickInvocationCall TickInvocationWorkspace::bind(

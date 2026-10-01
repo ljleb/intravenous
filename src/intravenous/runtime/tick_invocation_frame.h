@@ -3,7 +3,6 @@
 #include <intravenous/graph_jit/tick_invocation_call.h>
 #include <intravenous/runtime/async_capacity_manager.h>
 #include <intravenous/runtime/persisted_page_store.h>
-#include <intravenous/runtime/persisted_tick_capture_registry.h>
 #include <intravenous/runtime/realtime_persisted_state.h>
 #include <intravenous/runtime/tick_materialization_snapshot.h>
 
@@ -30,11 +29,8 @@ class TickInvocationWorkspace {
     class Impl;
     class CaptureScope {
         Impl* impl_ = nullptr;
-        TickCaptureStore::CallbackScope legacy_{};
 
-        CaptureScope(
-            Impl& impl,
-            TickCaptureStore::CallbackScope legacy) noexcept;
+        explicit CaptureScope(Impl& impl) noexcept;
         friend class TickInvocationWorkspace;
 
     public:
@@ -59,8 +55,7 @@ public:
     TickInvocationWorkspace(
         graph_jit::BackgroundEvaluationPlan const& plan,
         std::uint64_t generation,
-        std::size_t maximum_block_size = 1,
-        PersistedTickCaptureRegistry* captures = nullptr);
+        std::size_t maximum_block_size = 1);
     ~TickInvocationWorkspace();
 
     TickInvocationWorkspace(TickInvocationWorkspace const&) = delete;
@@ -74,10 +69,6 @@ public:
     [[nodiscard]] std::size_t random_access_event_count() const noexcept;
     [[nodiscard]] std::size_t sample_capture_count() const noexcept;
     [[nodiscard]] std::size_t event_capture_count() const noexcept;
-    // Temporary compatibility count for the legacy TickCaptureStore adapter.
-    // Executor-created workspaces use producer_requirements() instead.
-    [[nodiscard]] std::size_t maximum_capture_blocks_per_callback()
-        const noexcept;
     // One entry per Tick/persisted producer queue which the prepared execution
     // generation must provision. Entries are aligned sample-first/event-second
     // with the workspace's capture-operation slots and include record-header

@@ -2440,10 +2440,12 @@ recording merely because that planning metadata exists.
    retired snapshot. This checkpoint does not add a `ProjectGraph` or application-
    module bridge; that wiring follows only after the executor transaction boundary is
    complete and tested.
-5. **Refactor realtime-produced persistence/recording handoff onto producer reserves
-   and background pending queues.** The current capture-store implementation is the
-   migration substrate; the target transport is described normatively in
+5. **Tick/persisted transport landed; explicit recording bridge remains.**
+   Realtime-produced persistence uses producer reserves and background pending queues,
+   as described normatively in
    [realtime_background_execution_and_queues.md](./realtime_background_execution_and_queues.md).
+   The old capture store, capture-output registry, global capture sequence/frontier
+   and `TickInvocationWorkspace` compatibility adapter have been deleted.
 
    Keep one `GraphExecutor` app module with internal `RealtimeExecutor` and
    `BackgroundExecutor` actors and no shared mutable execution-state object. Prepare one
@@ -2451,7 +2453,7 @@ recording merely because that planning metadata exists.
    producer reserve requirements, pre-sized background input descriptors, migration
    metadata and cutover linkage must be ready before its pointer can become pending.
 
-   Replace recording-specific free-pool/log ownership with producer-specific
+   Producer-specific
    `ProducerReserve`s maintained by `AsyncCapacityManager` and producer-specific
    background `PendingQueue`s. Producers supply `C/L/H`; allocation/slab granularity is
    manager-owned. Where layout permits, realtime writes final sample/event payload
@@ -2481,10 +2483,11 @@ recording merely because that planning metadata exists.
    A zero-event Tick/persisted payload remains authoritative empty event data, not a
    recording void.
 
-   Remove transport concepts that only supported the old capture log once unused:
-   global capture insertion sequence/frontier, shared logical queue size, separate
-   cutover allocations, and recording-specific allocator ownership. Keep explicit
-   domain ordering or generation/version identities only where semantics require them.
+   The remaining authored recorder bridge must reuse this transport. It must not
+   recreate a recording-specific allocator/log, global capture insertion
+   sequence/frontier, shared logical queue size, separate cutover allocation, or
+   alternate `TickInvocationWorkspace` construction path. Keep explicit domain
+   ordering or generation/version identities only where semantics require them.
 
 6. **Implement concrete-node port-state continuity and graph-revision transitions.**
    Before optimization, define port history/latency exactly as if each surviving
