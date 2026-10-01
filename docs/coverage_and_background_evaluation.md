@@ -2518,7 +2518,15 @@ recording merely because that planning metadata exists.
    alternate `TickInvocationWorkspace` construction path. Keep explicit domain
    ordering or generation/version identities only where semantics require them.
 
-6. **Implement concrete-node port-state continuity and graph-revision transitions.**
+6. **In progress: implement concrete-node port-state continuity and graph-revision transitions.**
+   Graph-wide connection analysis now retains each authored concrete node's optional
+   stable graph/virtual-node/direct-member identity, and background planning consumes
+   that same identity instead of reconstructing a background-only copy. Anonymous
+   concrete nodes deliberately retain no synthetic identity derived from a
+   generation-local bundle handle. The next migration substep derives stable
+   direction/port/channel-or-event state identities and cold realization views from
+   this shared node identity.
+
    Before optimization, define port history/latency exactly as if each surviving
    concrete node privately owned that state. Carry stable user-instance/virtual-member/
    port/channel-or-event identities plus cold realization metadata; preserve the

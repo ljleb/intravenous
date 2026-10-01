@@ -1075,7 +1075,14 @@ This is a hint, not a hard constraint. Use your own good judgement if ever in do
     generations. Persisted generated/finalized data remains retained throughout its
     covered lifetime; coverage removal is the only semantic deletion condition.
     Superseded storage versions are reclaimed after their readers release them.
-20. **Implement concrete-node port-state continuity and transition realizations.**
+20. **In progress: implement concrete-node port-state continuity and transition realizations.**
+    Connection analysis now retains the optional stable graph/virtual-node/direct-
+    member identity of every authored concrete node, not only nodes selected for
+    background evaluation. Background planning reuses that authoritative identity;
+    anonymous concrete nodes receive no bundle-index-derived substitute. Derive the
+    stable direction/port/channel-or-event state identities and cold realization
+    views from this graph-wide identity next.
+
     Treat each surviving input history and output history/latency window as though it
     were private state owned by that concrete node/port, regardless of how the steady
     storage planner aliases or shares it. Carry stable node/virtual-member/port/channel

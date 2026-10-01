@@ -25,6 +25,10 @@ using ::iv::graph_jit::PlannedSourceProduction;
 
 struct PlannedGraphNode {
     NodeBundleHandle bundle = 0;
+    // Stable across compiled generations when this concrete node is a direct
+    // member of an authored virtual node. Anonymous concrete nodes retain no
+    // synthetic identity derived from their generation-local bundle handle.
+    std::optional<StableConcreteNodeId> stable_identity{};
     std::size_t internal_latency_samples = 0;
     std::size_t maximum_block_size = 0;
     std::size_t sample_input_count = 0;

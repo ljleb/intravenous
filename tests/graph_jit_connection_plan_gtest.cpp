@@ -1245,6 +1245,12 @@ TEST(GraphJitConnectionPlan, SimpleRealtimeSampleEdgeChoosesDirect)
     auto plan = graph_jit::detail::build_connection_analysis_plan(configured, 64);
     ASSERT_TRUE(plan.has_value()) << (plan ? std::string{} : plan.error());
 
+    EXPECT_TRUE(std::ranges::all_of(
+        plan->nodes,
+        [](graph_jit::detail::PlannedGraphNode const& node) {
+            return !node.stable_identity.has_value();
+        }));
+
     ASSERT_EQ(plan->sample_connections.size(), 1u);
     EXPECT_FALSE(plan->sample_connections[0].requires_conversion);
     EXPECT_FALSE(plan->sample_connections[0].requires_block_materialization);
@@ -1491,6 +1497,17 @@ TEST(GraphJitConnectionPlan, RetainsCompleteBackgroundTopologyAndRetention)
     auto built = graph_jit::detail::build_connection_analysis_plan(
         configured, 64);
     ASSERT_TRUE(built.has_value()) << (built ? std::string{} : built.error());
+    auto const planned_source = std::ranges::find_if(
+        built->nodes,
+        [&](graph_jit::detail::PlannedGraphNode const& node) {
+            return node.bundle == source_handle;
+        });
+    ASSERT_NE(planned_source, built->nodes.end());
+    ASSERT_TRUE(planned_source->stable_identity);
+    EXPECT_EQ(planned_source->stable_identity->graph, "root");
+    EXPECT_TRUE(planned_source->stable_identity->virtual_node
+        .starts_with("source#type:"));
+    EXPECT_EQ(planned_source->stable_identity->direct_member, 0u);
     auto const& plan = built->background;
 
     ASSERT_EQ(plan.nodes.size(), 4u);

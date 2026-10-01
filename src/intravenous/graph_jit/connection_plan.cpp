@@ -133,6 +133,34 @@ bool source_is_intrinsically_replayable(
     return node && node->intrinsically_replayable;
 }
 
+std::optional<StableConcreteNodeId> stable_concrete_node_identity(
+    ConfiguredGraph const& graph,
+    NodeBundleHandle bundle)
+{
+    auto const& configured_bundle = graph.node_bundles.bundle(bundle);
+    std::optional<StableConcreteNodeId> selected;
+    for (auto const handle : configured_bundle.virtual_node_handles()) {
+        auto const& record = graph.virtual_nodes.record(handle);
+        if (record.type_identity != configured_bundle.type_identity()) continue;
+        auto const member = std::ranges::find(
+            record.node_bundle_handles, bundle);
+        if (member == record.node_bundle_handles.end()) continue;
+        StableConcreteNodeId candidate{
+            .graph = graph.identity.value,
+            .virtual_node = record.id,
+            .direct_member = static_cast<std::size_t>(
+                member - record.node_bundle_handles.begin()),
+        };
+        if (!selected
+            || std::tie(candidate.virtual_node, candidate.direct_member)
+                < std::tie(
+                    selected->virtual_node, selected->direct_member)) {
+            selected = std::move(candidate);
+        }
+    }
+    return selected;
+}
+
 std::expected<void, std::string> inventory_nodes(
     ConfiguredGraph const& graph,
     ConnectionAnalysisPlan& plan)
@@ -168,6 +196,7 @@ std::expected<void, std::string> inventory_nodes(
             }
             plan.nodes.push_back(PlannedGraphNode{
                 .bundle = current,
+                .stable_identity = stable_concrete_node_identity(graph, current),
                 .internal_latency_samples = view.internal_latency_samples,
                 .maximum_block_size = view.maximum_block_size,
                 .sample_input_count = view.ports->sample_input_count(),
@@ -1261,32 +1290,6 @@ std::expected<void, std::string> populate_background_topology(
     BackgroundEvaluationPlan& plan,
     std::size_t kernel_block_size)
 {
-    auto stable_node_identity = [&](NodeBundleHandle bundle)
-        -> std::optional<StableConcreteNodeId> {
-        auto const& configured_bundle = graph.node_bundles.bundle(bundle);
-        std::optional<StableConcreteNodeId> selected;
-        for (auto const handle : configured_bundle.virtual_node_handles()) {
-            auto const& record = graph.virtual_nodes.record(handle);
-            if (record.type_identity != configured_bundle.type_identity()) continue;
-            auto const member = std::ranges::find(
-                record.node_bundle_handles, bundle);
-            if (member == record.node_bundle_handles.end()) continue;
-            StableConcreteNodeId candidate{
-                .graph = graph.identity.value,
-                .virtual_node = record.id,
-                .direct_member = static_cast<std::size_t>(
-                    member - record.node_bundle_handles.begin()),
-            };
-            if (!selected
-                || std::tie(candidate.virtual_node, candidate.direct_member)
-                    < std::tie(
-                        selected->virtual_node, selected->direct_member)) {
-                selected = std::move(candidate);
-            }
-        }
-        return selected;
-    };
-
     plan.intrinsic_replay_candidates.clear();
     for (auto const& node : connections.nodes) {
         if (node.intrinsically_replayable
@@ -1372,7 +1375,7 @@ std::expected<void, std::string> populate_background_topology(
             .bundle = node.bundle,
             .semantic_node = semantic_node,
             .semantic_scc = plan.semantic_nodes[semantic_node].scc,
-            .stable_identity = stable_node_identity(node.bundle),
+            .stable_identity = node.stable_identity,
             .authored_tock_execution = authored_tock,
             .replays_tick = node.contextually_replayable,
             .uses_replay_forward_coverage = node.contextually_replayable,
