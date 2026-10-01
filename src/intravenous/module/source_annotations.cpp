@@ -50,7 +50,7 @@ extern "C" void iv_builder_annotate_public_output_source_spans(
 extern "C" void iv_builder_annotate_public_output_source_span(
     GraphBuilder* builder,
     bool event,
-    std::size_t ordinal,
+    std::size_t index,
     char const* file_path,
     std::uint32_t begin,
     std::uint32_t end)
@@ -61,8 +61,8 @@ extern "C" void iv_builder_annotate_public_output_source_span(
     if (!builder)
         throw std::invalid_argument("public-output source has no graph builder");
     if (event)
-        builder->annotate_public_event_output_source_info(ordinal, info);
+        builder->annotate_public_event_output_source_info(index, info);
     else
-        builder->annotate_public_sample_output_source_info(ordinal, info);
+        builder->annotate_public_sample_output_source_info(index, info);
 }
 } // namespace iv::details

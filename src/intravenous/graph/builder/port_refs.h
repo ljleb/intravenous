@@ -9,6 +9,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -60,9 +61,11 @@ struct SamplePortRef {
   auto operator[](Member) const
   requires requires {
     typename std::remove_cvref_t<Member>::channel_type;
-    std::remove_cvref_t<Member>::channel_ordinal;
+    std::remove_cvref_t<Member>::channel_index;
   };
-  SamplePortRef detach(size_t loop_extra_latency = 1) const;
+  SamplePortRef detach(
+      size_t loop_extra_latency = 1,
+      std::optional<Sample> initial_value = std::nullopt) const;
   void _annotate_source_info(
       std::string_view, std::string_view, uint32_t, uint32_t) const;
   std::string to_string() const;
@@ -113,7 +116,7 @@ public:
   using member_type = Member;
   explicit TypedSamplePortChannelRef(
       TypedSamplePortRef<ChannelType> port)
-      : _port(port.erased().select_channel(Member::channel_ordinal)) {}
+      : _port(port.erased().select_channel(Member::channel_index)) {}
 
   constexpr operator SamplePortRef() const { return _port; }
   constexpr SamplePortRef const& erased() const { return _port; }
@@ -190,7 +193,7 @@ requires std::same_as<typename std::remove_cvref_t<Member>::channel_type,
                       ChannelType> {
   using MemberType = std::remove_cvref_t<Member>;
   return TypedSamplePortTileChannelRef<ChannelType, MemberType>{
-      _port.select_channel(MemberType::channel_ordinal)};
+      _port.select_channel(MemberType::channel_index)};
 }
 
 template<class ChannelType>
@@ -252,7 +255,7 @@ template<class Member>
 auto SamplePortRef::operator[](Member member) const
 requires requires {
   typename std::remove_cvref_t<Member>::channel_type;
-  std::remove_cvref_t<Member>::channel_ordinal;
+  std::remove_cvref_t<Member>::channel_index;
 } {
   using ChannelType = typename std::remove_cvref_t<Member>::channel_type;
   if (!graph_builder ||
@@ -283,6 +286,7 @@ struct EventPortRef {
   constexpr EventPortRef& operator=(EventPortRef const&) = default;
   constexpr EventPortRef& operator=(EventPortRef&&) noexcept = default;
   std::span<EventOutputPortId const> sources() const;
+  EventPortRef detach(size_t loop_extra_latency = 1) const;
   void _annotate_source_info(
       std::string_view, std::string_view, uint32_t, uint32_t) const;
   std::string to_string() const;

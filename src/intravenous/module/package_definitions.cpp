@@ -43,7 +43,7 @@ public:
 };
 } // namespace
 
-NodeRef configure_package_definition_impl(
+NodeRef configure_package_definition_provider(
     GraphBuilder& builder,
     std::string_view id,
     std::optional<ChannelLayout> tiled_layout,
@@ -124,6 +124,27 @@ NodeRef configure_package_definition_impl(
     definition.module_build(child, arguments);
     return builder.embed_child(child, "IV module definition");
 }
+NodeRef configure_package_definition_impl(
+    GraphBuilder& builder,
+    std::string_view id,
+    std::optional<ChannelLayout> tiled_layout,
+    std::span<ConfigurationArgument> arguments)
+{
+    if (!builder._session) {
+        throw std::logic_error("IV package definition requires a BuilderSession");
+    }
+    if (auto resolver = builder_definition_resolver(builder._session)) {
+        return resolver(
+            builder_definition_resolver_context(builder._session),
+            builder,
+            id,
+            tiled_layout,
+            arguments);
+    }
+    return configure_package_definition_provider(
+        builder, id, tiled_layout, arguments);
+}
+
 NodeRef configure_package_definition(
     GraphBuilder& builder,
     std::string_view id,

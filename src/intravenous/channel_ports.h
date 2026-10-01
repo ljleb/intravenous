@@ -17,7 +17,7 @@ namespace iv {
         using MemberT = std::remove_cvref_t<Member>;
         return DefaultChannelNamedArg<
             typename MemberT::channel_type,
-            MemberT::channel_ordinal,
+            MemberT::channel_index,
             std::remove_cvref_t<T>>{
             .value = std::forward<T>(value),
         };
@@ -34,7 +34,7 @@ namespace iv {
     template<class Type, class Tag>
     constexpr size_t port_index(ChannelMember<Type, Tag>)
     {
-        return ChannelMember<Type, Tag>::channel_ordinal;
+        return ChannelMember<Type, Tag>::channel_index;
     }
 
     template<class Type, class Tag>

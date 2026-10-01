@@ -5,6 +5,7 @@
 #include <array>
 #include <cmath>
 #include <functional>
+#include <utility>
 #include <vector>
 
 namespace iv {
@@ -39,12 +40,12 @@ namespace iv {
 
         void tick(auto const& ctx) const
         {
-            auto& out = ctx.outputs[0];
             Sample result = binary_op_default_v<BinaryOp>;
-            for (auto& input : ctx.inputs) {
-                result = BinaryOp{}(result, input.get());
-            }
-            out.push(result);
+            [&]<size_t... Index>(std::index_sequence<Index...>) {
+                ((result = BinaryOp{}(
+                    result, ctx.template input<Index>().get())), ...);
+            }(std::make_index_sequence<NumInputs>{});
+            ctx.template output<0>().push(result);
         }
     };
 
@@ -63,9 +64,9 @@ namespace iv {
 
         void tick(auto const& ctx) const
         {
-            auto& out = ctx.outputs[0];
-            auto& in0 = ctx.inputs[0];
-            auto& in1 = ctx.inputs[1];
+            auto out = ctx.template output<0>();
+            auto in0 = ctx.template input<0>();
+            auto in1 = ctx.template input<1>();
             out.push(BinaryOp{}(in0.get(), in1.get()));
         }
     };
@@ -91,7 +92,7 @@ namespace iv {
 
         static constexpr auto outputs()
         {
-            return std::array<OutputConfig, 1>{sample_output("out", {
+            return std::array<OutputConfig, 1>{tick_sample_output("out", {
                 .channel_layout = ChannelLayout{
                     .channel_type = ChannelTypeTraits<ChannelType>::id,
                     .sample_layout = Layout,
@@ -103,10 +104,11 @@ namespace iv {
         {
             for (size_t channel = 0; channel < ChannelType::channel_count; ++channel) {
                 Sample result = 0.0f;
-                for (auto const& input : ctx.inputs) {
-                    result = result + input.get(0, channel);
-                }
-                ctx.outputs[0].write_frame(0, channel, result);
+                [&]<size_t... Index>(std::index_sequence<Index...>) {
+                    ((result += ctx.template input<Index>().get(
+                        0, channel)), ...);
+                }(std::make_index_sequence<NumInputs>{});
+                ctx.template output<0>().write_frame(0, channel, result);
             }
         }
     };
@@ -134,7 +136,7 @@ namespace iv {
 
         void tick(auto const& state) const
         {
-            state.outputs[0].push(-state.inputs[0].get());
+            state.template output<0>().push(-state.template input<0>().get());
         }
     };
 
@@ -151,7 +153,7 @@ namespace iv {
 
         void tick(auto const& ctx) const
         {
-            ctx.outputs[0].push(std::pow(ctx.inputs[0].get(), ctx.inputs[1].get()));
+            ctx.template output<0>().push(std::pow(ctx.template input<0>().get(), ctx.template input<1>().get()));
         }
     };
 }

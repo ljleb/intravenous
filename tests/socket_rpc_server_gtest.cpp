@@ -1,11 +1,9 @@
 #include "module_test_utils.h"
 
 #include <intravenous/bridge.h>
-#include <intravenous/runtime/audio_device_lanes.h>
-#include <intravenous/runtime/lane_views.h>
+#include <intravenous/runtime/system_audio_devices.h>
 #include <intravenous/runtime/runtime_project_events.h>
-#include <intravenous/runtime/socket_rpc_audio_device_lanes_bridge.h>
-#include <intravenous/runtime/socket_rpc_lane_views_bridge.h>
+#include <intravenous/runtime/socket_rpc_system_audio_devices_bridge.h>
 #include <intravenous/runtime/socket_rpc_server.h>
 
 #include <gtest/gtest.h>
@@ -18,7 +16,6 @@
 #include <stdexcept>
 #include <string>
 #include <cstring>
-#include <string_view>
 #include <sys/select.h>
 #include <sys/socket.h>
 #include <unistd.h>
@@ -30,11 +27,6 @@ namespace {
 
     constexpr auto socket_rpc_startup_timeout = 30s;
     constexpr auto socket_rpc_response_timeout = 30s;
-
-    iv::InternedString intern(std::string_view value)
-    {
-        return iv::InternedString::from_view(value);
-    }
 
     struct IdleFakeAudioInputDevice {
         iv::RenderConfig config_;
@@ -56,9 +48,9 @@ namespace {
         void request_shutdown() {}
     };
 
-    iv::AudioDeviceLanesBackend make_audio_backend()
+    iv::SystemAudioDevicesBackend make_audio_backend()
     {
-        return iv::AudioDeviceLanesBackend{
+        return iv::SystemAudioDevicesBackend{
             .list_output_devices = [] {
                 return std::vector<iv::AudioDeviceDescriptor>{
                     {.device_id = "default", .name = "System Default"},
@@ -92,7 +84,6 @@ namespace {
         bool graph_query_should_fail = false;
         int graph_query_fail_code = -32000;
         std::string graph_query_fail_message;
-        std::optional<iv::LaneViewResult> deferred_lane_view_notification;
 
         void reset()
         {
@@ -102,16 +93,12 @@ namespace {
             graph_query_should_fail = false;
             graph_query_fail_code = -32000;
             graph_query_fail_message.clear();
-            deferred_lane_view_notification.reset();
         }
         void handle_graph_query_by_spans(
         iv::GraphQueryBySpansRequest const &request,
         iv::SocketRpcGraphQueryResultBuilder &builder)
         {
         graph_query_requests.push_back(request);
-        if (deferred_lane_view_notification.has_value() && current_server != nullptr) {
-            current_server->send_lane_view_updated(*deferred_lane_view_notification);
-        }
         if (graph_query_should_fail) {
             builder.fail(
                 graph_query_fail_code,
@@ -241,17 +228,17 @@ namespace {
 
     public:
         iv::SocketRpcServer server;
-        iv::AudioDeviceLanes audio_device_lanes;
+        iv::SystemAudioDevices system_audio_devices;
         socket_rpc_server_test_state_bridge::scope test_state_scope;
-        iv::socket_rpc_audio_device_lanes_bridge::scope audio_device_lanes_scope;
+        iv::socket_rpc_system_audio_devices_bridge::scope system_audio_devices_scope;
         std::string response_buffer;
 
         explicit SocketRpcHarness(std::filesystem::path const& workspace)
             : fds(make_socket_pair()),
               server(workspace, fds[1]),
-              audio_device_lanes(48000, 8, make_audio_backend()),
+              system_audio_devices(48000, 8, make_audio_backend()),
               test_state_scope(server, socket_rpc_test_state),
-              audio_device_lanes_scope(server, audio_device_lanes)
+              system_audio_devices_scope(server, system_audio_devices)
         {
             socket_rpc_test_state.current_server = &server;
             server.start();
@@ -352,42 +339,7 @@ TEST(SocketRpcServer, DispatchesQueryEventAndReturnsSubscriberResult)
     EXPECT_EQ(captured.match_mode, iv::SourceRangeMatchMode::intersection);
 }
 
-TEST(SocketRpcServer, DistinguishesOpenAndUpdateLaneViewEvents)
-{
-    socket_rpc_test_state.reset();
-    auto harness = SocketRpcHarness(make_server_workspace());
-    iv::LaneViews lane_views;
-    auto lane_views_scope = iv::socket_rpc_lane_views_bridge::bind(
-        harness.server,
-        lane_views);
 
-    ASSERT_FALSE(harness.read_line().empty());
-
-    harness.write_request(
-        R"({"jsonrpc":"2.0","id":3,"method":"timeline.openLaneView","params":{"viewId":"view-a","filter":{"kind":"graphInputs"},"startIndex":1,"visibleLaneCount":2}})"
-        "\n");
-    auto const open_response = harness.read_response(3);
-    EXPECT_TRUE(open_response.contains(R"("viewId":"view-a")")) << open_response;
-
-    harness.write_request(
-        R"({"jsonrpc":"2.0","id":4,"method":"timeline.updateLaneView","params":{"viewId":"view-b","filter":{"kind":"graphInputs"},"startIndex":3,"visibleLaneCount":4}})"
-        "\n");
-    auto const update_response = harness.read_response(4);
-    EXPECT_TRUE(update_response.contains(R"("viewId":"view-b")")) << update_response;
-
-    auto const active_requests = lane_views.active_view_requests();
-    auto const open_request = std::ranges::find_if(active_requests, [](auto const &request) {
-        return request.view_id.str() == "view-a";
-    });
-    ASSERT_NE(open_request, active_requests.end());
-    EXPECT_EQ(open_request->start_index, 1u);
-
-    auto const update_request = std::ranges::find_if(active_requests, [](auto const &request) {
-        return request.view_id.str() == "view-b";
-    });
-    ASSERT_NE(update_request, active_requests.end());
-    EXPECT_EQ(update_request->start_index, 3u);
-}
 
 TEST(SocketRpcServer, DispatchesAudioDeviceGetAndSetRequests)
 {
@@ -409,88 +361,7 @@ TEST(SocketRpcServer, DispatchesAudioDeviceGetAndSetRequests)
     auto const set_response = harness.read_response(9);
     EXPECT_TRUE(set_response.contains(R"("deviceId":"out-1")")) << set_response;
     EXPECT_TRUE(set_response.contains(R"("selectedInput")")) << set_response;
-    auto const snapshot = harness.audio_device_lanes.audio_devices_snapshot();
+    auto const snapshot = harness.system_audio_devices.audio_devices_snapshot();
     EXPECT_EQ(snapshot.selected_output.device_id, std::optional<std::string>{"out-1"});
     EXPECT_FALSE(snapshot.selected_input.device_id.has_value());
-}
-
-TEST(SocketRpcServer, UnboundRequestReturnsTheOwningServiceError)
-{
-    socket_rpc_test_state.reset();
-    auto harness = SocketRpcHarness(make_server_workspace());
-
-    ASSERT_FALSE(harness.read_line().empty());
-
-    harness.write_request(
-        R"({"jsonrpc":"2.0","id":10,"method":"playback.pause","params":{}})"
-        "\n");
-    auto const response = harness.read_response(10);
-    EXPECT_TRUE(response.contains("timeline execution service is unavailable"))
-        << response;
-}
-
-TEST(SocketRpcServer, ClosesLaneViewAndShutsDown)
-{
-    socket_rpc_test_state.reset();
-    auto harness = SocketRpcHarness(make_server_workspace());
-    iv::LaneViews lane_views;
-    auto lane_views_scope = iv::socket_rpc_lane_views_bridge::bind(
-        harness.server,
-        lane_views);
-
-    ASSERT_FALSE(harness.read_line().empty());
-
-    harness.write_request(
-        R"({"jsonrpc":"2.0","id":5,"method":"timeline.openLaneView","params":{"viewId":"view-z","filter":{"kind":"graphInputs"}}})"
-        "\n");
-    ASSERT_FALSE(harness.read_response(5).empty());
-
-    harness.write_request(
-        R"({"jsonrpc":"2.0","id":6,"method":"timeline.closeLaneView","params":{"viewId":"view-z"}})"
-        "\n");
-    auto const close_response = harness.read_response(6);
-    EXPECT_TRUE(close_response.contains(R"("ok":true)")) << close_response;
-    EXPECT_TRUE(lane_views.active_view_requests().empty());
-
-    harness.write_request(
-        R"({"jsonrpc":"2.0","id":7,"method":"server.shutdown","params":{}})"
-        "\n");
-    auto const shutdown_response = harness.read_response(7);
-    EXPECT_TRUE(shutdown_response.contains(R"("ok":true)")) << shutdown_response;
-}
-
-TEST(SocketRpcServer, DefersLaneViewNotificationsUntilAfterResponse)
-{
-    socket_rpc_test_state.reset();
-    socket_rpc_test_state.graph_query_result.nodes.push_back(iv::VirtualNodeInfo {
-        .id = "node-2",
-        .kind = "DeferredNode",
-    });
-    socket_rpc_test_state.deferred_lane_view_notification = iv::LaneViewResult {
-        .view_id = intern("deferred-view"),
-        .lanes = iv::LaneQueryResult {
-            .start_index = 0,
-            .visible_lane_count = 1,
-            .total_lane_count = 1,
-        },
-    };
-    auto workspace = make_server_workspace();
-    auto harness = SocketRpcHarness(workspace);
-
-    ASSERT_FALSE(harness.read_line().empty());
-
-    std::string const query_request =
-        R"({"jsonrpc":"2.0","id":7,"method":"graph.queryBySpans","params":{"filePath":")" +
-        (workspace / "module.cpp").generic_string() +
-        R"(","ranges":[{"start":{"line":1,"column":1},"end":{"line":1,"column":1}}],"match":"intersection"}})" "\n";
-    harness.write_request(query_request);
-
-    auto const query_response = harness.read_response(7);
-    ASSERT_FALSE(query_response.empty());
-    EXPECT_TRUE(query_response.contains(R"("id":"node-2")")) << query_response;
-
-    auto const deferred_notification = harness.read_line(5s);
-    ASSERT_FALSE(deferred_notification.empty());
-    EXPECT_TRUE(deferred_notification.contains(R"("method":"timeline.laneViewUpdated")")) << deferred_notification;
-    EXPECT_TRUE(deferred_notification.contains(R"("viewId":"deferred-view")")) << deferred_notification;
 }

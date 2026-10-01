@@ -9,7 +9,6 @@ namespace iv {
     struct RuntimeExecutionConfig {
         size_t sample_rate = 48000;
         size_t block_size = 256;
-        size_t compiled_sample_cache_chunk_size_multiplier = 16;
     };
 
     struct ProjectConfig {

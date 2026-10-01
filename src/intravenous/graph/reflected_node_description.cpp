@@ -56,6 +56,11 @@ void NodeDescriptionSink::set_block_skippable(bool value) const
     description().block_skippable = value;
 }
 
+void NodeDescriptionSink::set_intrinsically_replayable(bool value) const
+{
+    description().intrinsically_replayable = value;
+}
+
 void NodeDescriptionSink::set_static_sample_value(std::optional<Sample> value) const
 {
     description().static_sample_value = value;
@@ -93,6 +98,14 @@ ReflectedNodeDescription materialize_node_description(
     NodeDescriptionBuilder builder(result);
     auto sink = builder.sink();
     request.describe(result.node_storage.get(), sink);
+    if (result.intrinsically_replayable != record.intrinsically_replayable) {
+        throw std::invalid_argument(
+            "node intrinsic replayability disagrees with its compiler record");
+    }
+    if (result.intrinsically_replayable && result.internal_latency_samples != 0) {
+        throw std::invalid_argument(
+            "intrinsically replayable node requires zero configured internal latency");
+    }
     return result;
 }
 
