@@ -423,6 +423,7 @@ struct LoweringPlan {
     ConfigurationPlan configurations{};
     SamplePortBindingPlan sample_ports{};
     EventPortBindingPlan event_ports{};
+    RealtimePortStateRealizations realtime_port_state_realizations{};
     RootStackBufferPlan root_stack{};
     ExecutionPlan execution{};
 };

@@ -104,6 +104,7 @@ struct LoweringOutput {
     NodeLayout node_layout{};
     BackgroundEvaluationPlan background_evaluation_plan{};
     RealtimePortStateRequirements realtime_port_state_requirements{};
+    RealtimePortStateRealizations realtime_port_state_realizations{};
     LoweredGraphRootSymbols root_symbols{};
 };
 

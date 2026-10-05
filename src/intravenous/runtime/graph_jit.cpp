@@ -1231,6 +1231,8 @@ public:
                 .background_evaluation_plan = std::move(lowering->background_evaluation_plan),
                 .realtime_port_state_requirements =
                     std::move(lowering->realtime_port_state_requirements),
+                .realtime_port_state_realizations =
+                    std::move(lowering->realtime_port_state_realizations),
                 .root_operations = materialized.root_operations,
                 .background_operations = materialized.background_operations,
                 .code_lifetime = std::move(materialized.lifetime),

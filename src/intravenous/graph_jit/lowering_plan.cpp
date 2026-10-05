@@ -534,6 +534,244 @@ std::expected<DeclarationPlan, std::string> plan_declarations(
     return plan;
 }
 
+std::expected<RealtimePortStateRealizations, std::string>
+plan_sample_realtime_port_state_realizations(
+    GraphAnalysis const& analysis,
+    ConnectionAnalysisPlan const& connections,
+    DeclarationPlan const& declarations,
+    SamplePortBindingPlan const& sample_ports)
+{
+    RealtimePortStateRealizations result;
+    result.sample_states.reserve(
+        std::ranges::count_if(
+            connections.realtime_port_states.states,
+            [](RealtimePortStateRequirement const& state) {
+                return state.configured_port.port_kind == PortKind::sample;
+            }));
+
+    auto primitive_index_for_bundle = [&](NodeBundleHandle bundle)
+        -> std::optional<std::size_t> {
+        for (std::size_t i = 0; i < analysis.primitives.size(); ++i) {
+            if (analysis.primitives[i].bundle.node_bundle == bundle) return i;
+        }
+        return std::nullopt;
+    };
+
+    for (std::size_t requirement_index = 0;
+         requirement_index
+            < connections.realtime_port_states.states.size();
+         ++requirement_index) {
+        auto const& requirement =
+            connections.realtime_port_states.states[requirement_index];
+        if (requirement.configured_port.port_kind != PortKind::sample) continue;
+        if (!requirement.channel || requirement.extent_samples == 0) {
+            return std::unexpected(
+                "GraphJit sample port-state requirement has no channel or extent");
+        }
+
+        auto const primitive = primitive_index_for_bundle(
+            requirement.configured_port.node_bundle_handle);
+        if (!primitive || *primitive >= sample_ports.primitives.size()) {
+            return std::unexpected(
+                "GraphJit sample port-state requirement lost its concrete primitive");
+        }
+
+        std::size_t representation_index = no_sample_representation;
+        std::size_t representation_channel = 0;
+        std::int64_t timeline_offset = 0;
+        auto const port = requirement.configured_port.port_index;
+        auto const& primitive_ports = sample_ports.primitives[*primitive];
+        if (requirement.direction == PortDirection::input) {
+            if (requirement.role
+                    != RealtimePortStateRole::sequential_input_history
+                || port >= primitive_ports.inputs.size()) {
+                return std::unexpected(
+                    "GraphJit sample input state disagrees with its port binding");
+            }
+            auto const& binding = primitive_ports.inputs[port];
+            if (*requirement.channel >= binding.channels.size()
+                || binding.history != requirement.extent_samples) {
+                return std::unexpected(
+                    "GraphJit sample input state disagrees with its semantic extent");
+            }
+            auto const& channel = binding.channels[*requirement.channel];
+            representation_index = channel.storage;
+            representation_channel = channel.representation_channel;
+            if (channel.frame_delay
+                > std::numeric_limits<std::size_t>::max()
+                    - binding.read_latency) {
+                return std::unexpected(
+                    "GraphJit sample input state timeline delay overflows size_t");
+            }
+            auto const timeline_delay =
+                binding.read_latency + channel.frame_delay;
+            if (timeline_delay
+                > static_cast<std::size_t>(
+                    std::numeric_limits<std::int64_t>::max())) {
+                return std::unexpected(
+                    "GraphJit sample input state timeline offset is not representable");
+            }
+            timeline_offset = -static_cast<std::int64_t>(timeline_delay);
+        } else {
+            if (port >= primitive_ports.outputs.size()) {
+                return std::unexpected(
+                    "GraphJit sample output state lost its port binding");
+            }
+            auto const& binding = primitive_ports.outputs[port];
+            if (!binding.realtime || !binding.storage) {
+                return std::unexpected(
+                    "GraphJit Tick output state has no realtime storage binding");
+            }
+            std::size_t expected_extent = 0;
+            if (requirement.role
+                == RealtimePortStateRole::tick_output_history) {
+                expected_extent = binding.history;
+            } else if (requirement.role
+                       == RealtimePortStateRole::tick_output_latency) {
+                expected_extent = binding.latency;
+            }
+            if (expected_extent == 0
+                || expected_extent != requirement.extent_samples) {
+                return std::unexpected(
+                    "GraphJit sample output state disagrees with its semantic extent");
+            }
+            representation_index = *binding.storage;
+            representation_channel = *requirement.channel;
+            if (binding.latency
+                > static_cast<std::size_t>(
+                    std::numeric_limits<std::int64_t>::max())) {
+                return std::unexpected(
+                    "GraphJit sample output state timeline offset is not representable");
+            }
+            timeline_offset = static_cast<std::int64_t>(binding.latency);
+        }
+
+        if (representation_index == no_sample_representation
+            || representation_index
+                >= sample_ports.storage.representations.size()) {
+            return std::unexpected(
+                "GraphJit sample port-state binding names an invalid representation");
+        }
+        auto const& representation =
+            sample_ports.storage.representations[representation_index];
+        if (representation_channel
+            >= channel_count(representation.channel_layout)) {
+            return std::unexpected(
+                "GraphJit sample port-state channel lies outside its representation");
+        }
+
+        SampleRealtimePortStateRealization realization{
+            .requirement_index = requirement_index,
+            .channel_layout = representation.channel_layout,
+            .representation_channel = representation_channel,
+            .timeline_offset_frames = timeline_offset,
+            .working_frame_capacity = representation.frame_capacity,
+        };
+
+        if (representation.constant_value) {
+            if (representation.persistent_allocation
+                    != no_sample_persistent_allocation
+                || representation.transient_allocation
+                    != no_sample_transient_allocation) {
+                return std::unexpected(
+                    "GraphJit constant sample state unexpectedly owns mutable storage");
+            }
+            realization.storage =
+                SampleRealtimePortStateStorage::immutable_constant;
+            realization.storage_frame_count = representation.frame_capacity;
+            realization.constant_value = representation.constant_value;
+            result.sample_states.push_back(std::move(realization));
+            continue;
+        }
+
+        if (representation.persistent_allocation
+            != no_sample_persistent_allocation) {
+            auto const allocation_index =
+                representation.persistent_allocation;
+            if (allocation_index
+                >= sample_ports.storage.persistent_allocations.size()) {
+                return std::unexpected(
+                    "GraphJit sample port-state representation lost its persistent allocation");
+            }
+            auto const& allocation =
+                sample_ports.storage.persistent_allocations[allocation_index];
+            if (allocation.representation_index != representation_index
+                || allocation.channel_layout
+                    != representation.channel_layout
+                || allocation.storage_offset
+                    > declarations.node_layout.storage_size
+                || allocation.size_bytes
+                    > declarations.node_layout.storage_size
+                        - allocation.storage_offset) {
+                return std::unexpected(
+                    "GraphJit sample port-state persistent allocation disagrees with finalized NodeStorage");
+            }
+            realization.node_storage_offset = allocation.storage_offset;
+            realization.storage_size_bytes = allocation.size_bytes;
+            realization.storage_frame_count =
+                allocation.kind == SamplePersistentStorageKind::compact_carry
+                ? allocation.retained_frames
+                : allocation.frame_capacity;
+            if (allocation.kind == SamplePersistentStorageKind::ring) {
+                realization.storage = SampleRealtimePortStateStorage::ring;
+            } else {
+                realization.storage =
+                    SampleRealtimePortStateStorage::compact_carry;
+                auto carry = sample_ports.storage.carry_operations.end();
+                for (auto candidate =
+                         sample_ports.storage.carry_operations.begin();
+                     candidate != sample_ports.storage.carry_operations.end();
+                     ++candidate) {
+                    if (candidate->persistent_allocation != allocation_index) {
+                        continue;
+                    }
+                    if (carry != sample_ports.storage.carry_operations.end()) {
+                        return std::unexpected(
+                            "GraphJit compact sample state has more than one carry operation");
+                    }
+                    carry = candidate;
+                }
+                if (carry == sample_ports.storage.carry_operations.end()
+                    || carry->representation_index != representation_index
+                    || carry->retained_frames != allocation.retained_frames) {
+                    return std::unexpected(
+                        "GraphJit compact sample state lost its carry operation");
+                }
+                realization.carry_future_frames = carry->future_frames;
+            }
+            result.sample_states.push_back(std::move(realization));
+            continue;
+        }
+
+        if (representation.storage
+                != RealtimeBufferStorageKind::transient_stack
+            || representation.transient_allocation
+                >= sample_ports.storage.transient_allocations.size()) {
+            return std::unexpected(
+                "GraphJit sample port state has no constant, callback-local, or persistent realization");
+        }
+        auto const& allocation = sample_ports.storage.transient_allocations[
+            representation.transient_allocation];
+        if (allocation.representation_index != representation_index
+            || allocation.region_relative_offset
+                > sample_ports.storage.transient_arena_size
+            || allocation.size_bytes
+                > sample_ports.storage.transient_arena_size
+                    - allocation.region_relative_offset) {
+            return std::unexpected(
+                "GraphJit sample port-state callback allocation lies outside its arena");
+        }
+        realization.storage =
+            SampleRealtimePortStateStorage::callback_transient;
+        realization.callback_arena_offset =
+            allocation.region_relative_offset;
+        realization.storage_size_bytes = allocation.size_bytes;
+        realization.storage_frame_count = representation.frame_capacity;
+        result.sample_states.push_back(std::move(realization));
+    }
+    return result;
+}
+
 std::expected<PackageImportPlan, std::string> plan_package_imports(
     LoweringInput const& input,
     GraphAnalysis const& analysis,
@@ -4977,6 +5215,17 @@ std::expected<LoweringPlan, std::string> build_lowering_plan(
         realtime_ports->event_ports);
     if (!declarations) return std::unexpected(std::move(declarations.error()));
 
+    auto realtime_port_state_realizations =
+        plan_sample_realtime_port_state_realizations(
+            *analysis,
+            realtime_ports->connections,
+            *declarations,
+            realtime_ports->sample_ports);
+    if (!realtime_port_state_realizations) {
+        return std::unexpected(
+            std::move(realtime_port_state_realizations.error()));
+    }
+
     auto imports = plan_package_imports(
         input, *analysis, realtime_ports->connections.background);
     if (!imports) return std::unexpected(std::move(imports.error()));
@@ -5003,6 +5252,8 @@ std::expected<LoweringPlan, std::string> build_lowering_plan(
         .configurations = std::move(*configurations),
         .sample_ports = std::move(realtime_ports->sample_ports),
         .event_ports = std::move(realtime_ports->event_ports),
+        .realtime_port_state_realizations =
+            std::move(*realtime_port_state_realizations),
         .root_stack = realtime_ports->root_stack,
         .execution = std::move(*execution),
     };

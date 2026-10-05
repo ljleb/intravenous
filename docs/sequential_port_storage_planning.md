@@ -336,10 +336,30 @@ identity. `CompiledGraph` owns this inventory as cold transition-planning metada
 Generated realtime code does not inspect it.
 
 The physical realization view is a separate mapping produced after storage selection.
-It maps these authoritative semantic records onto the selected producer ring, compact
-carry, per-channel alias, event representation, or transition-only materialization.
-Storage planners must consume the inventory; they must not reconstruct semantic state
-ownership from their chosen representation.
+For sample state, lowering now maps every semantic requirement to its finalized
+per-channel representation after `NodeLayout` finalization. The cold record distinguishes
+an immutable constant, callback-local arena storage, compact cross-callback carry, and a
+persistent ring. It retains the physical channel layout/channel, signed
+semantic-to-storage timeline offset, working capacity, actual stored-frame count,
+compact-carry future extent, and either the final `NodeStorage` byte range or
+callback-arena-relative byte range. For semantic coordinate `P`, the physical ring
+coordinate is `P + offset`: Sequential-input read latency/channel delay is negative,
+while Tick-output authored storage latency is positive.
+
+Callback-local storage is intentionally identified as such rather than presented as a
+migration source. A transition planner encountering that form must trace the derived
+sample operation back to recoverable retained sources or arrange a transition-only
+materialization; it may not read expired root-stack bytes between callbacks. Constants
+require no mutable state migration. Compact carries and rings expose their canonical
+cross-callback `NodeStorage` backing directly.
+
+Event realization mapping remains separate because an authored event output may write a
+producer-local stream that is subsequently merged into shared retained fan-in storage.
+That mapping must preserve producer/source membership and deterministic equal-time order;
+it must not equate the callback binding with the retained event-state owner.
+
+Storage planners consume the authoritative semantic inventory; they do not reconstruct
+semantic state ownership from their chosen representation.
 
 ## Partition overlapping port subsets before choosing storage
 

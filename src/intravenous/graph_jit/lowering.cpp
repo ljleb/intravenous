@@ -4993,6 +4993,8 @@ std::expected<LoweringOutput, std::string> emit_lowering_plan(
         .background_evaluation_plan = std::move(plan.connections.background),
         .realtime_port_state_requirements =
             std::move(plan.connections.realtime_port_states),
+        .realtime_port_state_realizations =
+            std::move(plan.realtime_port_state_realizations),
         .root_symbols = {
             .tick_block = std::string(root_tick_block_symbol),
             .propagate_background_forward = has_background_program

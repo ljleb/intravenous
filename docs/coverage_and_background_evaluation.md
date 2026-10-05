@@ -2534,10 +2534,21 @@ recording merely because that planning metadata exists.
    event-stream marker, and role. `CompiledGraph` retains this inventory as cold
    metadata; generated realtime execution pays no lookup or disposition cost for it.
 
-   The next migration substep maps each inventory entry to its finalized sample/event
-   realization—producer ring, compact carry, per-channel alias, event representation,
-   or required materialization—without treating representation kind, allocation index,
-   capacity, or byte offset as semantic identity.
+   Sample-state inventory entries are now mapped after final `NodeLayout` placement to
+   their actual per-channel realization: immutable constant, callback-local arena view,
+   compact cross-callback carry, or persistent ring. The cold mapping retains the signed
+   semantic-to-storage timeline offset (`P + offset`), working capacity,
+   stored-frame count, compact-carry future extent, and finalized `NodeStorage` or
+   callback-arena-relative byte location. These are
+   generation-local realization facts and are never part of semantic identity or the
+   realtime node API. Callback-local views are explicitly non-migratable after the root
+   returns; later transition planning must trace their derivation to retained sources or
+   introduce transition-only materialization.
+
+   The next migration substep builds the corresponding event-state mapping. It must
+   distinguish a producer's authored callback stream from canonical retained fan-in
+   storage, preserve source membership/equal-time ordering, and resolve compact-carry
+   working representations to their persistent event backing before transition planning.
 
    Before optimization, define port history/latency exactly as if each surviving
    concrete node privately owned that state. Carry stable user-instance/virtual-member/

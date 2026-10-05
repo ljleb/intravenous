@@ -6978,6 +6978,35 @@ TEST_F(GraphJitRuntimeFixture, DisconnectedSampleInputUsesDeclaredDefault)
                 : compiled.diagnostics.front().message);
     EXPECT_EQ(count_raw_regions(compiled.compiled_graph->node_layout), 0u);
 
+    auto const& requirements =
+        compiled.compiled_graph->realtime_port_state_requirements.states;
+    auto const& realizations =
+        compiled.compiled_graph->realtime_port_state_realizations.sample_states;
+    ASSERT_EQ(requirements.size(), 2u);
+    ASSERT_EQ(realizations.size(), 2u);
+    for (std::size_t channel = 0; channel < 2; ++channel) {
+        auto const found = std::ranges::find_if(
+            realizations,
+            [&](iv::graph_jit::SampleRealtimePortStateRealization const& view) {
+                return view.requirement_index < requirements.size()
+                    && requirements[view.requirement_index].channel == channel;
+            });
+        ASSERT_NE(found, realizations.end());
+        EXPECT_EQ(
+            found->storage,
+            iv::graph_jit::SampleRealtimePortStateStorage::immutable_constant);
+        EXPECT_EQ(found->representation_channel, channel);
+        EXPECT_EQ(found->channel_layout.channel_type, iv::ChannelTypeId::stereo);
+        EXPECT_EQ(
+            found->channel_layout.sample_layout,
+            iv::SampleStreamLayout::interleaved);
+        EXPECT_EQ(found->timeline_offset_frames, 0);
+        ASSERT_TRUE(found->constant_value);
+        EXPECT_FLOAT_EQ(static_cast<float>(*found->constant_value), 0.375f);
+        EXPECT_FALSE(found->node_storage_offset);
+        EXPECT_FALSE(found->callback_arena_offset);
+    }
+
     auto storage = compiled.compiled_graph->node_layout.create_storage(resources);
     storage.initialize();
     auto* state = static_cast<DisconnectedSampleInputProbeStateMirror*>(
@@ -7033,6 +7062,34 @@ TEST_F(GraphJitRuntimeFixture, DisconnectedSampleOutputKeepsDeclaredHistory)
         });
     ASSERT_NE(raw, compiled.compiled_graph->node_layout.regions.end());
     EXPECT_EQ(raw->size, 5u * sizeof(iv::Sample));
+
+    auto const& requirements =
+        compiled.compiled_graph->realtime_port_state_requirements.states;
+    auto const& realizations =
+        compiled.compiled_graph->realtime_port_state_realizations.sample_states;
+    ASSERT_EQ(requirements.size(), 2u);
+    ASSERT_EQ(realizations.size(), 2u);
+    for (auto const& view : realizations) {
+        ASSERT_LT(view.requirement_index, requirements.size());
+        auto const& requirement = requirements[view.requirement_index];
+        EXPECT_EQ(requirement.direction, iv::graph_jit::PortDirection::output);
+        EXPECT_TRUE(
+            requirement.role
+                == iv::graph_jit::RealtimePortStateRole::tick_output_history
+            || requirement.role
+                == iv::graph_jit::RealtimePortStateRole::tick_output_latency);
+        EXPECT_EQ(
+            view.storage,
+            iv::graph_jit::SampleRealtimePortStateStorage::compact_carry);
+        EXPECT_EQ(view.representation_channel, 0u);
+        EXPECT_EQ(view.timeline_offset_frames, 2);
+        EXPECT_EQ(view.storage_frame_count, 5u);
+        EXPECT_EQ(view.storage_size_bytes, 5u * sizeof(iv::Sample));
+        ASSERT_TRUE(view.node_storage_offset);
+        EXPECT_EQ(*view.node_storage_offset, raw->storage_offset);
+        EXPECT_FALSE(view.callback_arena_offset);
+        EXPECT_FALSE(view.constant_value);
+    }
 
     auto storage = compiled.compiled_graph->node_layout.create_storage(resources);
     storage.initialize();
@@ -12689,6 +12746,30 @@ TEST_F(GraphJitRuntimeFixture, PersistentSampleHistory)
         persistent_ring_region->size,
         8192u * sizeof(iv::Sample));
     EXPECT_FALSE(persistent_ring_region->migration_identity.empty());
+
+    auto const& requirements = persistent_history.compiled_graph
+        ->realtime_port_state_requirements.states;
+    auto const& realizations = persistent_history.compiled_graph
+        ->realtime_port_state_realizations.sample_states;
+    ASSERT_EQ(requirements.size(), 1u);
+    ASSERT_EQ(realizations.size(), 1u);
+    ASSERT_LT(realizations[0].requirement_index, requirements.size());
+    EXPECT_EQ(
+        requirements[realizations[0].requirement_index].role,
+        iv::graph_jit::RealtimePortStateRole::sequential_input_history);
+    EXPECT_EQ(
+        realizations[0].storage,
+        iv::graph_jit::SampleRealtimePortStateStorage::ring);
+    EXPECT_EQ(realizations[0].working_frame_capacity, 8192u);
+    EXPECT_EQ(realizations[0].storage_frame_count, 8192u);
+    EXPECT_EQ(
+        realizations[0].storage_size_bytes,
+        8192u * sizeof(iv::Sample));
+    ASSERT_TRUE(realizations[0].node_storage_offset);
+    EXPECT_EQ(
+        *realizations[0].node_storage_offset,
+        persistent_ring_region->storage_offset);
+    EXPECT_FALSE(realizations[0].callback_arena_offset);
 
     auto persistent_history_storage =
         persistent_history.compiled_graph->node_layout.create_storage(resources);

@@ -110,6 +110,7 @@ struct CompiledGraph {
     // this inventory; execution-generation preparation uses it to reconcile
     // semantic port state before activating a replacement realization.
     graph_jit::RealtimePortStateRequirements realtime_port_state_requirements{};
+    graph_jit::RealtimePortStateRealizations realtime_port_state_realizations{};
     CompiledGraphRootOperations root_operations{};
     CompiledGraphBackgroundOperations background_operations{};
     std::shared_ptr<void const> code_lifetime{};
