@@ -3,6 +3,7 @@
 #include <intravenous/channel_layout.h>
 #include <intravenous/coverage.h>
 #include <intravenous/graph_jit/background_evaluation_plan.h>
+#include <intravenous/graph_jit/stable_graph_identity.h>
 #include <intravenous/ports.h>
 
 #include <atomic>

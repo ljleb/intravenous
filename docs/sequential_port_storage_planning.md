@@ -315,6 +315,32 @@ Any storage plan that aliases/elides one of these conceptual state pieces must r
 cold metadata capable of reading that semantic window again during a later graph
 transition.
 
+Connection analysis therefore emits one cold semantic-state requirement for every
+non-empty owned extent before storage selection:
+
+```text
+Sequential sample input history -> one record per semantic channel
+Sequential event input history  -> one record for the event stream
+Tick sample output history       -> one record per semantic channel
+Tick sample output latency       -> one record per semantic channel
+Tick event output history        -> one record for the event stream
+Tick event output latency        -> one record for the event stream
+```
+
+Each record always retains its generation-local configured port coordinate and exact,
+unrounded extent. When its concrete node has authored stable identity, the record also
+retains the graph/virtual-node/direct-member path, direction, port kind/name/index,
+sample channel or event-stream marker, and state role. Anonymous nodes retain only the
+generation-local record; bundle handles are never promoted into false cross-revision
+identity. `CompiledGraph` owns this inventory as cold transition-planning metadata.
+Generated realtime code does not inspect it.
+
+The physical realization view is a separate mapping produced after storage selection.
+It maps these authoritative semantic records onto the selected producer ring, compact
+carry, per-channel alias, event representation, or transition-only materialization.
+Storage planners must consume the inventory; they must not reconstruct semantic state
+ownership from their chosen representation.
+
 ## Partition overlapping port subsets before choosing storage
 
 Storage is not selected edge by edge and is not selected once for an entire authored

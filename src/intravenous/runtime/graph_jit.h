@@ -4,6 +4,7 @@
 #include <intravenous/graph/realtime_port_planning.h>
 #include <intravenous/graph_jit/background_evaluation_call.h>
 #include <intravenous/graph_jit/background_evaluation_plan.h>
+#include <intravenous/graph_jit/realtime_port_state_plan.h>
 #include <intravenous/graph_jit/tick_invocation_call.h>
 #include <intravenous/node/layout.h>
 #include <intravenous/runtime/node_definition_types.h>
@@ -105,6 +106,10 @@ struct CompiledGraph {
     std::vector<std::shared_ptr<PackageRevision const>> package_revisions{};
     NodeLayout node_layout{};
     graph_jit::BackgroundEvaluationPlan background_evaluation_plan{};
+    // Cold graph-revision metadata. Generated realtime code never consults
+    // this inventory; execution-generation preparation uses it to reconcile
+    // semantic port state before activating a replacement realization.
+    graph_jit::RealtimePortStateRequirements realtime_port_state_requirements{};
     CompiledGraphRootOperations root_operations{};
     CompiledGraphBackgroundOperations background_operations{};
     std::shared_ptr<void const> code_lifetime{};

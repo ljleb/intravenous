@@ -2523,9 +2523,21 @@ recording merely because that planning metadata exists.
    stable graph/virtual-node/direct-member identity, and background planning consumes
    that same identity instead of reconstructing a background-only copy. Anonymous
    concrete nodes deliberately retain no synthetic identity derived from a
-   generation-local bundle handle. The next migration substep derives stable
-   direction/port/channel-or-event state identities and cold realization views from
-   this shared node identity.
+   generation-local bundle handle.
+
+   Connection analysis also now derives the authoritative inventory of non-empty
+   node-owned Sequential-input history and Tick-output history/latency. Sample state
+   is identified per semantic channel; event state is identified per stream; history
+   and authored-future latency are distinct roles. Every entry retains its exact extent
+   and generation-local port coordinate, while entries for authored stable nodes also
+   retain graph/virtual-node/direct-member, direction, port kind/name/index, channel or
+   event-stream marker, and role. `CompiledGraph` retains this inventory as cold
+   metadata; generated realtime execution pays no lookup or disposition cost for it.
+
+   The next migration substep maps each inventory entry to its finalized sample/event
+   realization—producer ring, compact carry, per-channel alias, event representation,
+   or required materialization—without treating representation kind, allocation index,
+   capacity, or byte offset as semantic identity.
 
    Before optimization, define port history/latency exactly as if each surviving
    concrete node privately owned that state. Carry stable user-instance/virtual-member/

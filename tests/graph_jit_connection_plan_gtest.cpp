@@ -9,6 +9,7 @@
 #include <array>
 #include <cstddef>
 #include <iterator>
+#include <memory>
 #include <span>
 #include <string>
 #include <string_view>
@@ -34,6 +35,48 @@ struct TimedSamplePass {
     }
 
     void tick_block(iv::TickBlockContext<TimedSamplePass> const&) const {}
+};
+
+struct TimedStereoStateNode {
+    static constexpr auto inputs()
+    {
+        return std::array<iv::InputConfig, 2>{
+            iv::sequential_sample_input(
+                "in",
+                iv::SampleInputProperties{
+                    .channel_layout = iv::ChannelLayout{
+                        .channel_type = iv::ChannelTypeId::stereo,
+                        .sample_layout = iv::SampleStreamLayout::planar,
+                    },
+                },
+                iv::SequentialInputConfig{.history = 5}),
+            iv::sequential_event_input(
+                "events_in",
+                iv::EventTypeId::trigger,
+                iv::SequentialInputConfig{.history = 7}),
+        };
+    }
+
+    static constexpr auto outputs()
+    {
+        return std::array<iv::OutputConfig, 2>{
+            iv::tick_sample_output(
+                "out",
+                iv::SampleOutputProperties{
+                    .channel_layout = iv::ChannelLayout{
+                        .channel_type = iv::ChannelTypeId::stereo,
+                        .sample_layout = iv::SampleStreamLayout::planar,
+                    },
+                },
+                iv::TickOutputConfig{.history = 3, .latency = 2}),
+            iv::tick_event_output(
+                "events_out",
+                iv::EventTypeId::trigger,
+                iv::TickOutputConfig{.history = 11, .latency = 13}),
+        };
+    }
+
+    void tick_block(iv::TickBlockContext<TimedStereoStateNode> const&) const {}
 };
 
 struct PlainSamplePass {
@@ -549,6 +592,134 @@ struct MediumLatencySamplePass {
 };
 
 } // namespace
+
+TEST(GraphJitConnectionPlan, InventoriesStableNodeOwnedRealtimePortState)
+{
+    using namespace iv;
+    GraphBuilder graph;
+    auto node = details::configure_concrete_node<TimedStereoStateNode>(graph);
+    auto const bundle = node.node_bundle_handle();
+    _annotate_node_source_info(node.node_ref(), "timed");
+    graph.outputs();
+
+    auto configured = std::move(graph).finish();
+    auto plan = graph_jit::detail::build_connection_analysis_plan(configured, 64);
+    ASSERT_TRUE(plan.has_value()) << (plan ? std::string{} : plan.error());
+
+    auto const& states = plan->realtime_port_states.states;
+    ASSERT_EQ(states.size(), 9u);
+
+    auto find_state = [&](graph_jit::PortDirection direction,
+                          graph_jit::RealtimePortStateRole role,
+                          std::size_t channel)
+        -> graph_jit::RealtimePortStateRequirement const* {
+        auto const found = std::ranges::find_if(
+            states,
+            [&](graph_jit::RealtimePortStateRequirement const& state) {
+                return state.direction == direction
+                    && state.role == role
+                    && state.channel == channel;
+            });
+        return found == states.end() ? nullptr : std::addressof(*found);
+    };
+
+    for (std::size_t channel = 0; channel < 2; ++channel) {
+        auto const* input = find_state(
+            graph_jit::PortDirection::input,
+            graph_jit::RealtimePortStateRole::sequential_input_history,
+            channel);
+        ASSERT_NE(input, nullptr);
+        EXPECT_EQ(
+            input->configured_port,
+            (NodeBundlePortId{bundle, PortKind::sample, 0}));
+        EXPECT_EQ(input->extent_samples, 5u);
+        ASSERT_TRUE(input->stable_identity);
+        EXPECT_EQ(
+            input->stable_identity->direction,
+            graph_jit::PortDirection::input);
+        EXPECT_EQ(input->stable_identity->kind, PortKind::sample);
+        EXPECT_EQ(input->stable_identity->port_name, "in");
+        EXPECT_EQ(input->stable_identity->port_index, 0u);
+        EXPECT_EQ(input->stable_identity->channel, channel);
+        EXPECT_EQ(
+            input->stable_identity->role,
+            graph_jit::RealtimePortStateRole::sequential_input_history);
+
+        auto const* history = find_state(
+            graph_jit::PortDirection::output,
+            graph_jit::RealtimePortStateRole::tick_output_history,
+            channel);
+        ASSERT_NE(history, nullptr);
+        EXPECT_EQ(history->extent_samples, 3u);
+        ASSERT_TRUE(history->stable_identity);
+        EXPECT_EQ(history->stable_identity->port_name, "out");
+
+        auto const* latency = find_state(
+            graph_jit::PortDirection::output,
+            graph_jit::RealtimePortStateRole::tick_output_latency,
+            channel);
+        ASSERT_NE(latency, nullptr);
+        EXPECT_EQ(latency->extent_samples, 2u);
+        ASSERT_TRUE(latency->stable_identity);
+        EXPECT_EQ(latency->stable_identity->channel, channel);
+    }
+
+    auto find_event_state = [&](graph_jit::PortDirection direction,
+                                graph_jit::RealtimePortStateRole role)
+        -> graph_jit::RealtimePortStateRequirement const* {
+        auto const found = std::ranges::find_if(
+            states,
+            [&](graph_jit::RealtimePortStateRequirement const& state) {
+                return state.configured_port.port_kind == PortKind::event
+                    && state.direction == direction
+                    && state.role == role;
+            });
+        return found == states.end() ? nullptr : std::addressof(*found);
+    };
+
+    auto const* event_input = find_event_state(
+        graph_jit::PortDirection::input,
+        graph_jit::RealtimePortStateRole::sequential_input_history);
+    ASSERT_NE(event_input, nullptr);
+    EXPECT_FALSE(event_input->channel);
+    EXPECT_EQ(event_input->extent_samples, 7u);
+    ASSERT_TRUE(event_input->stable_identity);
+    EXPECT_FALSE(event_input->stable_identity->channel);
+    EXPECT_EQ(event_input->stable_identity->port_name, "events_in");
+
+    auto const* event_history = find_event_state(
+        graph_jit::PortDirection::output,
+        graph_jit::RealtimePortStateRole::tick_output_history);
+    ASSERT_NE(event_history, nullptr);
+    EXPECT_EQ(event_history->extent_samples, 11u);
+    ASSERT_TRUE(event_history->stable_identity);
+    EXPECT_EQ(event_history->stable_identity->port_name, "events_out");
+
+    auto const* event_latency = find_event_state(
+        graph_jit::PortDirection::output,
+        graph_jit::RealtimePortStateRole::tick_output_latency);
+    ASSERT_NE(event_latency, nullptr);
+    EXPECT_EQ(event_latency->extent_samples, 13u);
+}
+
+TEST(GraphJitConnectionPlan, KeepsAnonymousRealtimePortStateGenerationLocal)
+{
+    using namespace iv;
+    GraphBuilder graph;
+    details::configure_concrete_node<TimedSamplePass>(graph);
+    graph.outputs();
+
+    auto configured = std::move(graph).finish();
+    auto plan = graph_jit::detail::build_connection_analysis_plan(configured, 64);
+    ASSERT_TRUE(plan.has_value()) << (plan ? std::string{} : plan.error());
+
+    ASSERT_EQ(plan->realtime_port_states.states.size(), 3u);
+    EXPECT_TRUE(std::ranges::all_of(
+        plan->realtime_port_states.states,
+        [](graph_jit::RealtimePortStateRequirement const& state) {
+            return !state.stable_identity.has_value();
+        }));
+}
 
 TEST(GraphJitConnectionPlan, DerivesScheduleTemporalRequirementsAndProducerPolicy)
 {

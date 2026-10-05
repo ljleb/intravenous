@@ -4,6 +4,7 @@
 #include <intravenous/graph/configured_graph.hpp>
 #include <intravenous/graph/realtime_port_planning.h>
 #include <intravenous/graph_jit/background_evaluation_plan.h>
+#include <intravenous/graph_jit/realtime_port_state_plan.h>
 
 #include <cstddef>
 #include <expected>
@@ -327,6 +328,11 @@ struct ConnectionAnalysisPlan {
     std::vector<SampleProducerGroupPlan> sample_producer_groups{};
     std::vector<EventProducerGroupPlan> event_producer_groups{};
     ConnectionStoragePlan storage{};
+    // Authoritative semantic inventory of every non-empty Sequential-input
+    // history and Tick-output history/latency extent. Storage planning may
+    // share or elide their physical representations, but must map back to
+    // these node-owned state pieces for graph-revision reconciliation.
+    RealtimePortStateRequirements realtime_port_states{};
     // The background plan owns the complete semantic SCC decomposition as well as
     // the background/background topology. Later lowering/runtime stages retain and
     // reuse it instead of rediscovering either graph view.

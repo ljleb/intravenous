@@ -2,6 +2,7 @@
 
 #include <intravenous/channel_layout.h>
 #include <intravenous/graph/port_ids.h>
+#include <intravenous/graph_jit/stable_graph_identity.h>
 #include <intravenous/ports.h>
 
 #include <cstddef>
@@ -51,11 +52,6 @@ enum class PlannedDeliveryMechanism : std::uint8_t {
     // A pointwise Tick producer is recomputed in the background after
     // whole-graph contextual replayability has been proven.
     replayed_tick_to_random_access,
-};
-
-enum class PortDirection : std::uint8_t {
-    input,
-    output,
 };
 
 enum class BackgroundDependencyKind : std::uint8_t {
@@ -128,27 +124,6 @@ struct EventTargetPortSubsetPlan {
     std::vector<std::size_t> configured_connection_indices{};
     std::vector<PortSubsetIndex> source_subsets{};
     PortStorageRequirements storage{};
-};
-
-// A persistent identity exists only when the configured concrete node belongs
-// to a stable virtual node. Anonymous concrete nodes still receive dense
-// generation-local port indices, but are deliberately not assigned a
-// misleading persistent identity derived from a bundle handle.
-struct StableConcreteNodeId {
-    std::string graph{};
-    std::string virtual_node{};
-    std::size_t direct_member = 0;
-
-    bool operator==(StableConcreteNodeId const&) const = default;
-};
-
-struct StableOutputPortId {
-    StableConcreteNodeId node{};
-    PortKind kind = PortKind::sample;
-    std::string port_name{};
-    std::size_t port_index = 0;
-
-    bool operator==(StableOutputPortId const&) const = default;
 };
 
 struct SemanticNodePlan {

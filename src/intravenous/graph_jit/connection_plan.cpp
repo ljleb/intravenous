@@ -161,6 +161,140 @@ std::optional<StableConcreteNodeId> stable_concrete_node_identity(
     return selected;
 }
 
+void append_realtime_port_state(
+    RealtimePortStateRequirements& requirements,
+    NodeBundlePortId configured_port,
+    PortDirection direction,
+    std::string const& port_name,
+    std::optional<std::size_t> channel,
+    RealtimePortStateRole role,
+    std::size_t extent_samples,
+    std::optional<StableConcreteNodeId> const& stable_node)
+{
+    if (extent_samples == 0) return;
+
+    std::optional<StableRealtimePortStateId> stable_identity;
+    if (stable_node) {
+        stable_identity = StableRealtimePortStateId{
+            .node = *stable_node,
+            .direction = direction,
+            .kind = configured_port.port_kind,
+            .port_name = port_name,
+            .port_index = configured_port.port_index,
+            .channel = channel,
+            .role = role,
+        };
+    }
+    requirements.states.push_back(RealtimePortStateRequirement{
+        .configured_port = configured_port,
+        .direction = direction,
+        .channel = channel,
+        .role = role,
+        .extent_samples = extent_samples,
+        .stable_identity = std::move(stable_identity),
+    });
+}
+
+void inventory_realtime_port_states(
+    NodePorts const& ports,
+    NodeBundleHandle bundle,
+    std::optional<StableConcreteNodeId> const& stable_node,
+    RealtimePortStateRequirements& requirements)
+{
+    auto append_sample_states = [&](NodeBundlePortId port,
+                                    PortDirection direction,
+                                    std::string const& name,
+                                    ChannelLayout layout,
+                                    RealtimePortStateRole role,
+                                    std::size_t extent) {
+        for (std::size_t channel = 0; channel < channel_count(layout); ++channel) {
+            append_realtime_port_state(
+                requirements,
+                port,
+                direction,
+                name,
+                channel,
+                role,
+                extent,
+                stable_node);
+        }
+    };
+
+    auto const sample_inputs = ports.sample_inputs();
+    for (std::size_t index = 0; index < sample_inputs.size(); ++index) {
+        auto const& input = sample_inputs[index];
+        if (!is_sequential(input)) continue;
+        append_sample_states(
+            NodeBundlePortId{bundle, PortKind::sample, index},
+            PortDirection::input,
+            input.name,
+            input.channel_layout,
+            RealtimePortStateRole::sequential_input_history,
+            port_history_or_zero(input));
+    }
+
+    auto const event_inputs = ports.event_inputs();
+    for (std::size_t index = 0; index < event_inputs.size(); ++index) {
+        auto const& input = event_inputs[index];
+        if (!is_sequential(input)) continue;
+        append_realtime_port_state(
+            requirements,
+            NodeBundlePortId{bundle, PortKind::event, index},
+            PortDirection::input,
+            input.name,
+            std::nullopt,
+            RealtimePortStateRole::sequential_input_history,
+            port_history_or_zero(input),
+            stable_node);
+    }
+
+    auto const sample_outputs = ports.sample_outputs();
+    for (std::size_t index = 0; index < sample_outputs.size(); ++index) {
+        auto const& output = sample_outputs[index];
+        if (!is_tick(output)) continue;
+        auto const port = NodeBundlePortId{bundle, PortKind::sample, index};
+        append_sample_states(
+            port,
+            PortDirection::output,
+            output.name,
+            output.channel_layout,
+            RealtimePortStateRole::tick_output_history,
+            port_history_or_zero(output));
+        append_sample_states(
+            port,
+            PortDirection::output,
+            output.name,
+            output.channel_layout,
+            RealtimePortStateRole::tick_output_latency,
+            tick_latency_or_zero(output));
+    }
+
+    auto const event_outputs = ports.event_outputs();
+    for (std::size_t index = 0; index < event_outputs.size(); ++index) {
+        auto const& output = event_outputs[index];
+        if (!is_tick(output)) continue;
+        auto const port = NodeBundlePortId{bundle, PortKind::event, index};
+        append_realtime_port_state(
+            requirements,
+            port,
+            PortDirection::output,
+            output.name,
+            std::nullopt,
+            RealtimePortStateRole::tick_output_history,
+            port_history_or_zero(output),
+            stable_node);
+        append_realtime_port_state(
+            requirements,
+            port,
+            PortDirection::output,
+            output.name,
+            std::nullopt,
+            RealtimePortStateRole::tick_output_latency,
+            tick_latency_or_zero(output),
+            stable_node);
+    }
+}
+
 std::expected<void, std::string> inventory_nodes(
     ConfiguredGraph const& graph,
     ConnectionAnalysisPlan& plan)
@@ -194,9 +328,10 @@ std::expected<void, std::string> inventory_nodes(
                 error = "concrete bundle has no port metadata during connection analysis";
                 return;
             }
+            auto stable_identity = stable_concrete_node_identity(graph, current);
             plan.nodes.push_back(PlannedGraphNode{
                 .bundle = current,
-                .stable_identity = stable_concrete_node_identity(graph, current),
+                .stable_identity = stable_identity,
                 .internal_latency_samples = view.internal_latency_samples,
                 .maximum_block_size = view.maximum_block_size,
                 .sample_input_count = view.ports->sample_input_count(),
@@ -205,6 +340,11 @@ std::expected<void, std::string> inventory_nodes(
                 .event_output_count = view.ports->event_output_count(),
                 .intrinsically_replayable = view.intrinsically_replayable,
             });
+            inventory_realtime_port_states(
+                *view.ports,
+                current,
+                stable_identity,
+                plan.realtime_port_states);
         });
 
     if (!error.empty()) return std::unexpected(std::move(error));

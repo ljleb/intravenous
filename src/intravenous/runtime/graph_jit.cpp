@@ -1229,6 +1229,8 @@ public:
                 .package_revisions = std::move(package_revisions),
                 .node_layout = std::move(lowering->node_layout),
                 .background_evaluation_plan = std::move(lowering->background_evaluation_plan),
+                .realtime_port_state_requirements =
+                    std::move(lowering->realtime_port_state_requirements),
                 .root_operations = materialized.root_operations,
                 .background_operations = materialized.background_operations,
                 .code_lifetime = std::move(materialized.lifetime),
