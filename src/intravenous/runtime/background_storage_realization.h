@@ -148,6 +148,7 @@ class BackgroundStorageRealization {
 public:
     BackgroundStorageRealization(
         graph_jit::BackgroundEvaluationPlan const& plan,
+        PersistedPageStore& pages,
         BackgroundStorageSelection selection);
     ~BackgroundStorageRealization();
 
@@ -189,7 +190,7 @@ public:
     [[nodiscard]] BackgroundEventWriteView const* event_write(
         graph_jit::PortStorageIndex index) const;
 
-    [[nodiscard]] PersistedOutputId const* persisted_output(
+    [[nodiscard]] PersistedOutputHandle const* persisted_output_handle(
         graph_jit::PortStorageIndex index) const;
 
     // Freezes external bindings and verifies that every retained runtime

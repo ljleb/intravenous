@@ -4,7 +4,6 @@
 #include <cassert>
 #include <limits>
 #include <stdexcept>
-#include <tuple>
 #include <utility>
 
 namespace iv {
@@ -19,7 +18,7 @@ struct PageNode {
 };
 
 struct SampleOutputState {
-    PersistedOutputId output{};
+    PersistedOutputHandle output{};
     Coverage coverage{};
     ChannelLayout layout{};
     std::shared_ptr<PageNode<PersistedSamplePage> const> pages{};
@@ -27,7 +26,7 @@ struct SampleOutputState {
 };
 
 struct EventOutputState {
-    PersistedOutputId output{};
+    PersistedOutputHandle output{};
     Coverage coverage{};
     EventTypeId type = EventTypeId::empty;
     std::shared_ptr<PageNode<PersistedEventPage> const> pages{};
@@ -58,39 +57,14 @@ using persisted_page_store_detail::PageNode;
 using persisted_page_store_detail::SampleOutputNode;
 using persisted_page_store_detail::SampleOutputState;
 
+std::atomic<std::uint64_t> next_persisted_output_slot{0};
+
 [[nodiscard]] int compare_output(
-    PersistedOutputId const& left,
-    PersistedOutputId const& right) noexcept
+    PersistedOutputHandle left,
+    PersistedOutputHandle right) noexcept
 {
-    if (left.index() != right.index()) {
-        return left.index() < right.index() ? -1 : 1;
-    }
-    if (auto const* stable = std::get_if<graph_jit::StableOutputPortId>(&left)) {
-        auto const& other = std::get<graph_jit::StableOutputPortId>(right);
-        auto const left_key = std::tie(
-            stable->node.graph,
-            stable->node.virtual_node,
-            stable->node.direct_member,
-            stable->kind,
-            stable->port_name,
-            stable->port_index);
-        auto const right_key = std::tie(
-            other.node.graph,
-            other.node.virtual_node,
-            other.node.direct_member,
-            other.kind,
-            other.port_name,
-            other.port_index);
-        if (left_key < right_key) return -1;
-        if (right_key < left_key) return 1;
-        return 0;
-    }
-    auto const& local = std::get<GenerationLocalPersistedOutputId>(left);
-    auto const& other = std::get<GenerationLocalPersistedOutputId>(right);
-    auto const left_key = std::tie(local.generation, local.port, local.kind);
-    auto const right_key = std::tie(other.generation, other.port, other.kind);
-    if (left_key < right_key) return -1;
-    if (right_key < left_key) return 1;
+    if (left < right) return -1;
+    if (right < left) return 1;
     return 0;
 }
 
@@ -288,7 +262,7 @@ template<typename Page>
 template<typename Node, typename State>
 [[nodiscard]] State const* find_output(
     std::shared_ptr<Node const> const& root,
-    PersistedOutputId const& output) noexcept
+    PersistedOutputHandle output) noexcept
 {
     auto node = root.get();
     while (node) {
@@ -326,7 +300,7 @@ template<typename Node, typename State>
 template<typename Node, typename State>
 [[nodiscard]] std::shared_ptr<Node const> erase_output_node(
     std::shared_ptr<Node const> const& root,
-    PersistedOutputId const& output)
+    PersistedOutputHandle output)
 {
     if (!root) return {};
     auto const order = compare_output(output, root->state->output);
@@ -407,7 +381,8 @@ void validate_domain(Coverage const& domain, IndexRegion interval)
 
 void validate_page(PersistedSamplePage const& page, std::size_t page_width)
 {
-    if (persisted_output_kind(page.output) != PortKind::sample) {
+    if (!page.output.valid()
+        || persisted_output_kind(page.output) != PortKind::sample) {
         throw std::invalid_argument("sample page requires a sample output identity");
     }
     if (!is_valid_channel_type(page.layout.channel_type)
@@ -431,7 +406,8 @@ void validate_page(PersistedSamplePage const& page, std::size_t page_width)
 
 void validate_page(PersistedEventPage const& page, std::size_t page_width)
 {
-    if (persisted_output_kind(page.output) != PortKind::event) {
+    if (!page.output.valid()
+        || persisted_output_kind(page.output) != PortKind::event) {
         throw std::invalid_argument("event page requires an event output identity");
     }
     if (page.type >= EventTypeId::count) {
@@ -502,8 +478,37 @@ PersistedOutputId persisted_output_id(
     };
 }
 
+PersistedOutputHandle PersistedPageStore::resolve_output(
+    PersistedOutputId const& output)
+{
+    std::lock_guard lock{output_slots_mutex_};
+    auto const existing = std::ranges::find_if(
+        output_slots_, [&](auto const& registered) {
+            return registered.first == output;
+        });
+    if (existing != output_slots_.end()) return existing->second;
+
+    auto slot = next_persisted_output_slot.load(std::memory_order_relaxed);
+    for (;;) {
+        if (slot >= std::numeric_limits<std::uint64_t>::max() / 2) {
+            throw std::overflow_error("persisted output handles are exhausted");
+        }
+        if (next_persisted_output_slot.compare_exchange_weak(
+                slot,
+                slot + 1,
+                std::memory_order_relaxed,
+                std::memory_order_relaxed)) {
+            break;
+        }
+    }
+    auto const handle = PersistedOutputHandle{
+        slot, persisted_output_kind(output)};
+    output_slots_.push_back({output, handle});
+    return handle;
+}
+
 PersistedSamplePage const* PersistedPageStore::Snapshot::find_sample_page(
-    PersistedOutputId const& output,
+    PersistedOutputHandle output,
     std::uint64_t page_index) const noexcept
 {
     auto const* selected = find_output<SampleOutputNode, SampleOutputState>(
@@ -512,7 +517,7 @@ PersistedSamplePage const* PersistedPageStore::Snapshot::find_sample_page(
 }
 
 PersistedEventPage const* PersistedPageStore::Snapshot::find_event_page(
-    PersistedOutputId const& output,
+    PersistedOutputHandle output,
     std::uint64_t page_index) const noexcept
 {
     auto const* selected = find_output<EventOutputNode, EventOutputState>(
@@ -521,7 +526,7 @@ PersistedEventPage const* PersistedPageStore::Snapshot::find_event_page(
 }
 
 Coverage const* PersistedPageStore::Snapshot::find_sample_coverage(
-    PersistedOutputId const& output,
+    PersistedOutputHandle output,
     ChannelLayout layout) const noexcept
 {
     auto const* selected = find_output<SampleOutputNode, SampleOutputState>(
@@ -532,7 +537,7 @@ Coverage const* PersistedPageStore::Snapshot::find_sample_coverage(
 }
 
 Coverage const* PersistedPageStore::Snapshot::find_event_coverage(
-    PersistedOutputId const& output,
+    PersistedOutputHandle output,
     EventTypeId type) const noexcept
 {
     auto const* selected = find_output<EventOutputNode, EventOutputState>(
@@ -640,10 +645,14 @@ void PersistedPageStore::Candidate::put(PersistedEventPage page)
 }
 
 void PersistedPageStore::Candidate::erase_page(
-    PersistedOutputId const& output,
+    PersistedOutputHandle output,
     std::uint64_t page_index)
 {
     if (!successor_) throw std::logic_error("persisted page candidate is empty");
+    if (!output.valid()) {
+        throw std::invalid_argument(
+            "persisted page erasure requires a resolved output handle");
+    }
     if (persisted_output_kind(output) == PortKind::sample) {
         auto const* current = find_output<SampleOutputNode, SampleOutputState>(
             successor_->sample_outputs_, output);
@@ -700,9 +709,13 @@ void PersistedPageStore::Candidate::erase_page(
 }
 
 void PersistedPageStore::Candidate::erase_output(
-    PersistedOutputId const& output)
+    PersistedOutputHandle output)
 {
     if (!successor_) throw std::logic_error("persisted page candidate is empty");
+    if (!output.valid()) {
+        throw std::invalid_argument(
+            "persisted output erasure requires a resolved output handle");
+    }
     if (persisted_output_kind(output) == PortKind::sample) {
         auto const* current = find_output<SampleOutputNode, SampleOutputState>(
             successor_->sample_outputs_, output);

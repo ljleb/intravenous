@@ -121,7 +121,7 @@ iv::CompiledGraph queued_persisted_graph(iv::PortKind kind)
 }
 
 iv::PersistedSamplePage sample_page(
-    iv::PersistedOutputId output,
+    iv::PersistedOutputHandle output,
     float first)
 {
     return {
@@ -137,7 +137,7 @@ iv::PersistedSamplePage sample_page(
     };
 }
 
-iv::PersistedEventPage empty_event_page(iv::PersistedOutputId output)
+iv::PersistedEventPage empty_event_page(iv::PersistedOutputHandle output)
 {
     return {
         .output = std::move(output),
@@ -387,6 +387,26 @@ static_assert(std::is_nothrow_constructible_v<
     iv::TickMaterializationStore::ReaderSlot&,
     iv::TickInvocationWorkspace&>);
 
+TEST(PersistedPageStore, ResolvesSemanticIdentitiesToStableTypedHandles)
+{
+    iv::PersistedPageStore first_store;
+    auto const sample_id = stable_output(iv::PortKind::sample, "samples");
+    auto const event_id = stable_output(iv::PortKind::event, "events");
+
+    auto const sample = first_store.resolve_output(sample_id);
+    EXPECT_TRUE(sample.valid());
+    EXPECT_EQ(sample.kind(), iv::PortKind::sample);
+    EXPECT_EQ(first_store.resolve_output(sample_id), sample);
+
+    auto const event = first_store.resolve_output(event_id);
+    EXPECT_TRUE(event.valid());
+    EXPECT_EQ(event.kind(), iv::PortKind::event);
+    EXPECT_NE(event, sample);
+
+    iv::PersistedPageStore second_store;
+    EXPECT_NE(second_store.resolve_output(sample_id), sample);
+}
+
 TEST(PersistedPageStore, TickInvocationFramePinsOnePublishedRootForItsLifetime)
 {
     iv::PersistedPageStore store;
@@ -394,7 +414,7 @@ TEST(PersistedPageStore, TickInvocationFramePinsOnePublishedRootForItsLifetime)
     iv::TickMaterializationStore materializations;
     auto materialization_slot = materializations.register_reader();
     iv::graph_jit::BackgroundEvaluationPlan plan;
-    iv::TickInvocationWorkspace workspace{plan, 1};
+    iv::TickInvocationWorkspace workspace{plan, 1, store};
 
     {
         iv::TickInvocationFrame frame{
@@ -428,14 +448,15 @@ TEST(PersistedPageStore, TickInvocationFrameBindsPublishedRandomAccessSamples)
     auto reader = store.register_reader();
     iv::TickMaterializationStore materializations;
     auto materialization_reader = materializations.register_reader();
-    auto const output = local_output(iv::PortKind::sample, 0);
+    auto const output = store.resolve_output(
+        local_output(iv::PortKind::sample, 0));
     auto candidate = store.begin_candidate(3, 4);
     candidate.put(sample_page(output, 10.0f));
     ASSERT_EQ(
         store.publish(std::move(candidate)),
         iv::PersistedPagePublishResult::published);
 
-    iv::TickInvocationWorkspace workspace{plan, 3};
+    iv::TickInvocationWorkspace workspace{plan, 3, store};
     iv::TickInvocationFrame frame{
         reader, materialization_reader, workspace};
     ASSERT_EQ(workspace.sample_capture_count(), 1u);
@@ -459,7 +480,7 @@ TEST(TickInvocationWorkspace, TickInvocationFramePublishesQueuedSampleRecord)
     auto page_reader = pages.register_reader();
     iv::TickMaterializationStore materializations;
     auto materialization_reader = materializations.register_reader();
-    iv::TickInvocationWorkspace workspace{plan, 3, 4};
+    iv::TickInvocationWorkspace workspace{plan, 3, pages, 4};
     iv::ProducerReserve reserve{iv::realtime_produced_block_storage_size};
     iv::AsyncCapacityManager manager{1};
     iv::AsyncWorkSignal work_signal;
@@ -539,7 +560,7 @@ TEST(TickInvocationWorkspace, QueuedSampleReservationFailureIsSticky)
     auto page_reader = pages.register_reader();
     iv::TickMaterializationStore materializations;
     auto materialization_reader = materializations.register_reader();
-    iv::TickInvocationWorkspace workspace{plan, 3, 4};
+    iv::TickInvocationWorkspace workspace{plan, 3, pages, 4};
     iv::ProducerReserve empty_reserve{
         iv::realtime_produced_block_storage_size};
     iv::AsyncWorkSignal work_signal;
@@ -601,7 +622,7 @@ TEST(PersistedPageStore, TickFrameCopiesSequentialMaterializationAndUsesNeutral)
             std::vector<iv::TickMaterializedEventInput>{})),
         1u);
 
-    iv::TickInvocationWorkspace workspace{plan, 3, 4};
+    iv::TickInvocationWorkspace workspace{plan, 3, pages, 4};
     EXPECT_EQ(workspace.sequential_sample_count(), 1u);
     iv::TickInvocationFrame frame{
         page_reader,
@@ -631,14 +652,15 @@ TEST(PersistedPageStore, TickSampleViewsFollowOnePinnedRootAndPackedPageCoverage
     iv::TickMaterializationStore materializations;
     auto old_materialization_reader = materializations.register_reader();
     auto new_materialization_reader = materializations.register_reader();
-    auto const output = local_output(iv::PortKind::sample, 0);
+    auto const output = store.resolve_output(
+        local_output(iv::PortKind::sample, 0));
     auto first = store.begin_candidate(3, 4);
     first.put(sample_page(output, 10.0f));
     ASSERT_EQ(store.publish(std::move(first)),
         iv::PersistedPagePublishResult::published);
 
-    iv::TickInvocationWorkspace old_workspace{plan, 3};
-    iv::TickInvocationWorkspace new_workspace{plan, 3};
+    iv::TickInvocationWorkspace old_workspace{plan, 3, store};
+    iv::TickInvocationWorkspace new_workspace{plan, 3, store};
     iv::TickInvocationFrame old_frame{
         old_reader, old_materialization_reader, old_workspace};
     auto const old_inputs = static_cast<
@@ -680,7 +702,8 @@ TEST(PersistedPageStore, TickEventViewsVisitAcrossPinnedPagesInTimeOrder)
     auto reader = store.register_reader();
     iv::TickMaterializationStore materializations;
     auto materialization_reader = materializations.register_reader();
-    auto const output = local_output(iv::PortKind::event, 0);
+    auto const output = store.resolve_output(
+        local_output(iv::PortKind::event, 0));
     auto candidate = store.begin_candidate(3, 4);
     auto first = empty_event_page(output);
     first.events = {{.time = 2, .value = iv::TriggerEvent{}}};
@@ -696,7 +719,7 @@ TEST(PersistedPageStore, TickEventViewsVisitAcrossPinnedPagesInTimeOrder)
     ASSERT_EQ(store.publish(std::move(candidate)),
         iv::PersistedPagePublishResult::published);
 
-    iv::TickInvocationWorkspace workspace{plan, 3};
+    iv::TickInvocationWorkspace workspace{plan, 3, store};
     iv::TickInvocationFrame frame{
         reader, materialization_reader, workspace};
     auto const inputs = static_cast<
@@ -718,7 +741,7 @@ TEST(TickInvocationWorkspace, QueuedEventCapturePublishesAuthoritativeEmptyRecor
     auto page_reader = pages.register_reader();
     iv::TickMaterializationStore materializations;
     auto materialization_reader = materializations.register_reader();
-    iv::TickInvocationWorkspace workspace{plan, 3, 4};
+    iv::TickInvocationWorkspace workspace{plan, 3, pages, 4};
     iv::ProducerReserve reserve{iv::realtime_produced_block_storage_size};
     iv::AsyncCapacityManager manager{1};
     iv::AsyncWorkSignal work_signal;
@@ -784,7 +807,7 @@ TEST(TickInvocationWorkspace, TickPersistedVoidPublishesHeaderOnlyRecord)
     auto page_reader = pages.register_reader();
     iv::TickMaterializationStore materializations;
     auto materialization_reader = materializations.register_reader();
-    iv::TickInvocationWorkspace workspace{plan, 3, 4};
+    iv::TickInvocationWorkspace workspace{plan, 3, pages, 4};
     iv::ProducerReserve reserve{iv::realtime_produced_block_storage_size};
     iv::AsyncCapacityManager manager{1};
     iv::AsyncWorkSignal work_signal;
@@ -840,7 +863,7 @@ TEST(TickInvocationWorkspace, TickPersistedEventVoidPublishesHeaderOnlyRecord)
     auto page_reader = pages.register_reader();
     iv::TickMaterializationStore materializations;
     auto materialization_reader = materializations.register_reader();
-    iv::TickInvocationWorkspace workspace{plan, 3, 4};
+    iv::TickInvocationWorkspace workspace{plan, 3, pages, 4};
     iv::ProducerReserve reserve{iv::realtime_produced_block_storage_size};
     iv::AsyncCapacityManager manager{1};
     iv::AsyncWorkSignal work_signal;
@@ -920,7 +943,7 @@ TEST(PersistedPageStore, TickFrameCopiesBoundedSequentialEvents)
             })),
         1u);
 
-    iv::TickInvocationWorkspace workspace{plan, 3, 4};
+    iv::TickInvocationWorkspace workspace{plan, 3, pages, 4};
     EXPECT_EQ(workspace.sequential_event_count(), 1u);
     {
         iv::TickInvocationFrame frame{
@@ -967,11 +990,13 @@ TEST(PersistedPageStore, TickViewsDoNotTreatMixedStorageAsDirectPages)
     iv::TickMaterializationStore materializations;
     auto materialization_reader = materializations.register_reader();
     auto candidate = store.begin_candidate(3, 4);
-    candidate.put(sample_page(local_output(iv::PortKind::sample, 0), 10.0f));
+    candidate.put(sample_page(
+        store.resolve_output(local_output(iv::PortKind::sample, 0)),
+        10.0f));
     ASSERT_EQ(store.publish(std::move(candidate)),
         iv::PersistedPagePublishResult::published);
 
-    iv::TickInvocationWorkspace workspace{plan, 3};
+    iv::TickInvocationWorkspace workspace{plan, 3, store};
     iv::TickInvocationFrame frame{
         reader, materialization_reader, workspace};
     auto const inputs = static_cast<
@@ -1012,7 +1037,7 @@ TEST(PersistedPageStore, TickFrameBindsOneCoherentMaterializationSnapshot)
             std::vector<iv::TickMaterializedEventInput>{})),
         1u);
 
-    iv::TickInvocationWorkspace workspace{plan, 3};
+    iv::TickInvocationWorkspace workspace{plan, 3, pages};
     iv::TickInvocationFrame frame{
         page_reader, materialization_reader, workspace};
     auto const inputs = static_cast<
@@ -1029,7 +1054,7 @@ TEST(PersistedPageStore, TickFrameBindsOneCoherentMaterializationSnapshot)
         iv::PersistedPagePublishResult::published);
     auto newer_page_reader = pages.register_reader();
     auto newer_materialization_reader = materializations.register_reader();
-    iv::TickInvocationWorkspace newer_workspace{plan, 3};
+    iv::TickInvocationWorkspace newer_workspace{plan, 3, pages};
     iv::TickInvocationFrame incoherent{
         newer_page_reader,
         newer_materialization_reader,
@@ -1049,8 +1074,10 @@ TEST(PersistedPageStore, PublishesSampleAndEventPagesAsOneImmutableRoot)
     auto old = old_slot.pin();
     EXPECT_TRUE(store.is_current(old.snapshot()));
 
-    auto const sample = stable_output(iv::PortKind::sample, "samples");
-    auto const events = local_output(iv::PortKind::event, 8);
+    auto const sample = store.resolve_output(
+        stable_output(iv::PortKind::sample, "samples"));
+    auto const events = store.resolve_output(
+        local_output(iv::PortKind::event, 8));
     auto candidate = store.begin_candidate(12, 4);
     candidate.put(sample_page(sample, 1.0f));
     candidate.put(empty_event_page(events));
@@ -1087,7 +1114,8 @@ TEST(PersistedPageStore, RejectsASecondCandidateFromTheSameBaseAsStale)
 {
     iv::PersistedPageStore store;
     auto slot = store.register_reader();
-    auto const output = stable_output(iv::PortKind::sample, "samples");
+    auto const output = store.resolve_output(
+        stable_output(iv::PortKind::sample, "samples"));
     auto first = store.begin_candidate(4, 4);
     auto stale = store.begin_candidate(4, 4);
     first.put(sample_page(output, 10.0f));
@@ -1115,8 +1143,10 @@ TEST(PersistedPageStore, StructurallySharesUnchangedPagesAcrossRoots)
     iv::PersistedPageStore store;
     auto old_slot = store.register_reader();
     auto new_slot = store.register_reader();
-    auto const samples = stable_output(iv::PortKind::sample, "samples");
-    auto const events = stable_output(iv::PortKind::event, "events");
+    auto const samples = store.resolve_output(
+        stable_output(iv::PortKind::sample, "samples"));
+    auto const events = store.resolve_output(
+        stable_output(iv::PortKind::event, "events"));
 
     auto first = store.begin_candidate(7, 4);
     first.put(sample_page(samples, 2.0f));
@@ -1143,7 +1173,8 @@ TEST(PersistedPageStore, PathCopyIndexFindsAndErasesManyPagesAndOutputs)
 {
     iv::PersistedPageStore store;
     auto reader = store.register_reader();
-    auto const primary = local_output(iv::PortKind::sample, 100);
+    auto const primary = store.resolve_output(
+        local_output(iv::PortKind::sample, 100));
     auto seed = store.begin_candidate(8, 4);
 
     for (std::uint64_t page_index = 0; page_index < 64; ++page_index) {
@@ -1157,7 +1188,7 @@ TEST(PersistedPageStore, PathCopyIndexFindsAndErasesManyPagesAndOutputs)
     }
     for (iv::graph_jit::BackgroundPortIndex port = 200; port < 232; ++port) {
         seed.put(sample_page(
-            local_output(iv::PortKind::sample, port),
+            store.resolve_output(local_output(iv::PortKind::sample, port)),
             static_cast<float>(port)));
     }
     ASSERT_EQ(
@@ -1175,13 +1206,15 @@ TEST(PersistedPageStore, PathCopyIndexFindsAndErasesManyPagesAndOutputs)
     }
     for (iv::graph_jit::BackgroundPortIndex port = 200; port < 232; ++port) {
         EXPECT_NE(seeded->find_sample_page(
-            local_output(iv::PortKind::sample, port), 0), nullptr);
+            store.resolve_output(local_output(iv::PortKind::sample, port)), 0),
+            nullptr);
     }
     seeded = {};
 
     auto successor = store.begin_candidate(8, 4);
     successor.erase_page(primary, 31);
-    successor.erase_output(local_output(iv::PortKind::sample, 215));
+    successor.erase_output(
+        store.resolve_output(local_output(iv::PortKind::sample, 215)));
     ASSERT_EQ(
         store.publish(std::move(successor)),
         iv::PersistedPagePublishResult::published);
@@ -1192,7 +1225,8 @@ TEST(PersistedPageStore, PathCopyIndexFindsAndErasesManyPagesAndOutputs)
     EXPECT_NE(current->find_sample_page(primary, 30), nullptr);
     EXPECT_NE(current->find_sample_page(primary, 32), nullptr);
     EXPECT_EQ(current->find_sample_page(
-        local_output(iv::PortKind::sample, 215), 0), nullptr);
+        store.resolve_output(local_output(iv::PortKind::sample, 215)), 0),
+        nullptr);
     auto const* coverage = current->find_sample_coverage(
         primary, iv::mono_planar_channel_layout);
     ASSERT_NE(coverage, nullptr);
@@ -1202,7 +1236,8 @@ TEST(PersistedPageStore, PathCopyIndexFindsAndErasesManyPagesAndOutputs)
 TEST(PersistedPageStore, CandidateMetadataChangesWithItsPathCopiedPages)
 {
     iv::PersistedPageStore store;
-    auto const output = stable_output(iv::PortKind::event, "events");
+    auto const output = store.resolve_output(
+        stable_output(iv::PortKind::event, "events"));
     auto candidate = store.begin_candidate(9, 4);
     auto first = empty_event_page(output);
     first.domain = iv::Coverage{{{1, 3}}};
@@ -1230,18 +1265,22 @@ TEST(PersistedPageStore, ValidatesTypedPayloadsAgainstTheCanonicalPageDomain)
     auto candidate = store.begin_candidate(1, 4);
 
     auto packed = sample_page(
-        stable_output(iv::PortKind::sample, "samples"), 1.0f);
+        store.resolve_output(
+            stable_output(iv::PortKind::sample, "samples")),
+        1.0f);
     packed.domain = iv::Coverage{{{1, 3}}};
     packed.packing = iv::PersistedSamplePacking::coverage_packed;
     packed.values = {1.0f, 2.0f};
     EXPECT_NO_THROW(candidate.put(std::move(packed)));
 
     auto wrong_kind = empty_event_page(
-        stable_output(iv::PortKind::sample, "not-events"));
+        store.resolve_output(
+            stable_output(iv::PortKind::sample, "not-events")));
     EXPECT_THROW(candidate.put(std::move(wrong_kind)), std::invalid_argument);
 
     auto unordered = empty_event_page(
-        stable_output(iv::PortKind::event, "events"));
+        store.resolve_output(
+            stable_output(iv::PortKind::event, "events")));
     unordered.events = {
         {.time = 2, .value = iv::TriggerEvent{}},
         {.time = 1, .value = iv::TriggerEvent{}},
@@ -1296,8 +1335,10 @@ TEST(BackgroundEvaluationTransaction,
 
     auto selected = pending.pin();
     ASSERT_FALSE(selected.empty());
+    auto const output = pages.resolve_output(
+        local_output(iv::PortKind::sample, 0));
     std::array routes{iv::BackgroundProducedInputRoute{
-        .output = local_output(iv::PortKind::sample, 0),
+        .output = output,
         .port = 0,
         .kind = iv::PortKind::sample,
     }};
@@ -1320,7 +1361,6 @@ TEST(BackgroundEvaluationTransaction,
     ASSERT_TRUE(result->published_pages.has_value());
 
     auto published = reader.pin();
-    auto const output = local_output(iv::PortKind::sample, 0);
     auto const* first = published->find_sample_page(output, 0);
     auto const* second = published->find_sample_page(output, 1);
     ASSERT_NE(first, nullptr);
@@ -1340,7 +1380,8 @@ TEST(BackgroundEvaluationTransaction,
         graph.background_evaluation_plan, graph.specialization.sample_rate};
     iv::PersistedPageStore pages;
     auto reader = pages.register_reader();
-    auto const output = local_output(iv::PortKind::event, 0);
+    auto const output = pages.resolve_output(
+        local_output(iv::PortKind::event, 0));
     auto seed = pages.begin_candidate(1, 4);
     auto page = empty_event_page(output);
     page.events = {{.time = 1, .value = iv::TriggerEvent{}}};
@@ -1408,7 +1449,8 @@ TEST(BackgroundEvaluationTransaction,
         graph.background_evaluation_plan, graph.specialization.sample_rate};
     iv::PersistedPageStore pages;
     auto reader = pages.register_reader();
-    auto const output = local_output(iv::PortKind::sample, 0);
+    auto const output = pages.resolve_output(
+        local_output(iv::PortKind::sample, 0));
     auto seed = pages.begin_candidate(1, 4);
     auto first = sample_page(output, 1.0f);
     first.values = {1.0f, 2.0f, 3.0f, 4.0f};
@@ -1486,7 +1528,8 @@ TEST(BackgroundEvaluationTransaction,
         graph.background_evaluation_plan, graph.specialization.sample_rate};
     iv::PersistedPageStore pages;
     auto reader = pages.register_reader();
-    auto const output = local_output(iv::PortKind::event, 0);
+    auto const output = pages.resolve_output(
+        local_output(iv::PortKind::event, 0));
     auto seed = pages.begin_candidate(1, 4);
     auto first = empty_event_page(output);
     first.events = {
@@ -1586,7 +1629,8 @@ TEST(RealtimePersistedStateMailbox,
                             float first) {
         auto candidate = pages.begin_candidate(semantic, 4);
         candidate.put(sample_page(
-            local_output(iv::PortKind::sample, 0), first));
+            pages.resolve_output(local_output(iv::PortKind::sample, 0)),
+            first));
         ASSERT_EQ(
             pages.publish(std::move(candidate)),
             iv::PersistedPagePublishResult::published);
@@ -1619,7 +1663,7 @@ TEST(RealtimePersistedStateMailbox,
         (iv::PersistedPageSnapshotVersion{.semantic = 2, .page = 2}));
     EXPECT_EQ(adopted->materialization().pages(), adopted->pages().version());
     auto const* page = adopted->pages().find_sample_page(
-        local_output(iv::PortKind::sample, 0), 0);
+        pages.resolve_output(local_output(iv::PortKind::sample, 0)), 0);
     ASSERT_NE(page, nullptr);
     EXPECT_FLOAT_EQ(page->values.front().value, 20.0f);
 
@@ -1636,7 +1680,8 @@ TEST(RealtimePersistedStateMailbox,
     iv::PersistedPageStore pages;
     auto initial_state = iv::RealtimePersistedState::prepare_initial(4, pages);
 
-    auto const output = stable_output(iv::PortKind::sample, "late-page");
+    auto const output = pages.resolve_output(
+        stable_output(iv::PortKind::sample, "late-page"));
     auto candidate = pages.begin_candidate(7, 4);
     candidate.put(sample_page(output, 30.0f));
     ASSERT_EQ(

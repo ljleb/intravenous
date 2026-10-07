@@ -15,7 +15,7 @@
 namespace iv {
 
 struct RealtimeProducerRequirement {
-    PersistedOutputId output{};
+    PersistedOutputHandle output{};
     graph_jit::BackgroundPortIndex port = 0;
     PortKind kind = PortKind::sample;
     std::size_t maximum_blocks_per_callback = 0;
@@ -55,6 +55,7 @@ public:
     TickInvocationWorkspace(
         graph_jit::BackgroundEvaluationPlan const& plan,
         std::uint64_t generation,
+        PersistedPageStore& pages,
         std::size_t maximum_block_size = 1);
     ~TickInvocationWorkspace();
 

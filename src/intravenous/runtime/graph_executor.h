@@ -87,6 +87,7 @@ class GraphExecutor {
         RealtimeGeneration(
             CompiledGraph const& graph,
             ResourceContext const& resources,
+            PersistedPageStore& pages,
             AsyncCapacityManager& capacity_manager,
             RealtimeProducerCapacityConfig const& capacity_policy);
     };
@@ -134,6 +135,7 @@ class GraphExecutor {
         ExecutionGeneration(
             std::shared_ptr<CompiledGraph const> graph,
             ResourceContext const& resources,
+            PersistedPageStore& pages,
             AsyncCapacityManager& capacity_manager,
             std::atomic<bool>& production_reservation_failed,
             RealtimeProducerCapacityConfig const& capacity_policy,

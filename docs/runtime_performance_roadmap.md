@@ -19,8 +19,9 @@ The governing performance invariant is:
 ## Ordered implementation work
 
 1. Replace the persisted snapshot representation as one coherent unit:
-   - resolve stable and generation-local output identities off realtime into compact
-     store-owned output slots;
+   - resolve stable and generation-local output identities off realtime into compact,
+     non-recycled handles; snapshots and realtime/background page access carry only
+     those handles, never semantic identity variants or strings;
    - give each output a persistent/path-copy page index keyed by page position;
    - structurally share unchanged output directories, page subtrees, and page payloads;
    - update coverage/layout/type metadata from the changed leaves instead of rebuilding

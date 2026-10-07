@@ -354,7 +354,7 @@ public:
 
 class PersistedSampleReader {
     PersistedPageStore::Snapshot const* snapshot_ = nullptr;
-    PersistedOutputId output_{};
+    PersistedOutputHandle output_{};
     Coverage const* coverage_ = nullptr;
     ChannelLayout layout_{};
     std::span<std::size_t const> channels_{};
@@ -362,7 +362,7 @@ class PersistedSampleReader {
 public:
     PersistedSampleReader(
         PersistedPageStore::Snapshot const& snapshot,
-        PersistedOutputId output,
+        PersistedOutputHandle output,
         Coverage const& coverage,
         ChannelLayout layout,
         std::span<std::size_t const> channels) noexcept
@@ -460,14 +460,14 @@ public:
 
 class PersistedEventReader {
     PersistedPageStore::Snapshot const* snapshot_ = nullptr;
-    PersistedOutputId output_{};
+    PersistedOutputHandle output_{};
     Coverage const* coverage_ = nullptr;
     EventTypeId type_ = EventTypeId::empty;
 
 public:
     PersistedEventReader(
         PersistedPageStore::Snapshot const& snapshot,
-        PersistedOutputId output,
+        PersistedOutputHandle output,
         Coverage const& coverage,
         EventTypeId type) noexcept
         : snapshot_(&snapshot)
@@ -637,7 +637,7 @@ bool BackgroundEventWriteView::write(TimedEvent const& event) const noexcept
 struct BackgroundStorageRealization::Slot {
     graph_jit::PortStoragePlan const* plan = nullptr;
     Coverage const* coverage = nullptr;
-    std::optional<PersistedOutputId> persisted_identity{};
+    std::optional<PersistedOutputHandle> persisted_output{};
     std::unique_ptr<TransactionSampleStorage> owned_sample{};
     std::unique_ptr<TransactionEventStorage> owned_event{};
     std::unique_ptr<PersistedSampleReader> persisted_sample{};
@@ -650,6 +650,7 @@ struct BackgroundStorageRealization::Slot {
 
 BackgroundStorageRealization::BackgroundStorageRealization(
     graph_jit::BackgroundEvaluationPlan const& plan,
+    PersistedPageStore& pages,
     BackgroundStorageSelection selection)
     : plan_(&plan)
     , selection_(std::move(selection))
@@ -673,8 +674,8 @@ BackgroundStorageRealization::BackgroundStorageRealization(
         created->coverage = &selection_.storage_coverage[index];
 
         if (planned.storage == graph_jit::PortStorageKind::persisted_pages) {
-            created->persisted_identity = persisted_output_id(
-                plan, index, selection_.generation);
+            created->persisted_output = pages.resolve_output(
+                persisted_output_id(plan, index, selection_.generation));
         }
 
         auto const produced = selection_.produce_storage.empty()
@@ -704,7 +705,7 @@ BackgroundStorageRealization::BackgroundStorageRealization(
                 created->persisted_sample =
                     std::make_unique<PersistedSampleReader>(
                         *selection_.published,
-                        *created->persisted_identity,
+                        *created->persisted_output,
                         *created->coverage,
                         planned.sample_layout,
                         planned.sample_channels);
@@ -713,7 +714,7 @@ BackgroundStorageRealization::BackgroundStorageRealization(
                 created->persisted_event =
                     std::make_unique<PersistedEventReader>(
                         *selection_.published,
-                        *created->persisted_identity,
+                        *created->persisted_output,
                         *created->coverage,
                         planned.event_type);
                 created->event_read = created->persisted_event->view();
@@ -821,12 +822,13 @@ BackgroundEventWriteView const* BackgroundStorageRealization::event_write(
     return selected.event_write ? &*selected.event_write : nullptr;
 }
 
-PersistedOutputId const* BackgroundStorageRealization::persisted_output(
+PersistedOutputHandle const*
+BackgroundStorageRealization::persisted_output_handle(
     graph_jit::PortStorageIndex index) const
 {
     auto const& selected = slot(index);
-    return selected.persisted_identity
-        ? &*selected.persisted_identity
+    return selected.persisted_output
+        ? &*selected.persisted_output
         : nullptr;
 }
 
@@ -1582,7 +1584,7 @@ BackgroundStorageRealization::stage_persisted_pages(
     }
 
     struct StagedPage {
-        PersistedOutputId output{};
+        PersistedOutputHandle output{};
         std::uint64_t page = 0;
         graph_jit::PortStorageIndex storage = 0;
     };
@@ -1599,7 +1601,7 @@ BackgroundStorageRealization::stage_persisted_pages(
             || selected.coverage->empty() || !produced) {
             continue;
         }
-        if (!selected.persisted_identity) {
+        if (!selected.persisted_output) {
             return std::unexpected(
                 "produced persisted storage has no output identity");
         }
@@ -1612,7 +1614,7 @@ BackgroundStorageRealization::stage_persisted_pages(
                 auto const existing = std::ranges::find_if(
                     staged, [&](StagedPage const& page) {
                         return page.page == page_index
-                            && page.output == *selected.persisted_identity;
+                            && page.output == *selected.persisted_output;
                     });
                 if (existing != staged.end()) {
                     if (existing->storage != index) {
@@ -1644,7 +1646,7 @@ BackgroundStorageRealization::stage_persisted_pages(
                         }
                         auto const frames = coverage_sample_count(domain);
                         PersistedSamplePage page{
-                            .output = *selected.persisted_identity,
+                            .output = *selected.persisted_output,
                             .page_index = page_index,
                             .domain = domain,
                             .layout = planned.sample_layout,
@@ -1674,7 +1676,7 @@ BackgroundStorageRealization::stage_persisted_pages(
                                 "persisted event page has no readable storage");
                         }
                         PersistedEventPage page{
-                            .output = *selected.persisted_identity,
+                            .output = *selected.persisted_output,
                             .page_index = page_index,
                             .domain = domain,
                             .type = planned.event_type,
@@ -1691,7 +1693,7 @@ BackgroundStorageRealization::stage_persisted_pages(
                         candidate.put(std::move(page));
                     }
                     staged.push_back(
-                        {*selected.persisted_identity, page_index, index});
+                        {*selected.persisted_output, page_index, index});
                 }
                 if (page_index == last_page) break;
             }

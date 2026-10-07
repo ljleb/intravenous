@@ -10,9 +10,12 @@
 #include <compare>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <span>
+#include <type_traits>
+#include <utility>
 #include <variant>
 #include <vector>
 
@@ -32,6 +35,47 @@ using PersistedOutputId = std::variant<
 
 [[nodiscard]] PortKind persisted_output_kind(
     PersistedOutputId const& output) noexcept;
+
+// Compact executor-lifetime key resolved from a semantic output identity on a
+// control/background path. Values are process-unique and never recycled, so a
+// handle retained by an old generation cannot alias a later output.
+class PersistedOutputHandle {
+    friend class PersistedPageStore;
+
+    static constexpr std::uint64_t invalid =
+        std::numeric_limits<std::uint64_t>::max();
+    std::uint64_t value_ = invalid;
+
+    explicit constexpr PersistedOutputHandle(
+        std::uint64_t slot, PortKind kind) noexcept
+        : value_((slot << 1)
+            | static_cast<std::uint64_t>(kind == PortKind::event))
+    {}
+
+public:
+    PersistedOutputHandle() = default;
+
+    [[nodiscard]] constexpr bool valid() const noexcept
+    {
+        return value_ != invalid;
+    }
+
+    [[nodiscard]] constexpr PortKind kind() const noexcept
+    {
+        return (value_ & 1) == 0 ? PortKind::sample : PortKind::event;
+    }
+
+    constexpr auto operator<=>(PersistedOutputHandle const&) const = default;
+};
+
+static_assert(sizeof(PersistedOutputHandle) == sizeof(std::uint64_t));
+static_assert(std::is_trivially_copyable_v<PersistedOutputHandle>);
+
+[[nodiscard]] constexpr PortKind persisted_output_kind(
+    PersistedOutputHandle output) noexcept
+{
+    return output.kind();
+}
 
 // Resolve the canonical store identity already selected by one persisted
 // storage slot. Callers do this while constructing control-path workspaces,
@@ -56,7 +100,7 @@ enum class PersistedSamplePacking : std::uint8_t {
 // Event times are page-relative. Sample data is either one complete dense page
 // or the covered positions packed in increasing absolute-index order.
 struct PersistedSamplePage {
-    PersistedOutputId output{};
+    PersistedOutputHandle output{};
     std::uint64_t page_index = 0;
     Coverage domain{};
     ChannelLayout layout{};
@@ -65,7 +109,7 @@ struct PersistedSamplePage {
 };
 
 struct PersistedEventPage {
-    PersistedOutputId output{};
+    PersistedOutputHandle output{};
     std::uint64_t page_index = 0;
     Coverage domain{};
     EventTypeId type = EventTypeId::empty;
@@ -132,20 +176,20 @@ public:
         }
 
         [[nodiscard]] PersistedSamplePage const* find_sample_page(
-            PersistedOutputId const& output,
+            PersistedOutputHandle output,
             std::uint64_t page_index) const noexcept;
 
         [[nodiscard]] PersistedEventPage const* find_event_page(
-            PersistedOutputId const& output,
+            PersistedOutputHandle output,
             std::uint64_t page_index) const noexcept;
 
         // Coverage and format metadata are assembled before publication. Tick
         // readers only select immutable records and never allocate.
         [[nodiscard]] Coverage const* find_sample_coverage(
-            PersistedOutputId const& output,
+            PersistedOutputHandle output,
             ChannelLayout layout) const noexcept;
         [[nodiscard]] Coverage const* find_event_coverage(
-            PersistedOutputId const& output,
+            PersistedOutputHandle output,
             EventTypeId type) const noexcept;
     };
 
@@ -198,12 +242,15 @@ public:
         // the snapshot does not become globally visible until publish().
         [[nodiscard]] Snapshot const& working_snapshot() const;
 
+        // Page and erasure handles are resolved by this candidate's owning
+        // store. Handles are opaque outside that store even though their
+        // process-wide values are never recycled.
         void put(PersistedSamplePage page);
         void put(PersistedEventPage page);
         void erase_page(
-            PersistedOutputId const& output,
+            PersistedOutputHandle output,
             std::uint64_t page_index);
-        void erase_output(PersistedOutputId const& output);
+        void erase_output(PersistedOutputHandle output);
     };
 
     class ReaderPin {
@@ -261,6 +308,9 @@ private:
     std::unique_ptr<Snapshot const> published_owner_{};
     std::atomic<Snapshot const*> published_{nullptr};
     std::vector<std::unique_ptr<Snapshot const>> retired_{};
+    mutable std::mutex output_slots_mutex_{};
+    std::vector<std::pair<PersistedOutputId, PersistedOutputHandle>>
+        output_slots_{};
     mutable std::mutex reader_slots_mutex_{};
     std::vector<std::unique_ptr<ReaderSlotState>> reader_slots_{};
 
@@ -278,6 +328,12 @@ public:
     [[nodiscard]] Candidate begin_candidate(
         std::uint64_t target_semantic_version,
         std::size_t page_width);
+
+    // Identity resolution may lock and grow the executor-owned registry. It is
+    // performed while preparing generation/background runtime objects, never
+    // from realtime page lookup.
+    [[nodiscard]] PersistedOutputHandle resolve_output(
+        PersistedOutputId const& output);
 
     [[nodiscard]] PersistedPagePublishResult publish(Candidate&& candidate);
 

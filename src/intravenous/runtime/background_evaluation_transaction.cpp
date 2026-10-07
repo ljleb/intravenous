@@ -124,7 +124,7 @@ runtime_produced(graph_jit::BackgroundEvaluationPlan const& plan,
 
 class BackgroundEvaluationTransaction::Impl {
     struct PageMutation {
-        PersistedOutputId output{};
+        PersistedOutputHandle output{};
         std::uint64_t page = 0;
     };
 
@@ -174,13 +174,13 @@ class BackgroundEvaluationTransaction::Impl {
                    activity[node], graph_jit::BackgroundNodeActivity::evaluate);
     }
 
-    void add_page_mutation(PersistedOutputId output, std::uint64_t page)
+    void add_page_mutation(PersistedOutputHandle output, std::uint64_t page)
     {
         if (!std::ranges::any_of(
                 page_mutations_, [&](PageMutation const& item) {
                     return item.page == page && item.output == output;
                 })) {
-            page_mutations_.push_back({std::move(output), page});
+            page_mutations_.push_back({output, page});
         }
     }
 
@@ -202,7 +202,8 @@ class BackgroundEvaluationTransaction::Impl {
                     "background produced input references a missing port");
             }
             auto const& port = plan.ports[route.port];
-            if (port.direction != graph_jit::PortDirection::output
+            if (!route.output.valid()
+                || port.direction != graph_jit::PortDirection::output
                 || port.kind != route.kind || !port.persisted_tick_output
                 || port.retention != OutputRetention::persisted
                 || persisted_output_kind(route.output) != route.kind) {
@@ -220,8 +221,8 @@ class BackgroundEvaluationTransaction::Impl {
                     || planned.kind != route.kind) {
                     continue;
                 }
-                if (persisted_output_id(
-                        plan, storage, graph_->project_generation)
+                if (pages_->resolve_output(persisted_output_id(
+                        plan, storage, graph_->project_generation))
                     == route.output) {
                     canonical_route = true;
                     break;
@@ -745,8 +746,8 @@ class BackgroundEvaluationTransaction::Impl {
                 !runtime_produced(plan, storage)) {
                 continue;
             }
-            auto const output = persisted_output_id(
-                plan, index, self.graph_->project_generation);
+            auto const output = self.pages_->resolve_output(persisted_output_id(
+                plan, index, self.graph_->project_generation));
             for (auto const region : affected.regions()) {
                 auto page = static_cast<std::uint64_t>(region.begin / width);
                 auto const last =
@@ -1048,7 +1049,7 @@ class BackgroundEvaluationTransaction::Impl {
         auto binding = binding_selection();
         auto storage = storage_selection(binding, *working_pages_);
         auto realization = std::make_unique<BackgroundStorageRealization>(
-            graph_->background_evaluation_plan, std::move(storage));
+            graph_->background_evaluation_plan, *pages_, std::move(storage));
         if (auto sealed = realization->seal(); !sealed) {
             return std::unexpected(std::move(sealed.error()));
         }

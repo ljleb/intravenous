@@ -44,7 +44,7 @@ struct BackgroundEvaluationResult {
 // realtime-producer queue. The block prefix remains owned by GraphExecutor and
 // is released only after the transaction reports a committed result.
 struct BackgroundProducedInputRoute {
-    PersistedOutputId output{};
+    PersistedOutputHandle output{};
     graph_jit::BackgroundPortIndex port = 0;
     PortKind kind = PortKind::sample;
 };

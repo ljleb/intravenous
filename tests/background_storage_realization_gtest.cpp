@@ -79,8 +79,10 @@ TEST(BackgroundStorageRealization, OwnsAddressStableSparseTransactionStorage)
         },
     };
 
+    iv::PersistedPageStore pages;
     iv::BackgroundStorageRealization realization{
         plan,
+        pages,
         {
             .generation = 9,
             .storage_coverage = {
@@ -272,8 +274,10 @@ TEST(
         .random_access_event_count = 1,
     }};
 
+    iv::PersistedPageStore pages;
     BackgroundStorageRealization realization{
         plan,
+        pages,
         {
             .generation = 4,
             .storage_coverage = {
@@ -368,9 +372,11 @@ TEST(BackgroundStorageRealization, ReadsTypedPublishedPagesWithoutCopyingThem)
     auto reader = store.register_reader();
     auto const sample_id = stable_output(iv::PortKind::sample, "samples");
     auto const event_id = stable_output(iv::PortKind::event, "events");
+    auto const sample_output = store.resolve_output(sample_id);
+    auto const event_output = store.resolve_output(event_id);
     auto candidate = store.begin_candidate(6, 4);
     candidate.put(iv::PersistedSamplePage{
-        .output = sample_id,
+        .output = sample_output,
         .page_index = 0,
         .domain = iv::Coverage{{{0, 4}}},
         .layout = {
@@ -381,7 +387,7 @@ TEST(BackgroundStorageRealization, ReadsTypedPublishedPagesWithoutCopyingThem)
         .values = {1, 2, 3, 4, 10, 20, 30, 40},
     });
     candidate.put(iv::PersistedEventPage{
-        .output = event_id,
+        .output = event_output,
         .page_index = 1,
         .domain = iv::Coverage{{{4, 8}}},
         .type = iv::EventTypeId::trigger,
@@ -445,6 +451,7 @@ TEST(BackgroundStorageRealization, ReadsTypedPublishedPagesWithoutCopyingThem)
 
     iv::BackgroundStorageRealization realization{
         plan,
+        store,
         {
             .generation = 20,
             .storage_coverage = {
@@ -468,15 +475,13 @@ TEST(BackgroundStorageRealization, ReadsTypedPublishedPagesWithoutCopyingThem)
         times.push_back(event.time);
     });
     EXPECT_EQ(times, (std::vector<iv::EventTime>{5, 7}));
-    ASSERT_NE(realization.persisted_output(0), nullptr);
-    EXPECT_EQ(
-        std::get<iv::graph_jit::StableOutputPortId>(
-            *realization.persisted_output(0)),
-        sample_id);
+    ASSERT_NE(realization.persisted_output_handle(0), nullptr);
+    EXPECT_EQ(*realization.persisted_output_handle(0), sample_output);
     EXPECT_TRUE(realization.seal().has_value());
 
     iv::BackgroundStorageRealization missing_page{
         plan,
+        store,
         {
             .generation = 20,
             .storage_coverage = {
@@ -519,8 +524,10 @@ TEST(BackgroundStorageRealization, GivesProducedPersistedStoragePrivateOwners)
         .storage = {0},
     }};
 
+    iv::PersistedPageStore store;
     iv::BackgroundStorageRealization realization{
         plan,
+        store,
         {
             .generation = 4,
             .storage_coverage = {iv::Coverage{{{100, 102}}}},
@@ -531,21 +538,17 @@ TEST(BackgroundStorageRealization, GivesProducedPersistedStoragePrivateOwners)
     EXPECT_TRUE(realization.sample_write(0)->write(100, 0, 8.0f));
     EXPECT_TRUE(realization.sample_write(0)->write(101, 0, 9.0f));
     EXPECT_FLOAT_EQ(realization.sample_read(0)->at(100, 0).value, 8.0f);
-    ASSERT_NE(realization.persisted_output(0), nullptr);
-    EXPECT_EQ(
-        std::get<iv::graph_jit::StableOutputPortId>(
-            *realization.persisted_output(0)),
-        output);
+    ASSERT_NE(realization.persisted_output_handle(0), nullptr);
+    auto const output_handle = store.resolve_output(output);
+    EXPECT_EQ(*realization.persisted_output_handle(0), output_handle);
     EXPECT_TRUE(realization.seal().has_value());
-
-    iv::PersistedPageStore store;
     auto candidate = store.begin_candidate(12, 4);
     ASSERT_TRUE(realization.stage_persisted_pages(candidate).has_value());
     ASSERT_EQ(store.publish(std::move(candidate)),
               iv::PersistedPagePublishResult::published);
     auto reader = store.register_reader();
     auto pin = reader.pin();
-    auto const* page = pin->find_sample_page(output, 25);
+    auto const* page = pin->find_sample_page(output_handle, 25);
     ASSERT_NE(page, nullptr);
     EXPECT_EQ(page->domain, (iv::Coverage{{{100, 102}}}));
     EXPECT_EQ(page->packing, iv::PersistedSamplePacking::coverage_packed);
@@ -573,8 +576,10 @@ TEST(BackgroundStorageRealization, SealingRejectsMissingExternalDirectViews)
     }};
     plan.runtime.node_operations = {{.before = {0}}};
 
+    iv::PersistedPageStore pages;
     iv::BackgroundStorageRealization realization{
         plan,
+        pages,
         {
             .storage_coverage = {iv::Coverage{{{0, 1}}}},
         }};
@@ -705,8 +710,10 @@ TEST(BackgroundStorageRealization, ExecutesHeterogeneousSampleProjectionPlan)
         .operation = 0,
     }};
 
+    iv::PersistedPageStore pages;
     iv::BackgroundStorageRealization realization{
         plan,
+        pages,
         {
             .storage_coverage = {
                 iv::Coverage{{{9, 11}}},
@@ -796,8 +803,10 @@ TEST(BackgroundStorageRealization, ConvertsAndStablyMergesEventSources)
         },
     };
 
+    iv::PersistedPageStore pages;
     iv::BackgroundStorageRealization realization{
         plan,
+        pages,
         {
             .storage_coverage = {
                 iv::Coverage{{{0, 4}}},
@@ -833,7 +842,7 @@ TEST(BackgroundStorageRealization, ConvertsAndStablyMergesEventSources)
     EXPECT_EQ(boundaries, (std::vector<bool>{true, false}));
 }
 
-TEST(BackgroundStorageRealization, UsesGenerationLocalIdentityForAnonymousOutput)
+TEST(BackgroundStorageRealization, ResolvesAnonymousGenerationLocalOutputHandle)
 {
     iv::graph_jit::BackgroundEvaluationPlan plan;
     plan.ports = {{
@@ -849,17 +858,19 @@ TEST(BackgroundStorageRealization, UsesGenerationLocalIdentityForAnonymousOutput
         .event_type = iv::EventTypeId::empty,
     }};
 
+    iv::PersistedPageStore pages;
     iv::BackgroundStorageRealization realization{
         plan,
+        pages,
         {
             .generation = 77,
             .storage_coverage = {iv::Coverage{}},
         }};
-    auto const* identity = realization.persisted_output(0);
-    ASSERT_NE(identity, nullptr);
+    auto const* output = realization.persisted_output_handle(0);
+    ASSERT_NE(output, nullptr);
     EXPECT_EQ(
-        std::get<iv::GenerationLocalPersistedOutputId>(*identity),
-        (iv::GenerationLocalPersistedOutputId{
+        *output,
+        pages.resolve_output(iv::GenerationLocalPersistedOutputId{
             .generation = 77,
             .port = 0,
             .kind = iv::PortKind::event,
@@ -1005,8 +1016,10 @@ TEST(BackgroundEvaluationCallFrame, OwnsOperationFramesAndTockBindings)
     plan.runtime.node_operations.resize(1);
     plan.runtime.node_replay_invocations.resize(1);
 
+    iv::PersistedPageStore pages;
     iv::BackgroundStorageRealization realization{
         plan,
+        pages,
         {
             .storage_coverage =
                 {
@@ -1185,8 +1198,10 @@ TEST(BackgroundEvaluationCallFrame, ReservesAndValidatesReplaySchedule)
     }};
     plan.runtime.node_replay_invocations = {0};
 
+    iv::PersistedPageStore pages;
     iv::BackgroundStorageRealization realization{
         plan,
+        pages,
         {.storage_coverage = std::vector<iv::Coverage>(
              4, iv::Coverage{{{0, 10}}})}};
     ASSERT_TRUE(realization.sample_write(0)->write(0, 0, 3.0f));
@@ -1305,8 +1320,10 @@ TEST(
     }};
     plan.runtime.node_replay_invocations = {0};
 
+    iv::PersistedPageStore pages;
     iv::BackgroundStorageRealization realization{
         plan,
+        pages,
         {
             .storage_coverage = {
                 iv::Coverage{{{0, 4}}},

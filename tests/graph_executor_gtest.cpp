@@ -869,12 +869,12 @@ TEST_F(
     EXPECT_EQ(pages.retired_snapshot_count(), 1u);
     EXPECT_EQ(pages.reclaim_retired(), 1u);
 
-    auto const output = iv::PersistedOutputId{
+    auto const output = pages.resolve_output(iv::PersistedOutputId{
         iv::GenerationLocalPersistedOutputId{
             .generation = 1,
             .port = 0,
             .kind = iv::PortKind::sample,
-        }};
+        }});
     {
         auto pin = reader.pin();
         auto const* first_page = pin->find_sample_page(output, 0);

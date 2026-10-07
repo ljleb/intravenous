@@ -144,11 +144,12 @@ PersistedOutputId capture_output_id(
 }
 
 template<class Binding>
-std::optional<PersistedOutputId> direct_persisted_sample_output(
+std::optional<PersistedOutputHandle> direct_persisted_sample_output(
     graph_jit::BackgroundEvaluationPlan const& plan,
     Binding const& binding,
     graph_jit::BackgroundPortPlan const& port,
-    std::uint64_t generation)
+    std::uint64_t generation,
+    PersistedPageStore& pages)
 {
     std::optional<graph_jit::PortStorageIndex> persisted;
     for (auto const storage : binding.storage) {
@@ -184,17 +185,18 @@ std::optional<PersistedOutputId> direct_persisted_sample_output(
             });
     }
     return identity
-        ? std::optional<PersistedOutputId>{
-            persisted_output_id(plan, *persisted, generation)}
+        ? std::optional<PersistedOutputHandle>{pages.resolve_output(
+            persisted_output_id(plan, *persisted, generation))}
         : std::nullopt;
 }
 
 template<class Binding>
-std::optional<PersistedOutputId> direct_persisted_event_output(
+std::optional<PersistedOutputHandle> direct_persisted_event_output(
     graph_jit::BackgroundEvaluationPlan const& plan,
     Binding const& binding,
     graph_jit::BackgroundPortPlan const& port,
-    std::uint64_t generation)
+    std::uint64_t generation,
+    PersistedPageStore& pages)
 {
     std::optional<graph_jit::PortStorageIndex> persisted;
     for (auto const storage : binding.storage) {
@@ -224,8 +226,8 @@ std::optional<PersistedOutputId> direct_persisted_event_output(
                         plan, candidate.target_subset, port.configured_port);
             });
     return direct
-        ? std::optional<PersistedOutputId>{
-            persisted_output_id(plan, *persisted, generation)}
+        ? std::optional<PersistedOutputHandle>{pages.resolve_output(
+            persisted_output_id(plan, *persisted, generation))}
         : std::nullopt;
 }
 
@@ -610,7 +612,7 @@ public:
 
     struct SequentialSampleSlot {
         graph_jit::BackgroundPortIndex port = 0;
-        std::optional<PersistedOutputId> output{};
+        std::optional<PersistedOutputHandle> output{};
         bool accepts_materialization = false;
         ChannelLayout layout{};
         std::size_t history = 0;
@@ -720,7 +722,7 @@ public:
 
     struct SequentialEventSlot {
         graph_jit::BackgroundPortIndex port = 0;
-        std::optional<PersistedOutputId> output{};
+        std::optional<PersistedOutputHandle> output{};
         bool accepts_materialization = false;
         EventTypeId type = EventTypeId::empty;
         std::size_t events_offset = 0;
@@ -840,7 +842,7 @@ public:
     struct SampleSlot {
         PersistedPageStore::Snapshot const* snapshot = nullptr;
         TickMaterializedSampleInput const* materialized = nullptr;
-        std::optional<PersistedOutputId> output{};
+        std::optional<PersistedOutputHandle> output{};
         graph_jit::BackgroundPortIndex port = 0;
         bool accepts_materialization = false;
         ChannelLayout layout{};
@@ -885,7 +887,7 @@ public:
     struct EventSlot {
         PersistedPageStore::Snapshot const* snapshot = nullptr;
         TickMaterializedEventInput const* materialized = nullptr;
-        std::optional<PersistedOutputId> output{};
+        std::optional<PersistedOutputHandle> output{};
         graph_jit::BackgroundPortIndex port = 0;
         bool accepts_materialization = false;
         EventTypeId type = EventTypeId::empty;
@@ -952,6 +954,7 @@ public:
     Impl(
         graph_jit::BackgroundEvaluationPlan const& plan,
         std::uint64_t selected_generation,
+        PersistedPageStore& pages,
         std::size_t selected_maximum_block_size)
         : generation(selected_generation)
         , maximum_block_size(selected_maximum_block_size)
@@ -1022,7 +1025,7 @@ public:
                                 == graph_jit::PortStorageKind::tick_random_access);
                 });
             selected.output = direct_persisted_sample_output(
-                plan, planned, port, selected_generation);
+                plan, planned, port, selected_generation, pages);
             selected.initialize_storage();
             sequential_sample_views[slot] = selected.binding;
         }
@@ -1079,7 +1082,7 @@ public:
                                 == graph_jit::PortStorageKind::tick_random_access);
                 });
             selected.output = direct_persisted_event_output(
-                plan, planned, port, selected_generation);
+                plan, planned, port, selected_generation, pages);
             selected.initialize_storage();
             sequential_event_views[slot] = selected.binding;
         }
@@ -1102,7 +1105,7 @@ public:
                 });
 
             selected.output = direct_persisted_sample_output(
-                plan, binding, port, selected_generation);
+                plan, binding, port, selected_generation, pages);
             sample_views[slot] = RandomAccessSampleInputPort{
                 .data = &selected,
                 .coverage_value = &empty_tick_coverage,
@@ -1133,7 +1136,7 @@ public:
                 });
 
             selected.output = direct_persisted_event_output(
-                plan, binding, port, selected_generation);
+                plan, binding, port, selected_generation, pages);
             event_views[slot] = RandomAccessEventInputPort{
                 .data = &selected,
                 .coverage_value = &empty_tick_coverage,
@@ -1191,8 +1194,8 @@ public:
             }
             auto const bounds_compatible =
                 capture_bounds_match_workspace(planned);
-            auto const output = capture_output_id(
-                plan, planned.port, selected_generation);
+            auto const output = pages.resolve_output(capture_output_id(
+                plan, planned.port, selected_generation));
             auto& selected = sample_capture_slots[slot];
             selected = SampleCaptureSlot{
                 .layout = port.sample_layout,
@@ -1243,8 +1246,8 @@ public:
             }
             auto const bounds_compatible =
                 capture_bounds_match_workspace(planned);
-            auto const output = capture_output_id(
-                plan, planned.port, selected_generation);
+            auto const output = pages.resolve_output(capture_output_id(
+                plan, planned.port, selected_generation));
             auto& selected = event_capture_slots[slot];
             selected = EventCaptureSlot{
                 .type = port.event_type,
@@ -1431,9 +1434,10 @@ public:
 TickInvocationWorkspace::TickInvocationWorkspace(
     graph_jit::BackgroundEvaluationPlan const& plan,
     std::uint64_t generation,
+    PersistedPageStore& pages,
     std::size_t maximum_block_size)
     : impl_(std::make_unique<Impl>(
-        plan, generation, maximum_block_size))
+        plan, generation, pages, maximum_block_size))
 {}
 
 TickInvocationWorkspace::~TickInvocationWorkspace() = default;

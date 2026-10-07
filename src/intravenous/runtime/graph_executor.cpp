@@ -37,12 +37,14 @@ ProducerCapacityPolicy producer_capacity_policy(
 GraphExecutor::RealtimeGeneration::RealtimeGeneration(
     CompiledGraph const& graph,
     ResourceContext const& resources,
+    PersistedPageStore& pages,
     AsyncCapacityManager& capacity_manager,
     RealtimeProducerCapacityConfig const& capacity_policy)
     : storage(graph.node_layout.create_storage(resources))
     , tick_invocation(
         graph.background_evaluation_plan,
         graph.project_generation,
+        pages,
         graph.specialization.block_size)
 {
     auto const requirements = tick_invocation.producer_requirements();
@@ -136,13 +138,14 @@ bool GraphExecutor::BackgroundGeneration::release_closed_input_sentinels(
 GraphExecutor::ExecutionGeneration::ExecutionGeneration(
     std::shared_ptr<CompiledGraph const> compiled_graph,
     ResourceContext const& resources,
+    PersistedPageStore& pages,
     AsyncCapacityManager& capacity_manager,
     std::atomic<bool>& production_reservation_failed,
     RealtimeProducerCapacityConfig const& capacity_policy,
     AsyncWorkSignal& background_work_signal)
     : graph(std::move(compiled_graph))
     , realtime(
-        *graph, resources, capacity_manager, capacity_policy)
+        *graph, resources, pages, capacity_manager, capacity_policy)
     , background(*graph, resources, realtime, background_work_signal)
 {
     static_assert(std::atomic<ExecutionGeneration*>::is_always_lock_free);
@@ -494,6 +497,7 @@ GraphExecutorStageResult GraphExecutor::stage(
     auto prepared = std::make_unique<ExecutionGeneration>(
         std::move(compiled_graph),
         resources_,
+        persisted_pages_,
         async_capacity_manager_,
         production_reservation_failed_,
         producer_capacity_,
