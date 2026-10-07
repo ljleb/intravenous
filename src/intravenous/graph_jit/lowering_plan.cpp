@@ -557,6 +557,174 @@ plan_sample_realtime_port_state_realizations(
         return std::nullopt;
     };
 
+    auto storage_view = [&] (
+        std::size_t representation_index,
+        std::size_t representation_channel,
+        std::int64_t timeline_offset,
+        bool retained)
+        -> std::expected<
+            std::optional<SampleRealtimePortStateStorageView>,
+            std::string> {
+        if (representation_index == no_sample_representation
+            || representation_index
+                >= sample_ports.storage.representations.size()) {
+            return std::unexpected(
+                "GraphJit sample port-state binding names an invalid representation");
+        }
+        auto const& representation =
+            sample_ports.storage.representations[representation_index];
+        if (representation_channel
+            >= channel_count(representation.channel_layout)) {
+            return std::unexpected(
+                "GraphJit sample port-state channel lies outside its representation");
+        }
+
+        SampleRealtimePortStateStorageView view{
+            .channel_layout = representation.channel_layout,
+            .representation_channel = representation_channel,
+            .timeline_offset_frames = timeline_offset,
+            .working_frame_capacity = representation.frame_capacity,
+        };
+
+        if (representation.constant_value) {
+            if (representation.persistent_allocation
+                    != no_sample_persistent_allocation
+                || representation.transient_allocation
+                    != no_sample_transient_allocation) {
+                return std::unexpected(
+                    "GraphJit constant sample state unexpectedly owns mutable storage");
+            }
+            view.storage =
+                SampleRealtimePortStateStorage::immutable_constant;
+            view.storage_frame_count = representation.frame_capacity;
+            view.constant_value = representation.constant_value;
+            return std::optional<SampleRealtimePortStateStorageView>{
+                std::move(view)};
+        }
+
+        auto persistent_view = [&] ()
+            -> std::expected<
+                std::optional<SampleRealtimePortStateStorageView>,
+                std::string> {
+            if (representation.persistent_allocation
+                == no_sample_persistent_allocation) {
+                return std::optional<SampleRealtimePortStateStorageView>{};
+            }
+            auto const allocation_index =
+                representation.persistent_allocation;
+            if (allocation_index
+                >= sample_ports.storage.persistent_allocations.size()) {
+                return std::unexpected(
+                    "GraphJit sample port-state representation lost its persistent allocation");
+            }
+            auto const& allocation =
+                sample_ports.storage.persistent_allocations[allocation_index];
+            if (allocation.representation_index != representation_index
+                || allocation.channel_layout
+                    != representation.channel_layout
+                || allocation.storage_offset
+                    > declarations.node_layout.storage_size
+                || allocation.size_bytes
+                    > declarations.node_layout.storage_size
+                        - allocation.storage_offset) {
+                return std::unexpected(
+                    "GraphJit sample port-state persistent allocation disagrees with finalized NodeStorage");
+            }
+            view.node_storage_offset = allocation.storage_offset;
+            view.storage_size_bytes = allocation.size_bytes;
+            view.storage_frame_count =
+                allocation.kind == SamplePersistentStorageKind::compact_carry
+                ? allocation.retained_frames
+                : allocation.frame_capacity;
+            if (allocation.kind == SamplePersistentStorageKind::ring) {
+                view.storage = SampleRealtimePortStateStorage::ring;
+            } else {
+                view.storage =
+                    SampleRealtimePortStateStorage::compact_carry;
+                auto carry = sample_ports.storage.carry_operations.end();
+                for (auto candidate =
+                         sample_ports.storage.carry_operations.begin();
+                     candidate != sample_ports.storage.carry_operations.end();
+                     ++candidate) {
+                    if (candidate->persistent_allocation
+                        != allocation_index) {
+                        continue;
+                    }
+                    if (carry
+                        != sample_ports.storage.carry_operations.end()) {
+                        return std::unexpected(
+                            "GraphJit compact sample state has more than one carry operation");
+                    }
+                    carry = candidate;
+                }
+                if (carry == sample_ports.storage.carry_operations.end()
+                    || carry->representation_index != representation_index
+                    || carry->retained_frames
+                        != allocation.retained_frames) {
+                    return std::unexpected(
+                        "GraphJit compact sample state lost its carry operation");
+                }
+                view.carry_future_frames = carry->future_frames;
+            }
+            return std::optional<SampleRealtimePortStateStorageView>{
+                std::move(view)};
+        };
+
+        if (retained
+            || representation.storage
+                == RealtimeBufferStorageKind::full_node_storage) {
+            return persistent_view();
+        }
+
+        if (representation.transient_allocation
+                >= sample_ports.storage.transient_allocations.size()) {
+            return std::unexpected(
+                "GraphJit callback sample port state lost its transient allocation");
+        }
+        auto const& allocation = sample_ports.storage.transient_allocations[
+            representation.transient_allocation];
+        if (allocation.representation_index != representation_index
+            || allocation.region_relative_offset
+                > sample_ports.storage.transient_arena_size
+            || allocation.size_bytes
+                > sample_ports.storage.transient_arena_size
+                    - allocation.region_relative_offset) {
+            return std::unexpected(
+                "GraphJit sample port-state callback allocation lies outside its arena");
+        }
+        view.storage = SampleRealtimePortStateStorage::callback_transient;
+        view.callback_arena_offset = allocation.region_relative_offset;
+        view.storage_size_bytes = allocation.size_bytes;
+        view.storage_frame_count = representation.frame_capacity;
+        return std::optional<SampleRealtimePortStateStorageView>{
+            std::move(view)};
+    };
+
+    auto materialization_for_target = [&](std::size_t representation)
+        -> std::expected<SampleMaterializationPlan const*, std::string> {
+        SampleMaterializationPlan const* selected = nullptr;
+        for (auto const& materialization :
+             sample_ports.storage.materializations) {
+            if (materialization.target_representation != representation) {
+                continue;
+            }
+            if (selected) {
+                return std::unexpected(
+                    "GraphJit sample port state has more than one materialization producer");
+            }
+            selected = &materialization;
+        }
+        return selected;
+    };
+
+    auto is_composition_target = [&](std::size_t representation) {
+        return std::ranges::any_of(
+            sample_ports.storage.compositions,
+            [&](SampleCompositionPlan const& composition) {
+                return composition.target_representation == representation;
+            });
+    };
+
     for (std::size_t requirement_index = 0;
          requirement_index
             < connections.realtime_port_states.states.size();
@@ -646,127 +814,100 @@ plan_sample_realtime_port_state_realizations(
             timeline_offset = static_cast<std::int64_t>(binding.latency);
         }
 
-        if (representation_index == no_sample_representation
-            || representation_index
-                >= sample_ports.storage.representations.size()) {
+        auto authored = storage_view(
+            representation_index,
+            representation_channel,
+            timeline_offset,
+            false);
+        if (!authored) return std::unexpected(std::move(authored.error()));
+        if (!*authored) {
             return std::unexpected(
-                "GraphJit sample port-state binding names an invalid representation");
+                "GraphJit sample port state has no callback-facing realization");
         }
-        auto const& representation =
-            sample_ports.storage.representations[representation_index];
-        if (representation_channel
-            >= channel_count(representation.channel_layout)) {
-            return std::unexpected(
-                "GraphJit sample port-state channel lies outside its representation");
-        }
-
         SampleRealtimePortStateRealization realization{
             .requirement_index = requirement_index,
-            .channel_layout = representation.channel_layout,
-            .representation_channel = representation_channel,
-            .timeline_offset_frames = timeline_offset,
-            .working_frame_capacity = representation.frame_capacity,
+            .authored_storage = std::move(**authored),
         };
 
-        if (representation.constant_value) {
-            if (representation.persistent_allocation
-                    != no_sample_persistent_allocation
-                || representation.transient_allocation
-                    != no_sample_transient_allocation) {
-                return std::unexpected(
-                    "GraphJit constant sample state unexpectedly owns mutable storage");
-            }
-            realization.storage =
-                SampleRealtimePortStateStorage::immutable_constant;
-            realization.storage_frame_count = representation.frame_capacity;
-            realization.constant_value = representation.constant_value;
+        if (realization.authored_storage.storage
+            == SampleRealtimePortStateStorage::immutable_constant) {
+            realization.retained_access =
+                SampleRealtimePortStateAccess::immutable_constant;
             result.sample_states.push_back(std::move(realization));
             continue;
         }
 
-        if (representation.persistent_allocation
-            != no_sample_persistent_allocation) {
-            auto const allocation_index =
-                representation.persistent_allocation;
-            if (allocation_index
-                >= sample_ports.storage.persistent_allocations.size()) {
-                return std::unexpected(
-                    "GraphJit sample port-state representation lost its persistent allocation");
+        auto retained = storage_view(
+            representation_index,
+            representation_channel,
+            timeline_offset,
+            true);
+        if (!retained) return std::unexpected(std::move(retained.error()));
+        if (*retained) {
+            realization.retained_access =
+                SampleRealtimePortStateAccess::direct;
+            realization.retained_sources.push_back(std::move(**retained));
+            result.sample_states.push_back(std::move(realization));
+            continue;
+        }
+
+        if (requirement.direction == PortDirection::input) {
+            auto materialization = materialization_for_target(
+                representation_index);
+            if (!materialization) {
+                return std::unexpected(std::move(materialization.error()));
             }
-            auto const& allocation =
-                sample_ports.storage.persistent_allocations[allocation_index];
-            if (allocation.representation_index != representation_index
-                || allocation.channel_layout
-                    != representation.channel_layout
-                || allocation.storage_offset
-                    > declarations.node_layout.storage_size
-                || allocation.size_bytes
-                    > declarations.node_layout.storage_size
-                        - allocation.storage_offset) {
-                return std::unexpected(
-                    "GraphJit sample port-state persistent allocation disagrees with finalized NodeStorage");
-            }
-            realization.node_storage_offset = allocation.storage_offset;
-            realization.storage_size_bytes = allocation.size_bytes;
-            realization.storage_frame_count =
-                allocation.kind == SamplePersistentStorageKind::compact_carry
-                ? allocation.retained_frames
-                : allocation.frame_capacity;
-            if (allocation.kind == SamplePersistentStorageKind::ring) {
-                realization.storage = SampleRealtimePortStateStorage::ring;
-            } else {
-                realization.storage =
-                    SampleRealtimePortStateStorage::compact_carry;
-                auto carry = sample_ports.storage.carry_operations.end();
-                for (auto candidate =
-                         sample_ports.storage.carry_operations.begin();
-                     candidate != sample_ports.storage.carry_operations.end();
-                     ++candidate) {
-                    if (candidate->persistent_allocation != allocation_index) {
-                        continue;
-                    }
-                    if (carry != sample_ports.storage.carry_operations.end()) {
-                        return std::unexpected(
-                            "GraphJit compact sample state has more than one carry operation");
-                    }
-                    carry = candidate;
-                }
-                if (carry == sample_ports.storage.carry_operations.end()
-                    || carry->representation_index != representation_index
-                    || carry->retained_frames != allocation.retained_frames) {
+            if (*materialization) {
+                auto const& operation = **materialization;
+                if (operation.target_layout
+                        != realization.authored_storage.channel_layout
+                    || operation.source_representation
+                        >= sample_ports.storage.representations.size()) {
                     return std::unexpected(
-                        "GraphJit compact sample state lost its carry operation");
+                        "GraphJit sample port-state materialization disagrees with its callback view");
                 }
-                realization.carry_future_frames = carry->future_frames;
+                auto const& source = sample_ports.storage.representations[
+                    operation.source_representation];
+                if (source.channel_layout != operation.source_layout) {
+                    return std::unexpected(
+                        "GraphJit sample port-state materialization lost its source layout");
+                }
+                for (std::size_t source_channel = 0;
+                     source_channel < channel_count(operation.source_layout);
+                     ++source_channel) {
+                    auto source_view = storage_view(
+                        operation.source_representation,
+                        source_channel,
+                        timeline_offset,
+                        true);
+                    if (!source_view) {
+                        return std::unexpected(
+                            std::move(source_view.error()));
+                    }
+                    if (!*source_view) {
+                        realization.retained_sources.clear();
+                        break;
+                    }
+                    realization.retained_sources.push_back(
+                        std::move(**source_view));
+                }
+                if (!realization.retained_sources.empty()) {
+                    realization.retained_access =
+                        SampleRealtimePortStateAccess::materialized;
+                    realization.materialization =
+                        SampleRealtimePortStateMaterialization{
+                            .source_layout = operation.source_layout,
+                            .target_layout = operation.target_layout,
+                            .retained_before = operation.retained_before,
+                            .latest_read_latency =
+                                operation.latest_read_latency,
+                        };
+                }
+            } else if (is_composition_target(representation_index)) {
+                realization.retained_access =
+                    SampleRealtimePortStateAccess::composed;
             }
-            result.sample_states.push_back(std::move(realization));
-            continue;
         }
-
-        if (representation.storage
-                != RealtimeBufferStorageKind::transient_stack
-            || representation.transient_allocation
-                >= sample_ports.storage.transient_allocations.size()) {
-            return std::unexpected(
-                "GraphJit sample port state has no constant, callback-local, or persistent realization");
-        }
-        auto const& allocation = sample_ports.storage.transient_allocations[
-            representation.transient_allocation];
-        if (allocation.representation_index != representation_index
-            || allocation.region_relative_offset
-                > sample_ports.storage.transient_arena_size
-            || allocation.size_bytes
-                > sample_ports.storage.transient_arena_size
-                    - allocation.region_relative_offset) {
-            return std::unexpected(
-                "GraphJit sample port-state callback allocation lies outside its arena");
-        }
-        realization.storage =
-            SampleRealtimePortStateStorage::callback_transient;
-        realization.callback_arena_offset =
-            allocation.region_relative_offset;
-        realization.storage_size_bytes = allocation.size_bytes;
-        realization.storage_frame_count = representation.frame_capacity;
         result.sample_states.push_back(std::move(realization));
     }
     return result;

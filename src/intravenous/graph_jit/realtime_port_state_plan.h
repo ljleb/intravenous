@@ -70,11 +70,23 @@ enum class SampleRealtimePortStateStorage : std::uint8_t {
     ring,
 };
 
-struct SampleRealtimePortStateRealization {
-    // Index into RealtimePortStateRequirements::states. Only sample
-    // requirements have entries here; event realizations are planned
-    // independently because event fan-in has different ownership semantics.
-    std::size_t requirement_index = 0;
+enum class SampleRealtimePortStateAccess : std::uint8_t {
+    // The callback reads one compiler-owned constant timeline; no mutable
+    // cross-callback bytes exist.
+    immutable_constant,
+    // One retained source contains this semantic channel directly.
+    direct,
+    // The callback channel is reconstructed from retained_sources using the
+    // recorded whole-layout conversion and selected timeline window.
+    materialized,
+    // The callback channel is produced by a multi-source composition whose
+    // retained derivation has not yet been reduced to cold transition inputs.
+    composed,
+    // No recoverable cross-callback source is currently known.
+    callback_only,
+};
+
+struct SampleRealtimePortStateStorageView {
     SampleRealtimePortStateStorage storage =
         SampleRealtimePortStateStorage::callback_transient;
     ChannelLayout channel_layout{};
@@ -85,7 +97,7 @@ struct SampleRealtimePortStateRealization {
     // read-latency/channel-delay offset; Tick outputs use their positive
     // authored storage latency.
     std::int64_t timeline_offset_frames = 0;
-    // Capacity of the callback-facing absolute-indexed representation.
+    // Capacity of the representation's absolute-indexed working ring.
     std::size_t working_frame_capacity = 0;
     // Frames physically present in the selected immutable/callback/persistent
     // backing. A compact carry stores retained frames rather than the full
@@ -101,6 +113,29 @@ struct SampleRealtimePortStateRealization {
     std::optional<std::size_t> callback_arena_offset{};
     std::size_t storage_size_bytes = 0;
     std::optional<Sample> constant_value{};
+};
+
+struct SampleRealtimePortStateMaterialization {
+    ChannelLayout source_layout{};
+    ChannelLayout target_layout{};
+    std::size_t retained_before = 0;
+    std::size_t latest_read_latency = 0;
+};
+
+struct SampleRealtimePortStateRealization {
+    // Index into RealtimePortStateRequirements::states. Only sample
+    // requirements have entries here; event realizations are planned
+    // independently because event fan-in has different ownership semantics.
+    std::size_t requirement_index = 0;
+    // Exact channel view bound to the authored node callback.
+    SampleRealtimePortStateStorageView authored_storage{};
+    SampleRealtimePortStateAccess retained_access =
+        SampleRealtimePortStateAccess::callback_only;
+    // One entry for direct access, or every source-layout channel required to
+    // reconstruct a materialized target channel. Entries name cross-callback
+    // storage only; callback arena bytes are never exposed as retained state.
+    std::vector<SampleRealtimePortStateStorageView> retained_sources{};
+    std::optional<SampleRealtimePortStateMaterialization> materialization{};
 };
 
 enum class EventRealtimePortStateStorage : std::uint8_t {

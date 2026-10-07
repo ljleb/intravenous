@@ -337,21 +337,30 @@ Generated realtime code does not inspect it.
 
 The physical realization view is a separate mapping produced after storage selection.
 For sample state, lowering now maps every semantic requirement to its finalized
-per-channel representation after `NodeLayout` finalization. The cold record distinguishes
-an immutable constant, callback-local arena storage, compact cross-callback carry, and a
-persistent ring. It retains the physical channel layout/channel, signed
-semantic-to-storage timeline offset, working capacity, actual stored-frame count,
-compact-carry future extent, and either the final `NodeStorage` byte range or
+per-channel representation after `NodeLayout` finalization. The callback-facing view and
+cross-callback source are separate: a compact carry, for example, exposes a transient
+working ring to the node while retaining only its bounded tail in `NodeStorage`. The cold
+record distinguishes an immutable constant, callback-local arena storage, compact
+cross-callback carry, and a persistent ring. Each physical view retains its channel
+layout/channel, signed semantic-to-storage timeline offset, working capacity, actual
+stored-frame count, compact-carry future extent, and final `NodeStorage` or
 callback-arena-relative byte range. For semantic coordinate `P`, the physical ring
 coordinate is `P + offset`: Sequential-input read latency/channel delay is negative,
 while Tick-output authored storage latency is positive.
 
+When a callback-local sample input is produced by explicit materialization, the cold
+mapping records every retained source-layout channel needed to reconstruct its target
+channel, plus the source/target layouts and exact selected window. Aliasable input
+channels still resolve directly to their retained source. A callback-only composition is
+classified separately until its multi-source derivation is represented; expired arena
+bytes are never promoted into a migration source.
+
 Callback-local storage is intentionally identified as such rather than presented as a
-migration source. A transition planner encountering that form must trace the derived
-sample operation back to recoverable retained sources or arrange a transition-only
-materialization; it may not read expired root-stack bytes between callbacks. Constants
-require no mutable state migration. Compact carries and rings expose their canonical
-cross-callback `NodeStorage` backing directly.
+migration source. A transition planner may use the recorded retained sources of an
+explicit materialization, but must arrange transition-only storage for unresolved
+composition/callback-only forms; it may not read expired root-stack bytes between
+callbacks. Constants require no mutable state migration. Compact carries and rings expose
+their canonical cross-callback `NodeStorage` backing directly.
 
 Event state is mapped separately because an authored event output may write a
 producer-local callback stream that is subsequently merged into different retained

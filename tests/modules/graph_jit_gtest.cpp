@@ -65,6 +65,7 @@ constexpr char graph_jit_persistent_sample_revision_module_id[] = "iv.test.graph
 constexpr char graph_jit_composed_sample_revision_module_id[] = "iv.test.graph_jit.state_context.composed_sample_revision_module";
 constexpr char graph_jit_tick_fallback_sample_module_id[] = "iv.test.graph_jit.state_context.tick_fallback_sample_module";
 constexpr char graph_jit_stereo_conversion_module_id[] = "iv.test.graph_jit.state_context.stereo_conversion_module";
+constexpr char graph_jit_stereo_history_conversion_module_id[] = "iv.test.graph_jit.state_context.stereo_history_conversion_module";
 constexpr char graph_jit_history_fanout_module_id[] = "iv.test.graph_jit.state_context.history_fanout_module";
 constexpr char graph_jit_persistent_history_module_id[] = "iv.test.graph_jit.state_context.persistent_history_module";
 constexpr char graph_jit_latency_compensation_module_id[] = "iv.test.graph_jit.state_context.latency_compensation_module";
@@ -5160,6 +5161,14 @@ void stereo_conversion_module(iv::GraphBuilder& graph)
     graph.outputs();
 }
 
+void stereo_history_conversion_module(iv::GraphBuilder& graph)
+{
+    auto source = graph.node<"iv.test.graph_jit.state_context.stereo_ramp_source">();
+    auto sink = graph.node<"iv.test.graph_jit.state_context.history_consumer">();
+    sink(source);
+    graph.outputs();
+}
+
 void history_fanout_module(iv::GraphBuilder& graph)
 {
     auto source = graph.node<"iv.test.graph_jit.state_context.history_ramp_source">();
@@ -5374,6 +5383,7 @@ IV_MODULE("iv.test.graph_jit.state_context.persistent_sample_revision_module", p
 IV_MODULE("iv.test.graph_jit.state_context.composed_sample_revision_module", composed_sample_revision_module);
 IV_MODULE("iv.test.graph_jit.state_context.tick_fallback_sample_module", tick_fallback_sample_module);
 IV_MODULE("iv.test.graph_jit.state_context.stereo_conversion_module", stereo_conversion_module);
+IV_MODULE("iv.test.graph_jit.state_context.stereo_history_conversion_module", stereo_history_conversion_module);
 IV_MODULE("iv.test.graph_jit.state_context.history_fanout_module", history_fanout_module);
 IV_MODULE("iv.test.graph_jit.state_context.persistent_history_module", persistent_history_module);
 IV_MODULE("iv.test.graph_jit.state_context.latency_compensation_module", latency_compensation_module);
@@ -6526,6 +6536,8 @@ TEST(GraphJitSharedRuntimeFixture, BuildPackage)
     EXPECT_TRUE(has_module_definition(graph_jit_persistent_sample_revision_module_id));
     EXPECT_TRUE(has_module_definition(graph_jit_composed_sample_revision_module_id));
     EXPECT_TRUE(has_module_definition(graph_jit_stereo_conversion_module_id));
+    EXPECT_TRUE(has_module_definition(
+        graph_jit_stereo_history_conversion_module_id));
     EXPECT_TRUE(has_leaf_definition(
         "iv.test.graph_jit.state_context.history_ramp_source"));
     EXPECT_TRUE(has_leaf_definition(
@@ -6993,18 +7005,27 @@ TEST_F(GraphJitRuntimeFixture, DisconnectedSampleInputUsesDeclaredDefault)
             });
         ASSERT_NE(found, realizations.end());
         EXPECT_EQ(
-            found->storage,
-            iv::graph_jit::SampleRealtimePortStateStorage::immutable_constant);
-        EXPECT_EQ(found->representation_channel, channel);
-        EXPECT_EQ(found->channel_layout.channel_type, iv::ChannelTypeId::stereo);
+            found->retained_access,
+            iv::graph_jit::SampleRealtimePortStateAccess::immutable_constant);
         EXPECT_EQ(
-            found->channel_layout.sample_layout,
+            found->authored_storage.storage,
+            iv::graph_jit::SampleRealtimePortStateStorage::immutable_constant);
+        EXPECT_EQ(found->authored_storage.representation_channel, channel);
+        EXPECT_EQ(
+            found->authored_storage.channel_layout.channel_type,
+            iv::ChannelTypeId::stereo);
+        EXPECT_EQ(
+            found->authored_storage.channel_layout.sample_layout,
             iv::SampleStreamLayout::interleaved);
-        EXPECT_EQ(found->timeline_offset_frames, 0);
-        ASSERT_TRUE(found->constant_value);
-        EXPECT_FLOAT_EQ(static_cast<float>(*found->constant_value), 0.375f);
-        EXPECT_FALSE(found->node_storage_offset);
-        EXPECT_FALSE(found->callback_arena_offset);
+        EXPECT_EQ(found->authored_storage.timeline_offset_frames, 0);
+        ASSERT_TRUE(found->authored_storage.constant_value);
+        EXPECT_FLOAT_EQ(
+            static_cast<float>(*found->authored_storage.constant_value),
+            0.375f);
+        EXPECT_FALSE(found->authored_storage.node_storage_offset);
+        EXPECT_FALSE(found->authored_storage.callback_arena_offset);
+        EXPECT_TRUE(found->retained_sources.empty());
+        EXPECT_FALSE(found->materialization);
     }
 
     auto storage = compiled.compiled_graph->node_layout.create_storage(resources);
@@ -7079,16 +7100,29 @@ TEST_F(GraphJitRuntimeFixture, DisconnectedSampleOutputKeepsDeclaredHistory)
             || requirement.role
                 == iv::graph_jit::RealtimePortStateRole::tick_output_latency);
         EXPECT_EQ(
-            view.storage,
+            view.authored_storage.storage,
+            iv::graph_jit::SampleRealtimePortStateStorage::callback_transient);
+        EXPECT_EQ(
+            view.retained_access,
+            iv::graph_jit::SampleRealtimePortStateAccess::direct);
+        ASSERT_EQ(view.retained_sources.size(), 1u);
+        auto const& retained = view.retained_sources.front();
+        EXPECT_EQ(
+            retained.storage,
             iv::graph_jit::SampleRealtimePortStateStorage::compact_carry);
-        EXPECT_EQ(view.representation_channel, 0u);
-        EXPECT_EQ(view.timeline_offset_frames, 2);
-        EXPECT_EQ(view.storage_frame_count, 5u);
-        EXPECT_EQ(view.storage_size_bytes, 5u * sizeof(iv::Sample));
-        ASSERT_TRUE(view.node_storage_offset);
-        EXPECT_EQ(*view.node_storage_offset, raw->storage_offset);
-        EXPECT_FALSE(view.callback_arena_offset);
-        EXPECT_FALSE(view.constant_value);
+        EXPECT_EQ(view.authored_storage.representation_channel, 0u);
+        EXPECT_EQ(view.authored_storage.timeline_offset_frames, 2);
+        ASSERT_TRUE(view.authored_storage.callback_arena_offset);
+        EXPECT_FALSE(view.authored_storage.node_storage_offset);
+        EXPECT_EQ(retained.representation_channel, 0u);
+        EXPECT_EQ(retained.timeline_offset_frames, 2);
+        EXPECT_EQ(retained.storage_frame_count, 5u);
+        EXPECT_EQ(retained.storage_size_bytes, 5u * sizeof(iv::Sample));
+        ASSERT_TRUE(retained.node_storage_offset);
+        EXPECT_EQ(*retained.node_storage_offset, raw->storage_offset);
+        EXPECT_FALSE(retained.callback_arena_offset);
+        EXPECT_FALSE(retained.constant_value);
+        EXPECT_FALSE(view.materialization);
     }
 
     auto storage = compiled.compiled_graph->node_layout.create_storage(resources);
@@ -7736,6 +7770,73 @@ TEST_F(GraphJitRuntimeFixture, StereoSampleConversion)
     EXPECT_FLOAT_EQ(stereo_to_planar_state->sum_left, 2128.0f);
     EXPECT_FLOAT_EQ(stereo_to_planar_state->sum_right, 34128.0f);
 
+}
+
+TEST_F(GraphJitRuntimeFixture, RetainedStereoToMonoHistoryRecordsItsSources)
+{
+    auto graph = configured_module_graph(
+        *revision, graph_jit_stereo_history_conversion_module_id);
+    ASSERT_TRUE(graph);
+
+    auto analysis = iv::graph_jit::detail::build_connection_analysis_plan(
+        *graph, 64);
+    ASSERT_TRUE(analysis.has_value())
+        << (analysis ? std::string{} : analysis.error());
+    ASSERT_EQ(analysis->sample_producer_groups.size(), 1u);
+    ASSERT_TRUE(analysis->sample_producer_groups.front().storage_plan);
+    EXPECT_EQ(
+        analysis->sample_producer_groups.front().storage_plan->kind,
+        iv::RealtimeBufferStorageKind::stack_with_persistent_carry);
+
+    auto compiled = compile_graph(graph, 229);
+    ASSERT_TRUE(compiled.succeeded())
+        << (compiled.diagnostics.empty()
+                ? ""
+                : compiled.diagnostics.front().message);
+    auto const& requirements = compiled.compiled_graph
+        ->realtime_port_state_requirements.states;
+    auto const& realizations = compiled.compiled_graph
+        ->realtime_port_state_realizations.sample_states;
+    ASSERT_EQ(requirements.size(), 1u);
+    ASSERT_EQ(realizations.size(), 1u);
+    auto const& realization = realizations.front();
+    ASSERT_LT(realization.requirement_index, requirements.size());
+    EXPECT_EQ(
+        requirements[realization.requirement_index].role,
+        iv::graph_jit::RealtimePortStateRole::sequential_input_history);
+    EXPECT_EQ(
+        requirements[realization.requirement_index].extent_samples,
+        5u);
+    EXPECT_EQ(
+        realization.authored_storage.storage,
+        iv::graph_jit::SampleRealtimePortStateStorage::callback_transient);
+    EXPECT_EQ(
+        realization.authored_storage.channel_layout.channel_type,
+        iv::ChannelTypeId::mono);
+    EXPECT_EQ(
+        realization.retained_access,
+        iv::graph_jit::SampleRealtimePortStateAccess::materialized);
+    ASSERT_TRUE(realization.materialization);
+    EXPECT_EQ(
+        realization.materialization->source_layout.channel_type,
+        iv::ChannelTypeId::stereo);
+    EXPECT_EQ(
+        realization.materialization->target_layout.channel_type,
+        iv::ChannelTypeId::mono);
+    EXPECT_EQ(realization.materialization->retained_before, 5u);
+    EXPECT_EQ(realization.materialization->latest_read_latency, 0u);
+    ASSERT_EQ(realization.retained_sources.size(), 2u);
+    for (std::size_t channel = 0; channel < 2; ++channel) {
+        auto const& source = realization.retained_sources[channel];
+        EXPECT_EQ(
+            source.storage,
+            iv::graph_jit::SampleRealtimePortStateStorage::compact_carry);
+        EXPECT_EQ(source.channel_layout.channel_type, iv::ChannelTypeId::stereo);
+        EXPECT_EQ(source.representation_channel, channel);
+        EXPECT_EQ(source.timeline_offset_frames, 0);
+        ASSERT_TRUE(source.node_storage_offset);
+        EXPECT_FALSE(source.callback_arena_offset);
+    }
 }
 
 TEST_F(GraphJitRuntimeFixture, SampleOutputUpdateRevisesUnpublishedFrames)
@@ -12860,18 +12961,30 @@ TEST_F(GraphJitRuntimeFixture, PersistentSampleHistory)
         requirements[realizations[0].requirement_index].role,
         iv::graph_jit::RealtimePortStateRole::sequential_input_history);
     EXPECT_EQ(
-        realizations[0].storage,
+        realizations[0].authored_storage.storage,
         iv::graph_jit::SampleRealtimePortStateStorage::ring);
-    EXPECT_EQ(realizations[0].working_frame_capacity, 8192u);
-    EXPECT_EQ(realizations[0].storage_frame_count, 8192u);
     EXPECT_EQ(
-        realizations[0].storage_size_bytes,
+        realizations[0].retained_access,
+        iv::graph_jit::SampleRealtimePortStateAccess::direct);
+    ASSERT_EQ(realizations[0].retained_sources.size(), 1u);
+    auto const& retained_ring = realizations[0].retained_sources.front();
+    EXPECT_EQ(
+        retained_ring.storage,
+        iv::graph_jit::SampleRealtimePortStateStorage::ring);
+    EXPECT_EQ(
+        realizations[0].authored_storage.working_frame_capacity,
+        8192u);
+    EXPECT_EQ(retained_ring.working_frame_capacity, 8192u);
+    EXPECT_EQ(retained_ring.storage_frame_count, 8192u);
+    EXPECT_EQ(
+        retained_ring.storage_size_bytes,
         8192u * sizeof(iv::Sample));
-    ASSERT_TRUE(realizations[0].node_storage_offset);
+    ASSERT_TRUE(retained_ring.node_storage_offset);
     EXPECT_EQ(
-        *realizations[0].node_storage_offset,
+        *retained_ring.node_storage_offset,
         persistent_ring_region->storage_offset);
-    EXPECT_FALSE(realizations[0].callback_arena_offset);
+    EXPECT_FALSE(retained_ring.callback_arena_offset);
+    EXPECT_FALSE(realizations[0].materialization);
 
     auto persistent_history_storage =
         persistent_history.compiled_graph->node_layout.create_storage(resources);

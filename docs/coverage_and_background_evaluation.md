@@ -2535,15 +2535,16 @@ recording merely because that planning metadata exists.
    metadata; generated realtime execution pays no lookup or disposition cost for it.
 
    Sample-state inventory entries are now mapped after final `NodeLayout` placement to
-   their actual per-channel realization: immutable constant, callback-local arena view,
-   compact cross-callback carry, or persistent ring. The cold mapping retains the signed
-   semantic-to-storage timeline offset (`P + offset`), working capacity,
+   separate callback-facing and cross-callback views: immutable constant, callback-local
+   arena view, compact cross-callback carry, or persistent ring. The cold mapping retains
+   the signed semantic-to-storage timeline offset (`P + offset`), working capacity,
    stored-frame count, compact-carry future extent, and finalized `NodeStorage` or
-   callback-arena-relative byte location. These are
-   generation-local realization facts and are never part of semantic identity or the
-   realtime node API. Callback-local views are explicitly non-migratable after the root
-   returns; later transition planning must trace their derivation to retained sources or
-   introduce transition-only materialization.
+   callback-arena-relative byte location. For an explicitly materialized input it also
+   records every retained source-layout channel and the exact source/target window needed
+   to reconstruct the callback channel. These are generation-local realization facts and
+   are never part of semantic identity or the realtime node API. Unresolved composition
+   and callback-only views remain explicitly non-migratable after the root returns and
+   require transition-only storage rather than reads from expired arena bytes.
 
    Event-state inventory entries are now also mapped after finalized placement. The cold
    mapping records the callback representation separately from the cross-callback
@@ -2557,12 +2558,12 @@ recording merely because that planning metadata exists.
    type conversion: a same-type retained fan-in may have a zero-step conversion plan while
    still materializing the selected invocation window for its consumer.
 
-   The next migration substep resolves those truthful non-recoverable realizations. It
-   must trace callback-local sample/event derivations to retained semantic sources where
-   possible and otherwise plan private transition retention. It must likewise give each
-   surviving producer private identity when the steady event fan-in erased that identity.
-   Only then can old/new stable port-state identities be compared and their overlapping
-   temporal ranges assigned direct migration or a finite transition realization.
+   The next migration substep resolves the remaining truthful non-recoverable
+   realizations: multi-source sample compositions, callback-only event streams, and event
+   fan-in that erased producer identity. It must trace derivations where possible and
+   otherwise plan private transition retention. Only then can old/new stable port-state
+   identities be compared and their overlapping temporal ranges assigned direct migration
+   or a finite transition realization.
 
    Before optimization, define port history/latency exactly as if each surviving
    concrete node privately owned that state. Carry stable user-instance/virtual-member/
