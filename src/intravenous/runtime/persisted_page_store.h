@@ -72,6 +72,13 @@ struct PersistedEventPage {
     std::vector<TimedEvent> events{};
 };
 
+namespace persisted_page_store_detail {
+
+struct SampleOutputNode;
+struct EventOutputNode;
+
+} // namespace persisted_page_store_detail
+
 enum class PersistedPagePublishResult : std::uint8_t {
     published,
     stale_base,
@@ -91,22 +98,17 @@ public:
 
         PersistedPageSnapshotVersion version_{};
         std::size_t page_width_ = 0;
-        std::vector<std::shared_ptr<PersistedSamplePage const>> sample_pages_{};
-        std::vector<std::shared_ptr<PersistedEventPage const>> event_pages_{};
-        struct SampleOutputMetadata {
-            PersistedOutputId output{};
-            Coverage coverage{};
-            ChannelLayout layout{};
-        };
-        struct EventOutputMetadata {
-            PersistedOutputId output{};
-            Coverage coverage{};
-            EventTypeId type = EventTypeId::empty;
-        };
-        std::vector<SampleOutputMetadata> sample_outputs_{};
-        std::vector<EventOutputMetadata> event_outputs_{};
-
-        void rebuild_output_metadata();
+        // Both roots are immutable path-copy trees. A successor initially
+        // shares them wholesale and replaces only paths for outputs/pages it
+        // mutates; page payloads below unaffected paths remain shared.
+        std::shared_ptr<
+            persisted_page_store_detail::SampleOutputNode const>
+            sample_outputs_{};
+        std::shared_ptr<
+            persisted_page_store_detail::EventOutputNode const>
+            event_outputs_{};
+        std::size_t sample_page_count_ = 0;
+        std::size_t event_page_count_ = 0;
 
     public:
         [[nodiscard]] PersistedPageSnapshotVersion version() const noexcept
@@ -121,12 +123,12 @@ public:
 
         [[nodiscard]] std::size_t sample_page_count() const noexcept
         {
-            return sample_pages_.size();
+            return sample_page_count_;
         }
 
         [[nodiscard]] std::size_t event_page_count() const noexcept
         {
-            return event_pages_.size();
+            return event_page_count_;
         }
 
         [[nodiscard]] PersistedSamplePage const* find_sample_page(

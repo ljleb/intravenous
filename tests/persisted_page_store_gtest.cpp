@@ -1139,6 +1139,91 @@ TEST(PersistedPageStore, StructurallySharesUnchangedPagesAcrossRoots)
     EXPECT_EQ(old->find_event_page(events, 0), nullptr);
 }
 
+TEST(PersistedPageStore, PathCopyIndexFindsAndErasesManyPagesAndOutputs)
+{
+    iv::PersistedPageStore store;
+    auto reader = store.register_reader();
+    auto const primary = local_output(iv::PortKind::sample, 100);
+    auto seed = store.begin_candidate(8, 4);
+
+    for (std::uint64_t page_index = 0; page_index < 64; ++page_index) {
+        auto page = sample_page(primary, static_cast<float>(page_index));
+        page.page_index = page_index;
+        page.domain = iv::Coverage{{{
+            static_cast<iv::SampleIndex>(page_index * 4),
+            static_cast<iv::SampleIndex>((page_index + 1) * 4),
+        }}};
+        seed.put(std::move(page));
+    }
+    for (iv::graph_jit::BackgroundPortIndex port = 200; port < 232; ++port) {
+        seed.put(sample_page(
+            local_output(iv::PortKind::sample, port),
+            static_cast<float>(port)));
+    }
+    ASSERT_EQ(
+        store.publish(std::move(seed)),
+        iv::PersistedPagePublishResult::published);
+
+    auto seeded = reader.pin();
+    EXPECT_EQ(seeded->sample_page_count(), 96u);
+    for (std::uint64_t page_index = 0; page_index < 64; ++page_index) {
+        auto const* page = seeded->find_sample_page(primary, page_index);
+        ASSERT_NE(page, nullptr);
+        EXPECT_FLOAT_EQ(
+            page->values.front().value,
+            static_cast<float>(page_index));
+    }
+    for (iv::graph_jit::BackgroundPortIndex port = 200; port < 232; ++port) {
+        EXPECT_NE(seeded->find_sample_page(
+            local_output(iv::PortKind::sample, port), 0), nullptr);
+    }
+    seeded = {};
+
+    auto successor = store.begin_candidate(8, 4);
+    successor.erase_page(primary, 31);
+    successor.erase_output(local_output(iv::PortKind::sample, 215));
+    ASSERT_EQ(
+        store.publish(std::move(successor)),
+        iv::PersistedPagePublishResult::published);
+
+    auto current = reader.pin();
+    EXPECT_EQ(current->sample_page_count(), 94u);
+    EXPECT_EQ(current->find_sample_page(primary, 31), nullptr);
+    EXPECT_NE(current->find_sample_page(primary, 30), nullptr);
+    EXPECT_NE(current->find_sample_page(primary, 32), nullptr);
+    EXPECT_EQ(current->find_sample_page(
+        local_output(iv::PortKind::sample, 215), 0), nullptr);
+    auto const* coverage = current->find_sample_coverage(
+        primary, iv::mono_planar_channel_layout);
+    ASSERT_NE(coverage, nullptr);
+    EXPECT_EQ(*coverage, (iv::Coverage{{{0, 124}, {128, 256}}}));
+}
+
+TEST(PersistedPageStore, CandidateMetadataChangesWithItsPathCopiedPages)
+{
+    iv::PersistedPageStore store;
+    auto const output = stable_output(iv::PortKind::event, "events");
+    auto candidate = store.begin_candidate(9, 4);
+    auto first = empty_event_page(output);
+    first.domain = iv::Coverage{{{1, 3}}};
+    candidate.put(std::move(first));
+    auto second = empty_event_page(output);
+    second.page_index = 1;
+    second.domain = iv::Coverage{{{5, 8}}};
+    candidate.put(std::move(second));
+
+    auto const* coverage = candidate.working_snapshot().find_event_coverage(
+        output, iv::EventTypeId::trigger);
+    ASSERT_NE(coverage, nullptr);
+    EXPECT_EQ(*coverage, (iv::Coverage{{{1, 3}, {5, 8}}}));
+
+    candidate.erase_page(output, 0);
+    coverage = candidate.working_snapshot().find_event_coverage(
+        output, iv::EventTypeId::trigger);
+    ASSERT_NE(coverage, nullptr);
+    EXPECT_EQ(*coverage, (iv::Coverage{{{5, 8}}}));
+}
+
 TEST(PersistedPageStore, ValidatesTypedPayloadsAgainstTheCanonicalPageDomain)
 {
     iv::PersistedPageStore store;

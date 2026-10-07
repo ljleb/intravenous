@@ -4,25 +4,353 @@
 #include <cassert>
 #include <limits>
 #include <stdexcept>
+#include <tuple>
 #include <utility>
 
 namespace iv {
+namespace persisted_page_store_detail {
+
+template<typename Page>
+struct PageNode {
+    std::shared_ptr<Page const> page{};
+    std::shared_ptr<PageNode const> left{};
+    std::shared_ptr<PageNode const> right{};
+    std::uint32_t height = 1;
+};
+
+struct SampleOutputState {
+    PersistedOutputId output{};
+    Coverage coverage{};
+    ChannelLayout layout{};
+    std::shared_ptr<PageNode<PersistedSamplePage> const> pages{};
+    std::size_t page_count = 0;
+};
+
+struct EventOutputState {
+    PersistedOutputId output{};
+    Coverage coverage{};
+    EventTypeId type = EventTypeId::empty;
+    std::shared_ptr<PageNode<PersistedEventPage> const> pages{};
+    std::size_t page_count = 0;
+};
+
+struct SampleOutputNode {
+    std::shared_ptr<SampleOutputState const> state{};
+    std::shared_ptr<SampleOutputNode const> left{};
+    std::shared_ptr<SampleOutputNode const> right{};
+    std::uint32_t height = 1;
+};
+
+struct EventOutputNode {
+    std::shared_ptr<EventOutputState const> state{};
+    std::shared_ptr<EventOutputNode const> left{};
+    std::shared_ptr<EventOutputNode const> right{};
+    std::uint32_t height = 1;
+};
+
+} // namespace persisted_page_store_detail
+
 namespace {
 
-[[nodiscard]] bool same_page(
-    PersistedOutputId const& output,
-    std::uint64_t page_index,
-    PersistedSamplePage const& page) noexcept
+using persisted_page_store_detail::EventOutputNode;
+using persisted_page_store_detail::EventOutputState;
+using persisted_page_store_detail::PageNode;
+using persisted_page_store_detail::SampleOutputNode;
+using persisted_page_store_detail::SampleOutputState;
+
+[[nodiscard]] int compare_output(
+    PersistedOutputId const& left,
+    PersistedOutputId const& right) noexcept
 {
-    return page.output == output && page.page_index == page_index;
+    if (left.index() != right.index()) {
+        return left.index() < right.index() ? -1 : 1;
+    }
+    if (auto const* stable = std::get_if<graph_jit::StableOutputPortId>(&left)) {
+        auto const& other = std::get<graph_jit::StableOutputPortId>(right);
+        auto const left_key = std::tie(
+            stable->node.graph,
+            stable->node.virtual_node,
+            stable->node.direct_member,
+            stable->kind,
+            stable->port_name,
+            stable->port_index);
+        auto const right_key = std::tie(
+            other.node.graph,
+            other.node.virtual_node,
+            other.node.direct_member,
+            other.kind,
+            other.port_name,
+            other.port_index);
+        if (left_key < right_key) return -1;
+        if (right_key < left_key) return 1;
+        return 0;
+    }
+    auto const& local = std::get<GenerationLocalPersistedOutputId>(left);
+    auto const& other = std::get<GenerationLocalPersistedOutputId>(right);
+    auto const left_key = std::tie(local.generation, local.port, local.kind);
+    auto const right_key = std::tie(other.generation, other.port, other.kind);
+    if (left_key < right_key) return -1;
+    if (right_key < left_key) return 1;
+    return 0;
 }
 
-[[nodiscard]] bool same_page(
-    PersistedOutputId const& output,
-    std::uint64_t page_index,
-    PersistedEventPage const& page) noexcept
+template<typename Node>
+[[nodiscard]] std::uint32_t node_height(
+    std::shared_ptr<Node const> const& node) noexcept
 {
-    return page.output == output && page.page_index == page_index;
+    return node ? node->height : 0;
+}
+
+template<typename Page>
+[[nodiscard]] std::shared_ptr<PageNode<Page> const> make_page_node(
+    std::shared_ptr<Page const> page,
+    std::shared_ptr<PageNode<Page> const> left = {},
+    std::shared_ptr<PageNode<Page> const> right = {})
+{
+    auto const height = 1 + std::max(node_height(left), node_height(right));
+    return std::make_shared<PageNode<Page> const>(PageNode<Page>{
+        .page = std::move(page),
+        .left = std::move(left),
+        .right = std::move(right),
+        .height = height,
+    });
+}
+
+template<typename Node, typename State>
+[[nodiscard]] std::shared_ptr<Node const> make_output_node(
+    std::shared_ptr<State const> state,
+    std::shared_ptr<Node const> left = {},
+    std::shared_ptr<Node const> right = {})
+{
+    auto const height = 1 + std::max(node_height(left), node_height(right));
+    return std::make_shared<Node const>(Node{
+        .state = std::move(state),
+        .left = std::move(left),
+        .right = std::move(right),
+        .height = height,
+    });
+}
+
+template<typename Page>
+[[nodiscard]] std::shared_ptr<PageNode<Page> const> balance_page_node(
+    std::shared_ptr<PageNode<Page> const> node)
+{
+    auto const balance = static_cast<int>(node_height(node->left))
+        - static_cast<int>(node_height(node->right));
+    if (balance > 1) {
+        auto left = node->left;
+        if (node_height(left->left) < node_height(left->right)) {
+            auto const pivot = left->right;
+            left = make_page_node<Page>(
+                left->page,
+                left->left,
+                pivot->left);
+            left = make_page_node<Page>(
+                pivot->page,
+                std::move(left),
+                pivot->right);
+        }
+        auto const new_right = make_page_node<Page>(
+            node->page, left->right, node->right);
+        return make_page_node<Page>(
+            left->page, left->left, std::move(new_right));
+    }
+    if (balance < -1) {
+        auto right = node->right;
+        if (node_height(right->right) < node_height(right->left)) {
+            auto const pivot = right->left;
+            right = make_page_node<Page>(
+                right->page,
+                pivot->right,
+                right->right);
+            right = make_page_node<Page>(
+                pivot->page,
+                pivot->left,
+                std::move(right));
+        }
+        auto const new_left = make_page_node<Page>(
+            node->page, node->left, right->left);
+        return make_page_node<Page>(
+            right->page, std::move(new_left), right->right);
+    }
+    return node;
+}
+
+template<typename Node, typename State>
+[[nodiscard]] std::shared_ptr<Node const> balance_output_node(
+    std::shared_ptr<Node const> node)
+{
+    auto const balance = static_cast<int>(node_height(node->left))
+        - static_cast<int>(node_height(node->right));
+    if (balance > 1) {
+        auto left = node->left;
+        if (node_height(left->left) < node_height(left->right)) {
+            auto const pivot = left->right;
+            left = make_output_node<Node, State>(
+                left->state,
+                left->left,
+                pivot->left);
+            left = make_output_node<Node, State>(
+                pivot->state,
+                std::move(left),
+                pivot->right);
+        }
+        auto const new_right = make_output_node<Node, State>(
+            node->state, left->right, node->right);
+        return make_output_node<Node, State>(
+            left->state, left->left, std::move(new_right));
+    }
+    if (balance < -1) {
+        auto right = node->right;
+        if (node_height(right->right) < node_height(right->left)) {
+            auto const pivot = right->left;
+            right = make_output_node<Node, State>(
+                right->state,
+                pivot->right,
+                right->right);
+            right = make_output_node<Node, State>(
+                pivot->state,
+                pivot->left,
+                std::move(right));
+        }
+        auto const new_left = make_output_node<Node, State>(
+            node->state, node->left, right->left);
+        return make_output_node<Node, State>(
+            right->state, std::move(new_left), right->right);
+    }
+    return node;
+}
+
+template<typename Page>
+[[nodiscard]] std::shared_ptr<PageNode<Page> const> put_page(
+    std::shared_ptr<PageNode<Page> const> const& root,
+    std::shared_ptr<Page const> page)
+{
+    if (!root) return make_page_node<Page>(std::move(page));
+    if (page->page_index < root->page->page_index) {
+        return balance_page_node<Page>(make_page_node<Page>(
+            root->page,
+            put_page<Page>(root->left, std::move(page)),
+            root->right));
+    }
+    if (root->page->page_index < page->page_index) {
+        return balance_page_node<Page>(make_page_node<Page>(
+            root->page,
+            root->left,
+            put_page<Page>(root->right, std::move(page))));
+    }
+    return make_page_node<Page>(std::move(page), root->left, root->right);
+}
+
+template<typename Page>
+[[nodiscard]] Page const* find_page(
+    std::shared_ptr<PageNode<Page> const> const& root,
+    std::uint64_t page_index) noexcept
+{
+    auto node = root.get();
+    while (node) {
+        if (page_index < node->page->page_index) node = node->left.get();
+        else if (node->page->page_index < page_index) node = node->right.get();
+        else return node->page.get();
+    }
+    return nullptr;
+}
+
+template<typename Page>
+[[nodiscard]] std::shared_ptr<PageNode<Page> const> erase_page_node(
+    std::shared_ptr<PageNode<Page> const> const& root,
+    std::uint64_t page_index)
+{
+    if (!root) return {};
+    if (page_index < root->page->page_index) {
+        return balance_page_node<Page>(make_page_node<Page>(
+            root->page,
+            erase_page_node<Page>(root->left, page_index),
+            root->right));
+    }
+    if (root->page->page_index < page_index) {
+        return balance_page_node<Page>(make_page_node<Page>(
+            root->page,
+            root->left,
+            erase_page_node<Page>(root->right, page_index)));
+    }
+    if (!root->left) return root->right;
+    if (!root->right) return root->left;
+    auto successor = root->right;
+    while (successor->left) successor = successor->left;
+    return balance_page_node<Page>(make_page_node<Page>(
+        successor->page,
+        root->left,
+        erase_page_node<Page>(
+            root->right, successor->page->page_index)));
+}
+
+template<typename Node, typename State>
+[[nodiscard]] State const* find_output(
+    std::shared_ptr<Node const> const& root,
+    PersistedOutputId const& output) noexcept
+{
+    auto node = root.get();
+    while (node) {
+        auto const order = compare_output(output, node->state->output);
+        if (order < 0) node = node->left.get();
+        else if (order > 0) node = node->right.get();
+        else return node->state.get();
+    }
+    return nullptr;
+}
+
+template<typename Node, typename State>
+[[nodiscard]] std::shared_ptr<Node const> put_output(
+    std::shared_ptr<Node const> const& root,
+    std::shared_ptr<State const> state)
+{
+    if (!root) return make_output_node<Node, State>(std::move(state));
+    auto const order = compare_output(state->output, root->state->output);
+    if (order < 0) {
+        return balance_output_node<Node, State>(make_output_node<Node, State>(
+            root->state,
+            put_output<Node, State>(root->left, std::move(state)),
+            root->right));
+    }
+    if (order > 0) {
+        return balance_output_node<Node, State>(make_output_node<Node, State>(
+            root->state,
+            root->left,
+            put_output<Node, State>(root->right, std::move(state))));
+    }
+    return make_output_node<Node, State>(
+        std::move(state), root->left, root->right);
+}
+
+template<typename Node, typename State>
+[[nodiscard]] std::shared_ptr<Node const> erase_output_node(
+    std::shared_ptr<Node const> const& root,
+    PersistedOutputId const& output)
+{
+    if (!root) return {};
+    auto const order = compare_output(output, root->state->output);
+    if (order < 0) {
+        return balance_output_node<Node, State>(make_output_node<Node, State>(
+            root->state,
+            erase_output_node<Node, State>(root->left, output),
+            root->right));
+    }
+    if (order > 0) {
+        return balance_output_node<Node, State>(make_output_node<Node, State>(
+            root->state,
+            root->left,
+            erase_output_node<Node, State>(root->right, output)));
+    }
+    if (!root->left) return root->right;
+    if (!root->right) return root->left;
+    auto successor = root->right;
+    while (successor->left) successor = successor->left;
+    return balance_output_node<Node, State>(make_output_node<Node, State>(
+        successor->state,
+        root->left,
+        erase_output_node<Node, State>(
+            root->right, successor->state->output)));
 }
 
 [[nodiscard]] IndexRegion page_interval(
@@ -178,86 +506,40 @@ PersistedSamplePage const* PersistedPageStore::Snapshot::find_sample_page(
     PersistedOutputId const& output,
     std::uint64_t page_index) const noexcept
 {
-    auto const found = std::ranges::find_if(sample_pages_, [&](auto const& page) {
-        return same_page(output, page_index, *page);
-    });
-    return found == sample_pages_.end() ? nullptr : found->get();
+    auto const* selected = find_output<SampleOutputNode, SampleOutputState>(
+        sample_outputs_, output);
+    return selected ? find_page(selected->pages, page_index) : nullptr;
 }
 
 PersistedEventPage const* PersistedPageStore::Snapshot::find_event_page(
     PersistedOutputId const& output,
     std::uint64_t page_index) const noexcept
 {
-    auto const found = std::ranges::find_if(event_pages_, [&](auto const& page) {
-        return same_page(output, page_index, *page);
-    });
-    return found == event_pages_.end() ? nullptr : found->get();
+    auto const* selected = find_output<EventOutputNode, EventOutputState>(
+        event_outputs_, output);
+    return selected ? find_page(selected->pages, page_index) : nullptr;
 }
 
 Coverage const* PersistedPageStore::Snapshot::find_sample_coverage(
     PersistedOutputId const& output,
     ChannelLayout layout) const noexcept
 {
-    auto const found = std::ranges::find_if(
-        sample_outputs_, [&](auto const& metadata) {
-            return metadata.output == output && metadata.layout == layout;
-        });
-    return found == sample_outputs_.end() ? nullptr : &found->coverage;
+    auto const* selected = find_output<SampleOutputNode, SampleOutputState>(
+        sample_outputs_, output);
+    return selected && selected->layout == layout
+        ? &selected->coverage
+        : nullptr;
 }
 
 Coverage const* PersistedPageStore::Snapshot::find_event_coverage(
     PersistedOutputId const& output,
     EventTypeId type) const noexcept
 {
-    auto const found = std::ranges::find_if(
-        event_outputs_, [&](auto const& metadata) {
-            return metadata.output == output && metadata.type == type;
-        });
-    return found == event_outputs_.end() ? nullptr : &found->coverage;
-}
-
-void PersistedPageStore::Snapshot::rebuild_output_metadata()
-{
-    sample_outputs_.clear();
-    event_outputs_.clear();
-    for (auto const& page : sample_pages_) {
-        auto found = std::ranges::find_if(
-            sample_outputs_, [&](auto const& metadata) {
-                return metadata.output == page->output;
-            });
-        if (found == sample_outputs_.end()) {
-            sample_outputs_.push_back(SampleOutputMetadata{
-                .output = page->output,
-                .coverage = page->domain,
-                .layout = page->layout,
-            });
-        } else {
-            if (found->layout != page->layout) {
-                throw std::invalid_argument(
-                    "persisted sample output pages disagree on channel layout");
-            }
-            found->coverage.include(page->domain);
-        }
-    }
-    for (auto const& page : event_pages_) {
-        auto found = std::ranges::find_if(
-            event_outputs_, [&](auto const& metadata) {
-                return metadata.output == page->output;
-            });
-        if (found == event_outputs_.end()) {
-            event_outputs_.push_back(EventOutputMetadata{
-                .output = page->output,
-                .coverage = page->domain,
-                .type = page->type,
-            });
-        } else {
-            if (found->type != page->type) {
-                throw std::invalid_argument(
-                    "persisted event output pages disagree on event type");
-            }
-            found->coverage.include(page->domain);
-        }
-    }
+    auto const* selected = find_output<EventOutputNode, EventOutputState>(
+        event_outputs_, output);
+    return selected && selected->type == type
+        ? &selected->coverage
+        : nullptr;
 }
 
 PersistedPageStore::Candidate::Candidate(
@@ -293,21 +575,34 @@ void PersistedPageStore::Candidate::put(PersistedSamplePage page)
     if (!successor_) throw std::logic_error("persisted page candidate is empty");
     validate_page(page, successor_->page_width_);
     auto replacement = std::make_shared<PersistedSamplePage const>(std::move(page));
-    auto found = std::ranges::find_if(
-        successor_->sample_pages_, [&](auto const& existing) {
-            return same_page(
-                replacement->output, replacement->page_index, *existing);
-        });
-    if (found == successor_->sample_pages_.end()) {
-        auto const insertion = std::ranges::upper_bound(
-            successor_->sample_pages_,
-            replacement->page_index,
-            {},
-            [](auto const& existing) { return existing->page_index; });
-        successor_->sample_pages_.insert(insertion, std::move(replacement));
-    } else {
-        *found = std::move(replacement);
+    auto const* current = find_output<SampleOutputNode, SampleOutputState>(
+        successor_->sample_outputs_, replacement->output);
+    if (current && current->layout != replacement->layout) {
+        throw std::invalid_argument(
+            "persisted sample output pages disagree on channel layout");
     }
+    auto const* previous = current
+        ? find_page(current->pages, replacement->page_index)
+        : nullptr;
+    Coverage coverage = current ? current->coverage : Coverage{};
+    if (previous) coverage.exclude(previous->domain);
+    coverage.include(replacement->domain);
+    auto state = std::make_shared<SampleOutputState const>(SampleOutputState{
+        .output = replacement->output,
+        .coverage = std::move(coverage),
+        .layout = replacement->layout,
+        .pages = put_page(
+            current
+                ? current->pages
+                : std::shared_ptr<PageNode<PersistedSamplePage> const>{},
+            std::move(replacement)),
+        .page_count = (current ? current->page_count : 0)
+            + (previous ? 0 : 1),
+    });
+    successor_->sample_outputs_ = put_output<
+        SampleOutputNode, SampleOutputState>(
+            successor_->sample_outputs_, std::move(state));
+    if (!previous) ++successor_->sample_page_count_;
 }
 
 void PersistedPageStore::Candidate::put(PersistedEventPage page)
@@ -315,21 +610,33 @@ void PersistedPageStore::Candidate::put(PersistedEventPage page)
     if (!successor_) throw std::logic_error("persisted page candidate is empty");
     validate_page(page, successor_->page_width_);
     auto replacement = std::make_shared<PersistedEventPage const>(std::move(page));
-    auto found = std::ranges::find_if(
-        successor_->event_pages_, [&](auto const& existing) {
-            return same_page(
-                replacement->output, replacement->page_index, *existing);
-        });
-    if (found == successor_->event_pages_.end()) {
-        auto const insertion = std::ranges::upper_bound(
-            successor_->event_pages_,
-            replacement->page_index,
-            {},
-            [](auto const& existing) { return existing->page_index; });
-        successor_->event_pages_.insert(insertion, std::move(replacement));
-    } else {
-        *found = std::move(replacement);
+    auto const* current = find_output<EventOutputNode, EventOutputState>(
+        successor_->event_outputs_, replacement->output);
+    if (current && current->type != replacement->type) {
+        throw std::invalid_argument(
+            "persisted event output pages disagree on event type");
     }
+    auto const* previous = current
+        ? find_page(current->pages, replacement->page_index)
+        : nullptr;
+    Coverage coverage = current ? current->coverage : Coverage{};
+    if (previous) coverage.exclude(previous->domain);
+    coverage.include(replacement->domain);
+    auto state = std::make_shared<EventOutputState const>(EventOutputState{
+        .output = replacement->output,
+        .coverage = std::move(coverage),
+        .type = replacement->type,
+        .pages = put_page(
+            current
+                ? current->pages
+                : std::shared_ptr<PageNode<PersistedEventPage> const>{},
+            std::move(replacement)),
+        .page_count = (current ? current->page_count : 0)
+            + (previous ? 0 : 1),
+    });
+    successor_->event_outputs_ = put_output<EventOutputNode, EventOutputState>(
+        successor_->event_outputs_, std::move(state));
+    if (!previous) ++successor_->event_page_count_;
 }
 
 void PersistedPageStore::Candidate::erase_page(
@@ -338,13 +645,57 @@ void PersistedPageStore::Candidate::erase_page(
 {
     if (!successor_) throw std::logic_error("persisted page candidate is empty");
     if (persisted_output_kind(output) == PortKind::sample) {
-        std::erase_if(successor_->sample_pages_, [&](auto const& page) {
-            return same_page(output, page_index, *page);
-        });
+        auto const* current = find_output<SampleOutputNode, SampleOutputState>(
+            successor_->sample_outputs_, output);
+        auto const* previous = current
+            ? find_page(current->pages, page_index)
+            : nullptr;
+        if (!previous) return;
+        --successor_->sample_page_count_;
+        if (current->page_count == 1) {
+            successor_->sample_outputs_ = erase_output_node<
+                SampleOutputNode, SampleOutputState>(
+                    successor_->sample_outputs_, output);
+            return;
+        }
+        auto coverage = current->coverage;
+        coverage.exclude(previous->domain);
+        auto state = std::make_shared<SampleOutputState const>(
+            SampleOutputState{
+                .output = current->output,
+                .coverage = std::move(coverage),
+                .layout = current->layout,
+                .pages = erase_page_node(current->pages, page_index),
+                .page_count = current->page_count - 1,
+            });
+        successor_->sample_outputs_ = put_output<
+            SampleOutputNode, SampleOutputState>(
+                successor_->sample_outputs_, std::move(state));
     } else {
-        std::erase_if(successor_->event_pages_, [&](auto const& page) {
-            return same_page(output, page_index, *page);
+        auto const* current = find_output<EventOutputNode, EventOutputState>(
+            successor_->event_outputs_, output);
+        auto const* previous = current
+            ? find_page(current->pages, page_index)
+            : nullptr;
+        if (!previous) return;
+        --successor_->event_page_count_;
+        if (current->page_count == 1) {
+            successor_->event_outputs_ = erase_output_node<
+                EventOutputNode, EventOutputState>(
+                    successor_->event_outputs_, output);
+            return;
+        }
+        auto coverage = current->coverage;
+        coverage.exclude(previous->domain);
+        auto state = std::make_shared<EventOutputState const>(EventOutputState{
+            .output = current->output,
+            .coverage = std::move(coverage),
+            .type = current->type,
+            .pages = erase_page_node(current->pages, page_index),
+            .page_count = current->page_count - 1,
         });
+        successor_->event_outputs_ = put_output<EventOutputNode, EventOutputState>(
+            successor_->event_outputs_, std::move(state));
     }
 }
 
@@ -353,13 +704,21 @@ void PersistedPageStore::Candidate::erase_output(
 {
     if (!successor_) throw std::logic_error("persisted page candidate is empty");
     if (persisted_output_kind(output) == PortKind::sample) {
-        std::erase_if(successor_->sample_pages_, [&](auto const& page) {
-            return page->output == output;
-        });
+        auto const* current = find_output<SampleOutputNode, SampleOutputState>(
+            successor_->sample_outputs_, output);
+        if (!current) return;
+        successor_->sample_page_count_ -= current->page_count;
+        successor_->sample_outputs_ = erase_output_node<
+            SampleOutputNode, SampleOutputState>(
+                successor_->sample_outputs_, output);
     } else {
-        std::erase_if(successor_->event_pages_, [&](auto const& page) {
-            return page->output == output;
-        });
+        auto const* current = find_output<EventOutputNode, EventOutputState>(
+            successor_->event_outputs_, output);
+        if (!current) return;
+        successor_->event_page_count_ -= current->page_count;
+        successor_->event_outputs_ = erase_output_node<
+            EventOutputNode, EventOutputState>(
+                successor_->event_outputs_, output);
     }
 }
 
@@ -478,7 +837,7 @@ PersistedPageStore::Candidate PersistedPageStore::begin_candidate(
         throw std::overflow_error("persisted page version is exhausted");
     }
     if (base->page_width_ != 0 && base->page_width_ != page_width
-        && (!base->sample_pages_.empty() || !base->event_pages_.empty())) {
+        && (base->sample_page_count_ != 0 || base->event_page_count_ != 0)) {
         throw std::invalid_argument(
             "persisted pages must be explicitly repaged before changing page width");
     }
@@ -489,8 +848,10 @@ PersistedPageStore::Candidate PersistedPageStore::begin_candidate(
         .page = base->version_.page + 1,
     };
     successor->page_width_ = page_width;
-    successor->sample_pages_ = base->sample_pages_;
-    successor->event_pages_ = base->event_pages_;
+    successor->sample_outputs_ = base->sample_outputs_;
+    successor->event_outputs_ = base->event_outputs_;
+    successor->sample_page_count_ = base->sample_page_count_;
+    successor->event_page_count_ = base->event_page_count_;
     return Candidate{*this, *base, std::move(successor)};
 }
 
@@ -506,8 +867,6 @@ PersistedPagePublishResult PersistedPageStore::publish(Candidate&& candidate)
         candidate = {};
         return PersistedPagePublishResult::stale_base;
     }
-
-    candidate.successor_->rebuild_output_metadata();
 
     retired_.push_back(std::move(published_owner_));
     published_owner_ = std::move(candidate.successor_);
