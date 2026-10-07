@@ -375,9 +375,15 @@ materialization from a retained source, producer selection from a merged stream 
 source-index sidecar, a shared merged stream that no longer contains sufficient producer
 identity, authoritative immutable emptiness, or callback-only state. The source-indexed
 case retains the producer's semantic source ordinal, preserving deterministic equal-time
-ordering. The shared unindexed and callback-only cases are intentionally not presented as
-migration sources: transition planning must introduce producer-owned retention or trace
-the callback derivation to recoverable state before cutover.
+ordering. Retained fan-in acquires that sidecar exactly when one or more of its producers
+owns Tick-output history or latency; target-owned history alone continues to use the
+cheaper unindexed aggregate because no producer state has to be separated. A disconnected
+Tick event output likewise retains its declared history/latency through the ordinary
+compact-carry or persistent-ring policy even though it has no delivery edge. Zero-retention
+disconnected outputs remain callback-local sinks. The shared unindexed and callback-only
+classifications remain truthful descriptions of representations that do not by themselves
+identify migratable producer state; expired callback-arena bytes are never treated as a
+migration source.
 
 `materialized` describes the storage path, not necessarily an event-type conversion. A
 same-type fan-in may still materialize the selected retained invocation window into the

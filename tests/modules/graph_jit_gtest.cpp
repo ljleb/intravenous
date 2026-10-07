@@ -6238,6 +6238,39 @@ std::shared_ptr<iv::ConfiguredGraph const> configured_merged_retained_event_grap
 }
 
 std::shared_ptr<iv::ConfiguredGraph const>
+configured_disconnected_retained_event_output_graph(
+    iv::PackageRevision const& revision)
+{
+    using Session = std::unique_ptr<iv::details::BuilderSession,
+        decltype(&iv::details::iv_builder_session_destroy)>;
+    Session session(
+        iv::details::iv_builder_session_create(),
+        iv::details::iv_builder_session_destroy);
+    if (!session) {
+        throw std::runtime_error(
+            "could not create disconnected retained-event session");
+    }
+    auto const package_root = revision.package_root.generic_string();
+    std::array packages{iv::details::BuilderPackageView{
+        .package_root = package_root,
+        .definitions = revision.provider_definitions,
+        .config_pointer_fields = revision.config_pointer_fields,
+        .retained_globals = revision.retained_globals,
+        .node_state_structures = revision.node_state_structures,
+    }};
+    iv::details::set_builder_packages(session.get(), packages);
+    iv::GraphBuilder graph(session.get());
+    (void)iv::details::configure_package_definition_provider(
+        graph,
+        "iv.test.graph_jit.state_context.retained_trigger_event_source",
+        std::nullopt,
+        {});
+    graph.outputs();
+    return std::make_shared<iv::ConfiguredGraph const>(
+        iv::details::take_built_graph(session.get()));
+}
+
+std::shared_ptr<iv::ConfiguredGraph const>
 configured_event_feedback_scc_external_fanout_graph(
     iv::PackageRevision const& revision,
     std::string_view observer_definition =
@@ -10980,13 +11013,13 @@ TEST_F(GraphJitRuntimeFixture, FeedForwardEventFanInCompactCarryMigrates)
         EXPECT_EQ(
             realization.retained_storage->storage,
             iv::graph_jit::EventRealtimePortStateStorage::compact_carry);
-        EXPECT_FALSE(realization.retained_storage->has_source_indices);
+        EXPECT_TRUE(realization.retained_storage->has_source_indices);
         if (requirement.direction
             == iv::graph_jit::PortDirection::output) {
             ++output_state_count;
             EXPECT_EQ(
                 realization.retained_access,
-                iv::graph_jit::EventRealtimePortStateAccess::shared_merged_source);
+                iv::graph_jit::EventRealtimePortStateAccess::indexed_merged_source);
             ASSERT_TRUE(realization.retained_source_index);
             EXPECT_LT(*realization.retained_source_index, 2u);
         } else {
@@ -11050,6 +11083,44 @@ TEST_F(GraphJitRuntimeFixture, FeedForwardEventFanInCompactCarryMigrates)
     EXPECT_EQ(migrated_probe->first_times[0], 61u);
     EXPECT_EQ(migrated_probe->second_times[0], 61u);
     EXPECT_EQ(migrated_probe->last_times[0], 125u);
+}
+
+TEST_F(GraphJitRuntimeFixture, DisconnectedTickEventOutputRetainsItsLatency)
+{
+    auto graph = configured_disconnected_retained_event_output_graph(*revision);
+    ASSERT_TRUE(graph);
+    auto compiled = compile_graph(graph, 249);
+    ASSERT_TRUE(compiled.succeeded())
+        << (compiled.diagnostics.empty()
+                ? ""
+                : compiled.diagnostics.front().message);
+
+    auto const& requirements = compiled.compiled_graph
+        ->realtime_port_state_requirements.states;
+    auto const& realizations = compiled.compiled_graph
+        ->realtime_port_state_realizations.event_states;
+    ASSERT_EQ(requirements.size(), 1u);
+    ASSERT_EQ(realizations.size(), 1u);
+    auto const& realization = realizations.front();
+    ASSERT_LT(realization.requirement_index, requirements.size());
+    auto const& requirement = requirements[realization.requirement_index];
+    EXPECT_EQ(requirement.direction, iv::graph_jit::PortDirection::output);
+    EXPECT_EQ(
+        requirement.role,
+        iv::graph_jit::RealtimePortStateRole::tick_output_latency);
+    EXPECT_EQ(requirement.extent_samples, 8u);
+    EXPECT_EQ(
+        realization.authored_storage.storage,
+        iv::graph_jit::EventRealtimePortStateStorage::callback_transient);
+    ASSERT_TRUE(realization.retained_storage);
+    EXPECT_EQ(
+        realization.retained_storage->storage,
+        iv::graph_jit::EventRealtimePortStateStorage::compact_carry);
+    EXPECT_EQ(
+        realization.retained_access,
+        iv::graph_jit::EventRealtimePortStateAccess::direct);
+    EXPECT_FALSE(realization.retained_source_index);
+    EXPECT_FALSE(realization.retained_storage->has_source_indices);
 }
 
 TEST_F(GraphJitRuntimeFixture, FeedForwardEventFanInPersistentRingRetainsBursts)

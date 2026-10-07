@@ -3134,7 +3134,7 @@ std::expected<void, std::string> emit_event_merge(
                 != merge.source_representations.size())
         || (!ordered_merge && !merge.source_indices.empty())) {
         return std::unexpected(
-            "GraphJit staged event merge has inconsistent source indices");
+            "GraphJit ordered event merge has inconsistent source indices");
     }
     if ((target.event_capacity != 0
             && !is_power_of_2(target.event_capacity))) {
@@ -3152,7 +3152,7 @@ std::expected<void, std::string> emit_event_merge(
     }
     if (merge.target_is_semantic_source && ordered_merge) {
         return std::unexpected(
-            "GraphJit staged event merge cannot use producer-home storage");
+            "GraphJit ordered event merge cannot use producer-home storage");
     }
 
     auto& context = builder.getContext();

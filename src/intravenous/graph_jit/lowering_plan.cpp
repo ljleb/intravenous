@@ -1160,6 +1160,19 @@ plan_event_realtime_port_state_realizations(
                 std::distance(sources.begin(), found));
         }
         if (!producer_group) {
+            auto retained = retained_representation(authored_representation);
+            if (!retained) {
+                return std::unexpected(std::move(retained.error()));
+            }
+            if (*retained) {
+                auto view = storage_view(**retained);
+                if (!view) {
+                    return std::unexpected(std::move(view.error()));
+                }
+                realization.retained_storage = std::move(*view);
+                realization.retained_access =
+                    EventRealtimePortStateAccess::direct;
+            }
             result.push_back(std::move(realization));
             continue;
         }
@@ -2685,6 +2698,19 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
                     "GraphJit event fan-in aggregate max_events_per_index disagrees with connection analysis");
             }
 
+            // A retained aggregate can stand in for one producer's authored
+            // history/latency only when it continues to identify which
+            // producer authored each event. Target-owned history needs only
+            // the merged stream and therefore keeps the cheaper unindexed
+            // representation.
+            auto const requires_retained_source_identity =
+                std::ranges::any_of(
+                    validated_sources,
+                    [](ValidatedSource const& source) {
+                        return port_history(source.config) != 0
+                            || tick_latency(source.config) != 0;
+                    });
+
             std::size_t retained_history = 0;
             std::size_t retained_latency = 0;
             for (auto const connection_index : group.connection_indices) {
@@ -3281,6 +3307,7 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
                 }
             }
             auto const home_legal = !cyclic_source_region
+                && !requires_retained_source_identity
                 && retained_home_is_order_safe;
 
             std::optional<EventConnectionStoragePlan> home_plan;
@@ -3427,6 +3454,8 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
                 producer_home && !retained_storage;
             auto const retained_producer_home =
                 producer_home && retained_storage;
+            auto const preserve_source_identity = retained_storage
+                && requires_retained_source_identity;
             auto const identity_base = event_group_identity(group);
             auto canonical = append_representation(
                 group_index,
@@ -3440,7 +3469,8 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
                         + std::to_string(retained_latency) + ":capacity="
                         + std::to_string(canonical_capacity)
                     : std::string{},
-                persistent_ring);
+                persistent_ring,
+                preserve_source_identity);
             if (!canonical) {
                 return std::unexpected(std::move(canonical.error()));
             }
@@ -3456,7 +3486,9 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
                     identity_base + ":kind=compact_carry:history="
                         + std::to_string(retained_history) + ":latency="
                         + std::to_string(retained_latency) + ":capacity="
-                        + std::to_string(carry_capacity));
+                        + std::to_string(carry_capacity),
+                    false,
+                    preserve_source_identity);
                 if (!persistent) {
                     return std::unexpected(std::move(persistent.error()));
                 }
@@ -3510,6 +3542,9 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
             };
             merge.source_representations.reserve(
                 validated_sources.size() - (producer_home ? 1u : 0u));
+            if (preserve_source_identity) {
+                merge.source_indices.reserve(validated_sources.size());
+            }
             for (std::size_t source_index = 0;
                  source_index < validated_sources.size(); ++source_index) {
                 auto const& source = validated_sources[source_index];
@@ -3525,6 +3560,9 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
                     }
                     storage = *local;
                     merge.source_representations.push_back(storage);
+                    if (preserve_source_identity) {
+                        merge.source_indices.push_back(source_index);
+                    }
                 }
 
                 auto& source_binding =
@@ -4666,9 +4704,9 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
     }
 
     // Complete disconnected realtime ports explicitly. Inputs bind an empty
-    // bounded sequence; outputs bind a producer-sized sink so the callback keeps
-    // its normal ABI and overflow telemetry without introducing a fake graph
-    // edge or any audio-thread allocation.
+    // bounded sequence. Outputs use the same transient/carry/ring policy as a
+    // connected stream: disconnection removes delivery, not an authored Tick
+    // output's own history/latency state.
     for (std::size_t primitive_index = 0;
         primitive_index < plan.primitives.size(); ++primitive_index) {
         auto const bundle = analysis.primitives[primitive_index].bundle.node_bundle;
@@ -4712,36 +4750,128 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
                 .resolve_event_output(port_id).config;
             IV_ASSERT(is_tick(config.production),
                 "Tick event storage disagrees with its port declaration");
-            auto window_samples = input.specialization.block_size;
             auto const history = port_history(config);
             auto const latency = tick_latency(config);
-            if (history > std::numeric_limits<std::size_t>::max()
-                    - window_samples
-                || latency > std::numeric_limits<std::size_t>::max()
-                    - window_samples - history) {
+            if (history > std::numeric_limits<std::size_t>::max() - latency) {
                 return std::unexpected(
                     "GraphJit disconnected event output window overflows size_t");
             }
-            window_samples += history + latency;
-            auto capacity = event_sequence_capacity_for_sample_span(
-                config.max_events_per_index, window_samples);
-            if (!capacity) {
+            auto const retained_window = history + latency;
+            auto const current_events = event_count_for_sample_span(
+                config.max_events_per_index,
+                input.specialization.block_size);
+            auto const retained_events = event_count_for_sample_span(
+                config.max_events_per_index,
+                retained_window);
+            if (!current_events || !retained_events) {
                 return std::unexpected(
                     "GraphJit disconnected event output capacity is not representable");
             }
-            auto sink = append_representation(
-                connections.event_producer_groups.size(),
-                config.type,
-                *capacity,
-                true);
-            if (!sink) return std::unexpected(std::move(sink.error()));
+            auto const storage_plan = choose_event_connection_storage_plan(
+                EventConnectionStorageRequirements{
+                    .current_window_samples =
+                        input.specialization.block_size,
+                    .retained_window_samples = retained_window,
+                    .current_event_capacity = *current_events,
+                    .retained_event_capacity = *retained_events,
+                    .value_size_bytes = sizeof(TimedEvent),
+                },
+                cost_model);
+            if (*current_events > std::numeric_limits<std::size_t>::max()
+                    - *retained_events) {
+                return std::unexpected(
+                    "GraphJit disconnected event output working capacity overflows size_t");
+            }
+            auto working_capacity = rounded_event_capacity(
+                *current_events + *retained_events);
+            if (!working_capacity) {
+                return std::unexpected(std::move(working_capacity.error()));
+            }
+
+            auto const group_index = connections.event_producer_groups.size();
+            auto const identity_base =
+                "graphjit.event.disconnected_output:"
+                + std::to_string(bundle) + "." + std::to_string(port)
+                + ":history=" + std::to_string(history)
+                + ":latency=" + std::to_string(latency);
+            std::expected<std::size_t, std::string> authored =
+                std::unexpected(std::string{
+                    "unselected disconnected event storage"});
+            switch (storage_plan.kind) {
+            case RealtimeBufferStorageKind::transient_stack:
+                authored = append_representation(
+                    group_index,
+                    config.type,
+                    *working_capacity,
+                    true);
+                break;
+            case RealtimeBufferStorageKind::stack_with_persistent_carry: {
+                authored = append_representation(
+                    group_index,
+                    config.type,
+                    *working_capacity,
+                    true);
+                if (!authored) break;
+                auto carry_capacity = event_sequence_capacity_for_sample_span(
+                    config.max_events_per_index, retained_window);
+                if (!carry_capacity) {
+                    return std::unexpected(
+                        "GraphJit disconnected event output carry capacity is not representable");
+                }
+                auto persistent = append_representation(
+                    group_index,
+                    config.type,
+                    *carry_capacity,
+                    false,
+                    true,
+                    identity_base + ":kind=compact_carry:capacity="
+                        + std::to_string(*carry_capacity));
+                if (!persistent) {
+                    return std::unexpected(std::move(persistent.error()));
+                }
+                plan.carry_operations.push_back(EventCarryPlan{
+                    .working_representation = *authored,
+                    .persistent_representation = *persistent,
+                    .restore_scope = primitive_scope(
+                        position, EventOperationPhase::before),
+                    .commit_scope = primitive_scope(
+                        position, EventOperationPhase::after),
+                    .retained_history_samples = history,
+                    .retained_latency_samples = latency,
+                });
+                break;
+            }
+            case RealtimeBufferStorageKind::full_node_storage:
+                authored = append_representation(
+                    group_index,
+                    config.type,
+                    *working_capacity,
+                    true,
+                    true,
+                    identity_base + ":kind=persistent_ring:capacity="
+                        + std::to_string(*working_capacity),
+                    true);
+                if (authored) {
+                    plan.persistent_rings.push_back(EventPersistentRingPlan{
+                        .storage = *authored,
+                        .prune_scope = primitive_scope(
+                            position, EventOperationPhase::before),
+                        .retained_history_samples = history,
+                    });
+                }
+                break;
+            }
+            if (!authored) {
+                return std::unexpected(std::move(authored.error()));
+            }
             binding = PrimitiveEventOutputBindingPlan{
                 .realtime = true,
-                .storage = *sink,
+                .storage = *authored,
                 .source_type = config.type,
                 .history = history,
                 .latency = latency,
-                .append_existing = false,
+                .append_existing = storage_plan.kind
+                    != RealtimeBufferStorageKind::transient_stack,
             };
         }
     }

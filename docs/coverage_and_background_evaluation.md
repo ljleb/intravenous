@@ -2553,17 +2553,20 @@ recording merely because that planning metadata exists.
    retained-source materializations, source-indexed merged streams, immutable empty
    streams, shared unindexed merged streams, and callback-only streams remain distinct.
    A source-indexed merged stream retains its semantic source ordinal; a shared unindexed
-   stream is truthfully marked non-recoverable instead of being mistaken for one
-   producer's state. Materialization names a storage operation rather than necessarily a
-   type conversion: a same-type retained fan-in may have a zero-step conversion plan while
-   still materializing the selected invocation window for its consumer.
+   stream is never mistaken for one producer's state. Retained fan-in now allocates the
+   source-index sidecar precisely when a source owns Tick-output history or latency;
+   target-history-only fan-in stays unindexed. Disconnected Tick event outputs with their
+   own history/latency now receive the same compact-carry or persistent-ring backing as
+   connected outputs, while zero-retention disconnected outputs remain callback-local.
+   Materialization names a storage operation rather than necessarily a type conversion: a
+   same-type retained fan-in may have a zero-step conversion plan while still
+   materializing the selected invocation window for its consumer.
 
-   The next migration substep resolves the remaining truthful non-recoverable
-   realizations: multi-source sample compositions, callback-only event streams, and event
-   fan-in that erased producer identity. It must trace derivations where possible and
-   otherwise plan private transition retention. Only then can old/new stable port-state
-   identities be compared and their overlapping temporal ranges assigned direct migration
-   or a finite transition realization.
+   The next migration substep resolves multi-source sample compositions and audits any
+   remaining callback-only realization that owns semantic state. It must trace derivations
+   where possible and otherwise plan private transition retention. Then old/new stable
+   port-state identities can be compared and their overlapping temporal ranges assigned
+   direct migration or a finite transition realization.
 
    Before optimization, define port history/latency exactly as if each surviving
    concrete node privately owned that state. Carry stable user-instance/virtual-member/
