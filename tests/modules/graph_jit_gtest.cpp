@@ -10863,6 +10863,46 @@ TEST_F(GraphJitRuntimeFixture, FeedForwardEventFanInCompactCarryMigrates)
         << (compiled.diagnostics.empty()
                 ? ""
                 : compiled.diagnostics.front().message);
+    auto const& state_requirements = compiled.compiled_graph
+        ->realtime_port_state_requirements.states;
+    auto const& state_realizations = compiled.compiled_graph
+        ->realtime_port_state_realizations.event_states;
+    ASSERT_EQ(state_requirements.size(), 3u);
+    ASSERT_EQ(state_realizations.size(), 3u);
+    std::size_t output_state_count = 0;
+    std::size_t input_state_count = 0;
+    for (auto const& realization : state_realizations) {
+        ASSERT_LT(realization.requirement_index, state_requirements.size());
+        auto const& requirement =
+            state_requirements[realization.requirement_index];
+        ASSERT_TRUE(realization.retained_storage);
+        EXPECT_EQ(
+            realization.retained_storage->storage,
+            iv::graph_jit::EventRealtimePortStateStorage::compact_carry);
+        EXPECT_FALSE(realization.retained_storage->has_source_indices);
+        if (requirement.direction
+            == iv::graph_jit::PortDirection::output) {
+            ++output_state_count;
+            EXPECT_EQ(
+                realization.retained_access,
+                iv::graph_jit::EventRealtimePortStateAccess::shared_merged_source);
+            ASSERT_TRUE(realization.retained_source_index);
+            EXPECT_LT(*realization.retained_source_index, 2u);
+        } else {
+            ++input_state_count;
+            EXPECT_EQ(
+                realization.retained_access,
+                iv::graph_jit::EventRealtimePortStateAccess::materialized);
+            EXPECT_FALSE(realization.retained_source_index);
+            ASSERT_TRUE(realization.materialization_conversion);
+            EXPECT_EQ(realization.materialization_conversion->size(), 0u);
+            EXPECT_EQ(realization.materialization_history_samples, 8u);
+            EXPECT_TRUE(
+                realization.materialization_selects_invocation_window);
+        }
+    }
+    EXPECT_EQ(output_state_count, 2u);
+    EXPECT_EQ(input_state_count, 1u);
     auto storage = compiled.compiled_graph->node_layout.create_storage(resources);
     storage.initialize();
     RetainedEventConsumerProbeStateMirror* probe = nullptr;
@@ -12234,6 +12274,39 @@ TEST_F(GraphJitRuntimeFixture, CompactRetainedEvents)
             "graphjit.event:"),
         std::string::npos);
 
+    auto const& retained_state_requirements = retained_event.compiled_graph
+        ->realtime_port_state_requirements.states;
+    auto const& retained_state_realizations = retained_event.compiled_graph
+        ->realtime_port_state_realizations.event_states;
+    ASSERT_EQ(retained_state_requirements.size(), 2u);
+    ASSERT_EQ(retained_state_realizations.size(), 2u);
+    for (auto const& realization : retained_state_realizations) {
+        ASSERT_LT(
+            realization.requirement_index,
+            retained_state_requirements.size());
+        auto const& requirement =
+            retained_state_requirements[realization.requirement_index];
+        EXPECT_EQ(requirement.configured_port.port_kind, iv::PortKind::event);
+        EXPECT_EQ(
+            realization.authored_storage.storage,
+            iv::graph_jit::EventRealtimePortStateStorage::callback_transient);
+        EXPECT_EQ(
+            realization.retained_access,
+            iv::graph_jit::EventRealtimePortStateAccess::direct);
+        ASSERT_TRUE(realization.retained_storage);
+        EXPECT_EQ(
+            realization.retained_storage->storage,
+            iv::graph_jit::EventRealtimePortStateStorage::compact_carry);
+        ASSERT_TRUE(realization.retained_storage->node_storage_offset);
+        EXPECT_EQ(
+            *realization.retained_storage->node_storage_offset,
+            retained_persistent_region->storage_offset);
+        EXPECT_FALSE(realization.retained_storage->callback_arena_offset);
+        EXPECT_FALSE(realization.retained_storage->has_source_indices);
+        EXPECT_FALSE(realization.retained_source_index);
+        EXPECT_FALSE(realization.materialization_conversion);
+    }
+
     auto retained_event_storage =
         retained_event.compiled_graph->node_layout.create_storage(resources);
     retained_event_storage.initialize();
@@ -12343,6 +12416,35 @@ TEST_F(GraphJitRuntimeFixture, PersistentEventRing)
         persistent_event_ring_region->migration_identity.find(
             "kind=persistent_ring"),
         std::string::npos);
+
+    auto const& ring_state_requirements = persistent_event_ring.compiled_graph
+        ->realtime_port_state_requirements.states;
+    auto const& ring_state_realizations = persistent_event_ring.compiled_graph
+        ->realtime_port_state_realizations.event_states;
+    ASSERT_EQ(ring_state_requirements.size(), 1u);
+    ASSERT_EQ(ring_state_realizations.size(), 1u);
+    auto const& ring_state = ring_state_realizations.front();
+    ASSERT_LT(ring_state.requirement_index, ring_state_requirements.size());
+    EXPECT_EQ(
+        ring_state_requirements[ring_state.requirement_index].role,
+        iv::graph_jit::RealtimePortStateRole::sequential_input_history);
+    EXPECT_EQ(
+        ring_state.authored_storage.storage,
+        iv::graph_jit::EventRealtimePortStateStorage::ring);
+    EXPECT_EQ(
+        ring_state.retained_access,
+        iv::graph_jit::EventRealtimePortStateAccess::direct);
+    ASSERT_TRUE(ring_state.retained_storage);
+    EXPECT_EQ(
+        ring_state.retained_storage->storage,
+        iv::graph_jit::EventRealtimePortStateStorage::ring);
+    ASSERT_TRUE(ring_state.retained_storage->node_storage_offset);
+    EXPECT_EQ(
+        *ring_state.retained_storage->node_storage_offset,
+        persistent_event_ring_region->storage_offset);
+    EXPECT_FALSE(ring_state.retained_storage->callback_arena_offset);
+    EXPECT_FALSE(ring_state.retained_storage->has_source_indices);
+    EXPECT_FALSE(ring_state.retained_source_index);
 
     auto persistent_event_ring_storage =
         persistent_event_ring.compiled_graph->node_layout.create_storage(resources);

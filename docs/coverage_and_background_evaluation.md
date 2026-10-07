@@ -2545,10 +2545,24 @@ recording merely because that planning metadata exists.
    returns; later transition planning must trace their derivation to retained sources or
    introduce transition-only materialization.
 
-   The next migration substep builds the corresponding event-state mapping. It must
-   distinguish a producer's authored callback stream from canonical retained fan-in
-   storage, preserve source membership/equal-time ordering, and resolve compact-carry
-   working representations to their persistent event backing before transition planning.
+   Event-state inventory entries are now also mapped after finalized placement. The cold
+   mapping records the callback representation separately from the cross-callback
+   representation, resolves compact-carry working sequences to their persistent backing,
+   and carries finalized event/header/source-index offsets. Direct streams,
+   retained-source materializations, source-indexed merged streams, immutable empty
+   streams, shared unindexed merged streams, and callback-only streams remain distinct.
+   A source-indexed merged stream retains its semantic source ordinal; a shared unindexed
+   stream is truthfully marked non-recoverable instead of being mistaken for one
+   producer's state. Materialization names a storage operation rather than necessarily a
+   type conversion: a same-type retained fan-in may have a zero-step conversion plan while
+   still materializing the selected invocation window for its consumer.
+
+   The next migration substep resolves those truthful non-recoverable realizations. It
+   must trace callback-local sample/event derivations to retained semantic sources where
+   possible and otherwise plan private transition retention. It must likewise give each
+   surviving producer private identity when the steady event fan-in erased that identity.
+   Only then can old/new stable port-state identities be compared and their overlapping
+   temporal ranges assigned direct migration or a finite transition realization.
 
    Before optimization, define port history/latency exactly as if each surviving
    concrete node privately owned that state. Carry stable user-instance/virtual-member/

@@ -103,8 +103,78 @@ struct SampleRealtimePortStateRealization {
     std::optional<Sample> constant_value{};
 };
 
+enum class EventRealtimePortStateStorage : std::uint8_t {
+    callback_transient,
+    compact_carry,
+    ring,
+};
+
+// Describes how one semantic event-state requirement can be recovered after
+// the callback which authored or consumed it has returned.
+enum class EventRealtimePortStateAccess : std::uint8_t {
+    // A disconnected zero-capacity input is authoritatively empty and needs no
+    // mutable retained representation.
+    immutable_empty,
+    // retained_storage contains exactly this semantic stream.
+    direct,
+    // retained_storage is the source of the recorded conversion/window below.
+    materialized,
+    // retained_storage is a merged stream with a source-index sidecar; select
+    // retained_source_index to recover this producer's events.
+    indexed_merged_source,
+    // Retained events from several producers are merged without source
+    // identity. This is a truthful non-recoverable classification which forces
+    // transition planning to add producer-owned retention before cutover.
+    shared_merged_source,
+    // Only callback-local bytes currently represent the state. Transition
+    // planning must trace/add retention rather than reading expired arena data.
+    callback_only,
+};
+
+struct EventRealtimePortStateStorageView {
+    EventRealtimePortStateStorage storage =
+        EventRealtimePortStateStorage::callback_transient;
+    EventTypeId type = EventTypeId::empty;
+    std::size_t event_capacity = 0;
+    std::size_t size_bytes = 0;
+    std::size_t alignment = 1;
+
+    std::size_t count_relative_offset = 0;
+    std::size_t read_index_relative_offset = 0;
+    std::size_t write_index_relative_offset = 0;
+    std::size_t events_relative_offset = 0;
+    bool has_source_indices = false;
+    std::size_t source_indices_relative_offset = 0;
+
+    // Exactly one location is populated according to storage.
+    std::optional<std::size_t> node_storage_offset{};
+    std::optional<std::size_t> callback_arena_offset{};
+};
+
+struct EventRealtimePortStateRealization {
+    std::size_t requirement_index = 0;
+    // Exact representation bound to the authored node callback.
+    EventRealtimePortStateStorageView authored_storage{};
+    EventRealtimePortStateAccess retained_access =
+        EventRealtimePortStateAccess::callback_only;
+    // Cross-callback representation, when retained_access is not
+    // immutable_empty or callback_only.
+    std::optional<EventRealtimePortStateStorageView> retained_storage{};
+
+    // Populated for indexed_merged_source and shared_merged_source. In the
+    // latter case it records semantic ordering but cannot filter the stream.
+    std::optional<std::size_t> retained_source_index{};
+
+    // Populated for materialized input state. TimedEvent timestamps remain
+    // absolute, so no separate timeline offset is required.
+    std::optional<EventConversionPlan> materialization_conversion{};
+    std::size_t materialization_history_samples = 0;
+    bool materialization_selects_invocation_window = false;
+};
+
 struct RealtimePortStateRealizations {
     std::vector<SampleRealtimePortStateRealization> sample_states{};
+    std::vector<EventRealtimePortStateRealization> event_states{};
 };
 
 } // namespace iv::graph_jit

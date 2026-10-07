@@ -353,10 +353,26 @@ materialization; it may not read expired root-stack bytes between callbacks. Con
 require no mutable state migration. Compact carries and rings expose their canonical
 cross-callback `NodeStorage` backing directly.
 
-Event realization mapping remains separate because an authored event output may write a
-producer-local stream that is subsequently merged into shared retained fan-in storage.
-That mapping must preserve producer/source membership and deterministic equal-time order;
-it must not equate the callback binding with the retained event-state owner.
+Event state is mapped separately because an authored event output may write a
+producer-local callback stream that is subsequently merged into different retained
+fan-in storage. Each cold event realization therefore records both the exact authored
+callback view and, when one exists, the canonical cross-callback backing. It distinguishes
+callback-local sequences, compact carries, and persistent rings; records finalized header,
+event-array, and optional source-index-array offsets; and resolves compact-carry working
+representations to their persistent `NodeStorage` representation.
+
+A retained event stream is classified as one of: direct semantic ownership,
+materialization from a retained source, producer selection from a merged stream with a
+source-index sidecar, a shared merged stream that no longer contains sufficient producer
+identity, authoritative immutable emptiness, or callback-only state. The source-indexed
+case retains the producer's semantic source ordinal, preserving deterministic equal-time
+ordering. The shared unindexed and callback-only cases are intentionally not presented as
+migration sources: transition planning must introduce producer-owned retention or trace
+the callback derivation to recoverable state before cutover.
+
+`materialized` describes the storage path, not necessarily an event-type conversion. A
+same-type fan-in may still materialize the selected retained invocation window into the
+consumer-facing sequence; in that case the recorded `EventConversionPlan` has zero steps.
 
 Storage planners consume the authoritative semantic inventory; they do not reconstruct
 semantic state ownership from their chosen representation.
