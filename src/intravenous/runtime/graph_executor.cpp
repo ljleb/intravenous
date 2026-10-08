@@ -171,10 +171,22 @@ void GraphExecutor::ExecutionGeneration::prepare_realtime_migration_from(
     ExecutionGeneration& previous)
 {
     if (realtime_initialized || background_initialized
-        || realtime_migration || background_migration) {
+        || realtime_migration || background_migration
+        || realtime_port_state_transition) {
         throw std::logic_error(
             "GraphExecutor generation migration is already prepared");
     }
+    auto transition = graph_jit::plan_realtime_port_state_transition(
+        previous.graph->realtime_port_state_requirements,
+        previous.graph->realtime_port_state_realizations,
+        graph->realtime_port_state_requirements,
+        graph->realtime_port_state_realizations);
+    if (!transition) {
+        throw std::runtime_error(
+            "GraphExecutor could not reconcile realtime port state: "
+            + std::move(transition.error()));
+    }
+    realtime_port_state_transition.emplace(std::move(*transition));
     realtime_migration.emplace(
         realtime.storage.prepare_migration_from(previous.realtime.storage));
 }

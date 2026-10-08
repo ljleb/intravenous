@@ -1,5 +1,6 @@
 #pragma once
 
+#include <intravenous/graph_jit/realtime_port_state_transition.h>
 #include <intravenous/node/resources.h>
 #include <intravenous/runtime/async_capacity_manager.h>
 #include <intravenous/runtime/background_evaluation_transaction.h>
@@ -127,6 +128,10 @@ class GraphExecutor {
         std::unique_ptr<RealtimePersistedState> initial_persisted_state{};
         std::optional<NodeStorage::Migration> realtime_migration{};
         std::optional<NodeStorage::Migration> background_migration{};
+        // Semantic ownership/range reconciliation for the realtime cutover;
+        // retained after activation for the eventual transition realization.
+        std::optional<graph_jit::RealtimePortStateTransitionPlan>
+            realtime_port_state_transition{};
         bool realtime_initialized = false;
         bool background_initialized = false;
         std::unique_ptr<ExecutionGeneration> successor_owner{};

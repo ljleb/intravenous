@@ -132,6 +132,9 @@ add_iv_gtest(
     intravenous_graph_jit_connection_plan_tests
     graph_jit_connection_plan_gtest.cpp)
 add_iv_gtest(
+    intravenous_realtime_port_state_transition_tests
+    realtime_port_state_transition_gtest.cpp)
+add_iv_gtest(
     intravenous_graph_executor_tests
     graph_executor_gtest.cpp)
 add_iv_gtest(

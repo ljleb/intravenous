@@ -318,6 +318,7 @@ add_library(intravenous_graph_jit OBJECT
     graph_jit/background_storage_plan.cpp
     graph_jit/lowering.cpp
     graph_jit/lowering_plan.cpp
+    graph_jit/realtime_port_state_transition.cpp
     graph_jit/sample_storage_plan.cpp
     graph_jit/transient_arena_plan.cpp
 )

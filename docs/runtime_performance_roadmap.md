@@ -36,7 +36,10 @@ The governing performance invariant is:
    copy-free. Preserve inherited state by reading frozen predecessor storage directly
    where appropriate, or by using compact transition-only carries/materializations.
    Small bounded migration copies are valid; synchronous copying of whole histories or
-   unrelated raw regions is not.
+   unrelated raw regions is not. Prepared generations now own the cold semantic match
+   of surviving sample/event port-state identities, including exact inherited timeline
+   intervals and growing/shrinking extents; physical transition realization and bounded
+   cutover execution remain to be implemented from that plan.
 3. Convert realtime persisted playback and recording to page/span operations. This
    includes clearing only requested sample windows, one lookup per relevant page/span,
    ring-wrap copy runs, retained event-window cursors, direct materialization indexing,
