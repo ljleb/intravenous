@@ -6,6 +6,7 @@
 #include <intravenous/basic_nodes/constant.h>
 #include <intravenous/channel_ports.h>
 #include <intravenous/graph/builder/node_refs.h>
+#include <intravenous/graph/builder/embedding.h>
 #include <intravenous/graph/builder/output_refs.h>
 #include <intravenous/graph/builder/subgraphs.hpp>
 #include <intravenous/graph/source_info.h>
@@ -40,6 +41,9 @@ NodeRef configure_tiled_package_definition(
     GraphBuilder&, std::string_view, ChannelLayout,
     std::span<ConfigurationArgument>);
 NodeRef configure_package_definition_impl(
+    GraphBuilder&, std::string_view, std::optional<ChannelLayout>,
+    std::span<ConfigurationArgument>);
+NodeRef configure_package_definition_provider(
     GraphBuilder&, std::string_view, std::optional<ChannelLayout>,
     std::span<ConfigurationArgument>);
 template<class Node, class... Args>
@@ -96,6 +100,9 @@ class GraphBuilder {
       GraphBuilder&, std::string_view, ChannelLayout,
       std::span<details::ConfigurationArgument>);
   friend NodeRef details::configure_package_definition_impl(
+      GraphBuilder&, std::string_view, std::optional<ChannelLayout>,
+      std::span<details::ConfigurationArgument>);
+  friend NodeRef details::configure_package_definition_provider(
       GraphBuilder&, std::string_view, std::optional<ChannelLayout>,
       std::span<details::ConfigurationArgument>);
   template<class Node, class... Args>
@@ -289,10 +296,15 @@ public:
   SamplePortRef sample_port_from_output(NodeBundlePortId);
   EventPortRef event_port_from_output(NodeBundlePortId) const;
   SamplePortRef make_sample_port(ChannelTypeId, std::span<SampleOutputChannelId const>);
+  SamplePortRef make_tiled_sample_port(
+      ChannelTypeId, std::span<SamplePortRef const>);
+  SamplePortRef select_sample_port_channel(SamplePortRef const&, size_t);
   std::span<SampleOutputChannelId const> sample_port_channels(SamplePortRef const&) const;
   EventPortRef make_event_port(EventTypeId, std::span<EventOutputPortId const>);
   std::span<EventOutputPortId const> event_port_sources(EventPortRef const&) const;
-  SamplePortRef detach_sample_port(SamplePortRef const&, size_t);
+  SamplePortRef detach_sample_port(
+      SamplePortRef const&, size_t, std::optional<Sample>);
+  EventPortRef detach_event_port(EventPortRef const&, size_t);
   void apply_ttl(NodeBundleHandle, size_t);
   void annotate_node(NodeBundleHandle, std::string_view, std::string_view,
       uint32_t, uint32_t);
@@ -310,6 +322,12 @@ public:
   void annotate_public_event_output_source_info(std::span<SourceInfo const>);
   void annotate_public_sample_output_source_info(size_t, SourceInfo);
   void annotate_public_event_output_source_info(size_t, SourceInfo);
+  // Imports a frozen configured graph directly through the same semantic
+  // remapper used for live child builders. The returned translation is stable
+  // for this parent builder and leaves all local handles in the child untouched.
+  ConfiguredGraphEmbedding embed(
+      ConfiguredGraph const&, std::string_view kind = "Configured graph");
+
   ConfiguredGraph finish() const &;
   ConfiguredGraph finish() &&;
 
@@ -452,7 +470,7 @@ auto make_node_call_requests(GraphBuilder& builder, Args&&... args)
             .source = builder.lift_to_sample_port(
                 std::forward<Arg>(arg).value),
             .name = Value::name.view(),
-            .input_ordinal = 0,
+            .input_index = 0,
             .target = NodeCallInputTarget::named,
         };
       } else {
@@ -460,7 +478,7 @@ auto make_node_call_requests(GraphBuilder& builder, Args&&... args)
             .source = lift_node_call_event_operand(
                 std::forward<Arg>(arg).value),
             .name = Value::name.view(),
-            .input_ordinal = 0,
+            .input_index = 0,
             .target = NodeCallInputTarget::named,
         };
       }
@@ -468,14 +486,14 @@ auto make_node_call_requests(GraphBuilder& builder, Args&&... args)
       requests.event_inputs[event_index++] = {
         .source = static_cast<EventPortRef>(std::forward<Arg>(arg)),
         .name = {},
-        .input_ordinal = positional_index++,
+        .input_index = positional_index++,
         .target = NodeCallInputTarget::positional,
       };
     } else {
       requests.sample_inputs[sample_index++] = {
         .source = builder.lift_to_sample_port(std::forward<Arg>(arg)),
         .name = {},
-        .input_ordinal = positional_index++,
+        .input_index = positional_index++,
         .target = NodeCallInputTarget::positional,
       };
     }
@@ -501,7 +519,7 @@ inline auto make_sample_output_requests(
         .sample_layout = SampleStreamLayout::planar};
       request.family_name = Value::name.view();
       request.family_channel_type = ChannelTypeTraits<Channel>::id;
-      request.target_channel_ordinal = Value::channel_ordinal;
+      request.target_channel_index = Value::channel_index;
     } else if constexpr (is_default_channel_named_arg_v<Value>) {
       using Channel = typename Value::channel_type;
       request.ref = builder.lift_to_sample_port(ref.value);
@@ -510,7 +528,7 @@ inline auto make_sample_output_requests(
         .sample_layout = SampleStreamLayout::planar};
       request.family_name = "main";
       request.family_channel_type = ChannelTypeTraits<Channel>::id;
-      request.target_channel_ordinal = Value::channel_ordinal;
+      request.target_channel_index = Value::channel_index;
     } else if constexpr (is_named_arg_v<Value>) {
       request.ref = builder.lift_to_sample_port(ref.value);
       request.name = Value::name.view();
@@ -719,7 +737,8 @@ TypedNodeRef<Node, Projection>::connect_event_input(
   return this->_clone_handle();
 }
 template<class Node, class Projection>
-inline SamplePortRef TypedNodeRef<Node, Projection>::detach(size_t latency) const {
-  return static_cast<SamplePortRef>(*this).detach(latency);
+inline SamplePortRef TypedNodeRef<Node, Projection>::detach(
+    size_t latency, std::optional<Sample> initial_value) const {
+  return static_cast<SamplePortRef>(*this).detach(latency, initial_value);
 }
 } // namespace iv

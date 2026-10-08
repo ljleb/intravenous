@@ -2,15 +2,9 @@
 
 namespace iv {
 IV_DEFINE_LINKER_EVENT(
-    IvModuleSourceIntrospectionLiveInputSnapshotsRequestedEvent,
-    iv_runtime_iv_module_source_introspection_live_input_snapshots_requested_event);
-IV_DEFINE_LINKER_EVENT(
-    IvModuleSourceIntrospectionConfiguredStateSnapshotRequestedEvent,
-    iv_runtime_iv_module_source_introspection_configured_state_snapshot_requested_event);
-IV_DEFINE_LINKER_EVENT(
     IvModuleSourceIntrospectionNodesUpdatedEvent,
-    iv_runtime_iv_module_source_introspection_nodes_updated_event);
+    iv_runtime_iv_module_source_introspection_nodes_updated_event)
 IV_DEFINE_LINKER_EVENT(
     IvModuleInstancesSourceFileFilterEvent,
-    iv_runtime_iv_module_instances_source_file_filter_event);
+    iv_runtime_iv_module_instances_source_file_filter_event)
 } // namespace iv

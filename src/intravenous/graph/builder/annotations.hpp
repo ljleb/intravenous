@@ -3,7 +3,7 @@
 #include <intravenous/graph/builder/identity.h>
 #include <intravenous/graph/builder/node_bundles.hpp>
 #include <intravenous/graph/builder/virtual_nodes.hpp>
-#include <intravenous/graph/types.h>
+#include <intravenous/graph/source_info.h>
 
 #include <algorithm>
 #include <cstddef>

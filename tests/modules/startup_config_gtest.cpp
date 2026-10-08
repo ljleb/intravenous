@@ -24,7 +24,6 @@ TEST(StartupConfig, MissingProjectFileUsesBuiltinDefaults)
     EXPECT_EQ(initialized.workspace_root, std::filesystem::weakly_canonical(workspace));
     EXPECT_EQ(initialized.execution.block_size, 256u);
     EXPECT_EQ(initialized.execution.sample_rate, 48000u);
-    EXPECT_EQ(initialized.execution.compiled_sample_cache_chunk_size_multiplier, 16u);
     EXPECT_EQ(initialized.output_device_id, std::optional<std::string>("default"));
     EXPECT_EQ(initialized.input_device_id, std::optional<std::string>("default"));
 }
@@ -40,7 +39,6 @@ TEST(StartupConfig, ProjectFileDoesNotAffectStartupDefaults)
                 {"c_compiler", "/tmp/not-used"},
                 {"block_size", 512},
                 {"sample_rate", 44100},
-                {"compiled_sample_cache_chunk_size_multiplier", 8},
             }},
         }.dump() + "\n");
 
@@ -49,7 +47,6 @@ TEST(StartupConfig, ProjectFileDoesNotAffectStartupDefaults)
 
     EXPECT_EQ(initialized.execution.block_size, 256u);
     EXPECT_EQ(initialized.execution.sample_rate, 48000u);
-    EXPECT_EQ(initialized.execution.compiled_sample_cache_chunk_size_multiplier, 16u);
     EXPECT_FALSE(initialized.toolchain.c_compiler.has_value());
 }
 
@@ -91,7 +88,6 @@ TEST(StartupConfig, IntravenousDefaultsOverrideExecutionConfig)
         install_dir / ".intravenous_defaults",
         "block_size=512\n"
         "sample_rate=44100\n"
-        "compiled_sample_cache_chunk_size_multiplier=8\n"
         "output_device_id=out-1\n"
         "input_device_id=\n");
 
@@ -101,7 +97,6 @@ TEST(StartupConfig, IntravenousDefaultsOverrideExecutionConfig)
 
     EXPECT_EQ(initialized.execution.block_size, 512u);
     EXPECT_EQ(initialized.execution.sample_rate, 44100u);
-    EXPECT_EQ(initialized.execution.compiled_sample_cache_chunk_size_multiplier, 8u);
     EXPECT_EQ(initialized.output_device_id, std::optional<std::string>("out-1"));
     EXPECT_EQ(initialized.input_device_id, std::nullopt);
 }

@@ -44,8 +44,8 @@ namespace iv {
             auto& state = ctx.state();
             size_t const mask = state.memory.size() - 1;
 
-            state.memory[(ctx.index + _latency) & mask] = ctx.inputs[0].get();
-            ctx.outputs[0].push(state.memory[ctx.index & mask]);
+            state.memory[(ctx.index + _latency) & mask] = ctx.template input<0>().get();
+            ctx.template output<0>().push(state.memory[ctx.index & mask]);
         }
     };
 }

@@ -88,40 +88,40 @@ struct NodePorts {
         return count_event_ports(output_configs);
     }
 
-    constexpr SampleInputConfig sample_input(size_t ordinal) const
+    constexpr SampleInputConfig sample_input(size_t index) const
     {
         for (InputConfig const& config : input_configs) {
             if (!is_sample(config)) continue;
-            if (ordinal-- == 0) return materialize_sample_config(config);
+            if (index-- == 0) return materialize_sample_config(config);
         }
-        throw std::out_of_range("sample input ordinal is out of bounds");
+        throw std::out_of_range("sample input index is out of bounds");
     }
 
-    constexpr SampleOutputConfig sample_output(size_t ordinal) const
+    constexpr SampleOutputConfig sample_output(size_t index) const
     {
         for (OutputConfig const& config : output_configs) {
             if (!is_sample(config)) continue;
-            if (ordinal-- == 0) return materialize_sample_config(config);
+            if (index-- == 0) return materialize_sample_config(config);
         }
-        throw std::out_of_range("sample output ordinal is out of bounds");
+        throw std::out_of_range("sample output index is out of bounds");
     }
 
-    constexpr EventInputConfig event_input(size_t ordinal) const
+    constexpr EventInputConfig event_input(size_t index) const
     {
         for (InputConfig const& config : input_configs) {
             if (is_sample(config)) continue;
-            if (ordinal-- == 0) return materialize_event_config(config);
+            if (index-- == 0) return materialize_event_config(config);
         }
-        throw std::out_of_range("event input ordinal is out of bounds");
+        throw std::out_of_range("event input index is out of bounds");
     }
 
-    constexpr EventOutputConfig event_output(size_t ordinal) const
+    constexpr EventOutputConfig event_output(size_t index) const
     {
         for (OutputConfig const& config : output_configs) {
             if (is_sample(config)) continue;
-            if (ordinal-- == 0) return materialize_event_config(config);
+            if (index-- == 0) return materialize_event_config(config);
         }
-        throw std::out_of_range("event output ordinal is out of bounds");
+        throw std::out_of_range("event output index is out of bounds");
     }
 
     constexpr NodeBundlePortId input_port_at(
@@ -131,14 +131,14 @@ struct NodePorts {
             throw std::out_of_range("positional input is out of bounds");
         }
         auto const sample = is_sample(input_configs[position]);
-        size_t ordinal = 0;
-        for (size_t index = 0; index < position; ++index) {
-            ordinal += is_sample(input_configs[index]) == sample;
+        size_t port_index = 0;
+        for (size_t config_index = 0; config_index < position; ++config_index) {
+            port_index += is_sample(input_configs[config_index]) == sample;
         }
         return {
             node_bundle_handle,
             sample ? PortKind::sample : PortKind::event,
-            ordinal,
+            port_index,
         };
     }
 };

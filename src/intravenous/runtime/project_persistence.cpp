@@ -1,9 +1,8 @@
 #include <intravenous/runtime/project_persistence.h>
 
-#include <intravenous/runtime/iv_module_instances_events.h>
+#include <intravenous/runtime/project_persistence_events.h>
 #include <intravenous/runtime/runtime_project_events.h>
 #include <intravenous/runtime/socket_rpc_server.h>
-#include <intravenous/runtime/task_runner_events.h>
 
 #include <fstream>
 #include <nlohmann/json.hpp>
@@ -23,7 +22,9 @@ std::string require_string(Json const &args, std::string const &key)
     return it->get<std::string>();
 }
 
-std::optional<std::string> optional_nullable_string(Json const &args, std::string const &key)
+std::optional<std::string> optional_nullable_string(
+    Json const &args,
+    std::string const &key)
 {
     auto const it = args.find(key);
     if (it == args.end() || it->is_null()) {
@@ -44,9 +45,8 @@ std::filesystem::path require_project_path(
     if (!path.is_absolute()) {
         path = workspace_root / path;
     }
-
     std::error_code ec;
-    auto const normalized = std::filesystem::weakly_canonical(path, ec);
+    auto normalized = std::filesystem::weakly_canonical(path, ec);
     if (ec) {
         throw std::runtime_error(
             "command args key '" + key + "' cannot be resolved: " + ec.message());
@@ -54,23 +54,17 @@ std::filesystem::path require_project_path(
     return normalized.lexically_normal();
 }
 
-std::optional<InternedString> optional_interned_string(Json const &args, std::string const &key)
-{
-    auto const it = args.find(key);
-    if (it == args.end() || it->is_null()) {
-        return std::nullopt;
-    }
-    if (!it->is_string()) {
-        throw std::runtime_error("command args key '" + key + "' must be a string or null");
-    }
-    return InternedString::from_string(it->get<std::string>());
-}
-
 std::optional<std::filesystem::path> parse_optional_path_override_value(
     Json const &value,
     std::filesystem::path const &workspace_root)
 {
     if (value.is_null()) {
+        return std::nullopt;
+    }
+    if (!value.is_string()) {
+        throw std::runtime_error("project override toolchain settings must be strings or null");
+    }
+    if (value.get<std::string>() == "default") {
         return std::nullopt;
     }
     auto path = std::filesystem::path(value.get<std::string>());
@@ -90,129 +84,6 @@ void assign_if_present(
     has_any = true;
 }
 
-size_t require_size(Json const &args, std::string const &key)
-{
-    auto const it = args.find(key);
-    if (it == args.end() || !it->is_number_integer()) {
-        throw std::runtime_error("command args are missing non-negative integer key '" + key + "'");
-    }
-    auto const value = it->get<std::int64_t>();
-    if (value < 0) {
-        throw std::runtime_error("command args key '" + key + "' must be non-negative");
-    }
-    return static_cast<size_t>(value);
-}
-
-PortKind require_port_kind(Json const &args, std::string const &key)
-{
-    auto const value = require_string(args, key);
-    if (value == "sample") {
-        return PortKind::sample;
-    }
-    if (value == "event") {
-        return PortKind::event;
-    }
-    throw std::runtime_error("unknown port kind: " + value);
-}
-
-LanePortDomain require_port_domain(Json const &args, std::string const &key)
-{
-    auto const value = require_string(args, key);
-    if (value == "compiled") {
-        return LanePortDomain::compiled;
-    }
-    if (value == "realtime") {
-        return LanePortDomain::realtime;
-    }
-    throw std::runtime_error("unknown port domain: " + value);
-}
-
-ChannelTypeId require_channel_type(Json const &args, std::string const &key)
-{
-    auto const value = require_string(args, key);
-    if (value == "mono") {
-        return ChannelTypeId::mono;
-    }
-    if (value == "stereo") {
-        return ChannelTypeId::stereo;
-    }
-    throw std::runtime_error("unknown channel type: " + value);
-}
-
-ProjectSampleInputState parse_project_sample_input_state(std::string const &state)
-{
-    if (state == "default") {
-        return ProjectSampleInputState::default_;
-    }
-    if (state == "overridden") {
-        return ProjectSampleInputState::overridden;
-    }
-    if (state == "virtualFollow") {
-        return ProjectSampleInputState::virtual_follow;
-    }
-    if (state == "timelineLane") {
-        return ProjectSampleInputState::timeline_lane;
-    }
-    if (state == "disconnected") {
-        return ProjectSampleInputState::disconnected;
-    }
-    throw std::runtime_error("unknown project sample input state: " + state);
-}
-
-ProjectEventInputState parse_project_event_input_state(std::string const &state)
-{
-    if (state == "default") {
-        return ProjectEventInputState::default_;
-    }
-    if (state == "virtualFollow") {
-        return ProjectEventInputState::virtual_follow;
-    }
-    if (state == "timelineLane") {
-        return ProjectEventInputState::timeline_lane;
-    }
-    if (state == "disconnected") {
-        return ProjectEventInputState::disconnected;
-    }
-    throw std::runtime_error("unknown project event input state: " + state);
-}
-
-ProjectSampleOutputState parse_project_sample_output_state(std::string const &state)
-{
-    if (state == "disconnected") {
-        return ProjectSampleOutputState::disconnected;
-    }
-    if (state == "virtual") {
-        return ProjectSampleOutputState::virtual_port;
-    }
-    if (state == "timelineLane") {
-        return ProjectSampleOutputState::timeline_lane;
-    }
-    throw std::runtime_error("unknown project sample output state: " + state);
-}
-
-ProjectEventOutputState parse_project_event_output_state(std::string const &state)
-{
-    if (state == "disconnected") {
-        return ProjectEventOutputState::disconnected;
-    }
-    if (state == "virtual") {
-        return ProjectEventOutputState::virtual_port;
-    }
-    if (state == "timelineLane") {
-        return ProjectEventOutputState::timeline_lane;
-    }
-    throw std::runtime_error("unknown project event output state: " + state);
-}
-
-void publish_graph_input_public_ports(GraphInputPublicPortsSnapshot public_ports)
-{
-    IV_INVOKE_LINKER_EVENT(
-        iv_runtime_iv_module_instances_configured_event,
-        IvModuleInstancesConfigured{
-            .public_ports = std::move(public_ports)
-        });
-}
-
 bool is_recognized_project_override_key(std::string const &key)
 {
     return key == "c_compiler"
@@ -222,7 +93,6 @@ bool is_recognized_project_override_key(std::string const &key)
         || key == "make_program"
         || key == "juce_dir"
         || key == "iv_package_pch"
-        || key == "compiled_sample_cache_chunk_size_multiplier"
         || key == "output_device_id"
         || key == "input_device_id";
 }
@@ -241,34 +111,11 @@ std::optional<ProjectOverrideSettingsRequest> parse_project_override_settings_re
                 "project override setting key is not recognized and will be ignored: " + key);
             continue;
         }
-        if (key == "c_compiler" || key == "cxx_compiler" || key == "cmake_program" ||
-            key == "make_program" || key == "juce_dir" || key == "iv_package_pch") {
-            if (!value.is_null() && !value.is_string()) {
-                throw std::runtime_error("project override toolchain settings must be strings or null");
-            }
-            auto const parsed_value = (value.is_string() && value.get<std::string>() == "default")
-                ? std::optional<std::filesystem::path>{}
-                : parse_optional_path_override_value(value, workspace_root);
-            if (key == "c_compiler") {
-                assign_if_present(request.c_compiler, has_any, std::move(parsed_value));
-            } else if (key == "cxx_compiler") {
-                assign_if_present(request.cxx_compiler, has_any, std::move(parsed_value));
-            } else if (key == "cmake_program") {
-                assign_if_present(request.cmake_program, has_any, std::move(parsed_value));
-            } else if (key == "make_program") {
-                assign_if_present(request.make_program, has_any, std::move(parsed_value));
-            } else {
-                if (key == "juce_dir") {
-                    assign_if_present(request.juce_dir, has_any, std::move(parsed_value));
-                } else {
-                    assign_if_present(request.iv_package_pch, has_any, std::move(parsed_value));
-                }
-            }
-            continue;
-        }
+
         if (key == "cmake_generator") {
             if (!value.is_null() && !value.is_string()) {
-                throw std::runtime_error("project override toolchain settings must be strings or null");
+                throw std::runtime_error(
+                    "project override toolchain settings must be strings or null");
             }
             assign_if_present(
                 request.cmake_generator,
@@ -278,42 +125,36 @@ std::optional<ProjectOverrideSettingsRequest> parse_project_override_settings_re
                     : std::optional<std::string>{});
             continue;
         }
-        if (key == "compiled_sample_cache_chunk_size_multiplier") {
-            if (!value.is_string()
-                && (!value.is_number_integer() || value.get<std::int64_t>() < 0)) {
-                throw std::runtime_error(
-                    "project override setting 'compiled_sample_cache_chunk_size_multiplier' must be a non-negative integer or 'default'");
-            }
-            if (value.is_string()) {
-                if (value.get<std::string>() != "default") {
-                    throw std::runtime_error(
-                        "project override setting 'compiled_sample_cache_chunk_size_multiplier' must be a non-negative integer or 'default'");
-                }
-                assign_if_present(
-                    request.compiled_sample_cache_chunk_size_multiplier,
-                    has_any,
-                    std::optional<size_t>{});
-            } else {
-                assign_if_present(
-                    request.compiled_sample_cache_chunk_size_multiplier,
-                    has_any,
-                    std::optional<size_t>(static_cast<size_t>(value.get<std::int64_t>())));
-            }
-            continue;
-        }
+
         if (key == "output_device_id" || key == "input_device_id") {
             if (!value.is_null() && !value.is_string()) {
-                throw std::runtime_error("project audio device id override settings must be strings or null");
+                throw std::runtime_error(
+                    "project audio device id override settings must be strings or null");
             }
-            auto const parsed_value = (value.is_string() && value.get<std::string>() != "default")
+            auto parsed = (value.is_string() && value.get<std::string>() != "default")
                 ? std::optional<std::string>(value.get<std::string>())
                 : std::optional<std::string>{};
             if (key == "output_device_id") {
-                assign_if_present(request.output_device_id, has_any, parsed_value);
+                assign_if_present(request.output_device_id, has_any, std::move(parsed));
             } else {
-                assign_if_present(request.input_device_id, has_any, parsed_value);
+                assign_if_present(request.input_device_id, has_any, std::move(parsed));
             }
             continue;
+        }
+
+        auto parsed = parse_optional_path_override_value(value, workspace_root);
+        if (key == "c_compiler") {
+            assign_if_present(request.c_compiler, has_any, std::move(parsed));
+        } else if (key == "cxx_compiler") {
+            assign_if_present(request.cxx_compiler, has_any, std::move(parsed));
+        } else if (key == "cmake_program") {
+            assign_if_present(request.cmake_program, has_any, std::move(parsed));
+        } else if (key == "make_program") {
+            assign_if_present(request.make_program, has_any, std::move(parsed));
+        } else if (key == "juce_dir") {
+            assign_if_present(request.juce_dir, has_any, std::move(parsed));
+        } else if (key == "iv_package_pch") {
+            assign_if_present(request.iv_package_pch, has_any, std::move(parsed));
         }
     }
 
@@ -356,26 +197,25 @@ std::vector<ProjectCommand> ProjectPersistence::read_commands() const
 
     std::vector<ProjectCommand> commands;
     for (std::string line; std::getline(in, line);) {
-        auto trimmed = line;
-        trimmed.erase(0, trimmed.find_first_not_of(" \t\r\n"));
-        if (trimmed.empty() || trimmed.starts_with('#')) {
+        line.erase(0, line.find_first_not_of(" \t\r\n"));
+        if (line.empty() || line.starts_with('#')) {
             continue;
         }
-        auto json = Json::parse(trimmed);
+        auto json = Json::parse(line);
         if (!json.is_object()) {
             throw std::runtime_error("project command line must be an object");
         }
-        auto const command_it = json.find("command");
-        auto const args_it = json.find("args");
-        if (command_it == json.end() || !command_it->is_string()) {
+        auto const command = json.find("command");
+        auto const args = json.find("args");
+        if (command == json.end() || !command->is_string()) {
             throw std::runtime_error("project command line is missing string 'command'");
         }
-        if (args_it == json.end() || !args_it->is_object()) {
+        if (args == json.end() || !args->is_object()) {
             throw std::runtime_error("project command line is missing object 'args'");
         }
         commands.push_back(ProjectCommand{
-            .command = command_it->get<std::string>(),
-            .args = *args_it,
+            .command = command->get<std::string>(),
+            .args = *args,
         });
     }
     return commands;
@@ -384,20 +224,16 @@ std::vector<ProjectCommand> ProjectPersistence::read_commands() const
 void ProjectPersistence::apply_command(ProjectCommand const &command)
 {
     auto const &args = command.args;
-
     if (command.command == "project.overrideSettings") {
-        auto const request = parse_project_override_settings_request(
+        auto request = parse_project_override_settings_request(
             args,
             workspace_root_,
-            [&](std::string const &message) {
-                emit_message("warning", message);
-            });
-        if (!request.has_value()) {
-            return;
+            [&](std::string const &message) { emit_message("warning", message); });
+        if (request) {
+            IV_INVOKE_LINKER_EVENT(
+                iv_runtime_project_override_settings_requested_event,
+                *request);
         }
-        IV_INVOKE_LINKER_EVENT(
-            iv_runtime_project_override_settings_requested_event,
-            *request);
         return;
     }
 
@@ -430,185 +266,12 @@ void ProjectPersistence::apply_command(ProjectCommand const &command)
             updates.push_back(ProjectUpdateIvModuleInstance{
                 .instance_id = require_string(update, "instance_id"),
                 .display_name = optional_nullable_string(update, "display_name"),
-                .default_silence_ttl_samples = update.contains("default_silence_ttl_samples")
-                    ? std::optional<size_t>{require_size(update, "default_silence_ttl_samples")}
-                    : std::nullopt,
             });
         }
         ProjectAckBuilder builder;
         IV_INVOKE_LINKER_EVENT(
             iv_runtime_project_update_iv_module_instances_requested_event,
-            ProjectUpdateIvModuleInstancesRequest{
-                .updates = std::move(updates),
-            },
-            builder);
-        builder.build();
-        return;
-    }
-
-    if (command.command == "audioDevices.setLaneIds") {
-        ProjectAckBuilder builder;
-        IV_INVOKE_LINKER_EVENT(
-            iv_runtime_project_set_audio_device_lane_ids_requested_event,
-            ProjectSetAudioDeviceLaneIdsRequest{
-                .output_lane_id = InternedString::from_string(require_string(args, "output_lane_id")),
-                .input_lane_id = InternedString::from_string(require_string(args, "input_lane_id")),
-            },
-            builder);
-        builder.build();
-        return;
-    }
-
-    if (command.command == "graph.setSampleInputValue") {
-        ProjectGraphInputAckBuilder builder;
-        IV_INVOKE_LINKER_EVENT(
-            iv_runtime_project_set_sample_input_value_requested_event,
-            ProjectSetSampleInputValueRequest{
-                .node_id = require_string(args, "node_id"),
-                .member_ordinal = args["member_ordinal"].is_null()
-                    ? std::nullopt
-                    : std::optional<size_t>(args["member_ordinal"].get<size_t>()),
-                .input_ordinal = require_size(args, "input_ordinal"),
-                .value = Sample{args["value"].get<Sample::storage>()},
-            },
-            builder);
-        publish_graph_input_public_ports(builder.build());
-        return;
-    }
-
-    if (command.command == "graph.setSampleInputState") {
-        ProjectGraphInputAckBuilder builder;
-        IV_INVOKE_LINKER_EVENT(
-            iv_runtime_project_set_sample_input_state_requested_event,
-            ProjectSetSampleInputStateRequest{
-                .node_id = require_string(args, "node_id"),
-                .member_ordinal = args["member_ordinal"].is_null()
-                    ? std::nullopt
-                    : std::optional<size_t>(args["member_ordinal"].get<size_t>()),
-                .input_ordinal = require_size(args, "input_ordinal"),
-                .state = parse_project_sample_input_state(require_string(args, "state")),
-                .lane_id = optional_interned_string(args, "lane_id"),
-            },
-            builder);
-        publish_graph_input_public_ports(builder.build());
-        return;
-    }
-
-    if (command.command == "graph.setEventInputState") {
-        ProjectGraphInputAckBuilder builder;
-        IV_INVOKE_LINKER_EVENT(
-            iv_runtime_project_set_event_input_state_requested_event,
-            ProjectSetEventInputStateRequest{
-                .node_id = require_string(args, "node_id"),
-                .member_ordinal = args["member_ordinal"].is_null()
-                    ? std::nullopt
-                    : std::optional<size_t>(args["member_ordinal"].get<size_t>()),
-                .input_ordinal = require_size(args, "input_ordinal"),
-                .state = parse_project_event_input_state(require_string(args, "state")),
-                .lane_id = optional_interned_string(args, "lane_id"),
-            },
-            builder);
-        publish_graph_input_public_ports(builder.build());
-        return;
-    }
-
-    if (command.command == "graph.setSampleOutputState") {
-        ProjectGraphInputAckBuilder builder;
-        IV_INVOKE_LINKER_EVENT(
-            iv_runtime_project_set_sample_output_state_requested_event,
-            ProjectSetSampleOutputStateRequest{
-                .node_id = require_string(args, "node_id"),
-                .member_ordinal = args["member_ordinal"].is_null()
-                    ? std::nullopt
-                    : std::optional<size_t>(args["member_ordinal"].get<size_t>()),
-                .output_ordinal = require_size(args, "output_ordinal"),
-                .state = parse_project_sample_output_state(require_string(args, "state")),
-                .lane_id = optional_interned_string(args, "lane_id"),
-            },
-            builder);
-        publish_graph_input_public_ports(builder.build());
-        return;
-    }
-
-    if (command.command == "graph.setEventOutputState") {
-        ProjectGraphInputAckBuilder builder;
-        IV_INVOKE_LINKER_EVENT(
-            iv_runtime_project_set_event_output_state_requested_event,
-            ProjectSetEventOutputStateRequest{
-                .node_id = require_string(args, "node_id"),
-                .member_ordinal = args["member_ordinal"].is_null()
-                    ? std::nullopt
-                    : std::optional<size_t>(args["member_ordinal"].get<size_t>()),
-                .output_ordinal = require_size(args, "output_ordinal"),
-                .state = parse_project_event_output_state(require_string(args, "state")),
-                .lane_id = optional_interned_string(args, "lane_id"),
-            },
-            builder);
-        publish_graph_input_public_ports(builder.build());
-        return;
-    }
-
-    if (command.command == "timeline.openLaneView") {
-        // Lane views are restored by VS Code's workspace-local webview state.
-        // Accept old project files during migration, but do not recreate their
-        // views or carry them forward on the next save.
-        return;
-    }
-
-    if (command.command == "timeline.setLaneSampleChannelType") {
-        ProjectAckBuilder builder;
-        IV_INVOKE_LINKER_EVENT(
-            iv_runtime_project_set_timeline_lane_sample_channel_type_requested_event,
-            ProjectSetTimelineLaneSampleChannelTypeRequest{
-                .lane_id = InternedString::from_string(require_string(args, "lane_id")),
-                .sample_channel_type = require_channel_type(args, "sample_channel_type"),
-            },
-            builder);
-        builder.build();
-        return;
-    }
-
-    if (command.command == "timeline.createConfiguredLane") {
-        ProjectAckBuilder builder;
-        IV_INVOKE_LINKER_EVENT(
-            iv_runtime_project_create_timeline_lane_requested_event,
-            ProjectCreateTimelineLaneRequest{
-                .type_id = require_string(args, "type_id"),
-                .lane_id = InternedString::from_string(require_string(args, "lane_id")),
-                .serialized_state = require_string(args, "serialized_state"),
-            }, builder);
-        builder.build();
-        return;
-    }
-
-    if (command.command == "timeline.connectLanes") {
-        ProjectAckBuilder builder;
-        IV_INVOKE_LINKER_EVENT(
-            iv_runtime_project_connect_timeline_lanes_requested_event,
-            ProjectConnectTimelineLanesRequest{
-                .source_lane_id = InternedString::from_string(require_string(args, "source_lane_id")),
-                .target_lane_id = InternedString::from_string(require_string(args, "target_lane_id")),
-                .port_domain = require_port_domain(args, "port_domain"),
-                .port_kind = require_port_kind(args, "port_kind"),
-                .port_ordinal = require_size(args, "port_ordinal"),
-            },
-            builder);
-        builder.build();
-        return;
-    }
-
-    if (command.command == "timeline.connectConfiguredLanes") {
-        ProjectAckBuilder builder;
-        IV_INVOKE_LINKER_EVENT(
-            iv_runtime_project_connect_timeline_lanes_requested_event,
-            ProjectConnectTimelineLanesRequest{
-                .source_lane_id = InternedString::from_string(require_string(args, "source_lane_id")),
-                .target_lane_id = InternedString::from_string(require_string(args, "target_lane_id")),
-                .port_domain = require_port_domain(args, "port_domain"),
-                .port_kind = require_port_kind(args, "port_kind"),
-                .port_ordinal = require_size(args, "port_ordinal"),
-                .configured = true,
-            },
+            ProjectUpdateIvModuleInstancesRequest{.updates = std::move(updates)},
             builder);
         builder.build();
         return;
@@ -619,21 +282,14 @@ void ProjectPersistence::apply_command(ProjectCommand const &command)
 
 void ProjectPersistence::load()
 {
-    auto const commands = read_commands();
-    std::uint64_t synthetic_graph_revision = 0;
-    for (auto const &command : commands) {
+    for (auto const &command : read_commands()) {
         try {
             apply_command(command);
-            // Project replay is sequential: later commands may depend on graph-input
-            // lanes and rebuilds requested by earlier ones already being materialized.
-            IV_INVOKE_LINKER_EVENT(
-                iv_runtime_task_runner_after_pass_event,
-                TasksRunnerAfterPass{.graph_revision = synthetic_graph_revision++});
-        } catch (std::exception const &e) {
+        } catch (std::exception const &error) {
             emit_message(
                 "error",
                 "project load command failed for '" + command.command + "' args="
-                    + command.args.dump() + ": " + e.what());
+                    + command.args.dump() + ": " + error.what());
         }
     }
     IV_INVOKE_LINKER_EVENT(iv_runtime_project_loaded_event);
@@ -643,11 +299,8 @@ void ProjectPersistence::save() const
 {
     std::lock_guard lock(save_mutex_);
     ProjectPersistenceBuilder builder(workspace_root_, startup_);
-    IV_INVOKE_LINKER_EVENT(
-        iv_runtime_project_persistence_collect_state_event,
-        builder);
+    IV_INVOKE_LINKER_EVENT(iv_runtime_project_persistence_collect_state_event, builder);
 
-    auto const commands = builder.build();
     auto const project_file = project_file_path();
     auto const temporary_file = project_file.parent_path()
         / (project_file.filename().string() + ".tmp");
@@ -655,11 +308,8 @@ void ProjectPersistence::save() const
     if (!out) {
         throw std::runtime_error("failed to write " + temporary_file.string());
     }
-    for (auto const &command : commands) {
-        out << Json{
-            {"command", command.command},
-            {"args", command.args},
-        }.dump() << '\n';
+    for (auto const &command : builder.build()) {
+        out << Json{{"command", command.command}, {"args", command.args}}.dump() << '\n';
     }
     out.close();
     if (!out) {
@@ -686,245 +336,10 @@ void ProjectPersistence::handle_socket_rpc_save_project(
     try {
         save();
         builder.succeed();
-    } catch (std::exception const &exception) {
-        builder.fail(exception.what());
-    }
-}
-
-void ProjectPersistence::handle_socket_rpc_create_iv_module_instance(
-    CreateIvModuleInstanceRequest const &request,
-    SocketRpcCreateIvModuleInstanceResultBuilder &builder) const
-{
-    try {
-        ProjectStringBuilder project_builder;
-        IV_INVOKE_LINKER_EVENT(
-            iv_runtime_project_create_iv_module_instance_requested_event,
-            ProjectCreateIvModuleInstanceRequest{
-                .module_id = request.module_id,
-                .display_name = request.display_name,
-            },
-            project_builder);
-        builder.succeed(project_builder.build());
     } catch (std::exception const &error) {
         builder.fail(error.what());
     }
 }
 
-void ProjectPersistence::handle_socket_rpc_delete_iv_module_instance(
-    DeleteIvModuleInstanceRequest const &request,
-    SocketRpcAckResponseBuilder &builder) const
-{
-    try {
-        ProjectAckBuilder project_builder;
-        IV_INVOKE_LINKER_EVENT(
-            iv_runtime_project_delete_iv_module_instance_requested_event,
-            ProjectDeleteIvModuleInstanceRequest{.instance_id = request.instance_id},
-            project_builder);
-        project_builder.build();
-        builder.succeed();
-    } catch (std::exception const &error) {
-        builder.fail(error.what());
-    }
-}
 
-void ProjectPersistence::handle_socket_rpc_update_iv_module_instances(
-    UpdateIvModuleInstancesRequest const &request,
-    SocketRpcAckResponseBuilder &builder) const
-{
-    try {
-        std::vector<ProjectUpdateIvModuleInstance> updates;
-        updates.reserve(request.updates.size());
-        for (auto const &update : request.updates) {
-            updates.push_back(ProjectUpdateIvModuleInstance{
-                .instance_id = update.instance_id,
-                .display_name = update.display_name,
-                .default_silence_ttl_samples = update.default_silence_ttl_samples,
-            });
-        }
-        ProjectAckBuilder project_builder;
-        IV_INVOKE_LINKER_EVENT(
-            iv_runtime_project_update_iv_module_instances_requested_event,
-            ProjectUpdateIvModuleInstancesRequest{.updates = std::move(updates)},
-            project_builder);
-        project_builder.build();
-        builder.succeed();
-    } catch (std::exception const &error) {
-        builder.fail(error.what());
-    }
-}
-
-void ProjectPersistence::handle_socket_rpc_set_timeline_compiled_sample_cache_chunk_size_multiplier(
-    SetTimelineCompiledSampleCacheChunkSizeMultiplierRequest const &request,
-    SocketRpcAckResponseBuilder &builder) const
-{
-    try {
-        ProjectAckBuilder project_builder;
-        IV_INVOKE_LINKER_EVENT(
-            iv_runtime_project_set_timeline_compiled_sample_cache_chunk_size_multiplier_requested_event,
-            ProjectSetTimelineCompiledSampleCacheChunkSizeMultiplierRequest{
-                .compiled_sample_cache_chunk_size_multiplier =
-                    request.compiled_sample_cache_chunk_size_multiplier,
-            },
-            project_builder);
-        project_builder.build();
-        builder.succeed();
-    } catch (std::exception const &error) {
-        builder.fail(error.what());
-    }
-}
-
-void ProjectPersistence::handle_socket_rpc_set_timeline_lane_sample_channel_type(
-    SetTimelineLaneSampleChannelTypeRequest const &request,
-    SocketRpcAckResponseBuilder &builder) const
-{
-    try {
-        ProjectAckBuilder project_builder;
-        IV_INVOKE_LINKER_EVENT(
-            iv_runtime_project_set_timeline_lane_sample_channel_type_requested_event,
-            ProjectSetTimelineLaneSampleChannelTypeRequest{
-                .lane_id = request.lane_id,
-                .sample_channel_type = request.sample_channel_type,
-            },
-            project_builder);
-        project_builder.build();
-        builder.succeed();
-    } catch (std::exception const &error) {
-        builder.fail(error.what());
-    }
-}
-
-void ProjectPersistence::handle_socket_rpc_set_timeline_lane_ui_state(
-    SetTimelineLaneUiStateRequest const &request,
-    SocketRpcAckResponseBuilder &builder) const
-{
-    try {
-        ProjectAckBuilder project_builder;
-        IV_INVOKE_LINKER_EVENT(
-            iv_runtime_project_set_timeline_lane_ui_state_requested_event,
-            ProjectSetTimelineLaneUiStateRequest{
-                .lane_id = request.lane_id,
-                .expected_revision = request.expected_revision,
-                .serialized_state = request.serialized_state,
-                .name = request.name,
-            },
-            project_builder);
-        project_builder.build();
-        builder.succeed();
-    } catch (std::exception const &error) {
-        builder.fail(error.what());
-    }
-}
-
-void ProjectPersistence::handle_socket_rpc_connect_timeline_lanes(
-    ConnectTimelineLanesRequest const &request,
-    SocketRpcAckResponseBuilder &builder) const
-{
-    try {
-        ProjectAckBuilder project_builder;
-        IV_INVOKE_LINKER_EVENT(
-            iv_runtime_project_connect_timeline_lanes_requested_event,
-            ProjectConnectTimelineLanesRequest{
-                .source_lane_id = request.source_lane_id,
-                .target_lane_id = request.target_lane_id,
-                .port_domain = request.port_domain,
-                .port_kind = request.port_kind,
-                .port_ordinal = request.port_ordinal,
-                .configured = true,
-            },
-            project_builder);
-        project_builder.build();
-        builder.succeed();
-    } catch (std::exception const &error) {
-        builder.fail(error.what());
-    }
-}
-
-void ProjectPersistence::handle_socket_rpc_disconnect_timeline_lanes(
-    DisconnectTimelineLanesRequest const &request,
-    SocketRpcAckResponseBuilder &builder) const
-{
-    try {
-        ProjectAckBuilder project_builder;
-        IV_INVOKE_LINKER_EVENT(
-            iv_runtime_project_disconnect_timeline_lanes_requested_event,
-            ProjectDisconnectTimelineLanesRequest{
-                .source_lane_id = request.source_lane_id,
-                .target_lane_id = request.target_lane_id,
-                .port_domain = request.port_domain,
-                .port_kind = request.port_kind,
-                .port_ordinal = request.port_ordinal,
-            },
-            project_builder);
-        project_builder.build();
-        builder.succeed();
-    } catch (std::exception const &error) {
-        builder.fail(error.what());
-    }
-}
-
-void ProjectPersistence::handle_socket_rpc_get_timeline_lane_types(
-    GetTimelineLaneTypesRequest const &,
-    SocketRpcLaneTypesResultBuilder &builder) const
-{
-    try {
-        ProjectLaneTypesBuilder project_builder;
-        IV_INVOKE_LINKER_EVENT(
-            iv_runtime_project_get_timeline_lane_types_requested_event,
-            project_builder);
-        builder.succeed(project_builder.build());
-    } catch (std::exception const &error) {
-        builder.fail(error.what());
-    }
-}
-
-void ProjectPersistence::handle_socket_rpc_create_timeline_lane(
-    CreateTimelineLaneRequest const &request,
-    SocketRpcAckResponseBuilder &builder) const
-{
-    try {
-        ProjectAckBuilder project_builder;
-        IV_INVOKE_LINKER_EVENT(
-            iv_runtime_project_create_timeline_lane_requested_event,
-            ProjectCreateTimelineLaneRequest{.type_id = request.type_id},
-            project_builder);
-        project_builder.build();
-        builder.succeed();
-    } catch (std::exception const &error) {
-        builder.fail(error.what());
-    }
-}
-
-void ProjectPersistence::handle_socket_rpc_delete_timeline_lane(
-    DeleteTimelineLaneRequest const &request,
-    SocketRpcAckResponseBuilder &builder) const
-{
-    try {
-        ProjectAckBuilder project_builder;
-        IV_INVOKE_LINKER_EVENT(
-            iv_runtime_project_delete_timeline_lane_requested_event,
-            ProjectDeleteTimelineLaneRequest{.lane_id = request.lane_id},
-            project_builder);
-        project_builder.build();
-        builder.succeed();
-    } catch (std::exception const &error) {
-        builder.fail(error.what());
-    }
-}
-
-void ProjectPersistence::handle_socket_rpc_duplicate_timeline_lane(
-    DuplicateTimelineLaneRequest const &request,
-    SocketRpcAckResponseBuilder &builder) const
-{
-    try {
-        ProjectAckBuilder project_builder;
-        IV_INVOKE_LINKER_EVENT(
-            iv_runtime_project_duplicate_timeline_lane_requested_event,
-            ProjectDuplicateTimelineLaneRequest{.lane_id = request.lane_id},
-            project_builder);
-        project_builder.build();
-        builder.succeed();
-    } catch (std::exception const &error) {
-        builder.fail(error.what());
-    }
-}
 } // namespace iv

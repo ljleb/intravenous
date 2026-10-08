@@ -1,6 +1,5 @@
 #include <intravenous/runtime/socket_rpc_server.h>
 
-#include <intravenous/runtime/lane_query_schema_events.h>
 #include <intravenous/runtime/socket_rpc_json_serialization.h>
 
 #include <intravenous/filesystem_paths.h>
@@ -26,18 +25,6 @@ std::string serialize_json_line(Json const &value) {
     return value.dump() + "\n";
 }
 
-std::string_view channel_type_json(ChannelTypeId type) {
-    switch (type) {
-    case ChannelTypeId::mono:
-        return "mono";
-    case ChannelTypeId::stereo:
-        return "stereo";
-    case ChannelTypeId::count:
-        break;
-    }
-    return "mono";
-}
-
 std::string jsonrpc_error(int id, int code, std::string const &message) {
     return serialize_json_line(Json{
         {"jsonrpc", "2.0"},
@@ -59,92 +46,6 @@ Json string_array_json(std::vector<std::string> const &values) {
     Json json = Json::array();
     for (auto const &value : values) {
         json.push_back(value);
-    }
-    return json;
-}
-
-Json lane_view_content_update_json(LaneViewContentUpdate const &update) {
-    Json json_lanes = Json::array();
-    for (auto const &lane : update.lanes) {
-        Json json_events = Json::array();
-        for (auto const &event : lane.events) {
-            Json json_event{
-                {"time", event.time},
-            };
-            std::visit(
-                [&]<typename T>(T const &value) {
-                    using Event = std::remove_cvref_t<T>;
-                    if constexpr (std::same_as<Event, TriggerEvent>) {
-                        json_event["value"] = Json{{"type", "trigger"}};
-                    } else if constexpr (std::same_as<Event, MidiEvent>) {
-                        Json bytes = Json::array();
-                        for (size_t i = 0; i < value.size; ++i) {
-                            bytes.push_back(value.bytes[i]);
-                        }
-                        json_event["value"] = Json{
-                            {"type", "midi"},
-                            {"bytes", std::move(bytes)},
-                        };
-                    } else if constexpr (std::same_as<Event, BoundaryEvent>) {
-                        json_event["value"] = Json{
-                            {"type", "boundary"},
-                            {"isBegin", value.is_begin},
-                        };
-                    } else if constexpr (std::same_as<Event, EmptyEvent>) {
-                        json_event["value"] = Json{{"type", "empty"}};
-                    }
-                },
-                event.value);
-            json_events.push_back(std::move(json_event));
-        }
-        Json json_lane{
-            {"laneId", lane.lane_id.str()},
-            {"adapterType", lane.adapter_type},
-            {"sampleChannelType", lane.sample_channel_type.has_value()
-                ? Json(channel_type_json(*lane.sample_channel_type))
-                : Json(nullptr)},
-            {"events", std::move(json_events)},
-        };
-        if (lane.peak_level.has_value()) {
-            json_lane["peakLevel"] = *lane.peak_level;
-        }
-        if (lane.secondary_peak_level.has_value()) {
-            json_lane["secondaryPeakLevel"] = *lane.secondary_peak_level;
-        }
-        if (lane.event_count.has_value()) {
-            json_lane["eventCount"] = *lane.event_count;
-        }
-        if (lane.compiled_sample_window.has_value()) {
-            json_lane["samples"] = lane.compiled_sample_window->primary;
-            if (lane.compiled_window_first_sample_index.has_value()
-                && lane.compiled_window_last_sample_index.has_value()) {
-                json_lane["sampleWindowFirstIndex"] = *lane.compiled_window_first_sample_index;
-                json_lane["sampleWindowLastIndex"] = *lane.compiled_window_last_sample_index;
-            }
-            if (!lane.compiled_sample_window->secondary.empty()) {
-                json_lane["secondarySamples"] = lane.compiled_sample_window->secondary;
-            }
-        }
-        json_lanes.push_back(std::move(json_lane));
-    }
-
-    Json json{
-        {"viewId", update.view_id.str()},
-        {"lanes", std::move(json_lanes)},
-    };
-    Json json_ui_states = Json::array();
-    for (auto const &state : update.ui_states) {
-        json_ui_states.push_back(Json{
-            {"laneId", state.lane_id.str()},
-            {"revision", state.revision},
-            {"serializedState", state.serialized_state},
-        });
-    }
-    if (!json_ui_states.empty()) {
-        json["uiStates"] = std::move(json_ui_states);
-    }
-    if (update.playback_sample_index.has_value()) {
-        json["playbackSampleIndex"] = *update.playback_sample_index;
     }
     return json;
 }
@@ -307,9 +208,9 @@ void SocketRpcServer::handle_client(int fd) {
                             builder.fail("iv module instance service is unavailable");
                         }
                         response = builder.build(request_id);
-                    } else if constexpr (std::same_as<Request, GetIvPackagesRequest>) {
-                        SocketRpcIvPackagesResultBuilder builder;
-                        IV_INVOKE_LINKER_EVENT(iv_socket_rpc_get_iv_packages_event, event_request, builder);
+                    } else if constexpr (std::same_as<Request, GetIvPackageDefinitionsRequest>) {
+                        SocketRpcIvPackageDefinitionsResultBuilder builder;
+                        IV_INVOKE_LINKER_EVENT(iv_socket_rpc_get_iv_package_definitions_event, event_request, builder);
                         if (!builder.has_response()) {
                             builder.fail("IV package service is unavailable");
                         }
@@ -345,84 +246,6 @@ void SocketRpcServer::handle_client(int fd) {
                             builder.fail("iv module instance service is unavailable");
                         }
                         response = builder.build(request_id);
-                    } else if constexpr (std::same_as<Request, SetTimelineCompiledSampleCacheChunkSizeMultiplierRequest>) {
-                        SocketRpcAckResponseBuilder builder;
-                        IV_INVOKE_LINKER_EVENT(
-                            iv_socket_rpc_set_timeline_compiled_sample_cache_chunk_size_multiplier_event,
-                            event_request,
-                            builder);
-                        if (!builder.has_response()) {
-                            builder.fail("runtime project event was not handled");
-                        }
-                        response = builder.build(request_id);
-                    } else if constexpr (std::same_as<Request, SetTimelineLaneSampleChannelTypeRequest>) {
-                        SocketRpcAckResponseBuilder builder;
-                        IV_INVOKE_LINKER_EVENT(
-                            iv_socket_rpc_set_timeline_lane_sample_channel_type_event,
-                            event_request,
-                            builder);
-                        if (!builder.has_response()) {
-                            builder.fail("runtime project event was not handled");
-                        }
-                        response = builder.build(request_id);
-                    } else if constexpr (std::same_as<Request, SetTimelineLaneUiStateRequest>) {
-                        SocketRpcAckResponseBuilder builder;
-                        IV_INVOKE_LINKER_EVENT(
-                            iv_socket_rpc_set_timeline_lane_ui_state_event,
-                            event_request,
-                            builder);
-                        if (!builder.has_response()) {
-                            builder.fail("runtime project event was not handled");
-                        }
-                        response = builder.build(request_id);
-                    } else if constexpr (std::same_as<Request, ConnectTimelineLanesRequest>) {
-                        SocketRpcAckResponseBuilder builder;
-                        IV_INVOKE_LINKER_EVENT(
-                            iv_socket_rpc_connect_timeline_lanes_event,
-                            event_request,
-                            builder);
-                        if (!builder.has_response()) {
-                            builder.fail("runtime project event was not handled");
-                        }
-                        response = builder.build(request_id);
-                    } else if constexpr (std::same_as<Request, DisconnectTimelineLanesRequest>) {
-                        SocketRpcAckResponseBuilder builder;
-                        IV_INVOKE_LINKER_EVENT(
-                            iv_socket_rpc_disconnect_timeline_lanes_event,
-                            event_request,
-                            builder);
-                        if (!builder.has_response()) {
-                            builder.fail("runtime project event was not handled");
-                        }
-                        response = builder.build(request_id);
-                    } else if constexpr (std::same_as<Request, GetTimelineLaneTypesRequest>) {
-                        SocketRpcLaneTypesResultBuilder builder;
-                        IV_INVOKE_LINKER_EVENT(iv_socket_rpc_get_timeline_lane_types_event, event_request, builder);
-                        if (!builder.has_response()) {
-                            builder.fail("runtime project event was not handled");
-                        }
-                        response = builder.build(request_id);
-                    } else if constexpr (std::same_as<Request, CreateTimelineLaneRequest>) {
-                        SocketRpcAckResponseBuilder builder;
-                        IV_INVOKE_LINKER_EVENT(iv_socket_rpc_create_timeline_lane_event, event_request, builder);
-                        if (!builder.has_response()) {
-                            builder.fail("runtime project event was not handled");
-                        }
-                        response = builder.build(request_id);
-                    } else if constexpr (std::same_as<Request, DeleteTimelineLaneRequest>) {
-                        SocketRpcAckResponseBuilder builder;
-                        IV_INVOKE_LINKER_EVENT(iv_socket_rpc_delete_timeline_lane_event, event_request, builder);
-                        if (!builder.has_response()) {
-                            builder.fail("runtime project event was not handled");
-                        }
-                        response = builder.build(request_id);
-                    } else if constexpr (std::same_as<Request, DuplicateTimelineLaneRequest>) {
-                        SocketRpcAckResponseBuilder builder;
-                        IV_INVOKE_LINKER_EVENT(iv_socket_rpc_duplicate_timeline_lane_event, event_request, builder);
-                        if (!builder.has_response()) {
-                            builder.fail("runtime project event was not handled");
-                        }
-                        response = builder.build(request_id);
                     } else if constexpr (std::same_as<Request, GetAudioDevicesRequest>) {
                         SocketRpcAudioDevicesResultBuilder builder;
                         IV_INVOKE_LINKER_EVENT(
@@ -441,103 +264,6 @@ void SocketRpcServer::handle_client(int fd) {
                             builder);
                         if (!builder.has_response()) {
                             builder.fail("audio device service is unavailable");
-                        }
-                        response = builder.build(request_id);
-                    } else if constexpr (std::same_as<Request, OpenLaneViewRpcRequest>) {
-                        SocketRpcLaneViewResultBuilder builder;
-                        IV_INVOKE_LINKER_EVENT(iv_socket_rpc_open_lane_view_event, event_request.request, builder);
-                        if (!builder.has_response()) {
-                            builder.fail("lane view service is unavailable");
-                        }
-                        response = builder.build(request_id);
-                    } else if constexpr (std::same_as<Request, UpdateLaneViewRpcRequest>) {
-                        SocketRpcLaneViewResultBuilder builder;
-                        IV_INVOKE_LINKER_EVENT(iv_socket_rpc_update_lane_view_event, event_request.request, builder);
-                        if (!builder.has_response()) {
-                            builder.fail("lane view service is unavailable");
-                        }
-                        response = builder.build(request_id);
-                    } else if constexpr (std::same_as<Request, GetLaneQuerySchemaRequest>) {
-                        SocketRpcLaneQuerySchemaResultBuilder builder;
-                        IV_INVOKE_LINKER_EVENT(
-                            iv_socket_rpc_get_lane_query_schema_event,
-                            event_request,
-                            builder);
-                        if (!builder.has_response()) {
-                            builder.fail("lane query schema service is unavailable");
-                        }
-                        response = builder.build(request_id);
-                    } else if constexpr (std::same_as<Request, CompleteLaneQueryRequest>) {
-                        SocketRpcLaneQueryCompletionResultBuilder builder;
-                        IV_INVOKE_LINKER_EVENT(
-                            iv_socket_rpc_complete_lane_query_event,
-                            event_request,
-                            builder);
-                        if (!builder.has_response()) {
-                            builder.fail("lane query schema service is unavailable");
-                        }
-                        response = builder.build(request_id);
-                    } else if constexpr (std::same_as<Request, std::string>) {
-                        SocketRpcAckResponseBuilder builder;
-                        IV_INVOKE_LINKER_EVENT(iv_socket_rpc_close_lane_view_event, event_request, builder);
-                        if (!builder.has_response()) {
-                            builder.fail("lane view service is unavailable");
-                        }
-                        response = builder.build(request_id);
-                    } else if constexpr (std::same_as<Request, SetSampleInputValueRequest>) {
-                        SocketRpcAckResponseBuilder builder;
-                        IV_INVOKE_LINKER_EVENT(iv_socket_rpc_set_sample_input_value_event, event_request, builder);
-                        if (!builder.has_response()) {
-                            builder.fail("iv module source introspection service is unavailable");
-                        }
-                        response = builder.build(request_id);
-                    } else if constexpr (std::same_as<Request, SetSampleInputStateRequest>) {
-                        SocketRpcAckResponseBuilder builder;
-                        IV_INVOKE_LINKER_EVENT(iv_socket_rpc_set_sample_input_state_event, event_request, builder);
-                        if (!builder.has_response()) {
-                            builder.fail("iv module source introspection service is unavailable");
-                        }
-                        response = builder.build(request_id);
-                    } else if constexpr (std::same_as<Request, SetEventInputStateRequest>) {
-                        SocketRpcAckResponseBuilder builder;
-                        IV_INVOKE_LINKER_EVENT(iv_socket_rpc_set_event_input_state_event, event_request, builder);
-                        if (!builder.has_response()) {
-                            builder.fail("iv module source introspection service is unavailable");
-                        }
-                        response = builder.build(request_id);
-                    } else if constexpr (std::same_as<Request, SetSampleOutputStateRequest>) {
-                        SocketRpcAckResponseBuilder builder;
-                        IV_INVOKE_LINKER_EVENT(iv_socket_rpc_set_sample_output_state_event, event_request, builder);
-                        if (!builder.has_response()) {
-                            builder.fail("iv module source introspection service is unavailable");
-                        }
-                        response = builder.build(request_id);
-                    } else if constexpr (std::same_as<Request, SetEventOutputStateRequest>) {
-                        SocketRpcAckResponseBuilder builder;
-                        IV_INVOKE_LINKER_EVENT(iv_socket_rpc_set_event_output_state_event, event_request, builder);
-                        if (!builder.has_response()) {
-                            builder.fail("iv module source introspection service is unavailable");
-                        }
-                        response = builder.build(request_id);
-                    } else if constexpr (std::same_as<Request, PauseRequest>) {
-                        SocketRpcAckResponseBuilder builder;
-                        IV_INVOKE_LINKER_EVENT(iv_socket_rpc_pause_event, event_request, builder);
-                        if (!builder.has_response()) {
-                            builder.fail("timeline execution service is unavailable");
-                        }
-                        response = builder.build(request_id);
-                    } else if constexpr (std::same_as<Request, ResumeRequest>) {
-                        SocketRpcAckResponseBuilder builder;
-                        IV_INVOKE_LINKER_EVENT(iv_socket_rpc_resume_event, event_request, builder);
-                        if (!builder.has_response()) {
-                            builder.fail("timeline execution service is unavailable");
-                        }
-                        response = builder.build(request_id);
-                    } else if constexpr (std::same_as<Request, SeekRequest>) {
-                        SocketRpcAckResponseBuilder builder;
-                        IV_INVOKE_LINKER_EVENT(iv_socket_rpc_seek_event, event_request, builder);
-                        if (!builder.has_response()) {
-                            builder.fail("timeline execution service is unavailable");
                         }
                         response = builder.build(request_id);
                     } else if constexpr (std::same_as<Request, SaveProjectRequest>) {
@@ -566,6 +292,11 @@ void SocketRpcServer::handle_client(int fd) {
                         builder.succeed();
                         response = builder.build(request_id);
                         shutdown_after_response = true;
+                    } else if constexpr (std::same_as<Request, UnsupportedSocketRpcRequest>) {
+                        response = jsonrpc_error(
+                            request_id,
+                            -32601,
+                            "unsupported JSON-RPC method: " + event_request.method);
                     }
                 }, request.payload);
             } catch (std::exception const &e) {
@@ -697,89 +428,6 @@ void SocketRpcServer::send_server_status(SocketRpcServerStatus const &notificati
     }
 }
 
-void SocketRpcServer::send_lane_view_updated(LaneViewResult const &notification) {
-    int fd = -1;
-    {
-        std::scoped_lock client_lock(client_mutex);
-        fd = client_fd;
-    }
-    if (fd < 0) {
-        return;
-    }
-
-    auto const message =
-        jsonrpc_notification("timeline.laneViewUpdated", lane_view_result_json(notification));
-    {
-        std::scoped_lock deferred_lock(deferred_notification_mutex);
-        if (defer_current_request_notifications &&
-            deferred_notification_thread == std::this_thread::get_id()) {
-            deferred_notifications.push_back(message);
-            return;
-        }
-    }
-
-    if (!send_message(fd, message)) {
-        std::scoped_lock client_lock(client_mutex);
-        if (client_fd == fd) {
-            client_fd = -1;
-        }
-    }
-}
-
-void SocketRpcServer::send_lane_view_content_updated(
-    LaneViewContentUpdate const &notification) {
-    int fd = -1;
-    {
-        std::scoped_lock client_lock(client_mutex);
-        fd = client_fd;
-    }
-    if (fd < 0) {
-        return;
-    }
-
-    auto const message =
-        jsonrpc_notification(
-            "timeline.laneViewContentUpdated",
-            lane_view_content_update_json(notification));
-    {
-        std::scoped_lock deferred_lock(deferred_notification_mutex);
-        if (defer_current_request_notifications &&
-            deferred_notification_thread == std::this_thread::get_id()) {
-            deferred_notifications.push_back(message);
-            return;
-        }
-    }
-
-    if (!send_message(fd, message)) {
-        std::scoped_lock client_lock(client_mutex);
-        if (client_fd == fd) {
-            client_fd = -1;
-        }
-    }
-}
-
-void SocketRpcServer::send_lane_query_schema_changed(
-    query::LaneQuerySchemaChange const &notification)
-{
-    int fd = -1;
-    {
-        std::scoped_lock client_lock(client_mutex);
-        fd = client_fd;
-    }
-    if (fd < 0) {
-        return;
-    }
-    auto const message = jsonrpc_notification(
-        "timeline.laneQuerySchemaChanged",
-        lane_query_schema_change_json(notification));
-    if (!send_message(fd, message)) {
-        std::scoped_lock client_lock(client_mutex);
-        if (client_fd == fd) {
-            client_fd = -1;
-        }
-    }
-}
-
 void SocketRpcServer::send_iv_module_instances_updated(
     std::vector<IvModuleInstanceInfo> const &instances) {
     int fd = -1;
@@ -812,7 +460,7 @@ void SocketRpcServer::send_iv_module_instances_updated(
     }
 }
 
-void SocketRpcServer::send_iv_packages_updated()
+void SocketRpcServer::send_iv_package_definitions_updated()
 {
     int fd = -1;
     {
@@ -881,8 +529,6 @@ void SocketRpcServer::handle_project_notification(
             send_server_message(payload);
         } else if constexpr (std::same_as<Payload, ProjectStatusNotification>) {
             send_server_status(payload);
-        } else if constexpr (std::same_as<Payload, ProjectLaneViewNotification>) {
-            send_lane_view_updated(payload.lane_view);
         } else if constexpr (std::same_as<Payload, ProjectVirtualNodesNotification>) {
             send_virtual_nodes_updated(payload);
         }
@@ -892,24 +538,7 @@ void SocketRpcServer::handle_project_notification(
 void SocketRpcServer::handle_iv_package_catalog_changed(
     IvPackageCatalogChanged const &)
 {
-    send_iv_packages_updated();
-}
-
-void SocketRpcServer::handle_lane_views_updated(LaneViewResult const &lane_view)
-{
-    send_lane_view_updated(lane_view);
-}
-
-void SocketRpcServer::handle_lane_view_content_updated(
-    LaneViewContentUpdate const &update)
-{
-    send_lane_view_content_updated(update);
-}
-
-void SocketRpcServer::handle_lane_query_schema_changed(
-    LaneQuerySchemaChanged const &notification)
-{
-    send_lane_query_schema_changed(notification.change);
+    send_iv_package_definitions_updated();
 }
 
 void SocketRpcServer::handle_iv_module_instances_list_changed(

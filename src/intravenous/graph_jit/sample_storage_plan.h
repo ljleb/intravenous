@@ -1,0 +1,338 @@
+#pragma once
+
+#include <intravenous/channel_layout.h>
+#include <intravenous/graph_jit/connection_plan.h>
+#include <intravenous/node/layout.h>
+
+#include <cstddef>
+#include <expected>
+#include <limits>
+#include <optional>
+#include <span>
+#include <string>
+#include <vector>
+
+namespace iv::graph_jit::detail {
+
+inline constexpr std::size_t no_sample_representation =
+    std::numeric_limits<std::size_t>::max();
+inline constexpr std::size_t no_sample_producer_group =
+    std::numeric_limits<std::size_t>::max();
+inline constexpr std::size_t no_sample_transient_allocation =
+    std::numeric_limits<std::size_t>::max();
+inline constexpr std::size_t no_sample_persistent_allocation =
+    std::numeric_limits<std::size_t>::max();
+
+// One compiler-visible storage sample representation. Node API facades are
+// reconstructed from these immutable facts and never become persistent graph
+// objects. Storage placement is independent from the conversion, composition,
+// or feedback operations which read and write the representation.
+struct SampleRepresentationPlan {
+    std::size_t producer_group_index = 0;
+    bool canonical_producer_representation = true;
+    RealtimeBufferStorageKind storage =
+        RealtimeBufferStorageKind::transient_stack;
+    ChannelLayout channel_layout{};
+    std::size_t frame_capacity = 0;
+    ConnectionLiveIntervalPlan live_interval{};
+
+    std::size_t transient_allocation = no_sample_transient_allocation;
+    std::size_t persistent_allocation = no_sample_persistent_allocation;
+
+    // A disconnected realtime input is one immutable, compiler-owned constant
+    // timeline. It needs neither stack storage nor retained NodeStorage: every
+    // addressable frame has the same declared default value. The generated
+    // module materializes this bounded representation as read-only data.
+    std::optional<Sample> constant_value{};
+};
+
+// A disconnected output still exposes its declared history/latency window to
+// its producer callback. It therefore needs an ordinary writable storage
+// representation even though no graph edge consumes it. These requests enter
+// the same placement/capacity planner as connected producer representations.
+struct SampleSinkStorageRequest {
+    ChannelLayout channel_layout{};
+    std::size_t history = 0;
+    std::size_t latency = 0;
+    std::size_t execution_position = 0;
+    std::string migration_identity{};
+};
+
+// A disconnected realtime input reads its declared default value at every
+// sample index. The generated module can therefore bind it to immutable data
+// instead of reserving stack or NodeStorage bytes.
+struct SampleConstantInputRequest {
+    ChannelLayout channel_layout{};
+    Sample default_value{};
+    std::size_t execution_position = 0;
+};
+
+struct SampleProducerStoragePlan {
+    std::size_t canonical_representation = no_sample_representation;
+    // Final storage choice made by sample storage planning after accounting for
+    // compiler-generated conversion/fanout/feedback work that reads this
+    // producer buffer.
+    SampleConnectionStoragePlan storage_plan{};
+};
+
+// One target semantic channel resolved directly to a channel of an existing
+// storage representation. frame_delay is an additional per-channel read
+// delay, in frames, applied by InputPort on top of its port-level read latency.
+// This is the storage binding form used by zero-copy projection, permutation,
+// layout conversion, and channel duplication, as well as the final binding of a
+// selectively materialized conversion result.
+struct SampleChannelBindingPlan {
+    std::size_t representation = no_sample_representation;
+    std::size_t representation_channel = 0;
+    std::size_t frame_delay = 0;
+};
+
+// One explicit post-producer transformation from a canonical/derived sample
+// representation into another transient representation. History/latency are
+// part of the materialization window rather than mutable OutputPort state.
+struct SampleMaterializationPlan {
+    std::size_t source_representation = no_sample_representation;
+    std::size_t target_representation = no_sample_representation;
+    std::size_t after_execution_position = 0;
+    // Feedback conversion is consumer-driven rather than producer-driven: in a
+    // cyclic region the consumer may precede the producer in deterministic
+    // execution order, so the delayed window must be materialized from the
+    // retained feedback timeline immediately before that consumer executes.
+    std::optional<std::size_t> before_execution_position{};
+    ChannelLayout source_layout{};
+    ChannelLayout target_layout{};
+
+    // Shared converted fanout materializes the union of every consumer window.
+    // retained_before is the distance from the current sample index to the
+    // earliest frame any consumer can address. latest_read_latency is the
+    // smallest effective read latency, hence the latest frame any consumer
+    // needs from the current block. For one consumer these reduce to
+    // target_history + read_latency and read_latency respectively.
+    std::size_t retained_before = 0;
+    std::size_t latest_read_latency = 0;
+};
+
+struct SampleCompositionInputPlan {
+    std::size_t source_representation = no_sample_representation;
+    std::size_t source_channel = 0;
+    std::size_t read_latency = 0;
+};
+
+// One normalized semantic conversion -> projection contribution. sources are
+// ordered by source_layout's semantic channels and may resolve to different
+// storage representations; conversion reads them directly without first
+// gathering a contiguous source buffer. target_channels map converted semantic
+// channels into this operation's target representation.
+struct SampleCompositionContributionPlan {
+    ChannelLayout source_layout{};
+    ChannelLayout converted_layout{};
+    std::vector<SampleCompositionInputPlan> sources{};
+    std::vector<std::size_t> target_channels{};
+
+    // Unequal-latency channel mixing cannot be emitted by independently
+    // shifting converted target writes: conversion must observe source
+    // channels at one logical timestamp. Detached contributions that need
+    // this use a branch-local persistent source-layout ring. Current source
+    // samples are staged there, then conversion reads the required aligned
+    // past frames before writing the feedback timeline.
+    std::size_t feedback_alignment_representation = no_sample_representation;
+    std::size_t feedback_alignment_write_latency = 0;
+};
+
+// One explicit feed-forward composition/conversion operation. Independently
+// resolved source channels are read directly. The operation may represent the
+// legacy whole-target fallback or just one arithmetic conversion contribution;
+// aliasable target channels bypass it entirely through SampleChannelBindingPlan.
+// It writes a timestamp-aligned window, so bindings to its result use zero
+// additional per-channel latency. Detached composition is represented uniformly
+// by SampleFeedbackTimelinePlan below instead of a special mode here.
+struct SampleCompositionPlan {
+    std::size_t connection_index = 0;
+    std::vector<SampleCompositionContributionPlan> contributions{};
+    std::size_t target_representation = no_sample_representation;
+    std::size_t after_execution_position = 0;
+    ChannelLayout target_layout{};
+    std::size_t target_history = 0;
+};
+
+// Exact transient byte range assigned to one representation. Ranges may overlap
+// iff their inclusive schedule live intervals do not overlap. There is no
+// separate runtime allocation object or allocator metadata.
+struct SampleTransientAllocationPlan {
+    std::size_t representation_index = no_sample_representation;
+    std::size_t size_bytes = 0;
+    std::size_t alignment = alignof(Sample);
+    std::size_t region_relative_offset = 0;
+};
+
+enum class SamplePersistentStorageKind {
+    compact_carry,
+    ring,
+};
+
+// Persistent connection state is always represented by canonical raw
+// NodeStorage. compact_carry stores exactly retained_frames; ring stores the
+// whole power-of-two working ring. migration_identity is non-empty so exact-
+// shape NodeStorage migration preserves connection history across generations.
+struct SamplePersistentAllocationPlan {
+    std::size_t representation_index = no_sample_representation;
+    SamplePersistentStorageKind kind = SamplePersistentStorageKind::ring;
+    ChannelLayout channel_layout{};
+    std::size_t retained_frames = 0;
+    std::size_t frame_capacity = 0;
+    std::size_t size_bytes = 0;
+    std::size_t alignment = alignof(Sample);
+    std::string migration_identity{};
+    std::optional<Sample> initialize_value{};
+    NodeLayout::RegionHandle region{};
+
+    // Assigned after canonical NodeLayout finalization.
+    std::size_t storage_offset = 0;
+};
+
+// stack_with_persistent_carry uses a transient absolute-background working ring
+// while a minimal persistent tail crosses root invocations. Ordinary producer
+// storage restores/commits around the producer. Feedback storage may need to
+// restore before an earlier cyclic consumer while still committing after the
+// producer-side feedback writer.
+struct SampleCarryOperationPlan {
+    std::size_t representation_index = no_sample_representation;
+    std::size_t persistent_allocation = no_sample_persistent_allocation;
+    std::size_t restore_execution_position = 0;
+    std::size_t commit_execution_position = 0;
+    std::size_t retained_frames = 0;
+    // Number of retained frames at or after the next invocation boundary.
+    // Ordinary producer carry and copied feedback use zero. Shifted composed
+    // feedback may author aligned samples ahead of the current block end.
+    std::size_t future_frames = 0;
+};
+
+enum class SampleFeedbackTimelineWriterKind {
+    // The primitive output binding names the feedback timeline representation
+    // directly. No post-producer operation is emitted.
+    producer_home,
+    // Copy the newly-produced canonical slice into the branch-local timeline.
+    copy,
+    // Gather projected/permuted source channels into the target-layout timeline,
+    // shifting each current source write forward by its ordinary read latency.
+    composition,
+};
+
+// One write strategy for a detached branch timeline. Every feedback branch is
+// represented by the same retained-timeline abstraction regardless of how
+// current samples arrive in it; consumer-side conversion/materialization then
+// reads uniformly from timeline_representation.
+struct SampleFeedbackTimelineWriterPlan {
+    SampleFeedbackTimelineWriterKind kind =
+        SampleFeedbackTimelineWriterKind::producer_home;
+    std::size_t after_execution_position = 0;
+
+    // Number of already-authored source frames that must be recopied on every
+    // invocation because OutputPort::update() may revise any of them. This is
+    // the producer's authored latency horizon, not the consumer read latency.
+    std::size_t revision_frames = 0;
+
+    // copy only
+    std::size_t source_representation = no_sample_representation;
+
+    // composition only
+    std::vector<SampleCompositionContributionPlan> composition_contributions{};
+};
+
+
+struct SampleFeedbackTimelinePlan {
+    std::size_t connection_index = 0;
+    // Costed storage choice for this feedback buffer. Producer-home feedback
+    // shares the producer buffer and therefore carries that producer choice.
+    SampleConnectionStoragePlan storage_plan{};
+    std::size_t timeline_representation = no_sample_representation;
+    ChannelLayout channel_layout{};
+    std::size_t retained_frames = 0;
+    std::size_t loop_extra_latency = 1;
+    Sample initial_value{};
+    SampleFeedbackTimelineWriterPlan writer{};
+};
+
+struct SampleStoragePlan {
+    // Entry positions correspond to ConnectionAnalysisPlan::sample_producer_groups.
+    std::vector<std::optional<SampleProducerStoragePlan>> producer_groups{};
+    // Each storage representation handle identifies its entry here.
+    std::vector<SampleRepresentationPlan> representations{};
+    // Entry positions correspond to ConnectionAnalysisPlan::sample_connections.
+    // Whole-port bindings resolve here when every target channel shares one storage
+    // representation. Arithmetic converted branches may resolve to a shared
+    // derived representation when their static transformation is identical.
+    std::vector<std::optional<std::size_t>> connection_representations{};
+    // Channel-granular connections bind each target semantic channel to its
+    // resolved source/result representation. This covers projection,
+    // permutation, aliasable conversion, and mixed alias/computed composition.
+    // One entry per sample connection; when present, channel entries are in
+    // canonical target-channel order.
+    std::vector<std::optional<std::vector<SampleChannelBindingPlan>>>
+        connection_channel_bindings{};
+
+    // One entry per SampleSinkStorageRequest supplied to
+    // build_sample_storage_plan().
+    std::vector<std::size_t> sink_representations{};
+    // One entry per SampleConstantInputRequest supplied to
+    // build_sample_storage_plan().
+    std::vector<std::size_t> constant_input_representations{};
+
+    // Explicit conversion/materialization operations. These are scheduled after
+    // the source producer and before every consumer bound to the target
+    // representation.
+    std::vector<SampleMaterializationPlan> materializations{};
+    // Feed-forward channel compositions only. Detached channel composition is
+    // a SampleFeedbackTimelinePlan with a composition writer.
+    std::vector<SampleCompositionPlan> compositions{};
+    std::vector<SampleCarryOperationPlan> carry_operations{};
+    // One entry per detached sample connection. producer_home timelines need no
+    // scheduled write; copy/composition writers are emitted after their source
+    // execution position.
+    std::vector<SampleFeedbackTimelinePlan> feedback_timelines{};
+    // Unequal-latency feedback mixing uses ordinary persistent sample
+    // allocations as source-layout alignment rings. Their initialized contents
+    // are the branch prehistory; no separate validity/warmup state is needed.
+
+    // One exact range per transient representation. The arena high-water mark
+    // is independent of any individual representation's maximum size.
+    std::vector<SampleTransientAllocationPlan> transient_allocations{};
+    std::size_t transient_arena_size = 0;
+    std::size_t transient_arena_alignment = 1;
+
+    // Persistent allocations never alias. They are separate raw regions so the
+    // canonical NodeLayout can carry stable migration identities per logical
+    // producer representation.
+    std::vector<SamplePersistentAllocationPlan> persistent_allocations{};
+
+    [[nodiscard]] bool empty() const noexcept
+    {
+        return representations.empty();
+    }
+};
+
+// Pure host-side storage-representation planning. Producer-group decisions are
+// consumed from connection analysis; derived feedback requirements are fed back
+// through choose_sample_connection_storage_plan() rather than duplicating policy.
+// Carry and full persistent storage are realized as distinct storage
+// representations while conversion remains an explicit operation.
+std::expected<SampleStoragePlan, std::string> build_sample_storage_plan(
+    ConnectionAnalysisPlan const& connections,
+    std::size_t kernel_block_size,
+    std::span<SampleSinkStorageRequest const> sinks = {},
+    std::span<SampleConstantInputRequest const> constant_inputs = {},
+    RealtimeStorageCostModel const& cost_model = {});
+
+// Reserve canonical NodeStorage for persistent connection state. Transient
+// backing belongs to the generated root stack. Retained feedback state with
+// authored initial values installs raw-region initialization callbacks, so
+// realtime execution performs no setup/allocation.
+std::expected<void, std::string> declare_sample_storage(
+    NodeLayoutBuilder& builder,
+    SampleStoragePlan& plan);
+
+std::expected<void, std::string> finalize_sample_storage(
+    NodeLayout const& layout,
+    SampleStoragePlan& plan);
+
+} // namespace iv::graph_jit::detail

@@ -3,14 +3,13 @@
 // Private implementation for libiv_builder only. Do not include from a
 // module TU.
 #include <intravenous/graph/builder.h>
+#include <intravenous/graph/builder/embedding.h>
 #include <intravenous/basic_nodes/arithmetic.h>
 #include <intravenous/basic_nodes/routing.h>
-#include <intravenous/basic_nodes/type_erased.h>
 #include <intravenous/channel_ports.h>
 #include <intravenous/graph/builder/annotations.hpp>
 #include <intravenous/graph/configured_graph.hpp>
 #include <intravenous/graph/builder/connections.hpp>
-#include <intravenous/graph/builder/detach.hpp>
 #include <intravenous/graph/builder/identity.h>
 #include <intravenous/graph/builder/node_refs.h>
 #include <intravenous/graph/builder/node_bundles.hpp>
@@ -47,7 +46,6 @@
 #include <vector>
 
 namespace iv {
-class GraphRuntimeBindings;
 class GraphBuilderState;
 namespace details {
 struct SubgraphBuildScope {
@@ -71,7 +69,6 @@ class GraphBuilderState {
   friend struct EventPortRef;
   friend class GraphBuilderChildEmbedder;
   friend class GraphBuilderConnections;
-  friend class GraphBuilderDetach;
   friend class GraphBuilderAnnotations;
   friend class GraphBuilderVirtualNodes;
   friend class GraphBuilderPublicPorts;
@@ -81,16 +78,17 @@ class GraphBuilderState {
   GraphBuilderNodeBundles _node_bundles;
   GraphBuilderConnections _connections;
   GraphBuilderPublicPorts _public_ports;
-  GraphBuilderDetach _detach;
   GraphBuilderAnnotations _annotations;
   GraphBuilderVirtualNodes _virtual_nodes;
   struct SamplePortExpression {
     ChannelTypeId channel_type = ChannelTypeId::mono;
     std::vector<SampleOutputChannelId> channels{};
+    std::optional<ConfiguredSampleConnectionDetach> detach{};
   };
   struct EventPortExpression {
     EventTypeId type = EventTypeId::empty;
     std::vector<EventOutputPortId> sources{};
+    std::optional<ConfiguredEventConnectionDetach> detach{};
   };
   // SamplePortRef intentionally stores only an index into this session-owned
   // table. Variable-length expressions never live in module-generated code.
@@ -106,8 +104,18 @@ class GraphBuilderState {
     return *_facade;
   }
 
+  ConfiguredGraphEmbedding embed_graph_components(
+      GraphBuilderPublicPorts const& child_public_ports,
+      GraphBuilderNodeBundles const& child_bundles,
+      GraphBuilderConnections const& child_connections,
+      GraphBuilderVirtualNodes const& child_virtual_nodes,
+      std::string_view kind);
+
   constexpr explicit GraphBuilderState(GraphBuilderIdentity identity);
-  NodeRef embed_subgraph(GraphBuilderState const& child, std::string_view kind = "Subgraph");
+  ConfiguredGraphEmbedding embed_subgraph(
+      GraphBuilderState const& child, std::string_view kind = "Subgraph");
+  ConfiguredGraphEmbedding embed_configured_graph(
+      ConfiguredGraph const& child, std::string_view kind = "Configured graph");
   constexpr PublicSampleInputRef input_named(std::string_view name, Sample default_value,
                                    std::optional<Sample> min,
                                    std::optional<Sample> max);
@@ -162,9 +170,9 @@ public:
   void annotate_public_sample_output_source_info(std::span<SourceInfo const> infos);
   void annotate_public_event_output_source_info(std::span<SourceInfo const> infos);
   void annotate_public_sample_output_source_info(
-      size_t ordinal, SourceInfo info);
+      size_t index, SourceInfo info);
   void annotate_public_event_output_source_info(
-      size_t ordinal, SourceInfo info);
+      size_t index, SourceInfo info);
 
   void event_outputs(std::span<EventOutputRequest const> refs);
   constexpr void outputs(std::initializer_list<NamedRef> refs);
@@ -195,15 +203,17 @@ public:
   VirtualSampleOutputFamilies virtual_sample_output_families() const;
   VirtualPorts virtual_ports() const;
   constexpr GraphBuilderPublicSamplePortFamilies public_sample_input_families() const;
-  constexpr bool public_sample_input_is_connected(size_t port_ordinal) const;
+  constexpr bool public_sample_input_is_connected(size_t port_index) const;
   constexpr std::vector<GraphBuilderPublicEventInput> public_event_inputs() const;
-  constexpr bool public_event_input_is_connected(size_t port_ordinal) const;
+  constexpr bool public_event_input_is_connected(size_t port_index) const;
   constexpr std::span<SourceInfo const> public_event_input_source_infos(size_t) const;
   constexpr GraphBuilderPublicSamplePortFamilies public_sample_output_families() const;
   constexpr std::vector<GraphBuilderPublicEventOutput> public_event_outputs() const;
 
   constexpr void connect_sample_input(
       NodeBundlePortId target, SamplePortRef source);
+  constexpr void connect_sample_input(
+      SampleInputChannelId target, SamplePortRef source);
   void connect_sample_input(NodeBundlePortId target, std::span<SamplePortRef const> sources);
   void connect_event_input(NodeBundlePortId target, EventPortRef source);
   bool sample_input_is_connected(NodeBundlePortId target) const;
@@ -233,9 +243,15 @@ public:
 
 private:
   constexpr SamplePortRef detach_sample_port(
-      SamplePortRef const&, size_t loop_extra_latency);
+      SamplePortRef const&, size_t loop_extra_latency,
+      std::optional<Sample> initial_value);
+  EventPortRef detach_event_port(
+      EventPortRef const&, size_t loop_extra_latency);
   SamplePortRef make_sample_port(
       ChannelTypeId, std::span<SampleOutputChannelId const>);
+  SamplePortRef make_tiled_sample_port(
+      ChannelTypeId, std::span<SamplePortRef const>);
+  SamplePortRef select_sample_port_channel(SamplePortRef const&, size_t);
   std::span<SampleOutputChannelId const> sample_port_channels(
       SamplePortRef const&) const;
   EventPortRef make_event_port(
@@ -273,7 +289,7 @@ constexpr void GraphBuilderState::outputs(std::span<NamedRef const> refs) {
 constexpr void GraphBuilderPublicPorts::define_sample_outputs(
     GraphBuilderState& builder, GraphBuilderNodeBundles& bundles,
     GraphBuilderIdentity const& identity, std::span<OutputRefConfig const> refs) {
-  _last_sample_output_port_ordinals.clear();
+  _last_sample_output_port_indices.clear();
   bool require_names = refs.size() > 1;
   for (size_t i = 0; i < refs.size(); ++i) {
     auto const& ref = refs[i].ref; auto const& config = refs[i].config;
@@ -292,12 +308,12 @@ constexpr void GraphBuilderPublicPorts::define_sample_outputs(
       _sample_output_members.push_back(refs[i].public_member); _sample_output_source_infos.emplace_back();
     }
     NodeBundlePortId const target{_boundary, PortKind::sample, output};
-    if (refs[i].target_channel_ordinal) {
-      auto channels = bundles.sample_input_channels(target); auto channel = *refs[i].target_channel_ordinal;
-      if (channel >= channels.size()) details::error("public sample output channel ordinal is out of bounds");
+    if (refs[i].target_channel_index) {
+      auto channels = bundles.sample_input_channels(target); auto channel = *refs[i].target_channel_index;
+      if (channel >= channels.size()) details::error("public sample output channel index is out of bounds");
       builder.record_configured_sample_connection(channels[channel], ref);
     } else builder.record_configured_sample_connection(target, ref);
-    _last_sample_output_port_ordinals.push_back(output);
+    _last_sample_output_port_indices.push_back(output);
   }
   _sample_outputs_defined = true;
 }
@@ -406,41 +422,36 @@ constexpr void GraphBuilderState::populate_public_introspection_metadata(
     family.configured_connected = std::ranges::any_of(
         family.channels, [&](auto const& channel) {
           return std::ranges::any_of(
-              channel.port_ordinals, [&](auto ordinal) {
-                return public_sample_input_is_connected(ordinal);
+              channel.port_indices, [&](auto index) {
+                return public_sample_input_is_connected(index);
               });
         });
   }
   metadata.public_sample_inputs = std::move(sample_inputs.families);
   metadata.public_event_inputs = public_event_inputs();
   for (auto& input : metadata.public_event_inputs)
-    input.graph_connected = public_event_input_is_connected(input.port_ordinal);
+    input.graph_connected = public_event_input_is_connected(input.port_index);
   metadata.public_sample_outputs = public_sample_output_families().families;
   metadata.public_event_outputs = public_event_outputs();
 }
 
 constexpr ConfiguredGraph GraphBuilderState::finish() const & {
-  auto bundles = _node_bundles;
-  bundles.materialize_deferred_detaches();
   return {
       .identity = _identity,
-      .node_bundles = std::move(bundles),
+      .node_bundles = _node_bundles,
       .connections = _connections,
       .public_ports = _public_ports,
-      .detach = _detach,
       .annotations = _annotations,
       .virtual_nodes = _virtual_nodes,
   };
 }
 
 constexpr ConfiguredGraph GraphBuilderState::finish() && {
-  _node_bundles.materialize_deferred_detaches();
   return {
       .identity = std::move(_identity),
       .node_bundles = std::move(_node_bundles),
       .connections = std::move(_connections),
       .public_ports = std::move(_public_ports),
-      .detach = std::move(_detach),
       .annotations = std::move(_annotations),
       .virtual_nodes = std::move(_virtual_nodes),
   };
@@ -467,14 +478,19 @@ constexpr void GraphBuilderState::record_configured_sample_connection(
     SamplePortRef const& source)
 {
   if (target.port_kind != PortKind::sample || !source.graph_builder
-      || source.graph_builder != &facade())
+      || source.graph_builder != &facade()
+      || source.handle >= _sample_port_expressions.size())
     details::error("invalid configured sample connection");
   auto descriptor = _node_bundles.resolve_sample_input(target);
+  auto const& expression = _sample_port_expressions[source.handle];
+  if (expression.channel_type != source.channel_type)
+    details::error("sample port has an invalid semantic channel type");
   _connections.record_configured_sample_connection({
-      source.channel_type,
-      {source.channels().begin(), source.channels().end()},
-      descriptor.config.channel_layout.channel_type,
-      _node_bundles.sample_input_channels(target),
+      .source_type = source.channel_type,
+      .source_channels = {expression.channels.begin(), expression.channels.end()},
+      .target_type = descriptor.config.channel_layout.channel_type,
+      .target_channels = _node_bundles.sample_input_channels(target),
+      .detach = expression.detach,
   });
 }
 
@@ -482,17 +498,23 @@ constexpr void GraphBuilderState::record_configured_sample_connection(
     SampleInputChannelId target,
     SamplePortRef const& source)
 {
-  if (!source.graph_builder || source.graph_builder != &facade())
+  if (!source.graph_builder || source.graph_builder != &facade()
+      || source.handle >= _sample_port_expressions.size())
     details::error("invalid configured sample channel connection");
   auto channels = _node_bundles.sample_input_channels(
       {target.bundle, PortKind::sample, target.port});
   if (target.channel >= channels.size() || channels[target.channel] != target)
     details::error("sample input channel does not belong to its NodeBundle port");
+  auto const& expression = _sample_port_expressions[source.handle];
+  if (expression.channel_type != source.channel_type)
+    details::error("sample port has an invalid semantic channel type");
   _connections.record_configured_sample_connection({
-      source.channel_type,
-      {source.channels().begin(), source.channels().end()},
-      ChannelTypeId::mono,
-      {target}});
+      .source_type = source.channel_type,
+      .source_channels = {expression.channels.begin(), expression.channels.end()},
+      .target_type = ChannelTypeId::mono,
+      .target_channels = {target},
+      .detach = expression.detach,
+  });
 }
 
 constexpr void GraphBuilderState::connect_sample_input(
@@ -502,44 +524,67 @@ constexpr void GraphBuilderState::connect_sample_input(
   record_configured_sample_connection(target, source);
 }
 
+constexpr void GraphBuilderState::connect_sample_input(
+    SampleInputChannelId target,
+    SamplePortRef source)
+{
+  record_configured_sample_connection(target, source);
+}
+
 constexpr SamplePortRef GraphBuilderState::detach_sample_port(
-    SamplePortRef const& source, size_t latency) {
-  if (!source.graph_builder || source.graph_builder != &facade())
+    SamplePortRef const& source, size_t latency,
+    std::optional<Sample> initial_value) {
+  if (!source.graph_builder || source.graph_builder != &facade()
+      || source.handle >= _sample_port_expressions.size())
     details::error("cannot detach a sample port from another builder");
-  auto const source_channels = source.channels();
-  if (source_channels.empty())
-    details::error("cannot detach a sample port with no semantic channels");
-  if (_detach.reader_output_exists(source.channel_type, source_channels))
-    return source;
-  if (auto existing = _detach.info_for_source(source.channel_type, source_channels)) {
-    if (existing->loop_extra_latency != latency)
-      details::error("detach loop extra latency conflict");
-    return SamplePortRef(
-        facade(), {existing->reader_bundle, PortKind::sample, 0});
-  }
   if (latency < 1)
     details::error("detach loop extra latency must be at least 1");
-  auto id = _detach.allocate_detach_id();
-  auto writer = NodeRef(
-      facade(), _node_bundles.append_deferred_detach_writer(id, latency));
-  record_configured_sample_connection(
-      {writer.node_bundle_handle(), PortKind::sample, 0}, source);
-  auto reader = NodeRef(
-      facade(), _node_bundles.append_deferred_detach_reader(id, latency));
-  SamplePortRef detached = static_cast<SamplePortRef>(reader);
-  if (detached.channel_type != ChannelTypeId::mono ||
-      detached.channels().size() != 1)
-    details::error("detach reader must expose exactly one mono sample channel");
-  _detach.record_detached_source({
-      .detach_id = id,
-      .source_type = source.channel_type,
-      .source_channels = {source_channels.begin(), source_channels.end()},
-      .writer_bundle = writer.node_bundle_handle(),
-      .reader_bundle = reader.node_bundle_handle(),
-      .reader_channel = detached.channels().front(),
+  auto const expression = _sample_port_expressions[source.handle];
+  ConfiguredSampleConnectionDetach const requested{
       .loop_extra_latency = latency,
+      .initial_value_override = initial_value,
+  };
+  if (expression.detach) {
+    if (*expression.detach != requested)
+      details::error("detach parameters conflict with an already detached sample expression");
+    return source;
+  }
+  auto const handle = _sample_port_expressions.size();
+  _sample_port_expressions.push_back({
+      .channel_type = expression.channel_type,
+      .channels = expression.channels,
+      .detach = requested,
   });
-  return detached;
+  auto result = source;
+  result.handle = handle;
+  return result;
+}
+
+inline EventPortRef GraphBuilderState::detach_event_port(
+    EventPortRef const& source, size_t latency) {
+  if (!source.graph_builder || source.graph_builder != &facade()
+      || source.handle >= _event_port_expressions.size())
+    details::error("cannot detach an event port from another builder");
+  if (latency < 1)
+    details::error("detach loop extra latency must be at least 1");
+  auto const expression = _event_port_expressions[source.handle];
+  ConfiguredEventConnectionDetach const requested{
+      .loop_extra_latency = latency,
+  };
+  if (expression.detach) {
+    if (*expression.detach != requested)
+      details::error("detach parameters conflict with an already detached event expression");
+    return source;
+  }
+  auto const handle = _event_port_expressions.size();
+  _event_port_expressions.push_back({
+      .type = expression.type,
+      .sources = expression.sources,
+      .detach = requested,
+  });
+  auto result = source;
+  result.handle = handle;
+  return result;
 }
 
 constexpr SamplePortRef GraphBuilderState::lift_to_sample_port(

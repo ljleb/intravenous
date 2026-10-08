@@ -12,25 +12,25 @@ namespace iv {
         static constexpr auto inputs()
         {
             return std::array {
-                sample_input("in", {.history = 1}),
-                sample_input("threshold", {.default_value = 1.0}),
+                sequential_sample_input("in", {}, {.history = 1}),
+                sequential_sample_input("threshold", {.default_value = 1.0}),
             };
         }
 
         static constexpr auto outputs()
         {
             return std::array {
-                sample_output("anti_aliased", {.latency = 1}),
-                sample_output("aliased"),
+                tick_sample_output("anti_aliased", {}, {.latency = 1}),
+                tick_sample_output("aliased"),
             };
         }
 
         void tick(TickSampleContext<Warper> const& state) const
         {
-            auto const& in = state.inputs[0];
-            auto const& in_threshold = state.inputs[1];
-            auto& out = state.outputs[0];
-            auto& out_aliased = state.outputs[1];
+            auto in = state.template input<0>();
+            auto in_threshold = state.template input<1>();
+            auto out = state.template output<0>();
+            auto out_aliased = state.template output<1>();
 
             auto const threshold = in_threshold.get();
             auto const x0 = in.get();
@@ -56,18 +56,18 @@ namespace iv {
     struct PhaseIntegrator {
         static constexpr auto inputs()
         {
-            return std::array { sample_input("delta") };
+            return std::array { sequential_sample_input("delta") };
         }
 
         static constexpr auto outputs()
         {
-            return std::array { sample_output("phase", {.history = 1}) };
+            return std::array { tick_sample_output("phase", {}, {.history = 1}) };
         }
 
         void tick_block(TickBlockContext<PhaseIntegrator> const& ctx) const
         {
-            auto const delta = ctx.inputs[0].get_block(ctx.block_size);
-            auto& out = ctx.outputs[0];
+            auto const delta = ctx.template input<0>().get_block(ctx.block_size);
+            auto out = ctx.template output<0>();
 
             Sample phase = out.get();
             for (size_t i = 0; i < ctx.block_size; ++i) {
@@ -85,31 +85,31 @@ namespace iv {
         static constexpr auto inputs()
         {
             return std::array {
-                sample_input("phase_offset", {.history = 1}),
-                sample_input("frequency", {.history = 1, .min = 0}),
+                sequential_sample_input("phase_offset", {}, {.history = 1}),
+                sequential_sample_input("frequency", {.min = 0}, {.history = 1}),
             };
         }
 
         static constexpr auto outputs()
         {
             return std::array {
-                sample_output("out", {.latency = 1}),
+                tick_sample_output("out", {}, {.latency = 1}),
             };
         }
 
         void tick(TickSampleContext<SawOscillator> const& ctx) const
         {
             auto& state = ctx.state();
-            auto const phi = ctx.inputs[0].get();
-            auto const f = ctx.inputs[1].get();
+            auto const phi = ctx.template input<0>().get();
+            auto const f = ctx.template input<1>().get();
             auto const dt = ctx.sample_period();
-            auto& out = ctx.outputs[0];
+            auto out = ctx.template output<0>();
 
             auto const phase_advance = f * 2 * dt;
             auto const x0 = state.phase + phase_advance + phi;
-            auto const prev_phase_advance = ctx.inputs[1].get(1) * 2 * dt;
+            auto const prev_phase_advance = ctx.template input<1>().get(1) * 2 * dt;
             auto const prev_base_phase = warp_pm1(state.phase - prev_phase_advance, 1);
-            auto const x1 = prev_base_phase + prev_phase_advance + ctx.inputs[0].get(1);
+            auto const x1 = prev_base_phase + prev_phase_advance + ctx.template input<0>().get(1);
             auto const prev_output = out.get();
             bool const was_inside = x1 >= -1 && x1 <= 1;
             bool const is_outside = x0 < -1 || x0 > 1;
@@ -134,15 +134,15 @@ namespace iv {
         static constexpr auto inputs()
         {
             return std::array {
-                sample_input("phase_offset", {.history = 1}),
-                sample_input("frequency", {.history = 1, .min = 0}),
+                sequential_sample_input("phase_offset", {}, {.history = 1}),
+                sequential_sample_input("frequency", {.min = 0}, {.history = 1}),
             };
         }
 
         static constexpr auto outputs()
         {
             return std::array {
-                sample_output("out", {.latency = 1}),
+                tick_sample_output("out", {}, {.latency = 1}),
             };
         }
 
@@ -244,8 +244,8 @@ namespace iv {
         {
             auto& state = ctx.state();
 
-            auto const f = ctx.inputs[1].get();
-            auto const phi = ctx.inputs[0].get();
+            auto const f = ctx.template input<1>().get();
+            auto const phi = ctx.template input<0>().get();
             auto const dt = ctx.sample_period();
 
             if (!state.initialized) {
@@ -279,7 +279,7 @@ namespace iv {
             auto const y =
                 sine((phase + phi) * std::numbers::pi);
 
-            ctx.outputs[0].push(y);
+            ctx.template output<0>().push(y);
         }
     };
 
@@ -292,19 +292,19 @@ namespace iv {
 
         static constexpr auto inputs()
         {
-            return std::array { sample_input("f") };
+            return std::array { sequential_sample_input("f") };
         }
 
         static constexpr auto outputs()
         {
-            return std::array { sample_output("offset") };
+            return std::array { tick_sample_output("offset") };
         }
 
         void tick(TickSampleContext<PhaseOffsetPredictor> const& state) const
         {
-            auto const f = state.inputs[0].get();
+            auto const f = state.template input<0>().get();
             Sample const extra_latency = _latency > 0 ? (_latency - 1) : 0;
-            state.outputs[0].push(f * state.sample_period() * extra_latency);
+            state.template output<0>().push(f * state.sample_period() * extra_latency);
         }
     };
 
@@ -312,23 +312,23 @@ namespace iv {
         static constexpr auto inputs()
         {
             return std::array {
-                sample_input("a"),
-                sample_input("b"),
-                sample_input("alpha"),
+                sequential_sample_input("a"),
+                sequential_sample_input("b"),
+                sequential_sample_input("alpha"),
             };
         }
 
         static constexpr auto outputs()
         {
-            return std::array { sample_output("out") };
+            return std::array { tick_sample_output("out") };
         }
 
         void tick(TickSampleContext<Interpolation> const& state) const
         {
-            Sample a = state.inputs[0].get();
-            Sample b = state.inputs[1].get();
-            Sample alpha = state.inputs[2].get();
-            state.outputs[0].push(a + alpha * (b - a));
+            Sample a = state.template input<0>().get();
+            Sample b = state.template input<1>().get();
+            Sample alpha = state.template input<2>().get();
+            state.template output<0>().push(a + alpha * (b - a));
         }
     };
 }

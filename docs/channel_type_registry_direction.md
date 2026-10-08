@@ -6,8 +6,8 @@ Channel types have one canonical declaration.  That declaration defines their
 named members and is also the closed registry from which static and runtime
 channel information is derived.
 
-The system must support both static configured DSP syntax and runtime lane,
-conversion, persistence, and RPC state.  Static code therefore uses a channel
+The system must support both static configured DSP syntax and runtime
+conversion, persistence, device, and RPC state.  Static code therefore uses a channel
 descriptor type while runtime state uses its stable `ChannelTypeId`.
 
 ## Canonical registry
@@ -54,8 +54,8 @@ explicitly named output families in the same `outputs(...)` call.
 
 ## Runtime and conversion boundary
 
-`ChannelLayout` continues to carry `ChannelTypeId` because lanes, persistence,
-RPC, devices, and runtime-discovered nodes are dynamically shaped.  The ID is
+`ChannelLayout` continues to carry `ChannelTypeId` because persistence, RPC,
+devices, and runtime-discovered nodes are dynamically shaped.  The ID is
 derived from the canonical registry and maps back to a descriptor through the
 closed registry.
 
@@ -64,3 +64,25 @@ traits.  It must, however, require deliberate conversion definitions for every
 supported semantic pair.  Registry-generated validation should make a missing
 non-identity conversion a compile-time error rather than inventing a channel
 order or reduction.
+
+
+## FFT blocks use the existing audio channel registry
+
+The planned continuous value-type extension registers `GlobalIndex` in addition to
+audio-domain `iv::Sample` and `FFTBlock`. The audio-domain `Sample`/`FFTBlock` values
+continue to use the existing `ChannelTypeId`/channel-member registry. `GlobalIndex` is
+a scalar sample-coordinate value and does not require changing the channel registry.
+The registered value type determines whether the channel model applies; this does
+**not** make channel layout a universal property of every application value type.
+
+For FFT data, the canonical representation is planar by channel: a stereo FFT stream
+has one FFT block for the left channel and one for the right channel. GraphBuilder's
+existing channel tiling remains applicable to spectral nodes, so a tiled stereo node
+may still lower to one concrete mono spectral node per channel member. The initial FFT
+contract does not add a frequency-interleaved layout alternative.
+
+Channel conversion over FFT blocks remains aliasing or linear arithmetic over
+corresponding frequency values. Because the FFT is linear, legal channel reductions
+such as stereo averaging have the same mathematical meaning before or after the FFT
+(up to floating-point reassociation). GraphJit may exploit that fact as an
+optimization; it must not change the authored channel semantics.

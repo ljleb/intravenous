@@ -67,8 +67,23 @@ TEST(ModuleLoaderPackages, CanonicalPackageManifestLoads)
         &iv::ModuleLoader::LoadedDefinition::module_id);
     ASSERT_NE(primary, loaded.end());
     ASSERT_NE(secondary, loaded.end());
-    EXPECT_TRUE(static_cast<bool>(primary->root));
-    EXPECT_TRUE(static_cast<bool>(secondary->root));
+    EXPECT_NE(primary->configured_graph, nullptr);
+    EXPECT_NE(secondary->configured_graph, nullptr);
+}
+
+TEST(ModuleLoaderPackages, StagedBuiltinBuildStaysInsideCurrentCmakeBuildTree)
+{
+    // make_loader() loads the shipped package before loading project packages.
+    // It must not make the source checkout's builtin directory a build owner.
+    auto loader = iv::test::make_loader();
+    auto const staged = iv::test::staged_builtin_package_root();
+    auto const artifact = loader.compile_package(staged);
+    auto const build_root = staged / "build/iv/build";
+    auto const relative_artifact = artifact.lexically_relative(build_root);
+
+    ASSERT_FALSE(relative_artifact.empty());
+    EXPECT_NE(*relative_artifact.begin(), std::filesystem::path{".."});
+    EXPECT_TRUE(std::filesystem::is_regular_file(artifact));
 }
 
 TEST(ModuleLoaderPackages, ScalarSourceOutputResolvesShippedBuiltinConstant)
@@ -94,7 +109,7 @@ TEST(ModuleLoaderPackages, ScalarSourceOutputResolvesShippedBuiltinConstant)
     auto loaded = loader.load_package_definitions(package_root);
     ASSERT_EQ(loaded.size(), 1u);
     EXPECT_EQ(loaded.front().module_id, "iv.test.scalar_output");
-    EXPECT_TRUE(static_cast<bool>(loaded.front().root));
+    EXPECT_NE(loaded.front().configured_graph, nullptr);
 }
 
 TEST(ModuleLoaderPackages, BuiltinNodeShortIdCanConstructATiledRegisteredNode)
@@ -123,7 +138,7 @@ TEST(ModuleLoaderPackages, BuiltinNodeShortIdCanConstructATiledRegisteredNode)
 
     ASSERT_EQ(loaded.size(), 1u);
     EXPECT_EQ(loaded.front().module_id, "iv.test.builtin_oscillator");
-    EXPECT_TRUE(static_cast<bool>(loaded.front().root));
+    EXPECT_NE(loaded.front().configured_graph, nullptr);
 }
 
 TEST(ModuleLoaderPackages, ExactShortRegistrationOverridesBuiltinConvenienceAlias)
@@ -146,7 +161,7 @@ TEST(ModuleLoaderPackages, ExactShortRegistrationOverridesBuiltinConvenienceAlia
         "    static constexpr auto outputs()\n"
         "    { return std::array<iv::OutputConfig, 1>{}; }\n"
         "    void tick(iv::TickSampleContext<LocalShortNameOscillator> const& ctx) const\n"
-        "    { ctx.outputs[0].push(value); }\n"
+        "    { ctx.template output<0>().push(value); }\n"
         "};\n\n"
         "void local_short_name_consumer(iv::GraphBuilder& g)\n"
         "{\n"
@@ -163,7 +178,7 @@ TEST(ModuleLoaderPackages, ExactShortRegistrationOverridesBuiltinConvenienceAlia
     // builtin alias was considered.
     ASSERT_EQ(loaded.size(), 1u);
     EXPECT_EQ(loaded.front().module_id, "iv.test.local_short_name_consumer");
-    EXPECT_TRUE(static_cast<bool>(loaded.front().root));
+    EXPECT_NE(loaded.front().configured_graph, nullptr);
 }
 
 TEST(ModuleLoaderPackages, RegisteredModuleCanConstructATiledMonoInterface)
@@ -205,7 +220,6 @@ TEST(ModuleLoaderPackages, RegisteredModuleCanConstructATiledMonoInterface)
         "iv.test.tiled_stereo_voice",
         &iv::ModuleLoader::LoadedDefinition::module_id);
     ASSERT_NE(stereo, loaded.end());
-    EXPECT_TRUE(static_cast<bool>(stereo->root));
     ASSERT_NE(stereo->configured_graph, nullptr);
     auto const inputs = stereo->configured_graph->public_ports.sample_inputs(
         stereo->configured_graph->node_bundles);
@@ -338,7 +352,7 @@ TEST(ModuleLoaderPackages, RootPackageDoesNotPublishOtherPackageDefinitions)
 
     ASSERT_EQ(loaded.size(), 1u);
     EXPECT_EQ(loaded.front().module_id, "iv.test.nested_loader_project");
-    EXPECT_TRUE(static_cast<bool>(loaded.front().root));
+    EXPECT_NE(loaded.front().configured_graph, nullptr);
 }
 
 TEST(ModuleLoaderPackages, RegisteredPackageNodeIsResolvedFromLoadedPackageDefinitions)
@@ -366,7 +380,7 @@ TEST(ModuleLoaderPackages, RegisteredPackageNodeIsResolvedFromLoadedPackageDefin
         "    }\n\n"
         "    void tick(iv::TickSampleContext<RegisteredPackageNode> const& ctx) const\n"
         "    {\n"
-        "        ctx.outputs[0].push(0.25);\n"
+        "        ctx.template output<0>().push(0.25);\n"
         "    }\n"
         "};\n"
         "}\n\n"
@@ -392,7 +406,7 @@ TEST(ModuleLoaderPackages, RegisteredPackageNodeIsResolvedFromLoadedPackageDefin
 
     ASSERT_EQ(loaded.size(), 1);
     EXPECT_EQ(loaded.front().module_id, "iv.test.registered_node_consumer");
-    EXPECT_TRUE(static_cast<bool>(loaded.front().root));
+    EXPECT_NE(loaded.front().configured_graph, nullptr);
     ASSERT_NE(loaded.front().configured_graph, nullptr);
 
     std::optional<iv::RegisteredNodeTypeIdentity> registered_identity;
@@ -446,7 +460,7 @@ TEST(ModuleLoaderPackages, RegisteredNodeAndModuleUseProviderConstructionArgumen
         "    static constexpr auto outputs()\n"
         "    { return std::array<iv::OutputConfig, 1>{}; }\n"
         "    void tick(iv::TickSampleContext<ConfiguredProviderNode> const& ctx) const\n"
-        "    { ctx.outputs[0].push(gain); }\n"
+        "    { ctx.template output<0>().push(gain); }\n"
         "};\n"
         "struct RequiredConfiguredProviderNode {\n"
         "    iv::Sample gain;\n"
@@ -455,7 +469,7 @@ TEST(ModuleLoaderPackages, RegisteredNodeAndModuleUseProviderConstructionArgumen
         "    static constexpr auto outputs()\n"
         "    { return std::array<iv::OutputConfig, 1>{}; }\n"
         "    void tick(iv::TickSampleContext<RequiredConfiguredProviderNode> const& ctx) const\n"
-        "    { ctx.outputs[0].push(gain); }\n"
+        "    { ctx.template output<0>().push(gain); }\n"
         "};\n"
         "struct LabelConfiguredProviderNode {\n"
         "    char const* label;\n"
@@ -464,7 +478,7 @@ TEST(ModuleLoaderPackages, RegisteredNodeAndModuleUseProviderConstructionArgumen
         "    static constexpr auto outputs()\n"
         "    { return std::array<iv::OutputConfig, 1>{}; }\n"
         "    void tick(iv::TickSampleContext<LabelConfiguredProviderNode> const& ctx) const\n"
-        "    { ctx.outputs[0].push(iv::Sample{}); }\n"
+        "    { ctx.template output<0>().push(iv::Sample{}); }\n"
         "};\n"
         "}\n\n"
         "IV_NODE(\"iv.test.configured_provider_node\", ConfiguredProviderNode);\n\n"
@@ -562,7 +576,7 @@ TEST(ModuleLoaderPackages, RegisteredNodeAndModuleUseProviderConstructionArgumen
         "iv.test.required_provider_module",
         &iv::ModuleLoader::LoadedDefinition::module_id);
     ASSERT_NE(required_provider, provider_loaded.end());
-    EXPECT_FALSE(static_cast<bool>(required_provider->root));
+    EXPECT_EQ(required_provider->configured_graph, nullptr);
 }
 
 TEST(ModuleLoaderFailures, RegisteredConfigurationRejectsImplicitConversions)
@@ -588,7 +602,7 @@ TEST(ModuleLoaderFailures, RegisteredConfigurationRejectsImplicitConversions)
         "    static constexpr auto outputs()\n"
         "    { return std::array<iv::OutputConfig, 1>{}; }\n"
         "    void tick(iv::TickSampleContext<SampleConfiguredNode> const& ctx) const\n"
-        "    { ctx.outputs[0].push(iv::Sample{}); }\n"
+        "    { ctx.template output<0>().push(iv::Sample{}); }\n"
         "};\n"
         "}\n\n"
         "IV_NODE(\"iv.test.sample_configured_node\", SampleConfiguredNode);\n");
@@ -630,7 +644,7 @@ TEST(ModuleLoaderFailures, SamePackageNodeAndModuleCannotShareStableId)
         "    static constexpr auto outputs()\n"
         "    { return std::array<iv::OutputConfig, 1>{}; }\n"
         "    void tick(iv::TickSampleContext<DuplicateIdNode> const& ctx) const\n"
-        "    { ctx.outputs[0].push(iv::Sample{}); }\n"
+        "    { ctx.template output<0>().push(iv::Sample{}); }\n"
         "};\n\n"
         "void duplicate_id_module(iv::GraphBuilder& g) { g.outputs(); }\n\n"
         "IV_NODE(\"iv.test.duplicate_local_id\", DuplicateIdNode);\n"

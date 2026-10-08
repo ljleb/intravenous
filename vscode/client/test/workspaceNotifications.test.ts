@@ -26,13 +26,13 @@ test("WorkspaceNotificationRouter unsubscribes cleanly", async () => {
     const router = new WorkspaceNotificationRouter();
     let count = 0;
 
-    const subscription = router.subscribe("timeline.laneViewUpdated", async () => {
+    const subscription = router.subscribe("graph.nodesUpdated", async () => {
         count += 1;
     });
 
-    await router.dispatch("timeline.laneViewUpdated", { viewId: "view-1" });
+    await router.dispatch("graph.nodesUpdated", { nodes: [] });
     subscription.dispose();
-    await router.dispatch("timeline.laneViewUpdated", { viewId: "view-1" });
+    await router.dispatch("graph.nodesUpdated", { nodes: [] });
 
     assert.equal(count, 1);
 });

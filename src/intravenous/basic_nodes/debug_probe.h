@@ -32,10 +32,10 @@ struct DebugProbe {
 
     void tick(iv::TickSampleContext<DebugProbe> const& ctx) const
     {
-        auto const sample = ctx.inputs[0].get();
+        auto const sample = ctx.template input<0>().get();
         if (every_n_ticks != 0 && (ctx.index % every_n_ticks) == 0) {
             iv::details::write_debug_probe_sample(label, ctx.index, sample);
         }
-        ctx.outputs[0].push(sample);
+        ctx.template output<0>().push(sample);
     }
 };
