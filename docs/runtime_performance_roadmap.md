@@ -39,7 +39,11 @@ The governing performance invariant is:
    unrelated raw regions is not. Prepared generations now own the cold semantic match
    of surviving sample/event port-state identities, including exact inherited timeline
    intervals and growing/shrinking extents; physical transition realization and bounded
-   cutover execution remain to be implemented from that plan.
+   cutover execution remain to be implemented from that plan. Each inherited
+   state is now also classified as already represented, transferable into one
+   successor steady-storage view, requiring transition-only storage, or
+   unavailable from the predecessor; shared successor views cannot be selected
+   for transfers of distinct semantic states.
 3. Convert realtime persisted playback and recording to page/span operations. This
    includes clearing only requested sample windows, one lookup per relevant page/span,
    ring-wrap copy runs, retained event-window cursors, direct materialization indexing,

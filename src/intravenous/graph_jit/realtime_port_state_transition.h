@@ -10,6 +10,23 @@
 
 namespace iv::graph_jit {
 
+// How one inherited semantic port-state interval can be represented by the
+// prepared successor. This is selected from the predecessor's recoverable
+// views and the successor's steady views; it is not a raw-region copy policy.
+enum class InheritedRealtimePortStateRealization : std::uint8_t {
+    // The successor's immutable/fresh state already has the inherited value.
+    already_represented,
+    // The successor owns one private steady storage view that can receive the
+    // inherited interval during transition preparation.
+    transfer_to_steady_storage,
+    // The steady realization aliases, derives, or omits this semantic state;
+    // the transition realization must own temporary storage for it.
+    transition_only_storage,
+    // The predecessor retained no recoverable representation of this state.
+    // Cutover cannot proceed until an earlier realization retains a source.
+    predecessor_state_unavailable,
+};
+
 // One surviving semantic port-state piece across a graph-generation boundary.
 // Indices refer to the immutable metadata of the predecessor/current compiled
 // graphs. The inherited interval is relative to the cutover position: history
@@ -25,6 +42,8 @@ struct RealtimePortStateTransition {
     std::size_t inherited_extent_samples = 0;
     std::size_t newly_exposed_extent_samples = 0;
     std::size_t discarded_extent_samples = 0;
+    InheritedRealtimePortStateRealization inherited_state_realization =
+        InheritedRealtimePortStateRealization::transition_only_storage;
 };
 
 // Cold semantic reconciliation for one prospective generation cutover. This

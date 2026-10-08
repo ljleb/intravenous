@@ -65,6 +65,72 @@ iv::graph_jit::RealtimePortStateRealizations realizations_for(
     return result;
 }
 
+iv::graph_jit::SampleRealtimePortStateRealization constant_sample(
+    std::size_t requirement_index, float value)
+{
+    return {
+        .requirement_index = requirement_index,
+        .authored_storage = iv::graph_jit::SampleRealtimePortStateStorageView{
+            .storage = iv::graph_jit::SampleRealtimePortStateStorage::
+                immutable_constant,
+            .constant_value = iv::Sample{value},
+        },
+        .retained_access = iv::graph_jit::SampleRealtimePortStateAccess::
+            immutable_constant,
+    };
+}
+
+iv::graph_jit::SampleRealtimePortStateRealization direct_sample(
+    std::size_t requirement_index,
+    std::size_t storage_offset,
+    std::size_t channel = 0)
+{
+    iv::graph_jit::SampleRealtimePortStateRealization result{
+        .requirement_index = requirement_index,
+        .retained_access =
+            iv::graph_jit::SampleRealtimePortStateAccess::direct,
+    };
+    result.retained_sources.push_back(
+        iv::graph_jit::SampleRealtimePortStateStorageView{
+            .storage = iv::graph_jit::SampleRealtimePortStateStorage::ring,
+            .representation_channel = channel,
+            .working_frame_capacity = 8,
+            .storage_frame_count = 8,
+            .node_storage_offset = storage_offset,
+            .storage_size_bytes = 8 * sizeof(iv::Sample),
+        });
+    return result;
+}
+
+iv::graph_jit::EventRealtimePortStateRealization empty_event(
+    std::size_t requirement_index)
+{
+    return {
+        .requirement_index = requirement_index,
+        .retained_access =
+            iv::graph_jit::EventRealtimePortStateAccess::immutable_empty,
+    };
+}
+
+iv::graph_jit::EventRealtimePortStateRealization direct_event(
+    std::size_t requirement_index, std::size_t storage_offset)
+{
+    return {
+        .requirement_index = requirement_index,
+        .retained_access =
+            iv::graph_jit::EventRealtimePortStateAccess::direct,
+        .retained_storage =
+            iv::graph_jit::EventRealtimePortStateStorageView{
+                .storage = iv::graph_jit::EventRealtimePortStateStorage::ring,
+                .type = iv::EventTypeId::midi,
+                .event_capacity = 8,
+                .size_bytes = 256,
+                .alignment = alignof(iv::TimedEvent),
+                .node_storage_offset = storage_offset,
+            },
+    };
+}
+
 TEST(RealtimePortStateTransition, MatchesStableStateAcrossGenerationLocalPorts)
 {
     iv::graph_jit::RealtimePortStateRequirements previous{
@@ -129,6 +195,10 @@ TEST(RealtimePortStateTransition, MatchesStableStateAcrossGenerationLocalPorts)
     EXPECT_EQ(history.inherited_extent_samples, 5u);
     EXPECT_EQ(history.newly_exposed_extent_samples, 0u);
     EXPECT_EQ(history.discarded_extent_samples, 3u);
+    EXPECT_EQ(
+        history.inherited_state_realization,
+        iv::graph_jit::InheritedRealtimePortStateRealization::
+            predecessor_state_unavailable);
 
     auto const& latency = planned->sample_states[1];
     EXPECT_EQ(latency.inherited_begin, 0);
@@ -136,6 +206,10 @@ TEST(RealtimePortStateTransition, MatchesStableStateAcrossGenerationLocalPorts)
     EXPECT_EQ(latency.inherited_extent_samples, 2u);
     EXPECT_EQ(latency.newly_exposed_extent_samples, 4u);
     EXPECT_EQ(latency.discarded_extent_samples, 0u);
+    EXPECT_EQ(
+        latency.inherited_state_realization,
+        iv::graph_jit::InheritedRealtimePortStateRealization::
+            predecessor_state_unavailable);
 }
 
 TEST(RealtimePortStateTransition, SeparatesEventMatchesAndOmitsNewIdentity)
@@ -186,6 +260,157 @@ TEST(RealtimePortStateTransition, SeparatesEventMatchesAndOmitsNewIdentity)
     ASSERT_EQ(planned->event_states.size(), 1u);
     EXPECT_EQ(planned->event_states[0].inherited_begin, -32);
     EXPECT_EQ(planned->event_states[0].inherited_end, 0);
+    EXPECT_EQ(
+        planned->event_states[0].inherited_state_realization,
+        iv::graph_jit::InheritedRealtimePortStateRealization::
+            predecessor_state_unavailable);
+}
+
+TEST(RealtimePortStateTransition, SelectsImmutableAndPrivateSampleRealizations)
+{
+    iv::graph_jit::RealtimePortStateRequirements previous{
+        .states = {
+            requirement(
+                1,
+                8,
+                iv::PortKind::sample,
+                iv::graph_jit::PortDirection::input,
+                iv::graph_jit::RealtimePortStateRole::sequential_input_history,
+                "constant",
+                "in",
+                0),
+            requirement(
+                2,
+                8,
+                iv::PortKind::sample,
+                iv::graph_jit::PortDirection::input,
+                iv::graph_jit::RealtimePortStateRole::sequential_input_history,
+                "stored",
+                "in",
+                0),
+        },
+    };
+    auto current = previous;
+    current.states[0].configured_port.node_bundle_handle = 11;
+    current.states[1].configured_port.node_bundle_handle = 12;
+    iv::graph_jit::RealtimePortStateRealizations previous_realizations{
+        .sample_states = {
+            constant_sample(0, 0.25f),
+            direct_sample(1, 64),
+        },
+    };
+    iv::graph_jit::RealtimePortStateRealizations current_realizations{
+        .sample_states = {
+            constant_sample(0, 0.25f),
+            direct_sample(1, 512),
+        },
+    };
+
+    auto planned = iv::graph_jit::plan_realtime_port_state_transition(
+        previous,
+        previous_realizations,
+        current,
+        current_realizations);
+
+    ASSERT_TRUE(planned.has_value())
+        << (planned ? std::string{} : planned.error());
+    ASSERT_EQ(planned->sample_states.size(), 2u);
+    EXPECT_EQ(
+        planned->sample_states[0].inherited_state_realization,
+        iv::graph_jit::InheritedRealtimePortStateRealization::
+            already_represented);
+    EXPECT_EQ(
+        planned->sample_states[1].inherited_state_realization,
+        iv::graph_jit::InheritedRealtimePortStateRealization::
+            transfer_to_steady_storage);
+}
+
+TEST(RealtimePortStateTransition, NewStateSharingSampleTargetRequiresTransitionStorage)
+{
+    iv::graph_jit::RealtimePortStateRequirements previous{
+        .states = {requirement(
+            1,
+            8,
+            iv::PortKind::sample,
+            iv::graph_jit::PortDirection::input,
+            iv::graph_jit::RealtimePortStateRole::sequential_input_history,
+            "survivor",
+            "in",
+            0)},
+    };
+    iv::graph_jit::RealtimePortStateRequirements current{
+        .states = {
+            previous.states.front(),
+            requirement(
+                2,
+                8,
+                iv::PortKind::sample,
+                iv::graph_jit::PortDirection::input,
+                iv::graph_jit::RealtimePortStateRole::sequential_input_history,
+                "new-state",
+                "in",
+                0),
+        },
+    };
+    iv::graph_jit::RealtimePortStateRealizations previous_realizations{
+        .sample_states = {direct_sample(0, 64)},
+    };
+    iv::graph_jit::RealtimePortStateRealizations current_realizations{
+        .sample_states = {
+            direct_sample(0, 512),
+            direct_sample(1, 512),
+        },
+    };
+
+    auto planned = iv::graph_jit::plan_realtime_port_state_transition(
+        previous,
+        previous_realizations,
+        current,
+        current_realizations);
+
+    ASSERT_TRUE(planned.has_value())
+        << (planned ? std::string{} : planned.error());
+    ASSERT_EQ(planned->sample_states.size(), 1u);
+    EXPECT_EQ(
+        planned->sample_states[0].inherited_state_realization,
+        iv::graph_jit::InheritedRealtimePortStateRealization::
+            transition_only_storage);
+}
+
+TEST(RealtimePortStateTransition, EmptyEventsNeedNoTransferIntoPrivateStorage)
+{
+    iv::graph_jit::RealtimePortStateRequirements previous{
+        .states = {requirement(
+            1,
+            8,
+            iv::PortKind::event,
+            iv::graph_jit::PortDirection::input,
+            iv::graph_jit::RealtimePortStateRole::sequential_input_history,
+            "node",
+            "events",
+            std::nullopt)},
+    };
+    auto current = previous;
+    iv::graph_jit::RealtimePortStateRealizations previous_realizations{
+        .event_states = {empty_event(0)},
+    };
+    iv::graph_jit::RealtimePortStateRealizations current_realizations{
+        .event_states = {direct_event(0, 256)},
+    };
+
+    auto planned = iv::graph_jit::plan_realtime_port_state_transition(
+        previous,
+        previous_realizations,
+        current,
+        current_realizations);
+
+    ASSERT_TRUE(planned.has_value())
+        << (planned ? std::string{} : planned.error());
+    ASSERT_EQ(planned->event_states.size(), 1u);
+    EXPECT_EQ(
+        planned->event_states[0].inherited_state_realization,
+        iv::graph_jit::InheritedRealtimePortStateRealization::
+            already_represented);
 }
 
 TEST(RealtimePortStateTransition, RejectsDuplicateStableIdentity)
