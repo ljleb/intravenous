@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <expected>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -46,6 +47,42 @@ struct RealtimePortStateTransition {
         InheritedRealtimePortStateRealization::transition_only_storage;
 };
 
+// Concrete cold descriptor for transferring one recoverable predecessor
+// sample interval into one non-aliased successor steady-storage view. Source
+// views belong to the predecessor NodeStorage; target belongs to the successor.
+struct SampleRealtimePortStateTransfer {
+    std::size_t transition_index = 0;
+    SampleRealtimePortStateAccess source_access =
+        SampleRealtimePortStateAccess::callback_only;
+    std::vector<SampleRealtimePortStateStorageView> source_storage{};
+    std::optional<SampleRealtimePortStateMaterialization>
+        source_materialization{};
+    // Channel of source_materialization.target_layout represented by this
+    // semantic state. Ignored when source_access is not materialized.
+    std::size_t source_materialization_channel = 0;
+    SampleRealtimePortStateStorageView target_storage{};
+    std::int64_t inherited_begin = 0;
+    std::int64_t inherited_end = 0;
+};
+
+// Concrete cold descriptor for selecting/converting one predecessor event
+// interval into one non-aliased successor steady-storage view. Event payloads
+// retain absolute timestamps, so the inherited interval is also the filter
+// applied at the cutover position.
+struct EventRealtimePortStateTransfer {
+    std::size_t transition_index = 0;
+    EventRealtimePortStateAccess source_access =
+        EventRealtimePortStateAccess::callback_only;
+    EventRealtimePortStateStorageView source_storage{};
+    std::optional<std::size_t> source_index{};
+    std::optional<EventConversionPlan> source_conversion{};
+    std::size_t source_history_samples = 0;
+    bool source_selects_invocation_window = false;
+    EventRealtimePortStateStorageView target_storage{};
+    std::int64_t inherited_begin = 0;
+    std::int64_t inherited_end = 0;
+};
+
 // Cold semantic reconciliation for one prospective generation cutover. This
 // intentionally contains no raw-region transfers: physical transition
 // realization consumes these matches after stable node-port ownership has
@@ -53,6 +90,8 @@ struct RealtimePortStateTransition {
 struct RealtimePortStateTransitionPlan {
     std::vector<RealtimePortStateTransition> sample_states{};
     std::vector<RealtimePortStateTransition> event_states{};
+    std::vector<SampleRealtimePortStateTransfer> sample_transfers{};
+    std::vector<EventRealtimePortStateTransfer> event_transfers{};
 };
 
 [[nodiscard]] std::expected<RealtimePortStateTransitionPlan, std::string>

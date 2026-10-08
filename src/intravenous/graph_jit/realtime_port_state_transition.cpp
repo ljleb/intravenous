@@ -198,6 +198,11 @@ select_event_inherited_state_realization(
             return std::unexpected(
                 "successor direct event state has no persistent view");
         }
+        if (previous.authored_storage.type
+            != current.retained_storage->type) {
+            return InheritedRealtimePortStateRealization::
+                transition_only_storage;
+        }
         return InheritedRealtimePortStateRealization::
             transfer_to_steady_storage;
     }
@@ -526,6 +531,104 @@ std::expected<void, std::string> classify_shared_successor_storage(
     return {};
 }
 
+std::expected<void, std::string> build_steady_storage_transfers(
+    RealtimePortStateTransitionPlan& plan,
+    RealtimePortStateRealizations const& previous_realizations,
+    RealtimePortStateRealizations const& current_realizations)
+{
+    plan.sample_transfers.reserve(plan.sample_states.size());
+    for (std::size_t index = 0; index < plan.sample_states.size(); ++index) {
+        auto const& transition = plan.sample_states[index];
+        if (transition.inherited_state_realization
+            != InheritedRealtimePortStateRealization::
+                transfer_to_steady_storage) {
+            continue;
+        }
+        auto const& source = previous_realizations.sample_states[
+            transition.previous_realization_index];
+        auto const& target = current_realizations.sample_states[
+            transition.current_realization_index];
+        if (target.retained_access != SampleRealtimePortStateAccess::direct
+            || target.retained_sources.size() != 1
+            || !target.retained_sources.front().node_storage_offset
+            || target.retained_sources.front().callback_arena_offset) {
+            return std::unexpected(
+                "sample state transfer lost its successor steady-storage view");
+        }
+
+        SampleRealtimePortStateTransfer transfer{
+            .transition_index = index,
+            .source_access = source.retained_access,
+            .source_materialization = source.materialization,
+            .source_materialization_channel =
+                source.authored_storage.representation_channel,
+            .target_storage = target.retained_sources.front(),
+            .inherited_begin = transition.inherited_begin,
+            .inherited_end = transition.inherited_end,
+        };
+        if (source.retained_access
+            == SampleRealtimePortStateAccess::immutable_constant) {
+            if (!source.authored_storage.constant_value) {
+                return std::unexpected(
+                    "sample state transfer lost its predecessor constant");
+            }
+            transfer.source_storage.push_back(source.authored_storage);
+        } else {
+            transfer.source_storage = source.retained_sources;
+        }
+        if (transfer.source_storage.empty()
+            || !std::ranges::all_of(
+                transfer.source_storage,
+                sample_storage_source_is_recoverable)) {
+            return std::unexpected(
+                "sample state transfer lost its recoverable predecessor storage");
+        }
+        plan.sample_transfers.push_back(std::move(transfer));
+    }
+
+    plan.event_transfers.reserve(plan.event_states.size());
+    for (std::size_t index = 0; index < plan.event_states.size(); ++index) {
+        auto const& transition = plan.event_states[index];
+        if (transition.inherited_state_realization
+            != InheritedRealtimePortStateRealization::
+                transfer_to_steady_storage) {
+            continue;
+        }
+        auto const& source = previous_realizations.event_states[
+            transition.previous_realization_index];
+        auto const& target = current_realizations.event_states[
+            transition.current_realization_index];
+        if (!source.retained_storage
+            || !source.retained_storage->node_storage_offset
+            || source.retained_storage->callback_arena_offset) {
+            return std::unexpected(
+                "event state transfer lost its recoverable predecessor storage");
+        }
+        if (target.retained_access != EventRealtimePortStateAccess::direct
+            || !target.retained_storage
+            || !target.retained_storage->node_storage_offset
+            || target.retained_storage->callback_arena_offset) {
+            return std::unexpected(
+                "event state transfer lost its successor steady-storage view");
+        }
+        plan.event_transfers.push_back(EventRealtimePortStateTransfer{
+            .transition_index = index,
+            .source_access = source.retained_access,
+            .source_storage = *source.retained_storage,
+            .source_index = source.retained_source_index,
+            .source_conversion = source.materialization_conversion,
+            .source_history_samples =
+                source.materialization_history_samples,
+            .source_selects_invocation_window =
+                source.materialization_selects_invocation_window,
+            .target_storage = *target.retained_storage,
+            .inherited_begin = transition.inherited_begin,
+            .inherited_end = transition.inherited_end,
+        });
+    }
+    return {};
+}
+
 } // namespace
 
 std::expected<RealtimePortStateTransitionPlan, std::string>
@@ -605,6 +708,11 @@ plan_realtime_port_state_transition(
         result, current_realizations);
     if (!classified) {
         return std::unexpected(std::move(classified.error()));
+    }
+    auto transfers = build_steady_storage_transfers(
+        result, previous_realizations, current_realizations);
+    if (!transfers) {
+        return std::unexpected(std::move(transfers.error()));
     }
     return result;
 }

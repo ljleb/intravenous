@@ -43,7 +43,10 @@ The governing performance invariant is:
    state is now also classified as already represented, transferable into one
    successor steady-storage view, requiring transition-only storage, or
    unavailable from the predecessor; shared successor views cannot be selected
-   for transfers of distinct semantic states.
+   for transfers of distinct semantic states. Transferable states now produce
+   concrete sample/event descriptors containing predecessor storage and
+   conversion facts, the private successor storage view, and the exact inherited
+   interval; execution of those descriptors is the next cutover step.
 3. Convert realtime persisted playback and recording to page/span operations. This
    includes clearing only requested sample windows, one lookup per relevant page/span,
    ring-wrap copy runs, retained event-window cursors, direct materialization indexing,
