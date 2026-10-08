@@ -1,6 +1,7 @@
 #include <intravenous/runtime/persisted_page_store.h>
 
 #include <algorithm>
+#include <array>
 #include <cassert>
 #include <limits>
 #include <stdexcept>
@@ -33,18 +34,13 @@ struct EventOutputState {
     std::size_t page_count = 0;
 };
 
-struct SampleOutputNode {
-    std::shared_ptr<SampleOutputState const> state{};
-    std::shared_ptr<SampleOutputNode const> left{};
-    std::shared_ptr<SampleOutputNode const> right{};
-    std::uint32_t height = 1;
-};
+template<typename State>
+struct OutputDirectoryNode {
+    using Node = OutputDirectoryNode<State>;
+    using Children = std::array<std::shared_ptr<Node const>, 16>;
+    using Values = std::array<std::shared_ptr<State const>, 16>;
 
-struct EventOutputNode {
-    std::shared_ptr<EventOutputState const> state{};
-    std::shared_ptr<EventOutputNode const> left{};
-    std::shared_ptr<EventOutputNode const> right{};
-    std::uint32_t height = 1;
+    std::variant<Children, Values> entries{Values{}};
 };
 
 } // namespace persisted_page_store_detail
@@ -57,15 +53,26 @@ using persisted_page_store_detail::PageNode;
 using persisted_page_store_detail::SampleOutputNode;
 using persisted_page_store_detail::SampleOutputState;
 
-std::atomic<std::uint64_t> next_persisted_output_slot{0};
+std::atomic<std::uint32_t> next_persisted_output_owner{0};
 
-[[nodiscard]] int compare_output(
-    PersistedOutputHandle left,
-    PersistedOutputHandle right) noexcept
+[[nodiscard]] std::uint32_t allocate_persisted_output_owner()
 {
-    if (left < right) return -1;
-    if (right < left) return 1;
-    return 0;
+    constexpr auto exclusive_limit =
+        std::numeric_limits<std::uint32_t>::max() / 2;
+    auto owner = next_persisted_output_owner.load(std::memory_order_relaxed);
+    for (;;) {
+        if (owner >= exclusive_limit) {
+            throw std::overflow_error(
+                "persisted page store owner tokens are exhausted");
+        }
+        if (next_persisted_output_owner.compare_exchange_weak(
+                owner,
+                owner + 1,
+                std::memory_order_relaxed,
+                std::memory_order_relaxed)) {
+            return owner;
+        }
+    }
 }
 
 template<typename Node>
@@ -84,21 +91,6 @@ template<typename Page>
     auto const height = 1 + std::max(node_height(left), node_height(right));
     return std::make_shared<PageNode<Page> const>(PageNode<Page>{
         .page = std::move(page),
-        .left = std::move(left),
-        .right = std::move(right),
-        .height = height,
-    });
-}
-
-template<typename Node, typename State>
-[[nodiscard]] std::shared_ptr<Node const> make_output_node(
-    std::shared_ptr<State const> state,
-    std::shared_ptr<Node const> left = {},
-    std::shared_ptr<Node const> right = {})
-{
-    auto const height = 1 + std::max(node_height(left), node_height(right));
-    return std::make_shared<Node const>(Node{
-        .state = std::move(state),
         .left = std::move(left),
         .right = std::move(right),
         .height = height,
@@ -146,51 +138,6 @@ template<typename Page>
             node->page, node->left, right->left);
         return make_page_node<Page>(
             right->page, std::move(new_left), right->right);
-    }
-    return node;
-}
-
-template<typename Node, typename State>
-[[nodiscard]] std::shared_ptr<Node const> balance_output_node(
-    std::shared_ptr<Node const> node)
-{
-    auto const balance = static_cast<int>(node_height(node->left))
-        - static_cast<int>(node_height(node->right));
-    if (balance > 1) {
-        auto left = node->left;
-        if (node_height(left->left) < node_height(left->right)) {
-            auto const pivot = left->right;
-            left = make_output_node<Node, State>(
-                left->state,
-                left->left,
-                pivot->left);
-            left = make_output_node<Node, State>(
-                pivot->state,
-                std::move(left),
-                pivot->right);
-        }
-        auto const new_right = make_output_node<Node, State>(
-            node->state, left->right, node->right);
-        return make_output_node<Node, State>(
-            left->state, left->left, std::move(new_right));
-    }
-    if (balance < -1) {
-        auto right = node->right;
-        if (node_height(right->right) < node_height(right->left)) {
-            auto const pivot = right->left;
-            right = make_output_node<Node, State>(
-                right->state,
-                pivot->right,
-                right->right);
-            right = make_output_node<Node, State>(
-                pivot->state,
-                pivot->left,
-                std::move(right));
-        }
-        auto const new_left = make_output_node<Node, State>(
-            node->state, node->left, right->left);
-        return make_output_node<Node, State>(
-            right->state, std::move(new_left), right->right);
     }
     return node;
 }
@@ -259,72 +206,166 @@ template<typename Page>
             root->right, successor->page->page_index)));
 }
 
+constexpr std::uint32_t output_directory_mask = 15;
+constexpr std::uint8_t output_directory_digit_bits = 4;
+
+[[nodiscard]] std::uint8_t output_directory_levels(
+    std::uint32_t index) noexcept
+{
+    std::uint8_t result = 0;
+    auto remaining = index >> output_directory_digit_bits;
+    while (remaining != 0) {
+        ++result;
+        remaining >>= output_directory_digit_bits;
+    }
+    return result;
+}
+
+[[nodiscard]] std::size_t output_directory_digit(
+    std::uint32_t index,
+    std::uint8_t level) noexcept
+{
+    return static_cast<std::size_t>(
+        (index >> (level * output_directory_digit_bits))
+        & output_directory_mask);
+}
+
+[[nodiscard]] bool output_directory_contains(
+    std::uint8_t levels,
+    std::uint32_t index) noexcept
+{
+    auto const capacity = std::uint64_t{1}
+        << ((static_cast<unsigned>(levels) + 1)
+            * output_directory_digit_bits);
+    return index < capacity;
+}
+
+template<typename Node>
+[[nodiscard]] std::shared_ptr<Node const> make_output_leaf(
+    typename Node::Values values)
+{
+    return std::make_shared<Node const>(Node{
+        .entries = std::move(values),
+    });
+}
+
+template<typename Node>
+[[nodiscard]] std::shared_ptr<Node const> make_output_branch(
+    typename Node::Children children)
+{
+    return std::make_shared<Node const>(Node{
+        .entries = std::move(children),
+    });
+}
+
 template<typename Node, typename State>
 [[nodiscard]] State const* find_output(
     std::shared_ptr<Node const> const& root,
-    PersistedOutputHandle output) noexcept
+    std::uint8_t levels,
+    std::uint32_t index) noexcept
 {
-    auto node = root.get();
-    while (node) {
-        auto const order = compare_output(output, node->state->output);
-        if (order < 0) node = node->left.get();
-        else if (order > 0) node = node->right.get();
-        else return node->state.get();
+    if (!output_directory_contains(levels, index)) return nullptr;
+    auto const* node = root.get();
+    while (node && levels != 0) {
+        auto const* children =
+            std::get_if<typename Node::Children>(&node->entries);
+        assert(children != nullptr);
+        node = (*children)[output_directory_digit(index, levels)].get();
+        --levels;
     }
-    return nullptr;
+    if (!node) return nullptr;
+    auto const* values = std::get_if<typename Node::Values>(&node->entries);
+    assert(values != nullptr);
+    return (*values)[index & output_directory_mask].get();
+}
+
+template<typename Node, typename State>
+[[nodiscard]] std::shared_ptr<Node const> put_output_node(
+    std::shared_ptr<Node const> const& root,
+    std::uint8_t level,
+    std::uint32_t index,
+    std::shared_ptr<State const> state)
+{
+    if (level == 0) {
+        typename Node::Values values{};
+        if (root) {
+            auto const* existing =
+                std::get_if<typename Node::Values>(&root->entries);
+            assert(existing != nullptr);
+            values = *existing;
+        }
+        values[index & output_directory_mask] = std::move(state);
+        return make_output_leaf<Node>(std::move(values));
+    }
+
+    typename Node::Children children{};
+    if (root) {
+        auto const* existing =
+            std::get_if<typename Node::Children>(&root->entries);
+        assert(existing != nullptr);
+        children = *existing;
+    }
+    auto const digit = output_directory_digit(index, level);
+    children[digit] = put_output_node<Node, State>(
+        children[digit], level - 1, index, std::move(state));
+    return make_output_branch<Node>(std::move(children));
 }
 
 template<typename Node, typename State>
 [[nodiscard]] std::shared_ptr<Node const> put_output(
-    std::shared_ptr<Node const> const& root,
+    std::shared_ptr<Node const> root,
+    std::uint8_t& levels,
+    std::uint32_t index,
     std::shared_ptr<State const> state)
 {
-    if (!root) return make_output_node<Node, State>(std::move(state));
-    auto const order = compare_output(state->output, root->state->output);
-    if (order < 0) {
-        return balance_output_node<Node, State>(make_output_node<Node, State>(
-            root->state,
-            put_output<Node, State>(root->left, std::move(state)),
-            root->right));
+    auto const required = output_directory_levels(index);
+    while (levels < required) {
+        if (root) {
+            typename Node::Children children{};
+            children[0] = std::move(root);
+            root = make_output_branch<Node>(std::move(children));
+        }
+        ++levels;
     }
-    if (order > 0) {
-        return balance_output_node<Node, State>(make_output_node<Node, State>(
-            root->state,
-            root->left,
-            put_output<Node, State>(root->right, std::move(state))));
-    }
-    return make_output_node<Node, State>(
-        std::move(state), root->left, root->right);
+    return put_output_node<Node, State>(
+        root, levels, index, std::move(state));
 }
 
-template<typename Node, typename State>
+template<typename Entry>
+[[nodiscard]] bool output_directory_empty(Entry const& entries) noexcept
+{
+    return std::ranges::all_of(
+        entries, [](auto const& entry) { return !entry; });
+}
+
+template<typename Node>
 [[nodiscard]] std::shared_ptr<Node const> erase_output_node(
     std::shared_ptr<Node const> const& root,
-    PersistedOutputHandle output)
+    std::uint8_t level,
+    std::uint32_t index)
 {
     if (!root) return {};
-    auto const order = compare_output(output, root->state->output);
-    if (order < 0) {
-        return balance_output_node<Node, State>(make_output_node<Node, State>(
-            root->state,
-            erase_output_node<Node, State>(root->left, output),
-            root->right));
+    if (level == 0) {
+        auto const* existing =
+            std::get_if<typename Node::Values>(&root->entries);
+        assert(existing != nullptr);
+        auto values = *existing;
+        values[index & output_directory_mask].reset();
+        return output_directory_empty(values)
+            ? std::shared_ptr<Node const>{}
+            : make_output_leaf<Node>(std::move(values));
     }
-    if (order > 0) {
-        return balance_output_node<Node, State>(make_output_node<Node, State>(
-            root->state,
-            root->left,
-            erase_output_node<Node, State>(root->right, output)));
-    }
-    if (!root->left) return root->right;
-    if (!root->right) return root->left;
-    auto successor = root->right;
-    while (successor->left) successor = successor->left;
-    return balance_output_node<Node, State>(make_output_node<Node, State>(
-        successor->state,
-        root->left,
-        erase_output_node<Node, State>(
-            root->right, successor->state->output)));
+
+    auto const* existing =
+        std::get_if<typename Node::Children>(&root->entries);
+    assert(existing != nullptr);
+    auto children = *existing;
+    auto const digit = output_directory_digit(index, level);
+    children[digit] = erase_output_node<Node>(
+        children[digit], level - 1, index);
+    return output_directory_empty(children)
+        ? std::shared_ptr<Node const>{}
+        : make_output_branch<Node>(std::move(children));
 }
 
 [[nodiscard]] IndexRegion page_interval(
@@ -488,31 +529,53 @@ PersistedOutputHandle PersistedPageStore::resolve_output(
         });
     if (existing != output_slots_.end()) return existing->second;
 
-    auto slot = next_persisted_output_slot.load(std::memory_order_relaxed);
-    for (;;) {
-        if (slot >= std::numeric_limits<std::uint64_t>::max() / 2) {
-            throw std::overflow_error("persisted output handles are exhausted");
-        }
-        if (next_persisted_output_slot.compare_exchange_weak(
-                slot,
-                slot + 1,
-                std::memory_order_relaxed,
-                std::memory_order_relaxed)) {
-            break;
-        }
+    if (output_slots_.size()
+        > std::numeric_limits<std::uint32_t>::max()) {
+        throw std::overflow_error(
+            "persisted page store output slots are exhausted");
     }
     auto const handle = PersistedOutputHandle{
-        slot, persisted_output_kind(output)};
+        output_owner_token_,
+        static_cast<std::uint32_t>(output_slots_.size()),
+        persisted_output_kind(output)};
     output_slots_.push_back({output, handle});
     return handle;
+}
+
+std::uint32_t PersistedPageStore::output_owner_token(
+    PersistedOutputHandle output) noexcept
+{
+    return static_cast<std::uint32_t>(
+        output.value_ >> PersistedOutputHandle::owner_shift);
+}
+
+std::uint32_t PersistedPageStore::output_directory_index(
+    PersistedOutputHandle output) noexcept
+{
+    return static_cast<std::uint32_t>(
+        output.value_ >> PersistedOutputHandle::slot_shift);
+}
+
+bool PersistedPageStore::owns_output(
+    PersistedOutputHandle output) const noexcept
+{
+    return output.valid()
+        && output_owner_token(output) == output_owner_token_;
 }
 
 PersistedSamplePage const* PersistedPageStore::Snapshot::find_sample_page(
     PersistedOutputHandle output,
     std::uint64_t page_index) const noexcept
 {
+    if (!output.valid() || output.kind() != PortKind::sample
+        || PersistedPageStore::output_owner_token(output)
+            != output_owner_token_) {
+        return nullptr;
+    }
     auto const* selected = find_output<SampleOutputNode, SampleOutputState>(
-        sample_outputs_, output);
+        sample_outputs_,
+        sample_output_levels_,
+        PersistedPageStore::output_directory_index(output));
     return selected ? find_page(selected->pages, page_index) : nullptr;
 }
 
@@ -520,8 +583,15 @@ PersistedEventPage const* PersistedPageStore::Snapshot::find_event_page(
     PersistedOutputHandle output,
     std::uint64_t page_index) const noexcept
 {
+    if (!output.valid() || output.kind() != PortKind::event
+        || PersistedPageStore::output_owner_token(output)
+            != output_owner_token_) {
+        return nullptr;
+    }
     auto const* selected = find_output<EventOutputNode, EventOutputState>(
-        event_outputs_, output);
+        event_outputs_,
+        event_output_levels_,
+        PersistedPageStore::output_directory_index(output));
     return selected ? find_page(selected->pages, page_index) : nullptr;
 }
 
@@ -529,8 +599,15 @@ Coverage const* PersistedPageStore::Snapshot::find_sample_coverage(
     PersistedOutputHandle output,
     ChannelLayout layout) const noexcept
 {
+    if (!output.valid() || output.kind() != PortKind::sample
+        || PersistedPageStore::output_owner_token(output)
+            != output_owner_token_) {
+        return nullptr;
+    }
     auto const* selected = find_output<SampleOutputNode, SampleOutputState>(
-        sample_outputs_, output);
+        sample_outputs_,
+        sample_output_levels_,
+        PersistedPageStore::output_directory_index(output));
     return selected && selected->layout == layout
         ? &selected->coverage
         : nullptr;
@@ -540,8 +617,15 @@ Coverage const* PersistedPageStore::Snapshot::find_event_coverage(
     PersistedOutputHandle output,
     EventTypeId type) const noexcept
 {
+    if (!output.valid() || output.kind() != PortKind::event
+        || PersistedPageStore::output_owner_token(output)
+            != output_owner_token_) {
+        return nullptr;
+    }
     auto const* selected = find_output<EventOutputNode, EventOutputState>(
-        event_outputs_, output);
+        event_outputs_,
+        event_output_levels_,
+        PersistedPageStore::output_directory_index(output));
     return selected && selected->type == type
         ? &selected->coverage
         : nullptr;
@@ -579,9 +663,17 @@ void PersistedPageStore::Candidate::put(PersistedSamplePage page)
 {
     if (!successor_) throw std::logic_error("persisted page candidate is empty");
     validate_page(page, successor_->page_width_);
+    if (!store_->owns_output(page.output)) {
+        throw std::invalid_argument(
+            "sample page output handle belongs to another persisted page store");
+    }
     auto replacement = std::make_shared<PersistedSamplePage const>(std::move(page));
+    auto const output_index =
+        PersistedPageStore::output_directory_index(replacement->output);
     auto const* current = find_output<SampleOutputNode, SampleOutputState>(
-        successor_->sample_outputs_, replacement->output);
+        successor_->sample_outputs_,
+        successor_->sample_output_levels_,
+        output_index);
     if (current && current->layout != replacement->layout) {
         throw std::invalid_argument(
             "persisted sample output pages disagree on channel layout");
@@ -606,7 +698,10 @@ void PersistedPageStore::Candidate::put(PersistedSamplePage page)
     });
     successor_->sample_outputs_ = put_output<
         SampleOutputNode, SampleOutputState>(
-            successor_->sample_outputs_, std::move(state));
+            successor_->sample_outputs_,
+            successor_->sample_output_levels_,
+            output_index,
+            std::move(state));
     if (!previous) ++successor_->sample_page_count_;
 }
 
@@ -614,9 +709,17 @@ void PersistedPageStore::Candidate::put(PersistedEventPage page)
 {
     if (!successor_) throw std::logic_error("persisted page candidate is empty");
     validate_page(page, successor_->page_width_);
+    if (!store_->owns_output(page.output)) {
+        throw std::invalid_argument(
+            "event page output handle belongs to another persisted page store");
+    }
     auto replacement = std::make_shared<PersistedEventPage const>(std::move(page));
+    auto const output_index =
+        PersistedPageStore::output_directory_index(replacement->output);
     auto const* current = find_output<EventOutputNode, EventOutputState>(
-        successor_->event_outputs_, replacement->output);
+        successor_->event_outputs_,
+        successor_->event_output_levels_,
+        output_index);
     if (current && current->type != replacement->type) {
         throw std::invalid_argument(
             "persisted event output pages disagree on event type");
@@ -640,7 +743,10 @@ void PersistedPageStore::Candidate::put(PersistedEventPage page)
             + (previous ? 0 : 1),
     });
     successor_->event_outputs_ = put_output<EventOutputNode, EventOutputState>(
-        successor_->event_outputs_, std::move(state));
+        successor_->event_outputs_,
+        successor_->event_output_levels_,
+        output_index,
+        std::move(state));
     if (!previous) ++successor_->event_page_count_;
 }
 
@@ -649,13 +755,17 @@ void PersistedPageStore::Candidate::erase_page(
     std::uint64_t page_index)
 {
     if (!successor_) throw std::logic_error("persisted page candidate is empty");
-    if (!output.valid()) {
+    if (!store_->owns_output(output)) {
         throw std::invalid_argument(
-            "persisted page erasure requires a resolved output handle");
+            "persisted page erasure requires an output handle from its store");
     }
+    auto const output_index =
+        PersistedPageStore::output_directory_index(output);
     if (persisted_output_kind(output) == PortKind::sample) {
         auto const* current = find_output<SampleOutputNode, SampleOutputState>(
-            successor_->sample_outputs_, output);
+            successor_->sample_outputs_,
+            successor_->sample_output_levels_,
+            output_index);
         auto const* previous = current
             ? find_page(current->pages, page_index)
             : nullptr;
@@ -663,8 +773,10 @@ void PersistedPageStore::Candidate::erase_page(
         --successor_->sample_page_count_;
         if (current->page_count == 1) {
             successor_->sample_outputs_ = erase_output_node<
-                SampleOutputNode, SampleOutputState>(
-                    successor_->sample_outputs_, output);
+                SampleOutputNode>(
+                    successor_->sample_outputs_,
+                    successor_->sample_output_levels_,
+                    output_index);
             return;
         }
         auto coverage = current->coverage;
@@ -679,10 +791,15 @@ void PersistedPageStore::Candidate::erase_page(
             });
         successor_->sample_outputs_ = put_output<
             SampleOutputNode, SampleOutputState>(
-                successor_->sample_outputs_, std::move(state));
+                successor_->sample_outputs_,
+                successor_->sample_output_levels_,
+                output_index,
+                std::move(state));
     } else {
         auto const* current = find_output<EventOutputNode, EventOutputState>(
-            successor_->event_outputs_, output);
+            successor_->event_outputs_,
+            successor_->event_output_levels_,
+            output_index);
         auto const* previous = current
             ? find_page(current->pages, page_index)
             : nullptr;
@@ -690,8 +807,10 @@ void PersistedPageStore::Candidate::erase_page(
         --successor_->event_page_count_;
         if (current->page_count == 1) {
             successor_->event_outputs_ = erase_output_node<
-                EventOutputNode, EventOutputState>(
-                    successor_->event_outputs_, output);
+                EventOutputNode>(
+                    successor_->event_outputs_,
+                    successor_->event_output_levels_,
+                    output_index);
             return;
         }
         auto coverage = current->coverage;
@@ -704,7 +823,10 @@ void PersistedPageStore::Candidate::erase_page(
             .page_count = current->page_count - 1,
         });
         successor_->event_outputs_ = put_output<EventOutputNode, EventOutputState>(
-            successor_->event_outputs_, std::move(state));
+            successor_->event_outputs_,
+            successor_->event_output_levels_,
+            output_index,
+            std::move(state));
     }
 }
 
@@ -712,26 +834,36 @@ void PersistedPageStore::Candidate::erase_output(
     PersistedOutputHandle output)
 {
     if (!successor_) throw std::logic_error("persisted page candidate is empty");
-    if (!output.valid()) {
+    if (!store_->owns_output(output)) {
         throw std::invalid_argument(
-            "persisted output erasure requires a resolved output handle");
+            "persisted output erasure requires an output handle from its store");
     }
+    auto const output_index =
+        PersistedPageStore::output_directory_index(output);
     if (persisted_output_kind(output) == PortKind::sample) {
         auto const* current = find_output<SampleOutputNode, SampleOutputState>(
-            successor_->sample_outputs_, output);
+            successor_->sample_outputs_,
+            successor_->sample_output_levels_,
+            output_index);
         if (!current) return;
         successor_->sample_page_count_ -= current->page_count;
         successor_->sample_outputs_ = erase_output_node<
-            SampleOutputNode, SampleOutputState>(
-                successor_->sample_outputs_, output);
+            SampleOutputNode>(
+                successor_->sample_outputs_,
+                successor_->sample_output_levels_,
+                output_index);
     } else {
         auto const* current = find_output<EventOutputNode, EventOutputState>(
-            successor_->event_outputs_, output);
+            successor_->event_outputs_,
+            successor_->event_output_levels_,
+            output_index);
         if (!current) return;
         successor_->event_page_count_ -= current->page_count;
         successor_->event_outputs_ = erase_output_node<
-            EventOutputNode, EventOutputState>(
-                successor_->event_outputs_, output);
+            EventOutputNode>(
+                successor_->event_outputs_,
+                successor_->event_output_levels_,
+                output_index);
     }
 }
 
@@ -824,7 +956,12 @@ PersistedPageStore::ReaderPin PersistedPageStore::ReaderSlot::pin() noexcept
 }
 
 PersistedPageStore::PersistedPageStore()
-    : published_owner_(std::make_unique<Snapshot>())
+    : output_owner_token_(allocate_persisted_output_owner())
+    , published_owner_([this] {
+        auto snapshot = std::make_unique<Snapshot>();
+        snapshot->output_owner_token_ = output_owner_token_;
+        return snapshot;
+    }())
     , published_(published_owner_.get())
 {}
 
@@ -861,8 +998,11 @@ PersistedPageStore::Candidate PersistedPageStore::begin_candidate(
         .page = base->version_.page + 1,
     };
     successor->page_width_ = page_width;
+    successor->output_owner_token_ = base->output_owner_token_;
     successor->sample_outputs_ = base->sample_outputs_;
+    successor->sample_output_levels_ = base->sample_output_levels_;
     successor->event_outputs_ = base->event_outputs_;
+    successor->event_output_levels_ = base->event_output_levels_;
     successor->sample_page_count_ = base->sample_page_count_;
     successor->event_page_count_ = base->event_page_count_;
     return Candidate{*this, *base, std::move(successor)};

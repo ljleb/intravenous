@@ -22,6 +22,9 @@ The governing performance invariant is:
    - resolve stable and generation-local output identities off realtime into compact,
      non-recycled handles; snapshots and realtime/background page access carry only
      those handles, never semantic identity variants or strings;
+   - index each store-local handle slot through an immutable path-copy radix directory,
+     so output selection performs a bounded sequence of direct digits rather than an
+     output-count-dependent comparison search;
    - give each output a persistent/path-copy page index keyed by page position;
    - structurally share unchanged output directories, page subtrees, and page payloads;
    - update coverage/layout/type metadata from the changed leaves instead of rebuilding

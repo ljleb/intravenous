@@ -37,18 +37,25 @@ using PersistedOutputId = std::variant<
     PersistedOutputId const& output) noexcept;
 
 // Compact executor-lifetime key resolved from a semantic output identity on a
-// control/background path. Values are process-unique and never recycled, so a
-// handle retained by an old generation cannot alias a later output.
+// control/background path. It encodes a never-reused store token, a store-local
+// directory slot, and the port kind. Values are process-unique and never
+// recycled, so a handle retained by an old generation cannot alias a later
+// output.
 class PersistedOutputHandle {
     friend class PersistedPageStore;
 
     static constexpr std::uint64_t invalid =
         std::numeric_limits<std::uint64_t>::max();
+    static constexpr unsigned slot_shift = 1;
+    static constexpr unsigned owner_shift = 33;
     std::uint64_t value_ = invalid;
 
     explicit constexpr PersistedOutputHandle(
-        std::uint64_t slot, PortKind kind) noexcept
-        : value_((slot << 1)
+        std::uint32_t owner,
+        std::uint32_t slot,
+        PortKind kind) noexcept
+        : value_((static_cast<std::uint64_t>(owner) << owner_shift)
+            | (static_cast<std::uint64_t>(slot) << slot_shift)
             | static_cast<std::uint64_t>(kind == PortKind::event))
     {}
 
@@ -118,8 +125,12 @@ struct PersistedEventPage {
 
 namespace persisted_page_store_detail {
 
-struct SampleOutputNode;
-struct EventOutputNode;
+struct SampleOutputState;
+struct EventOutputState;
+template<typename State>
+struct OutputDirectoryNode;
+using SampleOutputNode = OutputDirectoryNode<SampleOutputState>;
+using EventOutputNode = OutputDirectoryNode<EventOutputState>;
 
 } // namespace persisted_page_store_detail
 
@@ -142,15 +153,19 @@ public:
 
         PersistedPageSnapshotVersion version_{};
         std::size_t page_width_ = 0;
-        // Both roots are immutable path-copy trees. A successor initially
-        // shares them wholesale and replaces only paths for outputs/pages it
-        // mutates; page payloads below unaffected paths remain shared.
+        std::uint32_t output_owner_token_ = 0;
+        // Output roots are immutable path-copy radix directories addressed by
+        // the store-local slot encoded in PersistedOutputHandle. Page roots
+        // remain immutable path-copy trees. A successor shares both wholesale
+        // and replaces only paths for outputs/pages it mutates.
         std::shared_ptr<
             persisted_page_store_detail::SampleOutputNode const>
             sample_outputs_{};
+        std::uint8_t sample_output_levels_ = 0;
         std::shared_ptr<
             persisted_page_store_detail::EventOutputNode const>
             event_outputs_{};
+        std::uint8_t event_output_levels_ = 0;
         std::size_t sample_page_count_ = 0;
         std::size_t event_page_count_ = 0;
 
@@ -305,6 +320,7 @@ public:
     };
 
 private:
+    std::uint32_t output_owner_token_ = 0;
     std::unique_ptr<Snapshot const> published_owner_{};
     std::atomic<Snapshot const*> published_{nullptr};
     std::vector<std::unique_ptr<Snapshot const>> retired_{};
@@ -314,6 +330,12 @@ private:
     mutable std::mutex reader_slots_mutex_{};
     std::vector<std::unique_ptr<ReaderSlotState>> reader_slots_{};
 
+    [[nodiscard]] static std::uint32_t output_owner_token(
+        PersistedOutputHandle output) noexcept;
+    [[nodiscard]] static std::uint32_t output_directory_index(
+        PersistedOutputHandle output) noexcept;
+    [[nodiscard]] bool owns_output(
+        PersistedOutputHandle output) const noexcept;
     void unregister_reader(ReaderSlotState& state) noexcept;
 
 public:

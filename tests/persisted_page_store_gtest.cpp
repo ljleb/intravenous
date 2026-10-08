@@ -404,7 +404,13 @@ TEST(PersistedPageStore, ResolvesSemanticIdentitiesToStableTypedHandles)
     EXPECT_NE(event, sample);
 
     iv::PersistedPageStore second_store;
-    EXPECT_NE(second_store.resolve_output(sample_id), sample);
+    auto const foreign_sample = second_store.resolve_output(sample_id);
+    EXPECT_NE(foreign_sample, sample);
+
+    auto candidate = first_store.begin_candidate(1, 4);
+    EXPECT_THROW(
+        candidate.put(sample_page(foreign_sample, 1.0f)),
+        std::invalid_argument);
 }
 
 TEST(PersistedPageStore, TickInvocationFramePinsOnePublishedRootForItsLifetime)
@@ -1108,6 +1114,43 @@ TEST(PersistedPageStore, PublishesSampleAndEventPagesAsOneImmutableRoot)
     old = {};
     EXPECT_EQ(store.reclaim_retired(), 1);
     EXPECT_EQ(store.retired_snapshot_count(), 0);
+}
+
+TEST(PersistedPageStore, RadixDirectoryDoesNotAliasUnmaterializedOutputSlots)
+{
+    iv::PersistedPageStore store;
+    auto reader = store.register_reader();
+    auto const first = store.resolve_output(
+        local_output(iv::PortKind::sample, 100));
+    iv::PersistedPageStore foreign_store;
+    auto const foreign = foreign_store.resolve_output(
+        local_output(iv::PortKind::sample, 100));
+    iv::PersistedOutputHandle later;
+    for (iv::graph_jit::BackgroundPortIndex port = 101; port <= 116; ++port) {
+        later = store.resolve_output(
+            local_output(iv::PortKind::sample, port));
+    }
+
+    auto initial = store.begin_candidate(1, 4);
+    initial.put(sample_page(first, 1.0f));
+    ASSERT_EQ(
+        store.publish(std::move(initial)),
+        iv::PersistedPagePublishResult::published);
+    {
+        auto pin = reader.pin();
+        EXPECT_NE(pin->find_sample_page(first, 0), nullptr);
+        EXPECT_EQ(pin->find_sample_page(foreign, 0), nullptr);
+        EXPECT_EQ(pin->find_sample_page(later, 0), nullptr);
+    }
+
+    auto expanded = store.begin_candidate(1, 4);
+    expanded.put(sample_page(later, 20.0f));
+    ASSERT_EQ(
+        store.publish(std::move(expanded)),
+        iv::PersistedPagePublishResult::published);
+    auto pin = reader.pin();
+    EXPECT_NE(pin->find_sample_page(first, 0), nullptr);
+    EXPECT_NE(pin->find_sample_page(later, 0), nullptr);
 }
 
 TEST(PersistedPageStore, RejectsASecondCandidateFromTheSameBaseAsStale)
