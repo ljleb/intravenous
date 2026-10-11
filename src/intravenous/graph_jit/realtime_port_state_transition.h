@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <expected>
 #include <optional>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -100,5 +101,15 @@ plan_realtime_port_state_transition(
     RealtimePortStateRealizations const& previous_realizations,
     RealtimePortStateRequirements const& current_requirements,
     RealtimePortStateRealizations const& current_realizations);
+
+// Executes the bounded transfers whose predecessor and successor states are
+// both canonical persistent rings. sample_index is the first sample processed
+// by the successor generation.
+[[nodiscard]] std::expected<void, std::string>
+execute_realtime_port_state_ring_transfers(
+    RealtimePortStateTransitionPlan const& plan,
+    std::span<std::byte const> previous_storage,
+    std::span<std::byte> current_storage,
+    std::size_t sample_index);
 
 } // namespace iv::graph_jit

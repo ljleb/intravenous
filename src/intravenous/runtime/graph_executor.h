@@ -149,7 +149,7 @@ class GraphExecutor {
         void initialize_first_generation();
         void prepare_realtime_migration_from(ExecutionGeneration& previous);
         void prepare_background_migration_from(ExecutionGeneration& previous);
-        void commit_realtime_migration();
+        void commit_realtime_migration(std::size_t sample_index);
         void commit_background_migration();
         void publish_successor(
             std::unique_ptr<ExecutionGeneration> successor);
@@ -273,12 +273,13 @@ public:
         std::shared_ptr<CompiledGraph const> compiled_graph);
 
     // At the caller-provided quiescent boundary, commits the prepared realtime
-    // migration, closes the predecessor's producer queues, installs the
-    // successor's prepared initial persisted-state root, appends the pending
+    // migration at the first successor sample, closes the predecessor's
+    // producer queues, installs the successor's prepared initial persisted-state
+    // root, appends the pending
     // generation to the ordered cutover chain and switches realtime. Background
     // migration commits only after those closed queues drain. Returns false when
     // no generation is pending.
-    bool activate_pending();
+    bool activate_pending(std::size_t sample_index);
 
     [[nodiscard]] std::optional<std::uint64_t> active_generation() const noexcept;
     [[nodiscard]] std::optional<std::uint64_t> pending_generation() const noexcept;

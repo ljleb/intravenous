@@ -202,13 +202,25 @@ void GraphExecutor::ExecutionGeneration::prepare_background_migration_from(
         background.storage.prepare_migration_from(previous.background.storage));
 }
 
-void GraphExecutor::ExecutionGeneration::commit_realtime_migration()
+void GraphExecutor::ExecutionGeneration::commit_realtime_migration(
+    std::size_t sample_index)
 {
-    if (realtime_initialized || !realtime_migration) {
+    if (realtime_initialized || !realtime_migration
+        || !realtime_port_state_transition) {
         throw std::logic_error(
             "GraphExecutor realtime generation migration is not prepared");
     }
     realtime_migration->commit();
+    auto transferred = graph_jit::execute_realtime_port_state_ring_transfers(
+        *realtime_port_state_transition,
+        realtime_migration->previous->buffer(),
+        realtime.storage.buffer(),
+        sample_index);
+    if (!transferred) {
+        throw std::runtime_error(
+            "GraphExecutor could not transfer realtime port state: "
+            + std::move(transferred.error()));
+    }
     realtime_migration.reset();
     realtime_initialized = true;
 }
@@ -527,7 +539,7 @@ GraphExecutorStageResult GraphExecutor::stage(
     return GraphExecutorStageResult::staged;
 }
 
-bool GraphExecutor::activate_pending()
+bool GraphExecutor::activate_pending(std::size_t sample_index)
 {
     if (!pending_generation_) return false;
     if (!realtime_active_) {
@@ -551,7 +563,7 @@ bool GraphExecutor::activate_pending()
         throw std::logic_error(
             "GraphExecutor initial persisted state was not prepared");
     }
-    pending_generation_->commit_realtime_migration();
+    pending_generation_->commit_realtime_migration(sample_index);
     previous.background.close_inputs();
     auto* next = pending_generation_.get();
     realtime_persisted_state_.activate_generation(

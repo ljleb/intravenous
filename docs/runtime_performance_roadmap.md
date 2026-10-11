@@ -46,7 +46,10 @@ The governing performance invariant is:
    for transfers of distinct semantic states. Transferable states now produce
    concrete sample/event descriptors containing predecessor storage and
    conversion facts, the private successor storage view, and the exact inherited
-   interval; execution of those descriptors is the next cutover step.
+   interval. Activation now receives the exact cutover sample and executes
+   direct persistent-ring sample/event transfers at that boundary. Compact
+   carries and materialized/indexed representations remain transition-only until
+   their bounded transition representations are implemented.
 3. Convert realtime persisted playback and recording to page/span operations. This
    includes clearing only requested sample windows, one lookup per relevant page/span,
    ring-wrap copy runs, retained event-window cursors, direct materialization indexing,

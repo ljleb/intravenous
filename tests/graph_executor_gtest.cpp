@@ -719,7 +719,7 @@ TEST_F(GraphExecutorFixture, StagesActivatesAndDispatchesOnlyActiveGeneration)
         executor.stage(first), iv::GraphExecutorStageResult::staged);
     EXPECT_FALSE(executor.active_generation());
     EXPECT_EQ(executor.pending_generation(), 1u);
-    EXPECT_TRUE(executor.activate_pending());
+    EXPECT_TRUE(executor.activate_pending(0));
     EXPECT_EQ(executor.active_generation(), 1u);
     EXPECT_FALSE(executor.pending_generation());
 
@@ -739,14 +739,14 @@ TEST_F(GraphExecutorFixture, StagesActivatesAndDispatchesOnlyActiveGeneration)
     EXPECT_EQ(first_tick.calls, 2u);
     EXPECT_EQ(second_tick.calls, 0u);
 
-    EXPECT_TRUE(executor.activate_pending());
+    EXPECT_TRUE(executor.activate_pending(65));
     EXPECT_EQ(executor.active_generation(), 2u);
     EXPECT_EQ(executor.active_graph(), second);
     executor.tick_block(65, 64);
     EXPECT_EQ(second_tick.calls, 1u);
     EXPECT_EQ(second_tick.sample_index, 65u);
     EXPECT_EQ(second_tick.block_size, 64u);
-    EXPECT_FALSE(executor.activate_pending());
+    EXPECT_FALSE(executor.activate_pending(129));
 }
 
 TEST_F(GraphExecutorFixture, IgnoresStaleAndSupersedesOlderPendingGeneration)
@@ -762,7 +762,7 @@ TEST_F(GraphExecutorFixture, IgnoresStaleAndSupersedesOlderPendingGeneration)
     EXPECT_EQ(
         executor.stage(second), iv::GraphExecutorStageResult::staged);
     EXPECT_EQ(executor.pending_generation(), 2u);
-    EXPECT_TRUE(executor.activate_pending());
+    EXPECT_TRUE(executor.activate_pending(0));
     EXPECT_EQ(executor.active_generation(), 2u);
     EXPECT_EQ(
         executor.stage(first), iv::GraphExecutorStageResult::ignored_stale);
@@ -780,7 +780,7 @@ TEST_F(
 
     ASSERT_EQ(
         executor.stage(first), iv::GraphExecutorStageResult::staged);
-    ASSERT_TRUE(executor.activate_pending());
+    ASSERT_TRUE(executor.activate_pending(0));
 
     ASSERT_EQ(
         executor.stage(second), iv::GraphExecutorStageResult::staged);
@@ -788,7 +788,7 @@ TEST_F(
     // Migration preparation must not snapshot mutable realtime bytes. The
     // value written after staging is the value copied at activation.
     executor.tick_block(0, 64);
-    ASSERT_TRUE(executor.activate_pending());
+    ASSERT_TRUE(executor.activate_pending(64));
     executor.tick_block(64, 64);
     EXPECT_EQ(migrated_raw_value, 0x5au);
 }
@@ -799,11 +799,11 @@ TEST_F(GraphExecutorFixture, GenerationCutoverWakesTheBackgroundActor)
     ASSERT_EQ(
         executor.stage(compiled_graph(1, &observe_first)),
         iv::GraphExecutorStageResult::staged);
-    ASSERT_TRUE(executor.activate_pending());
+    ASSERT_TRUE(executor.activate_pending(0));
     ASSERT_EQ(
         executor.stage(compiled_graph(2, &observe_second)),
         iv::GraphExecutorStageResult::staged);
-    ASSERT_TRUE(executor.activate_pending());
+    ASSERT_TRUE(executor.activate_pending(0));
 
     auto const deadline = std::chrono::steady_clock::now()
         + std::chrono::seconds{2};
@@ -823,7 +823,7 @@ TEST_F(GraphExecutorFixture, RejectsInvalidGraphsAndBlockSizes)
     ASSERT_EQ(
         executor.stage(compiled_graph(1, &observe_first)),
         iv::GraphExecutorStageResult::staged);
-    ASSERT_TRUE(executor.activate_pending());
+    ASSERT_TRUE(executor.activate_pending(0));
     EXPECT_FALSE(executor.realtime_production_failures().any());
     EXPECT_FALSE(executor.realtime_capacity_maintenance_failures().any());
     EXPECT_THROW(executor.tick_block(0, 0), std::invalid_argument);

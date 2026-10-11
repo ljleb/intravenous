@@ -2,6 +2,7 @@
 
 #include <gtest/gtest.h>
 
+#include <cstring>
 #include <optional>
 #include <string>
 #include <utility>
@@ -519,6 +520,126 @@ TEST(RealtimePortStateTransition, EventTypeChangeRequiresTransitionStorage)
         iv::graph_jit::InheritedRealtimePortStateRealization::
             transition_only_storage);
     EXPECT_TRUE(planned->event_transfers.empty());
+}
+
+TEST(RealtimePortStateTransition, ExecutesDirectSampleRingTransferAtCutover)
+{
+    std::vector<std::byte> previous(64);
+    std::vector<std::byte> current(64);
+    auto write_sample = [](std::vector<std::byte>& bytes,
+                           std::size_t frame,
+                           float value) {
+        iv::Sample sample{value};
+        std::memcpy(bytes.data() + frame * sizeof(sample), &sample, sizeof(sample));
+    };
+    auto read_sample = [](std::vector<std::byte> const& bytes,
+                          std::size_t frame) {
+        iv::Sample sample{};
+        std::memcpy(&sample, bytes.data() + frame * sizeof(sample), sizeof(sample));
+        return sample.value;
+    };
+    for (std::size_t semantic = 6; semantic < 10; ++semantic) {
+        write_sample(previous, semantic % 8, static_cast<float>(semantic));
+    }
+    auto view = iv::graph_jit::SampleRealtimePortStateStorageView{
+        .storage = iv::graph_jit::SampleRealtimePortStateStorage::ring,
+        .channel_layout = {
+            .channel_type = iv::ChannelTypeId::mono,
+            .sample_layout = iv::SampleStreamLayout::planar,
+        },
+        .working_frame_capacity = 8,
+        .storage_frame_count = 8,
+        .node_storage_offset = 0,
+        .storage_size_bytes = 8 * sizeof(iv::Sample),
+    };
+    iv::graph_jit::RealtimePortStateTransitionPlan plan{
+        .sample_transfers = {{
+            .source_access =
+                iv::graph_jit::SampleRealtimePortStateAccess::direct,
+            .source_storage = {view},
+            .target_storage = view,
+            .inherited_begin = -4,
+            .inherited_end = 0,
+        }},
+    };
+
+    auto executed = iv::graph_jit::execute_realtime_port_state_ring_transfers(
+        plan, previous, current, 10);
+
+    ASSERT_TRUE(executed.has_value())
+        << (executed ? std::string{} : executed.error());
+    for (std::size_t semantic = 6; semantic < 10; ++semantic) {
+        EXPECT_EQ(read_sample(current, semantic % 8), semantic);
+    }
+}
+
+TEST(RealtimePortStateTransition, ExecutesDirectEventRingTransferAtCutover)
+{
+    constexpr std::size_t read_offset = sizeof(std::size_t);
+    constexpr std::size_t write_offset = 2 * sizeof(std::size_t);
+    constexpr std::size_t events_offset = 3 * sizeof(std::size_t);
+    constexpr std::size_t capacity = 4;
+    constexpr std::size_t ring_size =
+        events_offset + capacity * sizeof(iv::TimedEvent);
+    std::vector<std::byte> previous(ring_size);
+    std::vector<std::byte> current(ring_size);
+    auto write_size = [](std::vector<std::byte>& bytes,
+                         std::size_t offset,
+                         std::size_t value) {
+        std::memcpy(bytes.data() + offset, &value, sizeof(value));
+    };
+    write_size(previous, read_offset, 3);
+    write_size(previous, write_offset, 6);
+    for (auto const [cursor, time] :
+         {std::pair{3u, 96u}, std::pair{4u, 100u}, std::pair{5u, 104u}}) {
+        iv::TimedEvent event{.time = time};
+        std::memcpy(
+            previous.data() + events_offset
+                + (cursor % capacity) * sizeof(event),
+            &event,
+            sizeof(event));
+    }
+    auto view = iv::graph_jit::EventRealtimePortStateStorageView{
+        .storage = iv::graph_jit::EventRealtimePortStateStorage::ring,
+        .type = iv::EventTypeId::empty,
+        .event_capacity = capacity,
+        .size_bytes = ring_size,
+        .alignment = alignof(iv::TimedEvent),
+        .read_index_relative_offset = read_offset,
+        .write_index_relative_offset = write_offset,
+        .events_relative_offset = events_offset,
+        .node_storage_offset = 0,
+    };
+    iv::graph_jit::RealtimePortStateTransitionPlan plan{
+        .event_transfers = {{
+            .source_access =
+                iv::graph_jit::EventRealtimePortStateAccess::direct,
+            .source_storage = view,
+            .target_storage = view,
+            .inherited_begin = -8,
+            .inherited_end = 0,
+        }},
+    };
+
+    auto executed = iv::graph_jit::execute_realtime_port_state_ring_transfers(
+        plan, previous, current, 108);
+
+    ASSERT_TRUE(executed.has_value())
+        << (executed ? std::string{} : executed.error());
+    std::size_t read = 1;
+    std::size_t write = 0;
+    std::memcpy(&read, current.data() + read_offset, sizeof(read));
+    std::memcpy(&write, current.data() + write_offset, sizeof(write));
+    EXPECT_EQ(read, 0u);
+    EXPECT_EQ(write, 2u);
+    for (std::size_t index = 0; index < write; ++index) {
+        iv::TimedEvent event{};
+        std::memcpy(
+            &event,
+            current.data() + events_offset + index * sizeof(event),
+            sizeof(event));
+        EXPECT_EQ(event.time, 100u + index * 4);
+    }
 }
 
 TEST(RealtimePortStateTransition, RejectsDuplicateStableIdentity)
