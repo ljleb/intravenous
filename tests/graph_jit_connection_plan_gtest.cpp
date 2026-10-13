@@ -1475,8 +1475,8 @@ TEST(GraphJitConnectionPlan, PartitionsOverlappingSamplePortUsesIntoPortAtoms)
     EXPECT_FALSE(right->storage.current_tick);
     EXPECT_TRUE(left->storage.capture);
     EXPECT_TRUE(right->storage.capture);
-    EXPECT_TRUE(left->storage.persisted_pages);
-    EXPECT_TRUE(right->storage.persisted_pages);
+    EXPECT_TRUE(left->storage.persisted_data);
+    EXPECT_TRUE(right->storage.persisted_data);
     EXPECT_EQ(left->connection_indices.size(), 1u);
     EXPECT_EQ(right->connection_indices.size(), 1u);
     EXPECT_NE(left->connection_indices, right->connection_indices);
@@ -1502,7 +1502,7 @@ TEST(GraphJitConnectionPlan, PartitionsOverlappingSamplePortUsesIntoPortAtoms)
             [&](graph_jit::PortStorageIndex port_index) {
                 return storage.ports[port_index].storage
                     == graph_jit::PortStorageKind::
-                        persisted_pages;
+                        persisted_data;
             });
     };
     auto const left_canonical = canonical_for(left_index);
@@ -1777,12 +1777,12 @@ TEST(GraphJitConnectionPlan, RetainsCompleteBackgroundTopologyAndRetention)
     ASSERT_NE(tock_persisted_atom, nullptr);
     EXPECT_TRUE(tick_ephemeral_atom->connection_indices.empty());
     EXPECT_TRUE(tick_persisted_atom->storage.capture);
-    EXPECT_TRUE(tick_persisted_atom->storage.persisted_pages);
+    EXPECT_TRUE(tick_persisted_atom->storage.persisted_data);
     EXPECT_TRUE(tock_ephemeral_atom->storage.tick_random_access);
     EXPECT_TRUE(tock_ephemeral_atom->storage.background_random_access);
     EXPECT_TRUE(tock_persisted_atom->connection_indices.empty());
     EXPECT_FALSE(tock_persisted_atom->storage.capture);
-    EXPECT_TRUE(tock_persisted_atom->storage.persisted_pages);
+    EXPECT_TRUE(tock_persisted_atom->storage.persisted_data);
 
     auto const persisted_event_atom = std::ranges::find_if(
         plan.event_source_subsets,
@@ -1792,7 +1792,7 @@ TEST(GraphJitConnectionPlan, RetainsCompleteBackgroundTopologyAndRetention)
     ASSERT_NE(persisted_event_atom, plan.event_source_subsets.end());
     EXPECT_TRUE(persisted_event_atom->connection_indices.empty());
     EXPECT_TRUE(
-        persisted_event_atom->storage.persisted_pages);
+        persisted_event_atom->storage.persisted_data);
 }
 
 TEST(GraphJitConnectionPlan, RetainsBackgroundEventConversion)
@@ -2514,7 +2514,7 @@ TEST(GraphJitConnectionPlan, PersistedTickToRandomAccessUsesStoredBoundary)
         });
     ASSERT_NE(source_subset, plan->background.sample_source_subsets.end());
     EXPECT_TRUE(source_subset->storage.capture);
-    EXPECT_TRUE(source_subset->storage.persisted_pages);
+    EXPECT_TRUE(source_subset->storage.persisted_data);
     EXPECT_FALSE(source_subset->storage.current_tick);
     auto const target_subset = std::ranges::find_if(
         plan->background.sample_target_subsets,
@@ -2523,7 +2523,7 @@ TEST(GraphJitConnectionPlan, PersistedTickToRandomAccessUsesStoredBoundary)
         });
     ASSERT_NE(target_subset, plan->background.sample_target_subsets.end());
     EXPECT_FALSE(target_subset->storage.capture);
-    EXPECT_TRUE(target_subset->storage.persisted_pages);
+    EXPECT_TRUE(target_subset->storage.persisted_data);
 
     auto const& tick_runtime = plan->background.tick_runtime;
     ASSERT_EQ(tick_runtime.random_access_sample_inputs.size(), 1u);
@@ -2552,7 +2552,7 @@ TEST(GraphJitConnectionPlan, PersistedTickToRandomAccessUsesStoredBoundary)
     ASSERT_LT(binding.storage.front(), plan->background.storage.ports.size());
     EXPECT_EQ(
         plan->background.storage.ports[binding.storage.front()].storage,
-        graph_jit::PortStorageKind::persisted_pages);
+        graph_jit::PortStorageKind::persisted_data);
     auto const sink_node =
         *plan->background.bundle_to_background_node[sink_handle];
     ASSERT_LT(sink_node, tick_runtime.nodes.size());

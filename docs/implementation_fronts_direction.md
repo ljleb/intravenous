@@ -136,7 +136,7 @@ Detailed direction:
 ## Front 3: Region/Coverage random-access representation
 
 **Primary ownership:** the authored and runtime random-access data model after the
-page-oriented checkpoint.
+canonical retained-data checkpoint.
 
 This front owns:
 
@@ -149,15 +149,17 @@ This front owns:
 - Region/Coverage Random Access inputs;
 - bounded Coverage-to-Sequential reduction;
 - ephemeral materialization ownership;
-- persisted Region/Coverage publication and versioning;
-- replacement of fixed-width page assumptions in the authored/runtime storage model.
+- persisted Region/Coverage publication and versioning; and
+- integration of canonical persisted sample regions with the authored/runtime
+  Region/Coverage model.
 
 This front consumes solved ordering requirements from front 1. It owns **how** sorted
 Coverage is represented or materialized, not **whether** a particular graph edge
 requires sortedness.
 
-**Can start mostly independently:** yes; use adapters to the current page store if
-needed while front 1 lands.
+**Can start mostly independently:** yes. Canonical persisted storage already exposes
+explicit sample regions/event chunks; use that final store boundary directly and do
+not introduce an adapter to the deleted page representation.
 
 Detailed direction:
 [Random-Access Port Data Direction](./random_access_port_data_direction.md) and
@@ -213,8 +215,8 @@ This front owns:
 There is intentionally no atomic snapshot across different producer queues. If a
 future semantic requirement needs one, stop and design that requirement explicitly.
 
-Prefer integrating with the Region/Coverage target of front 3 rather than deepening a
-page-only API that is already planned for replacement.
+Integrate with the Region/Coverage target of front 3 rather than reintroducing an
+adapter to the deleted fixed-width page representation.
 
 **Dependencies:** front 4 for the complete consumer side; front 3 is strongly preferred
 before the durable publication layer is finalized.
@@ -583,8 +585,8 @@ for every neighboring project to finish:
 2. **Normalized-callback checkpoint:** front 2 publishes unconditional scalar/batch
    compiler operations; GraphJit scheduling no longer inspects authored callback shape.
 3. **Random-access checkpoint:** front 3 publishes the canonical Region/Coverage
-   ownership/versioning interfaces; fronts 4/5/6 stop depending on authored page
-   semantics.
+   ownership/versioning interfaces; fronts 4/5/6 stop depending on fixed-width
+   storage assumptions.
 4. **Execution checkpoint:** fronts 4/6/7 provide enough correctness for front 8 to make
    `GraphExecutor` the normal application path while retaining separate internal realtime/background actors.
 5. **Configuration-value checkpoint:** front 9 publishes the restricted parser plus

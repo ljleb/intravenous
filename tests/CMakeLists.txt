@@ -141,8 +141,8 @@ add_iv_gtest(
     intravenous_async_capacity_manager_tests
     async_capacity_manager_gtest.cpp)
 add_iv_gtest(
-    intravenous_persisted_page_store_tests
-    persisted_page_store_gtest.cpp)
+    intravenous_persisted_data_store_tests
+    persisted_data_store_gtest.cpp)
 add_iv_gtest(
     intravenous_background_storage_realization_tests
     background_storage_realization_gtest.cpp)

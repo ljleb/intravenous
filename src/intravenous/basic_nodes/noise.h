@@ -182,31 +182,29 @@ namespace iv {
             auto const max = ctx.template input<1>().get();
             auto const scale = max - min;
 
-            auto const start = ctx.index;
-            auto const end   = start + ctx.block_size;
-
-            auto const first_group = start >> 2;
-            auto const last_group  = (end - 1) >> 2;
-
             auto const to_sample = [&](uint32_t x) -> Sample {
                 return r123::u01<Sample>(x) * scale + min;
             };
 
-            for (uint64_t group = first_group; group <= last_group; ++group) {
+            auto position = ctx.index.bits();
+            auto remaining = ctx.block_size;
+            while (remaining != 0) {
+                auto const group = position >> 2;
                 auto const r = _generator(make_index(group), _seed);
-
                 auto const tmp = std::to_array({
                     to_sample(r[0]),
                     to_sample(r[1]),
                     to_sample(r[2]),
                     to_sample(r[3]),
                 });
-
-                auto const first_offset = (group == first_group) ? (start & 3u) : 0u;
-                auto const last_offset  = (group == last_group)  ? ((end - 1) & 3u) : 3u;
-
-                std::span<Sample const> span{tmp.data() + first_offset, last_offset - first_offset + 1};
-                ctx.template output<0>().push_block(span);
+                auto const first = static_cast<std::size_t>(position & 3u);
+                auto const count = std::min(
+                    tmp.size() - first,
+                    remaining);
+                ctx.template output<0>().push_block(
+                    std::span<Sample const>{tmp}.subspan(first, count));
+                position += count;
+                remaining -= count;
             }
         }
     };

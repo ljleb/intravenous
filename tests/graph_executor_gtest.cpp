@@ -17,9 +17,27 @@
 
 namespace {
 
+iv::GlobalIndex index(std::int64_t value)
+{
+    return iv::GlobalIndex::from_signed(value);
+}
+
+iv::GlobalIndexRange range(std::int64_t begin, std::int64_t end)
+{
+    return iv::GlobalIndexRange::from_begin_and_end(index(begin), index(end));
+}
+
+iv::IndexCoverage coverage(
+    std::initializer_list<std::pair<std::int64_t, std::int64_t>> ranges)
+{
+    iv::IndexCoverage result;
+    for (auto const [begin, end] : ranges) result.include(range(begin, end));
+    return result;
+}
+
 struct TickObservation {
     std::size_t calls = 0;
-    std::size_t sample_index = 0;
+    iv::GlobalIndex sample_index{};
     std::size_t block_size = 0;
     std::byte* storage = nullptr;
     iv::graph_jit::TickInvocationCall const* invocation = nullptr;
@@ -30,21 +48,21 @@ TickObservation second_tick;
 std::size_t first_raw_offset = 0;
 std::size_t second_raw_offset = 0;
 unsigned migrated_raw_value = 0;
-iv::Coverage persisted_probe_coverage{};
+iv::IndexCoverage persisted_probe_coverage{};
 std::size_t persisted_probe_evaluate_calls = 0;
 bool throw_persisted_probe_evaluate = false;
 bool omit_last_persisted_probe_sample = false;
 std::size_t replay_probe_evaluate_calls = 0;
-iv::PersistedPageStore* competing_persisted_store = nullptr;
+iv::PersistedDataStore* competing_persisted_store = nullptr;
 bool publish_competing_persisted_snapshot = false;
 
 struct BackgroundPropagationObservation {
     std::size_t source_forward_calls[2]{};
     std::size_t sink_forward_calls = 0;
     std::size_t sink_reverse_calls = 0;
-    iv::Coverage sink_input_coverage{};
-    iv::Coverage sink_input_changed{};
-    iv::Coverage sink_output_required{};
+    iv::IndexCoverage sink_input_coverage{};
+    iv::IndexCoverage sink_input_changed{};
+    iv::IndexCoverage sink_output_required{};
     bool throw_from_sink = false;
     bool throw_from_reverse = false;
 };
@@ -54,7 +72,7 @@ BackgroundPropagationObservation background_observation;
 void observe_first(
     std::byte* storage,
     iv::graph_jit::TickInvocationCall const* invocation,
-    std::size_t sample_index,
+    iv::GlobalIndex sample_index,
     std::size_t block_size)
 {
     first_tick = TickObservation{
@@ -69,7 +87,7 @@ void observe_first(
 void observe_second(
     std::byte* storage,
     iv::graph_jit::TickInvocationCall const* invocation,
-    std::size_t sample_index,
+    iv::GlobalIndex sample_index,
     std::size_t block_size)
 {
     second_tick = TickObservation{
@@ -84,7 +102,7 @@ void observe_second(
 void write_raw_state(
     std::byte* storage,
     iv::graph_jit::TickInvocationCall const*,
-    std::size_t,
+    iv::GlobalIndex,
     std::size_t)
 {
     storage[first_raw_offset] = std::byte{0x5a};
@@ -93,7 +111,7 @@ void write_raw_state(
 void observe_raw_state(
     std::byte* storage,
     iv::graph_jit::TickInvocationCall const*,
-    std::size_t,
+    iv::GlobalIndex,
     std::size_t)
 {
     migrated_raw_value = std::to_integer<unsigned>(storage[second_raw_offset]);
@@ -117,8 +135,8 @@ void propagate_background_forward(
         if (node < 2) {
             ++background_observation.source_forward_calls[node];
             auto const coverage = node == 0
-                ? iv::Coverage{{{10, 13}}}
-                : iv::Coverage{{{20, 22}}};
+                ? coverage({{10, 13}})
+                : coverage({{20, 22}});
             outputs[0].publish_coverage(coverage);
             outputs[0].change(coverage);
             continue;
@@ -205,13 +223,17 @@ void evaluate_persisted_probe(
         auto outputs = static_cast<std::span<iv::TockSampleOutputPort>>(
             node.tock.outputs);
         ASSERT_EQ(outputs.size(), 1u);
-        for (auto const region : outputs[0].requested_coverage().regions()) {
-            for (auto index = region.begin; index < region.end; ++index) {
-                if (omit_last_persisted_probe_sample && index + 1 == region.end)
+        for (auto const region : outputs[0].requested_coverage()) {
+            for (std::uint64_t offset = 0; offset < region.extent; ++offset) {
+                auto const position = region.begin.advanced_by(offset);
+                if (omit_last_persisted_probe_sample
+                    && offset + 1 == region.extent) {
                     continue;
+                }
                 outputs[0].write(
-                    index, 0,
-                    iv::Sample{100.0f + static_cast<float>(index)});
+                    position, 0,
+                    iv::Sample{100.0f
+                        + static_cast<float>(position.signed_value())});
             }
         }
         if (throw_persisted_probe_evaluate) {
@@ -219,9 +241,9 @@ void evaluate_persisted_probe(
         }
         node.finalize_operations(node.operation_frame);
         if (publish_competing_persisted_snapshot) {
-            auto candidate = competing_persisted_store->begin_candidate(99, 4);
+            auto candidate = competing_persisted_store->begin_candidate(99);
             if (competing_persisted_store->publish(std::move(candidate)) !=
-                iv::PersistedPagePublishResult::published) {
+                iv::PersistedDataPublishResult::published) {
                 throw std::runtime_error(
                     "competing persisted background probe publish failed");
             }
@@ -299,7 +321,7 @@ iv::CompiledGraph persisted_tock_graph()
     graph.specialization.block_size = 4;
     graph.background_evaluation_plan = probe_tock_plan(
         iv::OutputRetention::persisted,
-        iv::graph_jit::PortStorageKind::persisted_pages);
+        iv::graph_jit::PortStorageKind::persisted_data);
     graph.background_operations = {
         .propagate_forward = &propagate_persisted_probe_forward,
         .propagate_reverse = &no_op_background_evaluate,
@@ -359,16 +381,22 @@ void evaluate_replay_probe(
             std::span<iv::ReflectedSampleOutputPortBinding const>>(
             node.replay.sample_output_bindings);
         for (auto const region :
-             static_cast<std::span<iv::IndexRegion const>>(node.replay_regions)) {
-            for (auto index = region.begin; index < region.end; ++index) {
+             static_cast<std::span<iv::GlobalIndexRange const>>(
+                 node.replay_regions)) {
+            for (iv::GlobalIndex::extent_type offset = 0;
+                 offset < region.extent;
+                 ++offset) {
+                auto const position = region.begin.advanced_by(offset);
                 for (std::size_t output = 0; output < outputs.size(); ++output) {
                     auto const& storage = outputs[output].storage;
                     auto* values = reinterpret_cast<iv::Sample*>(
                         storage.channels[0].storage);
-                    auto const frame = static_cast<std::size_t>(index) &
+                    auto const frame = static_cast<std::size_t>(position.bits()) &
                         (storage.frame_capacity - 1);
                     values[frame * storage.channels[0].frame_stride] =
-                        iv::Sample{static_cast<float>(100 * output + index)};
+                        iv::Sample{
+                            100.0f * static_cast<float>(output)
+                            + static_cast<float>(position.signed_value())};
                 }
             }
         }
@@ -693,7 +721,7 @@ protected:
         first_raw_offset = 0;
         second_raw_offset = 0;
         migrated_raw_value = 0;
-        persisted_probe_coverage = iv::Coverage{{{0, 8}}};
+        persisted_probe_coverage = coverage({{0, 8}});
         persisted_probe_evaluate_calls = 0;
         throw_persisted_probe_evaluate = false;
         omit_last_persisted_probe_sample = false;
@@ -714,18 +742,18 @@ TEST_F(GraphExecutorFixture, StagesActivatesAndDispatchesOnlyActiveGeneration)
     auto first = compiled_graph(1, &observe_first);
     auto second = compiled_graph(2, &observe_second);
 
-    EXPECT_THROW(executor.tick_block(0, 64), std::logic_error);
+    EXPECT_THROW(executor.tick_block(index(0), 64), std::logic_error);
     EXPECT_EQ(
         executor.stage(first), iv::GraphExecutorStageResult::staged);
     EXPECT_FALSE(executor.active_generation());
     EXPECT_EQ(executor.pending_generation(), 1u);
-    EXPECT_TRUE(executor.activate_pending(0));
+    EXPECT_TRUE(executor.activate_pending(index(0)));
     EXPECT_EQ(executor.active_generation(), 1u);
     EXPECT_FALSE(executor.pending_generation());
 
-    executor.tick_block(17, 32);
+    executor.tick_block(index(17), 32);
     EXPECT_EQ(first_tick.calls, 1u);
-    EXPECT_EQ(first_tick.sample_index, 17u);
+    EXPECT_EQ(first_tick.sample_index, index(17));
     EXPECT_EQ(first_tick.block_size, 32u);
     ASSERT_NE(first_tick.invocation, nullptr);
     EXPECT_TRUE(first_tick.invocation->sequential_sample_inputs.empty());
@@ -735,18 +763,18 @@ TEST_F(GraphExecutorFixture, StagesActivatesAndDispatchesOnlyActiveGeneration)
 
     EXPECT_EQ(
         executor.stage(second), iv::GraphExecutorStageResult::staged);
-    executor.tick_block(49, 16);
+    executor.tick_block(index(49), 16);
     EXPECT_EQ(first_tick.calls, 2u);
     EXPECT_EQ(second_tick.calls, 0u);
 
-    EXPECT_TRUE(executor.activate_pending(65));
+    EXPECT_TRUE(executor.activate_pending(index(65)));
     EXPECT_EQ(executor.active_generation(), 2u);
     EXPECT_EQ(executor.active_graph(), second);
-    executor.tick_block(65, 64);
+    executor.tick_block(index(65), 64);
     EXPECT_EQ(second_tick.calls, 1u);
-    EXPECT_EQ(second_tick.sample_index, 65u);
+    EXPECT_EQ(second_tick.sample_index, index(65));
     EXPECT_EQ(second_tick.block_size, 64u);
-    EXPECT_FALSE(executor.activate_pending(129));
+    EXPECT_FALSE(executor.activate_pending(index(129)));
 }
 
 TEST_F(GraphExecutorFixture, IgnoresStaleAndSupersedesOlderPendingGeneration)
@@ -762,7 +790,7 @@ TEST_F(GraphExecutorFixture, IgnoresStaleAndSupersedesOlderPendingGeneration)
     EXPECT_EQ(
         executor.stage(second), iv::GraphExecutorStageResult::staged);
     EXPECT_EQ(executor.pending_generation(), 2u);
-    EXPECT_TRUE(executor.activate_pending(0));
+    EXPECT_TRUE(executor.activate_pending(index(0)));
     EXPECT_EQ(executor.active_generation(), 2u);
     EXPECT_EQ(
         executor.stage(first), iv::GraphExecutorStageResult::ignored_stale);
@@ -780,16 +808,16 @@ TEST_F(
 
     ASSERT_EQ(
         executor.stage(first), iv::GraphExecutorStageResult::staged);
-    ASSERT_TRUE(executor.activate_pending(0));
+    ASSERT_TRUE(executor.activate_pending(index(0)));
 
     ASSERT_EQ(
         executor.stage(second), iv::GraphExecutorStageResult::staged);
     EXPECT_EQ(executor.active_generation(), 1u);
     // Migration preparation must not snapshot mutable realtime bytes. The
     // value written after staging is the value copied at activation.
-    executor.tick_block(0, 64);
-    ASSERT_TRUE(executor.activate_pending(64));
-    executor.tick_block(64, 64);
+    executor.tick_block(index(0), 64);
+    ASSERT_TRUE(executor.activate_pending(index(64)));
+    executor.tick_block(index(64), 64);
     EXPECT_EQ(migrated_raw_value, 0x5au);
 }
 
@@ -799,11 +827,11 @@ TEST_F(GraphExecutorFixture, GenerationCutoverWakesTheBackgroundActor)
     ASSERT_EQ(
         executor.stage(compiled_graph(1, &observe_first)),
         iv::GraphExecutorStageResult::staged);
-    ASSERT_TRUE(executor.activate_pending(0));
+    ASSERT_TRUE(executor.activate_pending(index(0)));
     ASSERT_EQ(
         executor.stage(compiled_graph(2, &observe_second)),
         iv::GraphExecutorStageResult::staged);
-    ASSERT_TRUE(executor.activate_pending(0));
+    ASSERT_TRUE(executor.activate_pending(index(0)));
 
     auto const deadline = std::chrono::steady_clock::now()
         + std::chrono::seconds{2};
@@ -823,53 +851,53 @@ TEST_F(GraphExecutorFixture, RejectsInvalidGraphsAndBlockSizes)
     ASSERT_EQ(
         executor.stage(compiled_graph(1, &observe_first)),
         iv::GraphExecutorStageResult::staged);
-    ASSERT_TRUE(executor.activate_pending(0));
+    ASSERT_TRUE(executor.activate_pending(index(0)));
     EXPECT_FALSE(executor.realtime_production_failures().any());
     EXPECT_FALSE(executor.realtime_capacity_maintenance_failures().any());
-    EXPECT_THROW(executor.tick_block(0, 0), std::invalid_argument);
-    EXPECT_THROW(executor.tick_block(0, 65), std::invalid_argument);
+    EXPECT_THROW(executor.tick_block(index(0), 0), std::invalid_argument);
+    EXPECT_THROW(executor.tick_block(index(0), 65), std::invalid_argument);
 }
 
 TEST_F(
     GraphExecutorFixture,
-    BackgroundTransactionPublishesPersistedPagesOnlyWhenTheyChange)
+    BackgroundTransactionPublishesPersistedDataOnlyWhenItChanges)
 {
     auto graph = persisted_tock_graph();
     iv::BackgroundCoverageState coverage(
         graph.background_evaluation_plan.accumulators.output_change_count);
     iv::BackgroundPropagationWorkspace propagation{
         graph.background_evaluation_plan, graph.specialization.sample_rate};
-    iv::PersistedPageStore pages;
-    auto reader = pages.register_reader();
+    iv::PersistedDataStore data;
+    auto reader = data.register_reader();
 
     iv::BackgroundEvaluationTransaction first{
         graph,
         nullptr,
         coverage,
         propagation,
-        pages,
+        data,
         {
             .semantic_version = 7,
             .roots = {
                 .locally_changed_nodes = {0},
                 .output_demands = {{
                     .port = 0,
-                    .required = iv::Coverage{{{0, 8}}},
+                    .required = coverage({{0, 8}}),
                 }},
             },
         }};
     auto first_result = first.execute();
     ASSERT_TRUE(first_result.has_value()) << first_result.error();
-    ASSERT_TRUE(first_result->published_pages.has_value());
+    ASSERT_TRUE(first_result->published_data.has_value());
     EXPECT_EQ(
-        *first_result->published_pages,
-        (iv::PersistedPageSnapshotVersion{.semantic = 7, .page = 1}));
+        *first_result->published_data,
+        (iv::PersistedDataVersion{.semantic = 7, .revision = 1}));
     EXPECT_EQ(persisted_probe_evaluate_calls, 1u);
     // execute() releases its base pin even while the transaction object lives.
-    EXPECT_EQ(pages.retired_snapshot_count(), 1u);
-    EXPECT_EQ(pages.reclaim_retired(), 1u);
+    EXPECT_EQ(data.retired_snapshot_count(), 1u);
+    EXPECT_EQ(data.reclaim_retired(), 1u);
 
-    auto const output = pages.resolve_output(iv::PersistedOutputId{
+    auto const output = data.resolve_output(iv::PersistedOutputId{
         iv::GenerationLocalPersistedOutputId{
             .generation = 1,
             .port = 0,
@@ -877,18 +905,14 @@ TEST_F(
         }});
     {
         auto pin = reader.pin();
-        auto const* first_page = pin->find_sample_page(output, 0);
-        auto const* second_page = pin->find_sample_page(output, 1);
-        ASSERT_NE(first_page, nullptr);
-        ASSERT_NE(second_page, nullptr);
-        EXPECT_EQ(first_page->domain, (iv::Coverage{{{0, 4}}}));
-        EXPECT_EQ(second_page->domain, (iv::Coverage{{{4, 8}}}));
-        ASSERT_EQ(first_page->values.size(), 4u);
-        ASSERT_EQ(second_page->values.size(), 4u);
-        EXPECT_FLOAT_EQ(first_page->values[0].value, 100.0f);
-        EXPECT_FLOAT_EQ(first_page->values[3].value, 103.0f);
-        EXPECT_FLOAT_EQ(second_page->values[0].value, 104.0f);
-        EXPECT_FLOAT_EQ(second_page->values[3].value, 107.0f);
+        auto const* region = pin->find_sample_region(output, index(0));
+        ASSERT_NE(region, nullptr);
+        EXPECT_EQ(region->range, range(0, 8));
+        ASSERT_EQ(region->values.size(), 8u);
+        EXPECT_FLOAT_EQ(region->values[0].value, 100.0f);
+        EXPECT_FLOAT_EQ(region->values[3].value, 103.0f);
+        EXPECT_FLOAT_EQ(region->values[4].value, 104.0f);
+        EXPECT_FLOAT_EQ(region->values[7].value, 107.0f);
     }
 
     iv::BackgroundEvaluationTransaction unchanged{
@@ -896,84 +920,84 @@ TEST_F(
         nullptr,
         coverage,
         propagation,
-        pages,
+        data,
         {
             .semantic_version = 7,
             .roots = {
                 .output_demands = {{
                     .port = 0,
-                    .required = iv::Coverage{{{0, 8}}},
+                    .required = coverage({{0, 8}}),
                 }},
             },
         }};
     auto unchanged_result = unchanged.execute();
     ASSERT_TRUE(unchanged_result.has_value()) << unchanged_result.error();
-    EXPECT_FALSE(unchanged_result->published_pages.has_value());
+    EXPECT_FALSE(unchanged_result->published_data.has_value());
     EXPECT_EQ(persisted_probe_evaluate_calls, 1u);
     {
         auto pin = reader.pin();
         EXPECT_EQ(
             pin->version(),
-            (iv::PersistedPageSnapshotVersion{.semantic = 7, .page = 1}));
+            (iv::PersistedDataVersion{.semantic = 7, .revision = 1}));
     }
 
-    persisted_probe_coverage = iv::Coverage{{{0, 4}}};
+    persisted_probe_coverage = coverage({{0, 4}});
     iv::BackgroundEvaluationTransaction shrink{
         graph,
         nullptr,
         coverage,
         propagation,
-        pages,
+        data,
         {
             .semantic_version = 8,
             .roots = {.locally_changed_nodes = {0}},
         }};
     auto shrink_result = shrink.execute();
     ASSERT_TRUE(shrink_result.has_value()) << shrink_result.error();
-    ASSERT_TRUE(shrink_result->published_pages.has_value());
+    ASSERT_TRUE(shrink_result->published_data.has_value());
     EXPECT_EQ(
-        *shrink_result->published_pages,
-        (iv::PersistedPageSnapshotVersion{.semantic = 8, .page = 2}));
+        *shrink_result->published_data,
+        (iv::PersistedDataVersion{.semantic = 8, .revision = 2}));
     EXPECT_EQ(persisted_probe_evaluate_calls, 1u);
     {
         auto pin = reader.pin();
-        EXPECT_NE(pin->find_sample_page(output, 0), nullptr);
-        EXPECT_EQ(pin->find_sample_page(output, 1), nullptr);
+        EXPECT_NE(pin->find_sample_region(output, index(0)), nullptr);
+        EXPECT_EQ(pin->find_sample_region(output, index(4)), nullptr);
     }
 }
 
 TEST_F(
     GraphExecutorFixture,
-    FailedPersistedBackgroundEvaluationPromotesNeitherPagesNorCoverage)
+    FailedPersistedBackgroundEvaluationPromotesNeitherDataNorCoverage)
 {
     auto graph = persisted_tock_graph();
     iv::BackgroundCoverageState coverage(
         graph.background_evaluation_plan.accumulators.output_change_count);
     iv::BackgroundPropagationWorkspace propagation{
         graph.background_evaluation_plan, graph.specialization.sample_rate};
-    iv::PersistedPageStore pages;
-    auto reader = pages.register_reader();
+    iv::PersistedDataStore data;
+    auto reader = data.register_reader();
     auto const request = iv::BackgroundTransactionInputs{
         .semantic_version = 7,
         .roots = {
             .locally_changed_nodes = {0},
             .output_demands = {{
                 .port = 0,
-                .required = iv::Coverage{{{0, 8}}},
+                .required = coverage({{0, 8}}),
             }},
         },
     };
 
     throw_persisted_probe_evaluate = true;
     iv::BackgroundEvaluationTransaction failed{
-        graph, nullptr, coverage, propagation, pages, request};
+        graph, nullptr, coverage, propagation, data, request};
     auto failed_result = failed.execute();
     EXPECT_FALSE(failed_result.has_value());
     EXPECT_EQ(persisted_probe_evaluate_calls, 1u);
     {
         auto pin = reader.pin();
-        EXPECT_EQ(pin->version(), (iv::PersistedPageSnapshotVersion{}));
-        EXPECT_EQ(pin->sample_page_count(), 0u);
+        EXPECT_EQ(pin->version(), (iv::PersistedDataVersion{}));
+        EXPECT_EQ(pin->sample_region_count(), 0u);
     }
 
     throw_persisted_probe_evaluate = false;
@@ -982,55 +1006,55 @@ TEST_F(
         nullptr,
         coverage,
         propagation,
-        pages,
+        data,
         {
             .semantic_version = 7,
             .roots = {
                 .output_demands = {{
                     .port = 0,
-                    .required = iv::Coverage{{{0, 8}}},
+                    .required = coverage({{0, 8}}),
                 }},
             },
         }};
     auto demand_only_result = demand_only.execute();
     ASSERT_TRUE(demand_only_result.has_value()) << demand_only_result.error();
-    EXPECT_FALSE(demand_only_result->published_pages.has_value());
+    EXPECT_FALSE(demand_only_result->published_data.has_value());
     EXPECT_EQ(persisted_probe_evaluate_calls, 1u);
 
     iv::BackgroundEvaluationTransaction retry{
-        graph, nullptr, coverage, propagation, pages, request};
+        graph, nullptr, coverage, propagation, data, request};
     auto retry_result = retry.execute();
     ASSERT_TRUE(retry_result.has_value()) << retry_result.error();
-    ASSERT_TRUE(retry_result->published_pages.has_value());
-    EXPECT_EQ(retry_result->published_pages->page, 1u);
+    ASSERT_TRUE(retry_result->published_data.has_value());
+    EXPECT_EQ(retry_result->published_data->revision, 1u);
     EXPECT_EQ(persisted_probe_evaluate_calls, 2u);
 }
 
 TEST_F(
     GraphExecutorFixture,
-    IncompletePersistedBackgroundEvaluationPromotesNeitherPagesNorCoverage)
+    IncompletePersistedBackgroundEvaluationPromotesNeitherDataNorCoverage)
 {
     auto graph = persisted_tock_graph();
     iv::BackgroundCoverageState coverage(
         graph.background_evaluation_plan.accumulators.output_change_count);
     iv::BackgroundPropagationWorkspace propagation{
         graph.background_evaluation_plan, graph.specialization.sample_rate};
-    iv::PersistedPageStore pages;
-    auto reader = pages.register_reader();
+    iv::PersistedDataStore data;
+    auto reader = data.register_reader();
     auto const request = iv::BackgroundTransactionInputs{
         .semantic_version = 7,
         .roots = {
             .locally_changed_nodes = {0},
             .output_demands = {{
                 .port = 0,
-                .required = iv::Coverage{{{0, 8}}},
+                .required = coverage({{0, 8}}),
             }},
         },
     };
 
     omit_last_persisted_probe_sample = true;
     iv::BackgroundEvaluationTransaction incomplete{
-        graph, nullptr, coverage, propagation, pages, request};
+        graph, nullptr, coverage, propagation, data, request};
     auto incomplete_result = incomplete.execute();
     ASSERT_FALSE(incomplete_result.has_value());
     EXPECT_NE(
@@ -1038,17 +1062,17 @@ TEST_F(
         std::string::npos);
     {
         auto pin = reader.pin();
-        EXPECT_EQ(pin->version(), (iv::PersistedPageSnapshotVersion{}));
-        EXPECT_EQ(pin->sample_page_count(), 0u);
+        EXPECT_EQ(pin->version(), (iv::PersistedDataVersion{}));
+        EXPECT_EQ(pin->sample_region_count(), 0u);
     }
 
     omit_last_persisted_probe_sample = false;
     iv::BackgroundEvaluationTransaction retry{
-        graph, nullptr, coverage, propagation, pages, request};
+        graph, nullptr, coverage, propagation, data, request};
     auto retry_result = retry.execute();
     ASSERT_TRUE(retry_result.has_value()) << retry_result.error();
-    ASSERT_TRUE(retry_result->published_pages.has_value());
-    EXPECT_EQ(retry_result->published_pages->page, 1u);
+    ASSERT_TRUE(retry_result->published_data.has_value());
+    EXPECT_EQ(retry_result->published_data->revision, 1u);
 }
 
 TEST_F(
@@ -1060,35 +1084,35 @@ TEST_F(
         graph.background_evaluation_plan.accumulators.output_change_count);
     iv::BackgroundPropagationWorkspace propagation{
         graph.background_evaluation_plan, graph.specialization.sample_rate};
-    iv::PersistedPageStore pages;
+    iv::PersistedDataStore data;
 
     iv::BackgroundEvaluationTransaction transaction{
         graph,
         nullptr,
         coverage,
         propagation,
-        pages,
+        data,
         {
             .semantic_version = 1,
             .roots = {
                 .output_changes = {
                     {
                         .port = 0,
-                        .coverage = iv::Coverage{{{0, 8}}},
+                        .coverage = coverage({{0, 8}}),
                     },
                     {
                         .port = 1,
-                        .coverage = iv::Coverage{{{0, 8}}},
+                        .coverage = coverage({{0, 8}}),
                     },
                 },
                 .output_demands = {
                     {
                         .port = 0,
-                        .required = iv::Coverage{{{0, 4}}},
+                        .required = coverage({{0, 4}}),
                     },
                     {
                         .port = 1,
-                        .required = iv::Coverage{{{4, 8}}},
+                        .required = coverage({{4, 8}}),
                     },
                 },
             },
@@ -1096,133 +1120,133 @@ TEST_F(
     auto result = transaction.execute();
     ASSERT_TRUE(result.has_value()) << result.error();
     EXPECT_EQ(result->status, iv::BackgroundEvaluationStatus::committed);
-    EXPECT_FALSE(result->published_pages.has_value());
+    EXPECT_FALSE(result->published_data.has_value());
     EXPECT_EQ(replay_probe_evaluate_calls, 1u);
 }
 
 TEST_F(
     GraphExecutorFixture,
-    StalePersistedBackgroundEvaluationPromotesNeitherPagesNorCoverage)
+    StalePersistedBackgroundEvaluationPromotesNeitherDataNorCoverage)
 {
     auto graph = persisted_tock_graph();
     iv::BackgroundCoverageState coverage(
         graph.background_evaluation_plan.accumulators.output_change_count);
     iv::BackgroundPropagationWorkspace propagation{
         graph.background_evaluation_plan, graph.specialization.sample_rate};
-    iv::PersistedPageStore pages;
-    auto reader = pages.register_reader();
+    iv::PersistedDataStore data;
+    auto reader = data.register_reader();
     auto const request = iv::BackgroundTransactionInputs{
         .semantic_version = 7,
         .roots = {
             .locally_changed_nodes = {0},
             .output_demands = {{
                 .port = 0,
-                .required = iv::Coverage{{{0, 8}}},
+                .required = coverage({{0, 8}}),
             }},
         },
     };
 
-    competing_persisted_store = &pages;
+    competing_persisted_store = &data;
     publish_competing_persisted_snapshot = true;
     iv::BackgroundEvaluationTransaction stale{
-        graph, nullptr, coverage, propagation, pages, request};
+        graph, nullptr, coverage, propagation, data, request};
     auto stale_result = stale.execute();
     ASSERT_TRUE(stale_result.has_value()) << stale_result.error();
     EXPECT_EQ(stale_result->status, iv::BackgroundEvaluationStatus::stale_base);
-    EXPECT_FALSE(stale_result->published_pages.has_value());
+    EXPECT_FALSE(stale_result->published_data.has_value());
     EXPECT_EQ(persisted_probe_evaluate_calls, 1u);
     {
         auto pin = reader.pin();
         EXPECT_EQ(
             pin->version(),
-            (iv::PersistedPageSnapshotVersion{.semantic = 99, .page = 1}));
-        EXPECT_EQ(pin->sample_page_count(), 0u);
+            (iv::PersistedDataVersion{.semantic = 99, .revision = 1}));
+        EXPECT_EQ(pin->sample_region_count(), 0u);
     }
 
     // execute() has returned, so the rejected transaction must no longer pin
     // the retired base even while the transaction object itself remains alive.
-    EXPECT_EQ(pages.retired_snapshot_count(), 1u);
-    EXPECT_EQ(pages.reclaim_retired(), 1u);
+    EXPECT_EQ(data.retired_snapshot_count(), 1u);
+    EXPECT_EQ(data.reclaim_retired(), 1u);
 
     iv::BackgroundEvaluationTransaction demand_only{
         graph,
         nullptr,
         coverage,
         propagation,
-        pages,
+        data,
         {
             .semantic_version = 99,
             .roots = {
                 .output_demands = {{
                     .port = 0,
-                    .required = iv::Coverage{{{0, 8}}},
+                    .required = coverage({{0, 8}}),
                 }},
             },
         }};
     auto demand_only_result = demand_only.execute();
     ASSERT_TRUE(demand_only_result.has_value()) << demand_only_result.error();
-    EXPECT_FALSE(demand_only_result->published_pages.has_value());
+    EXPECT_FALSE(demand_only_result->published_data.has_value());
     EXPECT_EQ(persisted_probe_evaluate_calls, 1u);
 }
 
 TEST_F(
     GraphExecutorFixture,
-    StalePageFreeBackgroundEvaluationPromotesNoCoverage)
+    StaleDataFreeBackgroundEvaluationPromotesNoCoverage)
 {
     auto graph = ephemeral_tock_graph();
     iv::BackgroundCoverageState coverage(
         graph.background_evaluation_plan.accumulators.output_change_count);
     iv::BackgroundPropagationWorkspace propagation{
         graph.background_evaluation_plan, graph.specialization.sample_rate};
-    iv::PersistedPageStore pages;
-    auto reader = pages.register_reader();
+    iv::PersistedDataStore data;
+    auto reader = data.register_reader();
 
-    competing_persisted_store = &pages;
+    competing_persisted_store = &data;
     publish_competing_persisted_snapshot = true;
     iv::BackgroundEvaluationTransaction stale{
         graph,
         nullptr,
         coverage,
         propagation,
-        pages,
+        data,
         {
             .semantic_version = 7,
             .roots = {
                 .locally_changed_nodes = {0},
                 .output_demands = {{
                     .port = 0,
-                    .required = iv::Coverage{{{0, 8}}},
+                    .required = coverage({{0, 8}}),
                 }},
             },
         }};
     auto stale_result = stale.execute();
     ASSERT_TRUE(stale_result.has_value()) << stale_result.error();
     EXPECT_EQ(stale_result->status, iv::BackgroundEvaluationStatus::stale_base);
-    EXPECT_FALSE(stale_result->published_pages.has_value());
+    EXPECT_FALSE(stale_result->published_data.has_value());
     EXPECT_EQ(persisted_probe_evaluate_calls, 1u);
     {
         auto pin = reader.pin();
         EXPECT_EQ(
             pin->version(),
-            (iv::PersistedPageSnapshotVersion{.semantic = 99, .page = 1}));
-        EXPECT_EQ(pin->sample_page_count(), 0u);
+            (iv::PersistedDataVersion{.semantic = 99, .revision = 1}));
+        EXPECT_EQ(pin->sample_region_count(), 0u);
     }
 
-    EXPECT_EQ(pages.retired_snapshot_count(), 1u);
-    EXPECT_EQ(pages.reclaim_retired(), 1u);
+    EXPECT_EQ(data.retired_snapshot_count(), 1u);
+    EXPECT_EQ(data.reclaim_retired(), 1u);
 
     iv::BackgroundEvaluationTransaction demand_only{
         graph,
         nullptr,
         coverage,
         propagation,
-        pages,
+        data,
         {
             .semantic_version = 99,
             .roots = {
                 .output_demands = {{
                     .port = 0,
-                    .required = iv::Coverage{{{0, 8}}},
+                    .required = coverage({{0, 8}}),
                 }},
             },
         }};
@@ -1231,13 +1255,13 @@ TEST_F(
         << demand_only_result.error();
     EXPECT_EQ(
         demand_only_result->status, iv::BackgroundEvaluationStatus::committed);
-    EXPECT_FALSE(demand_only_result->published_pages.has_value());
+    EXPECT_FALSE(demand_only_result->published_data.has_value());
     EXPECT_EQ(persisted_probe_evaluate_calls, 1u);
 }
 
 TEST_F(
     GraphExecutorFixture,
-    PageFreeBackgroundEvaluationPreservesPersistedBaseValidation)
+    RetainedDataFreeBackgroundEvaluationPreservesPersistedBaseValidation)
 {
     auto persisted_graph = persisted_tock_graph();
     iv::BackgroundCoverageState persisted_coverage(
@@ -1245,27 +1269,27 @@ TEST_F(
     iv::BackgroundPropagationWorkspace persisted_propagation{
         persisted_graph.background_evaluation_plan,
         persisted_graph.specialization.sample_rate};
-    iv::PersistedPageStore pages;
+    iv::PersistedDataStore data;
 
     iv::BackgroundEvaluationTransaction seed{
         persisted_graph,
         nullptr,
         persisted_coverage,
         persisted_propagation,
-        pages,
+        data,
         {
             .semantic_version = 7,
             .roots = {
                 .locally_changed_nodes = {0},
                 .output_demands = {{
                     .port = 0,
-                    .required = iv::Coverage{{{0, 8}}},
+                    .required = coverage({{0, 8}}),
                 }},
             },
         }};
     auto seed_result = seed.execute();
     ASSERT_TRUE(seed_result.has_value()) << seed_result.error();
-    ASSERT_TRUE(seed_result->published_pages.has_value());
+    ASSERT_TRUE(seed_result->published_data.has_value());
     EXPECT_EQ(persisted_probe_evaluate_calls, 1u);
 
     auto ephemeral_graph = ephemeral_tock_graph();
@@ -1278,7 +1302,7 @@ TEST_F(
         .locally_changed_nodes = {0},
         .output_demands = {{
             .port = 0,
-            .required = iv::Coverage{{{0, 8}}},
+            .required = coverage({{0, 8}}),
         }},
     };
 
@@ -1287,7 +1311,7 @@ TEST_F(
         nullptr,
         ephemeral_coverage,
         ephemeral_propagation,
-        pages,
+        data,
         {
             .semantic_version = 6,
             .roots = demand,
@@ -1299,23 +1323,21 @@ TEST_F(
         std::string::npos);
 
     ephemeral_graph.specialization.block_size = 8;
-    iv::BackgroundEvaluationTransaction incompatible_page_width{
+    iv::BackgroundEvaluationTransaction different_block_size{
         ephemeral_graph,
         nullptr,
         ephemeral_coverage,
         ephemeral_propagation,
-        pages,
+        data,
         {
             .semantic_version = 7,
             .roots = demand,
         }};
-    auto page_width_result = incompatible_page_width.execute();
-    ASSERT_FALSE(page_width_result.has_value());
-    EXPECT_NE(
-        page_width_result.error().find("explicitly repaged"),
-        std::string::npos);
+    auto different_block_size_result = different_block_size.execute();
+    ASSERT_TRUE(different_block_size_result.has_value())
+        << different_block_size_result.error();
 
-    // Neither rejected page-free transaction reaches evaluation or coverage
+    // Neither rejected data-free transaction reaches evaluation or coverage
     // commit.
     EXPECT_EQ(persisted_probe_evaluate_calls, 1u);
 }
@@ -1342,7 +1364,7 @@ TEST_F(
             .output_demands = {
                 iv::OutputCoverageRequest{
                     .port = 3,
-                    .required = iv::Coverage{{{11, 21}}},
+                    .required = coverage({{11, 21}}),
                 },
             },
         });
@@ -1371,7 +1393,7 @@ TEST_F(
             .output_demands = {
                 iv::OutputCoverageRequest{
                     .port = 3,
-                    .required = iv::Coverage{{{10, 22}}},
+                    .required = coverage({{10, 22}}),
                 },
             },
         });
@@ -1404,7 +1426,7 @@ TEST_F(
             .output_demands = {
                 iv::OutputCoverageRequest{
                     .port = 3,
-                    .required = iv::Coverage{{{11, 21}}},
+                    .required = coverage({{11, 21}}),
                 },
             },
         });
@@ -1415,37 +1437,37 @@ TEST_F(
     EXPECT_EQ(background_observation.sink_forward_calls, 1u);
     EXPECT_EQ(
         background_observation.sink_input_coverage,
-        (iv::Coverage{{{10, 13}, {20, 22}}}));
+        coverage({{10, 13}, {20, 22}}));
     EXPECT_EQ(
         background_observation.sink_input_changed,
         background_observation.sink_input_coverage);
     EXPECT_EQ(background_observation.sink_reverse_calls, 1u);
     EXPECT_EQ(
         background_observation.sink_output_required,
-        (iv::Coverage{{{11, 13}, {20, 21}}}));
+        coverage({{11, 13}, {20, 21}}));
 
     ASSERT_EQ(result.output_changes.size(), 3u);
     EXPECT_EQ(
         result.output_changes[2].coverage,
-        (iv::Coverage{{{10, 13}, {20, 22}}}));
+        coverage({{10, 13}, {20, 22}}));
     ASSERT_EQ(result.input_requirements.size(), 1u);
     EXPECT_EQ(result.input_requirements[0].port, 2u);
     EXPECT_EQ(
         result.input_requirements[0].required,
-        (iv::Coverage{{{11, 13}, {20, 21}}}));
+        coverage({{11, 13}, {20, 21}}));
     ASSERT_EQ(result.output_requirements.size(), 3u);
     EXPECT_EQ(result.output_requirements[0].port, 0u);
     EXPECT_EQ(
         result.output_requirements[0].required,
-        (iv::Coverage{{{11, 13}}}));
+        coverage({{11, 13}}));
     EXPECT_EQ(result.output_requirements[1].port, 1u);
     EXPECT_EQ(
         result.output_requirements[1].required,
-        (iv::Coverage{{{20, 21}}}));
+        coverage({{20, 21}}));
     EXPECT_EQ(result.output_requirements[2].port, 3u);
     EXPECT_EQ(
         result.output_requirements[2].required,
-        (iv::Coverage{{{11, 13}, {20, 21}}}));
+        coverage({{11, 13}, {20, 21}}));
 
     background_observation = {};
     prepared = workspace.prepare(
@@ -1456,7 +1478,7 @@ TEST_F(
             .output_demands = {
                 iv::OutputCoverageRequest{
                     .port = 3,
-                    .required = iv::Coverage{{{10, 22}}},
+                    .required = coverage({{10, 22}}),
                 },
             },
         });
@@ -1475,7 +1497,7 @@ TEST_F(
             .input_demands = {
                 iv::InputCoverageRequest{
                     .port = 2,
-                    .required = iv::Coverage{{{10, 22}}},
+                    .required = coverage({{10, 22}}),
                 },
             },
         });
@@ -1522,7 +1544,7 @@ TEST_F(
             .output_demands = {
                 iv::OutputCoverageRequest{
                     .port = 3,
-                    .required = iv::Coverage{{{10, 22}}},
+                    .required = coverage({{10, 22}}),
                 },
             },
         });
@@ -1556,7 +1578,7 @@ TEST_F(
                 .output_demands = {
                     iv::OutputCoverageRequest{
                         .port = 3,
-                        .required = iv::Coverage{{{10, 22}}},
+                        .required = coverage({{10, 22}}),
                     },
                 },
             })),
@@ -1571,7 +1593,7 @@ TEST_F(
             .output_demands = {
                 iv::OutputCoverageRequest{
                     .port = 3,
-                    .required = iv::Coverage{{{10, 22}}},
+                    .required = coverage({{10, 22}}),
                 },
             },
         });
@@ -1595,7 +1617,7 @@ TEST_F(
         .evaluate = &no_op_background_evaluate,
     };
 
-    auto const coverage = iv::Coverage{{{30, 34}}};
+    auto const selected_coverage = coverage({{30, 34}});
     auto prepared = workspace.prepare(
         operations,
         nullptr,
@@ -1604,8 +1626,8 @@ TEST_F(
             .input_changes = {
                 iv::InputCoverageChangeRequest{
                     .port = 2,
-                    .coverage = coverage,
-                    .changed = coverage,
+                    .coverage = selected_coverage,
+                    .changed = selected_coverage,
                 },
             },
         });
@@ -1614,11 +1636,11 @@ TEST_F(
     EXPECT_EQ(background_observation.source_forward_calls[0], 0u);
     EXPECT_EQ(background_observation.source_forward_calls[1], 0u);
     EXPECT_EQ(background_observation.sink_forward_calls, 1u);
-    EXPECT_EQ(background_observation.sink_input_coverage, coverage);
+    EXPECT_EQ(background_observation.sink_input_coverage, selected_coverage);
     ASSERT_EQ(result.output_changes.size(), 1u);
     EXPECT_EQ(result.output_changes[0].port, 3u);
-    EXPECT_EQ(result.output_changes[0].coverage, coverage);
-    EXPECT_EQ(result.output_changes[0].changed, coverage);
+    EXPECT_EQ(result.output_changes[0].coverage, selected_coverage);
+    EXPECT_EQ(result.output_changes[0].changed, selected_coverage);
     workspace.discard(std::move(prepared));
 }
 
@@ -1648,7 +1670,7 @@ TEST_F(
     EXPECT_EQ(result.output_changes[0].port, 1u);
     EXPECT_EQ(
         result.output_changes[0].coverage,
-        (iv::Coverage{{{10, 13}}}));
+        coverage({{10, 13}}));
     workspace.discard(std::move(prepared));
 }
 

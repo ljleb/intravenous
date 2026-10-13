@@ -147,7 +147,8 @@ namespace iv {
 
             auto const events = ctx.template input<0>().events();
             for (TimedEvent const& event : events) {
-                size_t const event_offset = event.time - ctx.index;
+                size_t const event_offset = static_cast<size_t>(
+                    ctx.index.forward_distance_to(event.time));
                 size_t const next = std::min(event_offset, ctx.block_size);
                 std::fill(state.block.begin() + static_cast<std::ptrdiff_t>(cursor), state.block.begin() + static_cast<std::ptrdiff_t>(next), value);
                 cursor = next;
@@ -215,7 +216,8 @@ namespace iv {
 
             auto const events = ctx.template input<0>().events();
             for (TimedEvent const& event : events) {
-                size_t const event_offset = event.time - ctx.index;
+                size_t const event_offset = static_cast<size_t>(
+                    ctx.index.forward_distance_to(event.time));
                 size_t const next = std::min(event_offset, ctx.block_size);
                 std::fill(state.block.begin() + static_cast<std::ptrdiff_t>(cursor), state.block.begin() + static_cast<std::ptrdiff_t>(next), value);
                 cursor = next;
@@ -316,7 +318,8 @@ namespace iv {
                 }
             };
 
-            auto assign_voice = [&](size_t voice, std::uint8_t note, Sample amplitude, size_t event_time) {
+            auto assign_voice = [&](size_t voice, std::uint8_t note,
+                                    Sample amplitude, size_t event_offset) {
                 bool const was_allocated = state.allocated.test(voice);
                 bool const assignment_changed = !was_allocated || state.notes[voice] != note;
                 state.allocated.set(voice);
@@ -328,7 +331,8 @@ namespace iv {
                         state.amplitude = amplitude;
                         if (assignment_changed) {
                             ctx.template output<2>().push(
-                                TriggerEvent {}, event_time - ctx.index);
+                                TriggerEvent {},
+                                event_offset);
                         }
                     }
                 }
@@ -346,7 +350,8 @@ namespace iv {
             size_t cursor = 0;
             auto const events = ctx.template input<0>().events();
             for (TimedEvent const& event : events) {
-                size_t const event_offset = event.time - ctx.index;
+                size_t const event_offset = static_cast<size_t>(
+                    ctx.index.forward_distance_to(event.time));
                 size_t const next = std::min(event_offset, ctx.block_size);
                 push_until(next, cursor);
 

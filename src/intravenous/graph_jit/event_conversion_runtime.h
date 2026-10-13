@@ -77,8 +77,8 @@ iv_graph_jit_merge_ordered_event_sequence(
 // Stable k-way merge for transient fan-in where semantic source 0 already
 // resides in target storage. source_events/source_remaining describe semantic
 // sources 1..N in order. All streams are required by the EventOutputPort
-// contract to be nondecreasing by absolute sample index. The merge walks the
-// streams backwards so it can write the final aggregate in place without
+// contract to be nondecreasing in forward order from origin. The merge walks
+// the streams backwards so it can write the final aggregate in place without
 // allocating scratch event storage. Equal timestamps are ordered by semantic
 // source index. source_remaining is caller-owned stack scratch and is
 // decremented in place; no heap allocation occurs.

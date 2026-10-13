@@ -2,7 +2,7 @@
 
 #include <intravenous/graph_jit/tick_invocation_call.h>
 #include <intravenous/runtime/async_capacity_manager.h>
-#include <intravenous/runtime/persisted_page_store.h>
+#include <intravenous/runtime/persisted_data_store.h>
 #include <intravenous/runtime/realtime_persisted_state.h>
 #include <intravenous/runtime/tick_materialization_snapshot.h>
 
@@ -46,7 +46,7 @@ class TickInvocationWorkspace {
     friend class TickInvocationFrame;
     [[nodiscard]] CaptureScope begin_capture() noexcept;
     [[nodiscard]] graph_jit::TickInvocationCall bind(
-        PersistedPageStore::Snapshot const& published,
+        PersistedDataStore::Snapshot const& published,
         TickMaterializationSnapshot const& materialized,
         GlobalIndex sample_index,
         std::size_t block_size) noexcept;
@@ -55,7 +55,7 @@ public:
     TickInvocationWorkspace(
         graph_jit::BackgroundEvaluationPlan const& plan,
         std::uint64_t generation,
-        PersistedPageStore& pages,
+        PersistedDataStore& data,
         std::size_t maximum_block_size = 1);
     ~TickInvocationWorkspace();
 
@@ -92,16 +92,16 @@ public:
 // callers may instead supply the two pre-registered reader slots. Construction
 // refreshes preallocated Sequential playback storage for the requested window.
 class TickInvocationFrame {
-    PersistedPageStore::ReaderPin published_pages_{};
+    PersistedDataStore::ReaderPin published_data_{};
     TickMaterializationStore::ReaderPin materialized_storage_{};
-    PersistedPageStore::Snapshot const* published_pages_view_ = nullptr;
+    PersistedDataStore::Snapshot const* published_data_view_ = nullptr;
     TickMaterializationSnapshot const* materialized_storage_view_ = nullptr;
     TickInvocationWorkspace::CaptureScope capture_scope_;
     graph_jit::TickInvocationCall call_{};
 
 public:
     explicit TickInvocationFrame(
-        PersistedPageStore::ReaderSlot& page_reader,
+        PersistedDataStore::ReaderSlot& data_reader,
         TickMaterializationStore::ReaderSlot& materialization_reader,
         TickInvocationWorkspace& workspace,
         GlobalIndex sample_index = {},
@@ -127,10 +127,10 @@ public:
 
     // Runtime binding construction may inspect the pinned root, but this owner
     // is never passed through the generated ABI.
-    [[nodiscard]] PersistedPageStore::Snapshot const& published_pages()
+    [[nodiscard]] PersistedDataStore::Snapshot const& published_data()
         const noexcept
     {
-        return *published_pages_view_;
+        return *published_data_view_;
     }
 
     [[nodiscard]] TickMaterializationSnapshot const& materialized_storage()

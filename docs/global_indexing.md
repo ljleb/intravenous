@@ -104,6 +104,13 @@ and multiplicity internally and uses signed-canonical order only as a stable
 representation choice. A modular input range may be split at the signed-order seam
 without changing its set meaning.
 
+Its canonical ranges are held in an immutable path-copied interval tree. Copying an
+`IndexCoverage` shares that tree; including or excluding a finite range replaces only
+the tree paths and canonical ranges touched by the operation. Ordered iteration uses a
+bounded non-allocating iterator. Persisted roots, background transactions, and node
+coverage views therefore use the same positional algebra without flattening a
+persistent store-specific representation into a vector.
+
 Data-bearing random-access samples use the distinct `SampleCoverage` algebra described
 by [Random-Access Port Data Direction](./random_access_port_data_direction.md).
 `SampleCoverage` preserves its `SampleRegion` objects, their contiguous backing,
@@ -138,4 +145,3 @@ wrap-aware page-number arithmetic.
 Generation cutover and state migration describe surviving timeline data relative to a
 cutover origin or by modular ranges. Reload logic must not classify inherited data by
 raw unsigned comparison against zero or the cutover coordinate.
-

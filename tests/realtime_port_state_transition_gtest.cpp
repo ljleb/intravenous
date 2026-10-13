@@ -9,6 +9,11 @@
 
 namespace {
 
+iv::GlobalIndex global_index(std::uint64_t bits)
+{
+    return iv::GlobalIndex::from_bits(bits);
+}
+
 iv::graph_jit::RealtimePortStateRequirement requirement(
     std::size_t bundle,
     std::size_t extent,
@@ -573,7 +578,7 @@ TEST(RealtimePortStateTransition, ExecutesDirectSampleRingTransferAtCutover)
     };
 
     auto executed = iv::graph_jit::execute_realtime_port_state_transfers(
-        plan, previous, current, 10);
+        plan, previous, current, global_index(10));
 
     ASSERT_TRUE(executed.has_value())
         << (executed ? std::string{} : executed.error());
@@ -647,7 +652,7 @@ TEST(RealtimePortStateTransition, ExecutesDirectSampleCompactCarryTransfer)
     };
 
     auto executed = iv::graph_jit::execute_realtime_port_state_transfers(
-        plan, previous, current, 20);
+        plan, previous, current, global_index(20));
 
     ASSERT_TRUE(executed.has_value())
         << (executed ? std::string{} : executed.error());
@@ -731,7 +736,7 @@ TEST(RealtimePortStateTransition, ExecutesDirectEventRingTransferAtCutover)
     write_size(previous, write_offset, 6);
     for (auto const [cursor, time] :
          {std::pair{3u, 96u}, std::pair{4u, 100u}, std::pair{5u, 104u}}) {
-        iv::TimedEvent event{.time = time};
+        iv::TimedEvent event{.time = global_index(time)};
         std::memcpy(
             previous.data() + events_offset
                 + (cursor % capacity) * sizeof(event),
@@ -761,7 +766,7 @@ TEST(RealtimePortStateTransition, ExecutesDirectEventRingTransferAtCutover)
     };
 
     auto executed = iv::graph_jit::execute_realtime_port_state_transfers(
-        plan, previous, current, 108);
+        plan, previous, current, global_index(108));
 
     ASSERT_TRUE(executed.has_value())
         << (executed ? std::string{} : executed.error());
@@ -777,7 +782,7 @@ TEST(RealtimePortStateTransition, ExecutesDirectEventRingTransferAtCutover)
             &event,
             current.data() + events_offset + index * sizeof(event),
             sizeof(event));
-        EXPECT_EQ(event.time, 100u + index * 4);
+        EXPECT_EQ(event.time, global_index(100u + index * 4));
     }
 }
 

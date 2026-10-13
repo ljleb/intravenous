@@ -784,7 +784,7 @@ namespace iv {
             for (size_t i = 0; i < ctx.block_size; ++i) {
                 do_tick(node, {
                     static_cast<TickContext<Node> const&>(ctx),
-                    ctx.index + i,
+                    ctx.index.advanced_by(i),
                 });
             }
         }

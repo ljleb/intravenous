@@ -542,8 +542,8 @@ explicit authored recording bridge/node before random-access demand. Tiling reta
 individual channel capabilities and adds no implicit recorder.
 
 `tock_coverage()` and tock propagation/evaluation are background-only. Audio-thread
-sequential inputs read an already published stale page as-is, or substitute their
-own `neutral_value` when the required page is missing, without waiting. Persisted outputs never automatically evict generated/finalized covered data; the
+sequential inputs read already published stale data as-is, or substitute their
+own `neutral_value` when a required position is missing, without waiting. Persisted outputs never automatically evict generated/finalized covered data; the
 author accepts potentially unbounded memory use. Coverage removal is the only
 semantic reason to stop retaining it, while reader-pinned old storage versions
 live until safe reclamation.
@@ -554,12 +554,12 @@ where layout permits, writes sample/event payloads directly into those blocks. A
 completed producer-private chain is published to `BackgroundExecutor` at a
 realtime pass boundary. Background work independently pins one finite prefix from
 each producer queue before evaluation; newly appended blocks are later work. Queue
-publication is not persisted-state/page publication.
+publication is not persisted-state/data publication.
 
-Persistent page width may continue to follow the fixed whole-graph root block
-quantum as a storage layout choice. Changing root block size is a quiescent
-storage-layout migration, not a semantic invalidation merely because the page
-partition changed.
+Canonical persisted samples use contiguous explicit-range records and persisted
+events use explicit-range chunks. Their boundaries do not follow the whole-graph root
+block quantum. Changing root block size therefore requires no persisted-data
+repartition and is not a semantic invalidation by itself.
 
 Static whole-project validation still computes semantic SCCs and rejects a
 random-access input edge within a semantic SCC. The background evaluation DAG
@@ -613,7 +613,7 @@ execution generation. It keeps at least:
 
 - the active and optional pending `ExecutionGeneration*` realtime realization;
 - canonical realtime `NodeStorage` and ordinary revision migration/transition state;
-- the active immutable persisted-state/page view selected for the current pass;
+- the active immutable persisted-state/data view selected for the current pass;
 - at most the newest compatible pending persisted-state pointer received from
   background;
 - address-stable Tick invocation/materialization bindings selected before a pass;
@@ -642,9 +642,9 @@ thread. It keeps at least:
 - the current background side of the active execution generation plus ordered actual
   successor cutovers already performed by realtime;
 - separately owned lifecycle/storage for optional background-only `TockState`;
-- stable canonical persisted-page/recording state and immutable publication roots;
+- stable canonical persisted-data/recording state and immutable publication roots;
 - committed background coverage state and reusable propagation/evaluation workspaces;
-- transaction-local invocation/materialization frames and private page candidates;
+- transaction-local invocation/materialization frames and private persisted-data candidates;
 - one independently pinnable `PendingQueue` per producer;
 - pre-sized per-generation descriptors used to remember selected `(first,last)` queue
   prefixes without dynamically growing a workload container; and
@@ -656,7 +656,7 @@ from every relevant pending queue and selects the exact immutable/versioned non-
 inputs it needs. There is intentionally no atomic snapshot relationship across queues.
 Once selected, later appends and pending-state changes affect only subsequent work.
 
-A successful operation may produce a new coherent immutable persisted-state/page
+A successful operation may produce a new coherent immutable persisted-state/data
 version. Background publishes only the newest such pointer through an internal mailbox;
 if several versions are produced before realtime reaches a boundary, intermediate
 pending versions need not be preserved. Superseded pending versions are retired off
@@ -748,13 +748,13 @@ that requirement explicitly rather than introducing hidden global synchronizatio
 Dynamically sized persisted output data is deliberately not part of fixed
 `NodeStorage`. Stable persisted outputs are not owned by one JIT generation merely
 because port indices are generation-local: compatible generations rebind stable
-virtual-node/member/output identities to the same background-owned canonical page
+virtual-node/member/output identities to the same background-owned canonical data
 store without copying data. Ephemeral outputs own no persisted data.
 
 Tick/persisted production reaches that same canonical store through the provisioned
 queue handoff rather than a Tock callback. Explicit recording uses the same queue/
 capacity infrastructure but its fixed RAM overwrite semantics remain distinct from
-Tick/persisted page retention. Queue blocks are pre-publication/background inputs,
+Tick/persisted retention. Queue blocks are pre-publication/background inputs,
 not a second Random Access retained-data representation.
 
 For recording, ordinary writes overwrite the addressed RAM recording, untouched
@@ -773,11 +773,11 @@ propagation determines downstream effects. Reverse coverage planning is value-bl
 and may conservatively request a larger input region when dependency addressing
 depends on input data values.
 
-The realtime thread selects one immutable published page/materialization view at the
-pass boundary, plays present pages even when out of date, and substitutes the
-consuming Sequential input's `neutral_value` for missing pages. Tick-time Random
+The realtime thread selects one immutable published persisted-data/materialization view at the
+pass boundary, plays present data even when out of date, and substitutes the
+consuming Sequential input's `neutral_value` for missing positions. Tick-time Random
 Access uses the same selected immutable state. It never invokes Tock, allocates on a
-page miss, or waits for background replacement. Newly queued realtime blocks and
+data miss, or waits for background replacement. Newly queued realtime blocks and
 newly published background versions do not become visible mid-pass.
 
 Persisted output data remains logically retained throughout generated coverage: there
@@ -785,7 +785,7 @@ is no eviction merely for memory pressure, invalidation, or lack of current read
 Old immutable storage versions are released only when their reader pins disappear;
 coverage removal is the semantic reason to stop retaining the data.
 
-Background evaluation uses a coherent selected semantic/page base for each workload.
+Background evaluation uses a coherent selected semantic/data base for each workload.
 A newer `tock/persisted` candidate is pending until the entire stored output required
 by that version pair is complete; callers may continue displaying an older completed
 pair rather than observe partial/default data. `tock/ephemeral` requests evaluate
@@ -793,7 +793,7 @@ exact requested coverage against one selected immutable version pair.
 
 The generated background root owns static node order and calls only narrow
 transaction-local prepare/finalize hooks selected by the compiled plan; generated
-code never receives either executor pointer, the page store, the queue/capacity
+code never receives either executor pointer, the persisted-data store, the queue/capacity
 manager, or a transaction-owner pointer.
 
 Reader-pin and retired-owner reclamation use audio-safe boundary/epoch ownership. The
@@ -958,11 +958,13 @@ The implementation checkpoints now stand as follows:
     [coverage_and_background_evaluation.md §32](./coverage_and_background_evaluation.md#32-implementation-landing-order):
     the committed-coverage/propagation-workspace split and compiler-owned runtime
     binding/materialization/replay schedules have landed. The executor-level canonical
-    sample/event page store has also landed with private structurally shared candidates,
-    semantic/page coordinates, whole-root stale-base publication, pre-registered
+    fixed-width page storage has been replaced by `PersistedDataStore`:
+    private candidates use a path-copied output directory and per-output range trees,
+    samples are contiguous regions, events are explicit-range chunks, and whole-root
+    stale-base publication uses semantic/data coordinates plus pre-registered
     non-owning reader pins and explicit non-audio retired-root reclamation.
     `BackgroundStorageRealization` now owns address-stable sparse transaction buffers,
-    binds published pages through the transaction's non-owning pinned view, resolves
+    binds published data through the transaction's non-owning pinned view, resolves
     stable/generation-local persisted identity and validates explicit views before
     sealing. It now executes compiler-planned direct/sample/event operations exactly
     once over those sealed views, including latency-aware heterogeneous sample
@@ -972,22 +974,23 @@ The implementation checkpoints now stand as follows:
     `BackgroundStorageOperationFrame` containing the realization and compiler-owned
     before/after spans; forward/reverse propagation remains hook-free. The transaction
     coordinator now populates authored-Tock/replay bindings, allocates isolated replay
-    storage, completes persisted-page demand from one pinned base, invokes the generated
+    storage, completes persisted-data demand from one pinned base, invokes the generated
     evaluate root once, and promotes prepared coverage only after any required private
-    page publication succeeds. It also validates produced-sample completeness before
-    staging pages and limits each multi-output replay flush to that output's selected
+    persisted-data publication succeeds. It also validates produced-sample completeness before
+    staging records and limits each multi-output replay flush to that output's selected
     coverage. Failed, incomplete or stale transactions promote neither state, and
-    page-free operations neither advance the page version nor skip pinned-base stale
+    data-free operations neither advance the data version nor skip pinned-base stale
     validation. The Tick binding frame, callback-lifetime published-root pin and
-    compiler-planned direct persisted-page Random Access sample/event views have now
+    compiler-planned direct persisted-data Random Access sample/event views have now
     landed. Their address-stable workspace is allocated on the control path and the
     generated root receives only compact resolved spans. Background-produced derived
     and ephemeral Random Access views now cross the root boundary in a separately
-    pinned immutable `TickMaterializationSnapshot`; generation/page-version matching
+    pinned immutable `TickMaterializationSnapshot`; generation/data-version matching
     prevents incoherent combinations, and retired owners are reclaimed explicitly off
-    the audio thread. Next add compiler-planned sequential snapshot playback and
-    per-input missing-page neutrality. Do this before enabling transactional recording
-    consumption;
+    the audio thread. Compiler-planned Sequential sample/event snapshot playback and
+    per-input missing-position neutrality are part of that active replacement. Finish
+    the source/test/document migration and validate it before enabling transactional
+    recording consumption;
 11. integrate stable logical `SystemAudioDevices` bindings with ordinary system
     audio leaf node definitions;
 12. once GraphJit plus the internally decomposed `GraphExecutor` have fully landed as the normal execution

@@ -37,12 +37,10 @@ using PersistedOutputId = std::variant<
     PersistedOutputId const& output) noexcept;
 
 // Compact executor-lifetime key resolved from a semantic output identity on a
-// control/background path. It encodes a never-reused store token, a store-local
-// directory slot, and the port kind. Values are process-unique and never
-// recycled, so a handle retained by an old generation cannot alias a later
-// output.
+// control/background path. The store token is never reused, so a handle
+// retained by an old generation cannot alias an output in another store.
 class PersistedOutputHandle {
-    friend class PersistedPageStore;
+    friend class PersistedDataStore;
 
     static constexpr std::uint64_t invalid =
         std::numeric_limits<std::uint64_t>::max();
@@ -84,46 +82,43 @@ static_assert(std::is_trivially_copyable_v<PersistedOutputHandle>);
     return output.kind();
 }
 
-// Resolve the canonical store identity already selected by one persisted
-// storage slot. Callers do this while constructing control-path workspaces,
-// never from the audio callback.
 [[nodiscard]] PersistedOutputId persisted_output_id(
     graph_jit::BackgroundEvaluationPlan const& plan,
     graph_jit::PortStorageIndex storage,
     std::uint64_t generation);
 
-struct PersistedPageSnapshotVersion {
+struct PersistedDataVersion {
     std::uint64_t semantic = 0;
-    std::uint64_t page = 0;
+    std::uint64_t revision = 0;
 
-    auto operator<=>(PersistedPageSnapshotVersion const&) const = default;
+    auto operator<=>(PersistedDataVersion const&) const = default;
 };
 
-enum class PersistedSamplePacking : std::uint8_t {
-    dense,
-    coverage_packed,
-};
-
-// Event times are page-relative. Sample data is either one complete dense page
-// or the covered positions packed in increasing absolute-index order.
-struct PersistedSamplePage {
+// One immutable, contiguous sample contribution. Values use layout and contain
+// exactly range.extent frames. A stored record never crosses the signed-order
+// seam; Candidate accepts circular input ranges and splits them before storage.
+struct PersistedSampleRegion {
     PersistedOutputHandle output{};
-    std::uint64_t page_index = 0;
-    IndexCoverage domain{};
+    GlobalIndexRange range{};
     ChannelLayout layout{};
-    PersistedSamplePacking packing = PersistedSamplePacking::dense;
     std::vector<Sample> values{};
+
+    [[nodiscard]] Sample at(
+        GlobalIndex index,
+        std::size_t channel) const noexcept;
 };
 
-struct PersistedEventPage {
+// One immutable event checkpoint. range is authoritative even when events is
+// empty. Events carry absolute GlobalIndex coordinates and are ordered forward
+// from range.begin. Stored chunks never cross the signed-order seam.
+struct PersistedEventChunk {
     PersistedOutputHandle output{};
-    std::uint64_t page_index = 0;
-    IndexCoverage domain{};
+    GlobalIndexRange range{};
     EventTypeId type = EventTypeId::empty;
     std::vector<TimedEvent> events{};
 };
 
-namespace persisted_page_store_detail {
+namespace persisted_data_store_detail {
 
 struct SampleOutputState;
 struct EventOutputState;
@@ -132,74 +127,115 @@ struct OutputDirectoryNode;
 using SampleOutputNode = OutputDirectoryNode<SampleOutputState>;
 using EventOutputNode = OutputDirectoryNode<EventOutputState>;
 
-} // namespace persisted_page_store_detail
+} // namespace persisted_data_store_detail
 
-enum class PersistedPagePublishResult : std::uint8_t {
+enum class PersistedDataPublishResult : std::uint8_t {
     published,
     stale_base,
 };
 
-// One executor-level canonical store for every persisted sample and event
-// output. Candidate and reclamation operations are serialized control/background
-// work. Only ReaderSlot::pin() and ReaderPin destruction are audio-thread APIs.
-class PersistedPageStore {
+// Executor-level canonical retained data for persisted sample and event
+// outputs. Candidate mutation and reclamation are serialized background/control
+// work. ReaderSlot::pin() and ReaderPin destruction are the only realtime APIs.
+class PersistedDataStore {
 public:
     class Candidate;
     class ReaderSlot;
 
     class Snapshot {
-        friend class PersistedPageStore;
+        friend class PersistedDataStore;
         friend class Candidate;
 
-        PersistedPageSnapshotVersion version_{};
-        std::size_t page_width_ = 0;
+        PersistedDataVersion version_{};
         std::uint32_t output_owner_token_ = 0;
-        // Output roots are immutable path-copy radix directories addressed by
-        // the store-local slot encoded in PersistedOutputHandle. Page roots
-        // remain immutable path-copy trees. A successor shares both wholesale
-        // and replaces only paths for outputs/pages it mutates.
         std::shared_ptr<
-            persisted_page_store_detail::SampleOutputNode const>
+            persisted_data_store_detail::SampleOutputNode const>
             sample_outputs_{};
         std::uint8_t sample_output_levels_ = 0;
         std::shared_ptr<
-            persisted_page_store_detail::EventOutputNode const>
+            persisted_data_store_detail::EventOutputNode const>
             event_outputs_{};
         std::uint8_t event_output_levels_ = 0;
-        std::size_t sample_page_count_ = 0;
-        std::size_t event_page_count_ = 0;
+        std::size_t sample_region_count_ = 0;
+        std::size_t event_chunk_count_ = 0;
 
     public:
-        [[nodiscard]] PersistedPageSnapshotVersion version() const noexcept
+        using VisitSampleRegion = void (*)(
+            void*, PersistedSampleRegion const&, GlobalIndexRange);
+        using VisitEventChunk = void (*)(
+            void*, PersistedEventChunk const&, GlobalIndexRange);
+
+        [[nodiscard]] PersistedDataVersion version() const noexcept
         {
             return version_;
         }
 
-        [[nodiscard]] std::size_t page_width() const noexcept
+        [[nodiscard]] std::size_t sample_region_count() const noexcept
         {
-            return page_width_;
+            return sample_region_count_;
         }
 
-        [[nodiscard]] std::size_t sample_page_count() const noexcept
+        [[nodiscard]] std::size_t event_chunk_count() const noexcept
         {
-            return sample_page_count_;
+            return event_chunk_count_;
         }
 
-        [[nodiscard]] std::size_t event_page_count() const noexcept
-        {
-            return event_page_count_;
-        }
-
-        [[nodiscard]] PersistedSamplePage const* find_sample_page(
+        [[nodiscard]] PersistedSampleRegion const* find_sample_region(
             PersistedOutputHandle output,
-            std::uint64_t page_index) const noexcept;
+            GlobalIndex index) const noexcept;
 
-        [[nodiscard]] PersistedEventPage const* find_event_page(
+        [[nodiscard]] PersistedEventChunk const* find_event_chunk(
             PersistedOutputHandle output,
-            std::uint64_t page_index) const noexcept;
+            GlobalIndex index) const noexcept;
 
-        // IndexCoverage and format metadata are assembled before publication. Tick
-        // readers only select immutable records and never allocate.
+        void for_each_sample_region(
+            PersistedOutputHandle output,
+            GlobalIndexRange range,
+            void* visitor_data,
+            VisitSampleRegion visitor) const;
+
+        void for_each_event_chunk(
+            PersistedOutputHandle output,
+            GlobalIndexRange range,
+            void* visitor_data,
+            VisitEventChunk visitor) const;
+
+        template<typename Fn>
+        void for_each_sample_region(
+            PersistedOutputHandle output,
+            GlobalIndexRange range,
+            Fn&& fn) const
+        {
+            using Visitor = std::remove_reference_t<Fn>;
+            for_each_sample_region(
+                output,
+                range,
+                std::addressof(fn),
+                +[](void* opaque,
+                    PersistedSampleRegion const& region,
+                    GlobalIndexRange intersection) {
+                    (*static_cast<Visitor*>(opaque))(region, intersection);
+                });
+        }
+
+        template<typename Fn>
+        void for_each_event_chunk(
+            PersistedOutputHandle output,
+            GlobalIndexRange range,
+            Fn&& fn) const
+        {
+            using Visitor = std::remove_reference_t<Fn>;
+            for_each_event_chunk(
+                output,
+                range,
+                std::addressof(fn),
+                +[](void* opaque,
+                    PersistedEventChunk const& chunk,
+                    GlobalIndexRange intersection) {
+                    (*static_cast<Visitor*>(opaque))(chunk, intersection);
+                });
+        }
+
         [[nodiscard]] IndexCoverage const* find_sample_coverage(
             PersistedOutputHandle output,
             ChannelLayout layout) const noexcept;
@@ -219,15 +255,15 @@ private:
 
 public:
     class Candidate {
-        friend class PersistedPageStore;
+        friend class PersistedDataStore;
 
-        PersistedPageStore* store_ = nullptr;
+        PersistedDataStore* store_ = nullptr;
         Snapshot const* base_ = nullptr;
-        PersistedPageSnapshotVersion base_version_{};
+        PersistedDataVersion base_version_{};
         std::unique_ptr<Snapshot> successor_{};
 
         Candidate(
-            PersistedPageStore& store,
+            PersistedDataStore& store,
             Snapshot const& base,
             std::unique_ptr<Snapshot> successor) noexcept;
 
@@ -244,27 +280,28 @@ public:
             return successor_ != nullptr;
         }
 
-        [[nodiscard]] PersistedPageSnapshotVersion base_version() const noexcept
+        [[nodiscard]] PersistedDataVersion base_version() const noexcept
         {
             return base_version_;
         }
 
-        [[nodiscard]] PersistedPageSnapshotVersion target_version() const noexcept;
-        [[nodiscard]] std::size_t page_width() const noexcept;
-
-        // Read-only access to the transaction-private successor. Background
-        // realizations may consume pages already staged into this candidate;
-        // the snapshot does not become globally visible until publish().
+        [[nodiscard]] PersistedDataVersion target_version() const noexcept;
         [[nodiscard]] Snapshot const& working_snapshot() const;
 
-        // Page and erasure handles are resolved by this candidate's owning
-        // store. Handles are opaque outside that store even though their
-        // process-wide values are never recycled.
-        void put(PersistedSamplePage page);
-        void put(PersistedEventPage page);
-        void erase_page(
+        // Overwrite replaces the retained value throughout record.range. A
+        // circular range is split at the signed-order seam without exposing
+        // that storage detail to the caller.
+        void overwrite(PersistedSampleRegion record);
+        void overwrite(PersistedEventChunk record);
+
+        void erase_sample(
             PersistedOutputHandle output,
-            std::uint64_t page_index);
+            GlobalIndexRange range,
+            ChannelLayout layout);
+        void erase_events(
+            PersistedOutputHandle output,
+            GlobalIndexRange range,
+            EventTypeId type);
         void erase_output(PersistedOutputHandle output);
     };
 
@@ -295,13 +332,13 @@ public:
     };
 
     class ReaderSlot {
-        friend class PersistedPageStore;
+        friend class PersistedDataStore;
 
-        PersistedPageStore* store_ = nullptr;
+        PersistedDataStore* store_ = nullptr;
         ReaderSlotState* state_ = nullptr;
 
         ReaderSlot(
-            PersistedPageStore& store,
+            PersistedDataStore& store,
             ReaderSlotState& state) noexcept;
         void reset() noexcept;
 
@@ -313,9 +350,6 @@ public:
         ReaderSlot(ReaderSlot&& other) noexcept;
         ReaderSlot& operator=(ReaderSlot&& other) noexcept;
 
-        // At most one ReaderPin may be live for a slot. Slot registration,
-        // movement and destruction remain non-realtime operations; registry
-        // mutation is synchronized with background reclamation.
         [[nodiscard]] ReaderPin pin() noexcept;
     };
 
@@ -339,36 +373,27 @@ private:
     void unregister_reader(ReaderSlotState& state) noexcept;
 
 public:
-    PersistedPageStore();
-    ~PersistedPageStore();
+    PersistedDataStore();
+    ~PersistedDataStore();
 
-    PersistedPageStore(PersistedPageStore const&) = delete;
-    PersistedPageStore& operator=(PersistedPageStore const&) = delete;
-    PersistedPageStore(PersistedPageStore&&) = delete;
-    PersistedPageStore& operator=(PersistedPageStore&&) = delete;
+    PersistedDataStore(PersistedDataStore const&) = delete;
+    PersistedDataStore& operator=(PersistedDataStore const&) = delete;
+    PersistedDataStore(PersistedDataStore&&) = delete;
+    PersistedDataStore& operator=(PersistedDataStore&&) = delete;
 
     [[nodiscard]] Candidate begin_candidate(
-        std::uint64_t target_semantic_version,
-        std::size_t page_width);
+        std::uint64_t target_semantic_version);
 
-    // Identity resolution may lock and grow the executor-owned registry. It is
-    // performed while preparing generation/background runtime objects, never
-    // from realtime page lookup.
     [[nodiscard]] PersistedOutputHandle resolve_output(
         PersistedOutputId const& output);
 
-    [[nodiscard]] PersistedPagePublishResult publish(Candidate&& candidate);
+    [[nodiscard]] PersistedDataPublishResult publish(Candidate&& candidate);
 
-    // Background/control transactions use this immediately before committing
-    // state derived from a pinned snapshot when they have no page candidate to
-    // publish. Candidate publication performs the same base-identity check.
     [[nodiscard]] bool is_current(Snapshot const& snapshot) const noexcept
     {
         return published_.load(std::memory_order_seq_cst) == &snapshot;
     }
 
-    // Registration and reclamation are control/background operations and may
-    // allocate or destroy storage. Acquiring/releasing a pin does neither.
     [[nodiscard]] ReaderSlot register_reader();
     [[nodiscard]] std::size_t reclaim_retired();
     [[nodiscard]] std::size_t retired_snapshot_count() const noexcept

@@ -1,7 +1,7 @@
 #pragma once
 
 // Public, execution-independent background sample/event port and callback API.
-// The executor owns coverage, requests, result storage, and cache pages; these
+// The executor owns coverage, requests, result storage, and retained records; these
 // views only expose the storage selected for one node invocation.
 
 #include <intravenous/coverage.h>
@@ -83,7 +83,7 @@ struct TockSampleOutputPort {
     }
 };
 
-// Event inputs may be storagely split across any number of cache pages. The
+// Event inputs may be physically split across any number of retained chunks. The
 // provider invokes the visitor synchronously in global timestamp order without
 // requiring a contiguous query-sized buffer.
 struct RandomAccessEventInputPort {

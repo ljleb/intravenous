@@ -1,5 +1,6 @@
 #pragma once
 
+#include <bit>
 #include <cstdint>
 #include <optional>
 #include <type_traits>
@@ -38,7 +39,7 @@ public:
 
     [[nodiscard]] constexpr signed_type signed_value() const noexcept
     {
-        return static_cast<signed_type>(bits_);
+        return std::bit_cast<signed_type>(bits_);
     }
 
     explicit constexpr operator signed_type() const noexcept
@@ -76,7 +77,7 @@ public:
     [[nodiscard]] constexpr difference_type signed_distance_to(
         GlobalIndex other) const noexcept
     {
-        return static_cast<difference_type>(forward_distance_to(other));
+        return std::bit_cast<difference_type>(forward_distance_to(other));
     }
 
     constexpr GlobalIndex& operator++() noexcept

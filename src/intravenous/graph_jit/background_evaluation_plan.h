@@ -43,9 +43,9 @@ enum class PlannedDeliveryMechanism : std::uint8_t {
     // Same-slice ordinary realtime transport. This is the only delivery kind
     // consumed by the sequential storage planner.
     tick_to_sequential,
-    // A background-produced page is available before Tick playback.
+    // Background-produced retained data is available before Tick playback.
     tock_to_sequential,
-    // Background-produced temporary or retained page materialization.
+    // Background-produced temporary or retained-data materialization.
     tock_to_random_access,
     // Finalized retained Tick data is a stored random-access boundary.
     persisted_tick_to_random_access,
@@ -68,11 +68,11 @@ enum class BackgroundDependencyKind : std::uint8_t {
 // own or be able to view; they do not imply that every target allocates another
 // copy of its source data. They are
 // intentionally independent: for example, a Tick/persisted source may require
-// both current-Tick visibility and canonical published pages.
+// both current-Tick visibility and canonical published retained data.
 struct PortStorageRequirements {
     bool current_tick = false;
     bool capture = false;
-    bool persisted_pages = false;
+    bool persisted_data = false;
     bool tick_sequential = false;
     bool tick_random_access = false;
     bool background_random_access = false;
@@ -182,7 +182,7 @@ struct BackgroundPortPlan {
     bool persisted_tick_output = false;
     bool replayed_tick_output = false;
 
-    // Sample-input neutral values are retained for missing-page playback at the
+    // Sample-input neutral values are retained for uncovered-position playback at the
     // Tick invocation boundary. Event inputs use absence-of-events as neutral.
     Sample sample_neutral_value{};
     // Authored Sequential-input history retained for callback-window playback.
@@ -285,11 +285,11 @@ struct BackgroundConnectionPlan {
 };
 
 // These are immutable port-storage decisions. The
-// executor supplies their requested range, selected page version and storage;
+// executor supplies their requested range, selected data version and storage;
 // those transaction-specific values never enter the compiled plan.
 enum class PortStorageKind : std::uint8_t {
     current_tick,
-    persisted_pages,
+    persisted_data,
     tick_sequential,
     tick_random_access,
     background,
@@ -308,7 +308,7 @@ struct PortStoragePlan {
     std::vector<PortStorageIndex> inputs{};
 
     // Source storage retains its authored port. Canonical persisted
-    // pages also bind the logical output port carrying stable identity.
+    // retained data also binds the logical output port carrying stable identity.
     std::optional<NodeBundlePortId> source_port{};
     std::optional<BackgroundPortIndex> output_port{};
 
@@ -321,7 +321,7 @@ struct PortStoragePlan {
     std::optional<EventMaterializationIndex> event_materialization{};
 };
 
-// One derived sample operation template. Range and selected input-page version
+// One derived sample operation template. Range and selected input-data version
 // are runtime keys; everything below is the compile-time portion of the sharing
 // key. Several consumers may reference one record only when these facts match.
 // Tick-time random-access storage may also serve an otherwise-identical
@@ -468,7 +468,7 @@ struct BackgroundRuntimePlan {
 
 // One Tick-root Random Access input slot. Storage candidates are retained in
 // preference order and already refer to compatible target representations.
-// Persisted-page slots can be bound directly from the callback's pinned root;
+// Persisted-data slots can be bound directly from the callback's pinned root;
 // tick_random_access slots are supplied by TickMaterializationSnapshot later.
 struct TickRandomAccessBindingPlan {
     BackgroundPortIndex port = 0;
@@ -477,7 +477,7 @@ struct TickRandomAccessBindingPlan {
 
 // One Tick-root Sequential input whose current-block storage is supplied by
 // background evaluation rather than the ordinary realtime graph. Persisted
-// pages and immutable Tick materializations are selected at the callback
+// retained data and immutable Tick materializations are selected at the callback
 // boundary. Mixed current_tick composites remain generated-root operations and
 // therefore do not occupy these external binding slots. The consuming port
 // retains its own sample neutral value.

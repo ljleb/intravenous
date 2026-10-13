@@ -37,14 +37,14 @@ ProducerCapacityPolicy producer_capacity_policy(
 GraphExecutor::RealtimeGeneration::RealtimeGeneration(
     CompiledGraph const& graph,
     ResourceContext const& resources,
-    PersistedPageStore& pages,
+    PersistedDataStore& data,
     AsyncCapacityManager& capacity_manager,
     RealtimeProducerCapacityConfig const& capacity_policy)
     : storage(graph.node_layout.create_storage(resources))
     , tick_invocation(
         graph.background_evaluation_plan,
         graph.project_generation,
-        pages,
+        data,
         graph.specialization.block_size)
 {
     auto const requirements = tick_invocation.producer_requirements();
@@ -138,14 +138,14 @@ bool GraphExecutor::BackgroundGeneration::release_closed_input_sentinels(
 GraphExecutor::ExecutionGeneration::ExecutionGeneration(
     std::shared_ptr<CompiledGraph const> compiled_graph,
     ResourceContext const& resources,
-    PersistedPageStore& pages,
+    PersistedDataStore& data,
     AsyncCapacityManager& capacity_manager,
     std::atomic<bool>& production_reservation_failed,
     RealtimeProducerCapacityConfig const& capacity_policy,
     AsyncWorkSignal& background_work_signal)
     : graph(std::move(compiled_graph))
     , realtime(
-        *graph, resources, pages, capacity_manager, capacity_policy)
+        *graph, resources, data, capacity_manager, capacity_policy)
     , background(*graph, resources, realtime, background_work_signal)
 {
     static_assert(std::atomic<ExecutionGeneration*>::is_always_lock_free);
@@ -256,10 +256,10 @@ GraphExecutor::ExecutionGeneration::successor() const noexcept
 }
 
 void GraphExecutor::ExecutionGeneration::prepare_initial_persisted_state(
-    PersistedPageStore& pages)
+    PersistedDataStore& data)
 {
     initial_persisted_state = RealtimePersistedState::prepare_initial(
-        graph->project_generation, pages);
+        graph->project_generation, data);
 }
 
 GraphExecutor::BackgroundExecutor::BackgroundExecutor(GraphExecutor& owner)
@@ -521,12 +521,12 @@ GraphExecutorStageResult GraphExecutor::stage(
     auto prepared = std::make_unique<ExecutionGeneration>(
         std::move(compiled_graph),
         resources_,
-        persisted_pages_,
+        persisted_data_,
         async_capacity_manager_,
         production_reservation_failed_,
         producer_capacity_,
         background_executor_.work_signal());
-    prepared->prepare_initial_persisted_state(persisted_pages_);
+    prepared->prepare_initial_persisted_state(persisted_data_);
     if (!realtime_active_) {
         prepared->initialize_first_generation();
     } else {
@@ -609,7 +609,7 @@ GraphExecutor::evaluate_generation(
         // realtime root happens before the domain transaction can commit.
         published_state = RealtimePersistedState::prepare(
             generation.graph->project_generation,
-            persisted_pages_,
+            persisted_data_,
             tick_materializations_);
     }
     background.select_inputs();
@@ -618,7 +618,7 @@ GraphExecutor::evaluate_generation(
         background.storage.buffer().data(),
         background.coverage,
         background.propagation,
-        persisted_pages_,
+        persisted_data_,
         tick_materializations_,
         BackgroundTransactionInputs{},
         background.input_routes,
@@ -738,7 +738,7 @@ GraphExecutor::reclaim_retired_snapshots_on_background()
     auto const states = realtime_persisted_state_.reclaim_returned();
     return {
         .realtime_persisted_states = states,
-        .persisted_pages = persisted_pages_.reclaim_retired(),
+        .persisted_data = persisted_data_.reclaim_retired(),
         .tick_materializations = tick_materializations_.reclaim_retired(),
     };
 }

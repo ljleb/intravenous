@@ -16,7 +16,7 @@ namespace {
 [[nodiscard]] bool contains_coverage(IndexCoverage const& outer,
                                      IndexCoverage const& inner) noexcept
 {
-    return std::ranges::all_of(inner.regions(), [&](GlobalIndexRange region) {
+    return std::ranges::all_of(inner, [&](GlobalIndexRange region) {
         return outer.contains(region);
     });
 }
@@ -25,7 +25,7 @@ namespace {
                                         std::size_t latency)
 {
     IndexCoverage result;
-    for (auto const region : source.regions()) {
+    for (auto const region : source) {
         result.include({
             .begin = region.begin.advanced_by(latency),
             .extent = region.extent,
@@ -211,7 +211,7 @@ struct BackgroundEvaluationCallFrame::BindingAdapter {
             BackgroundEventReadView const* selected = nullptr;
             GlobalIndex::extent_type selected_extent = 0;
             for (auto const& view : self.event_reads) {
-                for (auto const region : view.coverage().regions()) {
+                for (auto const region : view.coverage()) {
                     auto const offset = region.offset_of(cursor);
                     if (!offset) continue;
                     selected = &view;
@@ -447,7 +447,7 @@ void BackgroundEvaluationCallFrame::finalize_replay(void* opaque)
         IndexCoverage scheduled;
         for (auto const region : replay.regions) scheduled.include(region);
         auto const selected = scheduled & *adapter.coverage;
-        for (auto const region : selected.regions()) {
+        for (auto const region : selected) {
             for (GlobalIndex::extent_type offset = 0;
                  offset < region.extent; ++offset) {
                 auto const index = region.begin.advanced_by(offset);

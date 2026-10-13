@@ -310,7 +310,7 @@ add_library(intravenous_graph_jit OBJECT
     runtime/background_storage_realization.cpp
     runtime/graph_executor.cpp
     runtime/graph_jit.cpp
-    runtime/persisted_page_store.cpp
+    runtime/persisted_data_store.cpp
     runtime/realtime_persisted_state.cpp
     runtime/tick_invocation_frame.cpp
     runtime/tick_materialization_snapshot.cpp

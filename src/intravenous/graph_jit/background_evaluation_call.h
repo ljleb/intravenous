@@ -3,7 +3,7 @@
 // Runtime-owned data frame consumed by the generated background graph programs.
 // The call contains no topology: node indices and traversal order are fixed in
 // generated code from BackgroundEvaluationPlan. The surrounding transaction
-// owns every referenced coverage, page, port, accumulator and operation frame
+// owns every referenced coverage, retained-data root, port, accumulator and operation frame
 // for the duration of the call.
 
 #include <intravenous/graph/reflected_node_operations.h>
@@ -51,7 +51,7 @@ struct BackgroundNodeCall {
     // Generated evaluation code treats this as an opaque transaction-local
     // frame. The prepare/finalize callbacks interpret it and execute only the
     // compiler-placed operations belonging immediately before/after this node.
-    // It is never an executor, page-store or transaction pointer.
+    // It is never an executor, persisted-data-store or transaction pointer.
     void* operation_frame = nullptr;
     BackgroundOperationFunction prepare_operations = nullptr;
     BackgroundOperationFunction finalize_operations = nullptr;

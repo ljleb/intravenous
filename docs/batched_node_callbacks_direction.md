@@ -356,7 +356,8 @@ example:
 - resolved per-port block extents / invocation quantum;
 - execution/SCC phase facts that affect callback-visible semantics.
 
-Configured values, `State`, `TockState`, port addresses, and requested Coverage need
+Configured values, `State`, `TockState`, port addresses, and requested
+`IndexCoverage` need
 not be equal across lanes.
 
 Consequently, instances of the same C++ node type that resolve to different FFT sizes,
@@ -451,8 +452,9 @@ do_propagate_reverse_coverage_batch(...);
 do_tock_coverage_batch(...);
 ```
 
-Each lane still carries its own exact changed/required/requested Coverage, bindings,
-and Tock state. A batch callback is not one shared Coverage over several nodes.
+Each lane still carries its own exact changed/required/requested `IndexCoverage`,
+bindings, and Tock state. A batch callback is not one shared `IndexCoverage` over
+several nodes.
 
 The existing transaction invariant generalizes from "one callback per implicated node"
 to:

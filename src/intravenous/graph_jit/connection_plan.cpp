@@ -2775,8 +2775,8 @@ void join_capabilities(
         || source.current_tick;
     target.capture = target.capture
         || source.capture;
-    target.persisted_pages = target.persisted_pages
-        || source.persisted_pages;
+    target.persisted_data = target.persisted_data
+        || source.persisted_data;
     target.tick_sequential = target.tick_sequential
         || source.tick_sequential;
     target.tick_random_access = target.tick_random_access
@@ -2804,7 +2804,7 @@ PortStorageRequirements storage_capabilities_for(
 {
     PortStorageRequirements result;
     if (retention == OutputRetention::persisted) {
-        result.persisted_pages = true;
+        result.persisted_data = true;
         result.capture =
             production == PlannedSourceProduction::tick;
     }
@@ -2841,7 +2841,7 @@ PortStorageRequirements target_capabilities_for(
 {
     auto result = storage_capabilities_for(production, retention, delivery);
     // Capture is an intrinsic source-side transfer obligation. A target may
-    // consume the resulting published pages, but it never owns another copy of
+    // consume the resulting published data, but it never owns another copy of
     // the producer's capture staging.
     result.capture = false;
     return result;
@@ -2985,7 +2985,7 @@ void plan_port_atoms(
             auto const production = source_production(config.production);
             PortStorageRequirements intrinsic;
             if (config.retention == OutputRetention::persisted) {
-                intrinsic.persisted_pages = true;
+                intrinsic.persisted_data = true;
                 intrinsic.capture =
                     production == PlannedSourceProduction::tick;
             } else if (production == PlannedSourceProduction::tock
@@ -3284,7 +3284,7 @@ void plan_port_atoms(
             auto const production = source_production(config.production);
             PortStorageRequirements intrinsic;
             if (config.retention == OutputRetention::persisted) {
-                intrinsic.persisted_pages = true;
+                intrinsic.persisted_data = true;
                 intrinsic.capture =
                     production == PlannedSourceProduction::tick;
             } else if (production == PlannedSourceProduction::tock
@@ -3506,7 +3506,7 @@ void plan_sample_groups(
     // Tick storage may still coalesce the atoms of one authored output
     // port because OutputPort writes that port as one operation; all incidence
     // and capability distinctions remain retained in BackgroundEvaluationPlan for derived
-    // materialization/page ports.
+    // materialization/persisted-data ports.
     std::vector<NodeBundlePortId> connected_source_ports;
     for (auto const& atom : plan.background.sample_source_subsets) {
         if (!atom.connection_indices.empty()) {

@@ -14,6 +14,24 @@
 
 namespace {
 
+iv::GlobalIndex index(std::int64_t value)
+{
+    return iv::GlobalIndex::from_signed(value);
+}
+
+iv::GlobalIndexRange range(std::int64_t begin, std::int64_t end)
+{
+    return iv::GlobalIndexRange::from_begin_and_end(index(begin), index(end));
+}
+
+iv::IndexCoverage coverage(
+    std::initializer_list<std::pair<std::int64_t, std::int64_t>> ranges)
+{
+    iv::IndexCoverage result;
+    for (auto const [begin, end] : ranges) result.include(range(begin, end));
+    return result;
+}
+
 iv::graph_jit::StableOutputPortId stable_output(
     iv::PortKind kind,
     char const* name)
@@ -79,15 +97,15 @@ TEST(BackgroundStorageRealization, OwnsAddressStableSparseTransactionStorage)
         },
     };
 
-    iv::PersistedPageStore pages;
+    iv::PersistedDataStore data;
     iv::BackgroundStorageRealization realization{
         plan,
-        pages,
+        data,
         {
             .generation = 9,
             .storage_coverage = {
-                iv::Coverage{{{10, 12}, {20, 21}}},
-                iv::Coverage{{{10, 12}}},
+                coverage({{10, 12}, {20, 21}}),
+                coverage({{10, 12}}),
             },
         }};
 
@@ -100,31 +118,31 @@ TEST(BackgroundStorageRealization, OwnsAddressStableSparseTransactionStorage)
     ASSERT_NE(event_read, nullptr);
     ASSERT_NE(event_write, nullptr);
 
-    EXPECT_TRUE(sample_write->write(10, 0, 1.0f));
-    EXPECT_TRUE(sample_write->write(10, 1, 2.0f));
-    EXPECT_TRUE(sample_write->write(20, 0, 3.0f));
-    EXPECT_FALSE(sample_write->write(15, 0, 4.0f));
-    EXPECT_FLOAT_EQ(sample_read->at(10, 0).value, 1.0f);
-    EXPECT_FLOAT_EQ(sample_read->at(10, 1).value, 2.0f);
-    EXPECT_FLOAT_EQ(sample_read->at(20, 0).value, 3.0f);
+    EXPECT_TRUE(sample_write->write(index(10), 0, 1.0f));
+    EXPECT_TRUE(sample_write->write(index(10), 1, 2.0f));
+    EXPECT_TRUE(sample_write->write(index(20), 0, 3.0f));
+    EXPECT_FALSE(sample_write->write(index(15), 0, 4.0f));
+    EXPECT_FLOAT_EQ(sample_read->at(index(10), 0).value, 1.0f);
+    EXPECT_FLOAT_EQ(sample_read->at(index(10), 1).value, 2.0f);
+    EXPECT_FLOAT_EQ(sample_read->at(index(20), 0).value, 3.0f);
 
     EXPECT_TRUE(event_write->write({
-        .time = 10,
+        .time = index(10),
         .value = iv::TriggerEvent{},
     }));
     EXPECT_TRUE(event_write->write({
-        .time = 11,
+        .time = index(11),
         .value = iv::TriggerEvent{},
     }));
     EXPECT_FALSE(event_write->write({
-        .time = 11,
+        .time = index(11),
         .value = iv::TriggerEvent{},
     }));
-    std::vector<iv::EventTime> times;
-    event_read->for_each({10, 12}, [&](iv::TimedEvent const& event) {
+    std::vector<iv::GlobalIndex> times;
+    event_read->for_each(range(10, 12), [&](iv::TimedEvent const& event) {
         times.push_back(event.time);
     });
-    EXPECT_EQ(times, (std::vector<iv::EventTime>{10, 11}));
+    EXPECT_EQ(times, (std::vector<iv::GlobalIndex>{index(10), index(11)}));
 
     EXPECT_TRUE(realization.seal().has_value());
     EXPECT_TRUE(realization.sealed());
@@ -274,17 +292,17 @@ TEST(
         .random_access_event_count = 1,
     }};
 
-    iv::PersistedPageStore pages;
+    iv::PersistedDataStore data;
     BackgroundStorageRealization realization{
         plan,
-        pages,
+        data,
         {
             .generation = 4,
             .storage_coverage = {
-                Coverage{{{10, 12}}},
-                Coverage{{{10, 12}}},
-                Coverage{{{10, 12}}},
-                Coverage{{{10, 12}}},
+                coverage({{10, 12}}),
+                coverage({{10, 12}}),
+                coverage({{10, 12}}),
+                coverage({{10, 12}}),
             },
             .produce_storage = {true, true, true, true},
         }};
@@ -296,26 +314,26 @@ TEST(
     ASSERT_NE(event, nullptr);
     ASSERT_NE(sequential_sample, nullptr);
     ASSERT_NE(sequential_event, nullptr);
-    EXPECT_TRUE(sample->write(10, 0, 1.0f));
-    EXPECT_TRUE(sample->write(11, 0, 2.0f));
-    EXPECT_TRUE(sample->write(10, 1, 10.0f));
-    EXPECT_TRUE(sample->write(11, 1, 20.0f));
-    EXPECT_TRUE(event->write({.time = 11, .value = TriggerEvent{}}));
-    EXPECT_TRUE(sequential_sample->write(10, 0, 30.0f));
-    EXPECT_TRUE(sequential_sample->write(11, 0, 40.0f));
+    EXPECT_TRUE(sample->write(index(10), 0, 1.0f));
+    EXPECT_TRUE(sample->write(index(11), 0, 2.0f));
+    EXPECT_TRUE(sample->write(index(10), 1, 10.0f));
+    EXPECT_TRUE(sample->write(index(11), 1, 20.0f));
+    EXPECT_TRUE(event->write({.time = index(11), .value = TriggerEvent{}}));
+    EXPECT_TRUE(sequential_sample->write(index(10), 0, 30.0f));
+    EXPECT_TRUE(sequential_sample->write(index(11), 0, 40.0f));
     EXPECT_TRUE(
-        sequential_event->write({.time = 10, .value = TriggerEvent{}}));
+        sequential_event->write({.time = index(10), .value = TriggerEvent{}}));
     ASSERT_TRUE(realization.seal().has_value());
 
     auto frozen = realization.make_tick_materialization_snapshot(
-        4, 9, PersistedPageSnapshotVersion{.semantic = 9, .page = 2});
+        4, 9, PersistedDataVersion{.semantic = 9, .revision = 2});
     ASSERT_TRUE(frozen.has_value())
         << (frozen ? std::string{} : frozen.error());
     ASSERT_NE(*frozen, nullptr);
     EXPECT_EQ((*frozen)->generation(), 4u);
     EXPECT_EQ((*frozen)->semantic_version(), 9u);
-    EXPECT_EQ((*frozen)->pages(),
-        (PersistedPageSnapshotVersion{.semantic = 9, .page = 2}));
+    EXPECT_EQ((*frozen)->data_version(),
+        (PersistedDataVersion{.semantic = 9, .revision = 2}));
     auto const* frozen_sample = (*frozen)->find_sample(0);
     auto const* frozen_event = (*frozen)->find_event(1);
     auto const* frozen_sequential_sample = (*frozen)->find_sample(2);
@@ -324,28 +342,28 @@ TEST(
     ASSERT_NE(frozen_event, nullptr);
     ASSERT_NE(frozen_sequential_sample, nullptr);
     ASSERT_NE(frozen_sequential_event, nullptr);
-    EXPECT_FLOAT_EQ(frozen_sample->at(10, 0).value, 1.0f);
-    EXPECT_FLOAT_EQ(frozen_sample->at(11, 1).value, 20.0f);
-    EXPECT_FLOAT_EQ(frozen_sequential_sample->at(10, 0).value, 30.0f);
-    EXPECT_FLOAT_EQ(frozen_sequential_sample->at(11, 0).value, 40.0f);
-    std::vector<EventTime> times;
+    EXPECT_FLOAT_EQ(frozen_sample->at(index(10), 0).value, 1.0f);
+    EXPECT_FLOAT_EQ(frozen_sample->at(index(11), 1).value, 20.0f);
+    EXPECT_FLOAT_EQ(frozen_sequential_sample->at(index(10), 0).value, 30.0f);
+    EXPECT_FLOAT_EQ(frozen_sequential_sample->at(index(11), 0).value, 40.0f);
+    std::vector<GlobalIndex> times;
     frozen_event->for_each(
         10,
         12,
         &times,
         +[](void* opaque, TimedEvent const& value) {
-            static_cast<std::vector<EventTime>*>(opaque)->push_back(value.time);
+            static_cast<std::vector<GlobalIndex>*>(opaque)->push_back(value.time);
         });
-    EXPECT_EQ(times, (std::vector<EventTime>{11}));
+    EXPECT_EQ(times, (std::vector<GlobalIndex>{11}));
     times.clear();
     frozen_sequential_event->for_each(
         10,
         12,
         &times,
         +[](void* opaque, TimedEvent const& value) {
-            static_cast<std::vector<EventTime>*>(opaque)->push_back(value.time);
+            static_cast<std::vector<GlobalIndex>*>(opaque)->push_back(value.time);
         });
-    EXPECT_EQ(times, (std::vector<EventTime>{10}));
+    EXPECT_EQ(times, (std::vector<GlobalIndex>{10}));
 
     TickMaterializationStore store;
     auto reader = store.register_reader();
@@ -356,7 +374,7 @@ TEST(
         EXPECT_EQ(store.promote(std::make_unique<TickMaterializationSnapshot>(
             4,
             10,
-            PersistedPageSnapshotVersion{.semantic = 9, .page = 2},
+            PersistedDataVersion{.semantic = 9, .revision = 2},
             std::vector<TickMaterializedSampleInput>{},
             std::vector<TickMaterializedEventInput>{})), 2u);
         EXPECT_EQ(store.retired_snapshot_count(), 2u);
@@ -366,39 +384,36 @@ TEST(
     EXPECT_EQ(store.reclaim_retired(), 1u);
 }
 
-TEST(BackgroundStorageRealization, ReadsTypedPublishedPagesWithoutCopyingThem)
+TEST(BackgroundStorageRealization, ReadsTypedPublishedDataWithoutCopyingIt)
 {
-    iv::PersistedPageStore store;
+    iv::PersistedDataStore store;
     auto reader = store.register_reader();
     auto const sample_id = stable_output(iv::PortKind::sample, "samples");
     auto const event_id = stable_output(iv::PortKind::event, "events");
     auto const sample_output = store.resolve_output(sample_id);
     auto const event_output = store.resolve_output(event_id);
-    auto candidate = store.begin_candidate(6, 4);
-    candidate.put(iv::PersistedSamplePage{
+    auto candidate = store.begin_candidate(6);
+    candidate.overwrite(iv::PersistedSampleRegion{
         .output = sample_output,
-        .page_index = 0,
-        .domain = iv::Coverage{{{0, 4}}},
+        .range = range(0, 4),
         .layout = {
             .channel_type = iv::ChannelTypeId::stereo,
             .sample_layout = iv::SampleStreamLayout::planar,
         },
-        .packing = iv::PersistedSamplePacking::dense,
         .values = {1, 2, 3, 4, 10, 20, 30, 40},
     });
-    candidate.put(iv::PersistedEventPage{
+    candidate.overwrite(iv::PersistedEventChunk{
         .output = event_output,
-        .page_index = 1,
-        .domain = iv::Coverage{{{4, 8}}},
+        .range = range(4, 8),
         .type = iv::EventTypeId::trigger,
         .events = {
-            {.time = 1, .value = iv::TriggerEvent{}},
-            {.time = 3, .value = iv::TriggerEvent{}},
+            {.time = index(5), .value = iv::TriggerEvent{}},
+            {.time = index(7), .value = iv::TriggerEvent{}},
         },
     });
     ASSERT_EQ(
         store.publish(std::move(candidate)),
-        iv::PersistedPagePublishResult::published);
+        iv::PersistedDataPublishResult::published);
     auto pin = reader.pin();
 
     iv::graph_jit::BackgroundEvaluationPlan plan;
@@ -421,7 +436,7 @@ TEST(BackgroundStorageRealization, ReadsTypedPublishedPagesWithoutCopyingThem)
     plan.storage.ports = {
         {
             .kind = iv::PortKind::sample,
-            .storage = iv::graph_jit::PortStorageKind::persisted_pages,
+            .storage = iv::graph_jit::PortStorageKind::persisted_data,
             .output_port = 0,
             .sample_layout = {
                 .channel_type = iv::ChannelTypeId::stereo,
@@ -431,7 +446,7 @@ TEST(BackgroundStorageRealization, ReadsTypedPublishedPagesWithoutCopyingThem)
         },
         {
             .kind = iv::PortKind::event,
-            .storage = iv::graph_jit::PortStorageKind::persisted_pages,
+            .storage = iv::graph_jit::PortStorageKind::persisted_data,
             .output_port = 1,
             .event_type = iv::EventTypeId::trigger,
         },
@@ -455,8 +470,8 @@ TEST(BackgroundStorageRealization, ReadsTypedPublishedPagesWithoutCopyingThem)
         {
             .generation = 20,
             .storage_coverage = {
-                iv::Coverage{{{0, 4}}},
-                iv::Coverage{{{4, 8}}},
+                coverage({{0, 4}}),
+                coverage({{4, 8}}),
             },
             .published = &pin.snapshot(),
         }};
@@ -467,30 +482,30 @@ TEST(BackgroundStorageRealization, ReadsTypedPublishedPagesWithoutCopyingThem)
     ASSERT_NE(events, nullptr);
     EXPECT_EQ(realization.sample_write(0), nullptr);
     EXPECT_EQ(realization.event_write(1), nullptr);
-    EXPECT_FLOAT_EQ(samples->at(2, 0).value, 3.0f);
-    EXPECT_FLOAT_EQ(samples->at(2, 1).value, 30.0f);
+    EXPECT_FLOAT_EQ(samples->at(index(2), 0).value, 3.0f);
+    EXPECT_FLOAT_EQ(samples->at(index(2), 1).value, 30.0f);
 
-    std::vector<iv::EventTime> times;
-    events->for_each({4, 8}, [&](iv::TimedEvent const& event) {
+    std::vector<iv::GlobalIndex> times;
+    events->for_each(range(4, 8), [&](iv::TimedEvent const& event) {
         times.push_back(event.time);
     });
-    EXPECT_EQ(times, (std::vector<iv::EventTime>{5, 7}));
+    EXPECT_EQ(times, (std::vector<iv::GlobalIndex>{index(5), index(7)}));
     ASSERT_NE(realization.persisted_output_handle(0), nullptr);
     EXPECT_EQ(*realization.persisted_output_handle(0), sample_output);
     EXPECT_TRUE(realization.seal().has_value());
 
-    iv::BackgroundStorageRealization missing_page{
+    iv::BackgroundStorageRealization missing_data{
         plan,
         store,
         {
             .generation = 20,
             .storage_coverage = {
-                iv::Coverage{{{0, 5}}},
-                iv::Coverage{},
+                coverage({{0, 5}}),
+                iv::IndexCoverage{},
             },
             .published = &pin.snapshot(),
         }};
-    auto missing_result = missing_page.seal();
+    auto missing_result = missing_data.seal();
     ASSERT_FALSE(missing_result.has_value());
     EXPECT_NE(
         missing_result.error().find("missing selected published coverage"),
@@ -510,7 +525,7 @@ TEST(BackgroundStorageRealization, GivesProducedPersistedStoragePrivateOwners)
     }};
     plan.storage.ports = {{
         .kind = iv::PortKind::sample,
-        .storage = iv::graph_jit::PortStorageKind::persisted_pages,
+        .storage = iv::graph_jit::PortStorageKind::persisted_data,
         .output_port = 0,
         .sample_layout = {
             .channel_type = iv::ChannelTypeId::mono,
@@ -524,37 +539,36 @@ TEST(BackgroundStorageRealization, GivesProducedPersistedStoragePrivateOwners)
         .storage = {0},
     }};
 
-    iv::PersistedPageStore store;
+    iv::PersistedDataStore store;
     iv::BackgroundStorageRealization realization{
         plan,
         store,
         {
             .generation = 4,
-            .storage_coverage = {iv::Coverage{{{100, 102}}}},
+            .storage_coverage = {coverage({{100, 102}})},
         }};
 
     ASSERT_NE(realization.sample_read(0), nullptr);
     ASSERT_NE(realization.sample_write(0), nullptr);
-    EXPECT_TRUE(realization.sample_write(0)->write(100, 0, 8.0f));
-    EXPECT_TRUE(realization.sample_write(0)->write(101, 0, 9.0f));
-    EXPECT_FLOAT_EQ(realization.sample_read(0)->at(100, 0).value, 8.0f);
+    EXPECT_TRUE(realization.sample_write(0)->write(index(100), 0, 8.0f));
+    EXPECT_TRUE(realization.sample_write(0)->write(index(101), 0, 9.0f));
+    EXPECT_FLOAT_EQ(realization.sample_read(0)->at(index(100), 0).value, 8.0f);
     ASSERT_NE(realization.persisted_output_handle(0), nullptr);
     auto const output_handle = store.resolve_output(output);
     EXPECT_EQ(*realization.persisted_output_handle(0), output_handle);
     EXPECT_TRUE(realization.seal().has_value());
-    auto candidate = store.begin_candidate(12, 4);
-    ASSERT_TRUE(realization.stage_persisted_pages(candidate).has_value());
+    auto candidate = store.begin_candidate(12);
+    ASSERT_TRUE(realization.stage_persisted_data(candidate).has_value());
     ASSERT_EQ(store.publish(std::move(candidate)),
-              iv::PersistedPagePublishResult::published);
+              iv::PersistedDataPublishResult::published);
     auto reader = store.register_reader();
     auto pin = reader.pin();
-    auto const* page = pin->find_sample_page(output_handle, 25);
-    ASSERT_NE(page, nullptr);
-    EXPECT_EQ(page->domain, (iv::Coverage{{{100, 102}}}));
-    EXPECT_EQ(page->packing, iv::PersistedSamplePacking::coverage_packed);
-    ASSERT_EQ(page->values.size(), 2);
-    EXPECT_FLOAT_EQ(page->values[0].value, 8.0f);
-    EXPECT_FLOAT_EQ(page->values[1].value, 9.0f);
+    auto const* region = pin->find_sample_region(output_handle, index(100));
+    ASSERT_NE(region, nullptr);
+    EXPECT_EQ(region->range, range(100, 102));
+    ASSERT_EQ(region->values.size(), 2);
+    EXPECT_FLOAT_EQ(region->values[0].value, 8.0f);
+    EXPECT_FLOAT_EQ(region->values[1].value, 9.0f);
 }
 
 TEST(BackgroundStorageRealization, SealingRejectsMissingExternalDirectViews)
@@ -576,12 +590,12 @@ TEST(BackgroundStorageRealization, SealingRejectsMissingExternalDirectViews)
     }};
     plan.runtime.node_operations = {{.before = {0}}};
 
-    iv::PersistedPageStore pages;
+    iv::PersistedDataStore data;
     iv::BackgroundStorageRealization realization{
         plan,
-        pages,
+        data,
         {
-            .storage_coverage = {iv::Coverage{{{0, 1}}}},
+            .storage_coverage = {coverage({{0, 1}})},
         }};
     iv::BackgroundStorageOperationFrame operation_frame{
         realization,
@@ -592,7 +606,7 @@ TEST(BackgroundStorageRealization, SealingRejectsMissingExternalDirectViews)
     EXPECT_FALSE(realization.execute_operation(0).has_value());
 
     struct External {
-        iv::Coverage coverage{{{0, 1}}};
+        iv::IndexCoverage coverage = ::coverage({{0, 1}});
         std::array<std::size_t, 1> channels{0};
         iv::Sample value{5.0f};
     } external;
@@ -605,7 +619,7 @@ TEST(BackgroundStorageRealization, SealingRejectsMissingExternalDirectViews)
         },
         .channels = external.channels,
         .read_sample = +[](void const* opaque,
-                           iv::SampleIndex,
+                           iv::GlobalIndex,
                            std::size_t) noexcept {
             return static_cast<External const*>(opaque)->value;
         },
@@ -620,7 +634,7 @@ TEST(BackgroundStorageRealization, SealingRejectsMissingExternalDirectViews)
     EXPECT_FALSE(realization.execute_operation(0).has_value());
     EXPECT_NO_THROW(
         iv::BackgroundStorageOperationFrame::finalize_callback(&operation_frame));
-    EXPECT_FLOAT_EQ(realization.sample_read(0)->at(0, 0).value, 5.0f);
+    EXPECT_FLOAT_EQ(realization.sample_read(0)->at(index(0), 0).value, 5.0f);
     EXPECT_THROW(
         realization.bind_sample(0, *realization.sample_read(0)),
         std::logic_error);
@@ -710,36 +724,36 @@ TEST(BackgroundStorageRealization, ExecutesHeterogeneousSampleProjectionPlan)
         .operation = 0,
     }};
 
-    iv::PersistedPageStore pages;
+    iv::PersistedDataStore data;
     iv::BackgroundStorageRealization realization{
         plan,
-        pages,
+        data,
         {
             .storage_coverage = {
-                iv::Coverage{{{9, 11}}},
-                iv::Coverage{{{10, 12}}},
-                iv::Coverage{{{10, 12}}},
+                coverage({{9, 11}}),
+                coverage({{10, 12}}),
+                coverage({{10, 12}}),
             },
         }};
     auto const* stereo = realization.sample_write(0);
     auto const* mono = realization.sample_write(1);
     ASSERT_NE(stereo, nullptr);
     ASSERT_NE(mono, nullptr);
-    ASSERT_TRUE(stereo->write(9, 0, 2.0f));
-    ASSERT_TRUE(stereo->write(9, 1, 6.0f));
-    ASSERT_TRUE(stereo->write(10, 0, 4.0f));
-    ASSERT_TRUE(stereo->write(10, 1, 8.0f));
-    ASSERT_TRUE(mono->write(10, 0, 9.0f));
-    ASSERT_TRUE(mono->write(11, 0, 10.0f));
+    ASSERT_TRUE(stereo->write(index(9), 0, 2.0f));
+    ASSERT_TRUE(stereo->write(index(9), 1, 6.0f));
+    ASSERT_TRUE(stereo->write(index(10), 0, 4.0f));
+    ASSERT_TRUE(stereo->write(index(10), 1, 8.0f));
+    ASSERT_TRUE(mono->write(index(10), 0, 9.0f));
+    ASSERT_TRUE(mono->write(index(11), 0, 10.0f));
 
     ASSERT_TRUE(realization.seal().has_value());
     ASSERT_TRUE(realization.execute_operation(0).has_value());
     auto const* output = realization.sample_read(2);
     ASSERT_NE(output, nullptr);
-    EXPECT_FLOAT_EQ(output->at(10, 0).value, 4.0f);
-    EXPECT_FLOAT_EQ(output->at(10, 1).value, 9.0f);
-    EXPECT_FLOAT_EQ(output->at(11, 0).value, 6.0f);
-    EXPECT_FLOAT_EQ(output->at(11, 1).value, 10.0f);
+    EXPECT_FLOAT_EQ(output->at(index(10), 0).value, 4.0f);
+    EXPECT_FLOAT_EQ(output->at(index(10), 1).value, 9.0f);
+    EXPECT_FLOAT_EQ(output->at(index(11), 0).value, 6.0f);
+    EXPECT_FLOAT_EQ(output->at(index(11), 1).value, 10.0f);
 }
 
 TEST(BackgroundStorageRealization, ConvertsAndStablyMergesEventSources)
@@ -803,26 +817,26 @@ TEST(BackgroundStorageRealization, ConvertsAndStablyMergesEventSources)
         },
     };
 
-    iv::PersistedPageStore pages;
+    iv::PersistedDataStore data;
     iv::BackgroundStorageRealization realization{
         plan,
-        pages,
+        data,
         {
             .storage_coverage = {
-                iv::Coverage{{{0, 4}}},
-                iv::Coverage{{{0, 4}}},
-                iv::Coverage{{{0, 4}}},
+                coverage({{0, 4}}),
+                coverage({{0, 4}}),
+                coverage({{0, 4}}),
             },
         }};
     ASSERT_TRUE(realization.event_write(0)->write({
-        .time = 1,
+        .time = index(1),
         .value = iv::MidiEvent{
             .bytes = {0x90, 60, 100},
             .size = 3,
         },
     }));
     ASSERT_TRUE(realization.event_write(1)->write({
-        .time = 1,
+        .time = index(1),
         .value = iv::MidiEvent{
             .bytes = {0x80, 60, 0},
             .size = 3,
@@ -834,7 +848,7 @@ TEST(BackgroundStorageRealization, ConvertsAndStablyMergesEventSources)
     ASSERT_TRUE(realization.execute_operation(1).has_value());
     std::vector<bool> boundaries;
     realization.event_read(2)->for_each(
-        {0, 4},
+        range(0, 4),
         [&](iv::TimedEvent const& event) {
             boundaries.push_back(std::get<iv::BoundaryEvent>(event.value)
                 .is_begin);
@@ -853,24 +867,24 @@ TEST(BackgroundStorageRealization, ResolvesAnonymousGenerationLocalOutputHandle)
     }};
     plan.storage.ports = {{
         .kind = iv::PortKind::event,
-        .storage = iv::graph_jit::PortStorageKind::persisted_pages,
+        .storage = iv::graph_jit::PortStorageKind::persisted_data,
         .output_port = 0,
         .event_type = iv::EventTypeId::empty,
     }};
 
-    iv::PersistedPageStore pages;
+    iv::PersistedDataStore data;
     iv::BackgroundStorageRealization realization{
         plan,
-        pages,
+        data,
         {
             .generation = 77,
-            .storage_coverage = {iv::Coverage{}},
+            .storage_coverage = {iv::IndexCoverage{}},
         }};
     auto const* output = realization.persisted_output_handle(0);
     ASSERT_NE(output, nullptr);
     EXPECT_EQ(
         *output,
-        pages.resolve_output(iv::GenerationLocalPersistedOutputId{
+        data.resolve_output(iv::GenerationLocalPersistedOutputId{
             .generation = 77,
             .port = 0,
             .kind = iv::PortKind::event,
@@ -1016,20 +1030,20 @@ TEST(BackgroundEvaluationCallFrame, OwnsOperationFramesAndTockBindings)
     plan.runtime.node_operations.resize(1);
     plan.runtime.node_replay_invocations.resize(1);
 
-    iv::PersistedPageStore pages;
+    iv::PersistedDataStore data;
     iv::BackgroundStorageRealization realization{
         plan,
-        pages,
+        data,
         {
             .storage_coverage =
                 {
-                    iv::Coverage{{{9, 11}}},
-                    iv::Coverage{{{10, 12}}},
-                    iv::Coverage{{{10, 12}}},
+                    coverage({{9, 11}}),
+                    coverage({{10, 12}}),
+                    coverage({{10, 12}}),
                 },
         }};
-    ASSERT_TRUE(realization.sample_write(0)->write(9, 0, 3.0f));
-    ASSERT_TRUE(realization.sample_write(0)->write(10, 0, 4.0f));
+    ASSERT_TRUE(realization.sample_write(0)->write(index(9), 0, 3.0f));
+    ASSERT_TRUE(realization.sample_write(0)->write(index(10), 0, 4.0f));
     ASSERT_TRUE(realization.seal().has_value());
 
     iv::BackgroundEvaluationCallFrame frame{
@@ -1038,9 +1052,9 @@ TEST(BackgroundEvaluationCallFrame, OwnsOperationFramesAndTockBindings)
         {
             .binding_coverage =
                 {
-                    iv::Coverage{{{10, 12}}},
-                    iv::Coverage{{{10, 12}}},
-                    iv::Coverage{{{10, 12}}},
+                    coverage({{10, 12}}),
+                    coverage({{10, 12}}),
+                    coverage({{10, 12}}),
                 },
             .sample_rate = 96000,
         }};
@@ -1054,19 +1068,19 @@ TEST(BackgroundEvaluationCallFrame, OwnsOperationFramesAndTockBindings)
     ASSERT_EQ(node.tock.outputs.size(), 1);
     ASSERT_EQ(node.tock.event_outputs.size(), 1);
     EXPECT_EQ(node.tock.sample_rate, 96000);
-    EXPECT_FLOAT_EQ(node.tock.inputs.data()[0].at(10).value, 3.0f);
-    node.tock.outputs.data()[0].write(11, 0, iv::Sample{8.0f});
-    EXPECT_FLOAT_EQ(realization.sample_read(1)->at(11, 0).value, 8.0f);
+    EXPECT_FLOAT_EQ(node.tock.inputs.data()[0].at(index(10)).value, 3.0f);
+    node.tock.outputs.data()[0].write(index(11), 0, iv::Sample{8.0f});
+    EXPECT_FLOAT_EQ(realization.sample_read(1)->at(index(11), 0).value, 8.0f);
     node.tock.event_outputs.data()[0].write({
-        .time = 10,
+        .time = index(10),
         .value = iv::TriggerEvent{},
     });
-    std::vector<iv::EventTime> event_times;
-    realization.event_read(2)->for_each({10, 12},
+    std::vector<iv::GlobalIndex> event_times;
+    realization.event_read(2)->for_each(range(10, 12),
                                         [&](iv::TimedEvent const& event) {
                                             event_times.push_back(event.time);
                                         });
-    EXPECT_EQ(event_times, (std::vector<iv::EventTime>{10}));
+    EXPECT_EQ(event_times, (std::vector<iv::GlobalIndex>{index(10)}));
 }
 
 TEST(BackgroundEvaluationCallFrame, ReservesAndValidatesReplaySchedule)
@@ -1198,25 +1212,26 @@ TEST(BackgroundEvaluationCallFrame, ReservesAndValidatesReplaySchedule)
     }};
     plan.runtime.node_replay_invocations = {0};
 
-    iv::PersistedPageStore pages;
+    iv::PersistedDataStore data;
     iv::BackgroundStorageRealization realization{
         plan,
-        pages,
-        {.storage_coverage = std::vector<iv::Coverage>(
-             4, iv::Coverage{{{0, 10}}})}};
-    ASSERT_TRUE(realization.sample_write(0)->write(0, 0, 3.0f));
+        data,
+        {.storage_coverage = std::vector<iv::IndexCoverage>(
+             4, coverage({{0, 10}}))}};
+    ASSERT_TRUE(realization.sample_write(0)->write(index(0), 0, 3.0f));
     ASSERT_TRUE(realization.seal().has_value());
     iv::BackgroundEvaluationCallFrame frame{
         plan,
         realization,
-        {.binding_coverage = std::vector<iv::Coverage>(
-             4, iv::Coverage{{{0, 10}}})}};
+        {.binding_coverage = std::vector<iv::IndexCoverage>(
+             4, coverage({{0, 10}}))}};
     EXPECT_EQ(frame.replay_sample_inputs(0).size(), 1);
     EXPECT_EQ(frame.replay_event_inputs(0).size(), 1);
     EXPECT_EQ(frame.replay_sample_outputs(0).size(), 1);
     EXPECT_EQ(frame.replay_event_outputs(0).size(), 1);
-    EXPECT_FALSE(frame.set_replay_regions(0, {{0, 5}}).has_value());
-    ASSERT_TRUE(frame.set_replay_regions(0, {{0, 4}, {8, 10}}).has_value());
+    EXPECT_FALSE(frame.set_replay_regions(0, {range(0, 5)}).has_value());
+    ASSERT_TRUE(frame.set_replay_regions(
+        0, {range(0, 4), range(8, 10)}).has_value());
     ASSERT_TRUE(frame.seal().has_value());
     auto const& replay = frame.nodes().front().replay;
     EXPECT_EQ(replay.sample_input_bindings.size(), 1);
@@ -1225,7 +1240,7 @@ TEST(BackgroundEvaluationCallFrame, ReservesAndValidatesReplaySchedule)
     EXPECT_EQ(replay.event_output_bindings.size(), 1);
     ASSERT_EQ(frame.nodes().front().replay_regions.size(), 2);
     EXPECT_EQ(frame.nodes().front().replay_regions.data()[1],
-              (iv::IndexRegion{8, 10}));
+              range(8, 10));
 
     auto& node = frame.nodes().front();
     ASSERT_NE(node.prepare_operations, nullptr);
@@ -1242,7 +1257,7 @@ TEST(BackgroundEvaluationCallFrame, ReservesAndValidatesReplaySchedule)
     output_values[8 & (sample_output.storage.frame_capacity - 1)] =
         iv::Sample{9.0f};
     node.finalize_operations(node.operation_frame);
-    EXPECT_FLOAT_EQ(realization.sample_read(2)->at(8, 0).value, 9.0f);
+    EXPECT_FLOAT_EQ(realization.sample_read(2)->at(index(8), 0).value, 9.0f);
 }
 
 TEST(
@@ -1320,14 +1335,14 @@ TEST(
     }};
     plan.runtime.node_replay_invocations = {0};
 
-    iv::PersistedPageStore pages;
+    iv::PersistedDataStore data;
     iv::BackgroundStorageRealization realization{
         plan,
-        pages,
+        data,
         {
             .storage_coverage = {
-                iv::Coverage{{{0, 4}}},
-                iv::Coverage{{{4, 8}}},
+                coverage({{0, 4}}),
+                coverage({{4, 8}}),
             },
         }};
     ASSERT_TRUE(realization.seal().has_value());
@@ -1336,11 +1351,12 @@ TEST(
         realization,
         {
             .binding_coverage = {
-                iv::Coverage{{{0, 4}}},
-                iv::Coverage{{{4, 8}}},
+                coverage({{0, 4}}),
+                coverage({{4, 8}}),
             },
         }};
-    ASSERT_TRUE(frame.set_replay_regions(0, {{0, 4}, {4, 8}}).has_value());
+    ASSERT_TRUE(frame.set_replay_regions(
+        0, {range(0, 4), range(4, 8)}).has_value());
     ASSERT_TRUE(frame.seal().has_value());
 
     auto& node = frame.nodes().front();
@@ -1357,9 +1373,9 @@ TEST(
     }
     node.finalize_operations(node.operation_frame);
     ASSERT_TRUE(frame.validate_evaluation().has_value());
-    EXPECT_FLOAT_EQ(realization.sample_read(0)->at(3, 0).value, 3.0f);
-    EXPECT_FLOAT_EQ(realization.sample_read(1)->at(4, 0).value, 14.0f);
-    EXPECT_FLOAT_EQ(realization.sample_read(1)->at(7, 0).value, 17.0f);
+    EXPECT_FLOAT_EQ(realization.sample_read(0)->at(index(3), 0).value, 3.0f);
+    EXPECT_FLOAT_EQ(realization.sample_read(1)->at(index(4), 0).value, 14.0f);
+    EXPECT_FLOAT_EQ(realization.sample_read(1)->at(index(7), 0).value, 17.0f);
 }
 
 } // namespace

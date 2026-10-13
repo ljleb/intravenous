@@ -8,29 +8,29 @@ namespace iv {
 
 RealtimePersistedState::RealtimePersistedState(
     std::uint64_t generation,
-    PersistedPageStore::ReaderSlot page_slot,
+    PersistedDataStore::ReaderSlot data_slot,
     TickMaterializationStore::ReaderSlot materialization_slot) noexcept
     : generation_(generation)
-    , page_slot_(std::move(page_slot))
+    , data_slot_(std::move(data_slot))
     , materialization_slot_(std::move(materialization_slot))
 {}
 
 RealtimePersistedState::RealtimePersistedState(
     std::uint64_t generation,
-    PersistedPageStore::ReaderSlot page_slot) noexcept
+    PersistedDataStore::ReaderSlot data_slot) noexcept
     : generation_(generation)
-    , page_slot_(std::move(page_slot))
+    , data_slot_(std::move(data_slot))
 {}
 
 std::unique_ptr<RealtimePersistedState> RealtimePersistedState::prepare(
     std::uint64_t generation,
-    PersistedPageStore& pages,
+    PersistedDataStore& data,
     TickMaterializationStore& materializations)
 {
     return std::unique_ptr<RealtimePersistedState>{
         new RealtimePersistedState{
             generation,
-            pages.register_reader(),
+            data.register_reader(),
             materializations.register_reader(),
         }};
 }
@@ -38,10 +38,10 @@ std::unique_ptr<RealtimePersistedState> RealtimePersistedState::prepare(
 std::unique_ptr<RealtimePersistedState>
 RealtimePersistedState::prepare_initial(
     std::uint64_t generation,
-    PersistedPageStore& pages)
+    PersistedDataStore& data)
 {
     auto state = std::unique_ptr<RealtimePersistedState>{
-        new RealtimePersistedState{generation, pages.register_reader()}};
+        new RealtimePersistedState{generation, data.register_reader()}};
     state->owned_materialization_ =
         std::make_unique<TickMaterializationSnapshot>();
     return state;
@@ -50,11 +50,11 @@ RealtimePersistedState::prepare_initial(
 bool RealtimePersistedState::capture_initial() noexcept
 {
     if (captured_ || !owned_materialization_) return false;
-    pages_ = page_slot_.pin();
-    auto const version = pages_.snapshot().version();
+    data_ = data_slot_.pin();
+    auto const version = data_.snapshot().version();
     owned_materialization_->generation_ = generation_;
     owned_materialization_->semantic_version_ = version.semantic;
-    owned_materialization_->pages_ = version;
+    owned_materialization_->data_version_ = version;
     captured_ = true;
     return true;
 }
@@ -66,16 +66,16 @@ RealtimePersistedState::capture_current()
         return std::unexpected(
             "realtime persisted state has already captured its roots");
     }
-    pages_ = page_slot_.pin();
+    data_ = data_slot_.pin();
     materialization_ = materialization_slot_.pin();
     captured_ = true;
     if (materialization().generation() != generation_) {
         return std::unexpected(
             "realtime persisted state has an incompatible materialization generation");
     }
-    if (materialization().pages() != pages().version()) {
+    if (materialization().data_version() != data().version()) {
         return std::unexpected(
-            "realtime persisted state page and materialization roots disagree");
+            "realtime persisted state data and materialization roots disagree");
     }
     return {};
 }

@@ -5,33 +5,38 @@ without expanding the normative execution-model documents. Semantic contracts in
 linked design documents continue to govern implementation choices._
 
 The actor split, independently pinned producer-queue prefixes, generation draining,
-and ownership model are not presently the main scaling concern. The largest defect is
-that immutable persisted payloads sit behind a globally linear, non-persistent index.
-The next cluster of costs comes from per-value work where the data model already exposes
-page, ring, or contiguous spans.
+and ownership model are not presently the main scaling concern. Persisted data has now
+moved from a globally linear page index to structurally shared per-output range trees.
+The next cluster of costs comes from per-value work where the data model already
+exposes region, chunk, ring, or contiguous spans.
 
 The governing performance invariant is:
 
 > Realtime work must not grow with retained recording duration, and publishing a
-> successor must scale with changed pages and changed output metadata rather than with
+> successor must scale with changed records and changed output metadata rather than with
 > the complete persisted history.
 
 ## Ordered implementation work
 
-1. Replace the persisted snapshot representation as one coherent unit:
+1. **In progress in the active circular-index/store migration:** replace the persisted
+   snapshot representation as one coherent unit:
    - resolve stable and generation-local output identities off realtime into compact,
-     non-recycled handles; snapshots and realtime/background page access carry only
+     non-recycled handles; snapshots and realtime/background data access carry only
      those handles, never semantic identity variants or strings;
    - index each store-local handle slot through an immutable path-copy radix directory,
      so output selection performs a bounded sequence of direct digits rather than an
      output-count-dependent comparison search;
-   - give each output a persistent/path-copy page index keyed by page position;
-   - structurally share unchanged output directories, page subtrees, and page payloads;
-   - update coverage/layout/type metadata from the changed leaves instead of rebuilding
-     metadata from every retained page;
+   - give each output a persistent/path-copy balanced range index keyed in explicit
+     signed `GlobalIndex` order;
+   - structurally share unchanged output directories, range subtrees, and record payloads;
+   - retain per-output `IndexCoverage` in its immutable path-copied interval tree so
+     one write/erase does not copy every historical coverage run;
    - make lookup, mutation, successor publication, and retired-root destruction
      independent of total retained recording duration except for nodes actually changed
-     or made unreachable.
+     or made unreachable. The output directory, record trees, region/chunk payloads,
+     span playback, and persistent `IndexCoverage` metadata are implemented in the
+     active working tree; compiler/test verification of the coherent migration remains
+     before this item is complete.
 2. Complete semantic transition planning. Cutover work must be bounded, not necessarily
    copy-free. Preserve inherited state by reading frozen predecessor storage directly
    where appropriate, or by using compact transition-only carries/materializations.
@@ -51,15 +56,16 @@ The governing performance invariant is:
    boundary. Materialized sample histories and converted/indexed event
    representations remain transition-only until their bounded reconstruction is
    implemented.
-3. Convert realtime persisted playback and recording to page/span operations. This
-   includes clearing only requested sample windows, one lookup per relevant page/span,
-   ring-wrap copy runs, retained event-window cursors, direct materialization indexing,
-   and cached materialization coverage offsets/frame counts.
+3. Complete realtime persisted playback and recording span operations. Persisted
+   playback now clears only requested sample windows, traverses relevant sample
+   regions, copies ring-wrap runs, and binary-searches clipped event chunks. Realtime
+   recording still needs bulk ring capture; direct materialization indexing and cached
+   materialization coverage offsets/frame counts also remain.
 4. Make `BackgroundGeneration` own a sealed reusable runtime skeleton: reader slots,
    storage realization objects, binding adapters, node/operation frames, reusable replay
    buffers, and pre-indexed static routes. Transactions supply new root pins,
    coverage/selections, produced payload views, and logical reset state without
-   reconstructing that topology. Stream queued block chains into bulk page construction
+   reconstructing that topology. Stream queued block chains into bulk region construction
    and merge sorted event ranges rather than staging and sorting individual values.
 5. Replace the capacity manager's periodic producer scan with low-watermark and returned-
    block edge notifications, and replace per-output work wakes with one wake for all
@@ -77,23 +83,24 @@ The governing performance invariant is:
   runtime skeleton must not let failed or stale transaction state leak into the next
   transaction.
 - Current realtime queue blocks return through generation-owned producer reserves. A
-  persisted page cannot retain one of those blocks after that reserve dies. Zero-copy
-  queue-block-to-page promotion therefore requires an explicit transfer to executor-level
-  ownership (or equivalent page backing), not merely retaining the existing block.
+  persisted record cannot retain one of those blocks after that reserve dies. Zero-copy
+  queue-block-to-record promotion therefore requires an explicit transfer to
+  executor-level ownership (or equivalent record backing), not merely retaining the
+  existing block.
 - Retired-root reclamation must be serviced internally or guaranteed by the host, and
   opportunistic background reclamation must have a bounded budget so it cannot create an
   unbounded actor stall.
 
 ## Known costs covered by this roadmap
 
-- linear persisted page and coverage lookup;
-- linear page insertion, erasure, and mutation deduplication;
-- full page-pointer copying, full metadata reconstruction, and history-sized reference
+- linear persisted record and coverage lookup;
+- linear record insertion, erasure, and mutation deduplication;
+- full record-pointer copying, full metadata reconstruction, and history-sized reference
   release for every persisted snapshot successor;
 - per-frame/per-channel persisted playback and per-value realtime capture;
 - retained-event-ring rescans for every callback;
 - linear Tick-materialization lookup and repeated coverage-prefix walks;
-- per-value sample page reconstruction and concatenate-plus-sort event page rebuilding;
+- per-value sample-region reconstruction and concatenate-plus-sort event-chunk rebuilding;
 - synchronous unbounded graph-cutover copying;
 - per-transaction reader registration and reconstruction of background realization and
   call-frame topology;

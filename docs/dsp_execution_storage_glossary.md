@@ -318,10 +318,12 @@ integer sample coordinate is specifically meant.
 ### Coverage
 
 **Coverage** is the exact set of global positions for which an output semantically
-exists and may legally be requested. `Coverage` is the current C++ type name
-for this concept.
+exists and may legally be requested. `IndexCoverage` is the C++ positional-set type
+for this concept; the distinct data-bearing `SampleCoverage` type is described by the
+random-access sample direction.
 
-Coverage is independent of page boundaries and storage placement.
+Positional coverage is independent of persisted record boundaries and storage
+placement.
 
 ### Requested coverage
 
@@ -332,9 +334,9 @@ completion operation requires to be available or computed.
 
 A **changed region** is a sound region superset whose semantic value or coverage may
 have changed. It may be exact, but exactness is an optimization rather than a semantic
-requirement. Every actually affected position must be included. Stored-page
-invalidation must not widen the already-reported downstream semantic change merely
-because a whole page becomes locally invalid.
+requirement. Every actually affected position must be included. Retained-record
+replacement must not widen the already-reported downstream semantic change merely
+because a physical record is split or replaced.
 
 ### Invalidation
 
@@ -389,12 +391,12 @@ version.
 
 A **background evaluation transaction** is one coherent unit of invalidation-root
 and demand-root collection, forward/reverse propagation, and required Tock/replay
-evaluation against one coherent semantic/page-version view. When persisted state is
+evaluation against one coherent semantic/data-version view. When persisted state is
 changed, the same transaction completes and publishes the corresponding candidate.
 
 Forward/reverse propagation produces **prepared coverage**. It is not authoritative
 until final commit promotes that coverage together with the successor persisted-state/
-page snapshot and the domain-specific release of selected producer-queue prefixes.
+data snapshot and the domain-specific release of selected producer-queue prefixes.
 Failure, cancellation, or stale-base rejection promotes none of that committed state.
 
 This term describes atomic evaluation/publication semantics; it does not imply a
@@ -410,16 +412,16 @@ A **semantic version** identifies the graph/configuration/resource/sample-rate
 semantics under which values are meaningful. Do not qualify this as a coverage or
 storage version: it is intentionally broader.
 
-### Page version
+### Data version
 
-A **page version** identifies one immutable published page-backed output view
-produced by a completed background evaluation transaction. Use the singular phrase **page
-version** and the conceptual pair `(semantic_version, page_version)`.
+A **data version** identifies one immutable published persisted-data root produced by
+a completed background evaluation transaction. Use the conceptual pair
+`(semantic_version, data_version)`.
 
 ### Candidate / published
 
 A **candidate** is a not-yet-published successor being completed under a target
-semantic/page version. **Published** data is the immutable version externally or
+semantic/data version. **Published** data is the immutable version externally or
 sequentially readable as the current completed result.
 
 Incomplete persisted candidates are not exposed as partially valid published
@@ -444,24 +446,28 @@ steady realizations, each with its own canonical `NodeStorage`. It contains real
 execution, packed for locality and low callback overhead.
 
 It is not the owner of `TockState`, background workspaces, dynamically sized
-persisted-output pages, or recording capture backlogs. `TockState` is separately
+persisted-output data, or recording capture backlogs. `TockState` is separately
 owned background acceleration state and may use dynamic allocation.
 
-### Persisted page / persisted-page store
+### Persisted data store, sample region, and event chunk
 
-A **persisted page** is the canonical retained/versioned storage unit for persisted
-sample or event output data. **All persisted outputs use the same persisted-page
-store abstraction regardless of whether their producer is Tick or Tock.** Production
-mode changes how pages are filled; it does not create another retained-data read
-path.
+The **persisted data store** is the canonical retained/versioned owner for every
+persisted sample or event output. Tick and Tock production feed the same store and
+publish one coherent immutable root; production mode does not create another retained
+read path.
 
-Page validity is version-specific. An older readable persisted page may remain pinned
-while a successor candidate is incomplete or invalid. Backing storage may still be
-RAM, mmap/file-backed storage, immutable chunks, compression, or another page-store
-backend, but those are implementations of the same persisted-page abstraction rather
-than distinct semantic representations.
+A **persisted sample region** is one immutable contiguous sample payload for an
+explicit `GlobalIndexRange` and channel layout. A **persisted event chunk** is one
+immutable explicit range plus its complete ordered event set, which may be empty.
+Neither record is a fixed-width page, and neither record boundary is determined by the
+realtime root block size.
 
-Do not call an ephemeral intermediate a persisted page.
+Validity is version-specific. An older readable root may remain pinned while a
+successor candidate is incomplete or stale. Backing storage may be RAM,
+mmap/file-backed storage, immutable chunks, compression, or another retained-data
+backend without changing the sample-region/event-chunk semantics.
+
+Do not call an ephemeral intermediate persisted data.
 
 ### Transaction-local materialization
 
@@ -471,12 +477,12 @@ that transaction.
 
 For a Tock/ephemeral or replayed Tick/ephemeral result feeding a background-only
 Random Access consumer, the preliminary implementation may use a
-**transaction-local page-backed materialization** so the consumer receives the
+**transaction-local materialization** so the consumer receives the
 required addressable representation. If Random Access occurs during Tick execution,
 the addressable representation must instead be materialized and selected before the
 callback. Replayable Tick work may avoid or fuse materialization where the consumer
-contract permits it. A transaction-local page-backed materialization is not a
-persisted page and carries no retention guarantee beyond the transaction/readers
+contract permits it. A transaction-local materialization is not persisted data and
+carries no retention guarantee beyond the transaction/readers
 that require it.
 
 ### Materialized sequential data / materialized addressable window
@@ -491,17 +497,17 @@ requires Random Access, the materialization must instead provide an immutable
 **materialized addressable window**. The latter can also provide sequential slices, so
 one addressable materialization may satisfy both uses for the same source subset.
 Persisted sources normally need no separate playback copy: Sequential consumers can
-view the appropriate pinned persisted pages directly.
+view the appropriate pinned persisted sample regions or event chunks directly.
 
 ### Tick materialization snapshot
 
 A **`TickMaterializationSnapshot`** is the immutable callback-lifetime owner/view set
 for Tick-visible ephemeral advance materialization. It is selected at the root
 boundary and remains alive through every callback reader. It is not a published
-persisted-page version, has no persisted retention guarantee, and must not be called a
+persisted-data version, has no persisted retention guarantee, and must not be called a
 "published materialization." The concrete snapshot records its compiled generation
-and source persisted-page version. Background packages it with that exact immutable
-page root in one latest-version mailbox owner; realtime adopts only a compatible pair
+and source persisted-data version. Background packages it with that exact immutable
+data root in one latest-version mailbox owner; realtime adopts only a compatible pair
 at a pass boundary. Promotion and adoption relink already-built owners without
 allocation, and explicit non-audio reclamation destroys returned pair owners.
 
@@ -605,16 +611,17 @@ generation.
 
 The preliminary Random Access implementation reads one immutable selected/pinned
 published representation. For persisted outputs that representation is the
-persisted-page snapshot. Pending candidates, current Tick buffers, and pending realtime-produced queue blocks do not extend Random Access coverage or visibility.
+persisted-data snapshot. Pending candidates, current Tick buffers, and pending realtime-produced queue blocks do not extend Random Access coverage or visibility.
 A Tick callback therefore cannot observe a newly produced Tick/persisted block until
-a successor page version containing it has been published and a later callback/read
+a successor data version containing it has been published and a later callback/read
 context selects that version.
 
 A future optimization may overlay a bounded recent set of newly produced queue
-payloads on top of the published persisted-page snapshot so a later node in the
+payloads on top of the published persisted-data snapshot so a later node in the
 **same Tick** can Random-Access newly finalized data. That optimization requires a
-same-Tick producer-to-consumer dependency, a source-selection branch (published page
-versus recent queued payload; ordered merge for events), and pass-boundary-safe
+same-Tick producer-to-consumer dependency, a source-selection branch (published
+persisted region/chunk versus recent queued payload; ordered merge for events), and
+pass-boundary-safe
 ownership/reclamation. It is deliberately not part of the preliminary implementation.
 
 ### Port atom / incidence partition
@@ -681,7 +688,7 @@ Do not use **live** as a synonym for Tick, Sequential, or audio-thread execution
 - Use **random access** as a noun and **random-access** as an adjective.
 - Use **persisted** for the authored output-retention contract and **persistent**
   for unrelated storage/process lifetime.
-- Use **page version**, not "pages version."
+- Use **data version** for the coherent immutable persisted-data root.
 - Prefer **global position/range** when discussing coordinate semantics; use
   **sample index** when the integer sample coordinate itself matters.
 - Do not infer thread placement from a port contract. State **audio thread** or

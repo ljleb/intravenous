@@ -222,7 +222,7 @@ std::optional<PortStorageIndex> storage_for_delivery(
             return find_storage(
                 plan,
                 storage_indices,
-                PortStorageKind::persisted_pages);
+                PortStorageKind::persisted_data);
         }
         return find_storage(
             plan,
@@ -239,7 +239,7 @@ std::optional<PortStorageIndex> storage_for_delivery(
         return find_storage(
             plan,
             storage_indices,
-            PortStorageKind::persisted_pages);
+            PortStorageKind::persisted_data);
     }
     if (delivery == PlannedDeliveryMechanism::tick_to_sequential) {
         return find_storage(
@@ -426,9 +426,9 @@ std::expected<BackgroundStoragePlan, std::string> build_background_storage_plan(
         if (source.storage.current_tick && port_is_background) {
             append(PortStorageKind::current_tick, true);
         }
-        if (source.storage.persisted_pages) {
+        if (source.storage.persisted_data) {
             append(
-                PortStorageKind::persisted_pages,
+                PortStorageKind::persisted_data,
                 true);
         }
         if (source.storage.tick_random_access) {
@@ -469,9 +469,9 @@ std::expected<BackgroundStoragePlan, std::string> build_background_storage_plan(
         if (source.storage.current_tick && port_is_background) {
             append(PortStorageKind::current_tick, true);
         }
-        if (source.storage.persisted_pages) {
+        if (source.storage.persisted_data) {
             append(
-                PortStorageKind::persisted_pages,
+                PortStorageKind::persisted_data,
                 true);
         }
         if (source.storage.tick_random_access) {
@@ -1191,7 +1191,7 @@ std::expected<void, std::string> validate_background_runtime_plan(
                     && plan.storage.ports[storage_index].storage
                         != PortStorageKind::background
                     && plan.storage.ports[storage_index].storage
-                        != PortStorageKind::persisted_pages)
+                        != PortStorageKind::persisted_data)
                 || (binding.direction == PortDirection::output
                     && plan.storage.ports[storage_index].storage
                         == PortStorageKind::current_tick)) {
@@ -1214,7 +1214,7 @@ std::expected<void, std::string> validate_background_runtime_plan(
             return std::unexpected(
                 "GraphJit background storage input index is out of range");
         }
-        if (storage.storage != PortStorageKind::persisted_pages) continue;
+        if (storage.storage != PortStorageKind::persisted_data) continue;
         if (!storage.output_port || *storage.output_port >= plan.ports.size()) {
             return std::unexpected(
                 "GraphJit persisted background storage has no output identity");
@@ -1447,7 +1447,7 @@ std::expected<void, std::string> finalize_background_runtime_plan(
             auto const kind = storage.ports[index].storage;
             auto const compatible = direction == PortDirection::input
                 ? kind == PortStorageKind::background
-                    || kind == PortStorageKind::persisted_pages
+                    || kind == PortStorageKind::persisted_data
                 : kind != PortStorageKind::current_tick;
             if (compatible && !std::ranges::contains(target, index)) {
                 target.push_back(index);
@@ -1574,7 +1574,7 @@ std::expected<void, std::string> finalize_background_runtime_plan(
         auto const [latest_source, earliest_target] =
             source_and_target_positions(connections);
         auto const place_before = storage_kind == PortStorageKind::background
-                || storage_kind == PortStorageKind::persisted_pages
+                || storage_kind == PortStorageKind::persisted_data
             ? earliest_target
             : std::optional<std::pair<std::size_t, BackgroundNodeIndex>>{};
         if (!place_before && !latest_source) return;
@@ -1685,7 +1685,7 @@ std::expected<void, std::string> validate_tick_runtime_plan(
             if (storage >= plan.storage.ports.size()
                 || plan.storage.ports[storage].kind != kind
                 || (plan.storage.ports[storage].storage
-                        != PortStorageKind::persisted_pages
+                        != PortStorageKind::persisted_data
                     && plan.storage.ports[storage].storage
                         != PortStorageKind::tick_random_access)) {
                 return std::unexpected(
@@ -1714,7 +1714,7 @@ std::expected<void, std::string> validate_tick_runtime_plan(
             if (storage >= plan.storage.ports.size()
                 || plan.storage.ports[storage].kind != kind
                 || (plan.storage.ports[storage].storage
-                        != PortStorageKind::persisted_pages
+                        != PortStorageKind::persisted_data
                     && plan.storage.ports[storage].storage
                         != PortStorageKind::tick_sequential
                     && plan.storage.ports[storage].storage
@@ -1747,7 +1747,7 @@ std::expected<void, std::string> validate_tick_runtime_plan(
         auto const has_persisted_storage = std::ranges::any_of(
             plan.storage.ports,
             [&](PortStoragePlan const& storage) {
-                return storage.storage == PortStorageKind::persisted_pages
+                return storage.storage == PortStorageKind::persisted_data
                     && storage.kind == kind
                     && storage.output_port == binding.port;
             });
@@ -1907,7 +1907,7 @@ std::expected<void, std::string> finalize_tick_runtime_plan(
         for (auto const storage : candidates) {
             if (storage >= plan.storage.ports.size()) continue;
             auto const kind = plan.storage.ports[storage].storage;
-            auto const compatible = kind == PortStorageKind::persisted_pages
+            auto const compatible = kind == PortStorageKind::persisted_data
                 || kind == PortStorageKind::tick_random_access
                 || (sequential && kind == PortStorageKind::tick_sequential);
             if (compatible

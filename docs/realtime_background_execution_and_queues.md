@@ -86,7 +86,7 @@ persisted-output mappings, migration entries and node/event routing tables.
 - the active and optional pending `ExecutionGeneration*` realtime realization;
 - canonical realtime `NodeStorage` and graph-revision state migration;
 - whole-pass transition/steady activation;
-- the active immutable persisted-state/page version selected for the current pass;
+- the active immutable persisted-state/data version selected for the current pass;
 - at most the newest pending compatible persisted-state pointer received from
   background;
 - realtime invocation/materialization bindings; and
@@ -108,7 +108,7 @@ versions.
 - the current background generation and ordered generation cutovers already performed
   by realtime;
 - background-only mutable evaluation state and optional `TockState`;
-- canonical persisted-page/recording state and immutable publication roots;
+- canonical persisted-data/recording state and immutable publication roots;
 - one pending queue per producer as required by the compiled generation;
 - pre-sized descriptors used to pin the current finite workload;
 - background coverage/propagation workspaces and transaction-local candidates; and
@@ -148,8 +148,8 @@ already identify their routed output and global timeline window; decoding them d
 their exact coverage and changed-coverage roots. No externally supplied evaluation
 request is required to discover or process those records.
 
-Transaction context is actor-owned. Stored-page width comes from the active compiled
-generation's fixed root block size. The target semantic version comes from the
+Transaction context is actor-owned. Persisted-data record boundaries are independent
+of the active generation's fixed root block size. The target semantic version comes from the
 background actor's selected semantic environment. Mutation and demand roots come from
 the actor's selected inputs. A private transaction-local aggregate may hold those facts,
 but it is not a public execution command and it is never preserved for compatibility.
@@ -165,7 +165,7 @@ intermediate revision may instead be temporarily incomplete or fail to compile w
 self-contained architectural piece is being replaced; code that cannot support the
 final execution model must be deleted rather than disguised as a temporary API.
 
-Explicit reclamation of retired persisted-state roots, persisted pages and Tick
+Explicit reclamation of retired persisted-state roots, persisted data records and Tick
 materializations is submitted to that same worker, keeping publication/retired-owner
 mutation single-threaded. Reader-slot registration and unregistration may still occur
 during off-realtime generation staging or destruction, so those registries synchronize
@@ -457,9 +457,9 @@ Tick storage window but do not expand a recording item beyond the addressed bloc
 
 ## 14. Background -> realtime persisted state is a latest-version mailbox
 
-Persisted-state/page publications are complete immutable versions, not accumulating
-work items. Realtime normally needs only the newest compatible version available at a
-pass boundary.
+Persisted-data/materialization publications are complete immutable versions, not
+accumulating work items. Realtime normally needs only the newest compatible version
+available at a pass boundary.
 
 Therefore the background-to-realtime path is a mailbox, not a queue:
 
@@ -480,8 +480,8 @@ At a legal realtime pass boundary, realtime takes the newest compatible pending
 pointer and makes it active. The current pass never changes underneath execution.
 
 The initial persisted-state owner for a staged successor is allocated and registers
-its page reader during staging, but it does **not** pin the canonical page root then.
-The cutover pins the newest canonical page root and completes the successor's empty
+its persisted-data reader during staging, but it does **not** pin the canonical data root then.
+The cutover pins the newest canonical data root and completes the successor's empty
 generation-local materialization without allocation, then installs that root directly
 as realtime-active state before publishing the successor pointer to the background
 actor, rather than publishing the root through the background mailbox.

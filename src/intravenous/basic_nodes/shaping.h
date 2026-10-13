@@ -148,7 +148,7 @@ namespace iv {
 
         struct State {
             double anchor_phase = 0.0;
-            size_t anchor_index = 0;
+            GlobalIndex anchor_index{};
             double frequency = 0.0;
             bool initialized = false;
         };
@@ -258,7 +258,8 @@ namespace iv {
             // Re-anchor if frequency changed.
             if (f != state.frequency) {
                 double const elapsed =
-                    static_cast<double>(ctx.index - state.anchor_index);
+                    static_cast<double>(
+                        state.anchor_index.forward_distance_to(ctx.index));
 
                 state.anchor_phase = wrap(
                     state.anchor_phase +
@@ -270,7 +271,8 @@ namespace iv {
             }
 
             auto const elapsed =
-                static_cast<double>(ctx.index - state.anchor_index);
+                static_cast<double>(
+                    state.anchor_index.forward_distance_to(ctx.index));
 
             auto const phase =
                 state.anchor_phase +

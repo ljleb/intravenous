@@ -1,9 +1,10 @@
 # Random-Access Port Data, Audio Value Types, And Input Contract Direction
 
 _Status: planned port-contract and storage direction. This document supersedes the
-page-based random-access sample representation and the requirement that `Coverage`
-regions be disjoint in the older coverage/storage notes. The checked-in runtime still
-contains page-backed implementations while this migration is in progress._
+page-based random-access sample representation and the requirement that data-bearing
+sample coverage regions be disjoint in the older coverage/storage notes. The
+canonical persisted store has moved to explicit sample regions/event chunks; the
+node-facing `SampleRegion`/`SampleCoverage` API remains to be implemented._
 
 Related documents:
 
@@ -673,10 +674,13 @@ Consequences include:
 - FFT/convolution and similar consumers can require Region input and pass its
   contiguous storage directly to libraries that require it.
 
-The exact owner/versioning/publication representation that replaces the current
-persisted page store is still an implementation-design problem. This direction only
-requires that its node-facing/random-access semantic unit is Region/Coverage rather
-than fixed pages.
+The executor-owned `PersistedDataStore` provides the accepted retained
+owner/versioning/publication boundary. It publishes one coherent immutable root whose
+sample outputs are indexed contiguous `PersistedSampleRegion` records and whose event
+outputs are indexed explicit-range `PersistedEventChunk` records. That internal
+retained representation does not preempt the node-facing `SampleRegion` and
+`SampleCoverage` API defined here: the store converts/binds retained sample regions to
+that port shape at the runtime boundary.
 
 ## 10. Region count is evaluation data, not realtime layout data
 
@@ -699,11 +703,14 @@ coverage/content changes
 
 This does not change `NodeLayout` or force `NodeStorage` replacement.
 
-## 11. Migration boundary from the checked-in implementation
+## 11. Migration boundary from the current implementation
 
-The current repository still contains page-backed persisted/random-access sample
-storage and APIs designed around disjoint canonical Coverage. Those are implementation
-checkpoints, not the target contract described here.
+The current repository's canonical persisted store now uses contiguous
+`PersistedSampleRegion` records and explicit-range `PersistedEventChunk` records.
+Node-facing random-access sample APIs still use positional `IndexCoverage` plus
+per-value access rather than the `SampleRegion`/`SampleCoverage` contract described
+here. That remaining boundary is the next representation migration; the
+store-internal record type is not a substitute for the authored port API.
 
 Migration should preserve the broader architectural invariants already established:
 
@@ -715,5 +722,6 @@ Migration should preserve the broader architectural invariants already establish
 - connection validation rejects requirements the producer cannot satisfy directly
   unless an explicit adaptation/recording/materialization policy exists.
 
-The concrete replacement for current page-store ownership/version publication can be
-designed separately without reintroducing pages into the authored node contract.
+Persisted-data ownership/version publication remains an executor concern. Binding it
+to the future node-facing views must not reintroduce storage record boundaries into
+the authored port contract.

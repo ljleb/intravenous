@@ -15,20 +15,51 @@ Completed internal milestones:
 - signed-canonical and range-relative ordering are explicit types;
 - the old positional `Coverage` type has been replaced at its definition by modular
   `IndexCoverage` set algebra;
+- `IndexCoverage` stores canonical ranges in an immutable path-copied AVL tree, so
+  copied snapshots share coverage metadata and finite mutations replace only paths to
+  ranges they touch; its ordered iterator uses bounded stack storage and does not
+  allocate;
 - Tick port windows, node Tick callback indices, generated-root callback indices,
-  capture callback indices, feedback retention, event merging, and reload-transfer
-  indices are being migrated to modular operations; and
+  capture callback indices, feedback retention, event merging, reload-transfer
+  indices, background transaction ingestion, and background storage realization use
+  modular operations;
+- event producer, fan-in, retained-chunk, and materialization contracts now name
+  range-relative or signed-canonical ordering explicitly; no current contract relies
+  on a context-free "absolute index order" over the circular domain;
+- built-in per-sample fallback execution, latency rings, oscillator anchors,
+  deterministic-noise grouping, debug display, and MIDI trigger offsets use explicit
+  `GlobalIndex` advancement, distance, bit, or signed-display operations rather than
+  recovering general integer operators;
+- the shared fixed-width persisted-page representation has been removed from source;
+- canonical persisted samples are immutable contiguous `PersistedSampleRegion`
+  records, while canonical persisted events are explicit-range
+  `PersistedEventChunk` records whose empty payload still authoritatively covers its
+  range;
+- each persisted output has a path-copied balanced range index selected through a
+  path-copied compact-handle directory, and a candidate splits only records that its
+  overwrite or erasure intersects;
+- realtime persisted sample playback traverses intersecting regions and copies spans
+  around ring-buffer wraps instead of looking up one page per sample and channel;
+- persisted event playback traverses clipped chunks and binary-searches the first
+  event in each selected chunk;
+- final-design tests cover path-copy output indexing, exact overwrite/erase splitting,
+  Tick random-access playback, wrapped Tick capture, capture-reserve exhaustion,
+  authoritative empty event blocks, void erasure, queued transaction ingestion, and
+  coherent generation-specific realtime publication; and
 - earlier zero-clamping, saturation, begin/end ranges, and fractional-value naming
   have been preserved under `docs/historical/` and replaced normatively.
 
-Incomplete layers:
+Work outside this completed feature boundary:
 
-- background storage realization, background transaction ingestion, Tick persisted
-  playback, and persisted page validation still contain linear begin/end and raw page
-  arithmetic;
-- tests still describe the displaced raw-integer and begin/end APIs; and
-- the active migration intentionally has compiler errors until those layers and tests
-  are converted.
+- the future node-facing `SampleRegion`/`SampleCoverage` port algebra remains a
+  separate front from the store-internal `PersistedSampleRegion` representation; and
+- compiler and test-suite verification of the coherent source, test, and normative
+  documentation migration remains pending the co-author's requested build/test pass.
+
+A static working-tree sweep finds no old page-store API, raw `SampleIndex`/
+`EventTime`, `IndexRegion`, positional `Coverage`, or `.regions()` compatibility use
+in source and tests. Normative documents now refer to fixed pages only when explicitly
+rejecting or historically describing that superseded representation.
 
 ## Friction discovered at persisted storage
 
@@ -47,15 +78,44 @@ seam-splitting logic would spread through transaction ingestion, playback, stora
 realization, page validation, and tests, only to be deleted from the sample half in the
 next front.
 
-Recommended dependency change: complete the circular-index migration through every
-non-page execution layer, then replace persisted sample pages directly with
-`SampleRegion`/`SampleCoverage`. At the same boundary, separate event-chunk indexing
-from sample storage and define event chunks by explicit `GlobalIndexRange` plus stable
-checkpoint/directory entries. Resume background transaction and persisted-playback
-migration against those target representations rather than repairing the shared page
-quotient.
+Accepted dependency change: the persisted-store replacement is now part of this
+feature rather than a later prerequisite. The canonical store has one coherent
+sample/event publication root, but samples and events have distinct record types and
+range trees. Store-internal contiguous sample records deliberately do not introduce
+the future node-facing `SampleCoverage` API early. Background transaction and
+persisted-playback migration proceed against the new records rather than repairing the
+shared page quotient.
 
-The repository is not expected to compile while this feature remains active. No
-compatibility `SampleIndex`, `EventTime`, `IndexRegion`, or `Coverage` aliases should
-be added to hide the incomplete migration.
+## Friction discovered in persisted coverage metadata
 
+Planned assumption: path-copying each changed output's range tree would make candidate
+mutation and successor publication scale with the records actually changed.
+
+Observed constraint at discovery time: each output state still owned a vector-backed
+`IndexCoverage`.
+Copying an output state and including/excluding one range copies or rebuilds every
+historical coverage run for that output. A sparse recording with many written and
+voided intervals therefore retains an O(total coverage runs) mutation cost even though
+its data tree changes only O(log records) paths.
+
+The constraint reaches beyond `PersistedDataStore`: background views and node-facing
+coverage facades currently carry `IndexCoverage const*`, so replacing only the store's
+metadata with a persistent interval tree would either require an O(n) flattening step
+at every publication or introduce a second positional-coverage interface.
+
+Accepted dependency change: keep the one `IndexCoverage` algebra and represent it as
+an immutable persistent interval tree with a bounded non-allocating ordered iterator.
+Copies share a root; include, exclude, union, intersection, and difference path-copy
+or merge tree nodes; store snapshots, background callback views, and Tick callback
+views continue to expose the same `IndexCoverage` base interface. `SampleCoverage`
+remains the separate future data-bearing sample algebra. No store-only compatibility
+coverage type or publication-time vector flattening is introduced.
+
+Implementation status: the active working tree now contains that representation and
+tests for immutable-copy semantics and signed-seam iteration. Compiler and test-suite
+verification remains with the rest of the active migration.
+
+The source migration is now intended to compile as one coherent feature; build and
+test verification remains pending. No compatibility `SampleIndex`, `EventTime`,
+`IndexRegion`, or `Coverage` aliases should be added to hide a diagnostic if that
+verification finds an incomplete call site.

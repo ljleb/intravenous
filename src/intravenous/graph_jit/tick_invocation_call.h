@@ -40,7 +40,7 @@ static_assert(std::is_trivially_copyable_v<TickEventCaptureOperation>);
 
 // Narrow generated-root ABI for storage selected at one Tick callback boundary.
 // The owning runtime frame keeps every backing snapshot alive; generated code
-// receives only already-resolved views and cannot recover an executor, page
+// receives only already-resolved views and cannot recover an executor, persisted-data
 // store, or materialization owner from this record.
 struct TickInvocationCall {
     ReflectedSpan<ReflectedSampleInputPortBinding const>

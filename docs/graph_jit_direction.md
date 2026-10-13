@@ -5,12 +5,12 @@ _Status: current design direction for synchronous whole-project graph compilatio
 [Batched Node Callback Direction](./batched_node_callbacks_direction.md) defines the planned normalized scalar/batch node callback API and the scheduling rules GraphJit will use to exploit it.
 
 
-> **Planned random-access representation change:**
+> **Random-access representation boundary:**
 > [Random-Access Port Data, Audio Value Types, And Input Contract Direction](./random_access_port_data_direction.md)
-> supersedes page-backed random-access sample storage and disjoint-Coverage assumptions
-> in this document. Existing page-store discussion should be read as an implementation
-> checkpoint until GraphJit/runtime lowering migrates to contiguous Region/Coverage
-> sample views.
+> defines the future node-facing contiguous `SampleRegion`/`SampleCoverage` API.
+> Canonical persisted storage already uses contiguous sample-region records and
+> explicit-range event chunks; those store-internal records do not prematurely become
+> the node-facing API.
 
 Related documents:
 
@@ -106,7 +106,7 @@ ownership and is intentionally absent. Graphs with background-evaluation work
 additionally export off-thread forward, reverse, and evaluation batch roots. Those
 roots use the retained `BackgroundEvaluationPlan` orders, imported reflected Tock
 callbacks, and the existing imported `tick_block()` wrapper for replay; executor-owned
-batch frames still supply coverage accumulators and page bindings. Multi-node primitive
+batch frames still supply coverage accumulators and persisted-data bindings. Multi-node primitive
 callback batching is a separate planned layer inside those generated roots, as defined
 in [Batched Node Callback Direction](./batched_node_callbacks_direction.md).
 Unsupported shapes still fail explicitly at the lowering boundary; they are
@@ -140,7 +140,7 @@ groups fanout by producer, derives the requirement
 records consumed by the existing sample/event storage choosers, and
 emits semantic transient/persistent/external storage and liveness requests.
 A tock-produced output never becomes a same-slice sequential dependency merely
-because a sequential consumer reads its materialized pages. The source now uses
+because a sequential consumer reads its materialized data. The source now uses
 `SequentialInputConfig`/`RandomAccessInputConfig` for consumer access,
 `TickOutputConfig`/`TockOutputConfig` for production, and separate
 `OutputRetention::{ephemeral,persisted}`. Connection analysis classifies those
@@ -153,7 +153,7 @@ eligible Tick/ephemeral paths by traversing sequential dependencies. The retaine
 records authored Tock execution versus generated replay. An unreproducible
 Tick/ephemeral source feeding random-access demand requires an authored recorder.
 The background executor itself has not landed at this checkpoint: Tock evaluation,
-replay evaluation, page publication, missing-page neutral playback, and recording
+replay evaluation, persisted-data publication, missing-position neutral playback, and recording
 consumption remain subsequent execution work.
 Block-slice mismatches conservatively require materialization
 until a later scheduler proves a shared subdivision. At the point this refactor
@@ -815,8 +815,8 @@ This is a hint, not a hard constraint. Use your own good judgement if ever in do
     Event conversion plans are preserved by semantic analysis and realized as
     explicit transient sequence operations; identical converted fanout branches
     share one derived representation/materialization. Tick event outputs are
-    contractually emitted in nondecreasing absolute sample-index order within
-    each callback invocation. Transient
+    contractually emitted in nondecreasing forward order from the callback
+    invocation's legal window begin. Transient
     multi-producer event inputs place semantic source 0 directly in the canonical
     aggregate allocation, keep the remaining producers in bounded local
     sequences, and perform one stable backwards k-way merge after the last
@@ -919,7 +919,7 @@ This is a hint, not a hard constraint. Use your own good judgement if ever in do
 17. **In progress: subset-based storage inference and ordinary background evaluation.**
     Exact source/target port-atom incidence partitioning, capability joins, and
     immutable storage planning have landed. Source representations now
-    select canonical pages/current-Tick views/materialized or transaction-local placement;
+    select canonical persisted data/current-Tick views/materialized or transaction-local placement;
     direct views stay copy-free, while derived conversion/fan-in templates share only
     under an exact compile-time key, with materialized addressable results subsuming
     otherwise-identical materialized sequential results. The current monolithic executor substrate still owns active/pending `CompiledGraph` +
@@ -936,17 +936,17 @@ This is a hint, not a hard constraint. Use your own good judgement if ever in do
     activity. Reverse-demanded nodes receive `evaluate` only after both traversals
     succeed. No public executor operation commits the candidate after F/R alone.
     `BackgroundEvaluationTransaction` retains that prepared result and promotes it
-    only at final transaction commit, together with page publication when a candidate
+    only at final transaction commit, together with persisted-data publication when a candidate
     is present.
 
     Immutable before/after-node materialization placement, compact runtime binding
     slots and replay schedule constraints/slots now live in the compiled background
     plan and are validated without LLVM. The executor-level canonical sample/event
-    page store now owns one immutable published root, private structurally shared
-    candidates, semantic/page versions, stale-base rejection, pre-registered
+    data store now owns one immutable published root, private structurally shared
+    candidates, semantic/data versions, stale-base rejection, pre-registered
     non-owning reader pins and deferred non-audio reclamation. Address-stable runtime
     sample/event views and sparse transaction-owned backing now interpret each
-    `PortStoragePlan` index, bind non-owning published-page readers, preserve the
+    `PortStoragePlan` index, bind non-owning published-data readers, preserve the
     stable/generation-local identity boundary and validate required views before the
     realization is sealed. The realization now executes compiler-retained operations
     exactly once: direct delivery stays copy-free, sample operations apply planned
@@ -967,20 +967,20 @@ This is a hint, not a hard constraint. Use your own good judgement if ever in do
     isolated power-of-two raw sample/event buffers from that schedule, fills replay
     inputs after the placed prepare operations, flushes outputs before the placed
     finalize operations, and binds an empty replay state rather than live realtime
-    state. The complete transaction pins one page snapshot, completes persisted-page
+    state. The complete transaction pins one data snapshot, completes persisted-data
     demands between forward and reverse propagation, invokes the generated root with
-    prepared activity and privately stages produced or invalidated pages only when
-    page state changes. Page-free operations do not advance the page version, but
+    prepared activity and privately stages produced or erased exact ranges only when
+    persisted state changes. Data-free operations do not advance the data version, but
     revalidate their pinned base before coverage promotion; stale publication is
-    rejected. Selected pinned inputs are sealed only when compatible published pages
-    contain their complete requested domains. Before any publication, the transaction rejects incomplete selected
+    rejected. Selected pinned inputs are sealed only when compatible published data
+    contain their complete requested ranges. Before any publication, the transaction rejects incomplete selected
     sample/channel production and any callback write that missed its selected storage
     or exceeded an event bound. Multi-output replay flushes only each output's selected
     coverage from the node-wide union schedule. Semantic coverage is promoted only
-    after any required page publication succeeds. In the target split,
+    after any required persisted-data publication succeeds. In the target split,
     `BackgroundExecutor` exposes only that end-to-end operation. The Tick root ABI receives one narrow
     callback-scoped invocation record containing only resolved sequential and Random
-    Access views. `RealtimeExecutor` pre-registers its page-reader slot off the realtime
+    Access views. `RealtimeExecutor` pre-registers its persisted-data reader slot off the realtime
     thread, pins one published root for the complete generated-root call, and keeps
     that pin in a non-copyable `TickInvocationFrame`; neither the frame owner nor the
     store crosses the generated ABI. Immutable per-node dynamic Sequential and Random
@@ -990,30 +990,30 @@ This is a hint, not a hard constraint. Use your own good judgement if ever in do
     inputs remain intact. Sequential sample callback binding is active: the
     realization-owned workspace preallocates one bounded playback ring per external
     sample slot, copies the callback window plus authored history from the coherent
-    materialization/page root, and preserves each logical input's neutral value for
+    materialization/data root, and preserves each logical input's neutral value for
     missing frames. Sequential event callback binding is active as well: each slot
     owns a power-of-two bounded sequence sized from its selected aggregate event rate
     and the specialization's maximum block size, then copies only the callback's
     absolute-time window; missing data is the empty sequence. The realization-owned workspace
     resolves persisted identities and allocates its address-stable view arrays off the
     audio thread; published roots retain precomputed exact output coverage, so Random
-    Access callback binding only retargets direct persisted-page views to the one
+    Access callback binding only retargets direct persisted-data views to the one
     pinned snapshot.
     Background transactions now freeze compiler-routed derived/fan-in/converted and
     ephemeral Random Access results, together with direct background-only Sequential
     materializations, into an immutable `TickMaterializationSnapshot`. Mixed
     `current_tick` composites remain generated-root work because they also consume live
     Tick sources. The snapshot is promoted through a separate pre-registered-reader store. Promotion is a
-    no-fail owner relink after any page publication; retired owners are reclaimed
+    no-fail owner relink after any persisted-data publication; retired owners are reclaimed
     explicitly off the audio thread. `TickInvocationFrame` pins both roots for the
     callback, and materialized bindings are accepted only when the snapshot's
-    generation and recorded page version match the active realization and pinned page
+    generation and recorded data version match the active realization and pinned data
     root. Retained Sequential sample and event slots are now both supplied through
     bounded callback binding without exposing either snapshot owner.
     Final commit
-    advances prepared coverage, page publication and release of the selected
+    advances prepared coverage, persisted-data publication and release of the selected
     producer-queue prefixes together; every failure advances none. Background ephemeral Random Access may use
-    transaction-local page-backed materialization; Tick-time ephemeral Random Access
+    transaction-local addressable materialization; Tick-time ephemeral Random Access
     must be materialized before the callback. Playback never blocks, reclaims retired
     storage or invokes Tock.
 18. **Tick/persisted recording transport and disposition semantics landed.**
@@ -1063,7 +1063,7 @@ This is a hint, not a hard constraint. Use your own good judgement if ever in do
     continues to author exact arbitrary coverage.
 
     Background commit applies exactly the selected queue prefixes, publishes a
-    coherent immutable persisted-state/page version when appropriate, and then releases
+    coherent immutable persisted-state/data version when appropriate, and then releases
     completed prefixes through non-realtime reclamation. The published version reaches
     `RealtimeExecutor` as an immutable pointer and becomes active only at a legal
     realtime pass boundary.
@@ -1269,8 +1269,8 @@ runtime:      generated tick_block() (owns child tick/skip decisions)
 The root remains zero-port at the project graph boundary, but its native Tick ABI
 also receives one narrow invocation frame for dynamic background-derived bindings.
 That frame contains only compact immutable views selected for this callback: pinned
-published-page inputs and any `TickMaterializationSnapshot` bindings. It contains no
-an executor pointer, page-store pointer, transaction object, or storage-discovery API.
+published-data inputs and any `TickMaterializationSnapshot` bindings. It contains no
+an executor pointer, data-store pointer, transaction object, or storage-discovery API.
 GraphJit retains the compile-time node-port-to-slot mapping; the executor fills the
 slots before entering the generated root.
 
@@ -1303,7 +1303,7 @@ job is to pack the structures needed by generated audio-thread execution as tigh
 and access-locally as practical: authored `State`, compiler-selected cross-call
 sample/event carry, feedback/activity state, and other fixed regions the audio root
 actually needs. Request-sized objects, dynamically growing background data,
-persisted-output pages, and `TockState` are not part of this packed realtime arena.
+persisted-output data, and `TockState` are not part of this packed realtime arena.
 
 `GraphJit` must not introduce `CompiledGraphNodeStorageLayout`,
 `GraphKernelStorage`, or another parallel fixed **audio-thread** state arena.
@@ -1345,15 +1345,15 @@ should use the same realtime `NodeLayout` / `NodeStorage`, including for example
 Background-owned memory is a sidecar even when it happens to have a fixed size.
 Examples include `TockState`, reusable background-evaluation workspaces, transaction
 frames, and dynamically sized persisted-output storage. Persisted output continues
-to use executor-owned stable page stores because its size follows semantic coverage
+to use executor-owned stable data stores because its size follows semantic coverage
 and retained authoritative content rather than one realtime `NodeLayout`.
 
 Tick/persisted finalized data satisfies Random Access through the published
-persisted-page snapshot; replayable Tick/ephemeral output can satisfy it through
+persisted-data snapshot; replayable Tick/ephemeral output can satisfy it through
 background replay where upstream data is available. Tick/persisted recording uses
 executor/runtime-owned slab-backed producer reserves and pending queues. Pending queue
 blocks are not a second Random Access source: newly recorded Tick/persisted data
-becomes visible only after publication into the canonical page store.
+becomes visible only after publication into the canonical data store.
 
 Invocation-local Tick-execution sample/event buffers occupy compile-time byte ranges
 in the generated root stack. Sample and event ranges are lifetime-packed within
@@ -1547,10 +1547,10 @@ The normative port schema and execution semantics are in
 An ordinary Tick/ephemeral stream may feed a Sequential input. It needs authored
 persistence or an explicit recorder only when it is **unreproducible** and downstream
 Random Access demand reaches it. Tick/persisted data satisfies that demand through
-the canonical published persisted-page snapshot. Contextually replayable
+the canonical published persisted-data snapshot. Contextually replayable
 Tick/ephemeral and Tock/ephemeral data use immutable addressable materialization;
 background-only consumers may use transaction-local storage while Tick-time consumers
-require materialized data. Tock/persisted uses the same canonical page read path as
+require materialized data. Tock/persisted uses the same canonical persisted-data read path as
 Tick/persisted. Per-channel tiling preserves each member's contract without implicit
 retention.
 
@@ -1580,11 +1580,11 @@ in [Batched Node Callback Direction](./batched_node_callbacks_direction.md).
 
 `tock_coverage()` and its propagation callbacks **never run on the audio thread**.
 Background workers materialize data. An audio-thread sequential input reads an existing
-published page as-is even if stale, and substitutes that input's `neutral_value`
-for a missing page. The audio thread never waits or recomputes a missing page.
+published data as-is even if stale, and substitutes that input's `neutral_value`
+for a missing position. The audio thread never waits or recomputes missing data.
 A persisted output never evicts generated/finalized covered data for memory
-pressure, age or invalidation. All persisted outputs use the canonical persisted-page
-store; recomputed/finalized pages replace old published versions atomically. Coverage
+pressure, age or invalidation. All persisted outputs use the canonical persisted-data
+store; recomputed/finalized records replace old published versions atomically. Coverage
 removal alone ends the retention obligation, and old storage versions remain until
 reader pins are released.
 
@@ -1604,20 +1604,20 @@ use, then deduplicates conversions/compositions and coalesces equivalent
 atoms. This allows one Tock/ephemeral subset with Tick-time Random Access to require
 an addressable materialized window without promoting unrelated channels, while a
 Tick/persisted subset can simultaneously retain current Tick storage for Sequential
-consumers and canonical pages for Random Access.
+consumers and canonical persisted data for Random Access.
 
-The preliminary Tick-time Random Access path pins a published page snapshot at the
+The preliminary Tick-time Random Access path pins a published data snapshot at the
 root callback boundary. Newly queued Tick/persisted data from that callback is not
-visible until persisted-state/page publication and a later snapshot selection. A
+visible until persisted-state/data publication and a later snapshot selection. A
 same-Tick recent-data overlay is a later optional optimization, not baseline semantics.
 
 An explicit recording node for an unreproducible Sequential source authors an ordinary
 Tick/persisted output; it does not introduce another port or transport category.
 Tick/persisted outputs use producer-specific reserve/pending-queue SPSC transports. A background pass
 independently pins one finite prefix per relevant producer queue and commits its
-ordinary background transaction once. The page version advances on commit, not queue
-insertion. A page candidate may copy or adopt compatible queue payload data, but
-consumers see the canonical persisted-page/recording abstraction rather than a
+ordinary background transaction once. The data version advances on commit, not queue
+insertion. A persisted-data candidate may copy or adopt compatible queue payload data, but
+consumers see the canonical persisted-data/recording abstraction rather than a
 separate queue-storage read path.
 
 Background evaluation keeps one generated statically ordered root.
@@ -1630,7 +1630,7 @@ code calls narrow transaction-supplied prepare/finalize hooks carried by
 `BackgroundEvaluationCall`. The hook receives only an opaque transaction-local
 operation frame; it may realize already-planned views and execute conversion,
 projection, fan-in or deterministic merge operations, but it receives no executor,
-page-store or transaction-owner pointer. Runtime code must not reconstruct this
+data-store or transaction-owner pointer. Runtime code must not reconstruct this
 schedule by walking `ConfiguredGraph` or lowering internals.
 
 The immutable plan retains the replay binding slot and applicable root/primitive
@@ -1705,17 +1705,17 @@ metadata it needs, as applicable:
   to build legal transaction-local schedules;
 - per-node/per-port background evaluation transaction accumulator offsets/layout;
 - semantic SCC IDs/validation products;
-- canonical persisted-page store bindings for Tick/persisted and Tock/persisted outputs;
-- persisted-output reverse-cut/page-validity binding facts;
+- canonical persisted-data store bindings for Tick/persisted and Tock/persisted outputs;
+- persisted-output reverse-cut/semantic-compatibility binding facts;
 - port-atom incidence partitions plus joined source/target storage-capability facts;
 - stable concrete-node port-state identities and cold realization descriptors for
   input history and output history/latency, including their valid semantic ranges;
 - optional transition-realization requirements and finite expiry positions when a
   steady binding cannot directly represent inherited node-owned state;
 - direct/transient plans for tock/ephemeral outputs;
-- complete persisted-page bindings for Tick/persisted and Tock/persisted outputs;
+- complete persisted-data bindings for Tick/persisted and Tock/persisted outputs;
 - realtime-produced queue output identities/bindings and block metadata layout;
-- immutable page-version bindings/publication metadata and reader-pin requirements;
+- immutable data-version bindings/publication metadata and reader-pin requirements;
 - producer-queue provisioning/publication/reclamation integration facts; and
 - event fan-in ordering/capacity facts.
 
@@ -1728,7 +1728,7 @@ Project sample rate is part of background-computed output semantics and must be 
 compiler metadata. The name describes compilation, not random-access semantics.
 
 It owns no mutable dynamic persisted-output or transaction data. It describes
-how a generation binds to executor-owned canonical persisted-page storage,
+how a generation binds to executor-owned canonical persisted-data storage,
 Tick-capture resources, and transaction workspaces. It also carries the cold
 port-state realization metadata needed to reconcile concrete-node-owned history and
 latency across graph revisions; that metadata is not part of the hot generated
@@ -1903,7 +1903,7 @@ CompiledGraph + finalized NodeLayout
 Realtime node state and compiler-selected audio-thread regions whose contents cross
 audio-root calls become one packed `NodeLayout`/`NodeStorage`. Invocation-local
 realtime representations instead use the statically packed generated-root stack
-frame. Background-owned state (`TockState`, evaluation workspaces, persisted pages,
+frame. Background-owned state (`TockState`, evaluation workspaces, persisted data,
 etc.) is intentionally outside this realtime allocation model and follows its own
 lifetimes. Pure realtime storage analyses may still decide which logical values need
 stack or `NodeStorage`, their size/alignment, liveness, and desirable layout before
@@ -1912,5 +1912,5 @@ LLVM/declaration generation; they do not create a parallel realtime state arena.
 See [sequential_port_storage_planning.md](./sequential_port_storage_planning.md) for
 the rule that logical connections do not imply buffers, and
 [coverage_and_background_evaluation.md](./coverage_and_background_evaluation.md) for exact coverage/change
-propagation, whole-page covered-domain validity/versioning, reverse demand, and
+propagation, exact-range candidate completeness/versioning, reverse demand, and
 batched tock semantics that lowering specializes.

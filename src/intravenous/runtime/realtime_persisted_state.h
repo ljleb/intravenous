@@ -1,6 +1,6 @@
 #pragma once
 
-#include <intravenous/runtime/persisted_page_store.h>
+#include <intravenous/runtime/persisted_data_store.h>
 #include <intravenous/runtime/tick_materialization_snapshot.h>
 
 #include <atomic>
@@ -13,15 +13,15 @@
 
 namespace iv {
 
-// One immutable background-produced view that pins the exact canonical page
+// One immutable background-produced view that pins the exact canonical data
 // root and Tick-materialization root intended to become visible together.
 // Construction and destruction are non-realtime operations.
 class RealtimePersistedState {
     friend class RealtimePersistedStateMailbox;
 
     std::uint64_t generation_ = 0;
-    PersistedPageStore::ReaderSlot page_slot_{};
-    PersistedPageStore::ReaderPin pages_{};
+    PersistedDataStore::ReaderSlot data_slot_{};
+    PersistedDataStore::ReaderPin data_{};
     TickMaterializationStore::ReaderSlot materialization_slot_{};
     TickMaterializationStore::ReaderPin materialization_{};
     std::unique_ptr<TickMaterializationSnapshot> owned_materialization_{};
@@ -30,11 +30,11 @@ class RealtimePersistedState {
 
     RealtimePersistedState(
         std::uint64_t generation,
-        PersistedPageStore::ReaderSlot page_slot,
+        PersistedDataStore::ReaderSlot data_slot,
         TickMaterializationStore::ReaderSlot materialization_slot) noexcept;
     RealtimePersistedState(
         std::uint64_t generation,
-        PersistedPageStore::ReaderSlot page_slot) noexcept;
+        PersistedDataStore::ReaderSlot data_slot) noexcept;
 
 public:
     ~RealtimePersistedState() = default;
@@ -48,16 +48,16 @@ public:
     // atomic pins and validation.
     [[nodiscard]] static std::unique_ptr<RealtimePersistedState> prepare(
         std::uint64_t generation,
-        PersistedPageStore& pages,
+        PersistedDataStore& data,
         TickMaterializationStore& materializations);
 
     // Allocates/registers the owner of a generation's empty initial
     // materialization during staging. capture_initial() later pins the newest
-    // canonical page root using no allocation.
+    // canonical retained-data root using no allocation.
     [[nodiscard]] static std::unique_ptr<RealtimePersistedState>
     prepare_initial(
         std::uint64_t generation,
-        PersistedPageStore& pages);
+        PersistedDataStore& data);
 
     [[nodiscard]] bool capture_initial() noexcept;
 
@@ -69,10 +69,10 @@ public:
         return generation_;
     }
 
-    [[nodiscard]] PersistedPageStore::Snapshot const& pages() const noexcept
+    [[nodiscard]] PersistedDataStore::Snapshot const& data() const noexcept
     {
         assert(captured_);
-        return pages_.snapshot();
+        return data_.snapshot();
     }
 
     [[nodiscard]] TickMaterializationSnapshot const& materialization()
@@ -88,7 +88,7 @@ public:
 // Single-background-producer/single-realtime-consumer latest-value mailbox.
 // Realtime adopts at a pass boundary and returns the previous active owner
 // through an allocation-free intrusive stack. Only background reclamation
-// destroys roots and releases their underlying page/materialization pins.
+// destroys roots and releases their underlying data/materialization pins.
 class RealtimePersistedStateMailbox {
     std::atomic<RealtimePersistedState*> pending_{nullptr};
     RealtimePersistedState* active_ = nullptr;

@@ -60,7 +60,7 @@ struct RequiredInputCoverage {
 
 // Propagation deliberately returns coverage changes and requirements, not
 // sample or event data. A complete background transaction consumes these
-// requirements before it promotes semantic coverage or publishes pages.
+// requirements before it promotes semantic coverage or publishes retained data.
 struct CoveragePropagationResult {
     std::vector<PropagatedOutputChange> output_changes{};
     std::vector<RequiredInputCoverage> input_requirements{};
@@ -68,9 +68,9 @@ struct CoveragePropagationResult {
 };
 
 // Optional transaction policy invoked after the generated forward traversal
-// and before reverse propagation. Persisted-page planning uses this narrow
-// seam to complete page-sized output demands without teaching propagation
-// about page stores. The callback may only add to `additional`.
+// and before reverse propagation. Persisted-data planning uses this narrow
+// seam to complete bounded output demands without teaching propagation about
+// persisted-data storage. The callback may only add to `additional`.
 struct BackgroundCoverageDemandExpansion {
     void* data = nullptr;
     void (*expand_output)(
@@ -132,7 +132,7 @@ public:
 // Reusable propagation scratch and callback frames. Each preparation starts
 // from BackgroundCoverageState and may mutate only a private candidate. This
 // component knows accumulator topology and generated F/R roots, but owns no
-// persisted pages, materialized storage or transaction publication policy.
+// persisted data, materialized storage or transaction publication policy.
 class BackgroundPropagationWorkspace {
     struct InputChangeAccumulator {
         IndexCoverage coverage{};

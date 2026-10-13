@@ -10,6 +10,26 @@
 
 namespace {
 
+iv::GlobalIndex index(std::int64_t value)
+{
+    return iv::GlobalIndex::from_signed(value);
+}
+
+TEST(GlobalIndex, PreservesTwosComplementBitsAndWrapsModuloTwoToThe64)
+{
+    auto const negative_one = index(-1);
+    EXPECT_EQ(negative_one.bits(), std::numeric_limits<std::uint64_t>::max());
+    EXPECT_EQ(negative_one.signed_value(), -1);
+    EXPECT_EQ(negative_one.advanced_by(1), index(0));
+    EXPECT_EQ(index(0).retreated_by(1), negative_one);
+    EXPECT_EQ(negative_one.forward_distance_to(index(1)), 2u);
+
+    auto const signed_max = index(std::numeric_limits<std::int64_t>::max());
+    EXPECT_EQ(
+        signed_max.advanced_by(1).signed_value(),
+        std::numeric_limits<std::int64_t>::min());
+}
+
 TEST(EventConversionRegistry, OnlyObjectiveDirectedConversionsAreAvailable)
 {
     auto const registry = iv::EventConversionRegistry::instance();
@@ -54,7 +74,7 @@ TEST(EventConversionRegistry, AllowedConversionsDoNotInventLaterTimestamps)
         iv::EventTypeId::boundary,
         iv::EventTypeId::trigger);
     iv::TimedEvent source{
-        .time = 123,
+        .time = index(123),
         .value = iv::BoundaryEvent{.is_begin = true},
     };
 
@@ -66,7 +86,7 @@ TEST(EventConversionRegistry, AllowedConversionsDoNotInventLaterTimestamps)
         });
 
     ASSERT_EQ(count, 1u);
-    EXPECT_EQ(converted[0].time, 123u);
+    EXPECT_EQ(converted[0].time, index(123));
     EXPECT_TRUE(std::holds_alternative<iv::TriggerEvent>(converted[0].value));
 }
 
@@ -97,17 +117,19 @@ TEST(EventBufferSizing, FractionalRatesProduceDeterministicStaticCapacities)
 
 TEST(RealtimePortWindow, IncludesHistoryAndLatencyWithExclusiveEnd)
 {
-    auto const window = iv::realtime_port_window(100, 16, 4, 3);
-    EXPECT_EQ(window.begin, 96u);
-    EXPECT_EQ(window.end, 119u);
-    EXPECT_TRUE(window.contains(96));
-    EXPECT_TRUE(window.contains(118));
-    EXPECT_FALSE(window.contains(95));
-    EXPECT_FALSE(window.contains(119));
+    auto const window = iv::realtime_port_window(index(100), 16, 4, 3);
+    EXPECT_EQ(window.begin, index(96));
+    EXPECT_EQ(window.end(), index(119));
+    EXPECT_TRUE(window.contains(index(96)));
+    EXPECT_TRUE(window.contains(index(118)));
+    EXPECT_FALSE(window.contains(index(95)));
+    EXPECT_FALSE(window.contains(index(119)));
 
-    auto const clamped = iv::realtime_port_window(2, 16, 8, 0);
-    EXPECT_EQ(clamped.begin, 0u);
-    EXPECT_EQ(clamped.end, 18u);
+    auto const wrapping = iv::realtime_port_window(index(2), 16, 8, 0);
+    EXPECT_EQ(wrapping.begin, index(-6));
+    EXPECT_EQ(wrapping.end(), index(18));
+    EXPECT_TRUE(wrapping.contains(index(-1)));
+    EXPECT_TRUE(wrapping.contains(index(0)));
 }
 
 TEST(EventOutputPort, RejectsRealtimeEventsOutsideActiveWindow)
@@ -119,26 +141,26 @@ TEST(EventOutputPort, RejectsRealtimeEventsOutsideActiveWindow)
 
     EXPECT_THROW(
         output.push(iv::TimedEvent{
-            .time = 100,
+            .time = index(100),
             .value = iv::TriggerEvent{},
         }),
         std::logic_error);
 
-    output.begin_block(100, 16);
+    output.begin_block(index(100), 16);
     EXPECT_NO_THROW(output.push(iv::TimedEvent{
-        .time = 96,
+        .time = index(96),
         .value = iv::TriggerEvent{},
     }));
     EXPECT_NO_THROW(output.push(iv::TimedEvent{
-        .time = 118,
+        .time = index(118),
         .value = iv::TriggerEvent{},
     }));
     EXPECT_THROW(output.push(iv::TimedEvent{
-        .time = 95,
+        .time = index(95),
         .value = iv::TriggerEvent{},
     }), std::logic_error);
     EXPECT_THROW(output.push(iv::TimedEvent{
-        .time = 119,
+        .time = index(119),
         .value = iv::TriggerEvent{},
     }), std::logic_error);
     output.end_block();
@@ -154,9 +176,9 @@ TEST(EventOutputPort, ExplicitBlockPushUsesSameWindow)
     iv::EventOutputPort output(shared, iv::EventTypeId::trigger, 2, 1);
 
     EXPECT_NO_THROW(output.push(
-        iv::TriggerEvent{}, 8, 100, 8)); // time 108; latency permits it
+        iv::TriggerEvent{}, 8, index(100), 8)); // time 108; latency permits it
     EXPECT_THROW(output.push(
-        iv::TriggerEvent{}, 9, 100, 8), std::logic_error); // end is 109
+        iv::TriggerEvent{}, 9, index(100), 8), std::logic_error); // end is 109
 }
 
 TEST(EventOutputPort, CountsProducerSequenceOverflowWithoutAllocating)
@@ -172,10 +194,10 @@ TEST(EventOutputPort, CountsProducerSequenceOverflowWithoutAllocating)
         0,
         &overflow_count);
 
-    output.begin_block(0, 64);
+    output.begin_block(index(0), 64);
     for (std::size_t i = 0; i < 17; ++i) {
         output.push(iv::TimedEvent{
-            .time = 0,
+            .time = index(0),
             .value = iv::TriggerEvent{},
         });
     }
@@ -200,17 +222,17 @@ TEST(EventOutputPort, LogicalQuotaCanExcludeExistingRetainedPrefix)
         2,
         4);
 
-    output.begin_block(64, 64);
+    output.begin_block(index(64), 64);
     output.push(iv::TimedEvent{
-        .time = 64,
+        .time = index(64),
         .value = iv::TriggerEvent{},
     });
     output.push(iv::TimedEvent{
-        .time = 65,
+        .time = index(65),
         .value = iv::TriggerEvent{},
     });
     output.push(iv::TimedEvent{
-        .time = 66,
+        .time = index(66),
         .value = iv::TriggerEvent{},
     });
     output.end_block();

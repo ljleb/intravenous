@@ -5,7 +5,7 @@
 #include <intravenous/graph_jit/background_evaluation_plan.h>
 #include <intravenous/node/coverage_port_context.h>
 #include <intravenous/ports.h>
-#include <intravenous/runtime/persisted_page_store.h>
+#include <intravenous/runtime/persisted_data_store.h>
 
 #include <atomic>
 #include <cstddef>
@@ -21,7 +21,7 @@ struct TickMaterializedSampleInput {
     IndexCoverage coverage{};
     ChannelLayout layout{};
     std::vector<std::size_t> channels{};
-    // Channel-major values over coverage.regions() in increasing index order.
+    // Channel-major values over coverage's signed-canonical iteration order.
     std::vector<Sample> values{};
 
     [[nodiscard]] bool has_channel(std::size_t channel) const noexcept;
@@ -43,8 +43,9 @@ struct TickMaterializedEventInput {
 };
 
 // One immutable set of transaction-produced Tick-visible storage. It is not a
-// canonical persisted-page version: generation identifies the compiled plan,
-// while pages identifies the exact published root against which it was built.
+// canonical persisted-data version: generation identifies the compiled plan,
+// while data_version identifies the exact published root against which it was
+// built.
 class TickMaterializationSnapshot {
     friend class TickMaterializationStore;
     friend class RealtimePersistedState;
@@ -52,7 +53,7 @@ class TickMaterializationSnapshot {
     std::uint64_t generation_ = 0;
     std::uint64_t semantic_version_ = 0;
     std::uint64_t promotion_sequence_ = 0;
-    PersistedPageSnapshotVersion pages_{};
+    PersistedDataVersion data_version_{};
     std::vector<TickMaterializedSampleInput> samples_{};
     std::vector<TickMaterializedEventInput> events_{};
     std::unique_ptr<TickMaterializationSnapshot> retired_next_{};
@@ -62,7 +63,7 @@ public:
     TickMaterializationSnapshot(
         std::uint64_t generation,
         std::uint64_t semantic_version,
-        PersistedPageSnapshotVersion pages,
+        PersistedDataVersion data_version,
         std::vector<TickMaterializedSampleInput> samples,
         std::vector<TickMaterializedEventInput> events);
 
@@ -78,9 +79,9 @@ public:
     {
         return promotion_sequence_;
     }
-    [[nodiscard]] PersistedPageSnapshotVersion pages() const noexcept
+    [[nodiscard]] PersistedDataVersion data_version() const noexcept
     {
-        return pages_;
+        return data_version_;
     }
     [[nodiscard]] std::size_t sample_count() const noexcept
     {

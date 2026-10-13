@@ -13,7 +13,7 @@ namespace {
 [[nodiscard]] std::size_t coverage_sample_count(IndexCoverage const& coverage)
 {
     std::size_t result = 0;
-    for (auto const region : coverage.regions()) {
+    for (auto const region : coverage) {
         auto const length = region.extent;
         if (length > std::numeric_limits<std::size_t>::max() - result) {
             throw std::length_error(
@@ -67,7 +67,7 @@ Sample TickMaterializedSampleInput::at(
     if (found == channels.end() || *found != channel) return {};
     std::size_t frame = 0;
     bool covered = false;
-    for (auto const region : coverage.regions()) {
+    for (auto const region : coverage) {
         if (region.contains(index)) {
             frame += static_cast<std::size_t>(
                 region.begin.forward_distance_to(index));
@@ -79,7 +79,7 @@ Sample TickMaterializedSampleInput::at(
     }
     if (!covered) return {};
     std::size_t frames = 0;
-    for (auto const region : coverage.regions()) {
+    for (auto const region : coverage) {
         frames += static_cast<std::size_t>(region.extent);
     }
     auto const selected = static_cast<std::size_t>(
@@ -113,12 +113,12 @@ void TickMaterializedEventInput::for_each(
 TickMaterializationSnapshot::TickMaterializationSnapshot(
     std::uint64_t generation,
     std::uint64_t semantic_version,
-    PersistedPageSnapshotVersion pages,
+    PersistedDataVersion data_version,
     std::vector<TickMaterializedSampleInput> samples,
     std::vector<TickMaterializedEventInput> events)
     : generation_(generation)
     , semantic_version_(semantic_version)
-    , pages_(pages)
+    , data_version_(data_version)
     , samples_(std::move(samples))
     , events_(std::move(events))
 {

@@ -1367,8 +1367,9 @@ namespace iv {
             auto& shared_data = *_shared_data;
             size_t const mask = shared_data.buffer.size() - 1;
 
-            // EventOutputPort's producer contract keeps this sequence sorted
-            // by absolute time, so both scans may stop at the first boundary.
+            // EventOutputPort's producer contract keeps this sequence in
+            // forward order relative to the owning callback window, so both
+            // scans may stop at the first boundary.
             while (shared_data.read_index != shared_data.write_index) {
                 TimedEvent const& oldest = shared_data.buffer[shared_data.read_index & mask];
                 if (block_index.signed_distance_to(oldest.time) >= 0) {
@@ -1412,8 +1413,8 @@ namespace iv {
     };
 
     // Realtime event producers must append each logical output in
-    // nondecreasing absolute TimedEvent::time order within one tick/tick_block
-    // invocation. A history/latency window may overlap adjacent invocations;
+    // nondecreasing forward order from the invocation's legal window begin.
+    // A history/latency window may overlap adjacent invocations;
     // GraphJit therefore gives such cyclic producers an invocation-local stream
     // and merges that sorted stream into the retained aggregate. EventOutputPort
     // itself does not sort or add an O(n) release-time validation pass.
@@ -1603,7 +1604,8 @@ namespace iv {
             return _source_type;
         }
 
-        bool empty_in_block(size_t block_index, size_t block_size) const
+        bool empty_in_block(
+            GlobalIndex block_index, size_t block_size) const
         {
             if (!_shared_data) {
                 return true;

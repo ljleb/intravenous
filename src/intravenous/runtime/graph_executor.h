@@ -6,7 +6,7 @@
 #include <intravenous/runtime/background_evaluation_transaction.h>
 #include <intravenous/runtime/background_coverage_propagation.h>
 #include <intravenous/runtime/graph_jit.h>
-#include <intravenous/runtime/persisted_page_store.h>
+#include <intravenous/runtime/persisted_data_store.h>
 #include <intravenous/runtime/realtime_produced_record.h>
 #include <intravenous/runtime/realtime_persisted_state.h>
 #include <intravenous/runtime/tick_invocation_frame.h>
@@ -31,7 +31,7 @@ enum class GraphExecutorStageResult : std::uint8_t {
 
 struct GraphExecutorReclaimedSnapshots {
     std::size_t realtime_persisted_states = 0;
-    std::size_t persisted_pages = 0;
+    std::size_t persisted_data = 0;
     std::size_t tick_materializations = 0;
 };
 
@@ -88,7 +88,7 @@ class GraphExecutor {
         RealtimeGeneration(
             CompiledGraph const& graph,
             ResourceContext const& resources,
-            PersistedPageStore& pages,
+            PersistedDataStore& data,
             AsyncCapacityManager& capacity_manager,
             RealtimeProducerCapacityConfig const& capacity_policy);
     };
@@ -140,7 +140,7 @@ class GraphExecutor {
         ExecutionGeneration(
             std::shared_ptr<CompiledGraph const> graph,
             ResourceContext const& resources,
-            PersistedPageStore& pages,
+            PersistedDataStore& data,
             AsyncCapacityManager& capacity_manager,
             std::atomic<bool>& production_reservation_failed,
             RealtimeProducerCapacityConfig const& capacity_policy,
@@ -155,7 +155,7 @@ class GraphExecutor {
             std::unique_ptr<ExecutionGeneration> successor);
         [[nodiscard]] ExecutionGeneration* successor() const noexcept;
         void prepare_initial_persisted_state(
-            PersistedPageStore& pages);
+            PersistedDataStore& data);
     };
 
     class BackgroundExecutor {
@@ -224,12 +224,12 @@ class GraphExecutor {
     RealtimeProducerCapacityConfig producer_capacity_{};
     // Executor-level and deliberately outside either execution generation.
     // Compatible generations will rebind their persisted ports into this one
-    // canonical sample/event authority rather than migrate page ownership.
-    PersistedPageStore persisted_pages_{};
+    // canonical sample/event authority rather than migrate record ownership.
+    PersistedDataStore persisted_data_{};
     // Background publication authority for Tick-visible derived/ephemeral
     // storage. Realtime never pins this store independently.
     TickMaterializationStore tick_materializations_{};
-    // Owns the one coherent page/materialization pair used by realtime plus
+    // Owns the one coherent persisted-data/materialization pair used by realtime plus
     // at most the newest pending pair produced by background.
     RealtimePersistedStateMailbox realtime_persisted_state_{};
     // Generic generation-local producer capacity for Tick/persisted queues.
