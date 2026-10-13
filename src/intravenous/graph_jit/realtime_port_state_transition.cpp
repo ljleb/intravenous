@@ -142,16 +142,20 @@ select_sample_inherited_state_realization(
                 "successor direct sample state has no persistent view");
         }
         auto const& target = current.retained_sources.front();
-        auto const sources_are_rings = previous.retained_access
+        auto const sources_are_direct_storage = previous.retained_access
                 == SampleRealtimePortStateAccess::immutable_constant
             || std::ranges::all_of(
                 previous.retained_sources,
                 [](auto const& source) {
                     return source.storage
-                        == SampleRealtimePortStateStorage::ring;
+                            == SampleRealtimePortStateStorage::ring
+                        || source.storage
+                            == SampleRealtimePortStateStorage::compact_carry;
                 });
-        if (target.storage != SampleRealtimePortStateStorage::ring
-            || !sources_are_rings
+        if ((target.storage != SampleRealtimePortStateStorage::ring
+             && target.storage
+                 != SampleRealtimePortStateStorage::compact_carry)
+            || !sources_are_direct_storage
             || previous.retained_access
                 == SampleRealtimePortStateAccess::materialized) {
             return InheritedRealtimePortStateRealization::
@@ -363,11 +367,14 @@ std::expected<RealtimePortStateTransition, std::string> make_transition(
     auto const inherited = std::min(
         previous_requirement.extent_samples,
         current_requirement.extent_samples);
-    if (inherited
+    if (previous_requirement.extent_samples
+            > static_cast<std::size_t>(
+                std::numeric_limits<std::int64_t>::max())
+        || current_requirement.extent_samples
         > static_cast<std::size_t>(
             std::numeric_limits<std::int64_t>::max())) {
         return std::unexpected(
-            "realtime port-state inherited extent is not representable");
+            "realtime port-state extent is not representable");
     }
 
     std::int64_t begin = 0;
@@ -590,6 +597,16 @@ std::expected<void, std::string> build_steady_storage_transfers(
             .source_materialization_channel =
                 source.authored_storage.representation_channel,
             .target_storage = target.retained_sources.front(),
+            .target_begin = transition.inherited_begin < 0
+                ? -static_cast<std::int64_t>(
+                    transition.inherited_extent_samples
+                    + transition.newly_exposed_extent_samples)
+                : 0,
+            .target_end = transition.inherited_begin < 0
+                ? 0
+                : static_cast<std::int64_t>(
+                    transition.inherited_extent_samples
+                    + transition.newly_exposed_extent_samples),
             .inherited_begin = transition.inherited_begin,
             .inherited_end = transition.inherited_end,
         };
@@ -649,6 +666,16 @@ std::expected<void, std::string> build_steady_storage_transfers(
             .source_selects_invocation_window =
                 source.materialization_selects_invocation_window,
             .target_storage = *target.retained_storage,
+            .target_begin = transition.inherited_begin < 0
+                ? -static_cast<std::int64_t>(
+                    transition.inherited_extent_samples
+                    + transition.newly_exposed_extent_samples)
+                : 0,
+            .target_end = transition.inherited_begin < 0
+                ? 0
+                : static_cast<std::int64_t>(
+                    transition.inherited_extent_samples
+                    + transition.newly_exposed_extent_samples),
             .inherited_begin = transition.inherited_begin,
             .inherited_end = transition.inherited_end,
         });
@@ -744,7 +771,7 @@ plan_realtime_port_state_transition(
     return result;
 }
 
-std::expected<void, std::string> execute_realtime_port_state_ring_transfers(
+std::expected<void, std::string> execute_realtime_port_state_transfers(
     RealtimePortStateTransitionPlan const& plan,
     std::span<std::byte const> previous_storage,
     std::span<std::byte> current_storage,
@@ -781,28 +808,27 @@ std::expected<void, std::string> execute_realtime_port_state_ring_transfers(
         }
         return origin + static_cast<std::size_t>(magnitude);
     };
-    auto physical_frame = [](std::size_t semantic,
-                             std::int64_t offset,
-                             std::size_t capacity)
-        -> std::optional<std::size_t> {
-        if (capacity == 0) return std::nullopt;
-        if (offset < 0) {
-            auto const magnitude = static_cast<std::uint64_t>(-(offset + 1)) + 1;
-            if (magnitude > semantic) return std::nullopt;
-            return (semantic - static_cast<std::size_t>(magnitude)) % capacity;
-        }
-        auto const positive = static_cast<std::uint64_t>(offset);
-        if (positive > std::numeric_limits<std::size_t>::max() - semantic) {
-            return std::nullopt;
-        }
-        return (semantic + static_cast<std::size_t>(positive)) % capacity;
-    };
     auto sample_at = [&](auto bytes,
                          SampleRealtimePortStateStorageView const& view,
                          std::size_t semantic) -> decltype(bytes.data()) {
         auto* base = storage_base(bytes, view);
-        auto const frame = physical_frame(
-            semantic, view.timeline_offset_frames, view.working_frame_capacity);
+        auto const physical =
+            semantic + static_cast<std::size_t>(view.timeline_offset_frames);
+        std::optional<std::size_t> frame;
+        if (view.storage == SampleRealtimePortStateStorage::ring) {
+            if (view.working_frame_capacity != 0) {
+                frame = physical % view.working_frame_capacity;
+            }
+        } else if (view.storage
+                   == SampleRealtimePortStateStorage::compact_carry) {
+            if (view.storage_frame_count >= view.carry_future_frames) {
+                auto const retained_before =
+                    view.storage_frame_count - view.carry_future_frames;
+                auto const first = sample_index - retained_before;
+                auto const candidate = physical - first;
+                if (candidate < view.storage_frame_count) frame = candidate;
+            }
+        }
         auto const channels = channel_count(view.channel_layout);
         if (!base || !frame || channels == 0
             || view.representation_channel >= channels) {
@@ -810,7 +836,7 @@ std::expected<void, std::string> execute_realtime_port_state_ring_transfers(
         }
         auto const sample = view.channel_layout.sample_layout
                 == SampleStreamLayout::planar
-            ? view.representation_channel * view.working_frame_capacity + *frame
+            ? view.representation_channel * view.storage_frame_count + *frame
             : *frame * channels + view.representation_channel;
         if (sample >= view.storage_size_bytes / sizeof(Sample)) return nullptr;
         return reinterpret_cast<decltype(bytes.data())>(base)
@@ -818,14 +844,31 @@ std::expected<void, std::string> execute_realtime_port_state_ring_transfers(
     };
 
     for (auto const& transfer : plan.sample_transfers) {
-        if (transfer.target_storage.storage
-                != SampleRealtimePortStateStorage::ring
+        if ((transfer.target_storage.storage
+                 != SampleRealtimePortStateStorage::ring
+             && transfer.target_storage.storage
+                 != SampleRealtimePortStateStorage::compact_carry)
             || transfer.source_storage.size() != 1
             || (transfer.source_access != SampleRealtimePortStateAccess::direct
                 && transfer.source_access
                     != SampleRealtimePortStateAccess::immutable_constant)) {
             return std::unexpected(
-                "sample transition transfer is not an executable ring transfer");
+                "sample transition transfer has no executable direct storage");
+        }
+        Sample const silence{};
+        for (auto relative = transfer.target_begin;
+             relative < transfer.target_end; ++relative) {
+            auto const semantic = relative_sample(sample_index, relative);
+            if (!semantic) continue;
+            auto* target = sample_at(
+                std::span<std::byte>{current_storage},
+                transfer.target_storage,
+                *semantic);
+            if (!target) {
+                return std::unexpected(
+                    "sample transition target interval lies outside successor storage");
+            }
+            std::memcpy(target, &silence, sizeof(silence));
         }
         for (auto relative = transfer.inherited_begin;
              relative < transfer.inherited_end; ++relative) {

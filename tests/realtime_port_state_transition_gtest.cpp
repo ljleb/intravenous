@@ -341,6 +341,8 @@ TEST(RealtimePortStateTransition, SelectsImmutableAndPrivateSampleRealizations)
     ASSERT_TRUE(transfer.target_storage.node_storage_offset.has_value());
     EXPECT_EQ(*transfer.source_storage[0].node_storage_offset, 64u);
     EXPECT_EQ(*transfer.target_storage.node_storage_offset, 512u);
+    EXPECT_EQ(transfer.target_begin, -8);
+    EXPECT_EQ(transfer.target_end, 0);
     EXPECT_EQ(transfer.inherited_begin, -8);
     EXPECT_EQ(transfer.inherited_end, 0);
 }
@@ -480,6 +482,8 @@ TEST(RealtimePortStateTransition, DescribesDirectEventSteadyStorageTransfer)
     ASSERT_TRUE(transfer.target_storage.node_storage_offset.has_value());
     EXPECT_EQ(*transfer.source_storage.node_storage_offset, 128u);
     EXPECT_EQ(*transfer.target_storage.node_storage_offset, 640u);
+    EXPECT_EQ(transfer.target_begin, -32);
+    EXPECT_EQ(transfer.target_end, 0);
     EXPECT_EQ(transfer.inherited_begin, -32);
     EXPECT_EQ(transfer.inherited_end, 0);
 }
@@ -541,6 +545,9 @@ TEST(RealtimePortStateTransition, ExecutesDirectSampleRingTransferAtCutover)
     for (std::size_t semantic = 6; semantic < 10; ++semantic) {
         write_sample(previous, semantic % 8, static_cast<float>(semantic));
     }
+    for (std::size_t frame = 0; frame < 8; ++frame) {
+        write_sample(current, frame, 99.0f);
+    }
     auto view = iv::graph_jit::SampleRealtimePortStateStorageView{
         .storage = iv::graph_jit::SampleRealtimePortStateStorage::ring,
         .channel_layout = {
@@ -558,19 +565,151 @@ TEST(RealtimePortStateTransition, ExecutesDirectSampleRingTransferAtCutover)
                 iv::graph_jit::SampleRealtimePortStateAccess::direct,
             .source_storage = {view},
             .target_storage = view,
+            .target_begin = -5,
+            .target_end = 0,
             .inherited_begin = -4,
             .inherited_end = 0,
         }},
     };
 
-    auto executed = iv::graph_jit::execute_realtime_port_state_ring_transfers(
+    auto executed = iv::graph_jit::execute_realtime_port_state_transfers(
         plan, previous, current, 10);
 
     ASSERT_TRUE(executed.has_value())
         << (executed ? std::string{} : executed.error());
+    EXPECT_EQ(read_sample(current, 5), 0.0f);
     for (std::size_t semantic = 6; semantic < 10; ++semantic) {
         EXPECT_EQ(read_sample(current, semantic % 8), semantic);
     }
+}
+
+TEST(RealtimePortStateTransition, ExecutesDirectSampleCompactCarryTransfer)
+{
+    std::vector<std::byte> previous(8 * sizeof(iv::Sample));
+    std::vector<std::byte> current(6 * sizeof(iv::Sample));
+    auto write_sample = [](std::vector<std::byte>& bytes,
+                           std::size_t frame,
+                           float value) {
+        iv::Sample sample{value};
+        std::memcpy(bytes.data() + frame * sizeof(sample), &sample, sizeof(sample));
+    };
+    auto read_sample = [](std::vector<std::byte> const& bytes,
+                          std::size_t frame) {
+        iv::Sample sample{};
+        std::memcpy(&sample, bytes.data() + frame * sizeof(sample), sizeof(sample));
+        return sample.value;
+    };
+    write_sample(previous, 1, 17.0f);
+    write_sample(previous, 2, 18.0f);
+    write_sample(previous, 3, 19.0f);
+    for (std::size_t frame = 0; frame < 6; ++frame) {
+        write_sample(current, frame, 99.0f);
+    }
+    auto const source = iv::graph_jit::SampleRealtimePortStateStorageView{
+        .storage =
+            iv::graph_jit::SampleRealtimePortStateStorage::compact_carry,
+        .channel_layout = {
+            .channel_type = iv::ChannelTypeId::mono,
+            .sample_layout = iv::SampleStreamLayout::planar,
+        },
+        .timeline_offset_frames = -2,
+        .working_frame_capacity = 16,
+        .storage_frame_count = 8,
+        .carry_future_frames = 2,
+        .node_storage_offset = 0,
+        .storage_size_bytes = previous.size(),
+    };
+    auto const target = iv::graph_jit::SampleRealtimePortStateStorageView{
+        .storage =
+            iv::graph_jit::SampleRealtimePortStateStorage::compact_carry,
+        .channel_layout = {
+            .channel_type = iv::ChannelTypeId::mono,
+            .sample_layout = iv::SampleStreamLayout::planar,
+        },
+        .timeline_offset_frames = -1,
+        .working_frame_capacity = 8,
+        .storage_frame_count = 6,
+        .carry_future_frames = 1,
+        .node_storage_offset = 0,
+        .storage_size_bytes = current.size(),
+    };
+    iv::graph_jit::RealtimePortStateTransitionPlan plan{
+        .sample_transfers = {{
+            .source_access =
+                iv::graph_jit::SampleRealtimePortStateAccess::direct,
+            .source_storage = {source},
+            .target_storage = target,
+            .target_begin = -4,
+            .target_end = 0,
+            .inherited_begin = -3,
+            .inherited_end = 0,
+        }},
+    };
+
+    auto executed = iv::graph_jit::execute_realtime_port_state_transfers(
+        plan, previous, current, 20);
+
+    ASSERT_TRUE(executed.has_value())
+        << (executed ? std::string{} : executed.error());
+    EXPECT_EQ(read_sample(current, 0), 0.0f);
+    EXPECT_EQ(read_sample(current, 1), 17.0f);
+    EXPECT_EQ(read_sample(current, 2), 18.0f);
+    EXPECT_EQ(read_sample(current, 3), 19.0f);
+}
+
+TEST(RealtimePortStateTransition, PlansDirectCompactCarrySteadyStorageTransfer)
+{
+    iv::graph_jit::RealtimePortStateRequirements previous{
+        .states = {requirement(
+            1,
+            3,
+            iv::PortKind::sample,
+            iv::graph_jit::PortDirection::input,
+            iv::graph_jit::RealtimePortStateRole::sequential_input_history,
+            "node",
+            "in",
+            0)},
+    };
+    auto current = previous;
+    current.states[0].configured_port.node_bundle_handle = 9;
+    current.states[0].extent_samples = 5;
+    auto previous_state = direct_sample(0, 64);
+    previous_state.retained_sources[0].storage =
+        iv::graph_jit::SampleRealtimePortStateStorage::compact_carry;
+    previous_state.retained_sources[0].carry_future_frames = 2;
+    auto current_state = direct_sample(0, 512);
+    current_state.retained_sources[0].storage =
+        iv::graph_jit::SampleRealtimePortStateStorage::compact_carry;
+    current_state.retained_sources[0].carry_future_frames = 1;
+    iv::graph_jit::RealtimePortStateRealizations previous_realizations{
+        .sample_states = {std::move(previous_state)},
+    };
+    iv::graph_jit::RealtimePortStateRealizations current_realizations{
+        .sample_states = {std::move(current_state)},
+    };
+
+    auto planned = iv::graph_jit::plan_realtime_port_state_transition(
+        previous,
+        previous_realizations,
+        current,
+        current_realizations);
+
+    ASSERT_TRUE(planned.has_value())
+        << (planned ? std::string{} : planned.error());
+    ASSERT_EQ(planned->sample_states.size(), 1u);
+    EXPECT_EQ(
+        planned->sample_states[0].inherited_state_realization,
+        iv::graph_jit::InheritedRealtimePortStateRealization::
+            transfer_to_steady_storage);
+    ASSERT_EQ(planned->sample_transfers.size(), 1u);
+    EXPECT_EQ(planned->sample_transfers[0].target_begin, -5);
+    EXPECT_EQ(planned->sample_transfers[0].target_end, 0);
+    EXPECT_EQ(
+        planned->sample_transfers[0].source_storage[0].storage,
+        iv::graph_jit::SampleRealtimePortStateStorage::compact_carry);
+    EXPECT_EQ(
+        planned->sample_transfers[0].target_storage.storage,
+        iv::graph_jit::SampleRealtimePortStateStorage::compact_carry);
 }
 
 TEST(RealtimePortStateTransition, ExecutesDirectEventRingTransferAtCutover)
@@ -621,7 +760,7 @@ TEST(RealtimePortStateTransition, ExecutesDirectEventRingTransferAtCutover)
         }},
     };
 
-    auto executed = iv::graph_jit::execute_realtime_port_state_ring_transfers(
+    auto executed = iv::graph_jit::execute_realtime_port_state_transfers(
         plan, previous, current, 108);
 
     ASSERT_TRUE(executed.has_value())

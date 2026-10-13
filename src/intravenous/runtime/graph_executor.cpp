@@ -211,7 +211,7 @@ void GraphExecutor::ExecutionGeneration::commit_realtime_migration(
             "GraphExecutor realtime generation migration is not prepared");
     }
     realtime_migration->commit();
-    auto transferred = graph_jit::execute_realtime_port_state_ring_transfers(
+    auto transferred = graph_jit::execute_realtime_port_state_transfers(
         *realtime_port_state_transition,
         realtime_migration->previous->buffer(),
         realtime.storage.buffer(),

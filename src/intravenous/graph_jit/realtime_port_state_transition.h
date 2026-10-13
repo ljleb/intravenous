@@ -62,6 +62,10 @@ struct SampleRealtimePortStateTransfer {
     // semantic state. Ignored when source_access is not materialized.
     std::size_t source_materialization_channel = 0;
     SampleRealtimePortStateStorageView target_storage{};
+    // Complete successor interval. It is initialized to silence before the
+    // inherited sub-interval is transferred from predecessor storage.
+    std::int64_t target_begin = 0;
+    std::int64_t target_end = 0;
     std::int64_t inherited_begin = 0;
     std::int64_t inherited_end = 0;
 };
@@ -80,6 +84,10 @@ struct EventRealtimePortStateTransfer {
     std::size_t source_history_samples = 0;
     bool source_selects_invocation_window = false;
     EventRealtimePortStateStorageView target_storage{};
+    // Complete successor interval; events outside the inherited sub-interval
+    // are authoritatively absent after reconstruction.
+    std::int64_t target_begin = 0;
+    std::int64_t target_end = 0;
     std::int64_t inherited_begin = 0;
     std::int64_t inherited_end = 0;
 };
@@ -102,11 +110,11 @@ plan_realtime_port_state_transition(
     RealtimePortStateRequirements const& current_requirements,
     RealtimePortStateRealizations const& current_realizations);
 
-// Executes the bounded transfers whose predecessor and successor states are
-// both canonical persistent rings. sample_index is the first sample processed
-// by the successor generation.
+// Executes bounded transfers between canonical persistent sample storage and
+// between canonical persistent event rings. sample_index is the first sample
+// processed by the successor generation.
 [[nodiscard]] std::expected<void, std::string>
-execute_realtime_port_state_ring_transfers(
+execute_realtime_port_state_transfers(
     RealtimePortStateTransitionPlan const& plan,
     std::span<std::byte const> previous_storage,
     std::span<std::byte> current_storage,
