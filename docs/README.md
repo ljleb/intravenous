@@ -2,9 +2,16 @@
 
 Documents directly under `docs/` describe the current implementation, the current design direction, or future work that is still compatible with that direction.
 
+The rules for distinguishing normative design, current implementation, implementation
+friction, and historical material are defined by
+[Design, Implementation, And Documentation Workflow](./development_workflow.md).
+Implementation success must not retroactively redefine design intent, and semantic
+information removed from a current document must be preserved under `historical/`.
+
 The primary application-architecture entry points are:
 
 - [Outstanding Implementation Fronts](./implementation_fronts_direction.md)
+- [Design, Implementation, And Documentation Workflow](./development_workflow.md)
 - [Project Graph Application Architecture](./project_graph_application_architecture.md)
 - [Package Pipeline Application Architecture](./package_pipeline_architecture.md)
 - [Node Definitions And Instances Direction](./node_definitions_and_instances_direction.md)
@@ -18,6 +25,8 @@ The primary application-architecture entry points are:
 - [Runtime Performance Roadmap](./runtime_performance_roadmap.md)
 - [Batched Node Callback Direction](./batched_node_callbacks_direction.md)
 - [DSP Execution And Storage Glossary](./dsp_execution_storage_glossary.md)
+- [Circular Global Timeline Indexing](./global_indexing.md)
+- [Circular Global Index Migration Status](./global_index_migration_status.md)
 - [Coverage, Random Access, And Background Evaluation](./coverage_and_background_evaluation.md)
 - [Random-Access Port Data, Audio Value Types, And Input Contract Direction](./random_access_port_data_direction.md)
 - [Sequential Port Storage And Connection Planning](./sequential_port_storage_planning.md)

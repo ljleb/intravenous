@@ -38,7 +38,7 @@ struct RealtimeProducedRecordHeader {
         RealtimeProducedPayloadKind::samples;
     std::size_t record_block_count = 0;
     std::size_t payload_size = 0;
-    SampleIndex begin = 0;
+    GlobalIndex begin{};
     std::size_t sample_count = 0;
     ChannelLayout sample_layout{};
     EventTypeId event_type = EventTypeId::empty;

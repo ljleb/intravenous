@@ -227,7 +227,7 @@ struct BackgroundNodePlan {
     bool uses_replay_forward_coverage = false;
     bool uses_replay_reverse_coverage = false;
     bool uses_imported_tick_block_for_replay = false;
-    // Zero for non-replay nodes. Replay transactions split dynamic Coverage
+    // Zero for non-replay nodes. Replay transactions split dynamic IndexCoverage
     // into invocations no larger than this compiled constraint.
     std::size_t replay_maximum_block_size = 0;
 
@@ -262,7 +262,7 @@ struct BackgroundConnectionPlan {
     std::vector<NodeBundlePortId> source_ports{};
     std::vector<NodeBundlePortId> target_ports{};
     // Indices in the data-specific source/target subset vectors retained by
-    // BackgroundEvaluationPlan. Coverage remains port-granular.
+    // BackgroundEvaluationPlan. IndexCoverage remains port-granular.
     std::vector<PortSubsetIndex> source_subsets{};
     std::vector<PortSubsetIndex> target_subsets{};
 

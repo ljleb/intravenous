@@ -8,7 +8,7 @@
 namespace iv {
 namespace {
 
-Coverage coverage_difference(Coverage const& left, Coverage const& right)
+IndexCoverage coverage_difference(IndexCoverage const& left, IndexCoverage const& right)
 {
     return (left - right) | (right - left);
 }
@@ -35,10 +35,10 @@ BackgroundPropagationWorkspace::port(graph_jit::BackgroundPortIndex index) const
     return *planned.accumulators.input_change;
 }
 
-[[nodiscard]] Coverage BackgroundPropagationWorkspace::input_coverage(
+[[nodiscard]] IndexCoverage BackgroundPropagationWorkspace::input_coverage(
     graph_jit::BackgroundPortIndex input) const
 {
-    Coverage result;
+    IndexCoverage result;
     auto const& planned_input = port(input);
     for (auto const connection_index : planned_input.incoming_connections) {
         auto const& connection = plan_->connections[connection_index];
@@ -58,7 +58,7 @@ void BackgroundPropagationWorkspace::activate_node(
 }
 
 void BackgroundPropagationWorkspace::add_input_change(
-    graph_jit::BackgroundPortIndex input, Coverage const& changed,
+    graph_jit::BackgroundPortIndex input, IndexCoverage const& changed,
     bool recompute_coverage)
 {
     auto const& planned = port(input);
@@ -81,7 +81,7 @@ void BackgroundPropagationWorkspace::add_input_change(
 }
 
 void BackgroundPropagationWorkspace::route_output_change(
-    graph_jit::BackgroundPortIndex output, Coverage const& changed,
+    graph_jit::BackgroundPortIndex output, IndexCoverage const& changed,
     bool coverage_changed)
 {
     auto const& planned_output = port(output);
@@ -94,8 +94,8 @@ void BackgroundPropagationWorkspace::route_output_change(
 }
 
 void BackgroundPropagationWorkspace::set_input_change(
-    graph_jit::BackgroundPortIndex input, Coverage const& coverage,
-    Coverage const& changed)
+    graph_jit::BackgroundPortIndex input, IndexCoverage const& coverage,
+    IndexCoverage const& changed)
 {
     auto const& planned = port(input);
     auto const index = input_index(input);
@@ -112,7 +112,7 @@ void BackgroundPropagationWorkspace::set_input_change(
 }
 
 void BackgroundPropagationWorkspace::publish_output_coverage(
-    graph_jit::BackgroundPortIndex output, Coverage const& coverage)
+    graph_jit::BackgroundPortIndex output, IndexCoverage const& coverage)
 {
     auto const index = output_index(output);
     auto& accumulator = output_changes_[index];
@@ -125,7 +125,7 @@ void BackgroundPropagationWorkspace::publish_output_coverage(
 }
 
 void BackgroundPropagationWorkspace::publish_output_change(
-    graph_jit::BackgroundPortIndex output, Coverage const& changed)
+    graph_jit::BackgroundPortIndex output, IndexCoverage const& changed)
 {
     if (changed.empty())
         return;
@@ -137,21 +137,21 @@ void BackgroundPropagationWorkspace::publish_output_change(
 }
 
 void BackgroundPropagationWorkspace::publish_output_coverage_callback(
-    void* opaque, Coverage const& coverage)
+    void* opaque, IndexCoverage const& coverage)
 {
     auto& accumulator = *static_cast<OutputChangeAccumulator*>(opaque);
     accumulator.owner->publish_output_coverage(accumulator.port, coverage);
 }
 
 void BackgroundPropagationWorkspace::publish_output_change_callback(
-    void* opaque, Coverage const& changed)
+    void* opaque, IndexCoverage const& changed)
 {
     auto& accumulator = *static_cast<OutputChangeAccumulator*>(opaque);
     accumulator.owner->publish_output_change(accumulator.port, changed);
 }
 
 void BackgroundPropagationWorkspace::require_output(
-    graph_jit::BackgroundPortIndex output, Coverage const& requested,
+    graph_jit::BackgroundPortIndex output, IndexCoverage const& requested,
     bool activate_producer)
 {
     auto const& planned = port(output);
@@ -167,10 +167,10 @@ void BackgroundPropagationWorkspace::require_output(
 }
 
 void BackgroundPropagationWorkspace::require_input(
-    graph_jit::BackgroundPortIndex input, Coverage const& requested)
+    graph_jit::BackgroundPortIndex input, IndexCoverage const& requested)
 {
     auto const& planned_input = port(input);
-    Coverage coverage;
+    IndexCoverage coverage;
     InputRequirementAccumulator* accumulator = nullptr;
     if (planned_input.accumulators.input_requirement) {
         auto const index = *planned_input.accumulators.input_requirement;
@@ -197,7 +197,7 @@ void BackgroundPropagationWorkspace::require_input(
 }
 
 void BackgroundPropagationWorkspace::publish_input_requirement_callback(
-    void* opaque, Coverage const& required)
+    void* opaque, IndexCoverage const& required)
 {
     auto& accumulator = *static_cast<InputRequirementAccumulator*>(opaque);
     accumulator.owner->require_input(accumulator.port, required);
@@ -206,8 +206,8 @@ void BackgroundPropagationWorkspace::publish_input_requirement_callback(
 void BackgroundPropagationWorkspace::replay_forward_coverage(
     void*, ReflectedNodeForwardCoverageContext const& context)
 {
-    Coverage coverage;
-    Coverage changed;
+    IndexCoverage coverage;
+    IndexCoverage changed;
     for (auto const& input :
          static_cast<std::span<InputCoverageChange const>>(context.inputs)) {
         coverage.include(input.coverage());
@@ -233,7 +233,7 @@ void BackgroundPropagationWorkspace::replay_forward_coverage(
 void BackgroundPropagationWorkspace::replay_reverse_coverage(
     void*, ReflectedNodeReverseCoverageContext const& context)
 {
-    Coverage required;
+    IndexCoverage required;
     for (auto const& output :
          static_cast<std::span<OutputCoverageRequirement const>>(
              context.outputs)) {
@@ -508,7 +508,7 @@ BackgroundPropagationWorkspace::prepare(
             if (planned.direction != graph_jit::PortDirection::output)
                 continue;
             auto const change_index = output_index(index);
-            Coverage additional;
+            IndexCoverage additional;
             expansion.expand_output(
                 expansion.data, index,
                 candidate_output_coverages_[change_index],

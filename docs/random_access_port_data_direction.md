@@ -7,6 +7,7 @@ contains page-backed implementations while this migration is in progress._
 
 Related documents:
 
+- [Circular Global Timeline Indexing](./global_indexing.md)
 - [Coverage, Random Access, And Background Evaluation](./coverage_and_background_evaluation.md)
 - [Sequential Port Storage And Connection Planning](./sequential_port_storage_planning.md)
 - [Graph JIT Direction](./graph_jit_direction.md)
@@ -277,11 +278,11 @@ The initial extension remains deliberately narrow:
 
 ```text
 Sample
-GlobalIndex
+FractionalGlobalIndex
 FFTBlock
 ```
 
-`GlobalIndex` is a scalar fixed-point coordinate in the global sample-index domain.
+`FractionalGlobalIndex` is a scalar fixed-point coordinate in the global sample-index domain.
 It is data transported at ordinary integer global positions; it does **not** replace
 the integer global index used to locate graph data itself. Its representation retains
 the full integer global-sample-index width and adds 64 fractional bits, so fractional
@@ -289,7 +290,7 @@ sample positions do not sacrifice the existing global-index range.
 
 Image/video values are explicitly deferred. They should not force premature answers
 about image pacing, pixel layouts, channel semantics, or GraphJit video-kernel
-optimization while the audio system is still being completed. `GlobalIndex` is not an
+optimization while the audio system is still being completed. `FractionalGlobalIndex` is not an
 audio amplitude type, but it belongs in the same transported-value registry because it
 uses the same port/storage/lowering machinery.
 
@@ -297,7 +298,7 @@ The initial direction does **not** add implicit conversions between registered v
 types. A direct connection requires the source and target to resolve to the same value
 type. When a representation change is useful, an explicit conversion/DSP node owns its
 rounding, overflow, precision and other semantic choices. This is intentionally
-conservative: a one-way implicit conversion such as `Sample -> GlobalIndex` can be
+conservative: a one-way implicit conversion such as `Sample -> FractionalGlobalIndex` can be
 added later without changing either type's representation if experience shows that it
 is universally useful. A semantic transform such as waveform <-> FFT remains a DSP
 node rather than an implicit type conversion.
@@ -324,7 +325,7 @@ For the initial types:
 Sample
     scalar; no dynamic dimensions
 
-GlobalIndex
+FractionalGlobalIndex
     scalar; no dynamic dimensions
 
 FFTBlock
@@ -453,7 +454,7 @@ if (out.is<iv::Sample>()) {
     auto samples = out.as<iv::Sample>();
     // ...
 } else {
-    auto positions = out.as<iv::GlobalIndex>();
+    auto positions = out.as<iv::FractionalGlobalIndex>();
     // ...
 }
 ```
@@ -481,34 +482,34 @@ and per-port `tick_block()` sizes are specified in
 [Graph JIT Direction](./graph_jit_direction.md#planned-value-type-port-size-pace-history-latency-and-coverage-ordering-constraint-analysis)
 and [Sequential Port Storage And Connection Planning](./sequential_port_storage_planning.md#planned-pace-aware-tick_block-contract).
 
-### `GlobalIndex` enables explicit coordinate sampling without changing pace
+### `FractionalGlobalIndex` enables explicit coordinate sampling without changing pace
 
-`GlobalIndex` values make fractional/random source addressing ordinary graph data.
+`FractionalGlobalIndex` values make fractional/random source addressing ordinary graph data.
 A canonical resampler shape is:
 
 ```text
-positions : Sequential GlobalIndex
+positions : Sequential FractionalGlobalIndex
 source    : Random Access Sample
 output    : Tick/ephemeral Sample
 ```
 
 For each output position, the node samples `source` at the corresponding fractional
-`GlobalIndex`, using the node's explicitly defined interpolation and out-of-coverage
+`FractionalGlobalIndex`, using the node's explicitly defined interpolation and out-of-coverage
 policy. The position stream may increase, decrease, repeat, jump or otherwise warp
 time. A rate/BPM signal can therefore feed an integral-like node that produces
-`GlobalIndex`; negative rate naturally produces decreasing coordinates. Stutters,
+`FractionalGlobalIndex`; negative rate naturally produces decreasing coordinates. Stutters,
 scrubbing, variable-speed playback and granular/time-warping structures can be built
 from the same coordinate interface.
 
 This does not redefine port `pace()`. Pace still states an exact transport-rate
-relationship and performs no resampling. `GlobalIndex` is instead a value whose
+relationship and performs no resampling. `FractionalGlobalIndex` is instead a value whose
 meaning is a coordinate used by nodes that explicitly choose to sample another input.
 
 Curve authoring should likewise keep curve definition separate from evaluated value
 representation. One curve clip/event representation may be sampled/evaluated into
-either `Sample` or `GlobalIndex`. That can initially be exposed through separate
+either `Sample` or `FractionalGlobalIndex`. That can initially be exposed through separate
 concrete evaluator nodes hidden behind one module/presentation choice, or through one
-evaluator whose output declares `{Sample, GlobalIndex}` and resolves its selected type
+evaluator whose output declares `{Sample, FractionalGlobalIndex}` and resolves its selected type
 from graph constraints. The curve editing/clip machinery itself need not be duplicated
 solely because the eventual dense value type differs.
 

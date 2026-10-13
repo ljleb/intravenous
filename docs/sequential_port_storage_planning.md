@@ -1101,17 +1101,18 @@ port's declared history and declared/corrected latency. In other words, Tick
 event production is constrained by the same `current block + history + latency`
 semantic extent used to make sequential sample access predictable.
 
-For a callback beginning at global sample index `B`, block size `N`, output
-history `H`, and effective/corrected output latency `L`, the legal Tick event
-output extent is the half-open interval:
+For a callback beginning at `GlobalIndex B`, block size `N`, output history `H`,
+and effective/corrected output latency `L`, the legal Tick event output range is:
 
 ```text
-[max(0, B - H), B + N + L)
+begin  = B retreated by H
+extent = H + N + L
 ```
 
-The compatibility runtime enforces this exact half-open convention. Lowering
-may remove redundant checks when authored/generated accesses are statically
-proved to stay inside the same extent.
+The range is half-open in forward modular order and may cross bit-pattern zero.
+It is never clamped or saturated. The compatibility runtime enforces this exact
+convention. Lowering may remove redundant checks when authored/generated accesses
+are statically proved to stay inside the same range.
 
 The compatibility runtime should validate this constraint. The whole-project
 JIT may then specialize it away when the authored access is statically valid.

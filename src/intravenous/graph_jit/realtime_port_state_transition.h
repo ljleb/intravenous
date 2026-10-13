@@ -118,6 +118,6 @@ execute_realtime_port_state_transfers(
     RealtimePortStateTransitionPlan const& plan,
     std::span<std::byte const> previous_storage,
     std::span<std::byte> current_storage,
-    std::size_t sample_index);
+    GlobalIndex sample_index);
 
 } // namespace iv::graph_jit

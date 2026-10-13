@@ -71,7 +71,7 @@ struct BackgroundNodeCall {
     // supplies isolated invocation-local port storage for each requested
     // block; no live realtime State or buffers may be bound here.
     ReflectedNodeTickContext replay {};
-    ReflectedSpan<IndexRegion const> replay_regions {};
+    ReflectedSpan<GlobalIndexRange const> replay_regions {};
 };
 
 struct BackgroundEvaluationCall {

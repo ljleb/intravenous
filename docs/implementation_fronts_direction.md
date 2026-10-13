@@ -31,9 +31,12 @@ The fronts below follow five rules:
    GraphJit and executor runtime artifacts do not.
 4. **Land correctness before optimization.** Revision continuity, transactionality,
    and semantic delivery must not depend on a later batching/fusion/PGO pass.
-5. **Prefer explicit integration contracts over shared ownership.** A team may add a
-   temporary adapter to the current representation rather than taking ownership of a
-   neighboring front merely to make progress.
+5. **Depend on completed explicit integration contracts.** If a neighboring front's
+   current representation cannot support the feature, record that mismatch as
+   implementation friction and change the dependency order or design. Do not bridge an
+   incomplete prerequisite with a temporary adapter merely to keep another front
+   moving. The superseded policy is retained in
+   [historical documentation](./historical/implementation_fronts_temporary_adapter_policy.md).
 
 ## Front 1: port constraints and realization
 
@@ -55,7 +58,7 @@ This front owns:
 - effective local sample-rate domains after pace resolution;
 - per-port Tick block extents;
 - Sequential `block_extended()` realization;
-- the initial continuous-value registry, including `Sample`, `GlobalIndex` and
+- the initial continuous-value registry, including `Sample`, `FractionalGlobalIndex` and
   `FFTBlock`;
 - realization-time selection of one concrete type for multi-type ports before storage
   planning/lowering;

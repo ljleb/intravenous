@@ -203,7 +203,7 @@ void GraphExecutor::ExecutionGeneration::prepare_background_migration_from(
 }
 
 void GraphExecutor::ExecutionGeneration::commit_realtime_migration(
-    std::size_t sample_index)
+    GlobalIndex sample_index)
 {
     if (realtime_initialized || !realtime_migration
         || !realtime_port_state_transition) {
@@ -539,7 +539,7 @@ GraphExecutorStageResult GraphExecutor::stage(
     return GraphExecutorStageResult::staged;
 }
 
-bool GraphExecutor::activate_pending(std::size_t sample_index)
+bool GraphExecutor::activate_pending(GlobalIndex sample_index)
 {
     if (!pending_generation_) return false;
     if (!realtime_active_) {
@@ -773,7 +773,7 @@ GraphExecutor::background_execution_failures() const noexcept
     return background_executor_.failures();
 }
 
-void GraphExecutor::tick_block(std::size_t sample_index, std::size_t block_size)
+void GraphExecutor::tick_block(GlobalIndex sample_index, std::size_t block_size)
 {
     auto& generation = realtime_execution_generation();
     if (block_size == 0

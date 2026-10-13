@@ -48,7 +48,7 @@ class TickInvocationWorkspace {
     [[nodiscard]] graph_jit::TickInvocationCall bind(
         PersistedPageStore::Snapshot const& published,
         TickMaterializationSnapshot const& materialized,
-        SampleIndex sample_index,
+        GlobalIndex sample_index,
         std::size_t block_size) noexcept;
 
 public:
@@ -104,7 +104,7 @@ public:
         PersistedPageStore::ReaderSlot& page_reader,
         TickMaterializationStore::ReaderSlot& materialization_reader,
         TickInvocationWorkspace& workspace,
-        SampleIndex sample_index = 0,
+        GlobalIndex sample_index = {},
         std::size_t block_size = 0) noexcept;
 
     // GraphExecutor uses one already-adopted coherent root for the entire
@@ -112,7 +112,7 @@ public:
     explicit TickInvocationFrame(
         RealtimePersistedState const& persisted,
         TickInvocationWorkspace& workspace,
-        SampleIndex sample_index = 0,
+        GlobalIndex sample_index = {},
         std::size_t block_size = 0) noexcept;
 
     TickInvocationFrame(TickInvocationFrame const&) = delete;

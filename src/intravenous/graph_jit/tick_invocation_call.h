@@ -15,7 +15,7 @@ struct TickSampleCaptureOperation {
     using Capture = void (*)(
         void* context,
         ReflectedSampleOutputPortBinding const* output,
-        std::size_t sample_index,
+        GlobalIndex sample_index,
         std::size_t block_size) noexcept;
 
     void* context = nullptr;
@@ -26,7 +26,7 @@ struct TickEventCaptureOperation {
     using Capture = void (*)(
         void* context,
         ReflectedEventOutputPortBinding const* output,
-        std::size_t sample_index,
+        GlobalIndex sample_index,
         std::size_t block_size) noexcept;
 
     void* context = nullptr;

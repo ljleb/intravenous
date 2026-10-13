@@ -14,24 +14,24 @@ namespace iv {
 // plan.
 struct OutputCoverageChangeRequest {
     graph_jit::BackgroundPortIndex port = 0;
-    Coverage coverage{};
-    Coverage changed{};
+    IndexCoverage coverage{};
+    IndexCoverage changed{};
 };
 
 struct OutputCoverageRequest {
     graph_jit::BackgroundPortIndex port = 0;
-    Coverage required{};
+    IndexCoverage required{};
 };
 
 struct InputCoverageChangeRequest {
     graph_jit::BackgroundPortIndex port = 0;
-    Coverage coverage{};
-    Coverage changed{};
+    IndexCoverage coverage{};
+    IndexCoverage changed{};
 };
 
 struct InputCoverageRequest {
     graph_jit::BackgroundPortIndex port = 0;
-    Coverage required{};
+    IndexCoverage required{};
 };
 
 struct CoveragePropagationRequest {
@@ -44,18 +44,18 @@ struct CoveragePropagationRequest {
 
 struct PropagatedOutputChange {
     graph_jit::BackgroundPortIndex port = 0;
-    Coverage coverage{};
-    Coverage changed{};
+    IndexCoverage coverage{};
+    IndexCoverage changed{};
 };
 
 struct RequiredOutputCoverage {
     graph_jit::BackgroundPortIndex port = 0;
-    Coverage required{};
+    IndexCoverage required{};
 };
 
 struct RequiredInputCoverage {
     graph_jit::BackgroundPortIndex port = 0;
-    Coverage required{};
+    IndexCoverage required{};
 };
 
 // Propagation deliberately returns coverage changes and requirements, not
@@ -74,9 +74,9 @@ struct CoveragePropagationResult {
 struct BackgroundCoverageDemandExpansion {
     void* data = nullptr;
     void (*expand_output)(
-        void*, graph_jit::BackgroundPortIndex, Coverage const& available,
-        Coverage const& changed, Coverage const& required,
-        Coverage& additional) = nullptr;
+        void*, graph_jit::BackgroundPortIndex, IndexCoverage const& available,
+        IndexCoverage const& changed, IndexCoverage const& required,
+        IndexCoverage& additional) = nullptr;
 };
 
 class BackgroundPropagationWorkspace;
@@ -85,7 +85,7 @@ class BackgroundPropagationWorkspace;
 // intentionally separate from both reusable accumulator scratch and one
 // transaction's prepared candidate.
 class BackgroundCoverageState {
-    std::vector<Coverage> output_coverages_{};
+    std::vector<IndexCoverage> output_coverages_{};
 
     friend class BackgroundPropagationWorkspace;
 
@@ -99,7 +99,7 @@ public:
 // storage and evaluation without mutating the committed baseline.
 class PreparedCoveragePropagation {
     CoveragePropagationResult result_{};
-    std::vector<Coverage> output_coverages_{};
+    std::vector<IndexCoverage> output_coverages_{};
     std::vector<graph_jit::BackgroundNodeActivity> node_activity_{};
 
     PreparedCoveragePropagation() = default;
@@ -135,26 +135,26 @@ public:
 // persisted pages, materialized storage or transaction publication policy.
 class BackgroundPropagationWorkspace {
     struct InputChangeAccumulator {
-        Coverage coverage{};
-        Coverage changed{};
+        IndexCoverage coverage{};
+        IndexCoverage changed{};
     };
 
     struct OutputChangeAccumulator {
         BackgroundPropagationWorkspace* owner = nullptr;
         graph_jit::BackgroundPortIndex port = 0;
-        Coverage previous_coverage{};
-        Coverage changed{};
+        IndexCoverage previous_coverage{};
+        IndexCoverage changed{};
         bool touched = false;
     };
 
     struct InputRequirementAccumulator {
         BackgroundPropagationWorkspace* owner = nullptr;
         graph_jit::BackgroundPortIndex port = 0;
-        Coverage coverage{};
+        IndexCoverage coverage{};
     };
 
     struct OutputRequirementAccumulator {
-        Coverage required{};
+        IndexCoverage required{};
     };
 
     struct NodeCoverageCallData {
@@ -170,12 +170,12 @@ class BackgroundPropagationWorkspace {
 
     graph_jit::BackgroundEvaluationPlan const* plan_ = nullptr;
     std::size_t sample_rate_ = 0;
-    std::vector<Coverage> candidate_output_coverages_{};
+    std::vector<IndexCoverage> candidate_output_coverages_{};
     std::vector<InputChangeAccumulator> input_changes_{};
     std::vector<OutputChangeAccumulator> output_changes_{};
     std::vector<InputRequirementAccumulator> input_requirements_{};
     std::vector<OutputRequirementAccumulator> output_requirements_{};
-    std::vector<Coverage> input_requirements_by_port_{};
+    std::vector<IndexCoverage> input_requirements_by_port_{};
     std::vector<InputCoverageChange> callback_input_changes_{};
     std::vector<OutputCoverageChange> callback_output_changes_{};
     std::vector<InputCoverageRequirement> callback_input_requirements_{};
@@ -190,33 +190,33 @@ class BackgroundPropagationWorkspace {
     output_index(graph_jit::BackgroundPortIndex index) const;
     [[nodiscard]] std::size_t
     input_index(graph_jit::BackgroundPortIndex index) const;
-    [[nodiscard]] Coverage
+    [[nodiscard]] IndexCoverage
     input_coverage(graph_jit::BackgroundPortIndex input) const;
     void activate_node(graph_jit::BackgroundNodeIndex node,
                        graph_jit::BackgroundNodeActivity activity);
     void add_input_change(graph_jit::BackgroundPortIndex input,
-                          Coverage const& changed, bool coverage_changed);
+                          IndexCoverage const& changed, bool coverage_changed);
     void route_output_change(graph_jit::BackgroundPortIndex output,
-                             Coverage const& changed, bool coverage_changed);
+                             IndexCoverage const& changed, bool coverage_changed);
     void set_input_change(graph_jit::BackgroundPortIndex input,
-                          Coverage const& coverage, Coverage const& changed);
+                          IndexCoverage const& coverage, IndexCoverage const& changed);
     void publish_output_coverage(graph_jit::BackgroundPortIndex output,
-                                 Coverage const& coverage);
+                                 IndexCoverage const& coverage);
     void publish_output_change(graph_jit::BackgroundPortIndex output,
-                               Coverage const& changed);
+                               IndexCoverage const& changed);
     void require_output(graph_jit::BackgroundPortIndex output,
-                        Coverage const& requested, bool activate_producer);
+                        IndexCoverage const& requested, bool activate_producer);
     void require_input(graph_jit::BackgroundPortIndex input,
-                       Coverage const& requested);
+                       IndexCoverage const& requested);
     void initialize_calls();
     void reset(BackgroundCoverageState const& coverage);
 
     static void publish_output_coverage_callback(void* accumulator,
-                                                 Coverage const& coverage);
+                                                 IndexCoverage const& coverage);
     static void publish_output_change_callback(void* accumulator,
-                                               Coverage const& changed);
+                                               IndexCoverage const& changed);
     static void publish_input_requirement_callback(void* accumulator,
-                                                   Coverage const& required);
+                                                   IndexCoverage const& required);
     static void
     replay_forward_coverage(void*,
                             ReflectedNodeForwardCoverageContext const& context);

@@ -232,9 +232,9 @@ struct ReflectedNodeRuntimeOperations {
     std::size_t (*declare_node)(
         void const*, NodeStateStructures const*, NodeLayoutBuilder&) = nullptr;
     void (*tick_block)(
-        void const*, ReflectedNodeTickContext const&, std::size_t, std::size_t) = nullptr;
+        void const*, ReflectedNodeTickContext const&, GlobalIndex, std::size_t) = nullptr;
     void (*skip_block)(
-        void const*, ReflectedNodeTickContext const&, std::size_t, std::size_t) = nullptr;
+        void const*, ReflectedNodeTickContext const&, GlobalIndex, std::size_t) = nullptr;
 
     constexpr bool valid() const
     {

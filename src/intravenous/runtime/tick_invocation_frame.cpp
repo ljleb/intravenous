@@ -15,7 +15,7 @@ namespace {
 
 static_assert(std::atomic<bool>::is_always_lock_free);
 
-Coverage const empty_tick_coverage{};
+IndexCoverage const empty_tick_coverage{};
 
 [[nodiscard]] bool capture_event_matches_type(
     EventTypeId type, Event const& event) noexcept
@@ -36,26 +36,27 @@ Coverage const empty_tick_coverage{};
 }
 
 [[nodiscard]] std::size_t coverage_sample_count(
-    Coverage const& coverage) noexcept
+    IndexCoverage const& coverage) noexcept
 {
     std::size_t result = 0;
     for (auto const region : coverage.regions()) {
-        result += static_cast<std::size_t>(region.end - region.begin);
+        result += static_cast<std::size_t>(region.extent);
     }
     return result;
 }
 
 [[nodiscard]] std::optional<std::size_t> packed_frame_offset(
-    Coverage const& domain,
-    SampleIndex index) noexcept
+    IndexCoverage const& domain,
+    GlobalIndex index) noexcept
 {
     std::size_t offset = 0;
     for (auto const region : domain.regions()) {
         if (region.contains(index)) {
-            return offset + static_cast<std::size_t>(index - region.begin);
+            return offset + static_cast<std::size_t>(
+                region.begin.forward_distance_to(index));
         }
-        if (index < region.begin) break;
-        offset += static_cast<std::size_t>(region.end - region.begin);
+        if (SignedGlobalIndexOrder{}(index, region.begin)) break;
+        offset += static_cast<std::size_t>(region.extent);
     }
     return std::nullopt;
 }
@@ -251,13 +252,11 @@ public:
                 .capture = +[](
                     void* opaque,
                     ReflectedSampleOutputPortBinding const* output,
-                    std::size_t sample_index,
+                    GlobalIndex sample_index,
                     std::size_t block_size) noexcept {
                     if (!output) return;
                     static_cast<SampleCaptureSlot*>(opaque)->capture(
-                        *output,
-                        static_cast<SampleIndex>(sample_index),
-                        block_size);
+                        *output, sample_index, block_size);
                 },
             };
         }
@@ -280,7 +279,7 @@ public:
 
         void capture(
             ReflectedSampleOutputPortBinding const& binding,
-            SampleIndex sample_index,
+            GlobalIndex sample_index,
             std::size_t block_size) noexcept
         {
             if (binding.disposition == OutputDisposition::untouched) return;
@@ -314,10 +313,10 @@ public:
 
             auto const window = realtime_port_window(
                 sample_index, block_size, 0, 0);
-            auto const window_size = window.end - window.begin;
-            auto const selected_count = static_cast<std::size_t>(window_size);
+            auto const selected_count = static_cast<std::size_t>(window.extent);
             if (selected_count == 0
-                || static_cast<SampleIndex>(selected_count) != window_size
+                || static_cast<GlobalIndex::extent_type>(selected_count)
+                    != window.extent
                 || selected_count > std::numeric_limits<std::size_t>::max()
                         / bytes_per_frame) {
                 return;
@@ -356,16 +355,14 @@ public:
             auto append_values = [&](auto& writer) noexcept {
                 auto append_sample = [&](std::size_t frame,
                                          std::size_t channel) noexcept {
-                    auto const absolute = window.begin
-                        + static_cast<SampleIndex>(frame);
+                    auto const absolute = window.begin.advanced_by(frame);
                     auto const& source = binding.storage.channels[channel];
-                    auto const logical = absolute
-                        + static_cast<SampleIndex>(
-                            binding.storage.storage_latency);
-                    auto const delayed = logical
-                        - static_cast<SampleIndex>(source.frame_delay);
+                    auto const logical = absolute.advanced_by(
+                        binding.storage.storage_latency);
+                    auto const delayed = logical.retreated_by(
+                        source.frame_delay);
                     auto const source_frame = static_cast<std::size_t>(
-                        delayed & (source.frame_capacity - 1));
+                        delayed.bits() & (source.frame_capacity - 1));
                     auto const value =
                         reinterpret_cast<Sample const*>(source.storage)[
                             source_frame * source.frame_stride];
@@ -441,13 +438,11 @@ public:
                 .capture = +[](
                     void* opaque,
                     ReflectedEventOutputPortBinding const* output,
-                    std::size_t sample_index,
+                    GlobalIndex sample_index,
                     std::size_t block_size) noexcept {
                     if (!output) return;
                     static_cast<EventCaptureSlot*>(opaque)->capture(
-                        *output,
-                        static_cast<SampleIndex>(sample_index),
-                        block_size);
+                        *output, sample_index, block_size);
                 },
             };
         }
@@ -470,7 +465,7 @@ public:
 
         void capture(
             ReflectedEventOutputPortBinding const& binding,
-            SampleIndex sample_index,
+            GlobalIndex sample_index,
             std::size_t block_size) noexcept
         {
             if (binding.disposition == OutputDisposition::untouched) return;
@@ -484,12 +479,11 @@ public:
             }
             auto const window = realtime_port_window(
                 sample_index, block_size, 0, 0);
-            auto const window_size = window.end - window.begin;
             auto const selected_window_size =
-                static_cast<std::size_t>(window_size);
+                static_cast<std::size_t>(window.extent);
             if (selected_window_size == 0
-                || static_cast<SampleIndex>(selected_window_size)
-                    != window_size) {
+                || static_cast<GlobalIndex::extent_type>(selected_window_size)
+                    != window.extent) {
                 return;
             }
             if (binding.disposition == OutputDisposition::voided) {
@@ -542,20 +536,19 @@ public:
 
             std::size_t selected_begin = available;
             std::size_t selected_count = 0;
-            EventTime previous = 0;
+            GlobalIndex::extent_type previous_offset = 0;
             bool first_selected = true;
             for (std::size_t index = 0; index < available; ++index) {
                 auto const& event = events[
                     (read + index) & (storage.event_capacity - 1)];
-                auto const time = static_cast<SampleIndex>(event.time);
-                if (time < window.begin) continue;
-                if (time >= window.end) break;
+                auto const offset = window.offset_of(event.time);
+                if (!offset) continue;
                 if (!capture_event_matches_type(type, event.value)
-                    || (!first_selected && event.time < previous)) {
+                    || (!first_selected && *offset < previous_offset)) {
                     return;
                 }
                 if (first_selected) selected_begin = index;
-                previous = event.time;
+                previous_offset = *offset;
                 first_selected = false;
                 ++selected_count;
             }
@@ -659,7 +652,7 @@ public:
         [[nodiscard]] Sample read(
             PersistedPageStore::Snapshot const& published,
             TickMaterializedSampleInput const* materialized,
-            SampleIndex index,
+            GlobalIndex index,
             std::size_t channel) const noexcept
         {
             if (materialized && materialized->coverage.contains(index)) {
@@ -696,17 +689,17 @@ public:
         void populate(
             PersistedPageStore::Snapshot const& published,
             TickMaterializedSampleInput const* materialized,
-            SampleIndex sample_index,
+            GlobalIndex sample_index,
             std::size_t block_size) noexcept
         {
             std::ranges::fill(values, neutral);
             auto const channels = channel_count(layout);
-            auto const begin = sample_index - static_cast<SampleIndex>(history);
+            auto const begin = sample_index.retreated_by(history);
             auto const count = history + block_size;
             auto const mask = capacity - 1;
             for (std::size_t offset = 0; offset < count; ++offset) {
-                auto const index = begin + static_cast<SampleIndex>(offset);
-                auto const frame = static_cast<std::size_t>(index & mask);
+                auto const index = begin.advanced_by(offset);
+                auto const frame = static_cast<std::size_t>(index.bits() & mask);
                 for (std::size_t channel = 0; channel < channels; ++channel) {
                     auto const value = read(
                         published, materialized, index, channel);
@@ -793,18 +786,19 @@ public:
         void populate(
             PersistedPageStore::Snapshot const& published,
             TickMaterializedEventInput const* materialized,
-            SampleIndex sample_index,
+            GlobalIndex sample_index,
             std::size_t block_size) noexcept
         {
             count() = 0;
             if (block_size == 0) return;
-            auto const end = sample_index + static_cast<SampleIndex>(block_size);
-            if (end < sample_index) return;
+            auto const range = GlobalIndexRange{
+                .begin = sample_index,
+                .extent = block_size,
+            };
 
             if (materialized) {
                 materialized->for_each(
-                    sample_index,
-                    end,
+                    range,
                     this,
                     +[](void* opaque, TimedEvent const& event) {
                         static_cast<SequentialEventSlot*>(opaque)->append(event);
@@ -823,14 +817,14 @@ public:
                     auto const page_begin = page_index * width;
                     for (auto const& stored : page->events) {
                         auto const absolute = page_begin
-                            + static_cast<SampleIndex>(stored.time);
+                            + static_cast<GlobalIndex>(stored.time);
                         if (absolute < sample_index || absolute >= end
                             || absolute
-                                > std::numeric_limits<EventTime>::max()) {
+                                > std::numeric_limits<GlobalIndex>::max()) {
                             continue;
                         }
                         auto event = stored;
-                        event.time = static_cast<EventTime>(absolute);
+                        event.time = static_cast<GlobalIndex>(absolute);
                         append(event);
                     }
                 }
@@ -846,10 +840,10 @@ public:
         graph_jit::BackgroundPortIndex port = 0;
         bool accepts_materialization = false;
         ChannelLayout layout{};
-        Coverage const* coverage = &empty_tick_coverage;
+        IndexCoverage const* coverage = &empty_tick_coverage;
 
         [[nodiscard]] Sample read(
-            SampleIndex index, std::size_t channel) const noexcept
+            GlobalIndex index, std::size_t channel) const noexcept
         {
             if (materialized && materialized->coverage.contains(index)
                 && materialized->has_channel(channel)) {
@@ -891,21 +885,20 @@ public:
         graph_jit::BackgroundPortIndex port = 0;
         bool accepts_materialization = false;
         EventTypeId type = EventTypeId::empty;
-        Coverage const* coverage = &empty_tick_coverage;
+        IndexCoverage const* coverage = &empty_tick_coverage;
 
         void for_each(
-            SampleIndex begin,
-            SampleIndex end,
+            GlobalIndexRange range,
             void* visitor_data,
             RandomAccessEventInputPort::VisitEvent visitor) const
         {
             if (materialized) {
                 materialized->for_each(
-                    begin, end, visitor_data, visitor);
+                    range, visitor_data, visitor);
                 return;
             }
             if (!snapshot || !output || snapshot->page_width() == 0
-                || begin >= end) {
+                || range.empty()) {
                 return;
             }
             auto const width = snapshot->page_width();
@@ -918,14 +911,14 @@ public:
                     auto const page_begin = page_index * width;
                     for (auto const& stored : page->events) {
                         auto const absolute = page_begin
-                            + static_cast<SampleIndex>(stored.time);
+                            + static_cast<GlobalIndex>(stored.time);
                         if (absolute < begin || absolute >= end
                             || absolute
-                                > std::numeric_limits<EventTime>::max()) {
+                                > std::numeric_limits<GlobalIndex>::max()) {
                             continue;
                         }
                         auto event = stored;
-                        event.time = static_cast<EventTime>(absolute);
+                        event.time = static_cast<GlobalIndex>(absolute);
                         visitor(visitor_data, event);
                     }
                 }
@@ -1110,7 +1103,7 @@ public:
                 .data = &selected,
                 .coverage_value = &empty_tick_coverage,
                 .read_sample = +[](void const* opaque,
-                                   SampleIndex index,
+                                   GlobalIndex index,
                                    std::size_t channel) noexcept {
                     return static_cast<SampleSlot const*>(opaque)->read(
                         index, channel);
@@ -1142,12 +1135,11 @@ public:
                 .coverage_value = &empty_tick_coverage,
                 .for_each_event = +[](
                     void const* opaque,
-                    SampleIndex begin,
-                    SampleIndex end,
+                    GlobalIndexRange range,
                     void* visitor_data,
                     RandomAccessEventInputPort::VisitEvent visitor) {
                     static_cast<EventSlot const*>(opaque)->for_each(
-                        begin, end, visitor_data, visitor);
+                        range, visitor_data, visitor);
                 },
             };
         }
@@ -1328,7 +1320,7 @@ public:
     graph_jit::TickInvocationCall bind(
         PersistedPageStore::Snapshot const& published,
         TickMaterializationSnapshot const& materialized,
-        SampleIndex sample_index,
+        GlobalIndex sample_index,
         std::size_t block_size) noexcept
     {
         auto const materialization_matches = materialized.generation() == generation
@@ -1506,7 +1498,7 @@ TickInvocationWorkspace::begin_capture() noexcept
 graph_jit::TickInvocationCall TickInvocationWorkspace::bind(
     PersistedPageStore::Snapshot const& published,
     TickMaterializationSnapshot const& materialized,
-    SampleIndex sample_index,
+    GlobalIndex sample_index,
     std::size_t block_size) noexcept
 {
     return impl_->bind(published, materialized, sample_index, block_size);
@@ -1516,7 +1508,7 @@ TickInvocationFrame::TickInvocationFrame(
     PersistedPageStore::ReaderSlot& page_reader,
     TickMaterializationStore::ReaderSlot& materialization_reader,
     TickInvocationWorkspace& workspace,
-    SampleIndex sample_index,
+    GlobalIndex sample_index,
     std::size_t block_size) noexcept
     : published_pages_(page_reader.pin())
     , materialized_storage_(materialization_reader.pin())
@@ -1533,7 +1525,7 @@ TickInvocationFrame::TickInvocationFrame(
 TickInvocationFrame::TickInvocationFrame(
     RealtimePersistedState const& persisted,
     TickInvocationWorkspace& workspace,
-    SampleIndex sample_index,
+    GlobalIndex sample_index,
     std::size_t block_size) noexcept
     : published_pages_view_(&persisted.pages())
     , materialized_storage_view_(&persisted.materialization())

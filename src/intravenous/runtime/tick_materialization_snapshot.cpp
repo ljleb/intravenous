@@ -10,11 +10,11 @@
 namespace iv {
 namespace {
 
-[[nodiscard]] std::size_t coverage_sample_count(Coverage const& coverage)
+[[nodiscard]] std::size_t coverage_sample_count(IndexCoverage const& coverage)
 {
     std::size_t result = 0;
     for (auto const region : coverage.regions()) {
-        auto const length = region.end - region.begin;
+        auto const length = region.extent;
         if (length > std::numeric_limits<std::size_t>::max() - result) {
             throw std::length_error(
                 "Tick materialization coverage is too large");
@@ -61,7 +61,7 @@ bool TickMaterializedSampleInput::has_channel(
 }
 
 Sample TickMaterializedSampleInput::at(
-    SampleIndex index, std::size_t channel) const noexcept
+    GlobalIndex index, std::size_t channel) const noexcept
 {
     auto const found = std::ranges::lower_bound(channels, channel);
     if (found == channels.end() || *found != channel) return {};
@@ -69,17 +69,18 @@ Sample TickMaterializedSampleInput::at(
     bool covered = false;
     for (auto const region : coverage.regions()) {
         if (region.contains(index)) {
-            frame += static_cast<std::size_t>(index - region.begin);
+            frame += static_cast<std::size_t>(
+                region.begin.forward_distance_to(index));
             covered = true;
             break;
         }
-        if (index < region.begin) break;
-        frame += static_cast<std::size_t>(region.end - region.begin);
+        if (SignedGlobalIndexOrder{}(index, region.begin)) break;
+        frame += static_cast<std::size_t>(region.extent);
     }
     if (!covered) return {};
     std::size_t frames = 0;
     for (auto const region : coverage.regions()) {
-        frames += static_cast<std::size_t>(region.end - region.begin);
+        frames += static_cast<std::size_t>(region.extent);
     }
     auto const selected = static_cast<std::size_t>(
         std::distance(channels.begin(), found));
@@ -88,18 +89,23 @@ Sample TickMaterializedSampleInput::at(
 }
 
 void TickMaterializedEventInput::for_each(
-    SampleIndex begin,
-    SampleIndex end,
+    GlobalIndexRange range,
     void* visitor_data,
     RandomAccessEventInputPort::VisitEvent visitor) const
 {
-    if (begin >= end || visitor == nullptr) return;
-    auto found = std::ranges::lower_bound(events, begin, {},
+    if (range.empty() || visitor == nullptr) return;
+    auto found = std::ranges::lower_bound(events, range.begin,
+        SignedGlobalIndexOrder{},
         [](TimedEvent const& event) {
-            return static_cast<SampleIndex>(event.time);
+            return event.time;
         });
-    for (; found != events.end()
-         && static_cast<SampleIndex>(found->time) < end; ++found) {
+
+    for (; found != events.end() && range.contains(found->time); ++found) {
+        visitor(visitor_data, *found);
+    }
+    if (found != events.end()) return;
+    for (found = events.begin();
+         found != events.end() && range.contains(found->time); ++found) {
         visitor(visitor_data, *found);
     }
 }
@@ -142,13 +148,12 @@ TickMaterializationSnapshot::TickMaterializationSnapshot(
     }
     for (auto const& event : events_) {
         bool valid = !event.coverage.empty() && event.type < EventTypeId::count;
-        EventTime previous = 0;
+        GlobalIndex previous{};
         bool first = true;
         for (auto const& value : event.events) {
-            auto const index = static_cast<SampleIndex>(value.time);
-            valid = valid && event.coverage.contains(index)
+            valid = valid && event.coverage.contains(value.time)
                 && event_matches_type(event.type, value.value)
-                && (first || value.time >= previous);
+                && (first || !SignedGlobalIndexOrder{}(value.time, previous));
             previous = value.time;
             first = false;
         }

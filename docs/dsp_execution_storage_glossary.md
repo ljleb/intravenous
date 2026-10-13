@@ -127,7 +127,7 @@ contract.
 A port's **registered continuous value type** determines the representation and
 storage semantics of one transported dense value. The registry is closed/explicit in
 the same architectural sense as the event- and channel-type registries. The planned
-initial set includes scalar `Sample`, scalar `GlobalIndex`, and `FFTBlock`.
+initial set includes scalar `Sample`, scalar `FractionalGlobalIndex`, and `FFTBlock`.
 
 A static port schema may declare one concrete value type or a closed finite set of
 supported value types. A multi-type port's selected member is resolved by graph
@@ -138,9 +138,17 @@ adds an implicit conversion.
 
 ### GlobalIndex
 
-`GlobalIndex` is a scalar fixed-point value representing a fractional coordinate in
+`GlobalIndex` is the strong 64-bit integer coordinate of samples and events in the
+circular global timeline. Its bits advance modulo 2^64 and may be interpreted
+explicitly as two's-complement `int64_t`; it has no context-free relational ordering.
+[Circular Global Timeline Indexing](./global_indexing.md) defines its range, ordering,
+and coverage algebra.
+
+### FractionalGlobalIndex
+
+`FractionalGlobalIndex` is a scalar fixed-point value representing a fractional coordinate in
 the global sample-index domain. It retains the full integer global-index width and adds
-64 fractional bits. A `GlobalIndex` transported at integer graph position `p` is still
+64 fractional bits. A `FractionalGlobalIndex` transported at integer graph position `p` is still
 data located at `p`; its numeric value may point somewhere else and is interpreted as
 a coordinate only by nodes that explicitly use it that way, such as a resampler.
 

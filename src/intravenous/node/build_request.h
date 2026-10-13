@@ -227,7 +227,7 @@ IV_FORCEINLINE SamplePortStorageView reflected_sample_storage_view(
 
 IV_FORCEINLINE InputPort reflected_sample_input_port(
     ReflectedSampleInputPortBinding const& binding,
-    SampleIndex index)
+    GlobalIndex index)
 {
     return InputPort{
         reflected_sample_storage_view(binding.storage),
@@ -240,7 +240,7 @@ IV_FORCEINLINE InputPort reflected_sample_input_port(
 template<bool Recording>
 IV_FORCEINLINE OutputPort reflected_sample_output_port(
     ReflectedSampleOutputPortBinding const& binding,
-    SampleIndex index)
+    GlobalIndex index)
 {
     if constexpr (Recording) {
         binding.disposition = OutputDisposition::untouched;
@@ -256,7 +256,7 @@ IV_FORCEINLINE OutputPort reflected_sample_output_port(
 template<typename Node, std::size_t... I>
 IV_FORCEINLINE auto reflected_sample_inputs(
     ReflectedNodeTickContext const& ctx,
-    SampleIndex index,
+    GlobalIndex index,
     std::index_sequence<I...>)
 {
     return std::array<InputPort, sizeof...(I)>{
@@ -269,7 +269,7 @@ IV_FORCEINLINE auto reflected_sample_inputs(
 template<typename Node, std::size_t... I>
 IV_FORCEINLINE auto reflected_sample_outputs(
     ReflectedNodeTickContext const& ctx,
-    SampleIndex index,
+    GlobalIndex index,
     std::index_sequence<I...>)
 {
     return std::array<OutputPort, sizeof...(I)>{
@@ -283,7 +283,7 @@ IV_FORCEINLINE auto reflected_sample_outputs(
 template<typename Node, typename Fn>
 IV_FORCEINLINE void with_reflected_sample_ports(
     ReflectedNodeTickContext const& ctx,
-    SampleIndex index,
+    GlobalIndex index,
     Fn&& fn)
 {
     static_assert(has_constexpr_port_configs<Node>,
@@ -377,7 +377,7 @@ template<typename Node, std::size_t N, std::size_t... I>
 IV_FORCEINLINE void initialize_reflected_event_outputs(
     ReflectedEventOutputPorts<N>& result,
     ReflectedNodeTickContext const& ctx,
-    SampleIndex index,
+    GlobalIndex index,
     std::size_t block_size,
     std::index_sequence<I...>)
 {
@@ -432,7 +432,7 @@ IV_FORCEINLINE void commit_reflected_event_outputs(
 template<typename Node, typename Fn>
 IV_FORCEINLINE void with_reflected_event_ports(
     ReflectedNodeTickContext const& ctx,
-    SampleIndex index,
+    GlobalIndex index,
     std::size_t block_size,
     Fn&& fn)
 {
@@ -464,17 +464,17 @@ template<class Node>
 IV_FORCEINLINE void tick_node_block(
     void const* node_data,
     ReflectedNodeTickContext const& ctx,
-    std::size_t index,
+    GlobalIndex index,
     std::size_t block_size)
 {
     auto const& node = *static_cast<Node const*>(node_data);
     with_reflected_sample_ports<Node>(
         ctx,
-        static_cast<SampleIndex>(index),
+        index,
         [&](std::span<InputPort> inputs, std::span<OutputPort> outputs) {
             with_reflected_event_ports<Node>(
                 ctx,
-                static_cast<SampleIndex>(index),
+                index,
                 block_size,
                 [&](std::span<EventInputPort> event_inputs,
                     std::span<EventOutputPort> event_outputs) {
@@ -495,7 +495,7 @@ IV_FORCEINLINE void tick_node_block(
                             ctx.scc_feedback_latency,
                             ctx.state,
                         },
-                        static_cast<SampleIndex>(index),
+                        index,
                         block_size,
                     });
                 });
@@ -506,17 +506,17 @@ template<class Node>
 IV_FORCEINLINE void skip_node_block(
     void const* node_data,
     ReflectedNodeTickContext const& ctx,
-    std::size_t index,
+    GlobalIndex index,
     std::size_t block_size)
 {
     auto const& node = *static_cast<Node const*>(node_data);
     with_reflected_sample_ports<Node>(
         ctx,
-        static_cast<SampleIndex>(index),
+        index,
         [&](std::span<InputPort> inputs, std::span<OutputPort> outputs) {
             with_reflected_event_ports<Node>(
                 ctx,
-                static_cast<SampleIndex>(index),
+                index,
                 block_size,
                 [&](std::span<EventInputPort> event_inputs,
                     std::span<EventOutputPort> event_outputs) {
@@ -537,7 +537,7 @@ IV_FORCEINLINE void skip_node_block(
                             ctx.scc_feedback_latency,
                             ctx.state,
                         },
-                        static_cast<SampleIndex>(index),
+                        index,
                         block_size,
                     });
                 });

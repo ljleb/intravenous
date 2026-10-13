@@ -775,7 +775,7 @@ std::expected<void, std::string> execute_realtime_port_state_transfers(
     RealtimePortStateTransitionPlan const& plan,
     std::span<std::byte const> previous_storage,
     std::span<std::byte> current_storage,
-    std::size_t sample_index)
+    GlobalIndex sample_index)
 {
     auto storage_base = [](auto bytes, auto const& view)
         -> decltype(bytes.data()) {
@@ -794,38 +794,26 @@ std::expected<void, std::string> execute_realtime_port_state_transfers(
         }
         return bytes.data() + *view.node_storage_offset;
     };
-    auto relative_sample = [](std::size_t origin, std::int64_t relative)
-        -> std::optional<std::size_t> {
-        if (relative < 0) {
-            auto const magnitude =
-                static_cast<std::uint64_t>(-(relative + 1)) + 1;
-            if (magnitude > origin) return std::nullopt;
-            return origin - static_cast<std::size_t>(magnitude);
-        }
-        auto const magnitude = static_cast<std::uint64_t>(relative);
-        if (magnitude > std::numeric_limits<std::size_t>::max() - origin) {
-            return std::nullopt;
-        }
-        return origin + static_cast<std::size_t>(magnitude);
+    auto relative_sample = [](GlobalIndex origin, std::int64_t relative) {
+        return origin.shifted_by(relative);
     };
     auto sample_at = [&](auto bytes,
                          SampleRealtimePortStateStorageView const& view,
-                         std::size_t semantic) -> decltype(bytes.data()) {
+                         GlobalIndex semantic) -> decltype(bytes.data()) {
         auto* base = storage_base(bytes, view);
-        auto const physical =
-            semantic + static_cast<std::size_t>(view.timeline_offset_frames);
+        auto const physical = semantic.shifted_by(view.timeline_offset_frames);
         std::optional<std::size_t> frame;
         if (view.storage == SampleRealtimePortStateStorage::ring) {
             if (view.working_frame_capacity != 0) {
-                frame = physical % view.working_frame_capacity;
+                frame = physical.bits() % view.working_frame_capacity;
             }
         } else if (view.storage
                    == SampleRealtimePortStateStorage::compact_carry) {
             if (view.storage_frame_count >= view.carry_future_frames) {
                 auto const retained_before =
                     view.storage_frame_count - view.carry_future_frames;
-                auto const first = sample_index - retained_before;
-                auto const candidate = physical - first;
+                auto const first = sample_index.retreated_by(retained_before);
+                auto const candidate = first.forward_distance_to(physical);
                 if (candidate < view.storage_frame_count) frame = candidate;
             }
         }
@@ -859,11 +847,10 @@ std::expected<void, std::string> execute_realtime_port_state_transfers(
         for (auto relative = transfer.target_begin;
              relative < transfer.target_end; ++relative) {
             auto const semantic = relative_sample(sample_index, relative);
-            if (!semantic) continue;
             auto* target = sample_at(
                 std::span<std::byte>{current_storage},
                 transfer.target_storage,
-                *semantic);
+                semantic);
             if (!target) {
                 return std::unexpected(
                     "sample transition target interval lies outside successor storage");
@@ -873,11 +860,10 @@ std::expected<void, std::string> execute_realtime_port_state_transfers(
         for (auto relative = transfer.inherited_begin;
              relative < transfer.inherited_end; ++relative) {
             auto const semantic = relative_sample(sample_index, relative);
-            if (!semantic) continue;
             auto* target = sample_at(
                 std::span<std::byte>{current_storage},
                 transfer.target_storage,
-                *semantic);
+                semantic);
             if (!target) {
                 return std::unexpected(
                     "sample transition target lies outside successor storage");
@@ -891,7 +877,7 @@ std::expected<void, std::string> execute_realtime_port_state_transfers(
                 auto const* address = sample_at(
                     std::span<std::byte const>{previous_storage},
                     source,
-                    *semantic);
+                    semantic);
                 if (!address) {
                     return std::unexpected(
                         "sample transition source lies outside predecessor storage");
@@ -931,13 +917,11 @@ std::expected<void, std::string> execute_realtime_port_state_transfers(
                 "event transition source ring has invalid cursors");
         }
         std::size_t target_write = 0;
-        auto const begin = relative_sample(sample_index, transfer.inherited_begin)
-            .value_or(0);
-        auto const end = relative_sample(sample_index, transfer.inherited_end);
-        if (!end) {
-            return std::unexpected(
-                "event transition interval exceeds the realtime timeline");
-        }
+        auto const inherited = GlobalIndexRange{
+            .begin = relative_sample(sample_index, transfer.inherited_begin),
+            .extent = static_cast<GlobalIndex::extent_type>(
+                transfer.inherited_end - transfer.inherited_begin),
+        };
         for (auto cursor = read; cursor < write; ++cursor) {
             TimedEvent event{};
             std::memcpy(
@@ -945,7 +929,7 @@ std::expected<void, std::string> execute_realtime_port_state_transfers(
                 source_base + source.events_relative_offset
                     + (cursor % source.event_capacity) * sizeof(TimedEvent),
                 sizeof(event));
-            if (event.time < begin || event.time >= *end) continue;
+            if (!inherited.contains(event.time)) continue;
             if (target_write == target.event_capacity) {
                 return std::unexpected(
                     "event transition exceeds successor ring capacity");

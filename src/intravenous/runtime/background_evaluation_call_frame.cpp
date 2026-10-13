@@ -13,23 +13,23 @@
 namespace iv {
 namespace {
 
-[[nodiscard]] bool contains_coverage(Coverage const& outer,
-                                     Coverage const& inner) noexcept
+[[nodiscard]] bool contains_coverage(IndexCoverage const& outer,
+                                     IndexCoverage const& inner) noexcept
 {
-    return std::ranges::all_of(inner.regions(), [&](IndexRegion region) {
+    return std::ranges::all_of(inner.regions(), [&](GlobalIndexRange region) {
         return outer.contains(region);
     });
 }
 
-[[nodiscard]] Coverage shifted_coverage(Coverage const& source,
+[[nodiscard]] IndexCoverage shifted_coverage(IndexCoverage const& source,
                                         std::size_t latency)
 {
-    Coverage result;
+    IndexCoverage result;
     for (auto const region : source.regions()) {
-        auto const begin = saturating_sample_index_add(region.begin, latency);
-        auto const end = saturating_sample_index_add(region.end, latency);
-        if (begin < end)
-            result.include({begin, end});
+        result.include({
+            .begin = region.begin.advanced_by(latency),
+            .extent = region.extent,
+        });
     }
     return result;
 }
@@ -82,11 +82,11 @@ void append_unique_view(std::vector<View>& views, View view)
 }
 
 [[nodiscard]] std::size_t replay_sample_count(
-    std::span<IndexRegion const> regions)
+    std::span<GlobalIndexRange const> regions)
 {
     std::size_t result = 0;
     for (auto const region : regions) {
-        auto const size = region.end - region.begin;
+        auto const size = region.extent;
         if (size > std::numeric_limits<std::size_t>::max() - result) {
             throw std::length_error("background replay schedule is too large");
         }
@@ -96,10 +96,11 @@ void append_unique_view(std::vector<View>& views, View view)
 }
 
 [[nodiscard]] std::size_t replay_frame_capacity(
-    std::span<IndexRegion const> regions)
+    std::span<GlobalIndexRange const> regions)
 {
     if (regions.empty()) return 0;
-    auto const span = regions.back().end - regions.front().begin;
+    auto const span = regions.front().begin.forward_distance_to(
+        regions.back().end());
     auto const maximum_power = std::size_t{1}
         << (std::numeric_limits<std::size_t>::digits - 1);
     if (span > maximum_power) {
@@ -110,7 +111,7 @@ void append_unique_view(std::vector<View>& views, View view)
 }
 
 [[nodiscard]] std::size_t replay_event_capacity(
-    double maximum_per_index, std::span<IndexRegion const> regions)
+    double maximum_per_index, std::span<GlobalIndexRange const> regions)
 {
     auto requested = event_count_for_sample_span(
         maximum_per_index, replay_sample_count(regions));
@@ -158,21 +159,21 @@ struct BackgroundEvaluationCallFrame::BindingAdapter {
         }
     };
 
-    Coverage const* coverage = nullptr;
+    IndexCoverage const* coverage = nullptr;
     std::vector<SampleReadRoute> sample_reads{};
     std::vector<BackgroundSampleWriteView> sample_writes{};
     std::vector<BackgroundEventReadView> event_reads{};
     std::vector<BackgroundEventWriteView> event_writes{};
     bool rejected_write = false;
 
-    static Sample read_sample(void const* opaque, SampleIndex index,
+    static Sample read_sample(void const* opaque, GlobalIndex index,
                               std::size_t channel) noexcept
     {
         auto const& self = *static_cast<BindingAdapter const*>(opaque);
         for (auto const& route : self.sample_reads) {
-            if (route.logical_channel != channel || index < route.read_latency)
+            if (route.logical_channel != channel)
                 continue;
-            auto const source_index = index - route.read_latency;
+            auto const source_index = index.retreated_by(route.read_latency);
             if (route.view.coverage().contains(source_index)) {
                 return route.view.at(source_index, route.storage_channel);
             }
@@ -182,7 +183,7 @@ struct BackgroundEvaluationCallFrame::BindingAdapter {
         return {};
     }
 
-    static void write_sample(void* opaque, SampleIndex index,
+    static void write_sample(void* opaque, GlobalIndex index,
                              std::size_t channel, Sample value) noexcept
     {
         auto& self = *static_cast<BindingAdapter*>(opaque);
@@ -199,34 +200,40 @@ struct BackgroundEvaluationCallFrame::BindingAdapter {
                   "background sample binding has no selected writable route");
     }
 
-    static void for_each_event(void const* opaque, SampleIndex begin,
-                               SampleIndex end, void* visitor_data,
+    static void for_each_event(void const* opaque, GlobalIndexRange requested,
+                               void* visitor_data,
                                RandomAccessEventInputPort::VisitEvent visitor)
     {
         auto const& self = *static_cast<BindingAdapter const*>(opaque);
-        auto cursor = begin;
-        while (cursor < end) {
+        GlobalIndex::extent_type consumed = 0;
+        while (consumed < requested.extent) {
+            auto const cursor = requested.begin.advanced_by(consumed);
             BackgroundEventReadView const* selected = nullptr;
-            SampleIndex selected_end = cursor;
+            GlobalIndex::extent_type selected_extent = 0;
             for (auto const& view : self.event_reads) {
                 for (auto const region : view.coverage().regions()) {
-                    if (!region.contains(cursor))
-                        continue;
+                    auto const offset = region.offset_of(cursor);
+                    if (!offset) continue;
                     selected = &view;
-                    selected_end = std::min(end, region.end);
+                    selected_extent = std::min(
+                        requested.extent - consumed,
+                        region.extent - *offset);
                     break;
                 }
                 if (selected != nullptr)
                     break;
             }
             IV_ASSERT(
-                selected != nullptr && cursor < selected_end,
+                selected != nullptr && selected_extent != 0,
                 "background event binding has no selected readable route");
-            if (selected == nullptr || cursor >= selected_end)
-                return;
-            selected->for_each_event(selected->data, {cursor, selected_end},
+            if (selected == nullptr || selected_extent == 0) return;
+            selected->for_each_event(selected->data,
+                                     GlobalIndexRange{
+                                         .begin = cursor,
+                                         .extent = selected_extent,
+                                     },
                                      visitor_data, visitor);
-            cursor = selected_end;
+            consumed += selected_extent;
         }
     }
 
@@ -299,7 +306,7 @@ struct BackgroundEvaluationCallFrame::ReplayFrameStorage {
         }
 
         [[nodiscard]] Sample& at(
-            SampleIndex index, std::size_t channel) noexcept
+            GlobalIndex index, std::size_t channel) noexcept
         {
             auto const frame = static_cast<std::size_t>(index) & (capacity - 1);
             auto const channels = channel_count(layout);
@@ -367,7 +374,7 @@ struct BackgroundEvaluationCallFrame::ReplayFrameStorage {
     std::vector<ReflectedSampleOutputPortBinding> sample_outputs{};
     std::vector<ReflectedEventInputPortBinding> event_inputs{};
     std::vector<ReflectedEventOutputPortBinding> event_outputs{};
-    std::vector<IndexRegion> regions{};
+    std::vector<GlobalIndexRange> regions{};
     std::vector<std::unique_ptr<SampleStorage>> sample_input_storage{};
     std::vector<std::unique_ptr<SampleStorage>> sample_output_storage{};
     std::vector<std::unique_ptr<EventStorage>> event_input_storage{};
@@ -390,7 +397,9 @@ void BackgroundEvaluationCallFrame::prepare_replay(void* opaque)
                 throw std::runtime_error(
                     "background replay sample input is not fully selected");
             }
-            for (auto index = region.begin; index < region.end; ++index) {
+            for (GlobalIndex::extent_type offset = 0;
+                 offset < region.extent; ++offset) {
+                auto const index = region.begin.advanced_by(offset);
                 for (std::size_t channel = 0;
                      channel < channel_count(raw.layout); ++channel) {
                     raw.at(index, channel) =
@@ -410,7 +419,7 @@ void BackgroundEvaluationCallFrame::prepare_replay(void* opaque)
                     "background replay event input is not fully selected");
             }
             BindingAdapter::for_each_event(
-                &adapter, region.begin, region.end, &raw,
+                &adapter, region, &raw,
                 +[](void* data, TimedEvent const& event) {
                     auto& storage = *static_cast<
                         ReplayFrameStorage::EventStorage*>(data);
@@ -435,11 +444,13 @@ void BackgroundEvaluationCallFrame::finalize_replay(void* opaque)
          output < replay.sample_output_storage.size(); ++output) {
         auto& raw = *replay.sample_output_storage[output];
         auto& adapter = *replay.sample_output_adapters[output];
-        Coverage scheduled;
+        IndexCoverage scheduled;
         for (auto const region : replay.regions) scheduled.include(region);
         auto const selected = scheduled & *adapter.coverage;
         for (auto const region : selected.regions()) {
-            for (auto index = region.begin; index < region.end; ++index) {
+            for (GlobalIndex::extent_type offset = 0;
+                 offset < region.extent; ++offset) {
+                auto const index = region.begin.advanced_by(offset);
                 for (std::size_t channel = 0;
                      channel < channel_count(raw.layout); ++channel) {
                     BindingAdapter::write_sample(
@@ -458,8 +469,7 @@ void BackgroundEvaluationCallFrame::finalize_replay(void* opaque)
         }
         for (std::size_t event = 0; event < raw.count(); ++event) {
             auto const& value = raw.events()[event];
-            if (adapter.coverage->contains(
-                    static_cast<SampleIndex>(value.time))) {
+            if (adapter.coverage->contains(value.time)) {
                 BindingAdapter::write_event(&adapter, value);
             }
         }
@@ -561,7 +571,7 @@ BackgroundEvaluationCallFrame::replay_event_outputs(
 std::expected<void, std::string>
 BackgroundEvaluationCallFrame::set_replay_regions(
     graph_jit::BackgroundReplayInvocationSlot slot,
-    std::vector<IndexRegion> regions)
+    std::vector<GlobalIndexRange> regions)
 {
     if (sealed_) {
         return std::unexpected("background call frame is already sealed");
@@ -572,20 +582,21 @@ BackgroundEvaluationCallFrame::set_replay_regions(
     }
     auto const maximum =
         plan_->runtime.replay_invocations[slot].maximum_block_size;
-    SampleIndex previous_end = 0;
+    GlobalIndexRange previous{};
     bool first = true;
     for (auto const region : regions) {
-        if (!region.valid() || region.empty() ||
-            region.end - region.begin > maximum) {
+        if (region.empty() || region.extent > maximum) {
             return std::unexpected(
                 "background replay region violates its compiled block limit");
         }
-        if (!first && region.begin < previous_end) {
+        if (!first
+            && regions.front().begin.forward_distance_to(region.begin)
+                < regions.front().begin.forward_distance_to(previous.end())) {
             return std::unexpected(
                 "background replay regions are not in invocation order");
         }
         first = false;
-        previous_end = region.end;
+        previous = region;
     }
     replay_storage_[slot]->regions = std::move(regions);
     return {};
@@ -703,7 +714,7 @@ std::expected<void, std::string> BackgroundEvaluationCallFrame::seal()
 
             for (std::size_t channel = 0;
                  channel < channel_count(port.sample_layout); ++channel) {
-                Coverage available;
+                IndexCoverage available;
                 for (auto const& route : adapter->sample_reads) {
                     if (route.logical_channel == channel) {
                         available.include(shifted_coverage(
@@ -730,7 +741,7 @@ std::expected<void, std::string> BackgroundEvaluationCallFrame::seal()
             }
             for (std::size_t channel = 0;
                  channel < channel_count(port.sample_layout); ++channel) {
-                Coverage available;
+                IndexCoverage available;
                 for (auto const& view : adapter->sample_writes) {
                     if (view.has_channel(channel)) {
                         available.include(view.coverage());
@@ -785,7 +796,7 @@ std::expected<void, std::string> BackgroundEvaluationCallFrame::seal()
                     }
                 }
             }
-            Coverage available;
+            IndexCoverage available;
             for (auto const& view : adapter->event_reads) {
                 available.include(view.coverage());
             }
@@ -806,7 +817,7 @@ std::expected<void, std::string> BackgroundEvaluationCallFrame::seal()
                 }
                 adapter->event_writes.push_back(*view);
             }
-            Coverage available;
+            IndexCoverage available;
             for (auto const& view : adapter->event_writes) {
                 available.include(view.coverage());
             }

@@ -1,243 +1,388 @@
 #pragma once
 
-#include <intravenous/ports.h>
+#include <intravenous/global_index.h>
 
 #include <algorithm>
-#include <compare>
 #include <cstddef>
 #include <initializer_list>
 #include <iterator>
+#include <limits>
 #include <span>
 #include <utility>
 #include <vector>
 
 namespace iv {
 
-struct IndexRegion {
-    SampleIndex begin = 0;
-    SampleIndex end = 0;
+// Exact positional coverage in the circular GlobalIndex domain. This is set
+// algebra: overlap and multiplicity are intentionally discarded. Data-bearing
+// random-access sample regions use the distinct SampleCoverage algebra.
+class IndexCoverage {
+    struct Boundary {
+        GlobalIndex::storage_type key = 0;
+        bool domain_end = false;
+    };
 
-    [[nodiscard]] constexpr bool valid() const noexcept
+    struct Segment {
+        GlobalIndex::storage_type begin = 0;
+        Boundary end{};
+    };
+
+    std::vector<GlobalIndexRange> ranges_;
+
+    [[nodiscard]] static constexpr bool less(
+        Boundary left, Boundary right) noexcept
     {
-        return begin <= end;
+        if (left.domain_end != right.domain_end) return !left.domain_end;
+        return !left.domain_end && left.key < right.key;
     }
 
-    [[nodiscard]] constexpr bool empty() const noexcept
+    [[nodiscard]] static constexpr bool less(
+        Boundary left, GlobalIndex::storage_type right) noexcept
     {
-        return begin == end;
+        return !left.domain_end && left.key < right;
     }
 
-    [[nodiscard]] constexpr bool contains(SampleIndex index) const noexcept
+    [[nodiscard]] static constexpr bool less(
+        GlobalIndex::storage_type left, Boundary right) noexcept
     {
-        return begin <= index && index < end;
+        return right.domain_end || left < right.key;
     }
 
-    [[nodiscard]] constexpr bool contains(IndexRegion other) const noexcept
+    [[nodiscard]] static constexpr Boundary maximum(
+        Boundary left, Boundary right) noexcept
     {
-        return other.empty()
-            ? other.valid()
-            : begin <= other.begin && other.end <= end;
+        return less(left, right) ? right : left;
     }
 
-    constexpr auto operator<=>(IndexRegion const&) const = default;
-};
-
-class Coverage {
-    std::vector<IndexRegion> regions_;
-
-    void canonicalize()
+    [[nodiscard]] static constexpr Boundary minimum(
+        Boundary left, Boundary right) noexcept
     {
-        std::erase_if(regions_, [](IndexRegion region) {
-            return !region.valid() || region.empty();
+        return less(left, right) ? left : right;
+    }
+
+    [[nodiscard]] static constexpr GlobalIndex from_signed_key(
+        GlobalIndex::storage_type key) noexcept
+    {
+        constexpr auto sign = GlobalIndex::storage_type{1} << 63;
+        return GlobalIndex::from_bits(key ^ sign);
+    }
+
+    static void append_segments(
+        GlobalIndexRange range, std::vector<Segment>& destination)
+    {
+        if (range.empty()) return;
+
+        auto const begin = SignedGlobalIndexOrder::key(range.begin);
+        auto const distance_to_domain_end = begin == 0
+            ? std::numeric_limits<GlobalIndex::extent_type>::max()
+            : GlobalIndex::extent_type{0} - begin;
+
+        // A begin of zero has 2^64 positions until the end of the signed
+        // domain, one more than extent_type can represent. Every legal extent
+        // therefore remains in the first segment.
+        if (begin == 0 || range.extent < distance_to_domain_end) {
+            destination.push_back(Segment{
+                .begin = begin,
+                .end = Boundary{.key = begin + range.extent},
+            });
+            return;
+        }
+
+        if (range.extent == distance_to_domain_end) {
+            destination.push_back(Segment{
+                .begin = begin,
+                .end = Boundary{.domain_end = true},
+            });
+            return;
+        }
+
+        destination.push_back(Segment{
+            .begin = begin,
+            .end = Boundary{.domain_end = true},
         });
-        std::ranges::sort(regions_);
-
-        std::size_t write = 0;
-        for (IndexRegion region : regions_) {
-            if (write != 0 && region.begin <= regions_[write - 1].end) {
-                regions_[write - 1].end =
-                    std::max(regions_[write - 1].end, region.end);
-                continue;
-            }
-            regions_[write++] = region;
-        }
-        regions_.resize(write);
+        destination.push_back(Segment{
+            .begin = 0,
+            .end = Boundary{.key = range.extent - distance_to_domain_end},
+        });
     }
 
-public:
-    using Region = IndexRegion;
-    using const_iterator = std::vector<Region>::const_iterator;
-
-    Coverage() = default;
-
-    explicit Coverage(Region region)
+    [[nodiscard]] static std::vector<Segment> segments_of(
+        std::span<GlobalIndexRange const> ranges)
     {
-        if (region.valid() && !region.empty()) regions_.push_back(region);
-    }
-
-    explicit Coverage(std::span<Region const> regions)
-        : regions_(regions.begin(), regions.end())
-    {
-        canonicalize();
-    }
-
-    Coverage(std::initializer_list<Region> regions)
-        : Coverage(std::span<Region const>{regions.begin(), regions.size()})
-    {}
-
-    [[nodiscard]] bool empty() const noexcept { return regions_.empty(); }
-    [[nodiscard]] std::size_t size() const noexcept { return regions_.size(); }
-
-    [[nodiscard]] std::span<Region const> regions() const noexcept
-    {
-        return regions_;
-    }
-
-    [[nodiscard]] bool contains(SampleIndex index) const noexcept
-    {
-        auto const found = std::ranges::upper_bound(
-            regions_, index, {}, &Region::begin);
-        return found != regions_.begin() && std::prev(found)->contains(index);
-    }
-
-    [[nodiscard]] bool contains(Region region) const noexcept
-    {
-        if (!region.valid()) return false;
-        if (region.empty()) return true;
-        auto const found = std::ranges::upper_bound(
-            regions_, region.begin, {}, &Region::begin);
-        return found != regions_.begin() && std::prev(found)->contains(region);
-    }
-
-    [[nodiscard]] bool intersects(Region region) const noexcept
-    {
-        if (!region.valid() || region.empty()) return false;
-        auto const found = std::ranges::lower_bound(
-            regions_, region.end, {}, &Region::begin);
-        return found != regions_.begin() && std::prev(found)->end > region.begin;
-    }
-
-    void include(Region region)
-    {
-        if (!region.valid() || region.empty()) return;
-
-        auto first = std::ranges::lower_bound(
-            regions_, region.begin, {}, &Region::end);
-        while (first != regions_.end() && first->end < region.begin) ++first;
-
-        auto last = first;
-        while (last != regions_.end() && last->begin <= region.end) {
-            region.begin = std::min(region.begin, last->begin);
-            region.end = std::max(region.end, last->end);
-            ++last;
-        }
-        regions_.erase(first, last);
-        regions_.insert(
-            std::ranges::lower_bound(regions_, region.begin, {}, &Region::begin),
-            region);
-    }
-
-    void include(Coverage const& other)
-    {
-        if (other.empty()) return;
-        std::vector<Region> combined;
-        combined.reserve(regions_.size() + other.regions_.size());
-        std::ranges::merge(regions_, other.regions_, std::back_inserter(combined));
-        regions_ = std::move(combined);
-        canonicalize();
-    }
-
-    void exclude(Region excluded)
-    {
-        if (!excluded.valid() || excluded.empty() || regions_.empty()) return;
-        std::vector<Region> result;
-        result.reserve(regions_.size() + 1);
-        for (Region region : regions_) {
-            if (region.end <= excluded.begin || excluded.end <= region.begin) {
-                result.push_back(region);
-                continue;
-            }
-            if (region.begin < excluded.begin) {
-                result.push_back({region.begin, excluded.begin});
-            }
-            if (excluded.end < region.end) {
-                result.push_back({excluded.end, region.end});
-            }
-        }
-        regions_ = std::move(result);
-    }
-
-    void exclude(Coverage const& other)
-    {
-        for (Region region : other) exclude(region);
-    }
-
-    [[nodiscard]] Coverage intersection(
-        Coverage const& other) const
-    {
-        Coverage result;
-        auto left = begin();
-        auto right = other.begin();
-        while (left != end() && right != other.end()) {
-            SampleIndex const overlap_begin = std::max(left->begin, right->begin);
-            SampleIndex const overlap_end = std::min(left->end, right->end);
-            if (overlap_begin < overlap_end) {
-                result.regions_.push_back({overlap_begin, overlap_end});
-            }
-            if (left->end < right->end) ++left;
-            else ++right;
-        }
+        std::vector<Segment> result;
+        result.reserve(ranges.size() + 1);
+        for (auto range : ranges) append_segments(range, result);
+        std::ranges::sort(result, {}, &Segment::begin);
         return result;
     }
 
-    [[nodiscard]] Coverage difference(Coverage const& other) const
+    void assign_segments(std::vector<Segment> segments)
     {
-        Coverage result = *this;
+        std::erase_if(segments, [](Segment segment) {
+            return !less(segment.begin, segment.end);
+        });
+        std::ranges::sort(segments, {}, &Segment::begin);
+
+        std::size_t write = 0;
+        for (auto segment : segments) {
+            if (write != 0 && !less(segments[write - 1].end, segment.begin)) {
+                segments[write - 1].end = maximum(
+                    segments[write - 1].end, segment.end);
+                continue;
+            }
+            segments[write++] = segment;
+        }
+        segments.resize(write);
+
+        ranges_.clear();
+        ranges_.reserve(segments.size() + 1);
+        for (auto segment : segments) {
+            if (!segment.end.domain_end) {
+                ranges_.push_back(GlobalIndexRange{
+                    .begin = from_signed_key(segment.begin),
+                    .extent = segment.end.key - segment.begin,
+                });
+                continue;
+            }
+
+            if (segment.begin != 0) {
+                ranges_.push_back(GlobalIndexRange{
+                    .begin = from_signed_key(segment.begin),
+                    .extent = GlobalIndex::extent_type{0} - segment.begin,
+                });
+                continue;
+            }
+
+            // The complete 2^64-position domain has no single representable
+            // extent. Its unique canonical representation is two signed-order
+            // half-domain ranges.
+            constexpr auto half = GlobalIndex::extent_type{1} << 63;
+            ranges_.push_back(GlobalIndexRange{
+                .begin = from_signed_key(0),
+                .extent = half,
+            });
+            ranges_.push_back(GlobalIndexRange{
+                .begin = from_signed_key(half),
+                .extent = half,
+            });
+        }
+    }
+
+    void canonicalize()
+    {
+        assign_segments(segments_of(ranges_));
+    }
+
+public:
+    using Range = GlobalIndexRange;
+    using const_iterator = std::vector<Range>::const_iterator;
+
+    IndexCoverage() = default;
+
+    explicit IndexCoverage(Range range) : ranges_{range}
+    {
+        canonicalize();
+    }
+
+    explicit IndexCoverage(std::span<Range const> ranges)
+        : ranges_(ranges.begin(), ranges.end())
+    {
+        canonicalize();
+    }
+
+    IndexCoverage(std::initializer_list<Range> ranges)
+        : IndexCoverage(std::span<Range const>{ranges.begin(), ranges.size()})
+    {}
+
+    [[nodiscard]] bool empty() const noexcept { return ranges_.empty(); }
+    [[nodiscard]] std::size_t size() const noexcept { return ranges_.size(); }
+
+    [[nodiscard]] std::span<Range const> ranges() const noexcept
+    {
+        return ranges_;
+    }
+
+    [[nodiscard]] bool contains(GlobalIndex index) const noexcept
+    {
+        auto const key = SignedGlobalIndexOrder::key(index);
+        auto const found = std::ranges::upper_bound(
+            ranges_, key, {}, [](Range const& range) {
+                return SignedGlobalIndexOrder::key(range.begin);
+            });
+        return found != ranges_.begin() && std::prev(found)->contains(index);
+    }
+
+    [[nodiscard]] bool contains(Range range) const
+    {
+        if (range.empty()) return true;
+        for (auto segment : segments_of(std::span{&range, 1})) {
+            auto const found = std::ranges::upper_bound(
+                ranges_, segment.begin, {}, [](Range const& candidate) {
+                    return SignedGlobalIndexOrder::key(candidate.begin);
+                });
+            if (found == ranges_.begin()) return false;
+            std::vector<Segment> containing_segments;
+            append_segments(*std::prev(found), containing_segments);
+            auto const& containing = containing_segments.front();
+            if (segment.begin < containing.begin
+                || less(containing.end, segment.end)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    [[nodiscard]] bool intersects(Range range) const
+    {
+        if (range.empty()) return false;
+        auto const requested = segments_of(std::span{&range, 1});
+        auto const stored = segments_of(ranges_);
+        std::size_t left = 0;
+        std::size_t right = 0;
+        while (left < stored.size() && right < requested.size()) {
+            auto const overlap_begin = std::max(
+                stored[left].begin, requested[right].begin);
+            auto const overlap_end = minimum(
+                stored[left].end, requested[right].end);
+            if (less(overlap_begin, overlap_end)) return true;
+            if (less(stored[left].end, requested[right].end)) ++left;
+            else ++right;
+        }
+        return false;
+    }
+
+    void include(Range range)
+    {
+        if (range.empty()) return;
+        auto segments = segments_of(ranges_);
+        append_segments(range, segments);
+        assign_segments(std::move(segments));
+    }
+
+    void include(IndexCoverage const& other)
+    {
+        if (other.empty()) return;
+        auto segments = segments_of(ranges_);
+        auto appended = segments_of(other.ranges_);
+        segments.insert(segments.end(), appended.begin(), appended.end());
+        assign_segments(std::move(segments));
+    }
+
+    void exclude(Range excluded)
+    {
+        if (excluded.empty() || ranges_.empty()) return;
+        auto current = segments_of(ranges_);
+        for (auto removed : segments_of(std::span{&excluded, 1})) {
+            std::vector<Segment> next;
+            next.reserve(current.size() + 1);
+            for (auto segment : current) {
+                if (!less(segment.begin, removed.end)
+                    || !less(removed.begin, segment.end)) {
+                    next.push_back(segment);
+                    continue;
+                }
+                if (segment.begin < removed.begin) {
+                    next.push_back(Segment{
+                        .begin = segment.begin,
+                        .end = Boundary{.key = removed.begin},
+                    });
+                }
+                if (less(removed.end, segment.end)) {
+                    next.push_back(Segment{
+                        .begin = removed.end.key,
+                        .end = segment.end,
+                    });
+                }
+            }
+            current = std::move(next);
+        }
+        assign_segments(std::move(current));
+    }
+
+    void exclude(IndexCoverage const& other)
+    {
+        for (Range range : other) exclude(range);
+    }
+
+    [[nodiscard]] IndexCoverage intersection(
+        IndexCoverage const& other) const
+    {
+        auto left = segments_of(ranges_);
+        auto right = segments_of(other.ranges_);
+        std::vector<Segment> result;
+        std::size_t left_index = 0;
+        std::size_t right_index = 0;
+        while (left_index < left.size() && right_index < right.size()) {
+            auto const overlap_begin = std::max(
+                left[left_index].begin, right[right_index].begin);
+            auto const overlap_end = minimum(
+                left[left_index].end, right[right_index].end);
+            if (less(overlap_begin, overlap_end)) {
+                result.push_back(Segment{
+                    .begin = overlap_begin,
+                    .end = overlap_end,
+                });
+            }
+            if (less(left[left_index].end, right[right_index].end)) {
+                ++left_index;
+            } else {
+                ++right_index;
+            }
+        }
+        IndexCoverage coverage;
+        coverage.assign_segments(std::move(result));
+        return coverage;
+    }
+
+    [[nodiscard]] IndexCoverage difference(
+        IndexCoverage const& other) const
+    {
+        IndexCoverage result = *this;
         result.exclude(other);
         return result;
     }
 
-    [[nodiscard]] const_iterator begin() const noexcept { return regions_.begin(); }
-    [[nodiscard]] const_iterator end() const noexcept { return regions_.end(); }
+    [[nodiscard]] const_iterator begin() const noexcept { return ranges_.begin(); }
+    [[nodiscard]] const_iterator end() const noexcept { return ranges_.end(); }
 
-    bool operator==(Coverage const&) const = default;
+    bool operator==(IndexCoverage const&) const = default;
 };
 
-inline Coverage operator|(
-    Coverage left, Coverage const& right)
+inline IndexCoverage operator|(
+    IndexCoverage left, IndexCoverage const& right)
 {
     left.include(right);
     return left;
 }
 
-inline Coverage operator|(
-    Coverage left, IndexRegion const& right)
+inline IndexCoverage operator|(
+    IndexCoverage left, GlobalIndexRange const& right)
 {
     left.include(right);
     return left;
 }
 
-inline Coverage operator|(
-    IndexRegion const& left, Coverage right)
+inline IndexCoverage operator|(
+    GlobalIndexRange const& left, IndexCoverage right)
 {
     right.include(left);
     return right;
 }
 
-inline Coverage operator&(
-    Coverage const& left, Coverage const& right)
+inline IndexCoverage operator&(
+    IndexCoverage const& left, IndexCoverage const& right)
 {
     return left.intersection(right);
 }
 
-inline Coverage operator-(
-    Coverage const& left, Coverage const& right)
+inline IndexCoverage operator-(
+    IndexCoverage const& left, IndexCoverage const& right)
 {
     return left.difference(right);
 }
 
-inline Coverage operator-(
-    Coverage left, IndexRegion const& right)
+inline IndexCoverage operator-(
+    IndexCoverage left, GlobalIndexRange const& right)
 {
     left.exclude(right);
     return left;

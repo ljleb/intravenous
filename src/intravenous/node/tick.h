@@ -127,14 +127,14 @@ namespace iv {
                 , _background(background)
             {}
 
-            [[nodiscard]] Coverage const& coverage() const noexcept
+            [[nodiscard]] IndexCoverage const& coverage() const noexcept
             {
                 IV_ASSERT(_background != nullptr,
                     "background sample input has no arbitrary-access binding");
                 return _background->coverage();
             }
 
-            [[nodiscard]] Sample at(SampleIndex index) const noexcept
+            [[nodiscard]] Sample at(GlobalIndex index) const noexcept
             requires (Type == ChannelTypeId::mono)
             {
                 IV_ASSERT(_background != nullptr,
@@ -143,7 +143,7 @@ namespace iv {
             }
 
             template<class Channel>
-            [[nodiscard]] Sample at(Channel, SampleIndex index) const noexcept
+            [[nodiscard]] Sample at(Channel, GlobalIndex index) const noexcept
             requires (Type != ChannelTypeId::mono)
             {
                 IV_ASSERT(_background != nullptr,
@@ -166,14 +166,14 @@ namespace iv {
                 , _background(background)
             {}
 
-            [[nodiscard]] Coverage const& coverage() const noexcept
+            [[nodiscard]] IndexCoverage const& coverage() const noexcept
             {
                 IV_ASSERT(_background != nullptr,
                     "background sample input has no arbitrary-access binding");
                 return _background->coverage();
             }
 
-            [[nodiscard]] Sample at(SampleIndex index) const noexcept
+            [[nodiscard]] Sample at(GlobalIndex index) const noexcept
             requires (Type == ChannelTypeId::mono)
             {
                 IV_ASSERT(_background != nullptr,
@@ -182,7 +182,7 @@ namespace iv {
             }
 
             template<class Channel>
-            [[nodiscard]] Sample at(Channel, SampleIndex index) const noexcept
+            [[nodiscard]] Sample at(Channel, GlobalIndex index) const noexcept
             requires (Type != ChannelTypeId::mono)
             {
                 IV_ASSERT(_background != nullptr,
@@ -193,13 +193,13 @@ namespace iv {
 
         class StaticEventInputBlockTickAccess {
             EventInputPort const& _port;
-            SampleIndex _index = 0;
+            GlobalIndex _index{};
             std::size_t _block_size = 0;
 
         public:
             constexpr StaticEventInputBlockTickAccess(
                 EventInputPort const& port,
-                SampleIndex index,
+                GlobalIndex index,
                 std::size_t block_size)
                 : _port(port), _index(index), _block_size(block_size)
             {}
@@ -207,21 +207,21 @@ namespace iv {
             [[nodiscard]] auto events() const
             {
                 return _port.get_block(
-                    static_cast<std::size_t>(_index), _block_size);
+                    _index, _block_size);
             }
 
             [[nodiscard]] auto events(
-                SampleIndex begin, std::size_t count) const
+                GlobalIndex begin, std::size_t count) const
             {
                 return _port.get_block(
-                    static_cast<std::size_t>(begin), count);
+                    begin, count);
             }
 
             template<typename Fn>
             void for_each(Fn&& fn) const
             {
                 _port.for_each_in_block(
-                    static_cast<std::size_t>(_index),
+                    _index,
                     _block_size,
                     std::forward<Fn>(fn));
             }
@@ -237,14 +237,14 @@ namespace iv {
 
             StaticBackgroundEventInputBlockTickAccess(
                 EventInputPort const& current,
-                SampleIndex index,
+                GlobalIndex index,
                 std::size_t block_size,
                 RandomAccessEventInputPort const* background)
                 : StaticEventInputBlockTickAccess(current, index, block_size)
                 , _background(background)
             {}
 
-            [[nodiscard]] Coverage const& coverage() const noexcept
+            [[nodiscard]] IndexCoverage const& coverage() const noexcept
             {
                 IV_ASSERT(_background != nullptr,
                     "background event input has no arbitrary-access binding");
@@ -252,33 +252,26 @@ namespace iv {
             }
 
             template<typename Fn>
-            void for_each(IndexRegion region, Fn&& fn) const
+            void for_each(GlobalIndexRange region, Fn&& fn) const
             {
                 IV_ASSERT(_background != nullptr,
                     "background event input has no arbitrary-access binding");
                 _background->for_each(region, std::forward<Fn>(fn));
             }
 
-            template<typename Fn>
-            void for_each(SampleIndex begin, SampleIndex end, Fn&& fn) const
-            {
-                IV_ASSERT(_background != nullptr,
-                    "background event input has no arbitrary-access binding");
-                _background->for_each(begin, end, std::forward<Fn>(fn));
-            }
         };
 
         template<bool Recording>
         class StaticEventOutputBlockTickAccess
             : private StaticOutputDispositionObserver<Recording> {
             EventOutputPort& _port;
-            SampleIndex _index = 0;
+            GlobalIndex _index{};
             std::size_t _block_size = 0;
 
         public:
             constexpr StaticEventOutputBlockTickAccess(
                 EventOutputPort& port,
-                SampleIndex index,
+                GlobalIndex index,
                 std::size_t block_size)
             requires (!Recording)
                 : StaticOutputDispositionObserver<Recording>()
@@ -287,7 +280,7 @@ namespace iv {
 
             constexpr StaticEventOutputBlockTickAccess(
                 EventOutputPort& port,
-                SampleIndex index,
+                GlobalIndex index,
                 std::size_t block_size,
                 OutputDisposition& disposition)
             requires Recording
@@ -301,7 +294,7 @@ namespace iv {
                 _port.push(
                     std::move(event),
                     sample_offset,
-                    static_cast<std::size_t>(_index),
+                    _index,
                     _block_size);
             }
 
@@ -310,7 +303,7 @@ namespace iv {
                 if constexpr (Recording) this->observe_write();
                 _port.push(
                     event,
-                    static_cast<std::size_t>(_index),
+                    _index,
                     _block_size);
             }
 
@@ -319,7 +312,7 @@ namespace iv {
                 if constexpr (Recording) this->observe_write();
                 _port.push_block(
                     events,
-                    static_cast<std::size_t>(_index),
+                    _index,
                     _block_size);
             }
 
@@ -334,9 +327,9 @@ namespace iv {
 
     template<typename Node>
     struct TickSampleContext : public TickContext<Node> {
-        SampleIndex index;
+        GlobalIndex index;
 
-        TickSampleContext(TickContext<Node> base, SampleIndex index);
+        TickSampleContext(TickContext<Node> base, GlobalIndex index);
 
         template<size_t Index>
         auto input() const
@@ -465,12 +458,12 @@ namespace iv {
 
     template<typename Node>
     struct TickBlockContext : public TickContext<Node> {
-        SampleIndex index;
+        GlobalIndex index;
         size_t block_size;
 
         TickBlockContext(
             TickContext<Node> base,
-            SampleIndex index,
+            GlobalIndex index,
             size_t block_size
         );
 
@@ -620,7 +613,7 @@ namespace iv {
 
         SkipBlockContext(
             TickContext<Node> base,
-            SampleIndex index,
+            GlobalIndex index,
             size_t block_size)
             : TickBlockContext<Node>(base, index, block_size)
         {}
@@ -637,14 +630,14 @@ namespace iv {
 
     template<typename Node>
     IV_FORCEINLINE TickSampleContext<Node>::TickSampleContext(
-        TickContext<Node> base, SampleIndex index)
+        TickContext<Node> base, GlobalIndex index)
     : TickContext<Node>(base), index(index)
     {}
 
     template<typename Node>
     IV_FORCEINLINE TickBlockContext<Node>::TickBlockContext(
         TickContext<Node> base,
-        SampleIndex index,
+        GlobalIndex index,
         size_t block_size
     )
     : TickContext<Node>(base)

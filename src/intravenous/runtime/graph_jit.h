@@ -61,7 +61,7 @@ struct GraphJitDiagnostic {
 using CompiledGraphBlockFunction = void (*)(
     std::byte* storage_base,
     graph_jit::TickInvocationCall const* invocation,
-    std::size_t sample_index,
+    GlobalIndex sample_index,
     std::size_t block_size);
 
 struct CompiledGraphRootOperations {

@@ -18,7 +18,7 @@ namespace iv {
 
 struct TickMaterializedSampleInput {
     graph_jit::BackgroundPortIndex port = 0;
-    Coverage coverage{};
+    IndexCoverage coverage{};
     ChannelLayout layout{};
     std::vector<std::size_t> channels{};
     // Channel-major values over coverage.regions() in increasing index order.
@@ -26,19 +26,18 @@ struct TickMaterializedSampleInput {
 
     [[nodiscard]] bool has_channel(std::size_t channel) const noexcept;
     [[nodiscard]] Sample at(
-        SampleIndex index, std::size_t channel) const noexcept;
+        GlobalIndex index, std::size_t channel) const noexcept;
 };
 
 struct TickMaterializedEventInput {
     graph_jit::BackgroundPortIndex port = 0;
-    Coverage coverage{};
+    IndexCoverage coverage{};
     EventTypeId type = EventTypeId::empty;
     // Absolute event times in nondecreasing semantic order.
     std::vector<TimedEvent> events{};
 
     void for_each(
-        SampleIndex begin,
-        SampleIndex end,
+        GlobalIndexRange range,
         void* visitor_data,
         RandomAccessEventInputPort::VisitEvent visitor) const;
 };

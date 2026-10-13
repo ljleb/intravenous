@@ -17,9 +17,9 @@
 namespace iv {
 namespace {
 
-Coverage const empty_storage_coverage{};
+IndexCoverage const empty_storage_coverage{};
 
-[[nodiscard]] std::size_t coverage_sample_count(Coverage const& coverage)
+[[nodiscard]] std::size_t coverage_sample_count(IndexCoverage const& coverage)
 {
     std::size_t result = 0;
     for (auto const region : coverage.regions()) {
@@ -43,10 +43,10 @@ Coverage const empty_storage_coverage{};
 }
 
 [[nodiscard]] bool contains_coverage(
-    Coverage const& outer,
-    Coverage const& inner) noexcept
+    IndexCoverage const& outer,
+    IndexCoverage const& inner) noexcept
 {
-    return std::ranges::all_of(inner.regions(), [&](IndexRegion region) {
+    return std::ranges::all_of(inner.regions(), [&](GlobalIndexRange region) {
         return outer.contains(region);
     });
 }
@@ -81,15 +81,15 @@ Coverage const empty_storage_coverage{};
 
 template<typename Fn>
 void for_each_intersection(
-    Coverage const& left,
-    Coverage const& right,
+    IndexCoverage const& left,
+    IndexCoverage const& right,
     Fn&& fn)
 {
     auto left_region = left.regions().begin();
     auto right_region = right.regions().begin();
     while (left_region != left.regions().end()
         && right_region != right.regions().end()) {
-        auto const intersection = IndexRegion{
+        auto const intersection = GlobalIndexRange{
             .begin = std::max(left_region->begin, right_region->begin),
             .end = std::min(left_region->end, right_region->end),
         };
@@ -116,7 +116,7 @@ event_merge_capacity(std::size_t count)
 }
 
 class TransactionSampleStorage {
-    Coverage const* coverage_ = nullptr;
+    IndexCoverage const* coverage_ = nullptr;
     ChannelLayout layout_{};
     std::vector<std::size_t> channels_{};
     std::vector<std::size_t> region_offsets_{};
@@ -125,7 +125,7 @@ class TransactionSampleStorage {
     std::vector<std::uint8_t> written_{};
 
     [[nodiscard]] std::optional<std::size_t> frame_offset(
-        SampleIndex index) const noexcept
+        GlobalIndex index) const noexcept
     {
         auto const regions = coverage_->regions();
         for (std::size_t region = 0; region < regions.size(); ++region) {
@@ -149,7 +149,7 @@ class TransactionSampleStorage {
 
 public:
     TransactionSampleStorage(
-        Coverage const& coverage,
+        IndexCoverage const& coverage,
         ChannelLayout layout,
         std::span<std::size_t const> channels)
         : coverage_(&coverage)
@@ -187,7 +187,7 @@ public:
     }
 
     [[nodiscard]] Sample read(
-        SampleIndex index,
+        GlobalIndex index,
         std::size_t channel) const noexcept
     {
         auto const frame = frame_offset(index);
@@ -199,7 +199,7 @@ public:
     }
 
     [[nodiscard]] bool write(
-        SampleIndex index,
+        GlobalIndex index,
         std::size_t channel,
         Sample value) noexcept
     {
@@ -226,7 +226,7 @@ public:
             .layout = layout_,
             .channels = channels_,
             .read_sample = +[](void const* opaque,
-                               SampleIndex index,
+                               GlobalIndex index,
                                std::size_t channel) noexcept {
                 return static_cast<TransactionSampleStorage const*>(opaque)
                     ->read(index, channel);
@@ -242,7 +242,7 @@ public:
             .layout = layout_,
             .channels = channels_,
             .write_sample = +[](void* opaque,
-                                SampleIndex index,
+                                GlobalIndex index,
                                 std::size_t channel,
                                 Sample value) noexcept {
                 return static_cast<TransactionSampleStorage*>(opaque)
@@ -253,14 +253,14 @@ public:
 };
 
 class TransactionEventStorage {
-    Coverage const* coverage_ = nullptr;
+    IndexCoverage const* coverage_ = nullptr;
     EventTypeId type_ = EventTypeId::empty;
     std::size_t capacity_ = 0;
     std::vector<TimedEvent> events_{};
 
 public:
     TransactionEventStorage(
-        Coverage const& coverage,
+        IndexCoverage const& coverage,
         EventTypeId type,
         double max_events_per_index)
         : coverage_(&coverage)
@@ -282,7 +282,7 @@ public:
 
     [[nodiscard]] bool write(TimedEvent const& event) noexcept
     {
-        auto const index = static_cast<SampleIndex>(event.time);
+        auto const index = static_cast<GlobalIndex>(event.time);
         if (!coverage_->contains(index)
             || !event_matches_type(type_, event.value)
             || events_.size() == capacity_
@@ -294,16 +294,16 @@ public:
     }
 
     void for_each(
-        IndexRegion region,
+        GlobalIndexRange region,
         void* visitor_data,
         BackgroundEventReadView::VisitEvent visitor) const
     {
         auto first = std::ranges::lower_bound(events_, region.begin, {},
             [](TimedEvent const& event) {
-                return static_cast<SampleIndex>(event.time);
+                return static_cast<GlobalIndex>(event.time);
             });
         for (; first != events_.end()
-             && static_cast<SampleIndex>(first->time) < region.end; ++first) {
+             && static_cast<GlobalIndex>(first->time) < region.end; ++first) {
             visitor(visitor_data, *first);
         }
     }
@@ -315,7 +315,7 @@ public:
             .coverage_value = coverage_,
             .type = type_,
             .for_each_event = +[](void const* opaque,
-                                  IndexRegion region,
+                                  GlobalIndexRange region,
                                   void* visitor_data,
                                   BackgroundEventReadView::VisitEvent visitor) {
                 static_cast<TransactionEventStorage const*>(opaque)->for_each(
@@ -338,8 +338,8 @@ public:
 };
 
 [[nodiscard]] std::optional<std::size_t> packed_frame_offset(
-    Coverage const& domain,
-    SampleIndex index) noexcept
+    IndexCoverage const& domain,
+    GlobalIndex index) noexcept
 {
     std::size_t offset = 0;
     for (auto const region : domain.regions()) {
@@ -355,7 +355,7 @@ public:
 class PersistedSampleReader {
     PersistedPageStore::Snapshot const* snapshot_ = nullptr;
     PersistedOutputHandle output_{};
-    Coverage const* coverage_ = nullptr;
+    IndexCoverage const* coverage_ = nullptr;
     ChannelLayout layout_{};
     std::span<std::size_t const> channels_{};
 
@@ -363,7 +363,7 @@ public:
     PersistedSampleReader(
         PersistedPageStore::Snapshot const& snapshot,
         PersistedOutputHandle output,
-        Coverage const& coverage,
+        IndexCoverage const& coverage,
         ChannelLayout layout,
         std::span<std::size_t const> channels) noexcept
         : snapshot_(&snapshot)
@@ -384,8 +384,8 @@ public:
             for (;; ++page_index) {
                 auto const page_begin = page_index * width;
                 auto const page_end = saturating_sample_index_add(
-                    page_begin, static_cast<SampleIndex>(width));
-                auto const required = IndexRegion{
+                    page_begin, static_cast<GlobalIndex>(width));
+                auto const required = GlobalIndexRange{
                     std::max(region.begin, page_begin),
                     std::min(region.end, page_end),
                 };
@@ -405,7 +405,7 @@ public:
     }
 
     [[nodiscard]] Sample read(
-        SampleIndex index,
+        GlobalIndex index,
         std::size_t channel) const noexcept
     {
         auto const width = snapshot_->page_width();
@@ -449,7 +449,7 @@ public:
             .layout = layout_,
             .channels = channels_,
             .read_sample = +[](void const* opaque,
-                               SampleIndex index,
+                               GlobalIndex index,
                                std::size_t channel) noexcept {
                 return static_cast<PersistedSampleReader const*>(opaque)
                     ->read(index, channel);
@@ -461,14 +461,14 @@ public:
 class PersistedEventReader {
     PersistedPageStore::Snapshot const* snapshot_ = nullptr;
     PersistedOutputHandle output_{};
-    Coverage const* coverage_ = nullptr;
+    IndexCoverage const* coverage_ = nullptr;
     EventTypeId type_ = EventTypeId::empty;
 
 public:
     PersistedEventReader(
         PersistedPageStore::Snapshot const& snapshot,
         PersistedOutputHandle output,
-        Coverage const& coverage,
+        IndexCoverage const& coverage,
         EventTypeId type) noexcept
         : snapshot_(&snapshot)
         , output_(std::move(output))
@@ -487,8 +487,8 @@ public:
             for (;; ++page_index) {
                 auto const page_begin = page_index * width;
                 auto const page_end = saturating_sample_index_add(
-                    page_begin, static_cast<SampleIndex>(width));
-                auto const required = IndexRegion{
+                    page_begin, static_cast<GlobalIndex>(width));
+                auto const required = GlobalIndexRange{
                     std::max(region.begin, page_begin),
                     std::min(region.end, page_end),
                 };
@@ -504,7 +504,7 @@ public:
     }
 
     void for_each(
-        IndexRegion region,
+        GlobalIndexRange region,
         void* visitor_data,
         BackgroundEventReadView::VisitEvent visitor) const
     {
@@ -524,18 +524,18 @@ public:
                     auto const page_begin = page_index * width;
                     for (auto const& stored : page->events) {
                         auto const absolute = page_begin
-                            + static_cast<SampleIndex>(stored.time);
+                            + static_cast<GlobalIndex>(stored.time);
                         if (absolute < region.begin || absolute >= region.end) {
                             continue;
                         }
                         IV_ASSERT(
-                            absolute <= std::numeric_limits<EventTime>::max(),
-                            "persisted event time exceeds EventTime");
-                        if (absolute > std::numeric_limits<EventTime>::max()) {
+                            absolute <= std::numeric_limits<GlobalIndex>::max(),
+                            "persisted event time exceeds GlobalIndex");
+                        if (absolute > std::numeric_limits<GlobalIndex>::max()) {
                             continue;
                         }
                         TimedEvent event = stored;
-                        event.time = static_cast<EventTime>(absolute);
+                        event.time = static_cast<GlobalIndex>(absolute);
                         visitor(visitor_data, event);
                     }
                 }
@@ -551,7 +551,7 @@ public:
             .coverage_value = coverage_,
             .type = type_,
             .for_each_event = +[](void const* opaque,
-                                  IndexRegion region,
+                                  GlobalIndexRange region,
                                   void* visitor_data,
                                   BackgroundEventReadView::VisitEvent visitor) {
                 static_cast<PersistedEventReader const*>(opaque)->for_each(
@@ -577,7 +577,7 @@ public:
 
 } // namespace
 
-Coverage const& BackgroundSampleReadView::coverage() const noexcept
+IndexCoverage const& BackgroundSampleReadView::coverage() const noexcept
 {
     return coverage_value ? *coverage_value : empty_storage_coverage;
 }
@@ -589,7 +589,7 @@ bool BackgroundSampleReadView::has_channel(
 }
 
 Sample BackgroundSampleReadView::at(
-    SampleIndex index,
+    GlobalIndex index,
     std::size_t channel) const noexcept
 {
     IV_ASSERT(*this, "background sample storage has no readable view");
@@ -598,7 +598,7 @@ Sample BackgroundSampleReadView::at(
     return *this ? read_sample(data, index, channel) : Sample{};
 }
 
-Coverage const& BackgroundSampleWriteView::coverage() const noexcept
+IndexCoverage const& BackgroundSampleWriteView::coverage() const noexcept
 {
     return coverage_value ? *coverage_value : empty_storage_coverage;
 }
@@ -610,7 +610,7 @@ bool BackgroundSampleWriteView::has_channel(
 }
 
 bool BackgroundSampleWriteView::write(
-    SampleIndex index,
+    GlobalIndex index,
     std::size_t channel,
     Sample value) const noexcept
 {
@@ -618,25 +618,25 @@ bool BackgroundSampleWriteView::write(
         && write_sample(data, index, channel, value);
 }
 
-Coverage const& BackgroundEventReadView::coverage() const noexcept
+IndexCoverage const& BackgroundEventReadView::coverage() const noexcept
 {
     return coverage_value ? *coverage_value : empty_storage_coverage;
 }
 
-Coverage const& BackgroundEventWriteView::coverage() const noexcept
+IndexCoverage const& BackgroundEventWriteView::coverage() const noexcept
 {
     return coverage_value ? *coverage_value : empty_storage_coverage;
 }
 
 bool BackgroundEventWriteView::write(TimedEvent const& event) const noexcept
 {
-    return *this && coverage().contains(static_cast<SampleIndex>(event.time))
+    return *this && coverage().contains(static_cast<GlobalIndex>(event.time))
         && write_event(data, event);
 }
 
 struct BackgroundStorageRealization::Slot {
     graph_jit::PortStoragePlan const* plan = nullptr;
-    Coverage const* coverage = nullptr;
+    IndexCoverage const* coverage = nullptr;
     std::optional<PersistedOutputHandle> persisted_output{};
     std::unique_ptr<TransactionSampleStorage> owned_sample{};
     std::unique_ptr<TransactionEventStorage> owned_event{};
@@ -1212,7 +1212,7 @@ BackgroundStorageRealization::execute_operation(
             for_each_intersection(
                 *slot(materialization.inputs[source_index]).coverage,
                 target_coverage,
-                [&](IndexRegion region) {
+                [&](GlobalIndexRange region) {
                     source->for_each(region, [&](TimedEvent const& event) {
                         if (!source_events.empty()
                             && event.time < source_events.back().time) {
@@ -1330,8 +1330,8 @@ BackgroundStorageRealization::make_tick_materialization_snapshot(
         std::size_t storage_channel = 0;
         std::size_t latency = 0;
     };
-    auto shifted_forward = [](Coverage const& source, std::size_t latency) {
-        Coverage result;
+    auto shifted_forward = [](IndexCoverage const& source, std::size_t latency) {
+        IndexCoverage result;
         for (auto const region : source.regions()) {
             auto const begin = saturating_sample_index_add(region.begin, latency);
             auto const end = saturating_sample_index_add(region.end, latency);
@@ -1433,10 +1433,10 @@ BackgroundStorageRealization::make_tick_materialization_snapshot(
                 }
             }
         }
-        Coverage complete_coverage;
+        IndexCoverage complete_coverage;
         auto const channels = channel_count(port.sample_layout);
         for (std::size_t channel = 0; channel < channels; ++channel) {
-            Coverage available;
+            IndexCoverage available;
             for (auto const& route : routes) {
                 if (route.logical_channel == channel) {
                     available.include(shifted_forward(
@@ -1528,7 +1528,7 @@ BackgroundStorageRealization::make_tick_materialization_snapshot(
                 }
             }
         }
-        Coverage available;
+        IndexCoverage available;
         for (auto const* route : routes) available.include(route->coverage());
         if (available.empty()) continue;
         TickMaterializedEventInput frozen{
@@ -1625,11 +1625,11 @@ BackgroundStorageRealization::stage_persisted_pages(
                     continue;
                 }
                 auto const page_begin =
-                    static_cast<SampleIndex>(page_index * width);
+                    static_cast<GlobalIndex>(page_index * width);
                 auto const page_end = saturating_sample_index_add(
-                    page_begin, static_cast<SampleIndex>(width));
+                    page_begin, static_cast<GlobalIndex>(width));
                 auto const domain = *selected.coverage
-                    & Coverage{IndexRegion{page_begin, page_end}};
+                    & IndexCoverage{GlobalIndexRange{page_begin, page_end}};
                 if (!domain.empty()) {
                     if (planned.kind == PortKind::sample) {
                         auto const* view = sample_read(index);
@@ -1684,8 +1684,8 @@ BackgroundStorageRealization::stage_persisted_pages(
                         for (auto const part : domain.regions()) {
                             view->for_each(part, [&](TimedEvent const& event) {
                                 auto stored = event;
-                                stored.time = static_cast<EventTime>(
-                                    static_cast<SampleIndex>(event.time)
+                                stored.time = static_cast<GlobalIndex>(
+                                    static_cast<GlobalIndex>(event.time)
                                     - page_begin);
                                 page.events.push_back(std::move(stored));
                             });

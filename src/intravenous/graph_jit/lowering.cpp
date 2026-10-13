@@ -242,9 +242,9 @@ constexpr BackgroundCallByteOffsets background_batch_byte_offsets() noexcept
             BackgroundNodeCall, replay_reverse),
         .replay_tick_context = offsetof(BackgroundNodeCall, replay),
         .replay_regions_data = offsetof(BackgroundNodeCall, replay_regions)
-            + offsetof(ReflectedSpan<IndexRegion const>, pointer),
+            + offsetof(ReflectedSpan<GlobalIndexRange const>, pointer),
         .replay_regions_size = offsetof(BackgroundNodeCall, replay_regions)
-            + offsetof(ReflectedSpan<IndexRegion const>, extent),
+            + offsetof(ReflectedSpan<GlobalIndexRange const>, extent),
         .tock_background_state_data = offsetof(BackgroundNodeCall, tock)
             + offsetof(ReflectedNodeTockCoverageContext, background_state_storage)
             + offsetof(ReflectedSpan<std::byte>, pointer),
@@ -3053,7 +3053,7 @@ std::expected<void, std::string> emit_event_feedback_append(
         if (source.persistent_ring) {
             auto* helper_type = llvm::FunctionType::get(
                 llvm::Type::getVoidTy(context),
-                {pointer_type, size_type, size_type, size_type, size_type,
+                {pointer_type, size_type, size_type, size_type, size_type, size_type,
                  pointer_type, size_type, pointer_type},
                 false);
             auto helper = module->getOrInsertFunction(
@@ -3065,6 +3065,7 @@ std::expected<void, std::string> emit_event_feedback_append(
                  llvm::ConstantInt::get(size_type, source.event_capacity),
                  source_begin,
                  source_end,
+                 sample_index,
                  llvm::ConstantInt::get(size_type, feedback.loop_extra_latency),
                  target_events,
                  llvm::ConstantInt::get(size_type, target.event_capacity),
@@ -3072,7 +3073,7 @@ std::expected<void, std::string> emit_event_feedback_append(
         } else {
             auto* helper_type = llvm::FunctionType::get(
                 llvm::Type::getVoidTy(context),
-                {pointer_type, size_type, size_type, size_type,
+                {pointer_type, size_type, size_type, size_type, size_type,
                  pointer_type, size_type, pointer_type},
                 false);
             auto helper = module->getOrInsertFunction(
@@ -3082,6 +3083,7 @@ std::expected<void, std::string> emit_event_feedback_append(
                 {source_events,
                  source_begin,
                  source_end,
+                 sample_index,
                  llvm::ConstantInt::get(size_type, feedback.loop_extra_latency),
                  target_events,
                  llvm::ConstantInt::get(size_type, target.event_capacity),
@@ -3119,7 +3121,8 @@ std::expected<void, std::string> emit_event_merge(
     llvm::IRBuilder<>& builder,
     detail::EventPortBindingPlan const& event_ports,
     detail::EventMergePlan const& merge,
-    EmittedRealtimeStorage const& realtime_storage)
+    EmittedRealtimeStorage const& realtime_storage,
+    llvm::Value* sample_index)
 {
     if (merge.target_representation >= event_ports.ports.size()
         || merge.source_representations.empty()) {
@@ -3272,7 +3275,7 @@ std::expected<void, std::string> emit_event_merge(
         auto* helper_type = llvm::FunctionType::get(
             size_type,
             {pointer_type, size_type, size_type,
-             pointer_type, pointer_type, size_type},
+             pointer_type, pointer_type, size_type, size_type},
             false);
         auto* module = builder.GetInsertBlock()->getModule();
         auto helper = module->getOrInsertFunction(
@@ -3284,7 +3287,8 @@ std::expected<void, std::string> emit_event_merge(
              target_write,
              source_event_pointers,
              source_remaining,
-             llvm::ConstantInt::get(size_type, source_count)},
+             llvm::ConstantInt::get(size_type, source_count),
+             sample_index},
             "event.merge.kway.count");
         builder.CreateStore(merged_count, target_count_or_write_pointer);
         return {};
@@ -3316,7 +3320,7 @@ std::expected<void, std::string> emit_event_merge(
             auto* helper_type = llvm::FunctionType::get(
                 size_type,
                 {pointer_type, pointer_type, size_type, size_type, size_type,
-                 pointer_type, size_type, size_type, size_type},
+                 pointer_type, size_type, size_type, size_type, size_type},
                 false);
             auto helper = module->getOrInsertFunction(
                 detail::ordered_event_sequence_merge_symbol, helper_type);
@@ -3331,13 +3335,14 @@ std::expected<void, std::string> emit_event_merge(
                  llvm::ConstantInt::get(size_type, (*source)->event_capacity),
                  source_count,
                  llvm::ConstantInt::get(
-                     size_type, merge.source_indices[source_index])},
+                     size_type, merge.source_indices[source_index]),
+                 sample_index},
                 "event.merge.ordered.write." + std::to_string(source_index));
         } else {
             auto* helper_type = llvm::FunctionType::get(
                 size_type,
                 {pointer_type, size_type, size_type, size_type,
-                 pointer_type, size_type, size_type},
+                 pointer_type, size_type, size_type, size_type},
                 false);
             auto helper = module->getOrInsertFunction(
                 detail::event_sequence_merge_symbol, helper_type);
@@ -3349,7 +3354,8 @@ std::expected<void, std::string> emit_event_merge(
                  target_write,
                  source_events,
                  llvm::ConstantInt::get(size_type, (*source)->event_capacity),
-                 source_count},
+                 source_count,
+                 sample_index},
                 "event.merge.write." + std::to_string(source_index));
         }
     }
@@ -3634,7 +3640,8 @@ std::expected<void, std::string> emit_event_operations(
                 builder,
                 plan.event_ports,
                 plan.event_ports.merges[operation.index],
-                realtime_storage);
+                realtime_storage,
+                sample_index);
             if (!emitted) return std::unexpected(std::move(emitted.error()));
             break;
         }
@@ -4860,26 +4867,29 @@ std::expected<llvm::Function*, std::string> define_background_root_operation(
                     builder.CreateMul(
                         index,
                         llvm::ConstantInt::get(
-                            size_type, sizeof(IndexRegion))),
+                            size_type, sizeof(GlobalIndexRange))),
                     "replay.region.pointer");
                 auto* begin = builder.CreateLoad(
                     size_type,
                     byte_offset_pointer(
                         builder,
                         region,
-                        offsetof(IndexRegion, begin),
+                        offsetof(GlobalIndexRange, begin),
                         "replay.begin.index"),
                     "replay.begin");
-                auto* end = builder.CreateLoad(
+                auto* extent = builder.CreateLoad(
                     size_type,
                     byte_offset_pointer(
                         builder,
                         region,
-                        offsetof(IndexRegion, end),
-                        "replay.end.index"),
-                    "replay.end");
+                        offsetof(GlobalIndexRange, extent),
+                        "replay.extent.index"),
+                    "replay.extent");
                 builder.CreateCondBr(
-                    builder.CreateICmpUGT(end, begin, "replay.region.valid"),
+                    builder.CreateICmpNE(
+                        extent,
+                        llvm::ConstantInt::get(size_type, 0),
+                        "replay.region.nonempty"),
                     invoke,
                     advance);
 
@@ -4894,7 +4904,7 @@ std::expected<llvm::Function*, std::string> define_background_root_operation(
                          offsets.replay_tick_context,
                          "replay.context"),
                      begin,
-                     builder.CreateSub(end, begin, "replay.block.size")});
+                     extent});
                 builder.CreateBr(advance);
 
                 builder.SetInsertPoint(advance);

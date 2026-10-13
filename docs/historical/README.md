@@ -62,6 +62,8 @@ These documents are retained because they record deleted architectures, supersed
 
 ## Completed migrations, experiments, and checkpoints
 
+- [Superseded Linear And Saturating Global Index Semantics](./linear_global_index_semantics.md)
+- [Superseded Temporary-Adapter Coordination Policy](./implementation_fronts_temporary_adapter_policy.md)
 - [LLVM Module Reload Migration Log](./llvm_module_reload_migration.md)
 - [Module Builder Migration](./module_builder_migration.md)
 - [Phase 4 constexpr migration scope](./phase4_constexpr_migration_scope.md)

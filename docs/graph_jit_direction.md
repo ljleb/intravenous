@@ -251,15 +251,15 @@ one concrete callback:
 void constrain_ports(ConstrainPortsContext<MyNode>& ctx) const;
 ```
 
-The initial continuous value registry contains scalar `Sample`, scalar `GlobalIndex`
-and one-dimensional `FFTBlock`. `GlobalIndex` is the fractional global-sample
+The initial continuous value registry contains scalar `Sample`, scalar `FractionalGlobalIndex`
+and one-dimensional `FFTBlock`. `FractionalGlobalIndex` is the fractional global-sample
 coordinate type; it retains the full integer global-index width plus 64 fractional
 bits. Each registered type defines the rank and storage meaning of its `size()`;
-`Sample` and `GlobalIndex` have no dynamic dimension while `FFTBlock::size()` is the
+`Sample` and `FractionalGlobalIndex` have no dynamic dimension while `FFTBlock::size()` is the
 number of frequency values in one transported FFT block.
 
 A port may statically declare either one registered value type or a finite set such as
-`{Sample, GlobalIndex}`. The selected member is a graph-realization fact, not a runtime
+`{Sample, FractionalGlobalIndex}`. The selected member is a graph-realization fact, not a runtime
 per-value tag. Direct connections contribute equality between the source and target
 value-type variables, so connectivity intersects/propagates their finite domains.
 `constrain_ports()` may relate value types across a node in the same way:

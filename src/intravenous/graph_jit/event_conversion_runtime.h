@@ -52,7 +52,8 @@ iv_graph_jit_merge_event_sequence(
     std::size_t target_write_index,
     void const* source_events,
     std::size_t source_capacity,
-    std::size_t source_count) noexcept;
+    std::size_t source_count,
+    GlobalIndex origin) noexcept;
 
 // Stable in-place merge used by staged fan-in. source_indices is parallel to
 // the target event ring/sequence; source_index identifies every event in the
@@ -68,7 +69,8 @@ iv_graph_jit_merge_ordered_event_sequence(
     void const* source_events,
     std::size_t source_capacity,
     std::size_t source_count,
-    std::size_t source_index) noexcept;
+    std::size_t source_index,
+    GlobalIndex origin) noexcept;
 
 
 
@@ -87,7 +89,8 @@ iv_graph_jit_merge_event_sequences_into_home(
     std::size_t target_count,
     void const* const* source_events,
     std::size_t* source_remaining,
-    std::size_t source_count) noexcept;
+    std::size_t source_count,
+    GlobalIndex origin) noexcept;
 
 // Runtime leaf for retained-source materialization. The source is described by
 // monotonic read/write indices over a power-of-two raw TimedEvent ring. Ordinary
@@ -108,7 +111,7 @@ iv_graph_jit_materialize_event_sequence(
     std::size_t source_capacity,
     std::size_t source_read_index,
     std::size_t source_write_index,
-    SampleIndex block_index,
+    GlobalIndex block_index,
     std::size_t block_size,
     std::size_t history_samples,
     void* target_events,

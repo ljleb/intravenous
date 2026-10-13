@@ -2,12 +2,20 @@
 
 [DSP Execution And Storage Glossary](./dsp_execution_storage_glossary.md) defines the normative vocabulary used here.
 
+> **Circular-indexing and coverage-algebra change:**
+> [Circular Global Timeline Indexing](./global_indexing.md) supersedes this
+> document wherever it assumes a zero-origin linear `SampleIndex`, saturating
+> arithmetic, begin/end index regions, raw global-index ordering, or uses the
+> unqualified name `Coverage` for positional set algebra. That positional type is
+> now `IndexCoverage` over `GlobalIndexRange`. The displaced semantics are preserved
+> in [historical documentation](./historical/linear_global_index_semantics.md).
 
 > **Planned random-access representation change:**
 > [Random-Access Port Data, Audio Value Types, And Input Contract Direction](./random_access_port_data_direction.md)
-> supersedes this document where it requires disjoint/canonical `Coverage` regions,
+> supersedes this document where it treats data-bearing sample coverage as
+> disjoint/canonical positional regions,
 > page-backed random-access sample storage, or page-oriented node access. The target
-> API uses contiguous Region/Coverage sample views; Coverage regions may overlap. The
+> API uses contiguous `SampleRegion`/`SampleCoverage` views; sample regions may overlap. The
 > page-oriented sections below remain useful as the current implementation checkpoint
 > until that migration lands.
 
@@ -982,7 +990,7 @@ value specialization, and possible SIMD. It does not redefine `tick()` for ordin
 nodes or introduce a second implementation of the DSP algorithm. GraphJit generates
 identity-time forward/reverse propagation for mechanically pointwise dependencies.
 When a replayable Tick node has a non-pointwise Random Access dependency, such as a
-source addressed by a `GlobalIndex` coordinate stream, its background dependency
+source addressed by a `FractionalGlobalIndex` coordinate stream, its background dependency
 mapping is supplied through the same forward/reverse propagation contracts used by
 background planning. Conservative whole-input/whole-output bounds are valid when no
 tighter value-blind bound is available.

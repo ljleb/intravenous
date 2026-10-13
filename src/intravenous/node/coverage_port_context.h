@@ -18,10 +18,10 @@
 namespace iv {
 
 namespace background_port_details {
-    inline Coverage const empty_coverage {};
+    inline IndexCoverage const empty_coverage {};
 
-    inline Coverage const& coverage_or_empty(
-        Coverage const* coverage) noexcept
+    inline IndexCoverage const& coverage_or_empty(
+        IndexCoverage const* coverage) noexcept
     {
         return coverage ? *coverage : empty_coverage;
     }
@@ -43,16 +43,16 @@ namespace background_port_details {
 
 struct RandomAccessSampleInputPort {
     void const* data = nullptr;
-    Coverage const* coverage_value = nullptr;
-    Sample (*read_sample)(void const*, SampleIndex, std::size_t) = nullptr;
+    IndexCoverage const* coverage_value = nullptr;
+    Sample (*read_sample)(void const*, GlobalIndex, std::size_t) = nullptr;
 
-    [[nodiscard]] Coverage const& coverage() const noexcept
+    [[nodiscard]] IndexCoverage const& coverage() const noexcept
     {
         return background_port_details::coverage_or_empty(coverage_value);
     }
 
     [[nodiscard]] Sample at(
-        SampleIndex index, std::size_t channel = 0) const noexcept
+        GlobalIndex index, std::size_t channel = 0) const noexcept
     {
         IV_ASSERT(coverage().contains(index),
             "background sample input read lies outside published coverage");
@@ -64,16 +64,16 @@ struct RandomAccessSampleInputPort {
 
 struct TockSampleOutputPort {
     void* data = nullptr;
-    Coverage const* requested_coverage_value = nullptr;
-    void (*write_sample)(void*, SampleIndex, std::size_t, Sample) = nullptr;
+    IndexCoverage const* requested_coverage_value = nullptr;
+    void (*write_sample)(void*, GlobalIndex, std::size_t, Sample) = nullptr;
 
-    [[nodiscard]] Coverage const& requested_coverage() const noexcept
+    [[nodiscard]] IndexCoverage const& requested_coverage() const noexcept
     {
         return background_port_details::coverage_or_empty(requested_coverage_value);
     }
 
     void write(
-        SampleIndex index, std::size_t channel, Sample value) const noexcept
+        GlobalIndex index, std::size_t channel, Sample value) const noexcept
     {
         IV_ASSERT(requested_coverage().contains(index),
             "background sample output write lies outside requested coverage");
@@ -89,21 +89,21 @@ struct TockSampleOutputPort {
 struct RandomAccessEventInputPort {
     using VisitEvent = void (*)(void*, TimedEvent const&);
     using ForEachEvent = void (*)(
-        void const*, SampleIndex, SampleIndex, void*, VisitEvent);
+        void const*, GlobalIndexRange, void*, VisitEvent);
 
     void const* data = nullptr;
-    Coverage const* coverage_value = nullptr;
+    IndexCoverage const* coverage_value = nullptr;
     ForEachEvent for_each_event = nullptr;
 
-    [[nodiscard]] Coverage const& coverage() const noexcept
+    [[nodiscard]] IndexCoverage const& coverage() const noexcept
     {
         return background_port_details::coverage_or_empty(coverage_value);
     }
 
     template<typename Fn>
-    void for_each(IndexRegion region, Fn&& fn) const
+    void for_each(GlobalIndexRange region, Fn&& fn) const
     {
-        IV_ASSERT(region.valid() && coverage().contains(region),
+        IV_ASSERT(coverage().contains(region),
             "background event input read lies outside published coverage");
         if (region.empty()) return;
         IV_ASSERT(for_each_event != nullptr,
@@ -111,28 +111,21 @@ struct RandomAccessEventInputPort {
         using Visitor = std::remove_reference_t<Fn>;
         for_each_event(
             data,
-            region.begin,
-            region.end,
+            region,
             std::addressof(fn),
             +[](void* opaque, TimedEvent const& event) {
                 (*static_cast<Visitor*>(opaque))(event);
             });
     }
 
-    template<typename Fn>
-    void for_each(
-        SampleIndex begin, SampleIndex end, Fn&& fn) const
-    {
-        for_each(IndexRegion{begin, end}, std::forward<Fn>(fn));
-    }
 };
 
 struct TockEventOutputPort {
     void* data = nullptr;
-    Coverage const* requested_coverage_value = nullptr;
+    IndexCoverage const* requested_coverage_value = nullptr;
     void (*write_event)(void*, TimedEvent const&) = nullptr;
 
-    [[nodiscard]] Coverage const& requested_coverage() const noexcept
+    [[nodiscard]] IndexCoverage const& requested_coverage() const noexcept
     {
         return background_port_details::coverage_or_empty(requested_coverage_value);
     }
@@ -151,42 +144,42 @@ struct TockEventOutputPort {
 };
 
 struct InputCoverageChange {
-    Coverage const* coverage_value = nullptr;
-    Coverage const* changed_value = nullptr;
+    IndexCoverage const* coverage_value = nullptr;
+    IndexCoverage const* changed_value = nullptr;
 
-    [[nodiscard]] Coverage const& coverage() const noexcept
+    [[nodiscard]] IndexCoverage const& coverage() const noexcept
     {
         return background_port_details::coverage_or_empty(coverage_value);
     }
 
-    [[nodiscard]] Coverage const& changed() const noexcept
+    [[nodiscard]] IndexCoverage const& changed() const noexcept
     {
         return background_port_details::coverage_or_empty(changed_value);
     }
 };
 
 struct OutputCoverageChange {
-    using PublishCoverage = void (*)(void*, Coverage const&);
-    using PublishChange = void (*)(void*, Coverage const&);
+    using PublishCoverage = void (*)(void*, IndexCoverage const&);
+    using PublishChange = void (*)(void*, IndexCoverage const&);
 
     void* data = nullptr;
-    Coverage const* previous_coverage_value = nullptr;
+    IndexCoverage const* previous_coverage_value = nullptr;
     PublishCoverage publish_coverage_value = nullptr;
     PublishChange publish_changed_value = nullptr;
 
-    [[nodiscard]] Coverage const& previous_coverage() const noexcept
+    [[nodiscard]] IndexCoverage const& previous_coverage() const noexcept
     {
         return background_port_details::coverage_or_empty(previous_coverage_value);
     }
 
-    void publish_coverage(Coverage const& coverage) const
+    void publish_coverage(IndexCoverage const& coverage) const
     {
         IV_ASSERT(publish_coverage_value != nullptr,
             "background forward context has no output-coverage sink");
         publish_coverage_value(data, coverage);
     }
 
-    void change(Coverage const& changed) const
+    void change(IndexCoverage const& changed) const
     {
         if (changed.empty()) return;
         IV_ASSERT(publish_changed_value != nullptr,
@@ -194,34 +187,34 @@ struct OutputCoverageChange {
         publish_changed_value(data, changed);
     }
 
-    void change(IndexRegion changed) const
+    void change(GlobalIndexRange changed) const
     {
-        change(Coverage{changed});
+        change(IndexCoverage{changed});
     }
 };
 
 struct OutputCoverageRequirement {
-    Coverage const* required_value = nullptr;
+    IndexCoverage const* required_value = nullptr;
 
-    [[nodiscard]] Coverage const& required() const noexcept
+    [[nodiscard]] IndexCoverage const& required() const noexcept
     {
         return background_port_details::coverage_or_empty(required_value);
     }
 };
 
 struct InputCoverageRequirement {
-    using PublishRequirement = void (*)(void*, Coverage const&);
+    using PublishRequirement = void (*)(void*, IndexCoverage const&);
 
     void* data = nullptr;
-    Coverage const* coverage_value = nullptr;
+    IndexCoverage const* coverage_value = nullptr;
     PublishRequirement publish_required_value = nullptr;
 
-    [[nodiscard]] Coverage const& coverage() const noexcept
+    [[nodiscard]] IndexCoverage const& coverage() const noexcept
     {
         return background_port_details::coverage_or_empty(coverage_value);
     }
 
-    void require(Coverage const& required) const
+    void require(IndexCoverage const& required) const
     {
         if (required.empty()) return;
         IV_ASSERT(publish_required_value != nullptr,
@@ -229,9 +222,9 @@ struct InputCoverageRequirement {
         publish_required_value(data, required);
     }
 
-    void require(IndexRegion required) const
+    void require(GlobalIndexRange required) const
     {
-        require(Coverage{required});
+        require(IndexCoverage{required});
     }
 };
 
@@ -246,19 +239,19 @@ public:
         : port_(port)
     {}
 
-    [[nodiscard]] Coverage const& coverage() const noexcept
+    [[nodiscard]] IndexCoverage const& coverage() const noexcept
     {
         return port_.coverage();
     }
 
-    [[nodiscard]] Sample at(SampleIndex index) const noexcept
+    [[nodiscard]] Sample at(GlobalIndex index) const noexcept
     requires (Type == ChannelTypeId::mono)
     {
         return port_.at(index);
     }
 
     template<class Channel>
-    [[nodiscard]] Sample at(Channel, SampleIndex index) const noexcept
+    [[nodiscard]] Sample at(Channel, GlobalIndex index) const noexcept
     requires (Type != ChannelTypeId::mono)
     {
         return port_.at(index, static_channel_index<Type, Channel>());
@@ -274,19 +267,19 @@ public:
         : port_(port)
     {}
 
-    [[nodiscard]] Coverage const& requested_coverage() const noexcept
+    [[nodiscard]] IndexCoverage const& requested_coverage() const noexcept
     {
         return port_.requested_coverage();
     }
 
-    void write(SampleIndex index, Sample value) const noexcept
+    void write(GlobalIndex index, Sample value) const noexcept
     requires (Type == ChannelTypeId::mono)
     {
         port_.write(index, 0, value);
     }
 
     template<class Channel>
-    void write(Channel, SampleIndex index, Sample value) const noexcept
+    void write(Channel, GlobalIndex index, Sample value) const noexcept
     requires (Type != ChannelTypeId::mono)
     {
         port_.write(index, static_channel_index<Type, Channel>(), value);
@@ -301,22 +294,17 @@ public:
         : port_(port)
     {}
 
-    [[nodiscard]] Coverage const& coverage() const noexcept
+    [[nodiscard]] IndexCoverage const& coverage() const noexcept
     {
         return port_.coverage();
     }
 
     template<typename Fn>
-    void for_each(IndexRegion region, Fn&& fn) const
+    void for_each(GlobalIndexRange region, Fn&& fn) const
     {
         port_.for_each(region, std::forward<Fn>(fn));
     }
 
-    template<typename Fn>
-    void for_each(SampleIndex begin, SampleIndex end, Fn&& fn) const
-    {
-        port_.for_each(begin, end, std::forward<Fn>(fn));
-    }
 };
 
 class StaticBackgroundEventOutputAccess {
@@ -327,7 +315,7 @@ public:
         : port_(port)
     {}
 
-    [[nodiscard]] Coverage const& requested_coverage() const noexcept
+    [[nodiscard]] IndexCoverage const& requested_coverage() const noexcept
     {
         return port_.requested_coverage();
     }

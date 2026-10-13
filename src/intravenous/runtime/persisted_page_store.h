@@ -109,7 +109,7 @@ enum class PersistedSamplePacking : std::uint8_t {
 struct PersistedSamplePage {
     PersistedOutputHandle output{};
     std::uint64_t page_index = 0;
-    Coverage domain{};
+    IndexCoverage domain{};
     ChannelLayout layout{};
     PersistedSamplePacking packing = PersistedSamplePacking::dense;
     std::vector<Sample> values{};
@@ -118,7 +118,7 @@ struct PersistedSamplePage {
 struct PersistedEventPage {
     PersistedOutputHandle output{};
     std::uint64_t page_index = 0;
-    Coverage domain{};
+    IndexCoverage domain{};
     EventTypeId type = EventTypeId::empty;
     std::vector<TimedEvent> events{};
 };
@@ -198,12 +198,12 @@ public:
             PersistedOutputHandle output,
             std::uint64_t page_index) const noexcept;
 
-        // Coverage and format metadata are assembled before publication. Tick
+        // IndexCoverage and format metadata are assembled before publication. Tick
         // readers only select immutable records and never allocate.
-        [[nodiscard]] Coverage const* find_sample_coverage(
+        [[nodiscard]] IndexCoverage const* find_sample_coverage(
             PersistedOutputHandle output,
             ChannelLayout layout) const noexcept;
-        [[nodiscard]] Coverage const* find_event_coverage(
+        [[nodiscard]] IndexCoverage const* find_event_coverage(
             PersistedOutputHandle output,
             EventTypeId type) const noexcept;
     };

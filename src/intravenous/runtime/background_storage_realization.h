@@ -22,11 +22,11 @@ namespace iv {
 // lifetime; operations never recover an executor or transaction through it.
 struct BackgroundSampleReadView {
     void const* data = nullptr;
-    Coverage const* coverage_value = nullptr;
+    IndexCoverage const* coverage_value = nullptr;
     ChannelLayout layout{};
     std::span<std::size_t const> channels{};
     Sample (*read_sample)(
-        void const*, SampleIndex, std::size_t) noexcept = nullptr;
+        void const*, GlobalIndex, std::size_t) noexcept = nullptr;
 
     [[nodiscard]] explicit operator bool() const noexcept
     {
@@ -34,20 +34,20 @@ struct BackgroundSampleReadView {
             && read_sample != nullptr;
     }
 
-    [[nodiscard]] Coverage const& coverage() const noexcept;
+    [[nodiscard]] IndexCoverage const& coverage() const noexcept;
     [[nodiscard]] bool has_channel(std::size_t channel) const noexcept;
     [[nodiscard]] Sample at(
-        SampleIndex index,
+        GlobalIndex index,
         std::size_t channel) const noexcept;
 };
 
 struct BackgroundSampleWriteView {
     void* data = nullptr;
-    Coverage const* coverage_value = nullptr;
+    IndexCoverage const* coverage_value = nullptr;
     ChannelLayout layout{};
     std::span<std::size_t const> channels{};
     bool (*write_sample)(
-        void*, SampleIndex, std::size_t, Sample) noexcept = nullptr;
+        void*, GlobalIndex, std::size_t, Sample) noexcept = nullptr;
 
     [[nodiscard]] explicit operator bool() const noexcept
     {
@@ -55,10 +55,10 @@ struct BackgroundSampleWriteView {
             && write_sample != nullptr;
     }
 
-    [[nodiscard]] Coverage const& coverage() const noexcept;
+    [[nodiscard]] IndexCoverage const& coverage() const noexcept;
     [[nodiscard]] bool has_channel(std::size_t channel) const noexcept;
     [[nodiscard]] bool write(
-        SampleIndex index,
+        GlobalIndex index,
         std::size_t channel,
         Sample value) const noexcept;
 };
@@ -66,10 +66,10 @@ struct BackgroundSampleWriteView {
 struct BackgroundEventReadView {
     using VisitEvent = void (*)(void*, TimedEvent const&);
     using ForEachEvent = void (*)(
-        void const*, IndexRegion, void*, VisitEvent);
+        void const*, GlobalIndexRange, void*, VisitEvent);
 
     void const* data = nullptr;
-    Coverage const* coverage_value = nullptr;
+    IndexCoverage const* coverage_value = nullptr;
     EventTypeId type = EventTypeId::empty;
     ForEachEvent for_each_event = nullptr;
 
@@ -79,13 +79,13 @@ struct BackgroundEventReadView {
             && for_each_event != nullptr;
     }
 
-    [[nodiscard]] Coverage const& coverage() const noexcept;
+    [[nodiscard]] IndexCoverage const& coverage() const noexcept;
 
     template<typename Fn>
-    void for_each(IndexRegion region, Fn&& fn) const
+    void for_each(GlobalIndexRange region, Fn&& fn) const
     {
         IV_ASSERT(*this, "background event storage has no readable view");
-        IV_ASSERT(region.valid() && coverage().contains(region),
+        IV_ASSERT(coverage().contains(region),
             "background event storage read lies outside selected coverage");
         if (region.empty()) return;
         using Visitor = std::remove_reference_t<Fn>;
@@ -101,7 +101,7 @@ struct BackgroundEventReadView {
 
 struct BackgroundEventWriteView {
     void* data = nullptr;
-    Coverage const* coverage_value = nullptr;
+    IndexCoverage const* coverage_value = nullptr;
     EventTypeId type = EventTypeId::empty;
     bool (*write_event)(void*, TimedEvent const&) noexcept = nullptr;
 
@@ -111,7 +111,7 @@ struct BackgroundEventWriteView {
             && write_event != nullptr;
     }
 
-    [[nodiscard]] Coverage const& coverage() const noexcept;
+    [[nodiscard]] IndexCoverage const& coverage() const noexcept;
     [[nodiscard]] bool write(TimedEvent const& event) const noexcept;
 };
 
@@ -120,7 +120,7 @@ struct BackgroundEventWriteView {
 // non-owning: the surrounding transaction keeps its reader pin alive.
 struct BackgroundStorageSelection {
     std::uint64_t generation = 0;
-    std::vector<Coverage> storage_coverage{};
+    std::vector<IndexCoverage> storage_coverage{};
     // Empty preserves the plan-derived default used by direct component tests.
     // A complete transaction supplies one flag per storage slot so a persisted
     // authored output can be read from the pinned base when it is still valid,

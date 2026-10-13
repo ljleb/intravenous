@@ -20,7 +20,7 @@ struct PageNode {
 
 struct SampleOutputState {
     PersistedOutputHandle output{};
-    Coverage coverage{};
+    IndexCoverage coverage{};
     ChannelLayout layout{};
     std::shared_ptr<PageNode<PersistedSamplePage> const> pages{};
     std::size_t page_count = 0;
@@ -28,7 +28,7 @@ struct SampleOutputState {
 
 struct EventOutputState {
     PersistedOutputHandle output{};
-    Coverage coverage{};
+    IndexCoverage coverage{};
     EventTypeId type = EventTypeId::empty;
     std::shared_ptr<PageNode<PersistedEventPage> const> pages{};
     std::size_t page_count = 0;
@@ -368,12 +368,12 @@ template<typename Node>
         : make_output_branch<Node>(std::move(children));
 }
 
-[[nodiscard]] IndexRegion page_interval(
+[[nodiscard]] GlobalIndexRange page_interval(
     std::uint64_t page_index,
     std::size_t page_width)
 {
-    auto const width = static_cast<SampleIndex>(page_width);
-    auto const maximum = std::numeric_limits<SampleIndex>::max();
+    auto const width = static_cast<GlobalIndex>(page_width);
+    auto const maximum = std::numeric_limits<GlobalIndex>::max();
     if (page_width == 0 || page_index > maximum / width) {
         throw std::invalid_argument("persisted page index exceeds the sample timeline");
     }
@@ -384,7 +384,7 @@ template<typename Node>
     return {begin, begin + width};
 }
 
-void validate_domain(Coverage const& domain, IndexRegion interval)
+void validate_domain(IndexCoverage const& domain, GlobalIndexRange interval)
 {
     if (domain.empty()) {
         throw std::invalid_argument("persisted page domain cannot be empty");
@@ -397,7 +397,7 @@ void validate_domain(Coverage const& domain, IndexRegion interval)
     }
 }
 
-[[nodiscard]] std::size_t covered_sample_count(Coverage const& coverage)
+[[nodiscard]] std::size_t covered_sample_count(IndexCoverage const& coverage)
 {
     std::size_t result = 0;
     for (auto const region : coverage.regions()) {
@@ -456,14 +456,14 @@ void validate_page(PersistedEventPage const& page, std::size_t page_width)
     }
     auto const interval = page_interval(page.page_index, page_width);
     validate_domain(page.domain, interval);
-    EventTime previous = 0;
+    GlobalIndex previous = 0;
     bool first = true;
     for (auto const& event : page.events) {
         if (event.time >= page_width) {
             throw std::invalid_argument("event lies outside its persisted page");
         }
         if (!page.domain.contains(
-                interval.begin + static_cast<SampleIndex>(event.time))) {
+                interval.begin + static_cast<GlobalIndex>(event.time))) {
             throw std::invalid_argument("event lies outside its persisted page domain");
         }
         auto const type_matches =
@@ -595,7 +595,7 @@ PersistedEventPage const* PersistedPageStore::Snapshot::find_event_page(
     return selected ? find_page(selected->pages, page_index) : nullptr;
 }
 
-Coverage const* PersistedPageStore::Snapshot::find_sample_coverage(
+IndexCoverage const* PersistedPageStore::Snapshot::find_sample_coverage(
     PersistedOutputHandle output,
     ChannelLayout layout) const noexcept
 {
@@ -613,7 +613,7 @@ Coverage const* PersistedPageStore::Snapshot::find_sample_coverage(
         : nullptr;
 }
 
-Coverage const* PersistedPageStore::Snapshot::find_event_coverage(
+IndexCoverage const* PersistedPageStore::Snapshot::find_event_coverage(
     PersistedOutputHandle output,
     EventTypeId type) const noexcept
 {
@@ -681,7 +681,7 @@ void PersistedPageStore::Candidate::put(PersistedSamplePage page)
     auto const* previous = current
         ? find_page(current->pages, replacement->page_index)
         : nullptr;
-    Coverage coverage = current ? current->coverage : Coverage{};
+    IndexCoverage coverage = current ? current->coverage : IndexCoverage{};
     if (previous) coverage.exclude(previous->domain);
     coverage.include(replacement->domain);
     auto state = std::make_shared<SampleOutputState const>(SampleOutputState{
@@ -727,7 +727,7 @@ void PersistedPageStore::Candidate::put(PersistedEventPage page)
     auto const* previous = current
         ? find_page(current->pages, replacement->page_index)
         : nullptr;
-    Coverage coverage = current ? current->coverage : Coverage{};
+    IndexCoverage coverage = current ? current->coverage : IndexCoverage{};
     if (previous) coverage.exclude(previous->domain);
     coverage.include(replacement->domain);
     auto state = std::make_shared<EventOutputState const>(EventOutputState{

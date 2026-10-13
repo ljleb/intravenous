@@ -59,7 +59,8 @@ extern "C" std::size_t iv_graph_jit_merge_event_sequence(
     std::size_t target_write_index,
     void const* source_events,
     std::size_t source_capacity,
-    std::size_t source_count) noexcept
+    std::size_t source_count,
+    GlobalIndex origin) noexcept
 {
     if (target_events == nullptr || source_events == nullptr
         || (target_capacity != 0 && !is_power_of_2(target_capacity))) {
@@ -85,6 +86,7 @@ extern "C" std::size_t iv_graph_jit_merge_event_sequence(
     auto target_remaining = target_count;
     auto source_remaining = bounded_source_count;
     auto output_remaining = target_count + bounded_source_count;
+    auto const order = RangeRelativeIndexOrder{origin};
 
     while (output_remaining != 0) {
         bool take_target = false;
@@ -97,7 +99,7 @@ extern "C" std::size_t iv_graph_jit_merge_event_sequence(
             // On equal timestamps take the newly merged source while walking
             // backwards, leaving the existing target event earlier in the
             // final stable order.
-            take_target = target_event.time > source_event.time;
+            take_target = order(source_event.time, target_event.time);
         }
 
         auto const output_index =
@@ -124,7 +126,8 @@ extern "C" std::size_t iv_graph_jit_merge_ordered_event_sequence(
     void const* source_events,
     std::size_t source_capacity,
     std::size_t source_count,
-    std::size_t source_index) noexcept
+    std::size_t source_index,
+    GlobalIndex origin) noexcept
 {
     if (target_events == nullptr || target_source_indices == nullptr
         || source_events == nullptr
@@ -148,6 +151,7 @@ extern "C" std::size_t iv_graph_jit_merge_ordered_event_sequence(
     auto target_remaining = target_count;
     auto source_remaining = bounded_source_count;
     auto output_remaining = target_count + bounded_source_count;
+    auto const order = RangeRelativeIndexOrder{origin};
 
     while (output_remaining != 0) {
         bool take_target = false;
@@ -159,7 +163,7 @@ extern "C" std::size_t iv_graph_jit_merge_ordered_event_sequence(
             auto const& target_event = target[target_event_index];
             auto const& source_event = source[source_remaining - 1];
             auto const target_index = target_source_indices[target_event_index];
-            take_target = target_event.time > source_event.time
+            take_target = order(source_event.time, target_event.time)
                 || (target_event.time == source_event.time
                     && target_index > source_index);
         }
@@ -190,7 +194,8 @@ extern "C" std::size_t iv_graph_jit_merge_event_sequences_into_home(
     std::size_t target_count,
     void const* const* source_events,
     std::size_t* source_remaining,
-    std::size_t source_count) noexcept
+    std::size_t source_count,
+    GlobalIndex origin) noexcept
 {
     if (target_events == nullptr
         || (target_capacity != 0 && !is_power_of_2(target_capacity))
@@ -216,13 +221,14 @@ extern "C" std::size_t iv_graph_jit_merge_event_sequences_into_home(
     auto* target = static_cast<TimedEvent*>(target_events);
     std::size_t target_remaining = target_count;
     std::size_t output_remaining = total_count;
+    auto const order = RangeRelativeIndexOrder{origin};
 
     while (output_remaining != 0) {
         bool chose_target = target_remaining != 0;
         std::size_t chosen_source = 0;
-        EventTime chosen_time = chose_target
+        GlobalIndex chosen_time = chose_target
             ? target[target_remaining - 1].time
-            : EventTime{};
+            : GlobalIndex{};
         std::size_t chosen_index = 0;
 
         for (std::size_t source = 0; source < source_count; ++source) {
@@ -238,7 +244,7 @@ extern "C" std::size_t iv_graph_jit_merge_event_sequences_into_home(
                 chosen_index = candidate_index;
                 continue;
             }
-            if (candidate_time > chosen_time
+            if (order(chosen_time, candidate_time)
                 || (candidate_time == chosen_time
                     && candidate_index > chosen_index)) {
                 chose_target = false;
@@ -280,7 +286,7 @@ extern "C" std::size_t iv_graph_jit_materialize_event_sequence(
     std::size_t source_capacity,
     std::size_t source_read_index,
     std::size_t source_write_index,
-    SampleIndex block_index,
+    GlobalIndex block_index,
     std::size_t block_size,
     std::size_t history_samples,
     void* target_events,
@@ -323,8 +329,7 @@ extern "C" std::size_t iv_graph_jit_materialize_event_sequence(
     std::size_t written = 0;
     for (std::size_t offset = 0; offset < available; ++offset) {
         auto const& event = source[(source_read_index + offset) & mask];
-        auto const time = static_cast<SampleIndex>(event.time);
-        if (!window.contains(time)) {
+        if (!window.contains(event.time)) {
             continue;
         }
         EventConversionRegistry::instance().convert(

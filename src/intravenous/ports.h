@@ -2,6 +2,7 @@
 
 #include <intravenous/compat.h>
 #include <intravenous/channel_layout.h>
+#include <intravenous/global_index.h>
 #include <intravenous/sample.h>
 
 #include <algorithm>
@@ -87,54 +88,24 @@ namespace iv {
         event,
     };
 
-    // A global DSP timeline position. Unlike a buffer offset or event offset,
-    // this remains meaningful across sequential and arbitrary-access work.
-    using SampleIndex = std::uint64_t;
-
-    using EventTime = size_t;
-
-    struct RealtimePortWindow {
-        SampleIndex begin = 0;
-        SampleIndex end = 0; // exclusive
-
-        [[nodiscard]] constexpr bool contains(SampleIndex index) const noexcept
-        {
-            return index >= begin && index < end;
-        }
-
-        constexpr bool operator==(RealtimePortWindow const&) const = default;
-    };
-
-    [[nodiscard]] constexpr SampleIndex saturating_sample_index_add(
-        SampleIndex base, size_t delta) noexcept
-    {
-        auto const max = std::numeric_limits<SampleIndex>::max();
-        if (delta > max - base) {
-            return max;
-        }
-        return base + static_cast<SampleIndex>(delta);
-    }
-
-    [[nodiscard]] constexpr RealtimePortWindow realtime_port_window(
-        SampleIndex block_index,
+    [[nodiscard]] constexpr GlobalIndexRange realtime_port_window(
+        GlobalIndex block_index,
         size_t block_size,
         size_t history,
         size_t latency) noexcept
     {
-        SampleIndex const history_samples = history > block_index
-            ? block_index
-            : static_cast<SampleIndex>(history);
-        auto const block_end = saturating_sample_index_add(block_index, block_size);
         return {
-            .begin = block_index - history_samples,
-            .end = saturating_sample_index_add(block_end, latency),
+            .begin = block_index.retreated_by(history),
+            .extent = static_cast<GlobalIndex::extent_type>(history)
+                + static_cast<GlobalIndex::extent_type>(block_size)
+                + static_cast<GlobalIndex::extent_type>(latency),
         };
     }
 
     using Event = std::variant<MidiEvent, TriggerEvent, BoundaryEvent, EmptyEvent>;
 
     struct TimedEvent {
-        EventTime time = 0;
+        GlobalIndex time{};
         Event value {};
     };
 
@@ -738,18 +709,17 @@ namespace iv {
             return storage[frame * frame_stride];
         }
 
-        constexpr size_t frame_index_absolute(SampleIndex logical_frame) const
+        constexpr size_t frame_index_absolute(GlobalIndex logical_frame) const
         {
             IV_ASSERT(
                 frame_capacity != 0 && is_power_of_2(frame_capacity),
                 "sample channel capacity must be a power of two");
             auto const mask = frame_capacity - 1;
-            auto const delayed = logical_frame
-                - static_cast<SampleIndex>(frame_delay);
-            return static_cast<size_t>(delayed & mask);
+            auto const delayed = logical_frame.retreated_by(frame_delay);
+            return static_cast<size_t>(delayed.bits() & mask);
         }
 
-        constexpr Sample& sample_absolute(SampleIndex logical_frame) const
+        constexpr Sample& sample_absolute(GlobalIndex logical_frame) const
         {
             return sample(frame_index_absolute(logical_frame));
         }
@@ -885,7 +855,7 @@ namespace iv {
         }
 
         constexpr BlockView<Sample> channel_block_absolute(
-            size_t channel, SampleIndex logical_start, size_t count) const
+            size_t channel, GlobalIndex logical_start, size_t count) const
         {
             IV_ASSERT(channel < channel_count(channel_layout), "port channel index out of bounds");
             return channel_block(
@@ -899,7 +869,7 @@ namespace iv {
         SamplePortStorageView _storage;
         size_t _history;
         size_t _latency_samples = 0;
-        SampleIndex _read_index = 0;
+        GlobalIndex _read_index{};
 
         friend void advance_input(InputPort&, size_t);
         friend void advance_inputs(std::span<InputPort>, size_t);
@@ -907,7 +877,7 @@ namespace iv {
     private:
         IV_FORCEINLINE constexpr void advance(size_t amount = 1)
         {
-            _read_index += static_cast<SampleIndex>(amount);
+            _read_index = _read_index.advanced_by(amount);
         }
 
     public:
@@ -915,12 +885,12 @@ namespace iv {
             SamplePortStorageView storage,
             size_t history,
             size_t latency_samples = 0,
-            SampleIndex index = 0
+            GlobalIndex index = {}
         ) :
             _storage(storage),
             _history(history),
             _latency_samples(latency_samples),
-            _read_index(index - static_cast<SampleIndex>(latency_samples))
+            _read_index(index.retreated_by(latency_samples))
         {
             auto const count = channel_count(_storage.channel_layout);
             for (size_t channel = 0; channel < count; ++channel) {
@@ -944,7 +914,7 @@ namespace iv {
             SharedPortData& shared_data,
             size_t history,
             size_t latency_samples = 0,
-            SampleIndex index = 0
+            GlobalIndex index = {}
         ) : InputPort(
             SamplePortStorageView{shared_data}, history, latency_samples, index)
         {}
@@ -954,14 +924,14 @@ namespace iv {
             if (offset > _history) return 0.0f;
             IV_ASSERT(channel < channel_count(_storage.channel_layout), "port channel index out of bounds");
             return _storage.channels[channel].sample_absolute(
-                _read_index - static_cast<SampleIndex>(offset));
+                _read_index.retreated_by(offset));
         }
 
         IV_FORCEINLINE constexpr Sample get_frame(size_t sample_offset, size_t channel = 0) const
         {
             IV_ASSERT(channel < channel_count(_storage.channel_layout), "port channel index out of bounds");
             return _storage.channels[channel].sample_absolute(
-                _read_index + static_cast<SampleIndex>(sample_offset));
+                _read_index.advanced_by(sample_offset));
         }
 
         IV_FORCEINLINE constexpr BlockView<Sample> get_block(size_t block_size, size_t sample_offset = 0) const
@@ -972,7 +942,7 @@ namespace iv {
 
             return _storage.channel_block_absolute(
                 0,
-                _read_index + static_cast<SampleIndex>(sample_offset),
+                _read_index.advanced_by(sample_offset),
                 block_size - sample_offset);
         }
 
@@ -1029,7 +999,7 @@ namespace iv {
         explicit OutputPort(
             SamplePortStorageView storage,
             size_t history,
-            SampleIndex index = 0
+            GlobalIndex index = {}
         ) : OutputPort(
             storage,
             history,
@@ -1040,13 +1010,14 @@ namespace iv {
         explicit OutputPort(
             SamplePortStorageView storage,
             size_t history,
-            SampleIndex index,
+            GlobalIndex index,
             size_t latency
         ) :
             _storage(storage),
             _history(history),
             _latency(latency),
-            _position(static_cast<size_t>(index & (storage.frame_capacity - 1))),
+            _position(static_cast<size_t>(
+                index.bits() & (storage.frame_capacity - 1))),
             _source_layout(storage.channel_layout)
         {
             IV_ASSERT(is_power_of_2(_storage.frame_capacity), "buffer frame capacity should be a power of 2");
@@ -1056,7 +1027,7 @@ namespace iv {
         explicit OutputPort(
             SharedPortData& shared_data,
             size_t history,
-            SampleIndex index = 0
+            GlobalIndex index = {}
         ) :
             OutputPort(
                 SamplePortStorageView{shared_data},
@@ -1067,7 +1038,7 @@ namespace iv {
         explicit OutputPort(
             SharedPortData& shared_data,
             size_t history,
-            SampleIndex index,
+            GlobalIndex index,
             size_t latency
         ) :
             OutputPort(
@@ -1082,7 +1053,7 @@ namespace iv {
             size_t history,
             ChannelLayout source_layout,
             ChannelConversionPlan conversion,
-            SampleIndex index = 0
+            GlobalIndex index = {}
         ) : OutputPort(
             storage,
             history,
@@ -1097,13 +1068,14 @@ namespace iv {
             size_t history,
             ChannelLayout source_layout,
             ChannelConversionPlan conversion,
-            SampleIndex index,
+            GlobalIndex index,
             size_t latency
         ) :
             _storage(storage),
             _history(history),
             _latency(latency),
-            _position(static_cast<size_t>(index & (storage.frame_capacity - 1))),
+            _position(static_cast<size_t>(
+                index.bits() & (storage.frame_capacity - 1))),
             _source_layout(source_layout),
             _conversion(conversion)
         {
@@ -1118,7 +1090,7 @@ namespace iv {
             size_t history,
             ChannelLayout source_layout,
             ChannelConversionPlan conversion,
-            SampleIndex index = 0
+            GlobalIndex index = {}
         ) : OutputPort(
             SamplePortStorageView{shared_data},
                 history,
@@ -1132,7 +1104,7 @@ namespace iv {
             size_t history,
             ChannelLayout source_layout,
             ChannelConversionPlan conversion,
-            SampleIndex index,
+            GlobalIndex index,
             size_t latency
         ) : OutputPort(
             SamplePortStorageView{shared_data},
@@ -1385,21 +1357,21 @@ namespace iv {
             _shared_data(&shared_data)
         {}
 
-        BlockView<TimedEvent const> get_block(size_t block_index, size_t block_size) const
+        BlockView<TimedEvent const> get_block(
+            GlobalIndex block_index, size_t block_size) const
         {
             if (!_shared_data || _shared_data->buffer.empty()) {
                 return {};
             }
 
             auto& shared_data = *_shared_data;
-            size_t const block_end = block_index + block_size;
             size_t const mask = shared_data.buffer.size() - 1;
 
             // EventOutputPort's producer contract keeps this sequence sorted
             // by absolute time, so both scans may stop at the first boundary.
             while (shared_data.read_index != shared_data.write_index) {
                 TimedEvent const& oldest = shared_data.buffer[shared_data.read_index & mask];
-                if (oldest.time >= block_index) {
+                if (block_index.signed_distance_to(oldest.time) >= 0) {
                     break;
                 }
                 ++shared_data.read_index;
@@ -1407,7 +1379,11 @@ namespace iv {
 
             size_t const available = shared_data.write_index - shared_data.read_index;
             size_t end = 0;
-            while (end < available && shared_data.buffer[(shared_data.read_index + end) & mask].time < block_end) {
+            while (end < available
+                && block_index.forward_distance_to(
+                    shared_data.buffer[
+                        (shared_data.read_index + end) & mask].time)
+                    < block_size) {
                 ++end;
             }
 
@@ -1419,7 +1395,8 @@ namespace iv {
         }
 
         template<typename Fn>
-        void for_each_in_block(size_t block_index, size_t block_size, Fn&& fn) const
+        void for_each_in_block(
+            GlobalIndex block_index, size_t block_size, Fn&& fn) const
         {
             auto block = get_block(block_index, block_size);
             size_t i = 0;
@@ -1448,20 +1425,19 @@ namespace iv {
         size_t _latency = 0;
         bool _has_conversion = false;
         EventConversionPlan _conversion {};
-        std::optional<RealtimePortWindow> _active_window {};
+        std::optional<GlobalIndexRange> _active_window {};
 
-        [[nodiscard]] RealtimePortWindow window_for(
-            SampleIndex block_index, size_t block_size) const noexcept
+        [[nodiscard]] GlobalIndexRange window_for(
+            GlobalIndex block_index, size_t block_size) const noexcept
         {
             return realtime_port_window(
                 block_index, block_size, _history, _latency);
         }
 
         static void validate_time(
-            TimedEvent const& event, RealtimePortWindow window)
+            TimedEvent const& event, GlobalIndexRange window)
         {
-            auto const time = static_cast<SampleIndex>(event.time);
-            if (!window.contains(time)) {
+            if (!window.contains(event.time)) {
                 throw std::logic_error(
                     "realtime event output timestamp is outside the current "
                     "block + history + latency window");
@@ -1477,7 +1453,7 @@ namespace iv {
         }
 
         void push_in_window(
-            TimedEvent const& timed_event, RealtimePortWindow window) const
+            TimedEvent const& timed_event, GlobalIndexRange window) const
         {
             // Validate the final converted event as well as the source event.
             // Current built-in conversions preserve timestamps, but keeping the
@@ -1555,7 +1531,7 @@ namespace iv {
             }
         }
 
-        void begin_block(SampleIndex block_index, size_t block_size)
+        void begin_block(GlobalIndex block_index, size_t block_size)
         {
             _active_window = window_for(block_index, block_size);
         }
@@ -1568,27 +1544,26 @@ namespace iv {
         void push(
             Event event,
             size_t sample_offset,
-            size_t block_index,
+            GlobalIndex block_index,
             size_t block_size) const
         {
-            auto const time = saturating_sample_index_add(
-                static_cast<SampleIndex>(block_index), sample_offset);
+            auto const time = block_index.advanced_by(sample_offset);
             push_in_window(
                 TimedEvent{
-                    .time = static_cast<EventTime>(time),
+                    .time = time,
                     .value = std::move(event),
                 },
-                window_for(static_cast<SampleIndex>(block_index), block_size));
+                window_for(block_index, block_size));
         }
 
         void push(
             TimedEvent const& timed_event,
-            size_t block_index,
+            GlobalIndex block_index,
             size_t block_size) const
         {
             push_in_window(
                 timed_event,
-                window_for(static_cast<SampleIndex>(block_index), block_size));
+                window_for(block_index, block_size));
         }
 
         void push(TimedEvent const& timed_event) const
@@ -1602,11 +1577,10 @@ namespace iv {
 
         void push_block(
             BlockView<TimedEvent const> events,
-            size_t block_index,
+            GlobalIndex block_index,
             size_t block_size) const
         {
-            auto const window = window_for(
-                static_cast<SampleIndex>(block_index), block_size);
+            auto const window = window_for(block_index, block_size);
             for (TimedEvent const& event : events) {
                 push_in_window(event, window);
             }

@@ -19,7 +19,7 @@ namespace iv {
 // storage slots: direct aliases may shift a source storage domain by their
 // planned read latency, and one logical output may fan out to several stores.
 struct BackgroundEvaluationCallFrameSelection {
-    std::vector<Coverage> binding_coverage{};
+    std::vector<IndexCoverage> binding_coverage{};
     std::size_t sample_rate = 48000;
 };
 
@@ -28,7 +28,7 @@ struct BackgroundEvaluationCallFrameSelection {
 // the coordinator's already-selected logical coverage to a sealed storage
 // realization, owns each node's operation frame and compact Tock facades, and
 // owns the compiler-sized replay binding arrays and their isolated raw backing.
-// Coverage propagation, activity selection and commit remain outside it.
+// IndexCoverage propagation, activity selection and commit remain outside it.
 class BackgroundEvaluationCallFrame {
     struct BindingAdapter;
     struct NodeFrameStorage;
@@ -96,7 +96,7 @@ public:
     // nonempty and no larger than the compiled replay block limit.
     [[nodiscard]] std::expected<void, std::string>
     set_replay_regions(graph_jit::BackgroundReplayInvocationSlot slot,
-                       std::vector<IndexRegion> regions);
+                       std::vector<GlobalIndexRange> regions);
 
     // Freezes every facade/span after all external storage and replay records
     // have been populated. The underlying storage realization must already be

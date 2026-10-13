@@ -5,6 +5,7 @@
 // that build has been finalized.
 
 #include <intravenous/node/code_key.h>
+#include <intravenous/global_index.h>
 
 #include <cstddef>
 
@@ -25,9 +26,9 @@ struct NodeCompilerOperations {
     std::size_t (*declare_node)(
         void const*, NodeStateStructures const*, NodeLayoutBuilder&) = nullptr;
     void (*tick_block)(
-        void const*, ReflectedNodeTickContext const&, std::size_t, std::size_t) = nullptr;
+        void const*, ReflectedNodeTickContext const&, GlobalIndex, std::size_t) = nullptr;
     void (*skip_block)(
-        void const*, ReflectedNodeTickContext const&, std::size_t, std::size_t) = nullptr;
+        void const*, ReflectedNodeTickContext const&, GlobalIndex, std::size_t) = nullptr;
 
     // Compiler-facing one-node background callback anchors. Reflected contexts use
     // explicit pointer/count spans; wrappers reconstruct the Node-specialized
