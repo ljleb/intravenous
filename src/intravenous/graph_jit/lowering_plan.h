@@ -302,6 +302,10 @@ struct EventMergePlan {
     std::vector<std::size_t> source_indices{};
     std::size_t target_representation = 0;
     EventOperationScope scope{};
+    // Every input stream is sorted in forward circular order beginning at the
+    // root invocation's history-inclusive aggregate origin. That origin stays
+    // fixed while an SCC contributes several slices to the same sequence.
+    std::size_t ordering_history_samples = 0;
     bool target_is_semantic_source = false;
     // Retained targets already contain restored/pruned events from previous
     // invocations; transient producer-home targets contain source 0 instead.

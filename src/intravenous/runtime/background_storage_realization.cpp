@@ -288,19 +288,17 @@ public:
         void* visitor_data,
         BackgroundEventReadView::VisitEvent visitor) const
     {
-        auto first = std::ranges::lower_bound(
-            events_, region.begin, SignedGlobalIndexOrder{},
-            [](TimedEvent const& event) {
-                return event.time;
-            });
-        for (; first != events_.end() && region.contains(first->time); ++first) {
-            visitor(visitor_data, *first);
-        }
-        if (first != events_.end()) return;
-        for (first = events_.begin();
-             first != events_.end() && region.contains(first->time); ++first) {
-            visitor(visitor_data, *first);
-        }
+        region.for_each_signed_order_segment([&](GlobalIndexRange segment) {
+            auto event = std::ranges::lower_bound(
+                events_, segment.begin, SignedGlobalIndexOrder{},
+                [](TimedEvent const& value) {
+                    return value.time;
+                });
+            for (; event != events_.end() && segment.contains(event->time);
+                 ++event) {
+                visitor(visitor_data, *event);
+            }
+        });
     }
 
     [[nodiscard]] BackgroundEventReadView read_view() const noexcept
@@ -1164,6 +1162,9 @@ BackgroundStorageRealization::execute_operation(
             source_events.push_back(converted[source].data());
             source_remaining.push_back(converted[source].size());
         }
+        auto const merge_origin = target_coverage.empty()
+            ? GlobalIndex{}
+            : target_coverage.begin()->begin;
         auto const merged_count = graph_jit::detail::
             iv_graph_jit_merge_event_sequences_into_home(
                 merged.data(),
@@ -1171,7 +1172,8 @@ BackgroundStorageRealization::execute_operation(
                 converted.front().size(),
                 source_events.data(),
                 source_remaining.data(),
-                source_events.size());
+                source_events.size(),
+                merge_origin);
         if (merged_count != total_count) {
             result = std::unexpected(
                 "background event materialization merge failed");

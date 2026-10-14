@@ -24,7 +24,7 @@ iv::GlobalIndexRange range(std::int64_t begin, std::int64_t end)
     return iv::GlobalIndexRange::from_begin_and_end(index(begin), index(end));
 }
 
-iv::IndexCoverage coverage(
+iv::IndexCoverage index_coverage(
     std::initializer_list<std::pair<std::int64_t, std::int64_t>> ranges)
 {
     iv::IndexCoverage result;
@@ -104,8 +104,8 @@ TEST(BackgroundStorageRealization, OwnsAddressStableSparseTransactionStorage)
         {
             .generation = 9,
             .storage_coverage = {
-                coverage({{10, 12}, {20, 21}}),
-                coverage({{10, 12}}),
+                index_coverage({{10, 12}, {20, 21}}),
+                index_coverage({{10, 12}}),
             },
         }};
 
@@ -299,10 +299,10 @@ TEST(
         {
             .generation = 4,
             .storage_coverage = {
-                coverage({{10, 12}}),
-                coverage({{10, 12}}),
-                coverage({{10, 12}}),
-                coverage({{10, 12}}),
+                index_coverage({{10, 12}}),
+                index_coverage({{10, 12}}),
+                index_coverage({{10, 12}}),
+                index_coverage({{10, 12}}),
             },
             .produce_storage = {true, true, true, true},
         }};
@@ -348,22 +348,20 @@ TEST(
     EXPECT_FLOAT_EQ(frozen_sequential_sample->at(index(11), 0).value, 40.0f);
     std::vector<GlobalIndex> times;
     frozen_event->for_each(
-        10,
-        12,
+        range(10, 12),
         &times,
         +[](void* opaque, TimedEvent const& value) {
             static_cast<std::vector<GlobalIndex>*>(opaque)->push_back(value.time);
         });
-    EXPECT_EQ(times, (std::vector<GlobalIndex>{11}));
+    EXPECT_EQ(times, (std::vector<GlobalIndex>{index(11)}));
     times.clear();
     frozen_sequential_event->for_each(
-        10,
-        12,
+        range(10, 12),
         &times,
         +[](void* opaque, TimedEvent const& value) {
             static_cast<std::vector<GlobalIndex>*>(opaque)->push_back(value.time);
         });
-    EXPECT_EQ(times, (std::vector<GlobalIndex>{10}));
+    EXPECT_EQ(times, (std::vector<GlobalIndex>{index(10)}));
 
     TickMaterializationStore store;
     auto reader = store.register_reader();
@@ -470,8 +468,8 @@ TEST(BackgroundStorageRealization, ReadsTypedPublishedDataWithoutCopyingIt)
         {
             .generation = 20,
             .storage_coverage = {
-                coverage({{0, 4}}),
-                coverage({{4, 8}}),
+                index_coverage({{0, 4}}),
+                index_coverage({{4, 8}}),
             },
             .published = &pin.snapshot(),
         }};
@@ -500,7 +498,7 @@ TEST(BackgroundStorageRealization, ReadsTypedPublishedDataWithoutCopyingIt)
         {
             .generation = 20,
             .storage_coverage = {
-                coverage({{0, 5}}),
+                index_coverage({{0, 5}}),
                 iv::IndexCoverage{},
             },
             .published = &pin.snapshot(),
@@ -545,7 +543,7 @@ TEST(BackgroundStorageRealization, GivesProducedPersistedStoragePrivateOwners)
         store,
         {
             .generation = 4,
-            .storage_coverage = {coverage({{100, 102}})},
+            .storage_coverage = {index_coverage({{100, 102}})},
         }};
 
     ASSERT_NE(realization.sample_read(0), nullptr);
@@ -595,7 +593,7 @@ TEST(BackgroundStorageRealization, SealingRejectsMissingExternalDirectViews)
         plan,
         data,
         {
-            .storage_coverage = {coverage({{0, 1}})},
+            .storage_coverage = {index_coverage({{0, 1}})},
         }};
     iv::BackgroundStorageOperationFrame operation_frame{
         realization,
@@ -606,7 +604,7 @@ TEST(BackgroundStorageRealization, SealingRejectsMissingExternalDirectViews)
     EXPECT_FALSE(realization.execute_operation(0).has_value());
 
     struct External {
-        iv::IndexCoverage coverage = ::coverage({{0, 1}});
+        iv::IndexCoverage coverage = index_coverage({{0, 1}});
         std::array<std::size_t, 1> channels{0};
         iv::Sample value{5.0f};
     } external;
@@ -730,9 +728,9 @@ TEST(BackgroundStorageRealization, ExecutesHeterogeneousSampleProjectionPlan)
         data,
         {
             .storage_coverage = {
-                coverage({{9, 11}}),
-                coverage({{10, 12}}),
-                coverage({{10, 12}}),
+                index_coverage({{9, 11}}),
+                index_coverage({{10, 12}}),
+                index_coverage({{10, 12}}),
             },
         }};
     auto const* stereo = realization.sample_write(0);
@@ -823,9 +821,9 @@ TEST(BackgroundStorageRealization, ConvertsAndStablyMergesEventSources)
         data,
         {
             .storage_coverage = {
-                coverage({{0, 4}}),
-                coverage({{0, 4}}),
-                coverage({{0, 4}}),
+                index_coverage({{0, 4}}),
+                index_coverage({{0, 4}}),
+                index_coverage({{0, 4}}),
             },
         }};
     ASSERT_TRUE(realization.event_write(0)->write({
@@ -1037,9 +1035,9 @@ TEST(BackgroundEvaluationCallFrame, OwnsOperationFramesAndTockBindings)
         {
             .storage_coverage =
                 {
-                    coverage({{9, 11}}),
-                    coverage({{10, 12}}),
-                    coverage({{10, 12}}),
+                    index_coverage({{9, 11}}),
+                    index_coverage({{10, 12}}),
+                    index_coverage({{10, 12}}),
                 },
         }};
     ASSERT_TRUE(realization.sample_write(0)->write(index(9), 0, 3.0f));
@@ -1052,9 +1050,9 @@ TEST(BackgroundEvaluationCallFrame, OwnsOperationFramesAndTockBindings)
         {
             .binding_coverage =
                 {
-                    coverage({{10, 12}}),
-                    coverage({{10, 12}}),
-                    coverage({{10, 12}}),
+                    index_coverage({{10, 12}}),
+                    index_coverage({{10, 12}}),
+                    index_coverage({{10, 12}}),
                 },
             .sample_rate = 96000,
         }};
@@ -1217,14 +1215,14 @@ TEST(BackgroundEvaluationCallFrame, ReservesAndValidatesReplaySchedule)
         plan,
         data,
         {.storage_coverage = std::vector<iv::IndexCoverage>(
-             4, coverage({{0, 10}}))}};
+             4, index_coverage({{0, 10}}))}};
     ASSERT_TRUE(realization.sample_write(0)->write(index(0), 0, 3.0f));
     ASSERT_TRUE(realization.seal().has_value());
     iv::BackgroundEvaluationCallFrame frame{
         plan,
         realization,
         {.binding_coverage = std::vector<iv::IndexCoverage>(
-             4, coverage({{0, 10}}))}};
+             4, index_coverage({{0, 10}}))}};
     EXPECT_EQ(frame.replay_sample_inputs(0).size(), 1);
     EXPECT_EQ(frame.replay_event_inputs(0).size(), 1);
     EXPECT_EQ(frame.replay_sample_outputs(0).size(), 1);
@@ -1341,8 +1339,8 @@ TEST(
         data,
         {
             .storage_coverage = {
-                coverage({{0, 4}}),
-                coverage({{4, 8}}),
+                index_coverage({{0, 4}}),
+                index_coverage({{4, 8}}),
             },
         }};
     ASSERT_TRUE(realization.seal().has_value());
@@ -1351,8 +1349,8 @@ TEST(
         realization,
         {
             .binding_coverage = {
-                coverage({{0, 4}}),
-                coverage({{4, 8}}),
+                index_coverage({{0, 4}}),
+                index_coverage({{4, 8}}),
             },
         }};
     ASSERT_TRUE(frame.set_replay_regions(

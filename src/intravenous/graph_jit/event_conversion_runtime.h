@@ -40,10 +40,11 @@ iv_graph_jit_convert_event_sequence(
     void* target_events,
     std::size_t target_capacity) noexcept;
 
-// Stable in-place merge of one sorted producer-local sequence into an already
-// sorted aggregate sequence/ring. Existing target events precede newly merged
-// source events when timestamps are equal, so invoking this helper in semantic
-// source order gives deterministic tie ordering.
+// Stable in-place merge of one producer-local sequence into an aggregate
+// sequence/ring. Both sequences are ordered forward from origin. Existing
+// target events precede newly merged source events when timestamps are equal,
+// so invoking this helper in semantic source order gives deterministic tie
+// ordering.
 extern "C" IV_GRAPH_JIT_RUNTIME_EXPORT std::size_t
 iv_graph_jit_merge_event_sequence(
     void* target_events,
@@ -57,8 +58,9 @@ iv_graph_jit_merge_event_sequence(
 
 // Stable in-place merge used by staged fan-in. source_indices is parallel to
 // the target event ring/sequence; source_index identifies every event in the
-// producer-local source. Ordering is lexicographic by (time, semantic source
-// index), with existing events of the same source remaining first.
+// producer-local source. Ordering is lexicographic by (forward distance from
+// origin, semantic source index), with existing events of the same source
+// remaining first.
 extern "C" IV_GRAPH_JIT_RUNTIME_EXPORT std::size_t
 iv_graph_jit_merge_ordered_event_sequence(
     void* target_events,

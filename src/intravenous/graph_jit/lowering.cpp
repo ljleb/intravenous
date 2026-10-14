@@ -3122,7 +3122,7 @@ std::expected<void, std::string> emit_event_merge(
     detail::EventPortBindingPlan const& event_ports,
     detail::EventMergePlan const& merge,
     EmittedRealtimeStorage const& realtime_storage,
-    llvm::Value* sample_index)
+    llvm::Value* root_index)
 {
     if (merge.target_representation >= event_ports.ports.size()
         || merge.source_representations.empty()) {
@@ -3162,6 +3162,14 @@ std::expected<void, std::string> emit_event_merge(
     auto* size_type = llvm::IntegerType::get(
         context, static_cast<unsigned>(sizeof(std::size_t) * 8));
     auto* pointer_type = llvm::PointerType::getUnqual(context);
+    auto* merge_origin = merge.ordering_history_samples == 0
+        ? root_index
+        : builder.CreateSub(
+            root_index,
+            llvm::ConstantInt::get(
+                root_index->getType(),
+                merge.ordering_history_samples),
+            "event.merge.origin");
     auto* target_base = realtime_storage.event_representations[
         merge.target_representation];
     auto* target_events = byte_offset_pointer(
@@ -3288,7 +3296,7 @@ std::expected<void, std::string> emit_event_merge(
              source_event_pointers,
              source_remaining,
              llvm::ConstantInt::get(size_type, source_count),
-             sample_index},
+             merge_origin},
             "event.merge.kway.count");
         builder.CreateStore(merged_count, target_count_or_write_pointer);
         return {};
@@ -3336,7 +3344,7 @@ std::expected<void, std::string> emit_event_merge(
                  source_count,
                  llvm::ConstantInt::get(
                      size_type, merge.source_indices[source_index]),
-                 sample_index},
+                 merge_origin},
                 "event.merge.ordered.write." + std::to_string(source_index));
         } else {
             auto* helper_type = llvm::FunctionType::get(
@@ -3355,7 +3363,7 @@ std::expected<void, std::string> emit_event_merge(
                  source_events,
                  llvm::ConstantInt::get(size_type, (*source)->event_capacity),
                  source_count,
-                 sample_index},
+                 merge_origin},
                 "event.merge.write." + std::to_string(source_index));
         }
     }
@@ -3577,6 +3585,7 @@ std::expected<void, std::string> emit_event_operations(
     std::span<detail::EventOperationRef const> operations,
     std::vector<llvm::Value*> const& event_feedback_cursors,
     EmittedRealtimeStorage const& realtime_storage,
+    llvm::Value* root_index,
     llvm::Value* sample_index,
     llvm::Value* block_size)
 {
@@ -3641,7 +3650,7 @@ std::expected<void, std::string> emit_event_operations(
                 plan.event_ports,
                 plan.event_ports.merges[operation.index],
                 realtime_storage,
-                sample_index);
+                root_index);
             if (!emitted) return std::unexpected(std::move(emitted.error()));
             break;
         }
@@ -3852,6 +3861,7 @@ std::expected<void, std::string> emit_execution_step(
     std::vector<llvm::Value*> const& event_feedback_cursors,
     EmittedRealtimeStorage const& realtime_storage,
     llvm::Value* invocation,
+    llvm::Value* root_index,
     llvm::Value* sample_index,
     llvm::Value* block_size,
     bool skip,
@@ -3946,6 +3956,7 @@ std::expected<void, std::string> emit_execution_step(
         step.event_operations_before,
         event_feedback_cursors,
         realtime_storage,
+        root_index,
         sample_index,
         block_size);
     if (!event_before) return std::unexpected(std::move(event_before.error()));
@@ -4039,6 +4050,7 @@ std::expected<void, std::string> emit_execution_step(
         step.event_operations_after,
         event_feedback_cursors,
         realtime_storage,
+        root_index,
         sample_index,
         block_size);
     if (!event_after) return std::unexpected(std::move(event_after.error()));
@@ -4387,6 +4399,7 @@ std::expected<llvm::Function*, std::string> define_root_operation(
                     realtime_storage,
                     invocation,
                     sample_index,
+                    sample_index,
                     block_size,
                     skip,
                     true);
@@ -4409,6 +4422,7 @@ std::expected<llvm::Function*, std::string> define_root_operation(
             region.event_operations_before,
             event_feedback_cursors,
             realtime_storage,
+            sample_index,
             sample_index,
             block_size);
         if (!region_before) {
@@ -4463,6 +4477,7 @@ std::expected<llvm::Function*, std::string> define_root_operation(
                 event_feedback_cursors,
                 realtime_storage,
                 invocation,
+                sample_index,
                 slice_index,
                 slice_size,
                 skip,
@@ -4486,6 +4501,7 @@ std::expected<llvm::Function*, std::string> define_root_operation(
             region.event_operations_after,
             event_feedback_cursors,
             realtime_storage,
+            sample_index,
             sample_index,
             block_size);
         if (!region_after) {

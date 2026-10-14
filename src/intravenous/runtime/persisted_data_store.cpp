@@ -103,13 +103,6 @@ struct LinearRange {
 
 [[nodiscard]] constexpr bool less(
     LinearBoundary left,
-    GlobalIndex::storage_type right) noexcept
-{
-    return !left.domain_end && left.key < right;
-}
-
-[[nodiscard]] constexpr bool less(
-    LinearBoundary left,
     LinearBoundary right) noexcept
 {
     if (left.domain_end != right.domain_end) return !left.domain_end;
@@ -155,30 +148,6 @@ struct LinearRange {
             ? GlobalIndex::extent_type{0} - begin
             : end.key - begin,
     };
-}
-
-template<typename Fn>
-void for_each_signed_segment(GlobalIndexRange range, Fn&& fn)
-{
-    if (range.empty()) return;
-    auto const begin = SignedGlobalIndexOrder::key(range.begin);
-    if (begin == 0) {
-        fn(range);
-        return;
-    }
-    auto const until_end = GlobalIndex::extent_type{0} - begin;
-    if (range.extent <= until_end) {
-        fn(range);
-        return;
-    }
-    fn(GlobalIndexRange{
-        .begin = range.begin,
-        .extent = until_end,
-    });
-    fn(GlobalIndexRange{
-        .begin = from_signed_key(0),
-        .extent = range.extent - until_end,
-    });
 }
 
 [[nodiscard]] std::size_t checked_frame_count(GlobalIndexRange range)
@@ -838,7 +807,7 @@ void PersistedDataStore::Snapshot::for_each_sample_region(
         sample_output_levels_,
         PersistedDataStore::output_directory_index(output));
     if (!selected) return;
-    for_each_signed_segment(range, [&](GlobalIndexRange segment) {
+    range.for_each_signed_order_segment([&](GlobalIndexRange segment) {
         for_each_intersecting(selected->regions, segment, [&](auto const& record) {
             visitor(visitor_data, *record, intersection(record->range, segment));
         });
@@ -862,7 +831,7 @@ void PersistedDataStore::Snapshot::for_each_event_chunk(
         event_output_levels_,
         PersistedDataStore::output_directory_index(output));
     if (!selected) return;
-    for_each_signed_segment(range, [&](GlobalIndexRange segment) {
+    range.for_each_signed_order_segment([&](GlobalIndexRange segment) {
         for_each_intersecting(selected->chunks, segment, [&](auto const& record) {
             visitor(visitor_data, *record, intersection(record->range, segment));
         });
@@ -953,7 +922,7 @@ void PersistedDataStore::Candidate::overwrite(PersistedSampleRegion record)
     auto count = current ? current->region_count : 0;
     auto coverage = current ? current->coverage : IndexCoverage{};
     auto const original_range = record.range;
-    for_each_signed_segment(original_range, [&](GlobalIndexRange segment) {
+    original_range.for_each_signed_order_segment([&](GlobalIndexRange segment) {
         remove_range(root, count, segment);
         auto replacement = slice(record, segment);
         root = put_record(
@@ -1007,7 +976,7 @@ void PersistedDataStore::Candidate::overwrite(PersistedEventChunk record)
     auto count = current ? current->chunk_count : 0;
     auto coverage = current ? current->coverage : IndexCoverage{};
     auto const original_range = record.range;
-    for_each_signed_segment(original_range, [&](GlobalIndexRange segment) {
+    original_range.for_each_signed_order_segment([&](GlobalIndexRange segment) {
         remove_range(root, count, segment);
         auto replacement = slice(record, segment);
         root = put_record(
@@ -1060,7 +1029,7 @@ void PersistedDataStore::Candidate::erase_sample(
 
     auto root = current->regions;
     auto count = current->region_count;
-    for_each_signed_segment(range, [&](GlobalIndexRange segment) {
+    range.for_each_signed_order_segment([&](GlobalIndexRange segment) {
         remove_range(root, count, segment);
     });
     successor_->sample_region_count_ =
@@ -1114,7 +1083,7 @@ void PersistedDataStore::Candidate::erase_events(
 
     auto root = current->chunks;
     auto count = current->chunk_count;
-    for_each_signed_segment(range, [&](GlobalIndexRange segment) {
+    range.for_each_signed_order_segment([&](GlobalIndexRange segment) {
         remove_range(root, count, segment);
     });
     successor_->event_chunk_count_ =

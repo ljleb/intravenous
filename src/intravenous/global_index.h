@@ -151,6 +151,12 @@ struct GlobalIndexRange {
         return offset && other.extent <= extent - *offset;
     }
 
+    // Signed-canonical storage has one ordering seam between INT64_MAX and
+    // INT64_MIN. Visit the one or two signed-ordered segments comprising this
+    // modular range, preserving their forward range-relative order.
+    template<typename Fn>
+    constexpr void for_each_signed_order_segment(Fn&& fn) const;
+
     constexpr bool operator==(GlobalIndexRange const&) const noexcept = default;
 };
 
@@ -170,6 +176,33 @@ struct SignedGlobalIndexOrder {
         return key(left) < key(right);
     }
 };
+
+template<typename Fn>
+constexpr void GlobalIndexRange::for_each_signed_order_segment(Fn&& fn) const
+{
+    if (empty()) return;
+    auto const begin_key = SignedGlobalIndexOrder::key(begin);
+    if (begin_key == 0) {
+        fn(*this);
+        return;
+    }
+
+    auto const until_signed_domain_end =
+        GlobalIndex::extent_type{0} - begin_key;
+    if (extent <= until_signed_domain_end) {
+        fn(*this);
+        return;
+    }
+
+    fn(GlobalIndexRange{
+        .begin = begin,
+        .extent = until_signed_domain_end,
+    });
+    fn(GlobalIndexRange{
+        .begin = begin.advanced_by(until_signed_domain_end),
+        .extent = extent - until_signed_domain_end,
+    });
+}
 
 // Forward order relative to an explicitly selected origin. This is the order
 // used for events and iteration inside a finite callback/query range.

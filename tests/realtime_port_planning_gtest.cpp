@@ -30,6 +30,31 @@ TEST(GlobalIndex, PreservesTwosComplementBitsAndWrapsModuloTwoToThe64)
         std::numeric_limits<std::int64_t>::min());
 }
 
+TEST(GlobalIndexRange, SplitsOnlyAtTheSignedCanonicalOrderingSeam)
+{
+    std::array<iv::GlobalIndexRange, 2> segments{};
+    std::size_t count = 0;
+    auto const begin = index(std::numeric_limits<std::int64_t>::max() - 1);
+
+    iv::GlobalIndexRange{begin, 4}.for_each_signed_order_segment(
+        [&](iv::GlobalIndexRange segment) {
+            segments[count++] = segment;
+        });
+
+    ASSERT_EQ(count, 2u);
+    EXPECT_EQ(segments[0], (iv::GlobalIndexRange{begin, 2}));
+    EXPECT_EQ(segments[1], (iv::GlobalIndexRange{
+        index(std::numeric_limits<std::int64_t>::min()), 2}));
+
+    count = 0;
+    iv::GlobalIndexRange{index(-2), 4}.for_each_signed_order_segment(
+        [&](iv::GlobalIndexRange segment) {
+            segments[count++] = segment;
+        });
+    ASSERT_EQ(count, 1u);
+    EXPECT_EQ(segments[0], (iv::GlobalIndexRange{index(-2), 4}));
+}
+
 TEST(EventConversionRegistry, OnlyObjectiveDirectedConversionsAreAvailable)
 {
     auto const registry = iv::EventConversionRegistry::instance();

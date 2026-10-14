@@ -2979,6 +2979,7 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
                         .scope = primitive_scope(
                             stage.execution_position,
                             EventOperationPhase::after),
+                        .ordering_history_samples = retained_history,
                         .target_is_semantic_source = false,
                         .preserve_existing_target = true,
                     };
@@ -3536,6 +3537,7 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
                 .target_representation = *canonical,
                 .scope = primitive_scope(
                     producer_execution_position, EventOperationPhase::after),
+                .ordering_history_samples = retained_history,
                 .target_is_semantic_source = transient_producer_home,
                 .preserve_existing_target =
                     retained_storage || cyclic_source_region.has_value(),
@@ -3986,6 +3988,7 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
                 .target_representation = *source_representation,
                 .scope = primitive_scope(
                     group.live_interval.begin, EventOperationPhase::after),
+                .ordering_history_samples = retained_history,
                 .target_is_semantic_source = false,
                 .preserve_existing_target = true,
             });

@@ -111,7 +111,7 @@ namespace iv {
         {
             auto const min = state.template input<0>().get();
             auto const max = state.template input<1>().get();
-            uint64_t uniform_int = splitmix64(state.index);
+            uint64_t uniform_int = splitmix64(state.index.bits());
             state.template output<0>().push(uniform_m11(uniform_int, min, max));
         }
     };
@@ -402,7 +402,7 @@ namespace iv {
 
         void tick(TickSampleContext<DeterministicGaussianAESNoise> const& state) const
         {
-            Rng::ctr_type counter = make_index(state.index);
+            Rng::ctr_type counter = make_index(state.index.bits());
             unsigned int uniform_uint = _generator(counter, _seed)[0];
             Sample uniform = details::clamp_open_unit_interval_pm1(r123::uneg11<Sample>(uniform_uint));
             Sample gaussian = std::numbers::sqrt2_v<float> * erfinvf(uniform);

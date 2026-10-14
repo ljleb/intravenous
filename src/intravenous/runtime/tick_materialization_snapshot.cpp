@@ -94,20 +94,16 @@ void TickMaterializedEventInput::for_each(
     RandomAccessEventInputPort::VisitEvent visitor) const
 {
     if (range.empty() || visitor == nullptr) return;
-    auto found = std::ranges::lower_bound(events, range.begin,
-        SignedGlobalIndexOrder{},
-        [](TimedEvent const& event) {
-            return event.time;
-        });
-
-    for (; found != events.end() && range.contains(found->time); ++found) {
-        visitor(visitor_data, *found);
-    }
-    if (found != events.end()) return;
-    for (found = events.begin();
-         found != events.end() && range.contains(found->time); ++found) {
-        visitor(visitor_data, *found);
-    }
+    range.for_each_signed_order_segment([&](GlobalIndexRange segment) {
+        auto event = std::ranges::lower_bound(events, segment.begin,
+            SignedGlobalIndexOrder{},
+            [](TimedEvent const& value) {
+                return value.time;
+            });
+        for (; event != events.end() && segment.contains(event->time); ++event) {
+            visitor(visitor_data, *event);
+        }
+    });
 }
 
 TickMaterializationSnapshot::TickMaterializationSnapshot(

@@ -7,6 +7,7 @@
 #include <gtest/gtest.h>
 
 #include <array>
+#include <cstdint>
 #include <limits>
 #include <ranges>
 #include <span>
@@ -15,6 +16,11 @@
 
 namespace {
 using iv::operator""_P;
+
+iv::GlobalIndex index(std::int64_t value)
+{
+    return iv::GlobalIndex::from_signed(value);
+}
 
 static_assert(iv::channel_count(iv::ChannelTypeId::mono) == 1);
 static_assert(iv::channel_count(iv::ChannelTypeId::stereo) == 2);
@@ -89,8 +95,8 @@ TEST(Channels, SamplePortStorageViewConstructsInvocationLocalFacades)
         iv::mono_planar_channel_layout,
         samples.size(),
     };
-    iv::OutputPort output(storage, 0, 6);
-    iv::InputPort input(storage, 0, 0, 6);
+    iv::OutputPort output(storage, 0, index(6));
+    iv::InputPort input(storage, 0, 0, index(6));
 
     for (std::size_t i = 0; i < 4; ++i) {
         output.push(static_cast<iv::Sample>(i + 1));
@@ -134,7 +140,7 @@ TEST(Channels, SamplePortStorageViewSupportsIndependentChannelStorage)
     // This is an input projection: each channel has its own storage ring
     // capacity and read delay. OutputPort writes producer storage without
     // applying an input's per-channel frame_delay.
-    iv::InputPort input(storage, 0, 0, 10);
+    iv::InputPort input(storage, 0, 0, index(10));
 
     // Logical frame 10 resolves to left[(10 - 2) & 7] and
     // right[(10 - 5) & 15], respectively.
@@ -179,7 +185,7 @@ TEST(Channels, SamplePortStorageViewSupportsStridedChannelPointers)
         },
         8,
     };
-    iv::InputPort input(storage, 0, 0, 5);
+    iv::InputPort input(storage, 0, 0, index(5));
 
     EXPECT_FLOAT_EQ(input.get_frame(0, 0), 105.0f);
     EXPECT_FLOAT_EQ(input.get_frame(0, 1), 205.0f);

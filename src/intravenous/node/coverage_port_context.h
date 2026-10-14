@@ -18,12 +18,12 @@
 namespace iv {
 
 namespace background_port_details {
-    inline IndexCoverage const empty_coverage {};
-
-    inline IndexCoverage const& coverage_or_empty(
+    inline IndexCoverage const& bound_coverage(
         IndexCoverage const* coverage) noexcept
     {
-        return coverage ? *coverage : empty_coverage;
+        IV_ASSERT(coverage != nullptr,
+            "background port/context has no coverage binding");
+        return *coverage;
     }
 
     template<typename State>
@@ -48,7 +48,7 @@ struct RandomAccessSampleInputPort {
 
     [[nodiscard]] IndexCoverage const& coverage() const noexcept
     {
-        return background_port_details::coverage_or_empty(coverage_value);
+        return background_port_details::bound_coverage(coverage_value);
     }
 
     [[nodiscard]] Sample at(
@@ -69,7 +69,7 @@ struct TockSampleOutputPort {
 
     [[nodiscard]] IndexCoverage const& requested_coverage() const noexcept
     {
-        return background_port_details::coverage_or_empty(requested_coverage_value);
+        return background_port_details::bound_coverage(requested_coverage_value);
     }
 
     void write(
@@ -97,7 +97,7 @@ struct RandomAccessEventInputPort {
 
     [[nodiscard]] IndexCoverage const& coverage() const noexcept
     {
-        return background_port_details::coverage_or_empty(coverage_value);
+        return background_port_details::bound_coverage(coverage_value);
     }
 
     template<typename Fn>
@@ -127,7 +127,7 @@ struct TockEventOutputPort {
 
     [[nodiscard]] IndexCoverage const& requested_coverage() const noexcept
     {
-        return background_port_details::coverage_or_empty(requested_coverage_value);
+        return background_port_details::bound_coverage(requested_coverage_value);
     }
 
     void write(TimedEvent const& event) const noexcept
@@ -149,12 +149,12 @@ struct InputCoverageChange {
 
     [[nodiscard]] IndexCoverage const& coverage() const noexcept
     {
-        return background_port_details::coverage_or_empty(coverage_value);
+        return background_port_details::bound_coverage(coverage_value);
     }
 
     [[nodiscard]] IndexCoverage const& changed() const noexcept
     {
-        return background_port_details::coverage_or_empty(changed_value);
+        return background_port_details::bound_coverage(changed_value);
     }
 };
 
@@ -169,7 +169,7 @@ struct OutputCoverageChange {
 
     [[nodiscard]] IndexCoverage const& previous_coverage() const noexcept
     {
-        return background_port_details::coverage_or_empty(previous_coverage_value);
+        return background_port_details::bound_coverage(previous_coverage_value);
     }
 
     void publish_coverage(IndexCoverage const& coverage) const
@@ -198,7 +198,7 @@ struct OutputCoverageRequirement {
 
     [[nodiscard]] IndexCoverage const& required() const noexcept
     {
-        return background_port_details::coverage_or_empty(required_value);
+        return background_port_details::bound_coverage(required_value);
     }
 };
 
@@ -211,7 +211,7 @@ struct InputCoverageRequirement {
 
     [[nodiscard]] IndexCoverage const& coverage() const noexcept
     {
-        return background_port_details::coverage_or_empty(coverage_value);
+        return background_port_details::bound_coverage(coverage_value);
     }
 
     void require(IndexCoverage const& required) const

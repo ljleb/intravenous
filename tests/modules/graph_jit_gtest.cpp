@@ -51,7 +51,7 @@ iv::GlobalIndexRange range(std::int64_t begin, std::int64_t end)
     return iv::GlobalIndexRange::from_begin_and_end(index(begin), index(end));
 }
 
-iv::IndexCoverage coverage(
+iv::IndexCoverage index_coverage(
     std::initializer_list<std::pair<std::int64_t, std::int64_t>> ranges)
 {
     iv::IndexCoverage result;
@@ -753,10 +753,10 @@ TEST(GraphJitEventFeedbackRuntime, AppendsEachSourceSuffixExactlyOnce)
     std::size_t write_index = 0;
 
     iv::graph_jit::detail::iv_graph_jit_append_event_feedback(
-        source.data(), 0, 2, 0, 5,
+        source.data(), 0, 2, index(0), 5,
         ring.data(), ring.size(), &read_index, &write_index);
     iv::graph_jit::detail::iv_graph_jit_append_event_feedback(
-        source.data(), 2, source.size(), 4, 5,
+        source.data(), 2, source.size(), index(4), 5,
         ring.data(), ring.size(), &read_index, &write_index);
 
     EXPECT_EQ(read_index, 0u);
@@ -780,10 +780,10 @@ TEST(GraphJitEventFeedbackRuntime, AppendsWrappedPersistentSourceSuffixExactlyOn
     std::size_t write_index = 0;
 
     iv::graph_jit::detail::iv_graph_jit_append_event_feedback_ring_source(
-        source.data(), source.size(), 3, 5, 3, 5,
+        source.data(), source.size(), 3, 5, index(3), 5,
         ring.data(), ring.size(), &read_index, &write_index);
     iv::graph_jit::detail::iv_graph_jit_append_event_feedback_ring_source(
-        source.data(), source.size(), 5, 7, 5, 5,
+        source.data(), source.size(), 5, 7, index(5), 5,
         ring.data(), ring.size(), &read_index, &write_index);
 
     EXPECT_EQ(read_index, 0u);
@@ -806,9 +806,10 @@ TEST(GraphJitEventFeedbackRuntime, AppendsLinearFeedbackSuffixExactlyOnce)
     std::size_t count = 0;
 
     iv::graph_jit::detail::iv_graph_jit_append_event_feedback_sequence(
-        source.data(), 0, 2, 5, sequence.data(), sequence.size(), &count);
+        source.data(), 0, 2, index(0), 5,
+        sequence.data(), sequence.size(), &count);
     iv::graph_jit::detail::iv_graph_jit_append_event_feedback_sequence(
-        source.data(), 2, source.size(), 5,
+        source.data(), 2, source.size(), index(4), 5,
         sequence.data(), sequence.size(), &count);
 
     ASSERT_EQ(count, source.size());
@@ -829,10 +830,10 @@ TEST(GraphJitEventFeedbackRuntime, AppendsWrappedRingSourceIntoLinearFeedback)
     std::size_t count = 0;
 
     iv::graph_jit::detail::iv_graph_jit_append_event_feedback_sequence_ring_source(
-        source.data(), source.size(), 3, 5, 5,
+        source.data(), source.size(), 3, 5, index(3), 5,
         sequence.data(), sequence.size(), &count);
     iv::graph_jit::detail::iv_graph_jit_append_event_feedback_sequence_ring_source(
-        source.data(), source.size(), 5, 7, 5,
+        source.data(), source.size(), 5, 7, index(5), 5,
         sequence.data(), sequence.size(), &count);
 
     ASSERT_EQ(count, 4u);
@@ -6828,12 +6829,12 @@ TEST_F(GraphJitRuntimeFixture, GeneratedBackgroundRootsUseSuppliedBatchBindings)
 
     compiled.compiled_graph->background_operations.propagate_forward(
         storage.buffer().data(), &batch);
-    EXPECT_EQ(capture.coverage, ::coverage({{10, 13}}));
+    EXPECT_EQ(capture.coverage, index_coverage({{10, 13}}));
     EXPECT_EQ(capture.changed, capture.coverage);
     EXPECT_EQ(operation_hooks.prepare_calls, 0u);
     EXPECT_EQ(operation_hooks.finalize_calls, 0u);
 
-    auto const requested = ::coverage({{10, 13}});
+    auto const requested = index_coverage({{10, 13}});
     std::array outputs{iv::TockSampleOutputPort{
         .data = &capture,
         .requested_coverage_value = &requested,
@@ -6875,7 +6876,7 @@ TEST_F(GraphJitRuntimeFixture, GeneratedBackgroundRootsUseSuppliedBatchBindings)
             .output_demands = {
                 iv::OutputCoverageRequest{
                     .port = 0,
-                    .required = ::coverage({{10, 13}}),
+                    .required = index_coverage({{10, 13}}),
                 },
             },
         });
@@ -10665,7 +10666,8 @@ TEST(GraphJitEventMergeRuntime, KWayMergePreservesSemanticSourceOrder)
             3,
             source_events.data(),
             remaining.data(),
-            source_events.size());
+            source_events.size(),
+            index(0));
 
     ASSERT_EQ(count, 9u);
     EXPECT_EQ(remaining[0], 0u);
@@ -10675,6 +10677,49 @@ TEST(GraphJitEventMergeRuntime, KWayMergePreservesSemanticSourceOrder)
         index(7), index(9), index(9), index(9)};
     std::array<std::uint8_t, 9> const expected_notes{
         20, 10, 11, 21, 31, 32, 12, 22, 33};
+    for (std::size_t i = 0; i < count; ++i) {
+        EXPECT_EQ(target[i].time, expected_times[i]);
+        auto const* event = std::get_if<iv::MidiEvent>(&target[i].value);
+        ASSERT_NE(event, nullptr);
+        ASSERT_GE(event->size, 2u);
+        EXPECT_EQ(event->bytes[1], expected_notes[i]);
+    }
+}
+
+TEST(GraphJitEventMergeRuntime, KWayMergeUsesRangeRelativeGlobalOrder)
+{
+    auto midi = [](std::uint8_t note) {
+        iv::MidiEvent event{};
+        event.bytes = {0x90, note, 100};
+        event.size = 3;
+        return event;
+    };
+    auto timed = [&](std::int64_t time, std::uint8_t note) {
+        return iv::TimedEvent{.time = index(time), .value = midi(note)};
+    };
+
+    std::array<iv::TimedEvent, 8> target{};
+    target[0] = timed(-2, 10);
+    target[1] = timed(1, 11);
+    std::array source{timed(-1, 20), timed(0, 21)};
+    std::array<void const*, 1> source_events{source.data()};
+    std::array<std::size_t, 1> remaining{source.size()};
+
+    auto const count =
+        iv::graph_jit::detail::iv_graph_jit_merge_event_sequences_into_home(
+            target.data(),
+            target.size(),
+            2,
+            source_events.data(),
+            remaining.data(),
+            source_events.size(),
+            index(-2));
+
+    ASSERT_EQ(count, 4u);
+    EXPECT_EQ(remaining[0], 0u);
+    std::array<iv::GlobalIndex, 4> const expected_times{
+        index(-2), index(-1), index(0), index(1)};
+    std::array<std::uint8_t, 4> const expected_notes{10, 20, 21, 11};
     for (std::size_t i = 0; i < count; ++i) {
         EXPECT_EQ(target[i].time, expected_times[i]);
         auto const* event = std::get_if<iv::MidiEvent>(&target[i].value);
@@ -10714,7 +10759,8 @@ TEST(GraphJitEventMergeRuntime, StagedMergePreservesSemanticSourceOrder)
             semantic_source_0.data(),
             semantic_source_0.size(),
             semantic_source_0.size(),
-            0);
+            0,
+            index(0));
     count = iv::graph_jit::detail::iv_graph_jit_merge_ordered_event_sequence(
         target.data(),
         source_indices.data(),
@@ -10724,7 +10770,8 @@ TEST(GraphJitEventMergeRuntime, StagedMergePreservesSemanticSourceOrder)
         semantic_source_2.data(),
         semantic_source_2.size(),
         semantic_source_2.size(),
-        2);
+        2,
+        index(0));
 
     ASSERT_EQ(count, 3u);
     std::array<std::uint8_t, 3> const expected_notes{10, 21, 32};
@@ -10776,7 +10823,8 @@ TEST(GraphJitEventMergeRuntime, StagedMergePreservesWrappedRingOrder)
             source.data(),
             source.size(),
             source.size(),
-            0);
+            0,
+            index(0));
 
     ASSERT_EQ(write_index, read_index + 6);
     std::array<std::uint8_t, 6> const expected_notes{20, 30, 50, 51, 70, 80};

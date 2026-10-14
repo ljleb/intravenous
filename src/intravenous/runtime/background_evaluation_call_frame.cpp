@@ -308,7 +308,8 @@ struct BackgroundEvaluationCallFrame::ReplayFrameStorage {
         [[nodiscard]] Sample& at(
             GlobalIndex index, std::size_t channel) noexcept
         {
-            auto const frame = static_cast<std::size_t>(index) & (capacity - 1);
+            auto const frame = static_cast<std::size_t>(index.bits())
+                & (capacity - 1);
             auto const channels = channel_count(layout);
             auto const offset = layout.sample_layout
                     == SampleStreamLayout::planar

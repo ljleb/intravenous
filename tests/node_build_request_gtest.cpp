@@ -26,7 +26,7 @@ iv::GlobalIndexRange range(std::int64_t begin, std::int64_t end)
     return iv::GlobalIndexRange::from_begin_and_end(index(begin), index(end));
 }
 
-iv::IndexCoverage coverage(
+iv::IndexCoverage index_coverage(
     std::initializer_list<std::pair<std::int64_t, std::int64_t>> ranges)
 {
     iv::IndexCoverage result;
@@ -211,12 +211,12 @@ TEST(NodeBuildRequest, MaterializesHostOwnedDescriptionFromTypeSpecificCallback)
 
 TEST(IndexCoverage, CanonicalizesAndCoalescesRanges)
 {
-    auto selected = coverage({
+    auto selected = index_coverage({
         {40, 50}, {10, 20}, {18, 30}, {30, 35}, {70, 70},
     });
 
     ASSERT_EQ(selected.size(), 2u);
-    EXPECT_EQ(selected, coverage({{10, 35}, {40, 50}}));
+    EXPECT_EQ(selected, index_coverage({{10, 35}, {40, 50}}));
     EXPECT_TRUE(selected.contains(index(12)));
     EXPECT_FALSE(selected.contains(index(35)));
     EXPECT_TRUE(selected.contains(range(12, 34)));
@@ -225,37 +225,37 @@ TEST(IndexCoverage, CanonicalizesAndCoalescesRanges)
 
 TEST(IndexCoverage, IncludeExcludeIntersectionAndDifferenceStayCanonical)
 {
-    auto selected = coverage({{10, 20}, {30, 40}});
+    auto selected = index_coverage({{10, 20}, {30, 40}});
     selected.include(range(20, 30));
     ASSERT_EQ(selected.size(), 1u);
-    EXPECT_EQ(selected, coverage({{10, 40}}));
+    EXPECT_EQ(selected, index_coverage({{10, 40}}));
 
     selected.exclude(range(15, 35));
     ASSERT_EQ(selected.size(), 2u);
-    EXPECT_EQ(selected, coverage({{10, 15}, {35, 40}}));
+    EXPECT_EQ(selected, index_coverage({{10, 15}, {35, 40}}));
 
-    auto const other = coverage({{12, 38}, {50, 60}});
+    auto const other = index_coverage({{12, 38}, {50, 60}});
     EXPECT_EQ(selected.intersection(other),
-        coverage({{12, 15}, {35, 38}}));
+        index_coverage({{12, 15}, {35, 38}}));
     EXPECT_EQ(other.difference(selected),
-        coverage({{15, 35}, {50, 60}}));
+        index_coverage({{15, 35}, {50, 60}}));
 }
 
 TEST(IndexCoverage, CopiesShareAnImmutableValueUntilMutation)
 {
-    auto const original = coverage({{-20, -10}, {10, 20}});
+    auto const original = index_coverage({{-20, -10}, {10, 20}});
     auto changed = original;
 
     changed.include(range(-10, 10));
     ASSERT_EQ(changed.size(), 1u);
-    EXPECT_EQ(changed, coverage({{-20, 20}}));
+    EXPECT_EQ(changed, index_coverage({{-20, 20}}));
 
     ASSERT_EQ(original.size(), 2u);
-    EXPECT_EQ(original, coverage({{-20, -10}, {10, 20}}));
+    EXPECT_EQ(original, index_coverage({{-20, -10}, {10, 20}}));
 
     changed.exclude(range(-5, 5));
-    EXPECT_EQ(changed, coverage({{-20, -5}, {5, 20}}));
-    EXPECT_EQ(original, coverage({{-20, -10}, {10, 20}}));
+    EXPECT_EQ(changed, index_coverage({{-20, -5}, {5, 20}}));
+    EXPECT_EQ(original, index_coverage({{-20, -10}, {10, 20}}));
 }
 
 TEST(IndexCoverage, CircularRangesSplitOnlyAtTheSignedOrderingSeam)
@@ -332,7 +332,7 @@ struct BackgroundSource {
     void propagate_forward_coverage(
         iv::PropagateForwardCoverageContext<BackgroundSource>& ctx) const
     {
-        ctx.output<"signal">().publish_coverage({{10, 20}});
+        ctx.output<"signal">().publish_coverage(index_coverage({{10, 20}}));
     }
 };
 
@@ -670,7 +670,7 @@ TEST(BackgroundDspPorts, PersistedRealtimeOutputsUseOrdinaryTickBindings)
     iv::SharedPortData sample_shared(sample_storage, 0);
     iv::OutputDisposition sample_disposition{};
     std::array sample_outputs {iv::OutputPort(
-        sample_shared, 0, 128)};
+        sample_shared, 0, index(128))};
     std::array<iv::TimedEvent, 16> event_storage {};
     iv::EventSharedPortData event_shared {
         event_storage, 0, 0, iv::EventTypeId::trigger,
@@ -782,7 +782,7 @@ TEST(BackgroundDspPorts, ExplicitEmptyEventBlockIsAnOrdinaryWrite)
     operations.tick_block(
         &node,
         iv::ReflectedNodeTickContext{.event_output_bindings = bindings},
-        16,
+        index(16),
         4);
 
     EXPECT_EQ(bindings[0].disposition, iv::OutputDisposition::written);
@@ -824,7 +824,7 @@ TEST(BackgroundDspPorts, GeneratedPersistedSkipOutputsAreOrdinaryWrites)
             .sample_output_bindings = bindings,
             .event_output_bindings = event_bindings,
         },
-        0,
+        index(0),
         4);
 
     EXPECT_EQ(bindings[0].disposition, iv::OutputDisposition::written);
@@ -871,7 +871,7 @@ TEST(BackgroundDspPorts, EphemeralWritesDoNotObserveOutputDisposition)
             .sample_output_bindings = sample_bindings,
             .event_output_bindings = event_bindings,
         },
-        0,
+        index(0),
         4);
 
     EXPECT_EQ(
@@ -887,7 +887,7 @@ TEST(BackgroundDspPorts, EphemeralWritesDoNotObserveOutputDisposition)
             .sample_output_bindings = sample_bindings,
             .event_output_bindings = event_bindings,
         },
-        4,
+        index(4),
         4);
     EXPECT_EQ(
         sample_bindings[0].disposition, iv::OutputDisposition::voided);
@@ -923,8 +923,8 @@ TEST(BackgroundDspPorts, BackgroundInputsRemainAvailableFromTickBlock)
     };
     std::array realtime_event_inputs {iv::EventInputPort(event_shared)};
 
-    auto const sample_coverage = coverage({{0, 8}});
-    auto const event_coverage = coverage({{0, 4}, {10, 14}});
+    auto const sample_coverage = index_coverage({{0, 8}});
+    auto const event_coverage = index_coverage({{0, 4}, {10, 14}});
     SampleData sample_data;
     EventData event_data;
     std::array random_access_inputs {iv::RandomAccessSampleInputPort{
@@ -972,10 +972,10 @@ TEST(BackgroundDspPorts, BackgroundInputsRemainAvailableFromTickBlock)
 
 TEST(BackgroundDspPorts, TockContextExposesCoverageAndSampleEventBindings)
 {
-    auto const input_coverage = coverage({{0, 8}});
-    auto const event_coverage = coverage({{0, 4}, {10, 14}});
-    auto const sample_request = coverage({{2, 5}});
-    auto const event_request = coverage({{10, 14}});
+    auto const input_coverage = index_coverage({{0, 8}});
+    auto const event_coverage = index_coverage({{0, 4}, {10, 14}});
+    auto const sample_request = index_coverage({{2, 5}});
+    auto const event_request = index_coverage({{10, 14}});
     SampleData sample_data;
     SampleWrites sample_writes;
     EventData event_data;
@@ -1052,12 +1052,13 @@ void publish_required(void* data, iv::IndexCoverage const& required)
 
 TEST(BackgroundDspPorts, ForwardAndReverseContextsKeepExactDisjointCoverage)
 {
-    auto const sample_coverage = coverage({{10, 20}, {40, 50}});
-    auto const sample_changed = coverage({{12, 14}, {45, 47}});
-    auto const event_coverage = coverage({{100, 120}});
-    auto const event_changed = coverage({{108, 109}});
+    auto const sample_coverage = index_coverage({{10, 20}, {40, 50}});
+    auto const sample_changed = index_coverage({{12, 14}, {45, 47}});
+    auto const event_coverage = index_coverage({{100, 120}});
+    auto const event_changed = index_coverage({{108, 109}});
     PublishedCoverage sample_output;
     PublishedCoverage event_output;
+    iv::IndexCoverage const empty_output_coverage;
     std::array input_changes {iv::InputCoverageChange{
         .coverage_value = &sample_coverage, .changed_value = &sample_changed,
     }};
@@ -1066,11 +1067,13 @@ TEST(BackgroundDspPorts, ForwardAndReverseContextsKeepExactDisjointCoverage)
     }};
     std::array output_changes {iv::OutputCoverageChange{
         .data = &sample_output,
+        .previous_coverage_value = &empty_output_coverage,
         .publish_coverage_value = &publish_coverage,
         .publish_changed_value = &publish_changed,
     }};
     std::array event_output_changes {iv::OutputCoverageChange{
         .data = &event_output,
+        .previous_coverage_value = &empty_output_coverage,
         .publish_coverage_value = &publish_coverage,
         .publish_changed_value = &publish_changed,
     }};
@@ -1090,8 +1093,8 @@ TEST(BackgroundDspPorts, ForwardAndReverseContextsKeepExactDisjointCoverage)
     EXPECT_EQ(event_output.changed, event_changed);
     EXPECT_EQ(node.forward_sample_rate, 44100u);
 
-    auto const sample_demand = coverage({{13, 15}, {42, 44}});
-    auto const event_demand = coverage({{110, 112}});
+    auto const sample_demand = index_coverage({{13, 15}, {42, 44}});
+    auto const event_demand = index_coverage({{110, 112}});
     RequiredCoverage sample_input;
     RequiredCoverage event_input;
     std::array input_requirements {iv::InputCoverageRequirement{
@@ -1148,9 +1151,9 @@ struct DefaultPropagationNode {
 
 TEST(BackgroundDspPorts, ExactForwardPropagationRetainsCoverageAndInvalidatesIt)
 {
-    auto const input_coverage = coverage({{10, 20}, {50, 60}});
-    auto const input_changed = coverage({{12, 13}});
-    auto const previous_output = coverage({{100, 120}, {200, 220}});
+    auto const input_coverage = index_coverage({{10, 20}, {50, 60}});
+    auto const input_changed = index_coverage({{12, 13}});
+    auto const previous_output = index_coverage({{100, 120}, {200, 220}});
     PublishedCoverage captured;
     std::array inputs {iv::InputCoverageChange{
         .coverage_value = &input_coverage,
@@ -1176,8 +1179,8 @@ TEST(BackgroundDspPorts, ExactForwardPropagationRetainsCoverageAndInvalidatesIt)
 
 TEST(BackgroundDspPorts, DefaultReversePropagationRequiresWholeInputCoverage)
 {
-    auto const input_coverage = coverage({{10, 20}, {50, 60}});
-    auto const output_demand = coverage({{100, 101}});
+    auto const input_coverage = index_coverage({{10, 20}, {50, 60}});
+    auto const output_demand = index_coverage({{100, 101}});
     RequiredCoverage captured;
     std::array inputs {iv::InputCoverageRequirement{
         .data = &captured,

@@ -27,7 +27,7 @@ iv::GlobalIndexRange range(std::int64_t begin, std::int64_t end)
     return iv::GlobalIndexRange::from_begin_and_end(index(begin), index(end));
 }
 
-iv::IndexCoverage coverage(
+iv::IndexCoverage index_coverage(
     std::initializer_list<std::pair<std::int64_t, std::int64_t>> ranges)
 {
     iv::IndexCoverage result;
@@ -135,8 +135,8 @@ void propagate_background_forward(
         if (node < 2) {
             ++background_observation.source_forward_calls[node];
             auto const coverage = node == 0
-                ? coverage({{10, 13}})
-                : coverage({{20, 22}});
+                ? index_coverage({{10, 13}})
+                : index_coverage({{20, 22}});
             outputs[0].publish_coverage(coverage);
             outputs[0].change(coverage);
             continue;
@@ -721,7 +721,7 @@ protected:
         first_raw_offset = 0;
         second_raw_offset = 0;
         migrated_raw_value = 0;
-        persisted_probe_coverage = coverage({{0, 8}});
+        persisted_probe_coverage = index_coverage({{0, 8}});
         persisted_probe_evaluate_calls = 0;
         throw_persisted_probe_evaluate = false;
         omit_last_persisted_probe_sample = false;
@@ -882,7 +882,7 @@ TEST_F(
                 .locally_changed_nodes = {0},
                 .output_demands = {{
                     .port = 0,
-                    .required = coverage({{0, 8}}),
+                    .required = index_coverage({{0, 8}}),
                 }},
             },
         }};
@@ -926,7 +926,7 @@ TEST_F(
             .roots = {
                 .output_demands = {{
                     .port = 0,
-                    .required = coverage({{0, 8}}),
+                    .required = index_coverage({{0, 8}}),
                 }},
             },
         }};
@@ -941,7 +941,7 @@ TEST_F(
             (iv::PersistedDataVersion{.semantic = 7, .revision = 1}));
     }
 
-    persisted_probe_coverage = coverage({{0, 4}});
+    persisted_probe_coverage = index_coverage({{0, 4}});
     iv::BackgroundEvaluationTransaction shrink{
         graph,
         nullptr,
@@ -983,7 +983,7 @@ TEST_F(
             .locally_changed_nodes = {0},
             .output_demands = {{
                 .port = 0,
-                .required = coverage({{0, 8}}),
+                .required = index_coverage({{0, 8}}),
             }},
         },
     };
@@ -1012,7 +1012,7 @@ TEST_F(
             .roots = {
                 .output_demands = {{
                     .port = 0,
-                    .required = coverage({{0, 8}}),
+                    .required = index_coverage({{0, 8}}),
                 }},
             },
         }};
@@ -1047,7 +1047,7 @@ TEST_F(
             .locally_changed_nodes = {0},
             .output_demands = {{
                 .port = 0,
-                .required = coverage({{0, 8}}),
+                .required = index_coverage({{0, 8}}),
             }},
         },
     };
@@ -1098,21 +1098,21 @@ TEST_F(
                 .output_changes = {
                     {
                         .port = 0,
-                        .coverage = coverage({{0, 8}}),
+                        .coverage = index_coverage({{0, 8}}),
                     },
                     {
                         .port = 1,
-                        .coverage = coverage({{0, 8}}),
+                        .coverage = index_coverage({{0, 8}}),
                     },
                 },
                 .output_demands = {
                     {
                         .port = 0,
-                        .required = coverage({{0, 4}}),
+                        .required = index_coverage({{0, 4}}),
                     },
                     {
                         .port = 1,
-                        .required = coverage({{4, 8}}),
+                        .required = index_coverage({{4, 8}}),
                     },
                 },
             },
@@ -1141,7 +1141,7 @@ TEST_F(
             .locally_changed_nodes = {0},
             .output_demands = {{
                 .port = 0,
-                .required = coverage({{0, 8}}),
+                .required = index_coverage({{0, 8}}),
             }},
         },
     };
@@ -1179,7 +1179,7 @@ TEST_F(
             .roots = {
                 .output_demands = {{
                     .port = 0,
-                    .required = coverage({{0, 8}}),
+                    .required = index_coverage({{0, 8}}),
                 }},
             },
         }};
@@ -1215,7 +1215,7 @@ TEST_F(
                 .locally_changed_nodes = {0},
                 .output_demands = {{
                     .port = 0,
-                    .required = coverage({{0, 8}}),
+                    .required = index_coverage({{0, 8}}),
                 }},
             },
         }};
@@ -1246,7 +1246,7 @@ TEST_F(
             .roots = {
                 .output_demands = {{
                     .port = 0,
-                    .required = coverage({{0, 8}}),
+                    .required = index_coverage({{0, 8}}),
                 }},
             },
         }};
@@ -1261,7 +1261,7 @@ TEST_F(
 
 TEST_F(
     GraphExecutorFixture,
-    RetainedDataFreeBackgroundEvaluationPreservesPersistedBaseValidation)
+    RetainedDataFreeBackgroundEvaluationRejectsBackwardsSemanticVersion)
 {
     auto persisted_graph = persisted_tock_graph();
     iv::BackgroundCoverageState persisted_coverage(
@@ -1283,7 +1283,7 @@ TEST_F(
                 .locally_changed_nodes = {0},
                 .output_demands = {{
                     .port = 0,
-                    .required = coverage({{0, 8}}),
+                    .required = index_coverage({{0, 8}}),
                 }},
             },
         }};
@@ -1302,7 +1302,7 @@ TEST_F(
         .locally_changed_nodes = {0},
         .output_demands = {{
             .port = 0,
-            .required = coverage({{0, 8}}),
+            .required = index_coverage({{0, 8}}),
         }},
     };
 
@@ -1336,10 +1336,14 @@ TEST_F(
     auto different_block_size_result = different_block_size.execute();
     ASSERT_TRUE(different_block_size_result.has_value())
         << different_block_size_result.error();
+    EXPECT_EQ(different_block_size_result->status,
+        iv::BackgroundEvaluationStatus::committed);
+    EXPECT_FALSE(different_block_size_result->published_data.has_value());
 
-    // Neither rejected data-free transaction reaches evaluation or coverage
-    // commit.
-    EXPECT_EQ(persisted_probe_evaluate_calls, 1u);
+    // The backwards semantic version is rejected before evaluation. Persisted
+    // regions are independent of callback block size, so the second data-free
+    // transaction evaluates and commits coverage normally.
+    EXPECT_EQ(persisted_probe_evaluate_calls, 2u);
 }
 
 TEST_F(
@@ -1364,7 +1368,7 @@ TEST_F(
             .output_demands = {
                 iv::OutputCoverageRequest{
                     .port = 3,
-                    .required = coverage({{11, 21}}),
+                    .required = index_coverage({{11, 21}}),
                 },
             },
         });
@@ -1393,7 +1397,7 @@ TEST_F(
             .output_demands = {
                 iv::OutputCoverageRequest{
                     .port = 3,
-                    .required = coverage({{10, 22}}),
+                    .required = index_coverage({{10, 22}}),
                 },
             },
         });
@@ -1426,7 +1430,7 @@ TEST_F(
             .output_demands = {
                 iv::OutputCoverageRequest{
                     .port = 3,
-                    .required = coverage({{11, 21}}),
+                    .required = index_coverage({{11, 21}}),
                 },
             },
         });
@@ -1437,37 +1441,37 @@ TEST_F(
     EXPECT_EQ(background_observation.sink_forward_calls, 1u);
     EXPECT_EQ(
         background_observation.sink_input_coverage,
-        coverage({{10, 13}, {20, 22}}));
+        index_coverage({{10, 13}, {20, 22}}));
     EXPECT_EQ(
         background_observation.sink_input_changed,
         background_observation.sink_input_coverage);
     EXPECT_EQ(background_observation.sink_reverse_calls, 1u);
     EXPECT_EQ(
         background_observation.sink_output_required,
-        coverage({{11, 13}, {20, 21}}));
+        index_coverage({{11, 13}, {20, 21}}));
 
     ASSERT_EQ(result.output_changes.size(), 3u);
     EXPECT_EQ(
         result.output_changes[2].coverage,
-        coverage({{10, 13}, {20, 22}}));
+        index_coverage({{10, 13}, {20, 22}}));
     ASSERT_EQ(result.input_requirements.size(), 1u);
     EXPECT_EQ(result.input_requirements[0].port, 2u);
     EXPECT_EQ(
         result.input_requirements[0].required,
-        coverage({{11, 13}, {20, 21}}));
+        index_coverage({{11, 13}, {20, 21}}));
     ASSERT_EQ(result.output_requirements.size(), 3u);
     EXPECT_EQ(result.output_requirements[0].port, 0u);
     EXPECT_EQ(
         result.output_requirements[0].required,
-        coverage({{11, 13}}));
+        index_coverage({{11, 13}}));
     EXPECT_EQ(result.output_requirements[1].port, 1u);
     EXPECT_EQ(
         result.output_requirements[1].required,
-        coverage({{20, 21}}));
+        index_coverage({{20, 21}}));
     EXPECT_EQ(result.output_requirements[2].port, 3u);
     EXPECT_EQ(
         result.output_requirements[2].required,
-        coverage({{11, 13}, {20, 21}}));
+        index_coverage({{11, 13}, {20, 21}}));
 
     background_observation = {};
     prepared = workspace.prepare(
@@ -1478,7 +1482,7 @@ TEST_F(
             .output_demands = {
                 iv::OutputCoverageRequest{
                     .port = 3,
-                    .required = coverage({{10, 22}}),
+                    .required = index_coverage({{10, 22}}),
                 },
             },
         });
@@ -1497,7 +1501,7 @@ TEST_F(
             .input_demands = {
                 iv::InputCoverageRequest{
                     .port = 2,
-                    .required = coverage({{10, 22}}),
+                    .required = index_coverage({{10, 22}}),
                 },
             },
         });
@@ -1544,7 +1548,7 @@ TEST_F(
             .output_demands = {
                 iv::OutputCoverageRequest{
                     .port = 3,
-                    .required = coverage({{10, 22}}),
+                    .required = index_coverage({{10, 22}}),
                 },
             },
         });
@@ -1578,7 +1582,7 @@ TEST_F(
                 .output_demands = {
                     iv::OutputCoverageRequest{
                         .port = 3,
-                        .required = coverage({{10, 22}}),
+                        .required = index_coverage({{10, 22}}),
                     },
                 },
             })),
@@ -1593,7 +1597,7 @@ TEST_F(
             .output_demands = {
                 iv::OutputCoverageRequest{
                     .port = 3,
-                    .required = coverage({{10, 22}}),
+                    .required = index_coverage({{10, 22}}),
                 },
             },
         });
@@ -1617,7 +1621,7 @@ TEST_F(
         .evaluate = &no_op_background_evaluate,
     };
 
-    auto const selected_coverage = coverage({{30, 34}});
+    auto const selected_coverage = index_coverage({{30, 34}});
     auto prepared = workspace.prepare(
         operations,
         nullptr,
@@ -1670,7 +1674,7 @@ TEST_F(
     EXPECT_EQ(result.output_changes[0].port, 1u);
     EXPECT_EQ(
         result.output_changes[0].coverage,
-        coverage({{10, 13}}));
+        index_coverage({{10, 13}}));
     workspace.discard(std::move(prepared));
 }
 
