@@ -21,17 +21,22 @@ struct TimedSamplePass {
     static constexpr auto inputs()
     {
         return std::array{
-            iv::sequential_sample_input(
-                "in", {}, iv::SequentialInputConfig{.history = 5}),
+            iv::sequential_sample_input("in"),
         };
     }
 
     static constexpr auto outputs()
     {
         return std::array{
-            iv::tick_sample_output(
-                "out", {}, iv::TickOutputConfig{.history = 3, .latency = 2}),
+            iv::tick_sample_output("out"),
         };
+    }
+
+    void constrain_ports(iv::ConstrainPortsContext<TimedSamplePass>& ctx) const
+    {
+        ctx.input<"in">().history() = 5;
+        ctx.output<"out">().history() = 3;
+        ctx.output<"out">().latency() = 2;
     }
 
     void tick_block(iv::TickBlockContext<TimedSamplePass> const&) const {}
@@ -48,12 +53,10 @@ struct TimedStereoStateNode {
                         .channel_type = iv::ChannelTypeId::stereo,
                         .sample_layout = iv::SampleStreamLayout::planar,
                     },
-                },
-                iv::SequentialInputConfig{.history = 5}),
+                }),
             iv::sequential_event_input(
                 "events_in",
-                iv::EventTypeId::trigger,
-                iv::SequentialInputConfig{.history = 7}),
+                iv::EventTypeId::trigger),
         };
     }
 
@@ -67,13 +70,22 @@ struct TimedStereoStateNode {
                         .channel_type = iv::ChannelTypeId::stereo,
                         .sample_layout = iv::SampleStreamLayout::planar,
                     },
-                },
-                iv::TickOutputConfig{.history = 3, .latency = 2}),
+                }),
             iv::tick_event_output(
                 "events_out",
-                iv::EventTypeId::trigger,
-                iv::TickOutputConfig{.history = 11, .latency = 13}),
+                iv::EventTypeId::trigger),
         };
+    }
+
+    void constrain_ports(
+        iv::ConstrainPortsContext<TimedStereoStateNode>& ctx) const
+    {
+        ctx.input<"in">().history() = 5;
+        ctx.input<"events_in">().history() = 7;
+        ctx.output<"out">().history() = 3;
+        ctx.output<"out">().latency() = 2;
+        ctx.output<"events_out">().history() = 11;
+        ctx.output<"events_out">().latency() = 13;
     }
 
     void tick_block(iv::TickBlockContext<TimedStereoStateNode> const&) const {}
@@ -167,8 +179,15 @@ struct PersistedTickEventSource {
                 .type = iv::EventTypeId::trigger,
                 .max_events_per_index = 0.25,
             },
-            iv::TickOutputConfig{.history = 3, .latency = 2},
+            iv::TickOutputConfig{},
             iv::OutputRetention::persisted)};
+    }
+
+    void constrain_ports(
+        iv::ConstrainPortsContext<PersistedTickEventSource>& ctx) const
+    {
+        ctx.output<"out">().history() = 3;
+        ctx.output<"out">().latency() = 2;
     }
 
     void tick_block(
@@ -432,8 +451,7 @@ struct OutputAccessRetentionModes {
                 "realtime_ephemeral", {}, {},
                 iv::OutputRetention::ephemeral),
             iv::tick_sample_output(
-                "realtime_persisted", {},
-                iv::TickOutputConfig{.history = 3, .latency = 2},
+                "realtime_persisted", {}, {},
                 iv::OutputRetention::persisted),
             iv::tock_sample_output(
                 "background_ephemeral", {},
@@ -449,6 +467,13 @@ struct OutputAccessRetentionModes {
                 },
                 iv::OutputRetention::persisted),
         };
+    }
+
+    void constrain_ports(
+        iv::ConstrainPortsContext<OutputAccessRetentionModes>& ctx) const
+    {
+        ctx.output<"realtime_persisted">().history() = 3;
+        ctx.output<"realtime_persisted">().latency() = 2;
     }
 
     void tick_block(
@@ -528,8 +553,12 @@ struct LatentSamplePass {
 
     static constexpr auto outputs()
     {
-        return std::array{iv::tick_sample_output(
-            "out", {}, iv::TickOutputConfig{.latency = 2})};
+        return std::array{iv::tick_sample_output("out")};
+    }
+
+    void constrain_ports(iv::ConstrainPortsContext<LatentSamplePass>& ctx) const
+    {
+        ctx.output<"out">().latency() = 2;
     }
 
     constexpr std::size_t internal_latency() const { return 5; }
@@ -565,8 +594,13 @@ struct LatentTwoInputPass {
 
     static constexpr auto outputs()
     {
-        return std::array{iv::tick_sample_output(
-            "out", {}, iv::TickOutputConfig{.latency = 4})};
+        return std::array{iv::tick_sample_output("out")};
+    }
+
+    void constrain_ports(
+        iv::ConstrainPortsContext<LatentTwoInputPass>& ctx) const
+    {
+        ctx.output<"out">().latency() = 4;
     }
 
     constexpr std::size_t internal_latency() const { return 3; }
@@ -582,14 +616,33 @@ struct MediumLatencySamplePass {
 
     static constexpr auto outputs()
     {
-        return std::array{iv::tick_sample_output(
-            "out", {}, iv::TickOutputConfig{.latency = 1})};
+        return std::array{iv::tick_sample_output("out")};
+    }
+
+    void constrain_ports(
+        iv::ConstrainPortsContext<MediumLatencySamplePass>& ctx) const
+    {
+        ctx.output<"out">().latency() = 1;
     }
 
     constexpr std::size_t internal_latency() const { return 9; }
 
     void tick_block(iv::TickBlockContext<MediumLatencySamplePass> const&) const {}
 };
+
+std::expected<iv::graph_jit::detail::ConnectionAnalysisPlan, std::string>
+build_connection_analysis_plan(
+    iv::ConfiguredGraph const& graph,
+    std::size_t kernel_block_size,
+    iv::RealtimeStorageCostModel const& cost_model = {})
+{
+    auto port_realization = iv::graph_jit::resolve_port_realization(graph);
+    if (!port_realization) {
+        return std::unexpected(std::move(port_realization.error()));
+    }
+    return iv::graph_jit::detail::build_connection_analysis_plan(
+        graph, *port_realization, kernel_block_size, cost_model);
+}
 
 } // namespace
 
@@ -603,7 +656,7 @@ TEST(GraphJitConnectionPlan, InventoriesStableNodeOwnedRealtimePortState)
     graph.outputs();
 
     auto configured = std::move(graph).finish();
-    auto plan = graph_jit::detail::build_connection_analysis_plan(configured, 64);
+    auto plan = build_connection_analysis_plan(configured, 64);
     ASSERT_TRUE(plan.has_value()) << (plan ? std::string{} : plan.error());
 
     auto const& states = plan->realtime_port_states.states;
@@ -710,7 +763,7 @@ TEST(GraphJitConnectionPlan, KeepsAnonymousRealtimePortStateGenerationLocal)
     graph.outputs();
 
     auto configured = std::move(graph).finish();
-    auto plan = graph_jit::detail::build_connection_analysis_plan(configured, 64);
+    auto plan = build_connection_analysis_plan(configured, 64);
     ASSERT_TRUE(plan.has_value()) << (plan ? std::string{} : plan.error());
 
     ASSERT_EQ(plan->realtime_port_states.states.size(), 3u);
@@ -735,7 +788,7 @@ TEST(GraphJitConnectionPlan, DerivesScheduleTemporalRequirementsAndProducerPolic
     graph.outputs("out"_P = second);
 
     auto configured = std::move(graph).finish();
-    auto plan = graph_jit::detail::build_connection_analysis_plan(configured, 64);
+    auto plan = build_connection_analysis_plan(configured, 64);
     ASSERT_TRUE(plan.has_value()) << (plan ? std::string{} : plan.error());
 
     ASSERT_EQ(plan->nodes.size(), 2u);
@@ -836,7 +889,7 @@ TEST(GraphJitConnectionPlan, EqualizesFeedForwardSamplePathsAtConvergence)
     graph.outputs();
 
     auto configured = std::move(graph).finish();
-    auto plan = graph_jit::detail::build_connection_analysis_plan(configured, 64);
+    auto plan = build_connection_analysis_plan(configured, 64);
     ASSERT_TRUE(plan.has_value()) << (plan ? std::string{} : plan.error());
 
     auto connection_to = [&](NodeBundleHandle source_bundle,
@@ -898,7 +951,7 @@ TEST(GraphJitConnectionPlan, EqualizesChannelsInsideComposedSampleInput)
     graph.outputs();
 
     auto configured = std::move(graph).finish();
-    auto plan = graph_jit::detail::build_connection_analysis_plan(configured, 64);
+    auto plan = build_connection_analysis_plan(configured, 64);
     ASSERT_TRUE(plan.has_value()) << (plan ? std::string{} : plan.error());
 
     auto const connection = std::ranges::find_if(
@@ -1013,7 +1066,7 @@ TEST(GraphJitConnectionPlan, PropagatesAlignedLatencyAcrossMultipleConvergences)
     graph.outputs();
 
     auto configured = std::move(graph).finish();
-    auto plan = graph_jit::detail::build_connection_analysis_plan(configured, 64);
+    auto plan = build_connection_analysis_plan(configured, 64);
     ASSERT_TRUE(plan.has_value()) << (plan ? std::string{} : plan.error());
 
     auto connection_to = [&](NodeBundleHandle target_bundle,
@@ -1086,7 +1139,7 @@ TEST(GraphJitConnectionPlan, RejectsImplicitCycles)
     graph.outputs();
 
     auto configured = std::move(graph).finish();
-    auto plan = graph_jit::detail::build_connection_analysis_plan(configured, 64);
+    auto plan = build_connection_analysis_plan(configured, 64);
     ASSERT_FALSE(plan.has_value());
     EXPECT_NE(plan.error().find("implicit cycle"), std::string::npos);
 
@@ -1098,7 +1151,7 @@ TEST(GraphJitConnectionPlan, RejectsImplicitCycles)
     event_graph.outputs();
 
     auto event_configured = std::move(event_graph).finish();
-    auto event_plan = graph_jit::detail::build_connection_analysis_plan(
+    auto event_plan = build_connection_analysis_plan(
         event_configured, 64);
     ASSERT_FALSE(event_plan.has_value());
     EXPECT_NE(event_plan.error().find("implicit cycle"), std::string::npos);
@@ -1114,7 +1167,7 @@ TEST(GraphJitConnectionPlan, RejectsDetachThatDoesNotBreakCycle)
     sample_graph.outputs();
 
     auto sample_configured = std::move(sample_graph).finish();
-    auto sample_plan = graph_jit::detail::build_connection_analysis_plan(
+    auto sample_plan = build_connection_analysis_plan(
         sample_configured, 64);
     ASSERT_FALSE(sample_plan.has_value());
     EXPECT_NE(
@@ -1128,7 +1181,7 @@ TEST(GraphJitConnectionPlan, RejectsDetachThatDoesNotBreakCycle)
     event_graph.outputs();
 
     auto event_configured = std::move(event_graph).finish();
-    auto event_plan = graph_jit::detail::build_connection_analysis_plan(
+    auto event_plan = build_connection_analysis_plan(
         event_configured, 64);
     ASSERT_FALSE(event_plan.has_value());
     EXPECT_NE(
@@ -1149,7 +1202,7 @@ TEST(GraphJitConnectionPlan, RejectsBackgroundEdgesInWholeSemanticScc)
     sample_graph.outputs();
 
     auto sample_configured = std::move(sample_graph).finish();
-    auto sample_plan = graph_jit::detail::build_connection_analysis_plan(
+    auto sample_plan = build_connection_analysis_plan(
         sample_configured, 64);
     ASSERT_FALSE(sample_plan.has_value());
     EXPECT_NE(sample_plan.error().find("background sample connection"),
@@ -1166,7 +1219,7 @@ TEST(GraphJitConnectionPlan, RejectsBackgroundEdgesInWholeSemanticScc)
     event_graph.outputs();
 
     auto event_configured = std::move(event_graph).finish();
-    auto event_plan = graph_jit::detail::build_connection_analysis_plan(
+    auto event_plan = build_connection_analysis_plan(
         event_configured, 64);
     ASSERT_FALSE(event_plan.has_value());
     EXPECT_NE(event_plan.error().find("background event connection"),
@@ -1183,7 +1236,7 @@ TEST(GraphJitConnectionPlan, RejectsBackgroundSemanticSelfLoop)
     graph.outputs();
 
     auto configured = std::move(graph).finish();
-    auto plan = graph_jit::detail::build_connection_analysis_plan(configured, 64);
+    auto plan = build_connection_analysis_plan(configured, 64);
     ASSERT_FALSE(plan.has_value());
     EXPECT_NE(plan.error().find("background sample connection"),
         std::string::npos);
@@ -1206,7 +1259,7 @@ TEST(GraphJitConnectionPlan, AllowsRealtimeSccToExportBackgroundData)
     graph.outputs();
 
     auto configured = std::move(graph).finish();
-    auto plan = graph_jit::detail::build_connection_analysis_plan(configured, 64);
+    auto plan = build_connection_analysis_plan(configured, 64);
     ASSERT_TRUE(plan.has_value()) << (plan ? std::string{} : plan.error());
     EXPECT_TRUE(std::ranges::any_of(
         plan->sample_connections,
@@ -1253,7 +1306,7 @@ TEST(GraphJitConnectionPlan, DerivesSampleDetachExecutionRegion)
     graph.outputs();
 
     auto configured = std::move(graph).finish();
-    auto plan = graph_jit::detail::build_connection_analysis_plan(configured, 64);
+    auto plan = build_connection_analysis_plan(configured, 64);
     ASSERT_TRUE(plan.has_value()) << (plan ? std::string{} : plan.error());
 
     auto const detached = std::ranges::find_if(
@@ -1301,7 +1354,7 @@ TEST(GraphJitConnectionPlan, RetainsPersistedCaptureSccInvocationBounds)
     graph.outputs();
 
     auto configured = std::move(graph).finish();
-    auto plan = graph_jit::detail::build_connection_analysis_plan(configured, 64);
+    auto plan = build_connection_analysis_plan(configured, 64);
     ASSERT_TRUE(plan.has_value()) << (plan ? std::string{} : plan.error());
 
     ASSERT_LT(persisted_handle, plan->schedule.bundle_to_region.size());
@@ -1341,7 +1394,7 @@ TEST(GraphJitConnectionPlan, SampleDetachInitialValueOverrideWins)
     graph.outputs();
 
     auto configured = std::move(graph).finish();
-    auto plan = graph_jit::detail::build_connection_analysis_plan(configured, 64);
+    auto plan = build_connection_analysis_plan(configured, 64);
     ASSERT_TRUE(plan.has_value()) << (plan ? std::string{} : plan.error());
     auto const detached = std::ranges::find_if(
         plan->sample_connections,
@@ -1369,7 +1422,7 @@ TEST(GraphJitConnectionPlan, DerivesEventDetachExecutionRegion)
     graph.outputs();
 
     auto configured = std::move(graph).finish();
-    auto plan = graph_jit::detail::build_connection_analysis_plan(configured, 64);
+    auto plan = build_connection_analysis_plan(configured, 64);
     ASSERT_TRUE(plan.has_value()) << (plan ? std::string{} : plan.error());
 
     auto const detached = std::ranges::find_if(
@@ -1413,7 +1466,7 @@ TEST(GraphJitConnectionPlan, SimpleRealtimeSampleEdgeChoosesDirect)
     graph.outputs();
 
     auto configured = std::move(graph).finish();
-    auto plan = graph_jit::detail::build_connection_analysis_plan(configured, 64);
+    auto plan = build_connection_analysis_plan(configured, 64);
     ASSERT_TRUE(plan.has_value()) << (plan ? std::string{} : plan.error());
 
     EXPECT_TRUE(std::ranges::all_of(
@@ -1451,7 +1504,7 @@ TEST(GraphJitConnectionPlan, PartitionsOverlappingSamplePortUsesIntoPortAtoms)
     graph.outputs();
 
     auto configured = std::move(graph).finish();
-    auto plan = graph_jit::detail::build_connection_analysis_plan(configured, 64);
+    auto plan = build_connection_analysis_plan(configured, 64);
     ASSERT_TRUE(plan.has_value()) << (plan ? std::string{} : plan.error());
 
     auto const& subsets = plan->background.sample_source_subsets;
@@ -1531,7 +1584,7 @@ TEST(GraphJitConnectionPlan, ConversionUsesTransientMaterialization)
     graph.outputs();
 
     auto configured = std::move(graph).finish();
-    auto plan = graph_jit::detail::build_connection_analysis_plan(configured, 128);
+    auto plan = build_connection_analysis_plan(configured, 128);
     ASSERT_TRUE(plan.has_value()) << (plan ? std::string{} : plan.error());
 
     ASSERT_EQ(plan->sample_connections.size(), 1u);
@@ -1572,7 +1625,7 @@ TEST(GraphJitConnectionPlan, ExternalEventsUseBoundaryPolicy)
     graph.outputs();
 
     auto configured = std::move(graph).finish();
-    auto plan = graph_jit::detail::build_connection_analysis_plan(configured, 64);
+    auto plan = build_connection_analysis_plan(configured, 64);
     ASSERT_TRUE(plan.has_value()) << (plan ? std::string{} : plan.error());
 
     ASSERT_EQ(plan->event_connections.size(), 1u);
@@ -1596,7 +1649,7 @@ TEST(GraphJitConnectionPlan, BlockSliceMismatchRequiresMaterialization)
     graph.outputs();
 
     auto configured = std::move(graph).finish();
-    auto plan = graph_jit::detail::build_connection_analysis_plan(configured, 64);
+    auto plan = build_connection_analysis_plan(configured, 64);
     ASSERT_TRUE(plan.has_value()) << (plan ? std::string{} : plan.error());
 
     ASSERT_EQ(plan->sample_connections.size(), 1u);
@@ -1619,7 +1672,7 @@ TEST(GraphJitConnectionPlan, BackgroundConnectionsDoNotUseRealtimeStoragePolicy)
     graph.outputs();
 
     auto configured = std::move(graph).finish();
-    auto plan = graph_jit::detail::build_connection_analysis_plan(configured, 64);
+    auto plan = build_connection_analysis_plan(configured, 64);
     ASSERT_TRUE(plan.has_value()) << (plan ? std::string{} : plan.error());
 
     ASSERT_EQ(plan->sample_connections.size(), 1u);
@@ -1665,7 +1718,7 @@ TEST(GraphJitConnectionPlan, RetainsCompleteBackgroundTopologyAndRetention)
     graph.outputs();
 
     auto configured = std::move(graph).finish();
-    auto built = graph_jit::detail::build_connection_analysis_plan(
+    auto built = build_connection_analysis_plan(
         configured, 64);
     ASSERT_TRUE(built.has_value()) << (built ? std::string{} : built.error());
     auto const planned_source = std::ranges::find_if(
@@ -1807,7 +1860,7 @@ TEST(GraphJitConnectionPlan, RetainsBackgroundEventConversion)
     graph.outputs();
 
     auto configured = std::move(graph).finish();
-    auto built = graph_jit::detail::build_connection_analysis_plan(
+    auto built = build_connection_analysis_plan(
         configured, 64);
     ASSERT_TRUE(built.has_value()) << (built ? std::string{} : built.error());
     ASSERT_EQ(built->background.connections.size(), 1u);
@@ -1877,7 +1930,7 @@ TEST(GraphJitConnectionPlan, SharesEquivalentBackgroundEventMaterializations)
     graph.outputs();
 
     auto configured = std::move(graph).finish();
-    auto plan = graph_jit::detail::build_connection_analysis_plan(configured, 64);
+    auto plan = build_connection_analysis_plan(configured, 64);
     ASSERT_TRUE(plan.has_value()) << (plan ? std::string{} : plan.error());
     ASSERT_EQ(plan->background.connections.size(), 2u);
 
@@ -1912,7 +1965,7 @@ TEST(GraphJitConnectionPlan, AddressableEventMaterializationSubsumesSequential)
     graph.outputs();
 
     auto configured = std::move(graph).finish();
-    auto plan = graph_jit::detail::build_connection_analysis_plan(configured, 64);
+    auto plan = build_connection_analysis_plan(configured, 64);
     ASSERT_TRUE(plan.has_value()) << (plan ? std::string{} : plan.error());
     ASSERT_EQ(plan->background.connections.size(), 2u);
 
@@ -1956,7 +2009,7 @@ TEST(GraphJitConnectionPlan, ExactEventFanoutAliasesPreparedRepresentations)
     graph.outputs();
 
     auto configured = std::move(graph).finish();
-    auto plan = graph_jit::detail::build_connection_analysis_plan(configured, 64);
+    auto plan = build_connection_analysis_plan(configured, 64);
     ASSERT_TRUE(plan.has_value()) << (plan ? std::string{} : plan.error());
     ASSERT_EQ(plan->background.connections.size(), 2u);
 
@@ -1992,7 +2045,7 @@ TEST(GraphJitConnectionPlan, TockToSequentialUsesPreparedBackgroundDelivery)
     graph.outputs();
 
     auto configured = std::move(graph).finish();
-    auto plan = graph_jit::detail::build_connection_analysis_plan(configured, 64);
+    auto plan = build_connection_analysis_plan(configured, 64);
     ASSERT_TRUE(plan.has_value()) << (plan ? std::string{} : plan.error());
     ASSERT_EQ(plan->sample_connections.size(), 1u);
     ASSERT_EQ(plan->sample_connections[0].source_channel_timings.size(), 1u);
@@ -2059,7 +2112,7 @@ TEST(GraphJitConnectionPlan, AddressableAtomSubsumesSequentialWindow)
     graph.outputs();
 
     auto configured = std::move(graph).finish();
-    auto plan = graph_jit::detail::build_connection_analysis_plan(configured, 64);
+    auto plan = build_connection_analysis_plan(configured, 64);
     ASSERT_TRUE(plan.has_value()) << (plan ? std::string{} : plan.error());
 
     auto const subset = std::ranges::find_if(
@@ -2114,7 +2167,7 @@ TEST(GraphJitConnectionPlan, SharesEquivalentBackgroundSampleMaterializations)
     graph.outputs();
 
     auto configured = std::move(graph).finish();
-    auto plan = graph_jit::detail::build_connection_analysis_plan(configured, 64);
+    auto plan = build_connection_analysis_plan(configured, 64);
     ASSERT_TRUE(plan.has_value()) << (plan ? std::string{} : plan.error());
     ASSERT_EQ(plan->background.connections.size(), 2u);
 
@@ -2152,7 +2205,7 @@ TEST(GraphJitConnectionPlan, AddressableSampleMaterializationSubsumesSequential)
     graph.outputs();
 
     auto configured = std::move(graph).finish();
-    auto plan = graph_jit::detail::build_connection_analysis_plan(configured, 64);
+    auto plan = build_connection_analysis_plan(configured, 64);
     ASSERT_TRUE(plan.has_value()) << (plan ? std::string{} : plan.error());
     ASSERT_EQ(plan->background.connections.size(), 2u);
 
@@ -2215,7 +2268,7 @@ TEST(GraphJitConnectionPlan, BackgroundSampleMaterializationIsTargetAtomLocal)
         connections,
         std::span<ConfiguredEventConnection const>{});
 
-    auto plan = graph_jit::detail::build_connection_analysis_plan(configured, 64);
+    auto plan = build_connection_analysis_plan(configured, 64);
     ASSERT_TRUE(plan.has_value()) << (plan ? std::string{} : plan.error());
     ASSERT_EQ(plan->sample_connections.size(), 1u);
     ASSERT_EQ(plan->sample_connections.front().projection_contributions.size(), 2u);
@@ -2276,7 +2329,7 @@ TEST(GraphJitConnectionPlan, MixedTickAndTockSampleTilePlansPerSourceChannel)
     graph.outputs();
 
     auto configured = std::move(graph).finish();
-    auto plan = graph_jit::detail::build_connection_analysis_plan(configured, 64);
+    auto plan = build_connection_analysis_plan(configured, 64);
     ASSERT_TRUE(plan.has_value()) << (plan ? std::string{} : plan.error());
     ASSERT_EQ(plan->sample_connections.size(), 1u);
     auto const& connection = plan->sample_connections.front();
@@ -2364,7 +2417,7 @@ TEST(GraphJitConnectionPlan, MixedTickAndTockEventFanInPlansPerSource)
     graph.outputs();
 
     auto configured = std::move(graph).finish();
-    auto plan = graph_jit::detail::build_connection_analysis_plan(configured, 64);
+    auto plan = build_connection_analysis_plan(configured, 64);
     ASSERT_TRUE(plan.has_value()) << (plan ? std::string{} : plan.error());
     ASSERT_EQ(plan->event_connections.size(), 1u);
     auto const& connection = plan->event_connections.front();
@@ -2485,7 +2538,7 @@ TEST(GraphJitConnectionPlan, PersistedTickToRandomAccessUsesStoredBoundary)
     graph.outputs();
 
     auto configured = std::move(graph).finish();
-    auto plan = graph_jit::detail::build_connection_analysis_plan(configured, 64);
+    auto plan = build_connection_analysis_plan(configured, 64);
     ASSERT_TRUE(plan.has_value()) << (plan ? std::string{} : plan.error());
     ASSERT_EQ(plan->sample_connections.size(), 1u);
     ASSERT_EQ(plan->sample_connections[0].source_channel_timings.size(), 1u);
@@ -2591,7 +2644,7 @@ TEST(GraphJitConnectionPlan, PlansTypedCaptureForPersistedTickEvents)
     graph.outputs();
 
     auto configured = std::move(graph).finish();
-    auto plan = graph_jit::detail::build_connection_analysis_plan(configured, 64);
+    auto plan = build_connection_analysis_plan(configured, 64);
     ASSERT_TRUE(plan.has_value()) << (plan ? std::string{} : plan.error());
 
     auto const source_node =
@@ -2631,7 +2684,7 @@ TEST(GraphJitConnectionPlan, IntrinsicTickReplaySuppliesRandomAccess)
     graph.outputs();
 
     auto configured = std::move(graph).finish();
-    auto plan = graph_jit::detail::build_connection_analysis_plan(configured, 64);
+    auto plan = build_connection_analysis_plan(configured, 64);
     ASSERT_TRUE(plan.has_value()) << (plan ? std::string{} : plan.error());
     ASSERT_EQ(plan->sample_connections.size(), 1u);
     auto const& timing = plan->sample_connections[0].source_channel_timings[0];
@@ -2665,7 +2718,7 @@ TEST(GraphJitConnectionPlan, ContextualReplayTraversesSequentialDependencies)
     graph.outputs();
 
     auto configured = std::move(graph).finish();
-    auto plan = graph_jit::detail::build_connection_analysis_plan(configured, 64);
+    auto plan = build_connection_analysis_plan(configured, 64);
     ASSERT_TRUE(plan.has_value()) << (plan ? std::string{} : plan.error());
     auto const source_node = *plan->background.bundle_to_background_node[source_handle];
     auto const pass_node = *plan->background.bundle_to_background_node[pass_handle];
@@ -2759,7 +2812,7 @@ TEST(GraphJitConnectionPlan, RejectsInvalidBackgroundRuntimeIndicesAndPlacement)
     graph.outputs();
 
     auto configured = std::move(graph).finish();
-    auto plan = graph_jit::detail::build_connection_analysis_plan(configured, 64);
+    auto plan = build_connection_analysis_plan(configured, 64);
     ASSERT_TRUE(plan.has_value()) << (plan ? std::string{} : plan.error());
     auto const source_node =
         *plan->background.bundle_to_background_node[source_handle];
@@ -2817,7 +2870,7 @@ TEST(GraphJitConnectionPlan, TockDependencyCanFeedSynthesizedReplay)
     graph.outputs();
 
     auto configured = std::move(graph).finish();
-    auto plan = graph_jit::detail::build_connection_analysis_plan(configured, 64);
+    auto plan = build_connection_analysis_plan(configured, 64);
     ASSERT_TRUE(plan.has_value()) << (plan ? std::string{} : plan.error());
     auto const source_node = *plan->background.bundle_to_background_node[source_handle];
     auto const pass_node = *plan->background.bundle_to_background_node[pass_handle];
@@ -2879,7 +2932,7 @@ TEST(GraphJitConnectionPlan, PersistedTickBoundaryStopsContextualReplayTraversal
     graph.outputs();
 
     auto configured = std::move(graph).finish();
-    auto plan = graph_jit::detail::build_connection_analysis_plan(configured, 64);
+    auto plan = build_connection_analysis_plan(configured, 64);
     ASSERT_TRUE(plan.has_value()) << (plan ? std::string{} : plan.error());
     auto const recorder_node = *plan->background.bundle_to_background_node[recorder_handle];
     auto const replay_node = *plan->background.bundle_to_background_node[replay_handle];
@@ -2904,7 +2957,7 @@ TEST(GraphJitConnectionPlan, RejectsUnreproducibleTickEphemeralRandomAccess)
     sample_sink(sample_source);
     sample_graph.outputs();
     auto sample_configured = std::move(sample_graph).finish();
-    auto sample_plan = graph_jit::detail::build_connection_analysis_plan(
+    auto sample_plan = build_connection_analysis_plan(
         sample_configured, 64);
     ASSERT_FALSE(sample_plan.has_value());
     EXPECT_NE(sample_plan.error().find("unreproducible Tick/ephemeral"),
@@ -2917,7 +2970,7 @@ TEST(GraphJitConnectionPlan, RejectsUnreproducibleTickEphemeralRandomAccess)
     event_sink.connect_event_input(0, event_source.event_port());
     event_graph.outputs();
     auto event_configured = std::move(event_graph).finish();
-    auto event_plan = graph_jit::detail::build_connection_analysis_plan(
+    auto event_plan = build_connection_analysis_plan(
         event_configured, 64);
     ASSERT_FALSE(event_plan.has_value());
     EXPECT_NE(event_plan.error().find("unreproducible Tick/ephemeral"),
@@ -2938,7 +2991,7 @@ TEST(GraphJitConnectionPlan, RejectsUnreproducibleUpstreamDuringTransitiveReplay
     graph.outputs();
 
     auto configured = std::move(graph).finish();
-    auto plan = graph_jit::detail::build_connection_analysis_plan(configured, 64);
+    auto plan = build_connection_analysis_plan(configured, 64);
     ASSERT_FALSE(plan.has_value());
     EXPECT_NE(plan.error().find("unreproducible Tick/ephemeral"),
         std::string::npos);
@@ -2958,7 +3011,7 @@ TEST(GraphJitConnectionPlan, RejectsUnavailableBoundarySourceDuringTransitiveRep
     graph.outputs();
 
     auto configured = std::move(graph).finish();
-    auto plan = graph_jit::detail::build_connection_analysis_plan(configured, 64);
+    auto plan = build_connection_analysis_plan(configured, 64);
     ASSERT_FALSE(plan.has_value());
     EXPECT_NE(plan.error().find("unavailable live sample connection"),
         std::string::npos);
@@ -2979,7 +3032,7 @@ TEST(GraphJitConnectionPlan, RejectsContextualReplayCycles)
     graph.outputs();
 
     auto configured = std::move(graph).finish();
-    auto plan = graph_jit::detail::build_connection_analysis_plan(configured, 64);
+    auto plan = build_connection_analysis_plan(configured, 64);
     ASSERT_FALSE(plan.has_value());
     EXPECT_NE(plan.error().find("contextual replay dependency cycle"),
         std::string::npos);

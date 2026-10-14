@@ -73,17 +73,67 @@ ReflectedPortConstraintSink NodeDescriptionSink::port_constraint_sink() const
         .state = constraints,
         .equal_value_types = +[](
             void* state,
-            ContinuousPortConstraintRef first,
-            ContinuousPortConstraintRef second) {
+            PortConstraintRef first,
+            PortConstraintRef second) {
             static_cast<NodePortConstraints*>(state)
                 ->value_type_equalities.push_back({first, second});
         },
-        .anchor_value_type = +[](
+        .anchor_value_types = +[](
             void* state,
-            ContinuousPortConstraintRef port,
+            PortConstraintRef port,
             ContinuousValueTypeId value_type) {
             static_cast<NodePortConstraints*>(state)
                 ->value_type_anchors.push_back({port, value_type});
+        },
+        .equal_sizes = +[](
+            void* state, PortConstraintRef first, PortConstraintRef second) {
+            static_cast<NodePortConstraints*>(state)
+                ->size_equalities.push_back({first, second});
+        },
+        .anchor_sizes = +[](
+            void* state, PortConstraintRef port, std::size_t size) {
+            static_cast<NodePortConstraints*>(state)
+                ->size_anchors.push_back({port, size});
+        },
+        .equal_paces = +[](
+            void* state, PortConstraintRef first, PortConstraintRef second) {
+            static_cast<NodePortConstraints*>(state)
+                ->pace_equalities.push_back({first, second});
+        },
+        .anchor_paces = +[](
+            void* state, PortConstraintRef port, PortPace pace) {
+            static_cast<NodePortConstraints*>(state)
+                ->pace_anchors.push_back({port, pace});
+        },
+        .equal_histories = +[](
+            void* state, PortConstraintRef first, PortConstraintRef second) {
+            static_cast<NodePortConstraints*>(state)
+                ->history_equalities.push_back({first, second});
+        },
+        .anchor_histories = +[](
+            void* state, PortConstraintRef port, std::size_t history) {
+            static_cast<NodePortConstraints*>(state)
+                ->history_anchors.push_back({port, history});
+        },
+        .equal_latencies = +[](
+            void* state, PortConstraintRef first, PortConstraintRef second) {
+            static_cast<NodePortConstraints*>(state)
+                ->latency_equalities.push_back({first, second});
+        },
+        .anchor_latencies = +[](
+            void* state, PortConstraintRef port, std::size_t latency) {
+            static_cast<NodePortConstraints*>(state)
+                ->latency_anchors.push_back({port, latency});
+        },
+        .equal_orderings = +[](
+            void* state, PortConstraintRef first, PortConstraintRef second) {
+            static_cast<NodePortConstraints*>(state)
+                ->ordering_equalities.push_back({first, second});
+        },
+        .anchor_orderings = +[](
+            void* state, PortConstraintRef port, CoverageOrdering ordering) {
+            static_cast<NodePortConstraints*>(state)
+                ->ordering_anchors.push_back({port, ordering});
         },
     };
 }

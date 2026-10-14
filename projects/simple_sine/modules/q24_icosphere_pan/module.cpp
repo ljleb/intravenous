@@ -82,10 +82,16 @@ struct LearnedHrtfSourceIcosphere
     static constexpr auto inputs()
     {
         return std::array<InputConfig, 3> {
-            sequential_sample_input("in", {.history = input_history}),
+            sequential_sample_input("in"),
             sequential_sample_input("azimuth", {.default_value = 0, .min = -180, .max = 180}),
             sequential_sample_input("elevation", {.default_value = 0, .min = -180, .max = 180}),
         };
+    }
+
+    void constrain_ports(
+        ConstrainPortsContext<LearnedHrtfSourceIcosphere>& ctx) const
+    {
+        ctx.input<"in">().history() = input_history;
     }
 
     static constexpr auto outputs()
@@ -1545,9 +1551,13 @@ struct BaselineFir256
         return std::array<InputConfig, 1> {
             sequential_sample_input("in", {
                 .channel_layout = { .channel_type = ChannelTypeId::stereo },
-                .history = input_history,
             }),
         };
+    }
+
+    void constrain_ports(ConstrainPortsContext<BaselineFir256>& ctx) const
+    {
+        ctx.input<"in">().history() = input_history;
     }
 
     static constexpr auto outputs()

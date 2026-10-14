@@ -146,11 +146,11 @@ and coverage algebra.
 
 ### FractionalGlobalIndex
 
-`FractionalGlobalIndex` is a scalar fixed-point value representing a fractional coordinate in
-the global sample-index domain. It retains the full integer global-index width and adds
-64 fractional bits. A `FractionalGlobalIndex` transported at integer graph position `p` is still
-data located at `p`; its numeric value may point somewhere else and is interpreted as
-a coordinate only by nodes that explicitly use it that way, such as a resampler.
+`FractionalGlobalIndex` is the scalar Q64.64 coordinate of the global sample-index
+domain. It retains the full integer global-index width and adds 64 fractional bits. It
+may locate generated execution/storage or be transported as graph data. A transported
+coordinate's numeric value may point somewhere other than the coordinate where that
+value is stored, as in a resampler's position stream.
 
 ### Port value size
 
@@ -165,24 +165,36 @@ invocation; that quantity is the port's block size.
 
 ### Port pace
 
-A port's **pace** is the exact relative quantity of transported values consumed or
-produced per local logical node step. Different ports of one node may have different
-paces. Pace establishes execution/index-domain relationships; it does not perform
-resampling or otherwise compute new signal values.
+A port's **pace** is a power-of-two relative quantity of transported values consumed
+or produced per local logical node step. It is represented and solved as a signed
+base-2 exponent. Different ports of one node may have different paces. Pace
+establishes execution/index-domain relationships; it does not perform resampling or
+otherwise compute new signal values.
 
 Pace is a graph-resolved realization fact contributed through port constraints and
-connections. Exact integer/rational relationships should be preserved so different
-callback subdivision choices cannot accumulate timing/index drift.
+connections. Connections equate absolute pace exponents, and exponent differences
+around a cycle must sum to zero. Non-power-of-two conversion is explicit resampling or
+coordinate-driven Random Access sampling, not port pace.
+
+### Fractional global coordinate
+
+`FractionalGlobalIndex` is the Q64.64 circular coordinate used to address generated
+work and continuous storage in the shared power-of-two time domain. The same type may
+also be transported as graph data naming a coordinate. Resolved absolute pace
+exponents are initially restricted to `[-64, +64]`; graph realization rejects a
+revision outside that range.
 
 ### Per-port block size
 
 A port's **block size** is the number of transported values presented to or produced by
 that port during one `tick_block()` invocation. Under heterogeneous pacing there is no
 single node-wide block size. The specialized Tick-block context exposes the resolved
-count per port.
+count per port, and that count may be zero when the selected dyadic interval contains
+no position from the port's lattice.
 
-For an FFT-block port, `size() == 2048` and `block_size() == 4` means four transported
-FFT blocks, each containing 2048 frequency values.
+For an FFT-block port, `size() == 513` and `block_size() == 4` means four transported
+FFT blocks, each containing the complete nonredundant complex spectrum of a
+1024-sample real transform.
 
 A Sequential input's **history-inclusive block** is the contiguous view consisting of
 its resolved history immediately followed by the current block. The provisional API
@@ -190,17 +202,19 @@ name is `block_extended()`. It is a Sequential view, not a Region or Coverage;
 GraphJit may alias existing storage or materialize the finite view when contiguity
 requires it.
 
-### Effective local sample rate
+### Audio sample-rate basis, transport cadence, and sample support
 
-A node's **effective local sample rate** is the sample rate of its resolved execution
-rate domain, exposed after pace analysis to declaration/initialization/execution
-contexts. It is not a constant available during `constrain_ports()` because the
-constraint solve determines the domain itself. A node in a 2x oversampled region of a
-48 kHz project observes 96 kHz.
+An audio port's **sample-rate basis** is the physical rate of the time-domain signal it
+represents. Its **transport cadence** is the number of port values per second. Its
+**sample support** is the number or interval of basis samples represented by one value.
+These are distinct: at a 48 kHz basis an overlap FFT with length 1024 and hop 512 has a
+93.75-block/second transport cadence, while every `FFTBlock` represents 1024 samples.
 
-Use **pace** for relative per-port transport quantities and **effective local sample
-rate** for the physical/audio rate seen by the node. They are related by graph
-analysis but are not synonyms.
+A node-wide `ctx.sample_rate` convenience is valid only when its relevant audio ports
+are proven to share one sample-rate basis. A 2x oversampler instead has different input
+and output bases and uses port-specific resolved basis data. These facts are resolved
+after `constrain_ports()`; they are not constants available while constraints are
+being authored.
 
 ## Graph relations and execution structures
 

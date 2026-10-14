@@ -364,15 +364,12 @@ namespace iv {
             } else {
                 if constexpr (has_inputs<Node>) {
                     for (InputConfig const& config : Node::inputs()) {
-                        if (!is_sequential(config)
-                            || port_history_or_zero(config) != 0) return false;
+                        if (!is_sequential(config)) return false;
                     }
                 }
                 if constexpr (has_outputs<Node>) {
                     for (OutputConfig const& config : Node::outputs()) {
-                        if (!is_tick(config)
-                            || port_history_or_zero(config) != 0
-                            || tick_latency_or_zero(config) != 0) return false;
+                        if (!is_tick(config)) return false;
                     }
                 }
                 return true;

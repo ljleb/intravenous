@@ -352,8 +352,8 @@ example:
 - resolved port value types and dynamic value sizes;
 - resolved port paces;
 - resolved history and latency;
-- effective local sample rate;
-- resolved per-port block extents / invocation quantum;
+- resolved audio sample-rate basis, transport cadence, and sample support;
+- resolved per-port block extents for the selected dyadic interval;
 - execution/SCC phase facts that affect callback-visible semantics.
 
 Configured values, `State`, `TockState`, port addresses, and requested

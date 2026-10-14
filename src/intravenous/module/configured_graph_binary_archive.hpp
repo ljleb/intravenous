@@ -220,33 +220,23 @@ inline ChannelLayout read_layout(Reader& r)
 inline void write_input_access(Writer& w, InputAccessConfig const& value)
 {
     w.flag(is_random_access(value));
-    if (auto const* realtime = std::get_if<SequentialInputConfig>(&value)) {
-        w.size(realtime->history);
-    }
 }
 
 inline InputAccessConfig read_input_access(Reader& r)
 {
     if (r.flag()) return RandomAccessInputConfig{};
-    return SequentialInputConfig{.history = r.size()};
+    return SequentialInputConfig{};
 }
 
 inline void write_output_production(Writer& w, OutputProductionConfig const& value)
 {
     w.flag(is_tock(value));
-    if (auto const* realtime = std::get_if<TickOutputConfig>(&value)) {
-        w.size(realtime->history);
-        w.size(realtime->latency);
-    }
 }
 
 inline OutputProductionConfig read_output_production(Reader& r)
 {
     if (r.flag()) return TockOutputConfig{};
-    return TickOutputConfig{
-        .history = r.size(),
-        .latency = r.size(),
-    };
+    return TickOutputConfig{};
 }
 
 inline void write_output_retention(Writer& w, OutputRetention retention)
@@ -420,14 +410,14 @@ inline NodePorts read_ports(Reader& r)
     };
 }
 
-inline void write_port_constraint_ref(
-    Writer& w, ContinuousPortConstraintRef value)
+inline void write_port_constraint_ref(Writer& w, PortConstraintRef value)
 {
     write_enum(w, value.direction);
+    write_enum(w, value.kind);
     w.size(value.port_index);
 }
 
-inline ContinuousPortConstraintRef read_port_constraint_ref(Reader& r)
+inline PortConstraintRef read_port_constraint_ref(Reader& r)
 {
     auto const direction = read_enum<PortConstraintDirection>(r);
     if (direction != PortConstraintDirection::input
@@ -435,8 +425,14 @@ inline ContinuousPortConstraintRef read_port_constraint_ref(Reader& r)
         throw std::runtime_error(
             "configured graph archive has an invalid port-constraint direction");
     }
+    auto const kind = read_enum<PortKind>(r);
+    if (kind != PortKind::sample && kind != PortKind::event) {
+        throw std::runtime_error(
+            "configured graph archive has an invalid port-constraint kind");
+    }
     return {
         .direction = direction,
+        .kind = kind,
         .port_index = r.size(),
     };
 }
@@ -449,7 +445,35 @@ inline void write_port_constraints(Writer& w, NodePortConstraints const& value)
     });
     w.list(value.value_type_anchors, [&](auto const& anchor) {
         write_port_constraint_ref(w, anchor.port);
-        write_enum(w, anchor.value_type);
+        write_enum(w, anchor.value);
+    });
+    auto write_equalities = [&](auto const& equalities) {
+        w.list(equalities, [&](auto const& equality) {
+            write_port_constraint_ref(w, equality.first);
+            write_port_constraint_ref(w, equality.second);
+        });
+    };
+    auto write_sizes = [&](auto const& anchors) {
+        w.list(anchors, [&](auto const& anchor) {
+            write_port_constraint_ref(w, anchor.port);
+            w.size(anchor.value);
+        });
+    };
+    write_equalities(value.size_equalities);
+    write_sizes(value.size_anchors);
+    write_equalities(value.pace_equalities);
+    w.list(value.pace_anchors, [&](auto const& anchor) {
+        write_port_constraint_ref(w, anchor.port);
+        w.pod(anchor.value.exponent());
+    });
+    write_equalities(value.history_equalities);
+    write_sizes(value.history_anchors);
+    write_equalities(value.latency_equalities);
+    write_sizes(value.latency_anchors);
+    write_equalities(value.ordering_equalities);
+    w.list(value.ordering_anchors, [&](auto const& anchor) {
+        write_port_constraint_ref(w, anchor.port);
+        write_enum(w, anchor.value);
     });
 }
 
@@ -473,9 +497,62 @@ inline NodePortConstraints read_port_constraints(Reader& r)
             }
             return ContinuousValueTypeAnchorConstraint{
                 .port = port,
-                .value_type = value_type,
+                .value = value_type,
             };
         });
+    auto read_equalities = [&]<class Constraint>() {
+        return read_list<Constraint>(r, [&] {
+            return Constraint{
+                .first = read_port_constraint_ref(r),
+                .second = read_port_constraint_ref(r),
+            };
+        });
+    };
+    auto read_sizes = [&]<class Constraint>() {
+        return read_list<Constraint>(r, [&] {
+            return Constraint{
+                .port = read_port_constraint_ref(r),
+                .value = r.size(),
+            };
+        });
+    };
+    result.size_equalities =
+        read_equalities.template operator()<ContinuousValueSizeEqualityConstraint>();
+    result.size_anchors =
+        read_sizes.template operator()<ContinuousValueSizeAnchorConstraint>();
+    result.pace_equalities =
+        read_equalities.template operator()<PortPaceEqualityConstraint>();
+    result.pace_anchors = read_list<PortPaceAnchorConstraint>(r, [&] {
+        auto const port = read_port_constraint_ref(r);
+        auto const exponent = r.pod<PortPace::exponent_type>();
+        return PortPaceAnchorConstraint{
+            .port = port,
+            .value = PortPace::from_exponent(exponent),
+        };
+    });
+    result.history_equalities =
+        read_equalities.template operator()<PortHistoryEqualityConstraint>();
+    result.history_anchors =
+        read_sizes.template operator()<PortHistoryAnchorConstraint>();
+    result.latency_equalities =
+        read_equalities.template operator()<PortLatencyEqualityConstraint>();
+    result.latency_anchors =
+        read_sizes.template operator()<PortLatencyAnchorConstraint>();
+    result.ordering_equalities =
+        read_equalities.template operator()<CoverageOrderingEqualityConstraint>();
+    result.ordering_anchors = read_list<CoverageOrderingAnchorConstraint>(r, [&] {
+        auto const port = read_port_constraint_ref(r);
+        auto const ordering = read_enum<CoverageOrdering>(r);
+        if (ordering != CoverageOrdering::unspecified
+            && ordering != CoverageOrdering::sorted) {
+            throw std::runtime_error(
+                "configured graph archive has an invalid Coverage ordering");
+        }
+        return CoverageOrderingAnchorConstraint{
+            .port = port,
+            .value = ordering,
+        };
+    });
     return result;
 }
 

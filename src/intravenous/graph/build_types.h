@@ -24,8 +24,6 @@ namespace iv {
         Sample default_value = 0.0f;
         std::optional<Sample> min {};
         std::optional<Sample> max {};
-        size_t history = 0;
-        size_t latency = 0;
         std::optional<ChannelTypeId> sample_channel_type {};
         std::vector<SourceSpan> source_spans {};
 

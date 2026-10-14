@@ -4,6 +4,7 @@
 #include <intravenous/graph/configured_graph.hpp>
 #include <intravenous/graph/realtime_port_planning.h>
 #include <intravenous/graph_jit/background_evaluation_plan.h>
+#include <intravenous/graph_jit/port_realization.h>
 #include <intravenous/graph_jit/realtime_port_state_plan.h>
 
 #include <cstddef>
@@ -345,6 +346,7 @@ struct ConnectionAnalysisPlan {
 // analyzed and unit-tested before their port contexts are executable.
 std::expected<ConnectionAnalysisPlan, std::string> build_connection_analysis_plan(
     ConfiguredGraph const& graph,
+    ResolvedPortRealization const& port_realization,
     std::size_t kernel_block_size,
     RealtimeStorageCostModel const& cost_model = {},
     // Stack-pressure retries change only realtime storage policy. Supplying

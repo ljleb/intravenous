@@ -1,6 +1,7 @@
 #pragma once
 
 #include <intravenous/node/lifecycle.h>
+#include <intravenous/node/port_constraints.h>
 #include <array>
 #include <numbers>
 
@@ -41,9 +42,14 @@ namespace iv {
         static constexpr auto inputs()
         {
             return std::array {
-                sequential_sample_input("in", {}, {.history = 1}),
+                sequential_sample_input("in"),
                 sequential_sample_input("cutoff"),
             };
+        }
+
+        void constrain_ports(ConstrainPortsContext<SimpleIirHighPass>& ctx) const
+        {
+            ctx.input<"in">().history() = 1;
         }
 
         static constexpr auto outputs()
@@ -79,9 +85,14 @@ namespace iv {
         static constexpr auto inputs()
         {
             return std::array {
-                sequential_sample_input("in", {}, {.history = 1}),
+                sequential_sample_input("in"),
                 sequential_sample_input("cutoff"),
             };
+        }
+
+        void constrain_ports(ConstrainPortsContext<SimpleIirLowPass>& ctx) const
+        {
+            ctx.input<"in">().history() = 1;
         }
 
         static constexpr auto outputs()

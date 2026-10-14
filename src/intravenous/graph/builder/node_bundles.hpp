@@ -564,8 +564,7 @@ NodeBundle::sample_input_descriptor(size_t index) const {
               .name = output.name,
               .value_types = output.value_types,
               .channel_layout = output.channel_layout,
-              .access = is_tick(output) ? InputAccessConfig{SequentialInputConfig{
-                  .history = port_history_or_zero(output)}}
+              .access = is_tick(output) ? InputAccessConfig{SequentialInputConfig{}}
                   : InputAccessConfig{RandomAccessInputConfig{}},
           }};
         } else if constexpr (std::is_same_v<Bundle, ConcreteNodeBundle>) {
@@ -592,8 +591,7 @@ NodeBundle::sample_output_descriptor(size_t index) const {
               .name = input.name,
               .value_types = input.value_types,
               .channel_layout = input.channel_layout,
-              .production = is_sequential(input) ? OutputProductionConfig{TickOutputConfig{
-                  .history = port_history_or_zero(input)}}
+              .production = is_sequential(input) ? OutputProductionConfig{TickOutputConfig{}}
                   : OutputProductionConfig{TockOutputConfig{}},
           }};
         } else if constexpr (std::is_same_v<Bundle, ConcreteNodeBundle>) {
@@ -695,15 +693,13 @@ namespace iv {
 namespace {
 constexpr EventOutputConfig inward_event_output_config(
     EventInputConfig const &config) {
-  return EventOutputConfig{.name = config.name, .type = config.type, .production = is_sequential(config) ? OutputProductionConfig{TickOutputConfig{
-      .history = port_history_or_zero(config)}}
+  return EventOutputConfig{.name = config.name, .type = config.type, .production = is_sequential(config) ? OutputProductionConfig{TickOutputConfig{}}
       : OutputProductionConfig{TockOutputConfig{}}};
 }
 
 constexpr EventInputConfig inward_event_input_config(
     EventOutputConfig const &config) {
-  return EventInputConfig{.name = config.name, .type = config.type, .access = is_tick(config) ? InputAccessConfig{SequentialInputConfig{
-      .history = port_history_or_zero(config)}}
+  return EventInputConfig{.name = config.name, .type = config.type, .access = is_tick(config) ? InputAccessConfig{SequentialInputConfig{}}
       : InputAccessConfig{RandomAccessInputConfig{}}};
 }
 

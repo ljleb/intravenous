@@ -49,6 +49,9 @@ This front owns:
 - `ConstrainPortsContext<Node>`;
 - dynamic continuous-value `size()` constraints;
 - exact `pace()` constraints and pace-domain solving;
+- weighted dyadic pace relations in which each port's authored power-of-two factor is
+  relative to its owning node's logical step, connections equate absolute base-2 pace
+  exponents, and inconsistent exponent sums around cycles are rejected;
 - Sequential-input `history()` constraints;
 - Tick-output `latency()` constraints;
 - Coverage ordering/sortedness constraints;
@@ -57,7 +60,11 @@ This front owns:
   tiled continuous port without affecting event ports;
 - connection-generated constraints between producer and consumer ports;
 - conflict and unresolved-property diagnostics;
-- effective local sample-rate domains after pace resolution;
+- the shared Q64.64 `FractionalGlobalIndex` execution/storage and transported-coordinate
+  domain, the initial supported absolute-exponent range `[-64, +64]`, and realization
+  diagnostics for graphs outside that range;
+- audio sample-rate basis, transport cadence, and sample support as separate resolved
+  facts, with node-wide sample-rate access only for proven homogeneous audio bases;
 - per-port Tick block extents;
 - Sequential `block_extended()` realization;
 - the initial continuous-value registry, including `Sample`, `FractionalGlobalIndex` and
@@ -65,8 +72,9 @@ This front owns:
 - declaration-generated continuous-value identity/metadata/capability domains, with
   value-type-specific storage and authored-access behavior added by the type extension
   rather than by editing central consumer switches;
-- the canonical `FFTBin = std::complex<Sample::storage>` representation and resolved
-  `FFTBlock` bin count;
+- the canonical `FFTBin = std::complex<Sample::storage>` representation and the
+  preliminary real-transform `FFTBlock` layout of `N / 2 + 1` explicit complex bins,
+  including DC and Nyquist;
 - FFT-node realization requirements for backend layout, alignment, padding,
   in-place/destructive operation, scratch storage, canonicalization and normalization,
   so direct library use is selected only when compatible and every other path is
@@ -74,10 +82,13 @@ This front owns:
 - realization-time selection of one concrete type for multi-type ports before storage
   planning/lowering;
 - graph-resolved FFT dimensions and storage-size information;
-- the planned type-safe sample/event port-config representation;
+- the planned type-safe continuous/event port-config representation, with authored
+  `input<Types...>()` / `output<Types...>()` declarations in heterogeneous tuples,
+  scoped typed access/production tokens, and scoped output-retention values;
 - value-type-aware module/subgraph boundary input declarations, without imposing
   Sample-only default/min/max semantics on `FractionalGlobalIndex` or `FFTBlock`;
-- Sequential `neutral_value` / `combine_values` semantics where they affect
+- extension-provided defaults and per-Sequential-input overrides for
+  `neutral_value` / `combine_values` where their reduction algebra affects
   realization and delivery legality.
 
 Coverage ordering is a solved graph property, not only a static producer flag. A node
@@ -111,6 +122,9 @@ Detailed direction:
 [Graph JIT Direction](./graph_jit_direction.md),
 [Random-Access Port Data Direction](./random_access_port_data_direction.md), and
 [Sequential Port Storage And Connection Planning](./sequential_port_storage_planning.md).
+
+Active source migration status:
+[Port Realization Migration Status](./port_realization_migration_status.md).
 
 ## Front 2: batched primitive callbacks and scheduling
 

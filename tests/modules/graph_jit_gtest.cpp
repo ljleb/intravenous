@@ -59,6 +59,20 @@ iv::IndexCoverage index_coverage(
     return result;
 }
 
+std::expected<iv::graph_jit::detail::ConnectionAnalysisPlan, std::string>
+build_connection_analysis_plan(
+    iv::ConfiguredGraph const& graph,
+    std::size_t kernel_block_size,
+    iv::RealtimeStorageCostModel const& cost_model = {})
+{
+    auto port_realization = iv::graph_jit::resolve_port_realization(graph);
+    if (!port_realization) {
+        return std::unexpected(std::move(port_realization.error()));
+    }
+    return iv::graph_jit::detail::build_connection_analysis_plan(
+        graph, *port_realization, kernel_block_size, cost_model);
+}
+
 iv::graph_jit::TickInvocationCall const empty_tick_invocation{};
 constexpr char graph_jit_state_package_id[] = "iv.test.graph_jit.state_context.package";
 constexpr char graph_jit_stateful_module_id[] = "iv.test.graph_jit.state_context.stateful_module";
@@ -2969,8 +2983,13 @@ struct RevisingSampleSource {
 
     static constexpr auto outputs()
     {
-        return std::array{iv::tick_sample_output(
-            "out", {}, {.latency = 1})};
+        return std::array{iv::tick_sample_output("out")};
+    }
+
+    void constrain_ports(
+        iv::ConstrainPortsContext<RevisingSampleSource>& ctx) const
+    {
+        ctx.output<"out">().latency() = 1;
     }
 
     void tick_block(iv::TickBlockContext<RevisingSampleSource> const& ctx) const
@@ -2999,7 +3018,7 @@ struct TickCaptureSource {
             iv::tick_sample_output(
                 "samples",
                 {},
-                {.history = 2, .latency = 1},
+                {},
                 iv::OutputRetention::persisted),
             iv::tick_event_output(
                 "events",
@@ -3007,9 +3026,18 @@ struct TickCaptureSource {
                     .type = iv::EventTypeId::trigger,
                     .max_events_per_index = 0.25,
                 },
-                iv::TickOutputConfig{.history = 2, .latency = 1},
+                iv::TickOutputConfig{},
                 iv::OutputRetention::persisted),
         };
+    }
+
+    void constrain_ports(
+        iv::ConstrainPortsContext<TickCaptureSource>& ctx) const
+    {
+        ctx.output<"samples">().history() = 2;
+        ctx.output<"samples">().latency() = 1;
+        ctx.output<"events">().history() = 2;
+        ctx.output<"events">().latency() = 1;
     }
 
     void tick_block(iv::TickBlockContext<TickCaptureSource> const& ctx) const
@@ -3034,8 +3062,14 @@ struct PersistentRevisingSampleSource {
 
     static constexpr auto outputs()
     {
-        return std::array{iv::tick_sample_output(
-            "out", {}, {.history = 5000, .latency = 2})};
+        return std::array{iv::tick_sample_output("out")};
+    }
+
+    void constrain_ports(
+        iv::ConstrainPortsContext<PersistentRevisingSampleSource>& ctx) const
+    {
+        ctx.output<"out">().history() = 5000;
+        ctx.output<"out">().latency() = 2;
     }
 
     void tick_block(iv::TickBlockContext<PersistentRevisingSampleSource> const& ctx) const
@@ -3060,8 +3094,13 @@ struct TickFallbackSampleSource {
 
     static constexpr auto outputs()
     {
-        return std::array{iv::tick_sample_output(
-            "out", {}, {.latency = 1})};
+        return std::array{iv::tick_sample_output("out")};
+    }
+
+    void constrain_ports(
+        iv::ConstrainPortsContext<TickFallbackSampleSource>& ctx) const
+    {
+        ctx.output<"out">().latency() = 1;
     }
 
     std::size_t max_block_size() const { return 2; }
@@ -3298,14 +3337,19 @@ struct TemporalSampleFeedback {
 
     static constexpr auto inputs()
     {
-        return std::array{iv::sequential_sample_input(
-            "in", {}, {.history = 3})};
+        return std::array{iv::sequential_sample_input("in")};
     }
 
     static constexpr auto outputs()
     {
-        return std::array{iv::tick_sample_output(
-            "out", {}, {.latency = 2})};
+        return std::array{iv::tick_sample_output("out")};
+    }
+
+    void constrain_ports(
+        iv::ConstrainPortsContext<TemporalSampleFeedback>& ctx) const
+    {
+        ctx.input<"in">().history() = 3;
+        ctx.output<"out">().latency() = 2;
     }
 
     void tick_block(iv::TickBlockContext<TemporalSampleFeedback> const& ctx) const
@@ -3351,8 +3395,13 @@ struct RevisingSampleFeedback {
 
     static constexpr auto outputs()
     {
-        return std::array{iv::tick_sample_output(
-            "out", {}, {.latency = 2})};
+        return std::array{iv::tick_sample_output("out")};
+    }
+
+    void constrain_ports(
+        iv::ConstrainPortsContext<RevisingSampleFeedback>& ctx) const
+    {
+        ctx.output<"out">().latency() = 2;
     }
 
     void tick_block(iv::TickBlockContext<RevisingSampleFeedback> const& ctx) const
@@ -3408,8 +3457,13 @@ struct ProjectedRevisingSampleFeedback {
 
     static constexpr auto outputs()
     {
-        return std::array{iv::tick_sample_output(
-            "out", {}, {.latency = 2})};
+        return std::array{iv::tick_sample_output("out")};
+    }
+
+    void constrain_ports(
+        iv::ConstrainPortsContext<ProjectedRevisingSampleFeedback>& ctx) const
+    {
+        ctx.output<"out">().latency() = 2;
     }
 
     void tick_block(
@@ -3688,8 +3742,14 @@ struct HistoryRampSource {
 
     static constexpr auto outputs()
     {
-        return std::array{iv::tick_sample_output(
-            "out", {}, {.history = 3, .latency = 2})};
+        return std::array{iv::tick_sample_output("out")};
+    }
+
+    void constrain_ports(
+        iv::ConstrainPortsContext<HistoryRampSource>& ctx) const
+    {
+        ctx.output<"out">().history() = 3;
+        ctx.output<"out">().latency() = 2;
     }
 
     void tick_block(iv::TickBlockContext<HistoryRampSource> const& ctx) const
@@ -3717,8 +3777,13 @@ struct HistoryConsumerProbe {
 
     static constexpr auto inputs()
     {
-        return std::array{iv::sequential_sample_input(
-            "in", {}, {.history = 5})};
+        return std::array{iv::sequential_sample_input("in")};
+    }
+
+    void constrain_ports(
+        iv::ConstrainPortsContext<HistoryConsumerProbe>& ctx) const
+    {
+        ctx.input<"in">().history() = 5;
     }
 
     static constexpr auto outputs()
@@ -3756,8 +3821,13 @@ struct StereoHistoryConsumerProbe {
             {.channel_layout = {
                 .channel_type = iv::ChannelTypeId::stereo,
                 .sample_layout = iv::SampleStreamLayout::interleaved,
-            }},
-            {.history = 5})};
+            }})};
+    }
+
+    void constrain_ports(
+        iv::ConstrainPortsContext<StereoHistoryConsumerProbe>& ctx) const
+    {
+        ctx.input<"in">().history() = 5;
     }
 
     static constexpr auto outputs()
@@ -3809,8 +3879,13 @@ struct LargeHistoryConsumerProbe {
 
     static constexpr auto inputs()
     {
-        return std::array{iv::sequential_sample_input(
-            "in", {}, {.history = 5000})};
+        return std::array{iv::sequential_sample_input("in")};
+    }
+
+    void constrain_ports(
+        iv::ConstrainPortsContext<LargeHistoryConsumerProbe>& ctx) const
+    {
+        ctx.input<"in">().history() = 5000;
     }
 
     static constexpr auto outputs()
@@ -3841,8 +3916,12 @@ struct FiveSampleDelay {
 
     static constexpr auto outputs()
     {
-        return std::array{iv::tick_sample_output(
-            "out", {}, {.latency = 2})};
+        return std::array{iv::tick_sample_output("out")};
+    }
+
+    void constrain_ports(iv::ConstrainPortsContext<FiveSampleDelay>& ctx) const
+    {
+        ctx.output<"out">().latency() = 2;
     }
 
     constexpr std::size_t internal_latency() const { return 5; }
@@ -4002,8 +4081,13 @@ struct DisconnectedSampleInputProbe {
                  .channel_type = iv::ChannelTypeId::stereo,
                  .sample_layout = iv::SampleStreamLayout::interleaved,
              },
-             .default_value = iv::Sample{0.375f}},
-            {.history = 5})};
+             .default_value = iv::Sample{0.375f}})};
+    }
+
+    void constrain_ports(
+        iv::ConstrainPortsContext<DisconnectedSampleInputProbe>& ctx) const
+    {
+        ctx.input<"in">().history() = 5;
     }
 
     static constexpr auto outputs()
@@ -4229,9 +4313,14 @@ struct RetainedFanInEventFeedbackA {
         return std::array{
             iv::sequential_event_input(
                 "in",
-                iv::EventTypeId::trigger,
-                iv::SequentialInputConfig{.history = 8}),
+                iv::EventTypeId::trigger),
         };
+    }
+
+    void constrain_ports(
+        iv::ConstrainPortsContext<RetainedFanInEventFeedbackA>& ctx) const
+    {
+        ctx.input<"in">().history() = 8;
     }
 
     static constexpr auto outputs()
@@ -4290,8 +4379,13 @@ struct LatentEventFeedbackA {
             iv::EventOutputProperties{
                 .type = iv::EventTypeId::trigger,
                 .max_events_per_index = 0.25,
-            },
-            iv::TickOutputConfig{.latency = 16})};
+            })};
+    }
+
+    void constrain_ports(
+        iv::ConstrainPortsContext<LatentEventFeedbackA>& ctx) const
+    {
+        ctx.output<"out">().latency() = 16;
     }
 
     void tick_block(iv::TickBlockContext<LatentEventFeedbackA> const& ctx) const
@@ -4344,8 +4438,13 @@ struct PersistentLatentEventFeedbackA {
             iv::EventOutputProperties{
                 .type = iv::EventTypeId::trigger,
                 .max_events_per_index = 0.25,
-            },
-            iv::TickOutputConfig{.latency = 320})};
+            })};
+    }
+
+    void constrain_ports(
+        iv::ConstrainPortsContext<PersistentLatentEventFeedbackA>& ctx) const
+    {
+        ctx.output<"out">().latency() = 320;
     }
 
     void tick_block(iv::TickBlockContext<PersistentLatentEventFeedbackA> const& ctx) const
@@ -4389,8 +4488,13 @@ struct PersistentLatentBoundaryEventFeedbackA {
             iv::EventOutputProperties{
                 .type = iv::EventTypeId::boundary,
                 .max_events_per_index = 0.25,
-            },
-            iv::TickOutputConfig{.latency = 320})};
+            })};
+    }
+
+    void constrain_ports(
+        iv::ConstrainPortsContext<PersistentLatentBoundaryEventFeedbackA>& ctx) const
+    {
+        ctx.output<"out">().latency() = 320;
     }
 
     void tick_block(
@@ -4538,13 +4642,18 @@ struct RetainedDualEventFeedbackA {
         return std::array{
             iv::sequential_event_input(
                 "exact",
-                iv::EventTypeId::trigger,
-                iv::SequentialInputConfig{.history = 8}),
+                iv::EventTypeId::trigger),
             iv::sequential_event_input(
                 "converted",
-                iv::EventTypeId::trigger,
-                iv::SequentialInputConfig{.history = 8}),
+                iv::EventTypeId::trigger),
         };
+    }
+
+    void constrain_ports(
+        iv::ConstrainPortsContext<RetainedDualEventFeedbackA>& ctx) const
+    {
+        ctx.input<"exact">().history() = 8;
+        ctx.input<"converted">().history() = 8;
     }
 
     static constexpr auto outputs()
@@ -4690,9 +4799,14 @@ struct RetainedMidiEventConsumer {
         return std::array{
             iv::sequential_event_input(
                 "midi",
-                iv::EventTypeId::midi,
-                iv::SequentialInputConfig{.history = 160}),
+                iv::EventTypeId::midi),
         };
+    }
+
+    void constrain_ports(
+        iv::ConstrainPortsContext<RetainedMidiEventConsumer>& ctx) const
+    {
+        ctx.input<"midi">().history() = 160;
     }
 
     static constexpr auto outputs()
@@ -4840,9 +4954,14 @@ struct RetainedTriggerEventSource {
                 iv::EventOutputProperties{
                     .type = iv::EventTypeId::trigger,
                     .max_events_per_index = 0.5,
-                },
-                iv::TickOutputConfig{.latency = 8}),
+                }),
         };
+    }
+
+    void constrain_ports(
+        iv::ConstrainPortsContext<RetainedTriggerEventSource>& ctx) const
+    {
+        ctx.output<"trigger">().latency() = 8;
     }
 
     void tick_block(iv::TickBlockContext<RetainedTriggerEventSource> const& ctx) const
@@ -4874,9 +4993,14 @@ struct RetainedTriggerEventConsumer {
         return std::array{
             iv::sequential_event_input(
                 "trigger",
-                iv::EventTypeId::trigger,
-                iv::SequentialInputConfig{.history = 8}),
+                iv::EventTypeId::trigger),
         };
+    }
+
+    void constrain_ports(
+        iv::ConstrainPortsContext<RetainedTriggerEventConsumer>& ctx) const
+    {
+        ctx.input<"trigger">().history() = 8;
     }
 
     static constexpr auto outputs()
@@ -4948,9 +5072,14 @@ struct PersistentEventRingConsumer {
         return std::array{
             iv::sequential_event_input(
                 "trigger",
-                iv::EventTypeId::trigger,
-                iv::SequentialInputConfig{.history = 160}),
+                iv::EventTypeId::trigger),
         };
+    }
+
+    void constrain_ports(
+        iv::ConstrainPortsContext<PersistentEventRingConsumer>& ctx) const
+    {
+        ctx.input<"trigger">().history() = 160;
     }
 
     static constexpr auto outputs()
@@ -4990,9 +5119,14 @@ struct PersistentEventFeedbackConsumer {
         return std::array{
             iv::sequential_event_input(
                 "trigger",
-                iv::EventTypeId::trigger,
-                iv::SequentialInputConfig{.history = 320}),
+                iv::EventTypeId::trigger),
         };
+    }
+
+    void constrain_ports(
+        iv::ConstrainPortsContext<PersistentEventFeedbackConsumer>& ctx) const
+    {
+        ctx.input<"trigger">().history() = 320;
     }
 
     static constexpr auto outputs()
@@ -7060,7 +7194,7 @@ TEST_F(GraphJitRuntimeFixture, DisconnectedSampleInputUsesDeclaredDefault)
     auto graph = configured_module_graph(
         *revision, graph_jit_disconnected_sample_input_module_id);
     ASSERT_TRUE(graph);
-    auto analysis = iv::graph_jit::detail::build_connection_analysis_plan(
+    auto analysis = build_connection_analysis_plan(
         *graph, 64);
     ASSERT_TRUE(analysis.has_value())
         << (analysis ? std::string{} : analysis.error());
@@ -7147,7 +7281,7 @@ TEST_F(GraphJitRuntimeFixture, DisconnectedSampleOutputKeepsDeclaredHistory)
     auto graph = configured_module_graph(
         *revision, graph_jit_disconnected_sample_output_module_id);
     ASSERT_TRUE(graph);
-    auto analysis = iv::graph_jit::detail::build_connection_analysis_plan(
+    auto analysis = build_connection_analysis_plan(
         *graph, 64);
     ASSERT_TRUE(analysis.has_value())
         << (analysis ? std::string{} : analysis.error());
@@ -7285,7 +7419,7 @@ TEST_F(GraphJitRuntimeFixture, DirectSampleStorage)
     auto direct_graph = configured_module_graph(
         *revision, graph_jit_direct_sample_module_id);
     ASSERT_TRUE(direct_graph);
-    auto direct_analysis = iv::graph_jit::detail::build_connection_analysis_plan(
+    auto direct_analysis = build_connection_analysis_plan(
         *direct_graph, 64);
     ASSERT_TRUE(direct_analysis.has_value())
         << (direct_analysis ? std::string{} : direct_analysis.error());
@@ -7340,7 +7474,7 @@ TEST_F(GraphJitRuntimeFixture, TransientSampleStorage)
     auto transient_graph = configured_module_graph(
         *revision, graph_jit_transient_sample_module_id);
     ASSERT_TRUE(transient_graph);
-    auto transient_analysis = iv::graph_jit::detail::build_connection_analysis_plan(
+    auto transient_analysis = build_connection_analysis_plan(
         *transient_graph, 64);
     ASSERT_TRUE(transient_analysis.has_value())
         << (transient_analysis ? std::string{} : transient_analysis.error());
@@ -7408,7 +7542,7 @@ TEST_F(GraphJitRuntimeFixture, TransientArenaReuse)
         *revision, graph_jit_reused_sample_arena_module_id);
     ASSERT_TRUE(reused_arena_graph);
     auto reused_arena_analysis =
-        iv::graph_jit::detail::build_connection_analysis_plan(
+        build_connection_analysis_plan(
             *reused_arena_graph, 64);
     ASSERT_TRUE(reused_arena_analysis.has_value())
         << (reused_arena_analysis
@@ -7618,7 +7752,7 @@ TEST_F(GraphJitRuntimeFixture, SampleFanoutConversion)
     auto fanout_graph = configured_module_graph(
         *revision, graph_jit_sample_fanout_conversion_module_id);
     ASSERT_TRUE(fanout_graph);
-    auto fanout_analysis = iv::graph_jit::detail::build_connection_analysis_plan(
+    auto fanout_analysis = build_connection_analysis_plan(
         *fanout_graph, 64);
     ASSERT_TRUE(fanout_analysis.has_value())
         << (fanout_analysis ? std::string{} : fanout_analysis.error());
@@ -7760,7 +7894,7 @@ TEST_F(GraphJitRuntimeFixture, StereoSampleConversion)
         *revision, graph_jit_stereo_conversion_module_id);
     ASSERT_TRUE(stereo_conversion_graph);
     auto stereo_conversion_analysis =
-        iv::graph_jit::detail::build_connection_analysis_plan(
+        build_connection_analysis_plan(
             *stereo_conversion_graph, 64);
     ASSERT_TRUE(stereo_conversion_analysis.has_value())
         << (stereo_conversion_analysis
@@ -7862,7 +7996,7 @@ TEST_F(GraphJitRuntimeFixture, RetainedStereoToMonoHistoryRecordsItsSources)
         *revision, graph_jit_stereo_history_conversion_module_id);
     ASSERT_TRUE(graph);
 
-    auto analysis = iv::graph_jit::detail::build_connection_analysis_plan(
+    auto analysis = build_connection_analysis_plan(
         *graph, 64);
     ASSERT_TRUE(analysis.has_value())
         << (analysis ? std::string{} : analysis.error());
@@ -7929,7 +8063,7 @@ TEST_F(GraphJitRuntimeFixture, SampleOutputUpdateRevisesUnpublishedFrames)
         *revision, graph_jit_sample_revision_module_id);
     ASSERT_TRUE(graph);
 
-    auto analysis = iv::graph_jit::detail::build_connection_analysis_plan(
+    auto analysis = build_connection_analysis_plan(
         *graph, 64);
     ASSERT_TRUE(analysis.has_value())
         << (analysis ? std::string{} : analysis.error());
@@ -8016,7 +8150,7 @@ TEST_F(GraphJitRuntimeFixture, SampleOutputUpdateSurvivesPersistentRingStorage)
         *revision, graph_jit_persistent_sample_revision_module_id);
     ASSERT_TRUE(graph);
 
-    auto analysis = iv::graph_jit::detail::build_connection_analysis_plan(
+    auto analysis = build_connection_analysis_plan(
         *graph, 64);
     ASSERT_TRUE(analysis.has_value())
         << (analysis ? std::string{} : analysis.error());
@@ -8081,7 +8215,7 @@ TEST_F(GraphJitRuntimeFixture, SampleOutputUpdateFeedsComposedFanout)
         *revision, graph_jit_composed_sample_revision_module_id);
     ASSERT_TRUE(graph);
 
-    auto analysis = iv::graph_jit::detail::build_connection_analysis_plan(
+    auto analysis = build_connection_analysis_plan(
         *graph, 64);
     ASSERT_TRUE(analysis.has_value())
         << (analysis ? std::string{} : analysis.error());
@@ -8257,7 +8391,7 @@ TEST_F(GraphJitRuntimeFixture, ConvertedFanoutLatencyWindows)
         *revision, graph_jit_latency_conversion_fanout_module_id);
     ASSERT_TRUE(latency_conversion_fanout_graph);
     auto latency_conversion_analysis =
-        iv::graph_jit::detail::build_connection_analysis_plan(
+        build_connection_analysis_plan(
             *latency_conversion_fanout_graph, 64);
     ASSERT_TRUE(latency_conversion_analysis.has_value())
         << (latency_conversion_analysis
@@ -8406,7 +8540,7 @@ TEST_F(GraphJitRuntimeFixture, ComposedSampleLatency)
         *revision, graph_jit_composed_latency_module_id);
     ASSERT_TRUE(composed_latency_graph);
     auto composed_latency_analysis =
-        iv::graph_jit::detail::build_connection_analysis_plan(
+        build_connection_analysis_plan(
             *composed_latency_graph, 64);
     ASSERT_TRUE(composed_latency_analysis.has_value())
         << (composed_latency_analysis
@@ -8499,7 +8633,7 @@ TEST_F(GraphJitRuntimeFixture, ComposedSampleHistory)
         *revision, graph_jit_composed_history_module_id);
     ASSERT_TRUE(composed_history_graph);
     auto composed_history_analysis =
-        iv::graph_jit::detail::build_connection_analysis_plan(
+        build_connection_analysis_plan(
             *composed_history_graph, 64);
     ASSERT_TRUE(composed_history_analysis.has_value())
         << (composed_history_analysis
@@ -8681,7 +8815,7 @@ TEST_F(GraphJitRuntimeFixture, ProjectedSampleComposition)
         projected_connections,
         projected_base_graph->connections.configured_event_connections());
 
-    auto projected_analysis = iv::graph_jit::detail::build_connection_analysis_plan(
+    auto projected_analysis = build_connection_analysis_plan(
         *projected_graph, 64);
     ASSERT_TRUE(projected_analysis.has_value())
         << (projected_analysis ? std::string{} : projected_analysis.error());
@@ -8808,7 +8942,7 @@ TEST_F(GraphJitRuntimeFixture, DirectEventFlow)
         *revision, graph_jit_direct_event_module_id);
     ASSERT_TRUE(direct_event_graph);
     auto direct_event_analysis =
-        iv::graph_jit::detail::build_connection_analysis_plan(
+        build_connection_analysis_plan(
             *direct_event_graph, 64);
     ASSERT_TRUE(direct_event_analysis.has_value())
         << (direct_event_analysis
@@ -8878,7 +9012,7 @@ TEST_F(GraphJitRuntimeFixture, ExactSampleDetachFeedback)
     auto feedback_graph = configured_sample_feedback_graph(*revision);
     ASSERT_TRUE(feedback_graph);
 
-    auto analysis = iv::graph_jit::detail::build_connection_analysis_plan(
+    auto analysis = build_connection_analysis_plan(
         *feedback_graph, 64);
     ASSERT_TRUE(analysis.has_value())
         << (analysis ? std::string{} : analysis.error());
@@ -9009,7 +9143,7 @@ TEST_F(GraphJitRuntimeFixture, SampleFeedbackSccFansOutToAcyclicIdentityAndConve
     auto feedback_graph = configured_sample_feedback_scc_fanout_graph(*revision);
     ASSERT_TRUE(feedback_graph);
 
-    auto analysis = iv::graph_jit::detail::build_connection_analysis_plan(
+    auto analysis = build_connection_analysis_plan(
         *feedback_graph, 64);
     ASSERT_TRUE(analysis.has_value())
         << (analysis ? std::string{} : analysis.error());
@@ -9107,7 +9241,7 @@ TEST_F(GraphJitRuntimeFixture, MultipleSampleDetachBranchesShareProducerHomeAndF
     auto feedback_graph = configured_multi_branch_sample_feedback_graph(*revision);
     ASSERT_TRUE(feedback_graph);
 
-    auto analysis = iv::graph_jit::detail::build_connection_analysis_plan(
+    auto analysis = build_connection_analysis_plan(
         *feedback_graph, 64);
     ASSERT_TRUE(analysis.has_value())
         << (analysis ? std::string{} : analysis.error());
@@ -9320,7 +9454,7 @@ TEST_F(GraphJitRuntimeFixture, SampleDetachFeedbackPreservesSourceLatencyAndTarg
     auto feedback_graph = configured_temporal_sample_feedback_graph(*revision);
     ASSERT_TRUE(feedback_graph);
 
-    auto analysis = iv::graph_jit::detail::build_connection_analysis_plan(
+    auto analysis = build_connection_analysis_plan(
         *feedback_graph, 64);
     ASSERT_TRUE(analysis.has_value())
         << (analysis ? std::string{} : analysis.error());
@@ -9408,7 +9542,7 @@ TEST_F(GraphJitRuntimeFixture, SampleDetachFeedbackRecopiesAuthoredLatencyHorizo
     auto feedback_graph = configured_revising_sample_feedback_graph(*revision);
     ASSERT_TRUE(feedback_graph);
 
-    auto analysis = iv::graph_jit::detail::build_connection_analysis_plan(
+    auto analysis = build_connection_analysis_plan(
         *feedback_graph, 64);
     ASSERT_TRUE(analysis.has_value())
         << (analysis ? std::string{} : analysis.error());
@@ -9472,7 +9606,7 @@ TEST_F(GraphJitRuntimeFixture, ProjectedSampleDetachFeedbackRecomputesRevisionHo
         configured_projected_revising_sample_feedback_graph(*revision);
     ASSERT_TRUE(feedback_graph);
 
-    auto analysis = iv::graph_jit::detail::build_connection_analysis_plan(
+    auto analysis = build_connection_analysis_plan(
         *feedback_graph, 64);
     ASSERT_TRUE(analysis.has_value())
         << (analysis ? std::string{} : analysis.error());
@@ -9541,7 +9675,7 @@ TEST_F(GraphJitRuntimeFixture, ConvertedSampleDetachFeedback)
     auto feedback_graph = configured_converted_sample_feedback_graph(*revision);
     ASSERT_TRUE(feedback_graph);
 
-    auto analysis = iv::graph_jit::detail::build_connection_analysis_plan(
+    auto analysis = build_connection_analysis_plan(
         *feedback_graph, 64);
     ASSERT_TRUE(analysis.has_value())
         << (analysis ? std::string{} : analysis.error());
@@ -9623,7 +9757,7 @@ TEST_F(GraphJitRuntimeFixture, ZeroInitializedConvertedFeedbackWritesDirectlyToP
         *revision, 6, iv::Sample{0.0f});
     ASSERT_TRUE(feedback_graph);
 
-    auto analysis = iv::graph_jit::detail::build_connection_analysis_plan(
+    auto analysis = build_connection_analysis_plan(
         *feedback_graph, 64);
     ASSERT_TRUE(analysis.has_value())
         << (analysis ? std::string{} : analysis.error());
@@ -9706,7 +9840,7 @@ TEST_F(GraphJitRuntimeFixture, ProjectedSampleDetachFeedback)
     auto feedback_graph = configured_projected_sample_feedback_graph(*revision);
     ASSERT_TRUE(feedback_graph);
 
-    auto analysis = iv::graph_jit::detail::build_connection_analysis_plan(
+    auto analysis = build_connection_analysis_plan(
         *feedback_graph, 64);
     ASSERT_TRUE(analysis.has_value())
         << (analysis ? std::string{} : analysis.error());
@@ -9887,7 +10021,7 @@ TEST_F(GraphJitRuntimeFixture, ProjectedSampleDetachFeedbackAlignsUnequalMixingL
         configured_unequal_latency_projected_sample_feedback_graph(*revision);
     ASSERT_TRUE(feedback_graph);
 
-    auto analysis = iv::graph_jit::detail::build_connection_analysis_plan(
+    auto analysis = build_connection_analysis_plan(
         *feedback_graph, 64);
     ASSERT_TRUE(analysis.has_value())
         << (analysis ? std::string{} : analysis.error());
@@ -9982,7 +10116,7 @@ TEST_F(GraphJitRuntimeFixture, ProjectedSampleDetachFeedbackPermutesTargetChanne
         configured_permuted_unequal_latency_projected_sample_feedback_graph(*revision);
     ASSERT_TRUE(feedback_graph);
 
-    auto analysis = iv::graph_jit::detail::build_connection_analysis_plan(
+    auto analysis = build_connection_analysis_plan(
         *feedback_graph, 64);
     ASSERT_TRUE(analysis.has_value())
         << (analysis ? std::string{} : analysis.error());
@@ -10243,7 +10377,7 @@ TEST_F(GraphJitRuntimeFixture, ExactTypeEventDetachFeedback)
     auto feedback_graph = configured_event_feedback_graph(*revision);
     ASSERT_TRUE(feedback_graph);
 
-    auto analysis = iv::graph_jit::detail::build_connection_analysis_plan(
+    auto analysis = build_connection_analysis_plan(
         *feedback_graph, 64);
     ASSERT_TRUE(analysis.has_value())
         << (analysis ? std::string{} : analysis.error());
@@ -10420,7 +10554,7 @@ TEST_F(GraphJitRuntimeFixture, EventFanInStagesAcyclicIngressIntoFeedbackScc)
     auto graph = configured_staged_event_fan_in_graph(*revision);
     ASSERT_TRUE(graph);
 
-    auto analysis = iv::graph_jit::detail::build_connection_analysis_plan(
+    auto analysis = build_connection_analysis_plan(
         *graph, 64);
     ASSERT_TRUE(analysis.has_value())
         << (analysis ? std::string{} : analysis.error());
@@ -10499,7 +10633,7 @@ TEST_F(GraphJitRuntimeFixture, EventFeedbackSccConsumesRetainedAndConvertedHisto
     auto feedback_graph = configured_retained_converted_event_feedback_graph(*revision);
     ASSERT_TRUE(feedback_graph);
 
-    auto analysis = iv::graph_jit::detail::build_connection_analysis_plan(
+    auto analysis = build_connection_analysis_plan(
         *feedback_graph, 64);
     ASSERT_TRUE(analysis.has_value())
         << (analysis ? std::string{} : analysis.error());
@@ -10844,7 +10978,7 @@ TEST_F(GraphJitRuntimeFixture, FeedForwardEventFanInMergesSlicedSourcesAndFansOu
     auto graph = configured_merged_feed_forward_event_graph(*revision);
     ASSERT_TRUE(graph);
 
-    auto analysis = iv::graph_jit::detail::build_connection_analysis_plan(
+    auto analysis = build_connection_analysis_plan(
         *graph, 64);
     ASSERT_TRUE(analysis.has_value())
         << (analysis ? std::string{} : analysis.error());
@@ -10895,7 +11029,7 @@ TEST_F(GraphJitRuntimeFixture, FeedForwardEventFanInHomeUsesPlannedCapacity)
 {
     auto graph = configured_bounded_merged_feed_forward_event_graph(*revision);
     ASSERT_TRUE(graph);
-    auto analysis = iv::graph_jit::detail::build_connection_analysis_plan(
+    auto analysis = build_connection_analysis_plan(
         *graph, 64);
     ASSERT_TRUE(analysis.has_value())
         << (analysis ? std::string{} : analysis.error());
@@ -10947,7 +11081,7 @@ TEST_F(GraphJitRuntimeFixture, FeedForwardEventFanInRejectsUnavoidableLocalStack
 
     // Connection analysis no longer invents producer-local fan-in buffers, so
     // the hard stack failure belongs to lowering where those buffers exist.
-    auto analysis = iv::graph_jit::detail::build_connection_analysis_plan(
+    auto analysis = build_connection_analysis_plan(
         *graph,
         64,
         iv::RealtimeStorageCostModel{
@@ -10980,7 +11114,7 @@ TEST_F(GraphJitRuntimeFixture, FeedForwardEventFanInConvertsAfterMerge)
 {
     auto graph = configured_merged_converted_event_graph(*revision);
     ASSERT_TRUE(graph);
-    auto analysis = iv::graph_jit::detail::build_connection_analysis_plan(
+    auto analysis = build_connection_analysis_plan(
         *graph, 64);
     ASSERT_TRUE(analysis.has_value())
         << (analysis ? std::string{} : analysis.error());
@@ -11030,7 +11164,7 @@ TEST_F(GraphJitRuntimeFixture, FeedForwardEventFanInTargetHistoryUsesRetainedPro
 {
     auto graph = configured_merged_target_history_event_graph(*revision);
     ASSERT_TRUE(graph);
-    auto analysis = iv::graph_jit::detail::build_connection_analysis_plan(
+    auto analysis = build_connection_analysis_plan(
         *graph, 64);
     ASSERT_TRUE(analysis.has_value())
         << (analysis ? std::string{} : analysis.error());
@@ -11083,7 +11217,7 @@ TEST_F(GraphJitRuntimeFixture, FeedForwardEventFanInCompactCarryMigrates)
 {
     auto graph = configured_merged_retained_event_graph(*revision, false);
     ASSERT_TRUE(graph);
-    auto analysis = iv::graph_jit::detail::build_connection_analysis_plan(
+    auto analysis = build_connection_analysis_plan(
         *graph, 64);
     ASSERT_TRUE(analysis.has_value())
         << (analysis ? std::string{} : analysis.error());
@@ -11229,7 +11363,7 @@ TEST_F(GraphJitRuntimeFixture, FeedForwardEventFanInPersistentRingRetainsBursts)
 {
     auto graph = configured_merged_retained_event_graph(*revision, true);
     ASSERT_TRUE(graph);
-    auto analysis = iv::graph_jit::detail::build_connection_analysis_plan(
+    auto analysis = build_connection_analysis_plan(
         *graph, 64);
     ASSERT_TRUE(analysis.has_value())
         << (analysis ? std::string{} : analysis.error());
@@ -11276,7 +11410,7 @@ TEST_F(GraphJitRuntimeFixture, EventFeedbackSccFansOutToAcyclicConsumer)
         configured_event_feedback_scc_external_fanout_graph(*revision);
     ASSERT_TRUE(feedback_graph);
 
-    auto analysis = iv::graph_jit::detail::build_connection_analysis_plan(
+    auto analysis = build_connection_analysis_plan(
         *feedback_graph, 64);
     ASSERT_TRUE(analysis.has_value())
         << (analysis ? std::string{} : analysis.error());
@@ -11359,7 +11493,7 @@ TEST_F(GraphJitRuntimeFixture, EventFeedbackSccRetainsAuthoredFutureEvents)
         graph_jit_event_feedback_b_id);
     ASSERT_TRUE(feedback_graph);
 
-    auto analysis = iv::graph_jit::detail::build_connection_analysis_plan(
+    auto analysis = build_connection_analysis_plan(
         *feedback_graph, 64);
     ASSERT_TRUE(analysis.has_value())
         << (analysis ? std::string{} : analysis.error());
@@ -11519,7 +11653,7 @@ TEST_F(GraphJitRuntimeFixture, EventFeedbackSccPersistentRingRetainsAuthoredFutu
         graph_jit_event_feedback_b_id);
     ASSERT_TRUE(feedback_graph);
 
-    auto analysis = iv::graph_jit::detail::build_connection_analysis_plan(
+    auto analysis = build_connection_analysis_plan(
         *feedback_graph, 64);
     ASSERT_TRUE(analysis.has_value())
         << (analysis ? std::string{} : analysis.error());
@@ -11677,7 +11811,7 @@ TEST_F(GraphJitRuntimeFixture, EventFeedbackSccConvertsFanoutToAcyclicConsumer)
         graph_jit_boundary_event_feedback_b_id);
     ASSERT_TRUE(feedback_graph);
 
-    auto analysis = iv::graph_jit::detail::build_connection_analysis_plan(
+    auto analysis = build_connection_analysis_plan(
         *feedback_graph, 64);
     ASSERT_TRUE(analysis.has_value())
         << (analysis ? std::string{} : analysis.error());
@@ -11762,7 +11896,7 @@ TEST_F(GraphJitRuntimeFixture, EventFeedbackSccRetainsOutboundTargetHistory)
         "iv.test.graph_jit.state_context.retained_trigger_event_consumer");
     ASSERT_TRUE(feedback_graph);
 
-    auto analysis = iv::graph_jit::detail::build_connection_analysis_plan(
+    auto analysis = build_connection_analysis_plan(
         *feedback_graph, 64);
     ASSERT_TRUE(analysis.has_value())
         << (analysis ? std::string{} : analysis.error());
@@ -11908,7 +12042,7 @@ TEST_F(GraphJitRuntimeFixture, EventFeedbackSccComposesLatencyHistoryAndConversi
         graph_jit_boundary_event_feedback_b_id);
     ASSERT_TRUE(feedback_graph);
 
-    auto analysis = iv::graph_jit::detail::build_connection_analysis_plan(
+    auto analysis = build_connection_analysis_plan(
         *feedback_graph, 64);
     ASSERT_TRUE(analysis.has_value())
         << (analysis ? std::string{} : analysis.error());
@@ -12065,7 +12199,7 @@ TEST_F(GraphJitRuntimeFixture, EventFeedbackSccPersistentRingRetainsOutboundTarg
         "iv.test.graph_jit.state_context.persistent_event_feedback_consumer");
     ASSERT_TRUE(feedback_graph);
 
-    auto analysis = iv::graph_jit::detail::build_connection_analysis_plan(
+    auto analysis = build_connection_analysis_plan(
         *feedback_graph, 64);
     ASSERT_TRUE(analysis.has_value())
         << (analysis ? std::string{} : analysis.error());
@@ -12330,7 +12464,7 @@ TEST_F(GraphJitRuntimeFixture, TransientEventSlicing)
         *revision, graph_jit_transient_event_module_id);
     ASSERT_TRUE(transient_event_graph);
     auto transient_event_analysis =
-        iv::graph_jit::detail::build_connection_analysis_plan(
+        build_connection_analysis_plan(
             *transient_event_graph, 64);
     ASSERT_TRUE(transient_event_analysis.has_value())
         << (transient_event_analysis
@@ -12421,7 +12555,7 @@ TEST_F(GraphJitRuntimeFixture, ConvertedEventFanout)
         *revision, graph_jit_converted_event_fanout_module_id);
     ASSERT_TRUE(converted_event_graph);
     auto converted_event_analysis =
-        iv::graph_jit::detail::build_connection_analysis_plan(
+        build_connection_analysis_plan(
             *converted_event_graph, 64);
     ASSERT_TRUE(converted_event_analysis.has_value())
         << (converted_event_analysis
@@ -12505,7 +12639,7 @@ TEST_F(GraphJitRuntimeFixture, CompactRetainedEvents)
         *revision, graph_jit_retained_event_module_id);
     ASSERT_TRUE(retained_event_graph);
     auto retained_event_analysis =
-        iv::graph_jit::detail::build_connection_analysis_plan(
+        build_connection_analysis_plan(
             *retained_event_graph, 64);
     ASSERT_TRUE(retained_event_analysis.has_value())
         << (retained_event_analysis
@@ -12649,7 +12783,7 @@ TEST_F(GraphJitRuntimeFixture, PersistentEventRing)
         *revision, graph_jit_persistent_event_ring_module_id);
     ASSERT_TRUE(persistent_event_ring_graph);
     auto persistent_event_ring_analysis =
-        iv::graph_jit::detail::build_connection_analysis_plan(
+        build_connection_analysis_plan(
             *persistent_event_ring_graph, 64);
     ASSERT_TRUE(persistent_event_ring_analysis.has_value())
         << (persistent_event_ring_analysis
@@ -12801,7 +12935,7 @@ TEST_F(GraphJitRuntimeFixture, RetainedConvertedEventFanout)
         *revision, graph_jit_retained_converted_event_fanout_module_id);
     ASSERT_TRUE(retained_converted_event_graph);
     auto retained_converted_event_analysis =
-        iv::graph_jit::detail::build_connection_analysis_plan(
+        build_connection_analysis_plan(
             *retained_converted_event_graph, 64);
     ASSERT_TRUE(retained_converted_event_analysis.has_value())
         << (retained_converted_event_analysis
@@ -12955,7 +13089,7 @@ TEST_F(GraphJitRuntimeFixture, SampleHistoryCarryAndMigration)
     auto history_graph = configured_module_graph(
         *revision, graph_jit_history_fanout_module_id);
     ASSERT_TRUE(history_graph);
-    auto history_analysis = iv::graph_jit::detail::build_connection_analysis_plan(
+    auto history_analysis = build_connection_analysis_plan(
         *history_graph, 64);
     ASSERT_TRUE(history_analysis.has_value())
         << (history_analysis ? std::string{} : history_analysis.error());
@@ -13095,7 +13229,7 @@ TEST_F(GraphJitRuntimeFixture, PersistentSampleHistory)
         *revision, graph_jit_persistent_history_module_id);
     ASSERT_TRUE(persistent_history_graph);
     auto persistent_history_analysis =
-        iv::graph_jit::detail::build_connection_analysis_plan(
+        build_connection_analysis_plan(
             *persistent_history_graph, 64);
     ASSERT_TRUE(persistent_history_analysis.has_value())
         << (persistent_history_analysis

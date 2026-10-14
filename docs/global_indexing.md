@@ -51,6 +51,20 @@ Buffer offsets, frame counts, storage offsets, compiler execution positions, que
 cursors, capture sequences, generation numbers, and other non-timeline integers remain
 ordinary linear integer types.
 
+## Fractional global coordinates
+
+`FractionalGlobalIndex` extends the same circular global domain with 64 binary
+fractional bits. It is the Q64.64 coordinate used to address multirate execution and
+continuous storage, and it may also be transported as ordinary graph data whose value
+names a coordinate. Those are contextual roles of one number rather than distinct
+coordinate concepts.
+
+A resolved absolute pace exponent `+k` selects a lattice using `k` fractional bits; a
+negative exponent selects an aligned subset of integer project positions. The initial
+realizable exponent range is `[-64, +64]`, and graph compilation rejects a revision
+outside it. Port pace constrains which `FractionalGlobalIndex` values belong to a
+particular execution/storage lattice; it does not define another index type.
+
 ## Finite ranges
 
 `GlobalIndexRange` is the half-open modular range:
@@ -122,14 +136,16 @@ The integer indexing vocabulary is therefore:
 ```text
 GlobalIndex
 GlobalIndexRange
+FractionalGlobalIndex
+FractionalGlobalIndexRange
 IndexCoverage
 SampleRegion
 SampleCoverage
 ```
 
-The planned Q64.64 continuous port value is named `FractionalGlobalIndex`. It is data
-transported at an integer `GlobalIndex`; it does not replace the integer coordinate
-used to locate that data.
+`FractionalGlobalIndex` may itself locate execution/storage or be transported as a
+continuous port value. When transported, its value may name a coordinate other than
+the `FractionalGlobalIndex` position at which it is stored.
 
 ## Lowering, persistence, and reload
 

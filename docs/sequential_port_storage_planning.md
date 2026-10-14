@@ -101,9 +101,11 @@ The checked-in Tick path still assumes one common block size across every sequen
 sample input/output. Planned port pacing removes that assumption.
 
 Port pace is resolved by GraphJit from the node's `constrain_ports()` relations and
-graph connections before storage planning. It is an exact relative transport count,
-not resampling. A rate-changing node may therefore consume and produce different
-numbers of values in one logical invocation.
+graph connections before storage planning. It is a power-of-two transport factor,
+represented and solved as a signed base-2 exponent, not resampling. Generated Tick
+execution selects one half-open interval in the shared dyadic global-time domain. A
+rate-changing node may therefore consume and produce different numbers of values in
+that same temporal interval, including zero values on a sufficiently slow port.
 
 The specialized `TickBlockContext<Node>` should expose the resolved amount per port:
 
@@ -113,9 +115,9 @@ auto output_count = ctx.output<"out">().block_size();
 ```
 
 The corresponding block/span accessor covers that same number of transported values.
-For scalar `Sample`, this is the number of samples. For a future FFT-block port,
-`block_size()` is the number of FFT blocks while `size()` is the number of frequency
-values in each block.
+For scalar `Sample`, this is the number of samples. For an FFT-block port,
+`block_size()` is the number of FFT blocks while `size()` is the number of complex
+frequency bins in each block.
 
 A Sequential input whose resolved history is nonzero should additionally provide a
 contiguous history-inclusive block view, provisionally named `block_extended()`.
@@ -139,10 +141,13 @@ STFT with hop 512
     fft_output.block_size()  = K
 ```
 
-GraphJit chooses a legal logical invocation quantum and computes these counts from
-resolved pace ratios. It must preserve exact global-index correspondence across root
-callback subdivision; pace arithmetic should therefore remain exact rather than
-floating-point. Resampling remains explicit DSP and is not implied by pace.
+GraphJit computes these counts from the selected dyadic interval and each port's
+resolved exponent. The exact Q64.64 execution coordinate preserves correspondence
+across arbitrary root callback subdivision without retaining a partial actor firing
+between callbacks. A port may legitimately receive zero values for an interval;
+algorithms needing earlier values use declared history and `block_extended()`.
+Resampling and non-power-of-two conversion remain explicit DSP and are not implied by
+pace.
 
 A node defining pointwise `tick()` may be lowered only when the configured graph
 revision resolves its relevant sequential ports to a compatible equal pace. That
@@ -152,7 +157,10 @@ and reports a diagnostic rather than requiring source introspection to reject th
 definition. Nodes that can legitimately operate with heterogeneous paces should
 implement native adaptive `tick_block()`.
 
-Resolved pace domains also determine each node's effective local sample rate.
+Resolved pace domains determine transported-value cadence. Audio sample-rate basis and
+the sample support represented by one value are separate realization facts. A
+node-wide `ctx.sample_rate` convenience is legal only when the relevant audio ports are
+proven to share one basis; otherwise the node uses port-specific resolved basis data.
 Declaration, initialization, and execution contexts should observe that effective
 rate: a node in a 2x oversampled region sees 2x the project/device base rate. This is
 necessary for rate-dependent filters and other DSP to remain correct.

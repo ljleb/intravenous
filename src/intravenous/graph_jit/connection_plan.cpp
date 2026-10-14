@@ -198,6 +198,7 @@ void append_realtime_port_state(
 void inventory_realtime_port_states(
     NodePorts const& ports,
     NodeBundleHandle bundle,
+    ResolvedPortRealization const& realization,
     std::optional<StableConcreteNodeId> const& stable_node,
     RealtimePortStateRequirements& requirements)
 {
@@ -230,7 +231,7 @@ void inventory_realtime_port_states(
             input.name,
             input.channel_layout,
             RealtimePortStateRole::sequential_input_history,
-            port_history_or_zero(input));
+            realization.input(bundle, index).history);
     }
 
     auto const event_inputs = ports.event_inputs();
@@ -244,7 +245,7 @@ void inventory_realtime_port_states(
             input.name,
             std::nullopt,
             RealtimePortStateRole::sequential_input_history,
-            port_history_or_zero(input),
+            realization.event_input(bundle, index).history,
             stable_node);
     }
 
@@ -259,14 +260,14 @@ void inventory_realtime_port_states(
             output.name,
             output.channel_layout,
             RealtimePortStateRole::tick_output_history,
-            port_history_or_zero(output));
+            realization.output(bundle, index).history);
         append_sample_states(
             port,
             PortDirection::output,
             output.name,
             output.channel_layout,
             RealtimePortStateRole::tick_output_latency,
-            tick_latency_or_zero(output));
+            realization.output(bundle, index).latency);
     }
 
     auto const event_outputs = ports.event_outputs();
@@ -281,7 +282,7 @@ void inventory_realtime_port_states(
             output.name,
             std::nullopt,
             RealtimePortStateRole::tick_output_history,
-            port_history_or_zero(output),
+            realization.event_output(bundle, index).history,
             stable_node);
         append_realtime_port_state(
             requirements,
@@ -290,13 +291,14 @@ void inventory_realtime_port_states(
             output.name,
             std::nullopt,
             RealtimePortStateRole::tick_output_latency,
-            tick_latency_or_zero(output),
+            realization.event_output(bundle, index).latency,
             stable_node);
     }
 }
 
 std::expected<void, std::string> inventory_nodes(
     ConfiguredGraph const& graph,
+    ResolvedPortRealization const& realization,
     ConnectionAnalysisPlan& plan)
 {
     plan.boundary_bundle = graph.public_ports.boundary_handle();
@@ -343,6 +345,7 @@ std::expected<void, std::string> inventory_nodes(
             inventory_realtime_port_states(
                 *view.ports,
                 current,
+                realization,
                 stable_identity,
                 plan.realtime_port_states);
         });
@@ -399,6 +402,7 @@ void append_dependency(
 
 std::expected<void, std::string> inventory_sample_connections(
     ConfiguredGraph const& graph,
+    ResolvedPortRealization const& realization,
     ConnectionAnalysisPlan& plan)
 {
     auto const connections = graph.connections.configured_sample_connections();
@@ -437,7 +441,8 @@ std::expected<void, std::string> inventory_sample_connections(
             auto const target = graph.node_bundles.resolve_sample_input(
                 connection_plan.target_port).config;
             connection_plan.target_layout = target.channel_layout;
-            connection_plan.target_history = port_history_or_zero(target);
+            connection_plan.target_history =
+                realization.input(first_target.bundle, first_target.port).history;
             if (connection.detach) {
                 if (connection.detach->loop_extra_latency == 0)
                     return std::unexpected(
@@ -458,8 +463,10 @@ std::expected<void, std::string> inventory_sample_connections(
                     source_channel.bundle, PortKind::sample, source_channel.port};
                 auto const source =
                     graph.node_bundles.resolve_sample_output(source_port).config;
-                auto const source_history = port_history_or_zero(source);
-                auto const source_latency = tick_latency_or_zero(source);
+                auto const& resolved_source =
+                    realization.output(source_channel.bundle, source_channel.port);
+                auto const source_history = resolved_source.history;
+                auto const source_latency = resolved_source.latency;
                 auto const production = source_production(source.production);
                 auto delivery = connection_delivery(
                     production,
@@ -738,6 +745,7 @@ std::expected<void, std::string> normalize_sample_target_projections(
 
 std::expected<void, std::string> inventory_event_connections(
     ConfiguredGraph const& graph,
+    ResolvedPortRealization const& realization,
     ConnectionAnalysisPlan& plan)
 {
     auto const connections = graph.connections.configured_event_connections();
@@ -763,8 +771,10 @@ std::expected<void, std::string> inventory_event_connections(
                     source_id.bundle, PortKind::event, source_id.port};
                 auto const source =
                     graph.node_bundles.resolve_event_output(source_port).config;
-                auto const history = port_history_or_zero(source);
-                auto const latency = tick_latency_or_zero(source);
+                auto const& resolved_source =
+                    realization.event_output(source_id.bundle, source_id.port);
+                auto const history = resolved_source.history;
+                auto const latency = resolved_source.latency;
                 connection_plan.source_history = std::max(
                     connection_plan.source_history, history);
                 connection_plan.source_latency = std::max(
@@ -794,7 +804,8 @@ std::expected<void, std::string> inventory_event_connections(
                     target_id.bundle, PortKind::event, target_id.port};
                 auto const target =
                     graph.node_bundles.resolve_event_input(target_port).config;
-                auto const history = port_history_or_zero(target);
+                auto const history =
+                    realization.event_input(target_id.bundle, target_id.port).history;
                 connection_plan.target_history = std::max(
                     connection_plan.target_history, history);
                 connection_plan.target_plans.push_back(EventTargetPlan{
@@ -1426,6 +1437,7 @@ std::expected<BackgroundEvaluationPlan, std::string> build_semantic_background_p
 
 std::expected<void, std::string> populate_background_topology(
     ConfiguredGraph const& graph,
+    ResolvedPortRealization const& realization,
     ConnectionAnalysisPlan const& connections,
     BackgroundEvaluationPlan& plan,
     std::size_t kernel_block_size)
@@ -1634,12 +1646,16 @@ std::expected<void, std::string> populate_background_topology(
                 name = config.name;
                 sample_layout = config.channel_layout;
                 neutral = config.neutral_value;
-                sequential_history = port_history_or_zero(config);
+                sequential_history =
+                    realization.input(
+                        port.node_bundle_handle, port.port_index).history;
             } else {
                 auto const config = graph.node_bundles.resolve_event_input(port).config;
                 name = config.name;
                 event_type = config.type;
-                sequential_history = port_history_or_zero(config);
+                sequential_history =
+                    realization.event_input(
+                        port.node_bundle_handle, port.port_index).history;
             }
         } else {
             if (port.port_kind == PortKind::sample) {
@@ -1647,16 +1663,20 @@ std::expected<void, std::string> populate_background_topology(
                 name = config.name;
                 retention = config.retention;
                 sample_layout = config.channel_layout;
-                output_history = port_history_or_zero(config);
-                output_latency = tick_latency_or_zero(config);
+                auto const& resolved = realization.output(
+                    port.node_bundle_handle, port.port_index);
+                output_history = resolved.history;
+                output_latency = resolved.latency;
             } else {
                 auto const config = graph.node_bundles.resolve_event_output(port).config;
                 name = config.name;
                 retention = config.retention;
                 event_type = config.type;
                 max_events_per_index = config.max_events_per_index;
-                output_history = port_history_or_zero(config);
-                output_latency = tick_latency_or_zero(config);
+                auto const& resolved = realization.event_output(
+                    port.node_bundle_handle, port.port_index);
+                output_history = resolved.history;
+                output_latency = resolved.latency;
             }
         }
 
@@ -3911,6 +3931,7 @@ std::expected<void, std::string> plan_event_groups(
 
 std::expected<ConnectionAnalysisPlan, std::string> build_connection_analysis_plan(
     ConfiguredGraph const& graph,
+    ResolvedPortRealization const& port_realization,
     std::size_t kernel_block_size,
     RealtimeStorageCostModel const& cost_model,
     BackgroundEvaluationPlan const* retained_background_plan)
@@ -3921,16 +3942,18 @@ std::expected<ConnectionAnalysisPlan, std::string> build_connection_analysis_pla
     }
 
     ConnectionAnalysisPlan plan;
-    if (auto inventory = inventory_nodes(graph, plan); !inventory) {
+    if (auto inventory = inventory_nodes(graph, port_realization, plan); !inventory) {
         return std::unexpected(std::move(inventory.error()));
     }
-    if (auto samples = inventory_sample_connections(graph, plan); !samples) {
+    if (auto samples = inventory_sample_connections(
+            graph, port_realization, plan); !samples) {
         return std::unexpected(std::move(samples.error()));
     }
     if (auto projections = normalize_sample_target_projections(graph, plan); !projections) {
         return std::unexpected(std::move(projections.error()));
     }
-    if (auto events = inventory_event_connections(graph, plan); !events) {
+    if (auto events = inventory_event_connections(
+            graph, port_realization, plan); !events) {
         return std::unexpected(std::move(events.error()));
     }
     if (auto replay = derive_contextual_replayability(graph, plan); !replay) {
@@ -3965,7 +3988,7 @@ std::expected<ConnectionAnalysisPlan, std::string> build_connection_analysis_pla
     }
     if (!retained_background_plan) {
         if (auto populated = populate_background_topology(
-                graph, plan, plan.background, kernel_block_size);
+                graph, port_realization, plan, plan.background, kernel_block_size);
             !populated) {
             return std::unexpected(std::move(populated.error()));
         }

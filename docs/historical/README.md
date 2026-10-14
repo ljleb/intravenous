@@ -64,6 +64,10 @@ These documents are retained because they record deleted architectures, supersed
 
 - [Superseded Linear And Saturating Global Index Semantics](./linear_global_index_semantics.md)
 - [Superseded Temporary-Adapter Coordination Policy](./implementation_fronts_temporary_adapter_policy.md)
+- [Historical Sample-Only Port Configuration Sketch](./sample_port_config_before_typed_continuous_api.md)
+- [Superseded Rational Port Pace And SDF Scheduling Direction](./rational_port_pace_and_sdf_scheduling.md)
+- [Superseded Variable FFTBlock Spectrum Layout](./variable_fftblock_spectrum_layout.md)
+- [Superseded Separate Dyadic Execution Index](./separate_dyadic_execution_index.md)
 - [LLVM Module Reload Migration Log](./llvm_module_reload_migration.md)
 - [Module Builder Migration](./module_builder_migration.md)
 - [Phase 4 constexpr migration scope](./phase4_constexpr_migration_scope.md)

@@ -135,6 +135,9 @@ add_iv_gtest(
     intravenous_port_realization_tests
     port_realization_gtest.cpp)
 add_iv_gtest(
+    intravenous_global_index_tests
+    global_index_gtest.cpp)
+add_iv_gtest(
     intravenous_realtime_port_state_transition_tests
     realtime_port_state_transition_gtest.cpp)
 add_iv_gtest(

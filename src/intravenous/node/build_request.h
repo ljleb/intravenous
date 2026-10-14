@@ -739,7 +739,8 @@ void describe_node(void const* node_data, NodeDescriptionSink& sink)
     static_assert(replay_declaration_is_valid_v<Node>,
         "intrinsically replayable nodes must author tick() (not tick_block()), "
         "have no State/TockState or RandomAccess inputs, and declare only "
-        "pointwise Sequential inputs and Tick outputs with zero history/latency");
+        "Sequential inputs and Tick outputs; resolved timing is validated by "
+        "the whole-graph planner");
     sink.set_internal_latency(get_internal_latency(node));
     sink.set_intrinsically_replayable(intrinsically_replayable_v<Node>);
     sink.set_maximum_block_size(get_max_block_size(node));
@@ -759,7 +760,8 @@ NodeBuildRequest make_node_build_request(Node const& node)
     static_assert(replay_declaration_is_valid_v<Value>,
         "intrinsically replayable nodes must author tick() (not tick_block()), "
         "have no State/TockState or RandomAccess inputs, and declare only "
-        "pointwise Sequential inputs and Tick outputs with zero history/latency");
+        "Sequential inputs and Tick outputs; resolved timing is validated by "
+        "the whole-graph planner");
     // Emit the build-local record in the LLVM module.  The builder consumes
     // it synchronously and retains only copied data and the NodeCodeKey.
     auto const* record = &node_compiler_record<Value>;

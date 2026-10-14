@@ -32,14 +32,22 @@ struct ConstrainedArchiveNode {
 
     static constexpr auto inputs()
     {
-        return std::array{iv::sequential_sample_input(
-            "input", iv::SampleInputProperties{.value_types = domain})};
+        return std::array<iv::InputConfig, 2>{
+            iv::sequential_sample_input(
+                "input", iv::SampleInputProperties{.value_types = domain}),
+            iv::sequential_event_input(
+                "event_input", iv::EventTypeId::trigger),
+        };
     }
 
     static constexpr auto outputs()
     {
-        return std::array{iv::tick_sample_output(
-            "output", iv::SampleOutputProperties{.value_types = domain})};
+        return std::array<iv::OutputConfig, 2>{
+            iv::tick_sample_output(
+                "output", iv::SampleOutputProperties{.value_types = domain}),
+            iv::tick_event_output(
+                "event_output", iv::EventTypeId::trigger),
+        };
     }
 
     void constrain_ports(
@@ -47,6 +55,15 @@ struct ConstrainedArchiveNode {
     {
         context.output<"output">().value_type()
             = context.input<"input">().value_type();
+        context.output<"output">().pace()
+            = context.input<"input">().pace();
+        context.input<"input">().pace() = 512;
+        context.input<"input">().history() = 7;
+        context.output<"output">().history() = 11;
+        context.output<"output">().latency() = 3;
+        context.input<"event_input">().history() = 5;
+        context.output<"event_output">().history() = 13;
+        context.output<"event_output">().latency() = 2;
     }
 
     void tick_block(iv::TickBlockContext<ConstrainedArchiveNode> const&) const {}
@@ -250,7 +267,7 @@ TEST(ConfiguredGraphBinaryArchive, RoundTripsOrthogonalPortAccessConfigs)
             .channel_type = iv::ChannelTypeId::stereo,
             .sample_layout = iv::SampleStreamLayout::interleaved,
         },
-        .access = iv::SequentialInputConfig{.history = 7},
+        .access = iv::SequentialInputConfig{},
         .neutral_value = -0.125f,
         .default_value = 0.25f,
     };
@@ -261,7 +278,7 @@ TEST(ConfiguredGraphBinaryArchive, RoundTripsOrthogonalPortAccessConfigs)
     iv::SampleOutputConfig const realtime_output {
         .name = "realtime-output",
         .value_types = iv::continuous_value_types<iv::FFTBlock>,
-        .production = iv::TickOutputConfig{.history = 11, .latency = 3},
+        .production = iv::TickOutputConfig{},
         .retention = iv::OutputRetention::persisted,
     };
     iv::SampleOutputConfig const tock_output {
@@ -272,7 +289,7 @@ TEST(ConfiguredGraphBinaryArchive, RoundTripsOrthogonalPortAccessConfigs)
     iv::EventInputConfig const sequential_event_input {
         .name = "realtime-event-input",
         .type = iv::EventTypeId::trigger,
-        .access = iv::SequentialInputConfig{.history = 5},
+        .access = iv::SequentialInputConfig{},
     };
     iv::EventInputConfig const random_access_event_input {
         .name = "background-event-input",
@@ -283,7 +300,7 @@ TEST(ConfiguredGraphBinaryArchive, RoundTripsOrthogonalPortAccessConfigs)
         .name = "realtime-event-output",
         .type = iv::EventTypeId::midi,
         .max_events_per_index = 0.24,
-        .production = iv::TickOutputConfig{.history = 13, .latency = 2},
+        .production = iv::TickOutputConfig{},
         .retention = iv::OutputRetention::ephemeral,
     };
     iv::EventOutputConfig const tock_event_output {
@@ -319,7 +336,6 @@ TEST(ConfiguredGraphBinaryArchive, RoundTripsOrthogonalPortAccessConfigs)
     EXPECT_EQ(decoded_realtime_input.value_types, realtime_input.value_types);
     EXPECT_EQ(decoded_realtime_input.channel_layout, realtime_input.channel_layout);
     EXPECT_FALSE(iv::is_random_access(decoded_realtime_input));
-    EXPECT_EQ(iv::port_history(decoded_realtime_input), 7u);
     EXPECT_FLOAT_EQ(static_cast<float>(decoded_realtime_input.neutral_value), -0.125f);
     EXPECT_FLOAT_EQ(static_cast<float>(decoded_realtime_input.default_value), 0.25f);
     EXPECT_TRUE(iv::is_random_access(decoded_background_input));
@@ -328,21 +344,16 @@ TEST(ConfiguredGraphBinaryArchive, RoundTripsOrthogonalPortAccessConfigs)
     EXPECT_EQ(decoded_realtime_output.name, realtime_output.name);
     EXPECT_EQ(decoded_realtime_output.value_types, realtime_output.value_types);
     EXPECT_FALSE(iv::is_tock(decoded_realtime_output));
-    EXPECT_EQ(iv::port_history(decoded_realtime_output), 11u);
-    EXPECT_EQ(iv::tick_latency(decoded_realtime_output), 3u);
     EXPECT_TRUE(iv::is_persisted(decoded_realtime_output));
     EXPECT_TRUE(iv::is_tock(decoded_background_output));
     EXPECT_FALSE(iv::is_tick(decoded_background_output.production));
     EXPECT_FALSE(iv::is_persisted(decoded_background_output));
 
     EXPECT_EQ(decoded_realtime_event_input.type, sequential_event_input.type);
-    EXPECT_EQ(iv::port_history(decoded_realtime_event_input), 5u);
     EXPECT_TRUE(iv::is_random_access(decoded_background_event_input));
 
     EXPECT_EQ(decoded_realtime_event_output.type, tick_event_output.type);
     EXPECT_DOUBLE_EQ(decoded_realtime_event_output.max_events_per_index, 0.24);
-    EXPECT_EQ(iv::port_history(decoded_realtime_event_output), 13u);
-    EXPECT_EQ(iv::tick_latency(decoded_realtime_event_output), 2u);
     EXPECT_FALSE(iv::is_persisted(decoded_realtime_event_output));
     EXPECT_TRUE(iv::is_tock(decoded_background_event_output));
     EXPECT_TRUE(iv::is_persisted(decoded_background_event_output));
@@ -370,8 +381,12 @@ TEST(ConfiguredGraphBinaryArchive, RoundTripsAuthoredPortConstraints)
             ASSERT_NE(view.port_constraints, nullptr);
             auto const inputs = view.ports->sample_inputs();
             auto const outputs = view.ports->sample_outputs();
+            auto const event_inputs = view.ports->event_inputs();
+            auto const event_outputs = view.ports->event_outputs();
             ASSERT_EQ(inputs.size(), 1u);
             ASSERT_EQ(outputs.size(), 1u);
+            ASSERT_EQ(event_inputs.size(), 1u);
+            ASSERT_EQ(event_outputs.size(), 1u);
             EXPECT_EQ(inputs.front().value_types, ConstrainedArchiveNode::domain);
             EXPECT_EQ(outputs.front().value_types, ConstrainedArchiveNode::domain);
             ASSERT_EQ(
@@ -381,12 +396,35 @@ TEST(ConfiguredGraphBinaryArchive, RoundTripsAuthoredPortConstraints)
                 (ContinuousValueTypeEqualityConstraint{
                     .first = {
                         .direction = PortConstraintDirection::output,
+                        .kind = PortKind::sample,
                         .port_index = 0,
                     },
                     .second = {
                         .direction = PortConstraintDirection::input,
+                        .kind = PortKind::sample,
                         .port_index = 0,
                     },
+                }));
+            ASSERT_EQ(view.port_constraints->pace_equalities.size(), 1u);
+            ASSERT_EQ(view.port_constraints->pace_anchors.size(), 1u);
+            EXPECT_EQ(
+                view.port_constraints->pace_anchors.front().value.exponent(),
+                9);
+            ASSERT_EQ(view.port_constraints->history_anchors.size(), 4u);
+            EXPECT_EQ(
+                view.port_constraints->history_anchors,
+                (std::vector<PortHistoryAnchorConstraint>{
+                    {{PortConstraintDirection::input, PortKind::sample, 0}, 7},
+                    {{PortConstraintDirection::output, PortKind::sample, 0}, 11},
+                    {{PortConstraintDirection::input, PortKind::event, 0}, 5},
+                    {{PortConstraintDirection::output, PortKind::event, 0}, 13},
+                }));
+            ASSERT_EQ(view.port_constraints->latency_anchors.size(), 2u);
+            EXPECT_EQ(
+                view.port_constraints->latency_anchors,
+                (std::vector<PortLatencyAnchorConstraint>{
+                    {{PortConstraintDirection::output, PortKind::sample, 0}, 3},
+                    {{PortConstraintDirection::output, PortKind::event, 0}, 2},
                 }));
             ++constrained_nodes;
         });

@@ -16,16 +16,6 @@
 
 namespace iv {
 
-// A transported coordinate retains all 64 bits of the circular integer global
-// index and adds 64 fractional bits.  It is graph data, not the coordinate used
-// to address graph storage.
-struct FractionalGlobalIndex {
-    GlobalIndex integer {};
-    std::uint64_t fraction = 0;
-
-    constexpr bool operator==(FractionalGlobalIndex const&) const = default;
-};
-
 using FFTBin = std::complex<Sample::storage>;
 
 // One rank-one frequency-domain continuous value.  Its complete node-facing
@@ -34,26 +24,97 @@ using FFTBin = std::complex<Sample::storage>;
 // accidental empty marker object's sizeof from becoming storage semantics.
 class FFTBlock;
 
-// This is the sole declaration site for a registered continuous value type.
-// Its expansion derives the stable runtime ID, type trait, runtime descriptor,
-// type-domain membership and capability sets. Adding a value type must add one
-// declaration here; consumers must not grow type-specific switches.
-#define IV_CONTINUOUS_VALUE_TYPES(X)                                      \
-    X(sample, Sample, "Sample", 0, audio)                                \
-    X(fractional_global_index, FractionalGlobalIndex,                    \
-        "FractionalGlobalIndex", 0, scalar)                             \
-    X(fft_block, FFTBlock, "FFTBlock", 1, audio)
-
-enum class ContinuousValueTypeId : std::uint8_t {
-#define IV_CONTINUOUS_VALUE_TYPE_ID(key, cpp_type, display_name, value_rank, cap) key,
-    IV_CONTINUOUS_VALUE_TYPES(IV_CONTINUOUS_VALUE_TYPE_ID)
-#undef IV_CONTINUOUS_VALUE_TYPE_ID
-    count,
-};
-
 enum class ContinuousValueChannelCapability : std::uint8_t {
     scalar,
     audio,
+};
+
+// A registered value extension owns every type-dependent fact used by generic
+// realization code. Storage elements must remain trivial: generated execution
+// may copy, clear, persist and relocate them without invoking C++ object code.
+struct SampleContinuousValueExtension {
+    using value_type = Sample;
+    using storage_element = Sample;
+    static constexpr std::string_view name = "Sample";
+    static constexpr std::size_t rank = 0;
+    static constexpr auto channel_capability =
+        ContinuousValueChannelCapability::audio;
+
+    [[nodiscard]] static constexpr bool valid_size(
+        std::optional<std::size_t> size) noexcept
+    {
+        return !size;
+    }
+
+    [[nodiscard]] static constexpr std::optional<std::size_t> sample_support(
+        std::optional<std::size_t> size) noexcept
+    {
+        return valid_size(size) ? std::optional<std::size_t>{1} : std::nullopt;
+    }
+};
+
+struct FractionalGlobalIndexContinuousValueExtension {
+    using value_type = FractionalGlobalIndex;
+    using storage_element = FractionalGlobalIndex;
+    static constexpr std::string_view name = "FractionalGlobalIndex";
+    static constexpr std::size_t rank = 0;
+    static constexpr auto channel_capability =
+        ContinuousValueChannelCapability::scalar;
+
+    [[nodiscard]] static constexpr bool valid_size(
+        std::optional<std::size_t> size) noexcept
+    {
+        return !size;
+    }
+
+    [[nodiscard]] static constexpr std::optional<std::size_t> sample_support(
+        std::optional<std::size_t>) noexcept
+    {
+        return std::nullopt;
+    }
+};
+
+struct FFTBlockContinuousValueExtension {
+    using value_type = FFTBlock;
+    using storage_element = FFTBin;
+    static constexpr std::string_view name = "FFTBlock";
+    static constexpr std::size_t rank = 1;
+    static constexpr auto channel_capability =
+        ContinuousValueChannelCapability::audio;
+
+    // The canonical real-transform half-spectrum contains N/2 + 1 explicit
+    // complex bins, including DC and Nyquist. A useful transform therefore has
+    // at least two bins and represents 2 * (bin_count - 1) real samples.
+    [[nodiscard]] static constexpr bool valid_size(
+        std::optional<std::size_t> bin_count) noexcept
+    {
+        return bin_count && *bin_count >= 2;
+    }
+
+    [[nodiscard]] static constexpr std::optional<std::size_t> sample_support(
+        std::optional<std::size_t> bin_count) noexcept
+    {
+        if (!valid_size(bin_count)
+            || *bin_count - 1 > std::numeric_limits<std::size_t>::max() / 2) {
+            return std::nullopt;
+        }
+        return 2 * (*bin_count - 1);
+    }
+};
+
+// This is the sole registry declaration list. A new entry names one complete
+// extension; consumers must not grow type-specific switches.
+#define IV_CONTINUOUS_VALUE_TYPES(X)                                      \
+    X(sample, SampleContinuousValueExtension)                            \
+    X(fractional_global_index,                                           \
+        FractionalGlobalIndexContinuousValueExtension)                  \
+    X(fft_block, FFTBlockContinuousValueExtension)
+
+enum class ContinuousValueTypeId : std::uint8_t {
+#define IV_CONTINUOUS_VALUE_TYPE_ID(key, extension) key,
+    IV_CONTINUOUS_VALUE_TYPES(IV_CONTINUOUS_VALUE_TYPE_ID)
+#undef IV_CONTINUOUS_VALUE_TYPE_ID
+    count,
 };
 
 struct ContinuousValueTypeInfo {
@@ -62,16 +123,24 @@ struct ContinuousValueTypeInfo {
     std::size_t rank = 0;
     ContinuousValueChannelCapability channel_capability =
         ContinuousValueChannelCapability::scalar;
+    std::size_t storage_element_size = 0;
+    std::size_t storage_element_alignment = 1;
+    bool (*valid_size)(std::optional<std::size_t>) noexcept = nullptr;
+    std::optional<std::size_t> (*sample_support)(
+        std::optional<std::size_t>) noexcept = nullptr;
 };
 
 inline constexpr auto continuous_value_type_registry = std::array {
-#define IV_CONTINUOUS_VALUE_TYPE_INFO(key, cpp_type, display_name, value_rank, cap) \
+#define IV_CONTINUOUS_VALUE_TYPE_INFO(key, extension)                    \
     ContinuousValueTypeInfo {                                            \
         .id = ContinuousValueTypeId::key,                                \
-        .name = display_name,                                            \
-        .rank = value_rank,                                              \
-        .channel_capability =                                            \
-            ContinuousValueChannelCapability::cap,                       \
+        .name = extension::name,                                         \
+        .rank = extension::rank,                                         \
+        .channel_capability = extension::channel_capability,             \
+        .storage_element_size = sizeof(extension::storage_element),      \
+        .storage_element_alignment = alignof(extension::storage_element),\
+        .valid_size = &extension::valid_size,                            \
+        .sample_support = &extension::sample_support,                    \
     },
     IV_CONTINUOUS_VALUE_TYPES(IV_CONTINUOUS_VALUE_TYPE_INFO)
 #undef IV_CONTINUOUS_VALUE_TYPE_INFO
@@ -92,6 +161,11 @@ static_assert([] {
 }());
 static_assert(std::is_trivially_copyable_v<FFTBin>);
 
+#define IV_ASSERT_CONTINUOUS_STORAGE_IS_TRIVIAL(key, extension)           \
+    static_assert(std::is_trivially_copyable_v<extension::storage_element>);
+IV_CONTINUOUS_VALUE_TYPES(IV_ASSERT_CONTINUOUS_STORAGE_IS_TRIVIAL)
+#undef IV_ASSERT_CONTINUOUS_STORAGE_IS_TRIVIAL
+
 [[nodiscard]] constexpr bool is_registered_continuous_value_type(
     ContinuousValueTypeId id) noexcept
 {
@@ -111,14 +185,11 @@ static_assert(std::is_trivially_copyable_v<FFTBin>);
 template<class T>
 struct ContinuousValueType;
 
-#define IV_DEFINE_CONTINUOUS_VALUE_TYPE(key, cpp_type, display_name, value_rank, cap) \
+#define IV_DEFINE_CONTINUOUS_VALUE_TYPE(key, extension)                  \
     template<>                                                           \
-    struct ContinuousValueType<cpp_type> {                               \
+    struct ContinuousValueType<typename extension::value_type>           \
+        : extension {                                                    \
         static constexpr auto id = ContinuousValueTypeId::key;           \
-        static constexpr std::string_view name = display_name;           \
-        static constexpr std::size_t rank = value_rank;                  \
-        static constexpr auto channel_capability =                       \
-            ContinuousValueChannelCapability::cap;                       \
     };
 IV_CONTINUOUS_VALUE_TYPES(IV_DEFINE_CONTINUOUS_VALUE_TYPE)
 #undef IV_DEFINE_CONTINUOUS_VALUE_TYPE

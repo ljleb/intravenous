@@ -1667,15 +1667,10 @@ namespace iv {
     };
 
     struct SequentialInputConfig {
-        size_t history = 0;
-
         constexpr bool operator==(SequentialInputConfig const&) const = default;
     };
 
     struct TickOutputConfig {
-        size_t history = 0;
-        size_t latency = 0;
-
         constexpr bool operator==(TickOutputConfig const&) const = default;
     };
 
@@ -1721,48 +1716,6 @@ namespace iv {
     [[nodiscard]] constexpr bool is_tick(OutputProductionConfig const& config)
     {
         return std::holds_alternative<TickOutputConfig>(config);
-    }
-
-    [[nodiscard]] constexpr size_t port_history(InputAccessConfig const& config)
-    {
-        return std::get<SequentialInputConfig>(config).history;
-    }
-
-    [[nodiscard]] constexpr size_t port_history(OutputProductionConfig const& config)
-    {
-        return std::get<TickOutputConfig>(config).history;
-    }
-
-    [[nodiscard]] constexpr size_t tick_latency(OutputProductionConfig const& config)
-    {
-        return std::get<TickOutputConfig>(config).latency;
-    }
-
-    [[nodiscard]] constexpr size_t port_history_or_zero(
-        InputAccessConfig const& config)
-    {
-        if (auto const* realtime = std::get_if<SequentialInputConfig>(&config)) {
-            return realtime->history;
-        }
-        return 0;
-    }
-
-    [[nodiscard]] constexpr size_t port_history_or_zero(
-        OutputProductionConfig const& config)
-    {
-        if (auto const* realtime = std::get_if<TickOutputConfig>(&config)) {
-            return realtime->history;
-        }
-        return 0;
-    }
-
-    [[nodiscard]] constexpr size_t tick_latency_or_zero(
-        OutputProductionConfig const& config)
-    {
-        if (auto const* realtime = std::get_if<TickOutputConfig>(&config)) {
-            return realtime->latency;
-        }
-        return 0;
     }
 
     // Authored declarations keep data kind and temporal/access semantics
@@ -2094,105 +2047,6 @@ namespace iv {
     [[nodiscard]] constexpr bool is_persisted(EventOutputConfig const& config)
     {
         return is_persisted(config.retention);
-    }
-
-    [[nodiscard]] constexpr size_t port_history(InputConfig const& config)
-    {
-        return port_history(config.access);
-    }
-
-    [[nodiscard]] constexpr size_t port_history(OutputConfig const& config)
-    {
-        return port_history(config.production);
-    }
-
-    [[nodiscard]] constexpr size_t port_history(SampleInputConfig const& config)
-    {
-        return port_history(config.access);
-    }
-
-    [[nodiscard]] constexpr size_t port_history(SampleOutputConfig const& config)
-    {
-        return port_history(config.production);
-    }
-
-    [[nodiscard]] constexpr size_t port_history(EventInputConfig const& config)
-    {
-        return port_history(config.access);
-    }
-
-    [[nodiscard]] constexpr size_t port_history(EventOutputConfig const& config)
-    {
-        return port_history(config.production);
-    }
-
-    [[nodiscard]] constexpr size_t tick_latency(OutputConfig const& config)
-    {
-        return tick_latency(config.production);
-    }
-
-    [[nodiscard]] constexpr size_t tick_latency(SampleOutputConfig const& config)
-    {
-        return tick_latency(config.production);
-    }
-
-    [[nodiscard]] constexpr size_t tick_latency(EventOutputConfig const& config)
-    {
-        return tick_latency(config.production);
-    }
-
-    [[nodiscard]] constexpr size_t port_history_or_zero(
-        InputConfig const& config)
-    {
-        return port_history_or_zero(config.access);
-    }
-
-    [[nodiscard]] constexpr size_t port_history_or_zero(
-        OutputConfig const& config)
-    {
-        return port_history_or_zero(config.production);
-    }
-
-    [[nodiscard]] constexpr size_t port_history_or_zero(
-        SampleInputConfig const& config)
-    {
-        return port_history_or_zero(config.access);
-    }
-
-    [[nodiscard]] constexpr size_t port_history_or_zero(
-        SampleOutputConfig const& config)
-    {
-        return port_history_or_zero(config.production);
-    }
-
-    [[nodiscard]] constexpr size_t port_history_or_zero(
-        EventInputConfig const& config)
-    {
-        return port_history_or_zero(config.access);
-    }
-
-    [[nodiscard]] constexpr size_t port_history_or_zero(
-        EventOutputConfig const& config)
-    {
-        return port_history_or_zero(config.production);
-    }
-
-    [[nodiscard]] constexpr size_t tick_latency_or_zero(
-        OutputConfig const& config)
-    {
-        return tick_latency_or_zero(config.production);
-    }
-
-    [[nodiscard]] constexpr size_t tick_latency_or_zero(
-        SampleOutputConfig const& config)
-    {
-        return tick_latency_or_zero(config.production);
-    }
-
-    [[nodiscard]] constexpr size_t tick_latency_or_zero(
-        EventOutputConfig const& config)
-    {
-        return tick_latency_or_zero(config.production);
     }
 
     [[nodiscard]] constexpr SampleInputConfig materialize_sample_config(

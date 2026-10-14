@@ -596,11 +596,16 @@ struct OnePoleOneZero
     static constexpr auto inputs()
     {
         return std::array<InputConfig, 4>{
-            sequential_sample_input("in", {.history = 1}),
+            sequential_sample_input("in"),
             sequential_sample_input("b0"),
             sequential_sample_input("b1"),
             sequential_sample_input("feedback"),
         };
+    }
+
+    void constrain_ports(ConstrainPortsContext<OnePoleOneZero>& ctx) const
+    {
+        ctx.input<"in">().history() = 1;
     }
 
     static constexpr auto outputs()
@@ -670,9 +675,14 @@ struct SampleDelay
     static constexpr auto inputs()
     {
         return std::array<InputConfig, 2>{
-            sequential_sample_input("in", {.history = max_delay_samples}),
+            sequential_sample_input("in"),
             sequential_sample_input("delay_samples"),
         };
+    }
+
+    void constrain_ports(ConstrainPortsContext<SampleDelay>& ctx) const
+    {
+        ctx.input<"in">().history() = max_delay_samples;
     }
 
     static constexpr auto outputs()
@@ -738,13 +748,18 @@ struct BrownDudaPinna
     static constexpr auto inputs()
     {
         return std::array<InputConfig, 6>{
-            sequential_sample_input("in", {.history = max_delay_samples}),
+            sequential_sample_input("in"),
             sequential_sample_input("d2"),
             sequential_sample_input("d3"),
             sequential_sample_input("d4"),
             sequential_sample_input("d5"),
             sequential_sample_input("d6"),
         };
+    }
+
+    void constrain_ports(ConstrainPortsContext<BrownDudaPinna>& ctx) const
+    {
+        ctx.input<"in">().history() = max_delay_samples;
     }
 
     static constexpr auto outputs()

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <intravenous/node/lifecycle.h>
+#include <intravenous/node/port_constraints.h>
 #include <intravenous/math/polyblep.h>
 #include <algorithm>
 #include <array>
@@ -12,7 +13,7 @@ namespace iv {
         static constexpr auto inputs()
         {
             return std::array {
-                sequential_sample_input("in", {}, {.history = 1}),
+                sequential_sample_input("in"),
                 sequential_sample_input("threshold", {.default_value = 1.0}),
             };
         }
@@ -20,9 +21,15 @@ namespace iv {
         static constexpr auto outputs()
         {
             return std::array {
-                tick_sample_output("anti_aliased", {}, {.latency = 1}),
+                tick_sample_output("anti_aliased"),
                 tick_sample_output("aliased"),
             };
+        }
+
+        void constrain_ports(ConstrainPortsContext<Warper>& ctx) const
+        {
+            ctx.input<"in">().history() = 1;
+            ctx.output<"anti_aliased">().latency() = 1;
         }
 
         void tick(TickSampleContext<Warper> const& state) const
@@ -61,7 +68,12 @@ namespace iv {
 
         static constexpr auto outputs()
         {
-            return std::array { tick_sample_output("phase", {}, {.history = 1}) };
+            return std::array { tick_sample_output("phase") };
+        }
+
+        void constrain_ports(ConstrainPortsContext<PhaseIntegrator>& ctx) const
+        {
+            ctx.output<"phase">().history() = 1;
         }
 
         void tick_block(TickBlockContext<PhaseIntegrator> const& ctx) const
@@ -85,16 +97,23 @@ namespace iv {
         static constexpr auto inputs()
         {
             return std::array {
-                sequential_sample_input("phase_offset", {}, {.history = 1}),
-                sequential_sample_input("frequency", {.min = 0}, {.history = 1}),
+                sequential_sample_input("phase_offset"),
+                sequential_sample_input("frequency", {.min = 0}),
             };
         }
 
         static constexpr auto outputs()
         {
             return std::array {
-                tick_sample_output("out", {}, {.latency = 1}),
+                tick_sample_output("out"),
             };
+        }
+
+        void constrain_ports(ConstrainPortsContext<SawOscillator>& ctx) const
+        {
+            ctx.input<"phase_offset">().history() = 1;
+            ctx.input<"frequency">().history() = 1;
+            ctx.output<"out">().latency() = 1;
         }
 
         void tick(TickSampleContext<SawOscillator> const& ctx) const
@@ -134,16 +153,23 @@ namespace iv {
         static constexpr auto inputs()
         {
             return std::array {
-                sequential_sample_input("phase_offset", {}, {.history = 1}),
-                sequential_sample_input("frequency", {.min = 0}, {.history = 1}),
+                sequential_sample_input("phase_offset"),
+                sequential_sample_input("frequency", {.min = 0}),
             };
         }
 
         static constexpr auto outputs()
         {
             return std::array {
-                tick_sample_output("out", {}, {.latency = 1}),
+                tick_sample_output("out"),
             };
+        }
+
+        void constrain_ports(ConstrainPortsContext<SineOscillator>& ctx) const
+        {
+            ctx.input<"phase_offset">().history() = 1;
+            ctx.input<"frequency">().history() = 1;
+            ctx.output<"out">().latency() = 1;
         }
 
         struct State {

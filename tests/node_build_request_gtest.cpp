@@ -78,8 +78,12 @@ struct ReplayWithInputHistory {
     static constexpr bool intrinsically_replayable = true;
     static constexpr auto inputs()
     {
-        return std::array{iv::sequential_sample_input(
-            "input", {}, {.history = 1})};
+        return std::array{iv::sequential_sample_input("input")};
+    }
+    void constrain_ports(
+        iv::ConstrainPortsContext<ReplayWithInputHistory>& ctx) const
+    {
+        ctx.input<"input">().history() = 1;
     }
     void tick(iv::TickSampleContext<ReplayWithInputHistory> const&) const {}
 };
@@ -88,16 +92,20 @@ struct ReplayWithOutputLatency {
     static constexpr bool intrinsically_replayable = true;
     static constexpr auto outputs()
     {
-        return std::array{iv::tick_sample_output(
-            "output", {}, {.latency = 1})};
+        return std::array{iv::tick_sample_output("output")};
+    }
+    void constrain_ports(
+        iv::ConstrainPortsContext<ReplayWithOutputLatency>& ctx) const
+    {
+        ctx.output<"output">().latency() = 1;
     }
     void tick(iv::TickSampleContext<ReplayWithOutputLatency> const&) const {}
 };
 
 static_assert(iv::details::replay_declaration_is_valid_v<ReplayableNode>);
 static_assert(!iv::details::replay_declaration_is_valid_v<ReplayWithState>);
-static_assert(!iv::details::replay_declaration_is_valid_v<ReplayWithInputHistory>);
-static_assert(!iv::details::replay_declaration_is_valid_v<ReplayWithOutputLatency>);
+static_assert(iv::details::replay_declaration_is_valid_v<ReplayWithInputHistory>);
+static_assert(iv::details::replay_declaration_is_valid_v<ReplayWithOutputLatency>);
 
 TEST(NodeBuildRequest, ValidatesAndReflectsIntrinsicReplayability)
 {
@@ -153,26 +161,15 @@ static_assert(!HasHistory<iv::EventInputProperties>);
 static_assert(!HasHistory<iv::EventOutputProperties>);
 static_assert(!HasLatency<iv::SampleOutputProperties>);
 static_assert(!HasLatency<iv::EventOutputProperties>);
-static_assert(HasHistory<iv::SequentialInputConfig>);
-static_assert(HasHistory<iv::TickOutputConfig>);
-static_assert(HasLatency<iv::TickOutputConfig>);
+static_assert(!HasHistory<iv::SequentialInputConfig>);
+static_assert(!HasHistory<iv::TickOutputConfig>);
+static_assert(!HasLatency<iv::TickOutputConfig>);
 static_assert(!HasHistory<iv::RandomAccessInputConfig>);
 static_assert(!HasLatency<iv::TockOutputConfig>);
 static_assert(HasRetention<iv::OutputConfig>);
 static_assert(HasRetention<iv::SampleOutputConfig>);
 static_assert(HasRetention<iv::EventOutputConfig>);
 static_assert(iv::sample_properties(iv::InputConfig {}).neutral_value.value == 0.0f);
-static_assert(iv::port_history(
-    iv::sequential_sample_input("history", {}, {.history = 7})) == 7);
-static_assert(iv::port_history(
-    iv::sequential_event_input(
-        "history", iv::EventTypeId::trigger, {.history = 5})) == 5);
-static_assert(iv::port_history(
-    iv::tick_sample_output(
-        "timing", {}, {.history = 11, .latency = 3})) == 11);
-static_assert(iv::tick_latency(
-    iv::tick_sample_output(
-        "timing", {}, {.history = 11, .latency = 3})) == 3);
 static_assert(iv::is_random_access(iv::random_access_sample_input("background")));
 static_assert(iv::is_tock(iv::tock_event_output(
     "background", iv::EventTypeId::trigger)));

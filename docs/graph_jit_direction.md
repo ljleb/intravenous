@@ -339,12 +339,12 @@ required. The exact ordering lattice/proxy spelling may be refined with the solv
 but ordering participates in the same graph-wide realization pass as the other port
 properties.
 
-Pace is an exact
-relative quantity of transported values per local logical node step; it is not
-sample-rate conversion and
-must not imply interpolation/filtering. Inputs and outputs may have different paces,
-which represents FFT hop ratios and over/under-sampled graph regions without helper
-nodes. Equality is again variadic, for example:
+Pace is an exact power-of-two quantity of transported values per local logical node
+step; it is not sample-rate conversion and must not imply interpolation/filtering.
+Inputs and outputs may have different paces, which represents dyadic FFT hop ratios and
+over/under-sampled graph regions without helper nodes. Authored factors are positive
+integer powers of two; GraphJit stores and solves their signed base-2 exponents. Equality
+is again variadic, for example:
 
 ```cpp
 ctx.equal(
@@ -362,11 +362,49 @@ ctx.output<"out">().pace() = 2;
 ```
 
 or an STFT may bind its scalar input pace to a configured hop size and its FFT output
-pace to one. Pace arithmetic/normalization should use exact integer/rational
-relationships rather than floating-point rates so callback subdivision cannot
+pace to one when that hop is a power of two. Non-dyadic ratios are explicit resampling
+or coordinate-driven Random Access sampling rather than port pace. Pace arithmetic is
+signed integer exponent addition/subtraction, so callback subdivision cannot
 accumulate index drift.
-Connections join those relations across the graph; the resolved result defines exact
-global-index mappings and node execution-rate domains.
+The authored pace is local to its owning node's logical step; it is not an absolute
+graph-wide rate. GraphJit therefore solves a weighted exponent relation:
+
+```text
+absolute transported-value rate of port
+    = effective execution rate of owning node * authored local port pace
+```
+
+A connection equates the two ports' **absolute** transported-value pace exponents. It
+does not equate their local pace constants directly. For example, an oversampler with
+input pace one and output pace two may connect to an ordinary downstream filter whose
+input and output paces are both one. The connection makes the filter's execution-domain
+exponent one greater than the oversampler's input-domain exponent; it does not produce
+the false contradiction `2 == 1`. Exponent differences around a cycle must sum to zero.
+Otherwise graph compilation rejects the revision.
+
+Each otherwise-unanchored connected rate component receives a deterministic canonical
+exponent of zero. External/project-rate anchors fix that exponent where present. A
+resolved absolute exponent must remain in the range supported by the dyadic global-time
+coordinate; the initial Q64.64 coordinate supports exponents from -64 through +64.
+Graphs outside that range are rejected during realization rather than allowed to
+overflow or alias their global positions.
+
+Generated Tick execution covers one half-open dyadic global-time interval. Every node
+in that execution observes the same temporal interval, while each port facade contains
+the zero or more values from its own resolved dyadic lattice that fall in the interval.
+For example, a 256-project-sample interval contains 256 project-rate samples, 512
+samples from a 2x port, and either zero or one values from a port whose cadence is one
+value per 512 project samples. Native `tick_block()` therefore need not leave a generic
+partial actor firing or unconsumed connection value across root callbacks. Algorithms
+that require preceding values declare history and receive it through
+`block_extended()`; output revision remains described by latency.
+
+The execution coordinate is `FractionalGlobalIndex`: the wrapping 64-bit project
+`GlobalIndex` plus 64 binary fractional bits. The same type may be transported as graph
+data naming another coordinate. Execution address and transported value are contextual
+roles, not incompatible coordinate types. A pace exponent `+k` uses `k` fractional
+bits and has 2^(64+k) positions over one complete project-timeline cycle; a negative
+exponent selects aligned subsets of integer project positions.
 
 For a configured overlap FFT with transform length `N` and hop `H`, one ordinary
 complete-window contract is:
@@ -398,18 +436,40 @@ again, storage to be replanned, and the overlapping still-visible node-owned por
 to migrate under the ordinary graph-revision rules. No special history/latency mutation
 path is required.
 
-`ctx.sample_rate` is **not** available as a resolved number in `constrain_ports()`.
-The node's effective sample rate depends on the very pace-domain solve being
-constructed there. After resolution, declaration/initialization/execution contexts
-may expose `ctx.sample_rate`, meaning the node's **effective local sample rate**. A
-node running in a 2x oversampled region of a 48 kHz project must observe 96 kHz so
-filters, oscillators, time constants, and other rate-dependent DSP remain correct.
-This effective rate is distinct from per-port pace: an ordinary downstream filter may
-have pace 1 on every port while its whole node executes in a 2x sample-rate domain.
+Audio sample-rate basis, transported-value cadence, and the sample support represented
+by one value are separate realization facts. Scalar `Sample` normally has one-sample
+support and an audio basis equal to its transport lattice. An `FFTBlock` has a much
+slower block cadence while preserving the audio sample-rate basis of the time-domain
+signal it represents. For an overlap FFT with transform length 1024 and hop 512 at
+48 kHz, the input cadence is 48000 samples/second, the FFT output cadence is 93.75
+blocks/second, and both ports have a 48 kHz audio basis; one FFT value has 1024-sample
+support while consecutive values advance by 512 samples.
 
-Pacing and resampling remain separate operations. Pacing establishes how exact global
-indices and transported-value counts correspond between rate domains. A resampler is
-explicit DSP that computes new values. Future non-audio work may build on the same exact index-domain machinery, but
+The continuous-value extension owns whether a value participates in an audio basis and
+the exact sample-support relationship intrinsic to its representation. Node constraints
+propagate or transform the audio basis where it is semantic: an FFT preserves its input
+basis on the spectral output, while an explicit 2x oversampler changes the output basis
+from 48 kHz to 96 kHz. Connections require compatible resolved bases. A node-level
+`ctx.sample_rate` convenience is valid only where the node's relevant audio ports are
+proven to share one basis; heterogeneous nodes use the corresponding port realization.
+None of these resolved numbers is available while `constrain_ports()` is constructing
+the solve.
+
+The preliminary canonical `FFTBlock` layout is the complete nonredundant spectrum of a
+real-valued time-domain block: `N / 2 + 1` homogeneous complex `FFTBin` values including
+explicit DC and Nyquist bins. `FFTBlock::size()` is that complex-bin count, so the
+represented even time-domain transform length is `2 * (size() - 1)`. A 1024-sample
+transform therefore stores 513 complex bins, or 1026 scalar `Sample::storage` values.
+The mathematically-zero imaginary components of DC and Nyquist remain present; there is
+no special packed endpoint representation in the semantic port value. FFT-library
+adapters owned by the continuous-value extension may consume/produce a library's native
+packed form or convert it at the boundary. Benchmarking may later select faster adapter
+paths without changing this canonical graph representation.
+
+Pacing and resampling remain separate operations. Dyadic pacing establishes the exact
+global-time lattice and transported-value count of each port. A resampler is explicit
+DSP that computes new values; non-power-of-two ratios use explicit coordinate-driven
+sampling rather than expanding the pace algebra. Future non-audio work may build on the same exact index-domain machinery, but
 image/video value types and video-specific scheduling are out of scope for the
 initial audio implementation.
 
@@ -430,11 +490,13 @@ auto out_frames = ctx.output<"out">().block_size();
 ```
 
 `block_size()` counts transported values participating in this invocation. It is not
-the same as type-dependent `size()`: an FFT output may have `size() == 2048` and
-`block_size() == 4`, meaning four FFT values, each containing 2048 frequency values.
-GraphJit chooses a legal logical invocation quantum and derives every port's
-`block_size()` from its resolved pace. An oversampler may consume `N` input values and
-produce `2N`; an STFT may consume `512K` scalar samples and produce `K` FFT blocks.
+the same as type-dependent `size()`: an FFT output may have `size() == 513` and
+`block_size() == 4`, meaning four FFT values, each containing the nonredundant spectrum
+of a 1024-sample real transform. GraphJit derives every port's `block_size()` by
+projecting the selected dyadic interval onto its resolved lattice. An oversampler may
+consume `N` input values and produce `2N`; an STFT may consume `512K` scalar samples and
+produce `K` FFT blocks. A sufficiently slow port may receive zero values in one
+invocation.
 
 A Sequential input with history also needs an explicit history-inclusive contiguous view
 for algorithms such as FFTs. A provisional API name is `block_extended()`:

@@ -299,11 +299,20 @@ storage dispatcher merely to teach it another enumerator. Missing required behav
 a compile-time or realization-time error at the registry boundary, not a fallback to
 `Sample` behavior.
 
-`FractionalGlobalIndex` is a scalar fixed-point coordinate in the global sample-index domain.
-It is data transported at ordinary integer global positions; it does **not** replace
-the integer global index used to locate graph data itself. Its representation retains
-the full integer global-sample-index width and adds 64 fractional bits, so fractional
-sample positions do not sacrifice the existing global-index range.
+Each extension names one trivially copyable storage-element type, its alignment, valid
+resolved dimensions, channel/audio capability, and—where audio-capable—the sample
+support represented by one transported value. Generic realization code consumes those
+extension-owned facts through the generated descriptor. It does not inspect a known
+value-type enumerator. For the preliminary types, `Sample` stores `Sample`,
+`FractionalGlobalIndex` stores `FractionalGlobalIndex`, and `FFTBlock` stores a
+resolved-length array of `FFTBin`.
+
+`FractionalGlobalIndex` is the scalar Q64.64 coordinate of the circular global
+sample-index domain. It addresses multirate execution and continuous storage, and may
+also be transported as ordinary graph data naming a coordinate. Its representation
+retains the full integer global-index width and adds 64 fractional bits, so fractional
+positions do not sacrifice the existing global-index range. `GlobalIndex` remains the
+compact integer-coordinate subtype used where fractional positions are impossible.
 
 Image/video values are explicitly deferred. They should not force premature answers
 about image pacing, pixel layouts, channel semantics, or GraphJit video-kernel
@@ -361,10 +370,19 @@ using FFTBin = std::complex<Sample::storage>;
 
 Consequently, `FFTBlock::size()` counts complex bins. It does not count underlying
 real scalars, a transform library's work-buffer elements, or a configured time-domain
-transform length. A transform node owns the constraint between its configured
-time-domain length and its output bin count. For example, a node may expose all `N`
-complex bins or only the `N / 2 + 1` nonnegative-frequency bins of a real transform,
-but either result is an ordinary contiguous array of explicit `FFTBin` values.
+transform length. The preliminary canonical layout represents a real-valued
+time-domain transform as the complete nonredundant half-spectrum: exactly `N / 2 + 1`
+explicit `FFTBin` values, including DC and Nyquist, for even transform length `N`.
+Accordingly:
+
+```text
+time-domain transform length = 2 * (FFTBlock::size() - 1)
+```
+
+A 1024-sample transform therefore has `FFTBlock::size() == 513` and occupies 1026
+`Sample::storage` scalars. The mathematically-zero imaginary components of DC and
+Nyquist remain present. They are ordinary homogeneous `FFTBin` elements, not endpoint
+fields with a special packed interpretation.
 
 `std::complex<Sample::storage>` is deliberate rather than incidental ABI leakage from
 one FFT implementation. The C++ complex-number contract guarantees a trivially
@@ -397,8 +415,9 @@ mutation rules all satisfy the implementation's documented contract. Exact
 scalar-interleaved API may also be direct when its contract matches the C++
 array-oriented representation. A split-complex API may be direct when it accepts the
 corresponding strided view; otherwise it requires a split-plane materialization.
-Packed or unordered real-transform formats require canonicalization before the value
-is published to the graph.
+Packed or unordered real-transform formats—including the common 1024-scalar packed
+representation of a 1024-sample real transform—require canonicalization before the
+value is published to the graph.
 
 When direct use is not legal, the compiled realization owns pre-sized transient
 scratch and any required conversion operation. This is not an audio-thread fallback:
@@ -417,8 +436,8 @@ FFTW, vDSP, PFFFT, or any other backend's scratch representation part of the gra
 type system.
 
 Do not generate a distinct C++/registry type for every FFT size. `FFTBlock` remains
-one registered value type; a particular graph realization resolves, for example,
-`size() == 2048`. The type implementation/GraphJit may still specialize kernels for a
+one registered value type; a particular 1024-sample real-transform realization
+resolves `size() == 513`. The type implementation/GraphJit may still specialize kernels for a
 finite set of useful FFT sizes internally without making those specializations part
 of port type identity.
 
@@ -560,7 +579,7 @@ overlap FFT configured
 with transform size `N` and hop `H`, a complete-window implementation may constrain
 `input.history() = N - H`; if it does not emit a zero-padded startup frame, it may also
 constrain a positive output latency so the first authored FFT block can be finalized by
-a later invocation. Pace resolution, effective local sample rate, `tick()` legality,
+a later invocation. Dyadic pace resolution, audio sample-rate basis, `tick()` legality,
 and per-port `tick_block()` sizes are specified in
 [Graph JIT Direction](./graph_jit_direction.md#planned-value-type-port-size-pace-history-latency-and-coverage-ordering-constraint-analysis)
 and [Sequential Port Storage And Connection Planning](./sequential_port_storage_planning.md#planned-pace-aware-tick_block-contract).
@@ -626,127 +645,203 @@ tiled leaf and must be connected through an explicit shared/broadcast structure.
 keeps `FractionalGlobalIndex` scalar and prevents channel duplication or channel
 conversion from becoming an accidental property of scalar coordinate values.
 
-## 7. Sample port config types should make invalid states unrepresentable
+## 7. Authored continuous port configs are typed and toolable
 
-The current `InputConfig` representation combines a sample/event `kind` variant with
-an independent `InputAccessConfig`. That cross-product becomes undesirable once only
-Sequential sample inputs own `default_value`, `min`, `max`, `neutral_value`, and
-`combine_values`.
+`Node::inputs()` and `Node::outputs()` return heterogeneous tuples of concrete port
+configuration types. Node authors declare registered continuous value types as
+template arguments to concise `input<Types...>()` and `output<Types...>()` helpers.
+Type erasure begins during reflection, after the authored declarations have been
+statically validated; it is not present in a leaf node's declaration.
 
-The planned sample-input representation is instead approximately:
+Access, production, and retention choices must be scoped so ordinary C++ completion
+shows the legal values at each argument position. The API must not add unqualified
+global objects named `sequential`, `region`, `coverage`, `tick`, `ephemeral`, or
+`persisted`.
 
-```cpp
-struct SequentialSampleInputConfig {
-    Sample default_value = 0.0;
-    Sample min = -std::numeric_limits<Sample::storage>::infinity();
-    Sample max = std::numeric_limits<Sample::storage>::infinity();
-
-    Sample neutral_value = 0.0;
-    SampleCombineValuesFn combine_values;
-};
-
-struct RegionSampleInputConfig {};
-struct CoverageSampleInputConfig {};
-
-using SampleInputAccessConfig = std::variant<
-    SequentialSampleInputConfig,
-    RegionSampleInputConfig,
-    CoverageSampleInputConfig>;
-
-struct SampleInputConfig {
-    std::string name;
-    ChannelLayout channel_layout;
-    SampleInputAccessConfig access;
-};
-```
-
-Using distinct Region/Coverage alternative types is preferable to introducing a
-nested enum such as `RandomAccessForm`: the variant itself expresses the alternatives
-and prevents meaningless Region/Coverage fields from existing.
-
-At the top level, sample and event declarations should likewise be distinct config
-alternatives rather than a `kind x access` cross-product when their valid access
-configuration differs:
+The intended spelling is:
 
 ```cpp
-using InputConfig = std::variant<SampleInputConfig, EventInputConfig>;
-```
-
-The exact event-side access types may remain as appropriate for event semantics; they
-do not acquire sample-only reduction/UI fields merely for symmetry.
-
-### Sample outputs
-
-Tick history/latency remains meaningful only for Tick production, but it is not part of
-the static `constexpr` output-production config. Tock sample outputs select whether
-their random-access result is one Region or a Coverage:
-
-```cpp
-struct TickOutputConfig {};
-
-struct RegionTockOutputConfig {};
-struct CoverageTockOutputConfig {};
-
-using SampleOutputProductionConfig = std::variant<
-    TickOutputConfig,
-    RegionTockOutputConfig,
-    CoverageTockOutputConfig>;
-
-struct SampleOutputConfig {
-    std::string name;
-    ChannelLayout channel_layout;
-    SampleOutputProductionConfig production;
-    OutputRetention retention = OutputRetention::ephemeral;
-};
-```
-
-A configured Tick node contributes its required output `history()` and `latency()` in
-`constrain_ports()`. This allows constructor values and graph-resolved port sizes/paces
-to determine the temporal window without changing the static callback shape.
-
-`OutputRetention::{ephemeral,persisted}` remains an independent axis. Both Region and
-Coverage Tock outputs may be ephemeral or persisted.
-
-The exact final naming of the Region/Coverage alternatives and ordering enum can
-change, but the type separation is the intended contract. `CoverageOrdering` belongs
-to the configured realization/constraint layer rather than these static config
-structures: a Coverage input may constrain the realized ordering it requires, a
-Coverage producer may constrain the ordering it guarantees, and an order-preserving
-node may relate the two in `constrain_ports()`.
-
-## 8. Sequential combine helpers select the operation statically
-
-Authored node helpers should make `combine_values` a template-selected operation,
-while the materialized config contains the raw function pointer expected by generated
-runtime/JIT code.
-
-Conceptually:
-
-```cpp
-template<auto Combine = std::plus<Sample>{}>
-constexpr InputConfig sequential_sample_input(/* ... */)
+static constexpr auto inputs()
 {
-    SampleCombineValuesFn fn = +[](Sample a, Sample b) -> Sample {
-        return Combine(a, b);
-    };
+    return std::tuple{
+        input<Sample>(
+            "gain",
+            InputAccess::sequential,
+            {
+                .default_value = 1.0f,
+                .min = 0.0f,
+                .max = 2.0f,
+                .neutral_value = 0.0f,
+            }),
 
-    // Build SequentialSampleInputConfig with fn.
+        input<FractionalGlobalIndex>(
+            "position",
+            InputAccess::sequential,
+            {.default_value = {}}),
+
+        input<FFTBlock>(
+            "spectrum",
+            InputAccess::region),
+    };
+}
+
+static constexpr auto outputs()
+{
+    return std::tuple{
+        output<Sample>(
+            "audio",
+            OutputProduction::tick),
+
+        output<FFTBlock>(
+            "spectrum",
+            OutputProduction::region,
+            OutputRetention::persisted),
+    };
 }
 ```
 
-If `Combine(a, b)` cannot be used as `Sample(Sample, Sample)`, the helper does not
-compile. Node authors therefore get an ergonomic template interface without storing a
-runtime-erased callable such as `std::function` in the config.
+`OutputRetention` is an ordinary scoped enum because retention is an independent data
+axis and does not choose the C++ type of the output declaration:
 
-Node/package code is compiled to LLVM. The resulting `combine_values` target is a
-function in that compiled/JIT-linked module, so the executable config can use an
-ordinary function pointer after relocation. It is not an authored string identifier
-or a raw JSON-level operation enum. Whole-graph LLVM may also be able to
-specialize/devirtualize/in-line a statically known combiner such as addition.
+```cpp
+enum class OutputRetention {
+    ephemeral,
+    persisted,
+};
+```
 
-Frontend/reflection metadata does not need to serialize or expose the executable
-function pointer. It needs the scalar metadata (`default_value`, `min`, `max`, etc.)
-that is semantically useful outside the generated DSP module.
+Input access and output production do choose different concrete declaration types. A
+normal enum value passed as a function argument cannot select a function's return
+type. They are therefore scoped, enum-like typed tokens rather than unscoped globals:
+
+```cpp
+struct InputAccess {
+    struct Sequential {};
+    struct Region {};
+    struct Coverage {};
+
+    inline static constexpr Sequential sequential {};
+    inline static constexpr Region region {};
+    inline static constexpr Coverage coverage {};
+};
+
+struct OutputProduction {
+    struct Tick {};
+    struct Region {};
+    struct Coverage {};
+
+    inline static constexpr Tick tick {};
+    inline static constexpr Region region {};
+    inline static constexpr Coverage coverage {};
+};
+```
+
+The distinct token types select distinct authored config types:
+
+```text
+SequentialInputConfig<Types...>
+RegionInputConfig<Types...>
+CoverageInputConfig<Types...>
+
+TickOutputConfig<Types...>
+RegionOutputConfig<Types...>
+CoverageOutputConfig<Types...>
+```
+
+Consequently, Sequential-only options cannot appear on Region or Coverage inputs, and
+Tick-only semantics cannot appear on Region or Coverage outputs. There is no authored
+runtime `kind x access x production` variant. Event declarations remain separate
+typed configurations and do not acquire continuous-value-only fields for symmetry.
+
+The helper's template arguments determine the option types, so callers use designated
+initializers without spelling framework-internal `*_options` type names. Each
+registered continuous value extension defines the exact options meaningful for that
+type. For example, `Sample` supports scalar `default_value`, `min`, and `max`, while a
+type without a linear ordering does not expose meaningless `min` or `max` fields.
+Attempting to initialize an unsupported field is a compile-time error.
+
+A multi-type port lists one option initializer per configured type in the same order
+as the adjacent template argument list. Omitting all option initializers selects every
+extension's defaults:
+
+```cpp
+input<Sample, FractionalGlobalIndex>(
+    "value",
+    InputAccess::sequential,
+    {.default_value = 0.0f, .min = -1.0f, .max = 1.0f},
+    {.default_value = {}})
+
+input<Sample, FractionalGlobalIndex>(
+    "value",
+    InputAccess::sequential)
+```
+
+Reflection visits these concrete tuple elements and produces the homogeneous,
+type-erased configured-graph representation used by dynamic graph construction,
+archives, RPC, and GraphJit. The configured graph records stable registered type
+identities and the selected access/production semantics; it does not force the
+authored declaration back into the invalid cross-product representation.
+
+A configured Tick node contributes its required output `history()` and `latency()` in
+`constrain_ports()`. A configured Sequential consumer similarly contributes its
+history requirement there. This allows constructor values and graph-resolved port
+sizes and paces to determine temporal windows without changing the static callback
+shape.
+
+`CoverageOrdering` remains a configured-realization constraint rather than a static
+field of the authored config. A Coverage input may constrain the ordering it requires,
+a Coverage producer may constrain the ordering it guarantees, and an
+ordering-preserving node may relate the two in `constrain_ports()`.
+
+## 8. Sequential reduction is configurable per input
+
+Every registered continuous value extension supplies a default Sequential neutral
+value or neutral-initialization operation and a default `combine_values` operation.
+Those defaults make ordinary additive inputs concise; they do not fix every input to
+addition. Each authored Sequential input may override both parts of its reduction
+algebra.
+
+For a scalar `Sample` input, the intended syntax is:
+
+```cpp
+input<Sample>(
+    "gain_product",
+    InputAccess::sequential,
+    {
+        .neutral_value = 1.0f,
+        .combine_values = &multiply_samples,
+    })
+```
+
+The authored contract remains:
+
+```text
+combine_values is associative
+combine_values is commutative
+neutral_value is its identity
+```
+
+The operation belongs to the individual Sequential input because fan-in meaning is
+operation-dependent. The continuous value extension owns the typed option and
+executable representations. It must not force every logical value type into the
+scalar `Sample(Sample, Sample)` shape.
+
+For a dynamically sized logical value such as `FFTBlock`, the static declaration
+cannot contain a complete resolved-size neutral block. Its extension may instead
+represent the same contract with a neutral bin/fill operation and a block-combine
+operation over resolved storage. The authored field names retain their semantic
+meaning while the extension supplies their valid types and lowering behavior.
+
+The materialized executable configuration contains only the trivially copyable values
+and ordinary function/operation references needed by generated runtime/JIT code. It
+does not store `std::function` or another owning, runtime-erased callable. A configured
+combiner target is compiled into the node/package LLVM module and relocated normally;
+whole-graph LLVM may specialize, devirtualize, or inline a statically known operation.
+
+Frontend/reflection metadata does not need to serialize or expose executable function
+pointers. It records the presentation and value metadata that is semantically useful
+outside the generated DSP module. Executable reduction behavior remains part of the
+compiled node implementation.
 
 ## 9. Persisted and ephemeral random-access sample data stop using pages
 

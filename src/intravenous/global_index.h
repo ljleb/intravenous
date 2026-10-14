@@ -1,7 +1,9 @@
 #pragma once
 
 #include <bit>
+#include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <optional>
 #include <type_traits>
 
@@ -216,5 +218,247 @@ struct RangeRelativeIndexOrder {
             < origin.forward_distance_to(right);
     }
 };
+
+// Unsigned Q64.64 interval extent. Unlike a coordinate, this is linear and may
+// therefore be ordered. The all-zero representation is the only empty extent;
+// a complete 2^128 execution cycle is deliberately not representable.
+struct FractionalGlobalExtent {
+    std::uint64_t whole = 0;
+    std::uint64_t fraction = 0;
+
+    [[nodiscard]] constexpr bool empty() const noexcept
+    {
+        return whole == 0 && fraction == 0;
+    }
+
+    constexpr bool operator==(FractionalGlobalExtent const&) const noexcept = default;
+};
+
+[[nodiscard]] constexpr bool operator<(
+    FractionalGlobalExtent left,
+    FractionalGlobalExtent right) noexcept
+{
+    return left.whole < right.whole
+        || (left.whole == right.whole && left.fraction < right.fraction);
+}
+
+// One coordinate in the circular Q64.64 global domain. It is used both to
+// address fractional execution/storage positions and as a transported graph
+// value. Context supplies that role; the coordinate arithmetic is identical.
+class FractionalGlobalIndex {
+public:
+    constexpr FractionalGlobalIndex() noexcept = default;
+
+    [[nodiscard]] static constexpr FractionalGlobalIndex from_parts(
+        GlobalIndex whole,
+        std::uint64_t fraction) noexcept
+    {
+        return FractionalGlobalIndex(whole, fraction);
+    }
+
+    [[nodiscard]] static constexpr FractionalGlobalIndex from_global(
+        GlobalIndex index) noexcept
+    {
+        return from_parts(index, 0);
+    }
+
+    [[nodiscard]] constexpr GlobalIndex whole() const noexcept
+    {
+        return whole_;
+    }
+
+    [[nodiscard]] constexpr std::uint64_t fraction() const noexcept
+    {
+        return fraction_;
+    }
+
+    [[nodiscard]] constexpr FractionalGlobalIndex advanced_by(
+        FractionalGlobalExtent extent) const noexcept
+    {
+        auto const fraction = fraction_ + extent.fraction;
+        auto const carry = fraction < fraction_ ? std::uint64_t{1} : std::uint64_t{0};
+        return from_parts(
+            GlobalIndex::from_bits(whole_.bits() + extent.whole + carry),
+            fraction);
+    }
+
+    [[nodiscard]] constexpr FractionalGlobalExtent forward_distance_to(
+        FractionalGlobalIndex other) const noexcept
+    {
+        auto const borrow = other.fraction_ < fraction_
+            ? std::uint64_t{1}
+            : std::uint64_t{0};
+        return {
+            .whole = other.whole_.bits() - whole_.bits() - borrow,
+            .fraction = other.fraction_ - fraction_,
+        };
+    }
+
+    constexpr bool operator==(FractionalGlobalIndex const&) const noexcept = default;
+
+private:
+    constexpr FractionalGlobalIndex(
+        GlobalIndex whole,
+        std::uint64_t fraction) noexcept
+        : whole_(whole), fraction_(fraction)
+    {}
+
+    GlobalIndex whole_ {};
+    std::uint64_t fraction_ = 0;
+};
+
+static_assert(sizeof(FractionalGlobalIndex) == 2 * sizeof(std::uint64_t));
+static_assert(std::is_trivially_copyable_v<FractionalGlobalIndex>);
+static_assert(std::is_standard_layout_v<FractionalGlobalIndex>);
+
+// A finite half-open interval in the circular Q64.64 execution domain.
+struct FractionalGlobalIndexRange {
+    struct LatticeProjection {
+        FractionalGlobalIndex begin {};
+        std::size_t count = 0;
+
+        constexpr bool operator==(LatticeProjection const&) const noexcept = default;
+    };
+
+    static constexpr std::int32_t minimum_pace_exponent = -64;
+    static constexpr std::int32_t maximum_pace_exponent = 64;
+
+    FractionalGlobalIndex begin {};
+    FractionalGlobalExtent extent {};
+
+    [[nodiscard]] static constexpr FractionalGlobalIndexRange from_global_range(
+        GlobalIndexRange range) noexcept
+    {
+        return {
+            .begin = FractionalGlobalIndex::from_global(range.begin),
+            .extent = {.whole = range.extent},
+        };
+    }
+
+    [[nodiscard]] constexpr bool empty() const noexcept
+    {
+        return extent.empty();
+    }
+
+    [[nodiscard]] constexpr FractionalGlobalIndex end() const noexcept
+    {
+        return begin.advanced_by(extent);
+    }
+
+    [[nodiscard]] constexpr bool contains(FractionalGlobalIndex index) const noexcept
+    {
+        return begin.forward_distance_to(index) < extent;
+    }
+
+    // Returns the first lattice address in this range and the number of lattice
+    // values it contains. An empty optional means either the exponent is outside
+    // the Q64.64 domain or the value count cannot fit in size_t.
+    [[nodiscard]] constexpr std::optional<LatticeProjection>
+    try_project_onto_lattice(std::int32_t pace_exponent) const noexcept;
+};
+
+namespace detail {
+
+[[nodiscard]] constexpr FractionalGlobalExtent subtract(
+    FractionalGlobalExtent left,
+    FractionalGlobalExtent right) noexcept
+{
+    auto const borrow = left.fraction < right.fraction
+        ? std::uint64_t{1}
+        : std::uint64_t{0};
+    return {
+        .whole = left.whole - right.whole - borrow,
+        .fraction = left.fraction - right.fraction,
+    };
+}
+
+[[nodiscard]] constexpr FractionalGlobalExtent alignment_offset(
+    FractionalGlobalIndex index,
+    std::uint32_t spacing_shift) noexcept
+{
+    if (spacing_shift == 0) return {};
+    if (spacing_shift < 64) {
+        auto const mask = (std::uint64_t{1} << spacing_shift) - 1;
+        auto const remainder = index.fraction() & mask;
+        return remainder == 0
+            ? FractionalGlobalExtent{}
+            : FractionalGlobalExtent{
+                .fraction = (std::uint64_t{1} << spacing_shift) - remainder,
+            };
+    }
+    if (spacing_shift == 64) {
+        return index.fraction() == 0
+            ? FractionalGlobalExtent{}
+            : FractionalGlobalExtent{.fraction = std::uint64_t{0} - index.fraction()};
+    }
+    if (spacing_shift < 128) {
+        auto const high_bits = spacing_shift - 64;
+        auto const mask = (std::uint64_t{1} << high_bits) - 1;
+        auto const remainder_high = index.whole().bits() & mask;
+        auto const remainder_low = index.fraction();
+        if (remainder_high == 0 && remainder_low == 0) return {};
+        auto const borrow = remainder_low == 0 ? std::uint64_t{0} : std::uint64_t{1};
+        return {
+            .whole = (std::uint64_t{1} << high_bits) - remainder_high - borrow,
+            .fraction = std::uint64_t{0} - remainder_low,
+        };
+    }
+
+    if (index.whole().bits() == 0 && index.fraction() == 0) return {};
+    auto const borrow = index.fraction() == 0 ? std::uint64_t{0} : std::uint64_t{1};
+    return {
+        .whole = std::uint64_t{0} - index.whole().bits() - borrow,
+        .fraction = std::uint64_t{0} - index.fraction(),
+    };
+}
+
+[[nodiscard]] constexpr FractionalGlobalExtent shift_right(
+    FractionalGlobalExtent value,
+    std::uint32_t shift) noexcept
+{
+    if (shift == 0) return value;
+    if (shift < 64) {
+        return {
+            .whole = value.whole >> shift,
+            .fraction = (value.fraction >> shift)
+                | (value.whole << (64 - shift)),
+        };
+    }
+    if (shift == 64) return {.fraction = value.whole};
+    if (shift < 128) return {.fraction = value.whole >> (shift - 64)};
+    return {};
+}
+
+} // namespace detail
+
+constexpr std::optional<FractionalGlobalIndexRange::LatticeProjection>
+FractionalGlobalIndexRange::try_project_onto_lattice(
+    std::int32_t pace_exponent) const noexcept
+{
+    if (pace_exponent < minimum_pace_exponent
+        || pace_exponent > maximum_pace_exponent) {
+        return std::nullopt;
+    }
+    if (empty()) return LatticeProjection{.begin = begin};
+
+    auto const spacing_shift = static_cast<std::uint32_t>(64 - pace_exponent);
+    auto const offset = detail::alignment_offset(begin, spacing_shift);
+    if (!(offset < extent))
+        return LatticeProjection{.begin = end()};
+
+    auto const first = begin.advanced_by(offset);
+    auto after_first = detail::subtract(extent, offset);
+    after_first = detail::subtract(
+        after_first, FractionalGlobalExtent{.fraction = 1});
+    auto const additional = detail::shift_right(after_first, spacing_shift);
+    if (additional.whole != 0
+        || additional.fraction >= std::numeric_limits<std::size_t>::max()) {
+        return std::nullopt;
+    }
+    return LatticeProjection{
+        .begin = first,
+        .count = static_cast<std::size_t>(additional.fraction) + 1,
+    };
+}
 
 } // namespace iv

@@ -1551,6 +1551,7 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
     LoweringInput const& input,
     GraphAnalysis const& analysis,
     ConnectionAnalysisPlan const& connections,
+    ResolvedPortRealization const& realization,
     RealtimeStorageCostModel const& cost_model)
 {
     SamplePortBindingPlan plan;
@@ -1966,10 +1967,11 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
                 .port = port,
                 .config = config,
             });
+            auto const& resolved_output = realization.output(bundle, port);
             sink_requests.push_back(SampleSinkStorageRequest{
                 .channel_layout = config.channel_layout,
-                .history = port_history(config),
-                .latency = tick_latency(config),
+                .history = resolved_output.history,
+                .latency = resolved_output.latency,
                 .execution_position = *execution_position,
                 .migration_identity =
                     "graphjit.sample.disconnected_output:"
@@ -2121,7 +2123,9 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
         auto& binding = plan.primitives[disconnected.primitive]
             .inputs[disconnected.port];
         binding.channel_layout = disconnected.config.channel_layout;
-        binding.history = port_history(disconnected.config);
+        binding.history = realization.input(
+            analysis.primitives[disconnected.primitive].bundle.node_bundle,
+            disconnected.port).history;
         binding.read_latency = 0;
         auto const channels = channel_count(disconnected.config.channel_layout);
         binding.channels.reserve(channels);
@@ -2151,8 +2155,11 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
         IV_ASSERT(binding.realtime,
             "Tick sample storage disagrees with its port declaration");
         binding.storage = storage;
-        binding.history = port_history(disconnected.config);
-        binding.latency = tick_latency(disconnected.config);
+        auto const& resolved_output = realization.output(
+            analysis.primitives[disconnected.primitive].bundle.node_bundle,
+            disconnected.port);
+        binding.history = resolved_output.history;
+        binding.latency = resolved_output.latency;
     }
 
     for (auto const& primitive : plan.primitives) {
@@ -2201,6 +2208,7 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
     LoweringInput const& input,
     GraphAnalysis const& analysis,
     ConnectionAnalysisPlan const& connections,
+    ResolvedPortRealization const& realization,
     RealtimeStorageCostModel const& cost_model,
     EventPlanningDecisions const* decisions)
 {
@@ -2607,8 +2615,10 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
                     return std::unexpected(
                         "GraphJit event fan-in producer disagrees with its declaration");
                 }
-                auto const source_history = port_history(source);
-                auto const source_latency = tick_latency(source);
+                auto const& resolved_source =
+                    realization.event_output(source_id.bundle, source_id.port);
+                auto const source_history = resolved_source.history;
+                auto const source_latency = resolved_source.latency;
                 auto const source_region = region_index_for_bundle(
                     source_id.bundle);
                 auto const source_cyclic_region = source_region
@@ -2706,9 +2716,11 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
             auto const requires_retained_source_identity =
                 std::ranges::any_of(
                     validated_sources,
-                    [](ValidatedSource const& source) {
-                        return port_history(source.config) != 0
-                            || tick_latency(source.config) != 0;
+                    [&](ValidatedSource const& source) {
+                        auto const& resolved_source = realization.event_output(
+                            source.id.bundle, source.id.port);
+                        return resolved_source.history != 0
+                            || resolved_source.latency != 0;
                     });
 
             std::size_t retained_history = 0;
@@ -3008,12 +3020,14 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
                             return std::unexpected(
                                 "GraphJit event output belongs to more than one producer group");
                         }
+                        auto const& resolved_source = realization.event_output(
+                            source.id.bundle, source.id.port);
                         source_binding = PrimitiveEventOutputBindingPlan{
                             .realtime = true,
                             .storage = *local,
                             .source_type = group.source_type,
-                            .history = port_history(source.config),
-                            .latency = tick_latency(source.config),
+                            .history = resolved_source.history,
+                            .latency = resolved_source.latency,
                             .append_existing = !source.cyclic_region
                                 && analysis.primitives[source.primitive]
                                        .bundle.maximum_block_size
@@ -3298,10 +3312,12 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
             if (retained_values != 0) {
                 for (std::size_t source_index = 0;
                      source_index < validated_sources.size(); ++source_index) {
-                    auto const& source = validated_sources[source_index].config;
-                    if (tick_latency(source) != 0
+                    auto const& source = validated_sources[source_index];
+                    auto const& resolved_source = realization.event_output(
+                        source.id.bundle, source.id.port);
+                    if (resolved_source.latency != 0
                         || (source_index == 0
-                            && port_history(source) != 0)) {
+                            && resolved_source.history != 0)) {
                         retained_home_is_order_safe = false;
                         break;
                     }
@@ -3573,12 +3589,14 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
                     return std::unexpected(
                         "GraphJit event output belongs to more than one producer group");
                 }
+                auto const& resolved_source = realization.event_output(
+                    source.id.bundle, source.id.port);
                 source_binding = PrimitiveEventOutputBindingPlan{
                     .realtime = true,
                     .storage = storage,
                     .source_type = group.source_type,
-                    .history = port_history(source.config),
-                    .latency = tick_latency(source.config),
+                    .history = resolved_source.history,
+                    .latency = resolved_source.latency,
                     .append_existing = !cyclic_source_region
                         && ((retained_producer_home && source_index == 0)
                         || analysis.primitives[source.primitive]
@@ -3768,8 +3786,10 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
             ? region_scope(*source_region_index, EventOperationPhase::after)
             : primitive_scope(
                 group.live_interval.begin, EventOperationPhase::after);
-        auto const source_history = port_history(source);
-        auto const source_latency = tick_latency(source);
+        auto const& resolved_source =
+            realization.event_output(source_id.bundle, source_id.port);
+        auto const source_history = resolved_source.history;
+        auto const source_latency = resolved_source.latency;
         auto const requires_cyclic_local_merge = source_region_is_cyclic
             && (source_history != 0 || source_latency != 0);
         auto producer_window_samples = input.specialization.block_size;
@@ -4003,8 +4023,8 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
             .realtime = true,
             .storage = producer_representation,
             .source_type = group.source_type,
-            .history = port_history(source),
-            .latency = tick_latency(source),
+            .history = resolved_source.history,
+            .latency = resolved_source.latency,
             .append_existing = aggregate_sequence
                 && !requires_cyclic_local_merge,
         };
@@ -4699,7 +4719,7 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
             });
         }
         return plan_event_ports_once(
-            input, analysis, connections, cost_model, &selected);
+            input, analysis, connections, realization, cost_model, &selected);
     }
     if (plan.feedback_operations.size() != decisions->feedback.size()) {
         return std::unexpected(
@@ -4753,8 +4773,9 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
                 .resolve_event_output(port_id).config;
             IV_ASSERT(is_tick(config.production),
                 "Tick event storage disagrees with its port declaration");
-            auto const history = port_history(config);
-            auto const latency = tick_latency(config);
+            auto const& resolved_output = realization.event_output(bundle, port);
+            auto const history = resolved_output.history;
+            auto const latency = resolved_output.latency;
             if (history > std::numeric_limits<std::size_t>::max() - latency) {
                 return std::unexpected(
                     "GraphJit disconnected event output window overflows size_t");
@@ -5183,10 +5204,11 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports(
     LoweringInput const& input,
     GraphAnalysis const& analysis,
     ConnectionAnalysisPlan const& connections,
+    ResolvedPortRealization const& realization,
     RealtimeStorageCostModel const& cost_model)
 {
     return plan_event_ports_once(
-        input, analysis, connections, cost_model, nullptr);
+        input, analysis, connections, realization, cost_model, nullptr);
 }
 
 std::expected<ExecutionPlan, std::string> plan_execution(
@@ -5632,6 +5654,15 @@ std::expected<LoweringPlan, std::string> build_lowering_plan(
         return std::unexpected(std::move(port_realization.error()));
     }
 
+    std::vector<bool> intrinsically_replayable(
+        input.graph.node_bundles.size(), false);
+    std::size_t reflected_bundle = 0;
+    input.graph.node_bundles.for_each_configured_bundle(
+        [&](ConfiguredNodeBundleView const& view) {
+            intrinsically_replayable.at(reflected_bundle++) =
+                view.intrinsically_replayable;
+        });
+
     // The selected type is now a single immutable graph fact.  Existing
     // storage planning below is still the Sample implementation; reject every
     // other selected registered type here rather than silently allocating
@@ -5658,6 +5689,34 @@ std::expected<LoweringPlan, std::string> build_lowering_plan(
                     + std::string(continuous_value_type_info(selected).name) + "'");
             }
         }
+        if (intrinsically_replayable[bundle]) {
+            for (std::size_t port = 0;
+                 port < configured.sample_input_count(); ++port) {
+                if (port_realization->input(bundle, port).history != 0)
+                    return std::unexpected(
+                        "intrinsically replayable node resolves nonzero Sequential input history");
+            }
+            for (std::size_t port = 0;
+                 port < configured.sample_output_count(); ++port) {
+                auto const& output = port_realization->output(bundle, port);
+                if (output.history != 0 || output.latency != 0)
+                    return std::unexpected(
+                        "intrinsically replayable node resolves nonzero Tick output history or latency");
+            }
+            for (std::size_t port = 0;
+                 port < configured.event_input_count(); ++port) {
+                if (port_realization->event_input(bundle, port).history != 0)
+                    return std::unexpected(
+                        "intrinsically replayable node resolves nonzero Sequential event-input history");
+            }
+            for (std::size_t port = 0;
+                 port < configured.event_output_count(); ++port) {
+                auto const& output = port_realization->event_output(bundle, port);
+                if (output.history != 0 || output.latency != 0)
+                    return std::unexpected(
+                        "intrinsically replayable node resolves nonzero Tick event-output history or latency");
+            }
+        }
     }
 
     struct RealtimePortPlans {
@@ -5673,6 +5732,7 @@ std::expected<LoweringPlan, std::string> build_lowering_plan(
         -> std::expected<RealtimePortPlans, std::string> {
         auto connections = build_connection_analysis_plan(
             input.graph,
+            *port_realization,
             input.specialization.block_size,
             cost_model,
             retained_background_plan ? &*retained_background_plan : nullptr);
@@ -5683,12 +5743,12 @@ std::expected<LoweringPlan, std::string> build_lowering_plan(
             retained_background_plan = connections->background;
         }
         auto sample_ports = plan_sample_ports(
-            input, *analysis, *connections, cost_model);
+            input, *analysis, *connections, *port_realization, cost_model);
         if (!sample_ports) {
             return std::unexpected(std::move(sample_ports.error()));
         }
         auto event_ports = plan_event_ports(
-            input, *analysis, *connections, cost_model);
+            input, *analysis, *connections, *port_realization, cost_model);
         if (!event_ports) {
             return std::unexpected(std::move(event_ports.error()));
         }

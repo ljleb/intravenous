@@ -132,18 +132,12 @@ constexpr std::vector<IntrospectionPortInfo> project_introspection_sample_ports(
         Sample default_value = 0.0f;
         std::optional<Sample> min;
         std::optional<Sample> max;
-        std::size_t history = 0;
-        std::size_t latency = 0;
         if (inputs) {
             auto const config =
                 node_bundles.resolve_sample_input(first_address).config;
             default_value = config.default_value;
             min = config.min;
             max = config.max;
-            history = port_history_or_zero(config);
-        } else {
-            latency = tick_latency_or_zero(
-                node_bundles.resolve_sample_output(first_address).config);
         }
 
         bool any_connected = false;
@@ -165,8 +159,6 @@ constexpr std::vector<IntrospectionPortInfo> project_introspection_sample_ports(
             .default_value = default_value,
             .min = min,
             .max = max,
-            .history = history,
-            .latency = latency,
             .sample_channel_type = mapping.channel_layout.channel_type,
             .source_spans =
                 introspection_source_spans_for(mapping.source_infos),
