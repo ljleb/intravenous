@@ -2,6 +2,7 @@
 
 #include <intravenous/compat.h>
 #include <intravenous/channel_layout.h>
+#include <intravenous/continuous_value.h>
 #include <intravenous/global_index.h>
 #include <intravenous/sample.h>
 
@@ -1621,6 +1622,7 @@ namespace iv {
     // Sequential inputs and Tick outputs carry temporal history/latency;
     // RandomAccess inputs and Tock outputs have no Tick timing requirements.
     struct SampleInputProperties {
+        ContinuousValueTypeSet value_types = sample_value_type;
         ChannelLayout channel_layout {
             .channel_type = ChannelTypeId::mono,
             .sample_layout = SampleStreamLayout::planar,
@@ -1635,6 +1637,7 @@ namespace iv {
     };
 
     struct SampleOutputProperties {
+        ContinuousValueTypeSet value_types = sample_value_type;
         ChannelLayout channel_layout {
             .channel_type = ChannelTypeId::mono,
             .sample_layout = SampleStreamLayout::planar,
@@ -1985,6 +1988,7 @@ namespace iv {
 
     struct SampleInputConfig {
         std::string name {};
+        ContinuousValueTypeSet value_types = sample_value_type;
         ChannelLayout channel_layout {
             .channel_type = ChannelTypeId::mono,
             .sample_layout = SampleStreamLayout::planar,
@@ -1998,6 +2002,7 @@ namespace iv {
 
     struct SampleOutputConfig {
         std::string name {};
+        ContinuousValueTypeSet value_types = sample_value_type;
         ChannelLayout channel_layout {
             .channel_type = ChannelTypeId::mono,
             .sample_layout = SampleStreamLayout::planar,
@@ -2196,6 +2201,7 @@ namespace iv {
         auto const& properties = std::get<SampleInputProperties>(config.kind);
         return {
             .name = config.name,
+            .value_types = properties.value_types,
             .channel_layout = properties.channel_layout,
             .access = config.access,
             .neutral_value = properties.neutral_value,
@@ -2211,6 +2217,7 @@ namespace iv {
         auto const& properties = std::get<SampleOutputProperties>(config.kind);
         return {
             .name = config.name,
+            .value_types = properties.value_types,
             .channel_layout = properties.channel_layout,
             .production = config.production,
             .retention = config.retention,
@@ -2246,6 +2253,7 @@ namespace iv {
         return {
             config.name,
             SampleInputProperties{
+                .value_types = config.value_types,
                 .channel_layout = config.channel_layout,
                 .neutral_value = config.neutral_value,
                 .default_value = config.default_value,
@@ -2271,7 +2279,10 @@ namespace iv {
     {
         return {
             config.name,
-            SampleOutputProperties{.channel_layout = config.channel_layout},
+            SampleOutputProperties{
+                .value_types = config.value_types,
+                .channel_layout = config.channel_layout,
+            },
             config.production,
             config.retention,
         };

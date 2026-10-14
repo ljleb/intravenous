@@ -34,6 +34,7 @@ std::vector<OutputRefConfig> make_sample_output_configs(
         .ref = ref.ref,
         .config = {
             .name = std::string(ref.name),
+            .value_types = ContinuousValueTypeSet::audio_capable(),
             .channel_layout = ref.channel_layout,
         },
         .public_member = {
@@ -98,14 +99,16 @@ void GraphBuilderState::validate_tiled_module_interfaces(
     details::error("tiled IV module requires child graphs");
   }
   auto same_sample_input = [](SampleInputConfig const& lhs, SampleInputConfig const& rhs) {
-    return lhs.name == rhs.name && lhs.channel_layout == rhs.channel_layout
+    return lhs.name == rhs.name && lhs.value_types == rhs.value_types
+        && lhs.channel_layout == rhs.channel_layout
         && lhs.access == rhs.access
         && lhs.neutral_value.value == rhs.neutral_value.value
         && lhs.default_value.value == rhs.default_value.value
         && lhs.min.value == rhs.min.value && lhs.max.value == rhs.max.value;
   };
   auto same_sample_output = [](SampleOutputConfig const& lhs, SampleOutputConfig const& rhs) {
-    return lhs.name == rhs.name && lhs.channel_layout == rhs.channel_layout
+    return lhs.name == rhs.name && lhs.value_types == rhs.value_types
+        && lhs.channel_layout == rhs.channel_layout
         && lhs.production == rhs.production && lhs.retention == rhs.retention;
   };
   auto same_event_input = [](EventInputConfig const& lhs, EventInputConfig const& rhs) {

@@ -283,6 +283,22 @@ FractionalGlobalIndex
 FFTBlock
 ```
 
+The registry has one canonical declaration list. Each declaration contains the C++
+value type, stable runtime identity, diagnostic name, fixed rank and channel
+capability. That one declaration generates the runtime ID, compile-time trait,
+runtime descriptor and value-type-domain membership. Adding a continuous value type
+must not require editing an enum, a descriptor array, a trait specialization and
+consumer switches separately. Consumers select behavior through the generated
+descriptor or through a type-owned storage/port policy; they do not switch on known
+value-type enumerators.
+
+Storage and port behavior that differs by value type belongs to the same extension as
+new declarations or specializations owned by that type. A type extension may therefore
+add its own storage and authored-access declarations, but it must not modify an existing
+storage dispatcher merely to teach it another enumerator. Missing required behavior is
+a compile-time or realization-time error at the registry boundary, not a fallback to
+`Sample` behavior.
+
 `FractionalGlobalIndex` is a scalar fixed-point coordinate in the global sample-index domain.
 It is data transported at ordinary integer global positions; it does **not** replace
 the integer global index used to locate graph data itself. Its representation retains
@@ -333,6 +349,72 @@ FFTBlock
     rank 1
     size = number of frequency-domain values in one block
 ```
+
+### `FFTBlock` has a canonical library-neutral bin representation
+
+One frequency-domain value in an `FFTBlock` is a complex bin. Its canonical C++
+element type is:
+
+```cpp
+using FFTBin = std::complex<Sample::storage>;
+```
+
+Consequently, `FFTBlock::size()` counts complex bins. It does not count underlying
+real scalars, a transform library's work-buffer elements, or a configured time-domain
+transform length. A transform node owns the constraint between its configured
+time-domain length and its output bin count. For example, a node may expose all `N`
+complex bins or only the `N / 2 + 1` nonnegative-frequency bins of a real transform,
+but either result is an ordinary contiguous array of explicit `FFTBin` values.
+
+`std::complex<Sample::storage>` is deliberate rather than incidental ABI leakage from
+one FFT implementation. The C++ complex-number contract guarantees a trivially
+copyable value and array-oriented access to consecutive real/imaginary scalar pairs.
+That gives graph storage one stable interleaved-complex representation which can be
+passed directly to libraries whose public contract accepts the same representation,
+and can be adapted without inspecting private library objects when a C API names an
+equivalent complex type.
+
+The canonical representation is not required to match every FFT library's native
+working layout. Split-complex planes, packed real-transform arrays, library-internal
+unordered spectra, padding, and scratch space are realization details at the FFT node,
+not alternate meanings of `FFTBlock`. Those representations must not cross an
+ordinary port connection, enter persisted Region/Coverage data, or become a runtime
+layout tag carried by each value.
+
+An FFT implementation selected for a compiled node realization must describe the
+requirements relevant to direct use of graph storage:
+
+- the native input and output layout of the transform;
+- the required address alignment and any required padding;
+- whether the operation is in-place or out-of-place and whether it destroys input;
+- the amount and lifetime of auxiliary scratch storage; and
+- the transform's scaling/normalization convention.
+
+GraphJit may let that implementation consume or produce an `FFTBlock` in place only
+when the canonical bin layout, resolved bin count, alignment, capacity, lifetime, and
+mutation rules all satisfy the implementation's documented contract. Exact
+`std::complex<Sample::storage>` APIs are the straightforward direct case. A
+scalar-interleaved API may also be direct when its contract matches the C++
+array-oriented representation. A split-complex API may be direct when it accepts the
+corresponding strided view; otherwise it requires a split-plane materialization.
+Packed or unordered real-transform formats require canonicalization before the value
+is published to the graph.
+
+When direct use is not legal, the compiled realization owns pre-sized transient
+scratch and any required conversion operation. This is not an audio-thread fallback:
+the transform plan, alignment, storage extent, and conversion path are chosen before
+activation, and execution performs no dynamic allocation. The planner may co-locate
+or reuse scratch with destination storage when ordinary alias, lifetime, and mutation
+analysis proves that safe, but the node-facing `FFTBlock` view exposes only its
+logical complex bins.
+
+Backend-specific normalization is handled by the transform node/adapter so that
+changing the chosen library does not change the authored node's numerical contract.
+Likewise, direct compatibility must come from a C++ or library guarantee; equal
+`sizeof` and `alignof` values alone do not authorize reinterpretation. This keeps
+library interoperability and zero-copy execution available without making JUCE,
+FFTW, vDSP, PFFFT, or any other backend's scratch representation part of the graph
+type system.
 
 Do not generate a distinct C++/registry type for every FFT size. `FFTBlock` remains
 one registered value type; a particular graph realization resolves, for example,
@@ -530,6 +612,19 @@ FFT values/bins. In particular, averaging two FFT blocks is equivalent to FFT of
 averaged time-domain samples, apart from floating-point reassociation details. This
 preserves room for GraphJit to move/fuse legal linear channel operations around FFT
 boundaries when profitable without changing authored semantics.
+
+Tiling is itself an explicit value-type constraint. Every continuous port duplicated
+by a tiled node or tiled subgraph must resolve to a registered audio-capable value
+type. For example, tiling intersects `{Sample, FractionalGlobalIndex}` with the
+audio-capable domain and therefore selects `Sample`; tiling
+`{Sample, FFTBlock}` leaves both alternatives for other graph constraints to resolve.
+An empty intersection is diagnosed at realization. Event ports remain outside this
+continuous-value constraint.
+
+A scalar control shared by every tile is not a tiled port. It belongs outside the
+tiled leaf and must be connected through an explicit shared/broadcast structure. This
+keeps `FractionalGlobalIndex` scalar and prevents channel duplication or channel
+conversion from becoming an accidental property of scalar coordinate values.
 
 ## 7. Sample port config types should make invalid states unrepresentable
 

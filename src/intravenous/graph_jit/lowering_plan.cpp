@@ -5615,6 +5615,51 @@ std::expected<LoweringPlan, std::string> build_lowering_plan(
     auto analysis = analyze_graph(input);
     if (!analysis) return std::unexpected(std::move(analysis.error()));
 
+    auto const boundary_bundle = input.graph.public_ports.boundary_handle();
+    if (boundary_bundle < input.graph.node_bundles.size()) {
+        auto const& boundary = input.graph.node_bundles.bundle(boundary_bundle);
+        if (boundary.sample_input_count() != 0
+            || boundary.sample_output_count() != 0
+            || boundary.event_input_count() != 0
+            || boundary.event_output_count() != 0) {
+            return std::unexpected(
+                "GraphJit root graph must not declare boundary ports; system I/O and inter-module communication belong in concrete node types");
+        }
+    }
+
+    auto port_realization = resolve_port_realization(input.graph);
+    if (!port_realization) {
+        return std::unexpected(std::move(port_realization.error()));
+    }
+
+    // The selected type is now a single immutable graph fact.  Existing
+    // storage planning below is still the Sample implementation; reject every
+    // other selected registered type here rather than silently allocating
+    // Sample storage for it. Type-owned storage realizations are the next
+    // consumer-side part of Front 1.
+    for (NodeBundleHandle bundle = 0;
+         bundle < input.graph.node_bundles.size(); ++bundle) {
+        auto const& configured = input.graph.node_bundles.bundle(bundle);
+        for (std::size_t port = 0;
+             port < configured.sample_input_count(); ++port) {
+            auto const selected = port_realization->input(bundle, port).value_type;
+            if (selected != continuous_value_type_id_v<Sample>) {
+                return std::unexpected(
+                    "GraphJit continuous input storage does not yet realize selected type '"
+                    + std::string(continuous_value_type_info(selected).name) + "'");
+            }
+        }
+        for (std::size_t port = 0;
+             port < configured.sample_output_count(); ++port) {
+            auto const selected = port_realization->output(bundle, port).value_type;
+            if (selected != continuous_value_type_id_v<Sample>) {
+                return std::unexpected(
+                    "GraphJit continuous output storage does not yet realize selected type '"
+                    + std::string(continuous_value_type_info(selected).name) + "'");
+            }
+        }
+    }
+
     struct RealtimePortPlans {
         ConnectionAnalysisPlan connections{};
         SamplePortBindingPlan sample_ports{};
@@ -5637,18 +5682,6 @@ std::expected<LoweringPlan, std::string> build_lowering_plan(
         if (!retained_background_plan) {
             retained_background_plan = connections->background;
         }
-        if (connections->boundary_bundle < input.graph.node_bundles.size()) {
-            auto const& boundary = input.graph.node_bundles.bundle(
-                connections->boundary_bundle);
-            if (boundary.sample_input_count() != 0
-                || boundary.sample_output_count() != 0
-                || boundary.event_input_count() != 0
-                || boundary.event_output_count() != 0) {
-                return std::unexpected(
-                    "GraphJit root graph must not declare boundary ports; system I/O and inter-module communication belong in concrete node types");
-            }
-        }
-
         auto sample_ports = plan_sample_ports(
             input, *analysis, *connections, cost_model);
         if (!sample_ports) {
@@ -5815,6 +5848,7 @@ std::expected<LoweringPlan, std::string> build_lowering_plan(
     if (!execution) return std::unexpected(std::move(execution.error()));
 
     return LoweringPlan{
+        .port_realization = std::move(*port_realization),
         .connections = std::move(realtime_ports->connections),
         .declarations = std::move(*declarations),
         .imports = std::move(*imports),

@@ -25,6 +25,7 @@ struct NodeTypeIdentity {
 
 struct ConcreteNode {
   NodePorts ports{};
+  NodePortConstraints port_constraints{};
   ReflectedNodeOperations operations{};
   std::shared_ptr<void const> node_storage{};
   std::shared_ptr<NodeStateStructures const> state_structures_storage{};

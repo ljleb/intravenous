@@ -9,6 +9,7 @@
 #include <intravenous/node/build_request.h>
 #include <intravenous/node/config_relocations.h>
 #include <intravenous/node/config_storage.h>
+#include <intravenous/node/port_constraints.h>
 #include <intravenous/node/registered_type_identity.h>
 
 #include <memory>
@@ -19,6 +20,7 @@ namespace iv {
 
 struct ReflectedNodeDescription {
     NodePorts ports {};
+    NodePortConstraints port_constraints {};
     ReflectedNodeOperations operations {};
     std::shared_ptr<void const> node_storage {};
     std::shared_ptr<NodeStateStructures const> state_structures_storage {};

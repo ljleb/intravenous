@@ -53,6 +53,8 @@ This front owns:
 - Tick-output `latency()` constraints;
 - Coverage ordering/sortedness constraints;
 - finite registered value-type alternatives and value-type equality constraints;
+- explicit audio-capability constraints contributed by graph tiling, applied to every
+  tiled continuous port without affecting event ports;
 - connection-generated constraints between producer and consumer ports;
 - conflict and unresolved-property diagnostics;
 - effective local sample-rate domains after pace resolution;
@@ -60,10 +62,21 @@ This front owns:
 - Sequential `block_extended()` realization;
 - the initial continuous-value registry, including `Sample`, `FractionalGlobalIndex` and
   `FFTBlock`;
+- declaration-generated continuous-value identity/metadata/capability domains, with
+  value-type-specific storage and authored-access behavior added by the type extension
+  rather than by editing central consumer switches;
+- the canonical `FFTBin = std::complex<Sample::storage>` representation and resolved
+  `FFTBlock` bin count;
+- FFT-node realization requirements for backend layout, alignment, padding,
+  in-place/destructive operation, scratch storage, canonicalization and normalization,
+  so direct library use is selected only when compatible and every other path is
+  preplanned rather than allocated dynamically during execution;
 - realization-time selection of one concrete type for multi-type ports before storage
   planning/lowering;
 - graph-resolved FFT dimensions and storage-size information;
 - the planned type-safe sample/event port-config representation;
+- value-type-aware module/subgraph boundary input declarations, without imposing
+  Sample-only default/min/max semantics on `FractionalGlobalIndex` or `FFTBlock`;
 - Sequential `neutral_value` / `combine_values` semantics where they affect
   realization and delivery legality.
 

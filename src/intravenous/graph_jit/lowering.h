@@ -1,6 +1,7 @@
 #pragma once
 
 #include <intravenous/graph_jit/realtime_port_state_plan.h>
+#include <intravenous/graph_jit/port_realization.h>
 #include <intravenous/node/layout.h>
 #include <intravenous/runtime/graph_jit.h>
 
@@ -101,6 +102,7 @@ struct LoweredGraphRootSymbols {
 // Immutable lowering-shared tables should be emitted as LLVM globals so their
 // lifetime is exactly the materialized ORC generation.
 struct LoweringOutput {
+    ResolvedPortRealization port_realization{};
     NodeLayout node_layout{};
     BackgroundEvaluationPlan background_evaluation_plan{};
     RealtimePortStateRequirements realtime_port_state_requirements{};

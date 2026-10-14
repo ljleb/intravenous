@@ -26,6 +26,14 @@ static_assert(iv::channel_count(iv::ChannelTypeId::mono) == 1);
 static_assert(iv::channel_count(iv::ChannelTypeId::stereo) == 2);
 static_assert(iv::stereo::left.channel_index == 0);
 static_assert(iv::stereo::right.channel_index == 1);
+static_assert(iv::channel_type_info(iv::ChannelTypeId::mono).wire_name == "mono");
+static_assert(iv::channel_type_info(iv::ChannelTypeId::stereo).channel_count == 2);
+static_assert(iv::channel_conversion_coefficient(
+    iv::ChannelTypeId::mono, iv::ChannelTypeId::stereo, 0, 1) == 1.0f);
+static_assert(iv::channel_conversion_coefficient(
+    iv::ChannelTypeId::stereo, iv::ChannelTypeId::mono, 0, 0) == 0.5f);
+static_assert(iv::channel_conversion_coefficient(
+    iv::ChannelTypeId::stereo, iv::ChannelTypeId::mono, 1, 0) == 0.5f);
 
 struct NamedStereoSource {
     static constexpr auto inputs()
@@ -65,6 +73,72 @@ struct MonoPass {
         ctx.template output<0>().push_block(ctx.template input<0>().get_block(ctx.block_size));
     }
 };
+
+TEST(Channels, RegistryDerivedConversionPlansApplyDeclaredMatrices)
+{
+    auto const interleave = iv::ChannelConversionRegistry::plan(
+        {
+            .channel_type = iv::ChannelTypeId::stereo,
+            .sample_layout = iv::SampleStreamLayout::planar,
+        },
+        {
+            .channel_type = iv::ChannelTypeId::stereo,
+            .sample_layout = iv::SampleStreamLayout::interleaved,
+        });
+    std::array<iv::Sample, 6> planar_stereo {
+        1.0f, 2.0f, 3.0f, 11.0f, 12.0f, 13.0f};
+    std::array<iv::Sample, 6> interleaved_stereo {};
+    interleave.convert(
+        planar_stereo.data(), interleaved_stereo.data(), 3);
+    std::array<float, 6> const expected_interleaved {
+        1.0f, 11.0f, 2.0f, 12.0f, 3.0f, 13.0f};
+    for (std::size_t sample = 0; sample < interleaved_stereo.size(); ++sample) {
+        EXPECT_FLOAT_EQ(
+            interleaved_stereo[sample], expected_interleaved[sample]);
+    }
+
+    auto const duplicate = iv::ChannelConversionRegistry::plan(
+        {
+            .channel_type = iv::ChannelTypeId::mono,
+            .sample_layout = iv::SampleStreamLayout::planar,
+        },
+        {
+            .channel_type = iv::ChannelTypeId::stereo,
+            .sample_layout = iv::SampleStreamLayout::interleaved,
+        });
+    std::array<iv::Sample, 3> mono {1.0f, 2.0f, 3.0f};
+    std::array<iv::Sample, 6> stereo {};
+    duplicate.convert(mono.data(), stereo.data(), mono.size());
+    std::array<float, 6> const expected_stereo {
+        1.0f, 1.0f, 2.0f, 2.0f, 3.0f, 3.0f};
+    for (std::size_t sample = 0; sample < stereo.size(); ++sample) {
+        EXPECT_FLOAT_EQ(stereo[sample], expected_stereo[sample]);
+    }
+
+    auto const average = iv::ChannelConversionRegistry::plan(
+        {
+            .channel_type = iv::ChannelTypeId::stereo,
+            .sample_layout = iv::SampleStreamLayout::interleaved,
+        },
+        {
+            .channel_type = iv::ChannelTypeId::mono,
+            .sample_layout = iv::SampleStreamLayout::planar,
+        });
+    std::array<iv::Sample, 3> averaged {};
+    average.convert(stereo.data(), averaged.data(), averaged.size());
+    for (std::size_t sample = 0; sample < averaged.size(); ++sample) {
+        EXPECT_FLOAT_EQ(averaged[sample], mono[sample]);
+    }
+
+    EXPECT_EQ(
+        iv::channel_conversion_aliased_source(
+            iv::ChannelTypeId::mono, iv::ChannelTypeId::stereo, 1),
+        0u);
+    EXPECT_FALSE(iv::channel_conversion_aliased_source(
+        iv::ChannelTypeId::stereo, iv::ChannelTypeId::mono, 0));
+    EXPECT_TRUE(iv::channel_conversion_mixes_sources(
+        iv::ChannelTypeId::stereo, iv::ChannelTypeId::mono));
+}
 
 TEST(Channels, PositionalInputsUseSeparateSampleAndEventIndexes)
 {

@@ -192,16 +192,8 @@ std::optional<std::size_t> aliased_conversion_source_channel(
     ChannelTypeId target_type,
     std::size_t target_channel)
 {
-    if (source_type == target_type) {
-        if (target_channel < channel_count(source_type)) return target_channel;
-        return std::nullopt;
-    }
-    if (source_type == ChannelTypeId::mono
-        && target_type == ChannelTypeId::stereo
-        && target_channel < channel_count(ChannelTypeId::stereo)) {
-        return 0;
-    }
-    return std::nullopt;
+    return channel_conversion_aliased_source(
+        source_type, target_type, target_channel);
 }
 
 bool can_alias_sample_conversion(
@@ -224,8 +216,8 @@ bool can_compute_sample_conversion_channelwise(
     ChannelTypeId source_type,
     ChannelTypeId target_type)
 {
-    return source_type == ChannelTypeId::stereo
-        && target_type == ChannelTypeId::mono;
+    return is_registered_channel_type(source_type)
+        && is_registered_channel_type(target_type);
 }
 
 bool can_plan_sample_composition_channels(
@@ -1097,10 +1089,10 @@ std::expected<SampleStoragePlan, std::string> build_sample_storage_plan(
                     + std::string(e.what()));
             }
 
-            // Channel-granular bindings make layout-only conversion and
-            // mono->stereo duplication zero-copy. The consumer can read each
-            // target semantic channel directly from the canonical producer
-            // timeline, so no target-layout scratch representation is needed.
+            // A conversion whose every target row aliases exactly one source
+            // channel is zero-copy. The consumer can read each target semantic
+            // channel directly from the canonical producer timeline, so no
+            // target-layout scratch representation is needed.
             if (can_alias_sample_conversion(
                     *group.canonical_source_layout, connection.target_layout)) {
                 std::vector<SampleChannelBindingPlan> channel_bindings;
@@ -1982,8 +1974,9 @@ std::expected<SampleStoragePlan, std::string> build_sample_storage_plan(
             }
 
             if (detached
-                && source_layout.channel_type == ChannelTypeId::stereo
-                && converted_layout.channel_type == ChannelTypeId::mono) {
+                && channel_conversion_mixes_sources(
+                    source_layout.channel_type,
+                    converted_layout.channel_type)) {
                 auto const [minimum_it, maximum_it] = std::ranges::minmax_element(
                     contribution.sources,
                     {},

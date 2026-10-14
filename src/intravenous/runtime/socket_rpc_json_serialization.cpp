@@ -21,15 +21,7 @@ std::string_view virtual_port_connectivity_json(VirtualPortConnectivity connecti
 
 std::string_view channel_type_json(ChannelTypeId channel_type)
 {
-    switch (channel_type) {
-    case ChannelTypeId::mono:
-        return "mono";
-    case ChannelTypeId::stereo:
-        return "stereo";
-    case ChannelTypeId::count:
-        return "mono";
-    }
-    return "mono";
+    return channel_type_info(channel_type).wire_name;
 }
 
 std::string_view package_build_state_json(PackageBuildState state)

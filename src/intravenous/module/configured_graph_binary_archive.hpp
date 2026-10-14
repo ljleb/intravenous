@@ -44,7 +44,7 @@ struct SerializedConfiguredGraph {
 namespace iv::binary_wire_details {
 
 inline constexpr std::uint32_t archive_magic = 0x49564147; // IVAG
-inline constexpr std::uint32_t archive_version = 8;
+inline constexpr std::uint32_t archive_version = 9;
 
 class Writer {
 public:
@@ -265,9 +265,31 @@ inline OutputRetention read_output_retention(Reader& r)
     return retention;
 }
 
+inline void write_continuous_value_types(
+    Writer& w, ContinuousValueTypeSet value)
+{
+    w.pod(value.bits());
+}
+
+inline ContinuousValueTypeSet read_continuous_value_types(Reader& r)
+{
+    auto const bits = r.pod<ContinuousValueTypeSet::mask_type>();
+    if ((bits & ~ContinuousValueTypeSet::all().bits()) != 0) {
+        throw std::runtime_error(
+            "configured graph archive has an unregistered continuous value type");
+    }
+    auto const result = ContinuousValueTypeSet(bits, std::in_place);
+    if (result.empty()) {
+        throw std::runtime_error(
+            "configured graph archive has an empty continuous value-type domain");
+    }
+    return result;
+}
+
 inline void write_input(Writer& w, SampleInputConfig const& value)
 {
     w.string(value.name);
+    write_continuous_value_types(w, value.value_types);
     write_layout(w, value.channel_layout);
     write_input_access(w, value.access);
     w.pod(value.neutral_value.value);
@@ -280,6 +302,7 @@ inline SampleInputConfig read_input(Reader& r)
 {
     return {
         .name = r.string(),
+        .value_types = read_continuous_value_types(r),
         .channel_layout = read_layout(r),
         .access = read_input_access(r),
         .neutral_value = Sample{r.pod<Sample::storage>()},
@@ -292,6 +315,7 @@ inline SampleInputConfig read_input(Reader& r)
 inline void write_output(Writer& w, SampleOutputConfig const& value)
 {
     w.string(value.name);
+    write_continuous_value_types(w, value.value_types);
     write_layout(w, value.channel_layout);
     write_output_production(w, value.production);
     write_output_retention(w, value.retention);
@@ -301,6 +325,7 @@ inline SampleOutputConfig read_output(Reader& r)
 {
     return {
         .name = r.string(),
+        .value_types = read_continuous_value_types(r),
         .channel_layout = read_layout(r),
         .production = read_output_production(r),
         .retention = read_output_retention(r),
@@ -393,6 +418,65 @@ inline NodePorts read_ports(Reader& r)
         .input_configs = read_configs<InputConfig>(r, read_input_config),
         .output_configs = read_configs<OutputConfig>(r, read_output_config),
     };
+}
+
+inline void write_port_constraint_ref(
+    Writer& w, ContinuousPortConstraintRef value)
+{
+    write_enum(w, value.direction);
+    w.size(value.port_index);
+}
+
+inline ContinuousPortConstraintRef read_port_constraint_ref(Reader& r)
+{
+    auto const direction = read_enum<PortConstraintDirection>(r);
+    if (direction != PortConstraintDirection::input
+        && direction != PortConstraintDirection::output) {
+        throw std::runtime_error(
+            "configured graph archive has an invalid port-constraint direction");
+    }
+    return {
+        .direction = direction,
+        .port_index = r.size(),
+    };
+}
+
+inline void write_port_constraints(Writer& w, NodePortConstraints const& value)
+{
+    w.list(value.value_type_equalities, [&](auto const& equality) {
+        write_port_constraint_ref(w, equality.first);
+        write_port_constraint_ref(w, equality.second);
+    });
+    w.list(value.value_type_anchors, [&](auto const& anchor) {
+        write_port_constraint_ref(w, anchor.port);
+        write_enum(w, anchor.value_type);
+    });
+}
+
+inline NodePortConstraints read_port_constraints(Reader& r)
+{
+    NodePortConstraints result;
+    result.value_type_equalities =
+        read_list<ContinuousValueTypeEqualityConstraint>(r, [&] {
+            return ContinuousValueTypeEqualityConstraint{
+                .first = read_port_constraint_ref(r),
+                .second = read_port_constraint_ref(r),
+            };
+        });
+    result.value_type_anchors =
+        read_list<ContinuousValueTypeAnchorConstraint>(r, [&] {
+            auto const port = read_port_constraint_ref(r);
+            auto const value_type = read_enum<ContinuousValueTypeId>(r);
+            if (!is_registered_continuous_value_type(value_type)) {
+                throw std::runtime_error(
+                    "configured graph archive has an unregistered continuous value type");
+            }
+            return ContinuousValueTypeAnchorConstraint{
+                .port = port,
+                .value_type = value_type,
+            };
+        });
+    return result;
 }
 
 inline void write_code_key(Writer& w, NodeCodeKey value) { w.pod(value.low); w.pod(value.high); }
@@ -549,6 +633,11 @@ inline SerializedConfiguredGraph serialize_binary_configured_graph(
             if (!view.node_storage || !*view.node_storage || !view.code_key || !view.ports)
                 throw std::runtime_error("concrete configured node has incomplete compiler storage");
             write_ports(bundles, *view.ports);
+            if (!view.port_constraints) {
+                throw std::runtime_error(
+                    "concrete configured node has no port constraints");
+            }
+            write_port_constraints(bundles, *view.port_constraints);
             write_code_key(bundles, *view.code_key);
             bundles.flag(view.registered_node_type_identity != nullptr);
             if (view.registered_node_type_identity) {
@@ -725,6 +814,7 @@ inline ConfiguredGraph deserialize_binary_configured_graph(
         record.source_infos = read_source_infos(reader);
         if (record.kind == ConfiguredNodeBundleKind::concrete) {
             record.ports = read_ports(reader);
+            record.port_constraints = read_port_constraints(reader);
             record.code_key = read_code_key(reader);
             if (reader.flag()) {
                 record.registered_node_type_identity = RegisteredNodeTypeIdentity{

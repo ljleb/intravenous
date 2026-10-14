@@ -66,6 +66,28 @@ void NodeDescriptionSink::set_static_sample_value(std::optional<Sample> value) c
     description().static_sample_value = value;
 }
 
+ReflectedPortConstraintSink NodeDescriptionSink::port_constraint_sink() const
+{
+    auto* constraints = std::addressof(description().port_constraints);
+    return {
+        .state = constraints,
+        .equal_value_types = +[](
+            void* state,
+            ContinuousPortConstraintRef first,
+            ContinuousPortConstraintRef second) {
+            static_cast<NodePortConstraints*>(state)
+                ->value_type_equalities.push_back({first, second});
+        },
+        .anchor_value_type = +[](
+            void* state,
+            ContinuousPortConstraintRef port,
+            ContinuousValueTypeId value_type) {
+            static_cast<NodePortConstraints*>(state)
+                ->value_type_anchors.push_back({port, value_type});
+        },
+    };
+}
+
 ReflectedNodeDescription materialize_node_description(
     NodeBuildRequest const& request,
     std::shared_ptr<void const> storage,

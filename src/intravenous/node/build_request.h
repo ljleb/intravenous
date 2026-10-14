@@ -11,6 +11,7 @@
 #include <intravenous/node/coverage_port_context.h>
 #include <intravenous/node/compiler_record.h>
 #include <intravenous/node/lifecycle.h>
+#include <intravenous/node/port_constraints.h>
 
 #include <array>
 #include <cstddef>
@@ -47,6 +48,7 @@ public:
     void set_block_skippable(bool) const;
     void set_static_sample_value(std::optional<Sample>) const;
     void set_intrinsically_replayable(bool) const;
+    ReflectedPortConstraintSink port_constraint_sink() const;
 };
 
 struct NodeBuildRequest {
@@ -727,6 +729,12 @@ void describe_node(void const* node_data, NodeDescriptionSink& sink)
         for (OutputConfig const& output : Node::outputs()) {
             sink.add_output(output);
         }
+    }
+    ConstrainPortsContext<Node> port_constraints(sink.port_constraint_sink());
+    if constexpr (requires {
+        { node.constrain_ports(port_constraints) } -> std::same_as<void>;
+    }) {
+        node.constrain_ports(port_constraints);
     }
     static_assert(replay_declaration_is_valid_v<Node>,
         "intrinsically replayable nodes must author tick() (not tick_block()), "

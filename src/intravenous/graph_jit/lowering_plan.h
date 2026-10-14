@@ -419,6 +419,7 @@ struct RootStackBufferPlan {
 };
 
 struct LoweringPlan {
+    ResolvedPortRealization port_realization{};
     // Pure graph/topology analysis remains part of the stable lowering plan;
     // sample storage realization consumes it without introducing a parallel
     // topology or policy model.

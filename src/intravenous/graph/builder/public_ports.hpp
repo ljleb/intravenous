@@ -110,7 +110,9 @@ constexpr void GraphBuilderPublicPorts::define_sample_outputs_from_named_refs(
     auto logical = bundles.sample_output_port_for_channels(
         source.channel_type, source.channels());
     auto config = logical ? bundles.resolve_sample_output(*logical).config
-                          : SampleOutputConfig{.channel_layout = {.channel_type = source.channel_type,
+                          : SampleOutputConfig{
+                              .value_types = ContinuousValueTypeSet::audio_capable(),
+                              .channel_layout = {.channel_type = source.channel_type,
                                                            .sample_layout = SampleStreamLayout::planar}};
     config.name = std::string(ref.name); config.channel_layout.sample_layout = SampleStreamLayout::planar;
     out.push_back({

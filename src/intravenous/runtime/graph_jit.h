@@ -4,6 +4,7 @@
 #include <intravenous/graph/realtime_port_planning.h>
 #include <intravenous/graph_jit/background_evaluation_call.h>
 #include <intravenous/graph_jit/background_evaluation_plan.h>
+#include <intravenous/graph_jit/port_realization.h>
 #include <intravenous/graph_jit/realtime_port_state_plan.h>
 #include <intravenous/graph_jit/tick_invocation_call.h>
 #include <intravenous/node/layout.h>
@@ -104,6 +105,7 @@ struct CompiledGraph {
     GraphJitKernelSpecialization specialization{};
     std::shared_ptr<ConfiguredGraph const> configured_graph{};
     std::vector<std::shared_ptr<PackageRevision const>> package_revisions{};
+    graph_jit::ResolvedPortRealization port_realization{};
     NodeLayout node_layout{};
     graph_jit::BackgroundEvaluationPlan background_evaluation_plan{};
     // Cold graph-revision metadata. Generated realtime code never consults

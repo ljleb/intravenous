@@ -1227,6 +1227,7 @@ public:
                 .specialization = specialization_,
                 .configured_graph = request.graph,
                 .package_revisions = std::move(package_revisions),
+                .port_realization = std::move(lowering->port_realization),
                 .node_layout = std::move(lowering->node_layout),
                 .background_evaluation_plan = std::move(lowering->background_evaluation_plan),
                 .realtime_port_state_requirements =

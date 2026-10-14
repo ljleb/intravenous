@@ -65,6 +65,15 @@ supported semantic pair.  Registry-generated validation should make a missing
 non-identity conversion a compile-time error rather than inventing a channel
 order or reduction.
 
+The conversion definitions are coefficient-matrix declarations owned by the semantic
+source/target pair. Identity matrices are generated for every registered type. Adding
+a new channel type therefore adds its one canonical type declaration and new
+conversion declarations between that type and the already supported types; it does
+not modify an existing conversion function. Runtime block conversion, GraphJit
+materialization/composition, zero-copy alias detection, latency-alignment planning,
+wire-name serialization and channel-count lookup are all derived from the registry and
+those matrices. A missing ordered pair fails registry validation at compile time.
+
 
 ## FFT blocks use the existing audio channel registry
 

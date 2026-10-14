@@ -25,6 +25,33 @@ struct ReplayableArchiveNode {
     void tick(iv::TickSampleContext<ReplayableArchiveNode> const&) const {}
 };
 
+struct ConstrainedArchiveNode {
+    static constexpr auto domain = iv::continuous_value_types<
+        iv::Sample,
+        iv::FractionalGlobalIndex>;
+
+    static constexpr auto inputs()
+    {
+        return std::array{iv::sequential_sample_input(
+            "input", iv::SampleInputProperties{.value_types = domain})};
+    }
+
+    static constexpr auto outputs()
+    {
+        return std::array{iv::tick_sample_output(
+            "output", iv::SampleOutputProperties{.value_types = domain})};
+    }
+
+    void constrain_ports(
+        iv::ConstrainPortsContext<ConstrainedArchiveNode>& context) const
+    {
+        context.output<"output">().value_type()
+            = context.input<"input">().value_type();
+    }
+
+    void tick_block(iv::TickBlockContext<ConstrainedArchiveNode> const&) const {}
+};
+
 struct ArchiveFixture {
     iv::SerializedConfiguredGraph archive;
     using Pass = iv::Sum<iv::mono, iv::SampleStreamLayout::planar, 1>;
@@ -216,6 +243,9 @@ TEST(ConfiguredGraphBinaryArchive, RoundTripsOrthogonalPortAccessConfigs)
 {
     iv::SampleInputConfig const realtime_input {
         .name = "realtime-input",
+        .value_types = iv::continuous_value_types<
+            iv::Sample,
+            iv::FractionalGlobalIndex>,
         .channel_layout = {
             .channel_type = iv::ChannelTypeId::stereo,
             .sample_layout = iv::SampleStreamLayout::interleaved,
@@ -230,6 +260,7 @@ TEST(ConfiguredGraphBinaryArchive, RoundTripsOrthogonalPortAccessConfigs)
     };
     iv::SampleOutputConfig const realtime_output {
         .name = "realtime-output",
+        .value_types = iv::continuous_value_types<iv::FFTBlock>,
         .production = iv::TickOutputConfig{.history = 11, .latency = 3},
         .retention = iv::OutputRetention::persisted,
     };
@@ -285,6 +316,7 @@ TEST(ConfiguredGraphBinaryArchive, RoundTripsOrthogonalPortAccessConfigs)
     reader.finish();
 
     EXPECT_EQ(decoded_realtime_input.name, realtime_input.name);
+    EXPECT_EQ(decoded_realtime_input.value_types, realtime_input.value_types);
     EXPECT_EQ(decoded_realtime_input.channel_layout, realtime_input.channel_layout);
     EXPECT_FALSE(iv::is_random_access(decoded_realtime_input));
     EXPECT_EQ(iv::port_history(decoded_realtime_input), 7u);
@@ -294,6 +326,7 @@ TEST(ConfiguredGraphBinaryArchive, RoundTripsOrthogonalPortAccessConfigs)
     EXPECT_FALSE(iv::is_sequential(decoded_background_input.access));
 
     EXPECT_EQ(decoded_realtime_output.name, realtime_output.name);
+    EXPECT_EQ(decoded_realtime_output.value_types, realtime_output.value_types);
     EXPECT_FALSE(iv::is_tock(decoded_realtime_output));
     EXPECT_EQ(iv::port_history(decoded_realtime_output), 11u);
     EXPECT_EQ(iv::tick_latency(decoded_realtime_output), 3u);
@@ -313,6 +346,51 @@ TEST(ConfiguredGraphBinaryArchive, RoundTripsOrthogonalPortAccessConfigs)
     EXPECT_FALSE(iv::is_persisted(decoded_realtime_event_output));
     EXPECT_TRUE(iv::is_tock(decoded_background_event_output));
     EXPECT_TRUE(iv::is_persisted(decoded_background_event_output));
+}
+
+TEST(ConfiguredGraphBinaryArchive, RoundTripsAuthoredPortConstraints)
+{
+    using namespace iv;
+    GraphBuilder graph;
+    auto const node =
+        details::configure_concrete_node<ConstrainedArchiveNode>(graph);
+    graph.outputs("output"_P = node);
+
+    auto const archive = serialize_configured_graph(std::move(graph).finish());
+    std::array const compiler_records{
+        details::node_compiler_record<ConstrainedArchiveNode>};
+    auto const decoded = deserialize_configured_graph(
+        archive.bytes, compiler_records, archive.node_configs);
+
+    std::size_t constrained_nodes = 0;
+    decoded.node_bundles.for_each_configured_bundle(
+        [&](ConfiguredNodeBundleView const& view) {
+            if (view.kind != ConfiguredNodeBundleKind::concrete) return;
+            ASSERT_NE(view.ports, nullptr);
+            ASSERT_NE(view.port_constraints, nullptr);
+            auto const inputs = view.ports->sample_inputs();
+            auto const outputs = view.ports->sample_outputs();
+            ASSERT_EQ(inputs.size(), 1u);
+            ASSERT_EQ(outputs.size(), 1u);
+            EXPECT_EQ(inputs.front().value_types, ConstrainedArchiveNode::domain);
+            EXPECT_EQ(outputs.front().value_types, ConstrainedArchiveNode::domain);
+            ASSERT_EQ(
+                view.port_constraints->value_type_equalities.size(), 1u);
+            EXPECT_EQ(
+                view.port_constraints->value_type_equalities.front(),
+                (ContinuousValueTypeEqualityConstraint{
+                    .first = {
+                        .direction = PortConstraintDirection::output,
+                        .port_index = 0,
+                    },
+                    .second = {
+                        .direction = PortConstraintDirection::input,
+                        .port_index = 0,
+                    },
+                }));
+            ++constrained_nodes;
+        });
+    EXPECT_EQ(constrained_nodes, 1u);
 }
 
 TEST(ConfiguredGraphBinaryArchive, RoundTripsEveryOutputAccessRetentionMode)

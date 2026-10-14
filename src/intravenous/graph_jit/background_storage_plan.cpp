@@ -25,16 +25,8 @@ std::optional<std::size_t> aliased_source_channel(
     ChannelTypeId target_type,
     std::size_t target_channel)
 {
-    if (source_type == target_type) {
-        if (target_channel < channel_count(source_type)) return target_channel;
-        return std::nullopt;
-    }
-    if (source_type == ChannelTypeId::mono
-        && target_type == ChannelTypeId::stereo
-        && target_channel < channel_count(ChannelTypeId::stereo)) {
-        return 0;
-    }
-    return std::nullopt;
+    return channel_conversion_aliased_source(
+        source_type, target_type, target_channel);
 }
 
 std::optional<BackgroundPortIndex> output_port_for(

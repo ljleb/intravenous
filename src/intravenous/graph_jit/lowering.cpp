@@ -1600,6 +1600,60 @@ llvm::Value* sample_element_pointer(
         sample_type, representation_base, element, name + ".ptr");
 }
 
+std::expected<std::vector<llvm::Value*>, std::string>
+emit_channel_conversion(
+    llvm::IRBuilder<>& builder,
+    ChannelTypeId source_type,
+    ChannelTypeId target_type,
+    std::span<llvm::Value* const> source_values,
+    std::string_view name)
+{
+    if (!is_registered_channel_type(source_type)
+        || !is_registered_channel_type(target_type)
+        || source_values.size() != channel_count(source_type)) {
+        return std::unexpected(
+            "GraphJit channel conversion has an invalid registered type or source value count");
+    }
+
+    auto* sample_type = llvm::Type::getFloatTy(builder.getContext());
+    std::vector<llvm::Value*> result;
+    result.reserve(channel_count(target_type));
+    for (std::size_t target_channel = 0;
+         target_channel < channel_count(target_type);
+         ++target_channel) {
+        llvm::Value* value = nullptr;
+        for (std::size_t source_channel = 0;
+             source_channel < source_values.size();
+             ++source_channel) {
+            auto const coefficient = channel_conversion_coefficient(
+                source_type, target_type, source_channel, target_channel);
+            if (coefficient == 0.0f) continue;
+            llvm::Value* term = source_values[source_channel];
+            if (coefficient != 1.0f) {
+                term = builder.CreateFMul(
+                    term,
+                    llvm::ConstantFP::get(sample_type, coefficient),
+                    std::string(name) + ".scale."
+                        + std::to_string(target_channel) + "."
+                        + std::to_string(source_channel));
+            }
+            if (value) {
+                value = builder.CreateFAdd(
+                    value,
+                    term,
+                    std::string(name) + ".sum."
+                        + std::to_string(target_channel) + "."
+                        + std::to_string(source_channel));
+            } else {
+                value = term;
+            }
+        }
+        if (!value) value = llvm::ConstantFP::get(sample_type, 0.0);
+        result.push_back(value);
+    }
+    return result;
+}
+
 std::expected<void, std::string> emit_sample_materialization(
     llvm::IRBuilder<>& builder,
     detail::SampleStoragePlan const& storage,
@@ -1719,50 +1773,26 @@ std::expected<void, std::string> emit_sample_materialization(
                 name));
     };
 
-    switch (materialization.source_layout.channel_type) {
-    case ChannelTypeId::mono: {
-        auto* mono = load_source(0, "sample.materialize.mono");
-        switch (materialization.target_layout.channel_type) {
-        case ChannelTypeId::mono:
-            store_target(0, mono, "sample.materialize.out.mono");
-            break;
-        case ChannelTypeId::stereo:
-            store_target(0, mono, "sample.materialize.out.left");
-            store_target(1, mono, "sample.materialize.out.right");
-            break;
-        case ChannelTypeId::count:
-            return std::unexpected(
-                "GraphJit sample materialization has an invalid target channel type");
-        }
-        break;
+    std::vector<llvm::Value*> source_values;
+    source_values.reserve(channel_count(materialization.source_layout));
+    for (std::size_t channel = 0;
+         channel < channel_count(materialization.source_layout);
+         ++channel) {
+        source_values.push_back(load_source(
+            channel, "sample.materialize.source." + std::to_string(channel)));
     }
-    case ChannelTypeId::stereo: {
-        auto* left = load_source(0, "sample.materialize.left");
-        auto* right = load_source(1, "sample.materialize.right");
-        switch (materialization.target_layout.channel_type) {
-        case ChannelTypeId::mono: {
-            auto* sum = builder.CreateFAdd(
-                left, right, "sample.materialize.stereo.sum");
-            auto* mono = builder.CreateFMul(
-                sum,
-                llvm::ConstantFP::get(sample_type, 0.5),
-                "sample.materialize.stereo.average");
-            store_target(0, mono, "sample.materialize.out.mono");
-            break;
-        }
-        case ChannelTypeId::stereo:
-            store_target(0, left, "sample.materialize.out.left");
-            store_target(1, right, "sample.materialize.out.right");
-            break;
-        case ChannelTypeId::count:
-            return std::unexpected(
-                "GraphJit sample materialization has an invalid target channel type");
-        }
-        break;
-    }
-    case ChannelTypeId::count:
-        return std::unexpected(
-            "GraphJit sample materialization has an invalid source channel type");
+    auto converted = emit_channel_conversion(
+        builder,
+        materialization.source_layout.channel_type,
+        materialization.target_layout.channel_type,
+        source_values,
+        "sample.materialize.convert");
+    if (!converted) return std::unexpected(std::move(converted.error()));
+    for (std::size_t channel = 0; channel < converted->size(); ++channel) {
+        store_target(
+            channel,
+            (*converted)[channel],
+            "sample.materialize.target." + std::to_string(channel));
     }
 
     auto* next = builder.CreateAdd(
@@ -1928,60 +1958,79 @@ std::expected<void, std::string> emit_sample_composition_write(
             auto const converted_type = contribution.converted_layout.channel_type;
             contribution.shifted_write_latencies.resize(
                 channel_count(converted_type));
-            if (source_type == converted_type) {
-                for (std::size_t channel = 0;
-                     channel < contribution.shifted_write_latencies.size();
-                     ++channel) {
-                    contribution.shifted_write_latencies[channel] =
-                        contribution.sources[channel].read_latency;
-                }
-            } else if (source_type == ChannelTypeId::mono) {
-                auto const latency = contribution.sources.front().read_latency;
-                std::ranges::fill(
-                    contribution.shifted_write_latencies, latency);
-            } else if (source_type == ChannelTypeId::stereo
-                && converted_type == ChannelTypeId::mono) {
-                auto const minimum_latency = std::min(
-                    contribution.sources[0].read_latency,
-                    contribution.sources[1].read_latency);
-                auto const maximum_latency = std::max(
-                    contribution.sources[0].read_latency,
-                    contribution.sources[1].read_latency);
-                contribution.shifted_write_latencies[0] = minimum_latency;
-                if (minimum_latency != maximum_latency) {
-                    if (contribution_plan.feedback_alignment_representation
-                            >= storage.representations.size()
-                        || contribution_plan.feedback_alignment_write_latency
-                            != minimum_latency) {
-                        return std::unexpected(
-                            "GraphJit unequal-latency feedback mixing lost its alignment plan");
-                    }
-                    auto alignment = sample_storage_binding(
-                        storage,
-                        contribution_plan.feedback_alignment_representation);
-                    if (!alignment) {
-                        return std::unexpected(std::move(alignment.error()));
-                    }
-                    if (alignment->channel_layout != contribution.source_layout
-                        || alignment->frame_capacity == 0
-                        || !is_power_of_2(alignment->frame_capacity)) {
-                        return std::unexpected(
-                            "GraphJit unequal-latency feedback mixing has invalid alignment storage");
-                    }
-                    contribution.feedback_alignment_storage = *alignment;
-                    contribution.feedback_alignment_base =
-                        realtime_storage.sample_representations[
-                            contribution_plan.feedback_alignment_representation];
-                    contribution.feedback_alignment_write_latency =
-                        minimum_latency;
-                } else if (contribution_plan.feedback_alignment_representation
-                               != detail::no_sample_representation) {
+            auto const [minimum_source, maximum_source] =
+                std::ranges::minmax_element(
+                    contribution.sources,
+                    {},
+                    &SourceBinding::read_latency);
+            auto const minimum_latency = minimum_source->read_latency;
+            auto const maximum_latency = maximum_source->read_latency;
+            auto const needs_alignment = channel_conversion_mixes_sources(
+                    source_type, converted_type)
+                && minimum_latency != maximum_latency;
+
+            if (needs_alignment) {
+                if (contribution_plan.feedback_alignment_representation
+                        >= storage.representations.size()
+                    || contribution_plan.feedback_alignment_write_latency
+                        != minimum_latency) {
                     return std::unexpected(
-                        "GraphJit equal-latency feedback mixing unexpectedly owns alignment storage");
+                        "GraphJit unequal-latency feedback mixing lost its alignment plan");
                 }
+                auto alignment = sample_storage_binding(
+                    storage,
+                    contribution_plan.feedback_alignment_representation);
+                if (!alignment) {
+                    return std::unexpected(std::move(alignment.error()));
+                }
+                if (alignment->channel_layout != contribution.source_layout
+                    || alignment->frame_capacity == 0
+                    || !is_power_of_2(alignment->frame_capacity)) {
+                    return std::unexpected(
+                        "GraphJit unequal-latency feedback mixing has invalid alignment storage");
+                }
+                contribution.feedback_alignment_storage = *alignment;
+                contribution.feedback_alignment_base =
+                    realtime_storage.sample_representations[
+                        contribution_plan.feedback_alignment_representation];
+                contribution.feedback_alignment_write_latency = minimum_latency;
+                std::ranges::fill(
+                    contribution.shifted_write_latencies, minimum_latency);
             } else {
-                return std::unexpected(
-                    "GraphJit shifted sample composition has an unsupported semantic conversion");
+                if (contribution_plan.feedback_alignment_representation
+                    != detail::no_sample_representation) {
+                    return std::unexpected(
+                        "GraphJit feedback conversion unexpectedly owns alignment storage");
+                }
+                for (std::size_t target_channel = 0;
+                     target_channel < contribution.shifted_write_latencies.size();
+                     ++target_channel) {
+                    std::optional<std::size_t> latency;
+                    for (std::size_t source_channel = 0;
+                         source_channel < contribution.sources.size();
+                         ++source_channel) {
+                        if (channel_conversion_coefficient(
+                                source_type,
+                                converted_type,
+                                source_channel,
+                                target_channel)
+                            == 0.0f) {
+                            continue;
+                        }
+                        auto const candidate =
+                            contribution.sources[source_channel].read_latency;
+                        if (latency && *latency != candidate) {
+                            return std::unexpected(
+                                "GraphJit feedback conversion mixes unaligned source latencies");
+                        }
+                        latency = candidate;
+                    }
+                    if (!latency) {
+                        return std::unexpected(
+                            "GraphJit feedback conversion has a target channel with no source contribution");
+                    }
+                    contribution.shifted_write_latencies[target_channel] = *latency;
+                }
             }
         }
         contributions.push_back(std::move(contribution));
@@ -2110,51 +2159,14 @@ std::expected<void, std::string> emit_sample_composition_write(
 
         }
 
-        std::vector<llvm::Value*> converted_values;
-        switch (contribution.source_layout.channel_type) {
-        case ChannelTypeId::mono: {
-            auto* mono = source_values[0];
-            switch (contribution.converted_layout.channel_type) {
-            case ChannelTypeId::mono:
-                converted_values.push_back(mono);
-                break;
-            case ChannelTypeId::stereo:
-                converted_values.push_back(mono);
-                converted_values.push_back(mono);
-                break;
-            case ChannelTypeId::count:
-                return std::unexpected(
-                    "GraphJit sample composition has an invalid converted channel type");
-            }
-            break;
-        }
-        case ChannelTypeId::stereo: {
-            auto* left = source_values[0];
-            auto* right = source_values[1];
-            switch (contribution.converted_layout.channel_type) {
-            case ChannelTypeId::mono: {
-                auto* sum = builder.CreateFAdd(
-                    left, right, "sample.compose.stereo.sum");
-                converted_values.push_back(builder.CreateFMul(
-                    sum,
-                    llvm::ConstantFP::get(sample_type, 0.5),
-                    "sample.compose.stereo.average"));
-                break;
-            }
-            case ChannelTypeId::stereo:
-                converted_values.push_back(left);
-                converted_values.push_back(right);
-                break;
-            case ChannelTypeId::count:
-                return std::unexpected(
-                    "GraphJit sample composition has an invalid converted channel type");
-            }
-            break;
-        }
-        case ChannelTypeId::count:
-            return std::unexpected(
-                "GraphJit sample composition has an invalid source channel type");
-        }
+        auto converted = emit_channel_conversion(
+            builder,
+            contribution.source_layout.channel_type,
+            contribution.converted_layout.channel_type,
+            source_values,
+            "sample.compose.convert." + std::to_string(contribution_index));
+        if (!converted) return std::unexpected(std::move(converted.error()));
+        auto& converted_values = *converted;
 
         if (converted_values.size() != contribution.target_channels.size()) {
             return std::unexpected(
@@ -5015,6 +5027,7 @@ std::expected<LoweringOutput, std::string> emit_lowering_plan(
     }
 
     return LoweringOutput{
+        .port_realization = std::move(plan.port_realization),
         .node_layout = std::move(plan.declarations.node_layout),
         .background_evaluation_plan = std::move(plan.connections.background),
         .realtime_port_state_requirements =

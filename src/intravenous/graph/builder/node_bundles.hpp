@@ -42,6 +42,7 @@ using EventOutputPortDescriptor = EventPortDescriptor<EventOutputConfig>;
 class NodeBundle {
   struct ConcreteNodeBundle {
     NodePorts ports{};
+    NodePortConstraints port_constraints{};
     ReflectedNodeOperations operations{};
     std::shared_ptr<void const> node_storage{};
     std::shared_ptr<NodeStateStructures const> state_structures_storage{};
@@ -189,6 +190,7 @@ enum class ConfiguredNodeBundleKind : std::uint8_t {
 struct ConfiguredNodeBundleRecord {
   ConfiguredNodeBundleKind kind = ConfiguredNodeBundleKind::boundary;
   NodePorts ports{};
+  NodePortConstraints port_constraints{};
   ReflectedNodeOperations operations{};
   std::shared_ptr<void const> node_storage{};
   std::shared_ptr<NodeStateStructures const> state_structures_storage{};
@@ -227,6 +229,7 @@ struct ConfiguredNodeBundleRecord {
 struct ConfiguredNodeBundleView {
   ConfiguredNodeBundleKind kind = ConfiguredNodeBundleKind::boundary;
   NodePorts const* ports = nullptr;
+  NodePortConstraints const* port_constraints = nullptr;
   ReflectedNodeOperations const* operations = nullptr;
   std::shared_ptr<void const> const* node_storage = nullptr;
   std::shared_ptr<NodeStateStructures const> const* state_structures_storage = nullptr;
@@ -363,6 +366,7 @@ constexpr ConcreteNode GraphBuilderNodeBundles::make_concrete_node(
 
   return ConcreteNode{
       .ports = std::move(description.ports),
+      .port_constraints = std::move(description.port_constraints),
       .operations = description.operations,
       .node_storage = std::move(description.node_storage),
       .state_structures_storage = std::move(description.state_structures_storage),
@@ -393,6 +397,7 @@ constexpr NodeBundleHandle GraphBuilderNodeBundles::append_concrete(
     ConcreteNode lowered) {
   NodeBundle::ConcreteNodeBundle payload{
       .ports = std::move(lowered.ports),
+      .port_constraints = std::move(lowered.port_constraints),
       .operations = lowered.operations,
       .node_storage = std::move(lowered.node_storage),
       .state_structures_storage = std::move(lowered.state_structures_storage),
@@ -557,6 +562,7 @@ NodeBundle::sample_input_descriptor(size_t index) const {
           auto const output = payload.ports.sample_output(index);
           return {.config = SampleInputConfig{
               .name = output.name,
+              .value_types = output.value_types,
               .channel_layout = output.channel_layout,
               .access = is_tick(output) ? InputAccessConfig{SequentialInputConfig{
                   .history = port_history_or_zero(output)}}
@@ -584,6 +590,7 @@ NodeBundle::sample_output_descriptor(size_t index) const {
           auto const input = payload.ports.sample_input(index);
           return {.config = SampleOutputConfig{
               .name = input.name,
+              .value_types = input.value_types,
               .channel_layout = input.channel_layout,
               .production = is_sequential(input) ? OutputProductionConfig{TickOutputConfig{
                   .history = port_history_or_zero(input)}}
@@ -999,7 +1006,8 @@ constexpr NodeBundleHandle GraphBuilderNodeBundles::append_tiled(
     if (is_sample(lhs)) {
       auto const& a = sample_properties(lhs);
       auto const& b = sample_properties(rhs);
-      return a.channel_layout == b.channel_layout
+      return a.value_types == b.value_types
+          && a.channel_layout == b.channel_layout
           && a.neutral_value.value == b.neutral_value.value
           && a.default_value.value == b.default_value.value
           && a.min.value == b.min.value
@@ -1014,7 +1022,8 @@ constexpr NodeBundleHandle GraphBuilderNodeBundles::append_tiled(
     if (is_sample(lhs)) {
       auto const& a = sample_properties(lhs);
       auto const& b = sample_properties(rhs);
-      return a.channel_layout == b.channel_layout;
+      return a.value_types == b.value_types
+          && a.channel_layout == b.channel_layout;
     }
     return event_properties(lhs).type == event_properties(rhs).type;
   };
@@ -1185,6 +1194,7 @@ GraphBuilderNodeBundles::materialize_concrete_description(
   if (!payload) details::error("NodeBundle is not concrete");
   return ReflectedNodeDescription{
       .ports = payload->ports,
+      .port_constraints = payload->port_constraints,
       .operations = payload->operations,
       .node_storage = payload->node_storage,
       .state_structures_storage = payload->state_structures_storage,
@@ -1282,6 +1292,7 @@ constexpr void GraphBuilderNodeBundles::for_each_configured_bundle(
       if constexpr (std::same_as<Payload, NodeBundle::ConcreteNodeBundle>) {
         view.kind = ConfiguredNodeBundleKind::concrete;
         view.ports = &payload.ports;
+        view.port_constraints = &payload.port_constraints;
         view.operations = &payload.operations;
         view.node_storage = &payload.node_storage;
         view.state_structures_storage = &payload.state_structures_storage;
@@ -1346,6 +1357,7 @@ constexpr GraphBuilderNodeBundles GraphBuilderNodeBundles::from_configured_recor
           : nullptr;
       bundle = NodeBundle(NodeBundle::ConcreteNodeBundle{
           .ports = record.ports,
+          .port_constraints = record.port_constraints,
           .operations = operations,
           .node_storage = record.node_storage,
           .state_structures_storage = record.state_structures_storage,
