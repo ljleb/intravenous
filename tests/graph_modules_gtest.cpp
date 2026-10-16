@@ -63,6 +63,24 @@ struct NodeCallMixedSink {
     void tick_block(TickBlockContext<NodeCallMixedSink> const&) const {}
 };
 
+struct IntrospectionContinuousDomainNode {
+    static constexpr auto inputs()
+    {
+        return std::array{input<Sample, FractionalGlobalIndex, FFTBlock>(
+            "in", InputAccess::sequential)};
+    }
+
+    static constexpr auto outputs()
+    {
+        return std::array{output<Sample, FractionalGlobalIndex, FFTBlock>(
+            "out", OutputProduction::tick)};
+    }
+
+    void tick_block(
+        TickBlockContext<IntrospectionContinuousDomainNode> const&) const
+    {}
+};
+
 static_assert(details::fixed_input_count_v<NodeCallMixedSink> == 2);
 static_assert(details::fixed_event_input_count_v<NodeCallMixedSink> == 1);
 static_assert(details::fixed_input_count_v<Constant> == 0);
@@ -131,9 +149,18 @@ ConfiguredGraph configure_introspection_regression()
     return std::move(g).finish();
 }
 
+ConfiguredGraph configure_continuous_domain_introspection()
+{
+    GraphBuilder g;
+    auto node = details::configure_concrete_node<
+        IntrospectionContinuousDomainNode>(g);
+    (void)_annotate_node_source_info(node.node_ref(), "continuous-domain");
+    return std::move(g).finish();
+}
+
 struct IntrospectionRegressionSnapshot {
     bool virtual_node_is_preserved = false;
-    bool sample_ports_are_preserved = false;
+    bool continuous_ports_are_preserved = false;
     bool event_ports_are_preserved = false;
 };
 
@@ -145,14 +172,15 @@ IntrospectionRegressionSnapshot introspection_regression_snapshot()
 
     result.virtual_node_is_preserved = metadata.virtual_nodes.size() == 1
         && metadata.virtual_nodes.front().source_identity == "sum"
-        && metadata.virtual_nodes.front().sample_inputs.size() == 1
-        && metadata.virtual_nodes.front().sample_outputs.size() == 1;
+        && metadata.virtual_nodes.front().continuous_inputs.size() == 1
+        && metadata.virtual_nodes.front().continuous_outputs.size() == 1;
 
-    result.sample_ports_are_preserved = metadata.public_sample_inputs.size() == 1
-        && metadata.public_sample_outputs.size() == 1
-        && metadata.public_sample_inputs.front().family_name == "in"
-        && metadata.public_sample_inputs.front().configured_connected
-        && metadata.public_sample_outputs.front().family_name == "out";
+    result.continuous_ports_are_preserved =
+        metadata.public_continuous_inputs.size() == 1
+        && metadata.public_continuous_outputs.size() == 1
+        && metadata.public_continuous_inputs.front().family_name == "in"
+        && metadata.public_continuous_inputs.front().configured_connected
+        && metadata.public_continuous_outputs.front().family_name == "out";
 
     result.event_ports_are_preserved = metadata.public_event_inputs.size() == 1
         && metadata.public_event_inputs.front().port_index == 0
@@ -461,8 +489,40 @@ TEST(GraphModules, RuntimeIntrospectionPreservesVirtualAndPublicPorts)
 {
     auto snapshot = introspection_regression_snapshot();
     EXPECT_TRUE(snapshot.virtual_node_is_preserved);
-    EXPECT_TRUE(snapshot.sample_ports_are_preserved);
+    EXPECT_TRUE(snapshot.continuous_ports_are_preserved);
     EXPECT_TRUE(snapshot.event_ports_are_preserved);
+}
+
+TEST(GraphModules, RuntimeIntrospectionPreservesContinuousValueTypeDomains)
+{
+    auto const configured = configure_continuous_domain_introspection();
+    auto const metadata = build_graph_introspection_metadata(configured);
+    ASSERT_EQ(metadata.virtual_nodes.size(), 1u);
+    auto const& node = metadata.virtual_nodes.front();
+    ASSERT_EQ(node.continuous_inputs.size(), 1u);
+    ASSERT_EQ(node.continuous_outputs.size(), 1u);
+    auto const& input_types = node.continuous_inputs.front().value_types;
+    auto const& output_types = node.continuous_outputs.front().value_types;
+    ASSERT_EQ(input_types.size(), 3u);
+    ASSERT_EQ(output_types.size(), 3u);
+    EXPECT_EQ(
+        continuous_introspection_value_type(input_types[0]),
+        ContinuousValueTypeId::sample);
+    EXPECT_EQ(
+        continuous_introspection_value_type(input_types[1]),
+        ContinuousValueTypeId::fractional_global_index);
+    EXPECT_EQ(
+        continuous_introspection_value_type(input_types[2]),
+        ContinuousValueTypeId::fft_block);
+    EXPECT_EQ(
+        continuous_introspection_value_type(output_types[0]),
+        ContinuousValueTypeId::sample);
+    EXPECT_EQ(
+        continuous_introspection_value_type(output_types[1]),
+        ContinuousValueTypeId::fractional_global_index);
+    EXPECT_EQ(
+        continuous_introspection_value_type(output_types[2]),
+        ContinuousValueTypeId::fft_block);
 }
 
 } // namespace iv

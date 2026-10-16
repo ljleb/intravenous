@@ -45,7 +45,7 @@ inline GraphBuilderState::VirtualPorts virtual_ports(GraphBuilder const& builder
         const_cast<GraphBuilder&>(builder)).virtual_ports();
 }
 
-inline GraphBuilderPublicSamplePortFamilies
+inline GraphBuilderPublicContinuousPortFamilies
 public_sample_input_families(GraphBuilder const& builder)
 {
     return details::builder_graph_state(
@@ -80,7 +80,7 @@ public_event_input_source_infos(GraphBuilder const& builder, size_t index)
         const_cast<GraphBuilder&>(builder)).public_event_input_source_infos(index);
 }
 
-inline GraphBuilderPublicSamplePortFamilies
+inline GraphBuilderPublicContinuousPortFamilies
 public_sample_output_families(GraphBuilder const& builder)
 {
     return details::builder_graph_state(

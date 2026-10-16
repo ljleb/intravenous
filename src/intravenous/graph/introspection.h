@@ -114,33 +114,67 @@ constexpr bool introspection_sample_channel_is_connected(
     return connectivity.sample_outputs.contains(channel);
 }
 
+constexpr ContinuousInputConfig introspection_continuous_config(
+    GraphBuilderNodeBundles const& node_bundles,
+    SampleInputChannelId channel)
+{
+    return node_bundles.resolve_sample_input(NodeBundlePortId{
+        channel.bundle, PortKind::sample, channel.port}).config;
+}
+
+constexpr ContinuousOutputConfig introspection_continuous_config(
+    GraphBuilderNodeBundles const& node_bundles,
+    SampleOutputChannelId channel)
+{
+    return node_bundles.resolve_sample_output(NodeBundlePortId{
+        channel.bundle, PortKind::sample, channel.port}).config;
+}
+
+template<class Config>
+constexpr Config introspection_semantic_config(Config config)
+{
+    config.name.clear();
+    return config;
+}
+
+constexpr std::vector<ContinuousValueIntrospectionMetadata>
+introspection_value_types(ContinuousInputConfig const& config)
+{
+    return std::visit([](auto const& access) {
+        return continuous_introspection_metadata(access.value_metadata);
+    }, config.access);
+}
+
+constexpr std::vector<ContinuousValueIntrospectionMetadata>
+introspection_value_types(ContinuousOutputConfig const& config)
+{
+    return std::visit([](auto const& production) {
+        return continuous_introspection_metadata(production.value_metadata);
+    }, config.production);
+}
+
 template<class Mapping>
-constexpr std::vector<IntrospectionPortInfo> project_introspection_sample_ports(
+constexpr std::vector<IntrospectionContinuousPortInfo>
+project_introspection_continuous_ports(
     std::vector<Mapping> const& mappings,
     GraphBuilderNodeBundles const& node_bundles,
-    ConfiguredGraphConnectivity const& connectivity,
-    bool inputs)
+    ConfiguredGraphConnectivity const& connectivity)
 {
-    std::vector<IntrospectionPortInfo> result;
+    std::vector<IntrospectionContinuousPortInfo> result;
     result.reserve(mappings.size());
     for (auto const& mapping : mappings) {
         if (mapping.channels.empty()) continue;
 
-        auto const first_channel = mapping.channels.front();
-        NodeBundlePortId const first_address{
-            first_channel.bundle, PortKind::sample, first_channel.port};
-        Sample default_value = 0.0f;
-        std::optional<Sample> min;
-        std::optional<Sample> max;
-        if (inputs) {
-            auto const config =
-                node_bundles.resolve_sample_input(first_address).config;
-            if (is_sequential(config)) {
-                auto const& properties = sequential_input_metadata<Sample>(
-                    sequential_input_properties(config));
-                default_value = properties.default_value;
-                min = properties.min;
-                max = properties.max;
+        auto const config = introspection_continuous_config(
+            node_bundles, mapping.channels.front());
+        auto const semantic_config = introspection_semantic_config(config);
+        for (auto const channel : mapping.channels) {
+            if (introspection_semantic_config(
+                    introspection_continuous_config(node_bundles, channel))
+                != semantic_config) {
+                details::error(
+                    "virtual node members expose incompatible continuous port "
+                    "configurations");
             }
         }
 
@@ -152,18 +186,19 @@ constexpr std::vector<IntrospectionPortInfo> project_introspection_sample_ports(
             any_connected = any_connected || connected;
             any_disconnected = any_disconnected || !connected;
         }
-        result.push_back(IntrospectionPortInfo{
+        auto const value_type_domain = continuous_value_type_domain(config);
+        result.push_back(IntrospectionContinuousPortInfo{
             .name = mapping.name,
-            .type = "sample",
             .connectivity = any_connected && any_disconnected
                 ? VirtualPortConnectivity::mixed
                 : any_connected ? VirtualPortConnectivity::connected
                                 : VirtualPortConnectivity::disconnected,
             .index = mapping.index,
-            .default_value = default_value,
-            .min = min,
-            .max = max,
-            .sample_channel_type = mapping.channel_layout.channel_type,
+            .value_types = introspection_value_types(config),
+            .channel_type =
+                !(value_type_domain & ContinuousValueTypeSet::audio_capable()).empty()
+                ? std::optional{mapping.channel_layout.channel_type}
+                : std::nullopt,
             .source_spans =
                 introspection_source_spans_for(mapping.source_infos),
         });
@@ -172,13 +207,12 @@ constexpr std::vector<IntrospectionPortInfo> project_introspection_sample_ports(
 }
 
 template<class Mapping>
-constexpr std::vector<IntrospectionPortInfo>
-project_bundle_introspection_sample_ports(
+constexpr std::vector<IntrospectionContinuousPortInfo>
+project_bundle_introspection_continuous_ports(
     std::vector<Mapping> const& mappings,
     GraphBuilderNodeBundles const& node_bundles,
     ConfiguredGraphConnectivity const& connectivity,
-    NodeBundleHandle bundle_handle,
-    bool inputs)
+    NodeBundleHandle bundle_handle)
 {
     std::vector<Mapping> bundle_mappings;
     bundle_mappings.reserve(mappings.size());
@@ -191,33 +225,38 @@ project_bundle_introspection_sample_ports(
             bundle_mappings.push_back(std::move(projected));
         }
     }
-    return project_introspection_sample_ports(
-        bundle_mappings, node_bundles, connectivity, inputs);
+    return project_introspection_continuous_ports(
+        bundle_mappings, node_bundles, connectivity);
 }
 
-constexpr std::vector<IntrospectionPortInfo> project_introspection_event_ports(
+constexpr std::vector<IntrospectionEventPortInfo> project_introspection_event_ports(
     std::vector<VirtualEventPortMapping> const& mappings,
     ConfiguredGraphConnectivity const& connectivity,
     bool inputs)
 {
-    std::vector<IntrospectionPortInfo> result;
+    std::vector<IntrospectionEventPortInfo> result;
     result.reserve(mappings.size());
     for (auto const& mapping : mappings) {
         if (mapping.node_bundle_ports.empty()) continue;
-        bool connected = false;
+        bool any_connected = false;
+        bool any_disconnected = false;
         for (auto const port : mapping.node_bundle_ports) {
-            connected = connected || (inputs
+            auto const connected = inputs
                 ? connectivity.event_inputs.contains(EventInputPortId{
                     port.node_bundle_handle, port.port_index})
                 : connectivity.event_outputs.contains(EventOutputPortId{
-                    port.node_bundle_handle, port.port_index}));
+                    port.node_bundle_handle, port.port_index});
+            any_connected = any_connected || connected;
+            any_disconnected = any_disconnected || !connected;
         }
-        result.push_back(IntrospectionPortInfo{
+        result.push_back(IntrospectionEventPortInfo{
             .name = mapping.name,
-            .type = event_type_name(mapping.type),
-            .connectivity = connected ? VirtualPortConnectivity::connected
-                                      : VirtualPortConnectivity::disconnected,
+            .connectivity = any_connected && any_disconnected
+                ? VirtualPortConnectivity::mixed
+                : any_connected ? VirtualPortConnectivity::connected
+                                : VirtualPortConnectivity::disconnected,
             .index = mapping.index,
+            .type = mapping.type,
             .source_spans =
                 introspection_source_spans_for(mapping.source_infos),
         });
@@ -225,7 +264,7 @@ constexpr std::vector<IntrospectionPortInfo> project_introspection_event_ports(
     return result;
 }
 
-constexpr std::vector<IntrospectionPortInfo>
+constexpr std::vector<IntrospectionEventPortInfo>
 project_bundle_introspection_event_ports(
     std::vector<VirtualEventPortMapping> const& mappings,
     ConfiguredGraphConnectivity const& connectivity,
@@ -258,10 +297,10 @@ constexpr void append_configured_virtual_node_metadata(
             .source_identity = record.source_identity,
             .type_identity = record.type_identity,
             .source_spans = introspection_source_spans_for(record.source_infos),
-            .sample_inputs = project_introspection_sample_ports(
-                record.sample_inputs, node_bundles, connectivity, true),
-            .sample_outputs = project_introspection_sample_ports(
-                record.sample_outputs, node_bundles, connectivity, false),
+            .continuous_inputs = project_introspection_continuous_ports(
+                record.sample_inputs, node_bundles, connectivity),
+            .continuous_outputs = project_introspection_continuous_ports(
+                record.sample_outputs, node_bundles, connectivity),
             .event_inputs = project_introspection_event_ports(
                 record.event_inputs, connectivity, true),
             .event_outputs = project_introspection_event_ports(
@@ -281,8 +320,8 @@ constexpr void append_configured_virtual_node_metadata(
                 .backing_node_id = backing_id,
                 .kind = node.kind,
                 .type_identity = record.type_identity,
-                .sample_inputs = node.sample_inputs,
-                .sample_outputs = node.sample_outputs,
+                .continuous_inputs = node.continuous_inputs,
+                .continuous_outputs = node.continuous_outputs,
                 .event_inputs = node.event_inputs,
                 .event_outputs = node.event_outputs,
             });
@@ -305,12 +344,10 @@ constexpr void append_configured_virtual_node_metadata(
                 .backing_node_id = backing_id,
                 .kind = type,
                 .type_identity = type,
-                .sample_inputs = project_bundle_introspection_sample_ports(
-                    record.sample_inputs, node_bundles, connectivity, handle,
-                    true),
-                .sample_outputs = project_bundle_introspection_sample_ports(
-                    record.sample_outputs, node_bundles, connectivity, handle,
-                    false),
+                .continuous_inputs = project_bundle_introspection_continuous_ports(
+                    record.sample_inputs, node_bundles, connectivity, handle),
+                .continuous_outputs = project_bundle_introspection_continuous_ports(
+                    record.sample_outputs, node_bundles, connectivity, handle),
                 .event_inputs = project_bundle_introspection_event_ports(
                     record.event_inputs, connectivity, handle, true),
                 .event_outputs = project_bundle_introspection_event_ports(
@@ -353,7 +390,7 @@ constexpr GraphIntrospectionMetadata build_graph_introspection_metadata(
                     });
             });
     }
-    metadata.public_sample_inputs = std::move(sample_inputs.families);
+    metadata.public_continuous_inputs = std::move(sample_inputs.families);
 
     metadata.public_event_inputs =
         configured.public_ports.collected_event_inputs(configured.node_bundles);
@@ -369,7 +406,7 @@ constexpr GraphIntrospectionMetadata build_graph_introspection_metadata(
             });
     }
 
-    metadata.public_sample_outputs =
+    metadata.public_continuous_outputs =
         configured.public_ports.sample_output_families(configured.node_bundles)
             .families;
     metadata.public_event_outputs =

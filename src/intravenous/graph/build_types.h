@@ -16,34 +16,26 @@ namespace iv {
         mixed,
     };
 
-    struct IntrospectionPortInfo {
+    struct IntrospectionContinuousPortInfo {
         std::string name {};
-        std::string type {};
         VirtualPortConnectivity connectivity = VirtualPortConnectivity::disconnected;
         size_t index = 0;
-        Sample default_value = 0.0f;
-        std::optional<Sample> min {};
-        std::optional<Sample> max {};
-        std::optional<ChannelTypeId> sample_channel_type {};
+        std::vector<ContinuousValueIntrospectionMetadata> value_types {};
+        std::optional<ChannelTypeId> channel_type {};
         std::vector<SourceSpan> source_spans {};
 
-        bool operator==(IntrospectionPortInfo const&) const = default;
+        bool operator==(
+            IntrospectionContinuousPortInfo const&) const = default;
     };
 
-    struct VirtualPortInfo {
+    struct IntrospectionEventPortInfo {
         std::string name {};
-        std::string type {};
         VirtualPortConnectivity connectivity = VirtualPortConnectivity::disconnected;
         size_t index = 0;
-        Sample default_value = 0.0f;
-        std::optional<Sample> min {};
-        std::optional<Sample> max {};
-        Sample current_value = 0.0f;
-        bool has_concrete_override = false;
-        std::optional<ChannelTypeId> sample_channel_type {};
-        std::string state_value {};
+        EventTypeId type = EventTypeId::empty;
+        std::vector<SourceSpan> source_spans {};
 
-        bool operator==(VirtualPortInfo const&) const = default;
+        bool operator==(IntrospectionEventPortInfo const&) const = default;
     };
 
     struct IntrospectionVirtualNode {
@@ -52,10 +44,10 @@ namespace iv {
             std::string backing_node_id {};
             std::string kind {};
             std::string type_identity {};
-            std::vector<IntrospectionPortInfo> sample_inputs {};
-            std::vector<IntrospectionPortInfo> sample_outputs {};
-            std::vector<IntrospectionPortInfo> event_inputs {};
-            std::vector<IntrospectionPortInfo> event_outputs {};
+            std::vector<IntrospectionContinuousPortInfo> continuous_inputs {};
+            std::vector<IntrospectionContinuousPortInfo> continuous_outputs {};
+            std::vector<IntrospectionEventPortInfo> event_inputs {};
+            std::vector<IntrospectionEventPortInfo> event_outputs {};
         };
 
         std::string id {};
@@ -63,32 +55,32 @@ namespace iv {
         std::string source_identity {};
         std::string type_identity {};
         std::vector<SourceSpan> source_spans {};
-        std::vector<IntrospectionPortInfo> sample_inputs {};
-        std::vector<IntrospectionPortInfo> sample_outputs {};
-        std::vector<IntrospectionPortInfo> event_inputs {};
-        std::vector<IntrospectionPortInfo> event_outputs {};
+        std::vector<IntrospectionContinuousPortInfo> continuous_inputs {};
+        std::vector<IntrospectionContinuousPortInfo> continuous_outputs {};
+        std::vector<IntrospectionEventPortInfo> event_inputs {};
+        std::vector<IntrospectionEventPortInfo> event_outputs {};
         std::vector<std::string> backing_node_ids {};
         std::vector<Member> members {};
     };
 
-    struct GraphBuilderPublicSamplePortChannel {
+    struct GraphBuilderPublicContinuousPortChannel {
         std::vector<size_t> port_indices {};
         std::vector<SourceInfo> source_infos {};
     };
 
-    struct GraphBuilderPublicSamplePortFamily {
+    struct GraphBuilderPublicContinuousPortFamily {
         size_t family_index = 0;
         std::string family_name {};
         ContinuousInputConfig input_config {};
         ContinuousOutputConfig output_config {};
         ChannelTypeId channel_type = ChannelTypeId::mono;
-        std::vector<GraphBuilderPublicSamplePortChannel> channels {};
+        std::vector<GraphBuilderPublicContinuousPortChannel> channels {};
         std::vector<SourceInfo> source_infos {};
         bool configured_connected = false;
     };
 
-    struct GraphBuilderPublicSamplePortFamilies {
-        std::vector<GraphBuilderPublicSamplePortFamily> families {};
+    struct GraphBuilderPublicContinuousPortFamilies {
+        std::vector<GraphBuilderPublicContinuousPortFamily> families {};
     };
 
     struct GraphBuilderPublicEventInput {
@@ -106,9 +98,9 @@ namespace iv {
 
     struct GraphIntrospectionMetadata {
         std::vector<IntrospectionVirtualNode> virtual_nodes;
-        std::vector<GraphBuilderPublicSamplePortFamily> public_sample_inputs;
+        std::vector<GraphBuilderPublicContinuousPortFamily> public_continuous_inputs;
         std::vector<GraphBuilderPublicEventInput> public_event_inputs;
-        std::vector<GraphBuilderPublicSamplePortFamily> public_sample_outputs;
+        std::vector<GraphBuilderPublicContinuousPortFamily> public_continuous_outputs;
         std::vector<GraphBuilderPublicEventOutput> public_event_outputs;
     };
 

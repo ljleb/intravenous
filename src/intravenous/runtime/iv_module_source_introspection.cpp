@@ -73,29 +73,68 @@ SourcePosition SourceTextLineMap::position_for(size_t offset) const
 namespace {
 constexpr std::string_view runtime_node_id_separator = "\x1fvirtual:";
 
-VirtualPortInfo to_live_port(IntrospectionPortInfo const &port)
+VirtualContinuousPortInfo to_live_port(
+    IntrospectionContinuousPortInfo const& port,
+    VirtualPortBinding binding)
 {
-    return VirtualPortInfo{
+    return VirtualContinuousPortInfo{
         .name = port.name,
-        .type = port.type,
         .connectivity = port.connectivity,
         .index = port.index,
-        .default_value = port.default_value,
-        .min = port.min,
-        .max = port.max,
-        .current_value = port.default_value,
-        .sample_channel_type = port.sample_channel_type,
+        .value_types = port.value_types,
+        .channel_type = port.channel_type,
+        .binding = binding,
     };
 }
 
-std::vector<VirtualPortInfo> to_live_ports(std::span<IntrospectionPortInfo const> ports)
+VirtualEventPortInfo to_live_port(
+    IntrospectionEventPortInfo const& port,
+    VirtualPortBinding binding)
 {
-    std::vector<VirtualPortInfo> live_ports;
+    return VirtualEventPortInfo{
+        .name = port.name,
+        .connectivity = port.connectivity,
+        .index = port.index,
+        .type = port.type,
+        .binding = binding,
+    };
+}
+
+VirtualPortBinding member_input_binding(
+    VirtualPortConnectivity connectivity)
+{
+    switch (connectivity) {
+    case VirtualPortConnectivity::connected:
+        return VirtualPortBinding::none;
+    case VirtualPortConnectivity::disconnected:
+        return VirtualPortBinding::virtual_input;
+    case VirtualPortConnectivity::mixed:
+        return VirtualPortBinding::mixed;
+    }
+    return VirtualPortBinding::mixed;
+}
+
+template<class LivePort, class IntrospectionPort, class Binding>
+std::vector<LivePort> to_live_ports_with_bindings(
+    std::span<IntrospectionPort const> ports,
+    Binding binding)
+{
+    std::vector<LivePort> live_ports;
     live_ports.reserve(ports.size());
     for (auto const &port : ports) {
-        live_ports.push_back(to_live_port(port));
+        live_ports.push_back(to_live_port(port, binding(port)));
     }
     return live_ports;
+}
+
+template<class LivePort, class IntrospectionPort>
+std::vector<LivePort> to_live_ports(
+    std::span<IntrospectionPort const> ports,
+    VirtualPortBinding binding)
+{
+    return to_live_ports_with_bindings<LivePort>(ports, [binding](auto const&) {
+        return binding;
+    });
 }
 
 void sort_and_deduplicate_spans(std::vector<SourceSpan> &spans)
@@ -148,8 +187,8 @@ LoadedGraphIntrospectionIndex build_graph_introspection_index(
                 sort_and_deduplicate_spans(port.source_spans);
             }
         };
-        normalize_port_spans(virtual_node.sample_inputs);
-        normalize_port_spans(virtual_node.sample_outputs);
+        normalize_port_spans(virtual_node.continuous_inputs);
+        normalize_port_spans(virtual_node.continuous_outputs);
         normalize_port_spans(virtual_node.event_inputs);
         normalize_port_spans(virtual_node.event_outputs);
     }
@@ -249,14 +288,14 @@ VirtualNodeInfo IvModuleSourceIntrospection::to_virtual_node(
     live.kind = node.kind;
     live.source_identity = node.source_identity;
     live.type_identity = node.type_identity;
-    live.sample_inputs = to_live_ports(node.sample_inputs);
-    for (auto &port : live.sample_inputs) port.state_value = "default";
-    live.sample_outputs = to_live_ports(node.sample_outputs);
-    for (auto &port : live.sample_outputs) port.state_value = "disconnected";
-    live.event_inputs = to_live_ports(node.event_inputs);
-    for (auto &port : live.event_inputs) port.state_value = "default";
-    live.event_outputs = to_live_ports(node.event_outputs);
-    for (auto &port : live.event_outputs) port.state_value = "disconnected";
+    live.continuous_inputs = to_live_ports<VirtualContinuousPortInfo>(
+        std::span{node.continuous_inputs}, VirtualPortBinding::interface);
+    live.continuous_outputs = to_live_ports<VirtualContinuousPortInfo>(
+        std::span{node.continuous_outputs}, VirtualPortBinding::interface);
+    live.event_inputs = to_live_ports<VirtualEventPortInfo>(
+        std::span{node.event_inputs}, VirtualPortBinding::interface);
+    live.event_outputs = to_live_ports<VirtualEventPortInfo>(
+        std::span{node.event_outputs}, VirtualPortBinding::interface);
     live.member_count = node.backing_node_ids.size();
     live.members.reserve(node.members.size());
     for (auto const &member : node.members) {
@@ -265,22 +304,22 @@ VirtualNodeInfo IvModuleSourceIntrospection::to_virtual_node(
         live_member.backing_node_id = member.backing_node_id;
         live_member.kind = member.kind;
         live_member.type_identity = member.type_identity;
-        live_member.sample_inputs = to_live_ports(member.sample_inputs);
-        for (auto &port : live_member.sample_inputs) {
-            port.state_value = port.connectivity == VirtualPortConnectivity::connected
-                ? "disconnected"
-                : "virtualFollow";
-        }
-        live_member.sample_outputs = to_live_ports(member.sample_outputs);
-        for (auto &port : live_member.sample_outputs) port.state_value = "disconnected";
-        live_member.event_inputs = to_live_ports(member.event_inputs);
-        for (auto &port : live_member.event_inputs) {
-            port.state_value = port.connectivity == VirtualPortConnectivity::connected
-                ? "disconnected"
-                : "virtualFollow";
-        }
-        live_member.event_outputs = to_live_ports(member.event_outputs);
-        for (auto &port : live_member.event_outputs) port.state_value = "disconnected";
+        live_member.continuous_inputs =
+            to_live_ports_with_bindings<VirtualContinuousPortInfo>(
+                std::span{member.continuous_inputs}, [](auto const& port) {
+                    return member_input_binding(port.connectivity);
+                });
+        live_member.continuous_outputs =
+            to_live_ports<VirtualContinuousPortInfo>(
+                std::span{member.continuous_outputs},
+                VirtualPortBinding::virtual_output);
+        live_member.event_inputs =
+            to_live_ports_with_bindings<VirtualEventPortInfo>(
+                std::span{member.event_inputs}, [](auto const& port) {
+                    return member_input_binding(port.connectivity);
+                });
+        live_member.event_outputs = to_live_ports<VirtualEventPortInfo>(
+            std::span{member.event_outputs}, VirtualPortBinding::virtual_output);
         live.members.push_back(std::move(live_member));
     }
     live.source_spans.reserve(node.source_spans.size());
@@ -459,7 +498,7 @@ ProjectQueryResult IvModuleSourceIntrospection::query_by_spans(
         std::string definition_id;
         size_t virtual_index = 0;
         bool full_node = false;
-        std::vector<size_t> sample_input_indices {};
+        std::vector<size_t> continuous_input_indices {};
         std::vector<size_t> event_input_indices {};
         std::vector<SourceSpan> selected_port_spans {};
         uint32_t best_span_size = std::numeric_limits<uint32_t>::max();
@@ -534,7 +573,8 @@ ProjectQueryResult IvModuleSourceIntrospection::query_by_spans(
                     if (matched_port) indices.push_back(port.index);
                 }
             };
-            collect_port_matches(node.sample_inputs, ranked.sample_input_indices);
+            collect_port_matches(
+                node.continuous_inputs, ranked.continuous_input_indices);
             collect_port_matches(node.event_inputs, ranked.event_input_indices);
 
             auto const is_matched = [](bool value) { return value; };
@@ -603,22 +643,24 @@ ProjectQueryResult IvModuleSourceIntrospection::query_by_spans(
                 auto keep_index = [](auto const &indices, auto const &port) {
                     return std::ranges::contains(indices, port.index);
                 };
-                std::erase_if(live.sample_inputs, [&](auto const &port) {
-                    return !keep_index(ranked.sample_input_indices, port);
+                std::erase_if(live.continuous_inputs, [&](auto const &port) {
+                    return !keep_index(ranked.continuous_input_indices, port);
                 });
                 std::erase_if(live.event_inputs, [&](auto const &port) {
                     return !keep_index(ranked.event_input_indices, port);
                 });
-                live.sample_outputs.clear();
+                live.continuous_outputs.clear();
                 live.event_outputs.clear();
                 for (auto &member : live.members) {
-                    std::erase_if(member.sample_inputs, [&](auto const &port) {
-                        return !keep_index(ranked.sample_input_indices, port);
+                    std::erase_if(
+                        member.continuous_inputs, [&](auto const &port) {
+                        return !keep_index(
+                            ranked.continuous_input_indices, port);
                     });
                     std::erase_if(member.event_inputs, [&](auto const &port) {
                         return !keep_index(ranked.event_input_indices, port);
                     });
-                    member.sample_outputs.clear();
+                    member.continuous_outputs.clear();
                     member.event_outputs.clear();
                 }
                 live.source_spans.clear();
@@ -665,7 +707,7 @@ ProjectRegionQueryResult IvModuleSourceIntrospection::query_active_regions(
               }
             };
             append_spans(node.source_spans);
-            for (auto const &port : node.sample_inputs) {
+            for (auto const &port : node.continuous_inputs) {
                 append_spans(port.source_spans);
             }
             for (auto const &port : node.event_inputs) {

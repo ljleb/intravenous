@@ -11,6 +11,37 @@
 #include <vector>
 
 namespace iv {
+    enum class VirtualPortBinding : std::uint8_t {
+        interface,
+        none,
+        virtual_input,
+        virtual_output,
+        mixed,
+    };
+
+    struct VirtualContinuousPortInfo {
+        std::string name {};
+        VirtualPortConnectivity connectivity =
+            VirtualPortConnectivity::disconnected;
+        size_t index = 0;
+        std::vector<ContinuousValueIntrospectionMetadata> value_types {};
+        std::optional<ChannelTypeId> channel_type {};
+        VirtualPortBinding binding = VirtualPortBinding::none;
+
+        bool operator==(VirtualContinuousPortInfo const&) const = default;
+    };
+
+    struct VirtualEventPortInfo {
+        std::string name {};
+        VirtualPortConnectivity connectivity =
+            VirtualPortConnectivity::disconnected;
+        size_t index = 0;
+        EventTypeId type = EventTypeId::empty;
+        VirtualPortBinding binding = VirtualPortBinding::none;
+
+        bool operator==(VirtualEventPortInfo const&) const = default;
+    };
+
     struct SourcePosition {
         uint32_t line = 1;
         uint32_t column = 1;
@@ -42,10 +73,10 @@ namespace iv {
         std::string backing_node_id{};
         std::string kind{};
         std::string type_identity{};
-        std::vector<VirtualPortInfo> sample_inputs{};
-        std::vector<VirtualPortInfo> sample_outputs{};
-        std::vector<VirtualPortInfo> event_inputs{};
-        std::vector<VirtualPortInfo> event_outputs{};
+        std::vector<VirtualContinuousPortInfo> continuous_inputs{};
+        std::vector<VirtualContinuousPortInfo> continuous_outputs{};
+        std::vector<VirtualEventPortInfo> event_inputs{};
+        std::vector<VirtualEventPortInfo> event_outputs{};
     };
 
     struct VirtualNodeInfo {
@@ -55,10 +86,10 @@ namespace iv {
         std::string source_identity{};
         std::string type_identity{};
         std::vector<LiveSourceSpan> source_spans{};
-        std::vector<VirtualPortInfo> sample_inputs{};
-        std::vector<VirtualPortInfo> sample_outputs{};
-        std::vector<VirtualPortInfo> event_inputs{};
-        std::vector<VirtualPortInfo> event_outputs{};
+        std::vector<VirtualContinuousPortInfo> continuous_inputs{};
+        std::vector<VirtualContinuousPortInfo> continuous_outputs{};
+        std::vector<VirtualEventPortInfo> event_inputs{};
+        std::vector<VirtualEventPortInfo> event_outputs{};
         size_t member_count = 0;
         std::vector<VirtualNodeMemberInfo> members{};
     };

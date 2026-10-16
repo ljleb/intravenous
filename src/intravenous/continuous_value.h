@@ -6,6 +6,7 @@
 
 #include <array>
 #include <bit>
+#include <cmath>
 #include <complex>
 #include <concepts>
 #include <cstddef>
@@ -13,11 +14,13 @@
 #include <limits>
 #include <optional>
 #include <span>
+#include <string>
 #include <string_view>
 #include <tuple>
 #include <type_traits>
 #include <utility>
 #include <variant>
+#include <vector>
 
 namespace iv {
 
@@ -105,6 +108,63 @@ struct SampleContinuousValueExtension {
             };
         }
     };
+
+    struct IntrospectionMetadata {
+        std::optional<Sample> default_value {};
+        std::optional<Sample> min {};
+        std::optional<Sample> max {};
+
+        constexpr bool operator==(
+            IntrospectionMetadata const&) const = default;
+
+        template<class Json>
+        void write_json(Json& json) const
+        {
+            if (default_value) {
+                write_value(json, "defaultValue", *default_value);
+            }
+            if (min) {
+                write_value(json, "minValue", *min);
+            }
+            if (max) {
+                write_value(json, "maxValue", *max);
+            }
+        }
+
+    private:
+        template<class Json>
+        static void write_value(
+            Json& json, char const* name, Sample value)
+        {
+            auto const number = static_cast<Sample::storage>(value);
+            if (std::isnan(number)) {
+                json[name] = "nan";
+            } else if (std::isinf(number)) {
+                json[name] = number > 0
+                    ? "positiveInfinity"
+                    : "negativeInfinity";
+            } else {
+                json[name] = number;
+            }
+        }
+    };
+
+    [[nodiscard]] static constexpr IntrospectionMetadata
+    introspection_metadata(SequentialInputMetadata const& metadata) noexcept
+    {
+        return {
+            .default_value = metadata.default_value,
+            .min = metadata.min,
+            .max = metadata.max,
+        };
+    }
+
+    template<class Metadata>
+    [[nodiscard]] static constexpr IntrospectionMetadata
+    introspection_metadata(Metadata const&) noexcept
+    {
+        return {};
+    }
 
 #define IV_AUDIO_CHANNEL_OPTIONS(Name)                                   \
     struct Name {                                                        \
@@ -263,6 +323,36 @@ struct FractionalGlobalIndexContinuousValueExtension {
         }
     };
 
+    struct IntrospectionMetadata {
+        std::optional<FractionalGlobalIndex> default_value {};
+
+        constexpr bool operator==(
+            IntrospectionMetadata const&) const = default;
+
+        template<class Json>
+        void write_json(Json& json) const
+        {
+            if (!default_value) return;
+            json["defaultValue"] = {
+                {"wholeBits", std::to_string(default_value->whole().bits())},
+                {"fractionBits", std::to_string(default_value->fraction())},
+            };
+        }
+    };
+
+    [[nodiscard]] static constexpr IntrospectionMetadata
+    introspection_metadata(SequentialInputMetadata const& metadata) noexcept
+    {
+        return {.default_value = metadata.default_value};
+    }
+
+    template<class Metadata>
+    [[nodiscard]] static constexpr IntrospectionMetadata
+    introspection_metadata(Metadata const&) noexcept
+    {
+        return {};
+    }
+
     struct RegionInputOptions {
         constexpr bool operator==(RegionInputOptions const&) const = default;
 
@@ -406,6 +496,22 @@ struct FFTBlockContinuousValueExtension {
             return {};
         }
     };
+
+    struct IntrospectionMetadata {
+        constexpr bool operator==(
+            IntrospectionMetadata const&) const = default;
+
+        template<class Json>
+        void write_json(Json&) const
+        {}
+    };
+
+    template<class Metadata>
+    [[nodiscard]] static constexpr IntrospectionMetadata
+    introspection_metadata(Metadata const&) noexcept
+    {
+        return {};
+    }
 
 #define IV_AUDIO_CHANNEL_OPTIONS(Name)                                   \
     struct Name {                                                        \
@@ -702,6 +808,9 @@ struct MetadataVariants<ExtensionList<Ignored, Extensions...>> {
         typename Extensions::RegionOutputMetadata...>;
     using CoverageOutput = std::variant<
         typename Extensions::CoverageOutputMetadata...>;
+    using Introspection = std::variant<
+        typename Extensions::IntrospectionMetadata...>;
+    using ExtensionTuple = std::tuple<Extensions...>;
 };
 
 using RegisteredMetadataVariants = MetadataVariants<RegisteredExtensions>;
@@ -720,6 +829,8 @@ using ContinuousRegionOutputMetadata =
     continuous_value_details::RegisteredMetadataVariants::RegionOutput;
 using ContinuousCoverageOutputMetadata =
     continuous_value_details::RegisteredMetadataVariants::CoverageOutput;
+using ContinuousValueIntrospectionMetadata =
+    continuous_value_details::RegisteredMetadataVariants::Introspection;
 
 namespace continuous_value_details {
 
@@ -747,6 +858,9 @@ consteval bool metadata_variants_match_registry(
         && std::same_as<
             std::variant_alternative_t<Index, typename Variants::CoverageOutput>,
             typename Extensions::CoverageOutputMetadata>
+        && std::same_as<
+            std::variant_alternative_t<Index, typename Variants::Introspection>,
+            typename Extensions::IntrospectionMetadata>
         && ContinuousValueType<typename Extensions::value_type>::id
             == continuous_value_type_registry[Index].id) && ...);
 }
@@ -777,6 +891,9 @@ static_assert(
 static_assert(
     std::variant_size_v<ContinuousCoverageOutputMetadata>
     == continuous_value_type_registry.size());
+static_assert(
+    std::variant_size_v<ContinuousValueIntrospectionMetadata>
+    == continuous_value_type_registry.size());
 
 template<class Variant>
 concept ContinuousMetadataVariant =
@@ -802,6 +919,62 @@ template<ContinuousMetadataVariant Variant>
         throw "continuous metadata has no registered value type";
     }
     return continuous_value_type_registry[metadata.index()].id;
+}
+
+[[nodiscard]] constexpr ContinuousValueTypeId
+continuous_introspection_value_type(
+    ContinuousValueIntrospectionMetadata const& metadata)
+{
+    if (metadata.valueless_by_exception()
+        || metadata.index() >= continuous_value_type_registry.size()) {
+        throw "continuous introspection metadata has no registered value type";
+    }
+    return continuous_value_type_registry[metadata.index()].id;
+}
+
+namespace continuous_value_details {
+
+template<std::size_t Index = 0, ContinuousMetadataVariant Metadata>
+[[nodiscard]] constexpr ContinuousValueIntrospectionMetadata
+make_introspection_metadata(Metadata const& metadata)
+{
+    if constexpr (Index >= std::variant_size_v<Metadata>) {
+        throw "continuous metadata has no registered value type";
+    } else {
+        if (metadata.index() == Index) {
+            using Extension = std::tuple_element_t<
+                Index,
+                typename RegisteredMetadataVariants::ExtensionTuple>;
+            return ContinuousValueIntrospectionMetadata{
+                std::in_place_index<Index>,
+                Extension::introspection_metadata(std::get<Index>(metadata))};
+        }
+        return make_introspection_metadata<Index + 1>(metadata);
+    }
+}
+
+} // namespace continuous_value_details
+
+template<ContinuousMetadataVariant Metadata>
+[[nodiscard]] constexpr ContinuousValueIntrospectionMetadata
+continuous_introspection_metadata(Metadata const& metadata)
+{
+    if (metadata.valueless_by_exception()) {
+        throw "continuous metadata has no registered value type";
+    }
+    return continuous_value_details::make_introspection_metadata(metadata);
+}
+
+template<ContinuousMetadataVariant Metadata>
+[[nodiscard]] constexpr std::vector<ContinuousValueIntrospectionMetadata>
+continuous_introspection_metadata(std::vector<Metadata> const& metadata)
+{
+    std::vector<ContinuousValueIntrospectionMetadata> result;
+    result.reserve(metadata.size());
+    for (auto const& value : metadata) {
+        result.push_back(continuous_introspection_metadata(value));
+    }
+    return result;
 }
 
 #define IV_DEFAULT_CONTINUOUS_METADATA_CASE(Kind, key, extension)        \

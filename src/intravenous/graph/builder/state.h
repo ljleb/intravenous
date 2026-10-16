@@ -202,12 +202,12 @@ public:
   VirtualOutputs virtual_outputs() const;
   VirtualSampleOutputFamilies virtual_sample_output_families() const;
   VirtualPorts virtual_ports() const;
-  constexpr GraphBuilderPublicSamplePortFamilies public_sample_input_families() const;
+  constexpr GraphBuilderPublicContinuousPortFamilies public_sample_input_families() const;
   constexpr bool public_sample_input_is_connected(size_t port_index) const;
   constexpr std::vector<GraphBuilderPublicEventInput> public_event_inputs() const;
   constexpr bool public_event_input_is_connected(size_t port_index) const;
   constexpr std::span<SourceInfo const> public_event_input_source_infos(size_t) const;
-  constexpr GraphBuilderPublicSamplePortFamilies public_sample_output_families() const;
+  constexpr GraphBuilderPublicContinuousPortFamilies public_sample_output_families() const;
   constexpr std::vector<GraphBuilderPublicEventOutput> public_event_outputs() const;
 
   constexpr void connect_sample_input(
@@ -373,7 +373,7 @@ constexpr PublicSampleInputRef GraphBuilderState::input_named(
       *this, _node_bundles, name, channel_layout, value, min, max));
 }
 
-constexpr GraphBuilderPublicSamplePortFamilies
+constexpr GraphBuilderPublicContinuousPortFamilies
 GraphBuilderState::public_sample_input_families() const {
   return _public_ports.sample_input_families(_node_bundles);
 }
@@ -404,7 +404,7 @@ GraphBuilderState::public_event_input_source_infos(size_t i) const {
   return _public_ports.event_input_source_infos(i);
 }
 
-constexpr GraphBuilderPublicSamplePortFamilies
+constexpr GraphBuilderPublicContinuousPortFamilies
 GraphBuilderState::public_sample_output_families() const {
   return _public_ports.sample_output_families(_node_bundles);
 }
@@ -427,11 +427,11 @@ constexpr void GraphBuilderState::populate_public_introspection_metadata(
               });
         });
   }
-  metadata.public_sample_inputs = std::move(sample_inputs.families);
+  metadata.public_continuous_inputs = std::move(sample_inputs.families);
   metadata.public_event_inputs = public_event_inputs();
   for (auto& input : metadata.public_event_inputs)
     input.graph_connected = public_event_input_is_connected(input.port_index);
-  metadata.public_sample_outputs = public_sample_output_families().families;
+  metadata.public_continuous_outputs = public_sample_output_families().families;
   metadata.public_event_outputs = public_event_outputs();
 }
 

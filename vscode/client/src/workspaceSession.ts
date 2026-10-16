@@ -6,7 +6,20 @@ import * as path from "path";
 import { Duplex } from "stream";
 
 import { collectPrimarySourceSpans, QueryShape, sortNodesByRelevance } from "./graphQueryModel";
-import { VirtualNode, VirtualNodeMember, VirtualPort, SourcePosition, SourceRange, SourceSpan } from "./graphModel";
+import {
+    ContinuousValueAlternative,
+    FractionalGlobalIndexValue,
+    ScalarPresentationNumber,
+    SourcePosition,
+    SourceRange,
+    SourceSpan,
+    VirtualContinuousPort,
+    VirtualEventPort,
+    VirtualNode,
+    VirtualNodeMember,
+    VirtualPortBinding,
+    VirtualPortConnectivity,
+} from "./graphModel";
 import { LiveGraphControlMessage } from "./liveGraphProtocol";
 import { JsonRpcSocketClient } from "./rpcClient";
 import { NodeSpanHighlighter } from "./nodeSpanHighlighter";
@@ -392,11 +405,145 @@ export class WorkspaceSession {
         };
     }
 
-    private parseVirtualPort(payload: unknown): VirtualPort | null {
-        if (!payload || typeof payload !== "object") {
+    private parseVirtualPortConnectivity(
+        payload: unknown,
+    ): VirtualPortConnectivity | null {
+        return payload === "disconnected" || payload === "connected"
+            || payload === "mixed" ? payload : null;
+    }
+
+    private parseVirtualPortBinding(payload: unknown): VirtualPortBinding | null {
+        return payload === "interface" || payload === "none"
+            || payload === "virtualInput" || payload === "virtualOutput"
+            || payload === "mixed"
+            ? payload : null;
+    }
+
+    private parseFractionalGlobalIndexValue(
+        payload: unknown,
+    ): FractionalGlobalIndexValue | null {
+        if (!payload || typeof payload !== "object") return null;
+        const candidate = payload as Record<string, unknown>;
+        if (typeof candidate.wholeBits !== "string"
+            || typeof candidate.fractionBits !== "string"
+            || !/^\d+$/.test(candidate.wholeBits)
+            || !/^\d+$/.test(candidate.fractionBits)) {
             return null;
         }
-        return payload as VirtualPort;
+        const maxUint64 = (1n << 64n) - 1n;
+        if (BigInt(candidate.wholeBits) > maxUint64
+            || BigInt(candidate.fractionBits) > maxUint64) {
+            return null;
+        }
+        return {
+            wholeBits: candidate.wholeBits,
+            fractionBits: candidate.fractionBits,
+        };
+    }
+
+    private parseContinuousValueAlternative(
+        payload: unknown,
+    ): ContinuousValueAlternative | null {
+        if (!payload || typeof payload !== "object") return null;
+        const candidate = payload as Record<string, unknown>;
+        if (typeof candidate.type !== "string"
+            || typeof candidate.rank !== "number"
+            || !Number.isSafeInteger(candidate.rank)
+            || candidate.rank < 0
+            || (candidate.channelCapability !== "scalar"
+                && candidate.channelCapability !== "audio")) {
+            return null;
+        }
+
+        const parseScalarPresentationNumber = (
+            value: unknown,
+        ): ScalarPresentationNumber | undefined => {
+            if (typeof value === "number" && Number.isFinite(value)) return value;
+            return value === "nan" || value === "positiveInfinity"
+                || value === "negativeInfinity" ? value : undefined;
+        };
+
+        let defaultValue:
+            ScalarPresentationNumber | FractionalGlobalIndexValue | undefined;
+        const scalarDefault = parseScalarPresentationNumber(
+            candidate.defaultValue);
+        if (scalarDefault !== undefined) {
+            defaultValue = scalarDefault;
+        } else if (candidate.defaultValue !== undefined) {
+            defaultValue = this.parseFractionalGlobalIndexValue(
+                candidate.defaultValue) ?? undefined;
+        }
+        const minValue = parseScalarPresentationNumber(candidate.minValue);
+        const maxValue = parseScalarPresentationNumber(candidate.maxValue);
+
+        return {
+            type: candidate.type,
+            rank: candidate.rank,
+            channelCapability: candidate.channelCapability,
+            ...(defaultValue === undefined ? {} : { defaultValue }),
+            ...(minValue === undefined ? {} : { minValue }),
+            ...(maxValue === undefined ? {} : { maxValue }),
+        };
+    }
+
+    private parseVirtualContinuousPort(
+        payload: unknown,
+    ): VirtualContinuousPort | null {
+        if (!payload || typeof payload !== "object") return null;
+        const candidate = payload as Record<string, unknown>;
+        const connectivity = this.parseVirtualPortConnectivity(
+            candidate.connectivity);
+        const binding = this.parseVirtualPortBinding(candidate.binding);
+        if (typeof candidate.index !== "number"
+            || !Number.isSafeInteger(candidate.index)
+            || candidate.index < 0
+            || typeof candidate.name !== "string"
+            || !connectivity
+            || !binding
+            || !Array.isArray(candidate.valueTypes)
+            || candidate.valueTypes.length === 0) {
+            return null;
+        }
+        const valueTypes = candidate.valueTypes.map((value) =>
+            this.parseContinuousValueAlternative(value));
+        if (valueTypes.some((value) => value === null)) return null;
+        if (candidate.channelType !== undefined
+            && typeof candidate.channelType !== "string") {
+            return null;
+        }
+        return {
+            index: candidate.index,
+            name: candidate.name,
+            connectivity,
+            binding,
+            valueTypes: valueTypes as ContinuousValueAlternative[],
+            ...(typeof candidate.channelType === "string"
+                ? { channelType: candidate.channelType } : {}),
+        };
+    }
+
+    private parseVirtualEventPort(payload: unknown): VirtualEventPort | null {
+        if (!payload || typeof payload !== "object") return null;
+        const candidate = payload as Record<string, unknown>;
+        const connectivity = this.parseVirtualPortConnectivity(
+            candidate.connectivity);
+        const binding = this.parseVirtualPortBinding(candidate.binding);
+        if (typeof candidate.index !== "number"
+            || !Number.isSafeInteger(candidate.index)
+            || candidate.index < 0
+            || typeof candidate.name !== "string"
+            || typeof candidate.eventType !== "string"
+            || !connectivity
+            || !binding) {
+            return null;
+        }
+        return {
+            index: candidate.index,
+            name: candidate.name,
+            connectivity,
+            binding,
+            eventType: candidate.eventType,
+        };
     }
 
     private parseVirtualNodeMember(payload: unknown): VirtualNodeMember | null {
@@ -409,17 +556,17 @@ export class WorkspaceSession {
             backingNodeId: typeof candidate.backingNodeId === "string" ? candidate.backingNodeId : undefined,
             kind: typeof candidate.kind === "string" ? candidate.kind : undefined,
             typeIdentity: typeof candidate.typeIdentity === "string" ? candidate.typeIdentity : undefined,
-            sampleInputs: Array.isArray(candidate.sampleInputs)
-                ? candidate.sampleInputs.map((port) => this.parseVirtualPort(port)).filter((port): port is VirtualPort => port !== null)
+            continuousInputs: Array.isArray(candidate.continuousInputs)
+                ? candidate.continuousInputs.map((port) => this.parseVirtualContinuousPort(port)).filter((port): port is VirtualContinuousPort => port !== null)
                 : undefined,
-            sampleOutputs: Array.isArray(candidate.sampleOutputs)
-                ? candidate.sampleOutputs.map((port) => this.parseVirtualPort(port)).filter((port): port is VirtualPort => port !== null)
+            continuousOutputs: Array.isArray(candidate.continuousOutputs)
+                ? candidate.continuousOutputs.map((port) => this.parseVirtualContinuousPort(port)).filter((port): port is VirtualContinuousPort => port !== null)
                 : undefined,
             eventInputs: Array.isArray(candidate.eventInputs)
-                ? candidate.eventInputs.map((port) => this.parseVirtualPort(port)).filter((port): port is VirtualPort => port !== null)
+                ? candidate.eventInputs.map((port) => this.parseVirtualEventPort(port)).filter((port): port is VirtualEventPort => port !== null)
                 : undefined,
             eventOutputs: Array.isArray(candidate.eventOutputs)
-                ? candidate.eventOutputs.map((port) => this.parseVirtualPort(port)).filter((port): port is VirtualPort => port !== null)
+                ? candidate.eventOutputs.map((port) => this.parseVirtualEventPort(port)).filter((port): port is VirtualEventPort => port !== null)
                 : undefined,
         };
     }
@@ -446,17 +593,17 @@ export class WorkspaceSession {
                 packageIdentity: typeof candidate.packageIdentity === "string" ? candidate.packageIdentity : undefined,
                 typeIdentity: typeof candidate.typeIdentity === "string" ? candidate.typeIdentity : undefined,
                 sourceSpans,
-                sampleInputs: Array.isArray(candidate.sampleInputs)
-                    ? candidate.sampleInputs.map((port) => this.parseVirtualPort(port)).filter((port): port is VirtualPort => port !== null)
+                continuousInputs: Array.isArray(candidate.continuousInputs)
+                    ? candidate.continuousInputs.map((port) => this.parseVirtualContinuousPort(port)).filter((port): port is VirtualContinuousPort => port !== null)
                     : undefined,
-                sampleOutputs: Array.isArray(candidate.sampleOutputs)
-                    ? candidate.sampleOutputs.map((port) => this.parseVirtualPort(port)).filter((port): port is VirtualPort => port !== null)
+                continuousOutputs: Array.isArray(candidate.continuousOutputs)
+                    ? candidate.continuousOutputs.map((port) => this.parseVirtualContinuousPort(port)).filter((port): port is VirtualContinuousPort => port !== null)
                     : undefined,
                 eventInputs: Array.isArray(candidate.eventInputs)
-                    ? candidate.eventInputs.map((port) => this.parseVirtualPort(port)).filter((port): port is VirtualPort => port !== null)
+                    ? candidate.eventInputs.map((port) => this.parseVirtualEventPort(port)).filter((port): port is VirtualEventPort => port !== null)
                     : undefined,
                 eventOutputs: Array.isArray(candidate.eventOutputs)
-                    ? candidate.eventOutputs.map((port) => this.parseVirtualPort(port)).filter((port): port is VirtualPort => port !== null)
+                    ? candidate.eventOutputs.map((port) => this.parseVirtualEventPort(port)).filter((port): port is VirtualEventPort => port !== null)
                     : undefined,
                 memberCount: typeof candidate.memberCount === "number" ? candidate.memberCount : undefined,
                 members,

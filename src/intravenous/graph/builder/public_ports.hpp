@@ -66,9 +66,9 @@ public:
       GraphBuilderNodeBundles const&) const;
   constexpr std::vector<OutputConfig> const& outputs(
       GraphBuilderNodeBundles const&) const;
-  constexpr GraphBuilderPublicSamplePortFamilies sample_input_families(
+  constexpr GraphBuilderPublicContinuousPortFamilies sample_input_families(
       GraphBuilderNodeBundles const&) const;
-  constexpr GraphBuilderPublicSamplePortFamilies sample_output_families(
+  constexpr GraphBuilderPublicContinuousPortFamilies sample_output_families(
       GraphBuilderNodeBundles const&) const;
   constexpr std::vector<GraphBuilderPublicEventInput> collected_event_inputs(
       GraphBuilderNodeBundles const&) const;
@@ -137,21 +137,21 @@ constexpr void GraphBuilderPublicPorts::define_sample_outputs_from_named_refs(
 namespace iv {
 namespace {
 template<class Config>
-constexpr GraphBuilderPublicSamplePortFamilies collect_sample_port_families(
+constexpr GraphBuilderPublicContinuousPortFamilies collect_sample_port_families(
     std::span<Config const> configs, std::span<PublicSamplePortMember const> members,
     bool input) {
   IV_ASSERT(configs.size() == members.size(), "public sample port metadata must align with configs");
-  GraphBuilderPublicSamplePortFamilies result;
+  GraphBuilderPublicContinuousPortFamilies result;
   for (size_t index = 0; index < configs.size(); ++index) {
     auto const& config = configs[index]; auto const& member = members[index];
     auto family = std::find_if(result.families.begin(), result.families.end(),
         [&](auto const& f) { return !member.family_name.empty() && f.family_name == member.family_name; });
     if (family == result.families.end()) {
-      GraphBuilderPublicSamplePortFamily f{
+      GraphBuilderPublicContinuousPortFamily f{
           .family_index = index,
           .family_name = member.family_name.empty() ? config.name : member.family_name,
           .channel_type = member.channel_type,
-          .channels = std::vector<GraphBuilderPublicSamplePortChannel>(channel_count(member.channel_type))};
+          .channels = std::vector<GraphBuilderPublicContinuousPortChannel>(channel_count(member.channel_type))};
       if constexpr (std::is_same_v<Config, ContinuousInputConfig>) f.input_config = config;
       else f.output_config = config;
       result.families.push_back(std::move(f)); family = std::prev(result.families.end());
@@ -194,7 +194,7 @@ constexpr void GraphBuilderPublicPorts::annotate_event_input_source_info(size_t 
 }
 constexpr std::span<SourceInfo const> GraphBuilderPublicPorts::event_input_source_infos(size_t i) const { return i < _event_input_source_infos.size() ? std::span<SourceInfo const>(_event_input_source_infos[i]) : std::span<SourceInfo const>{}; }
 
-constexpr GraphBuilderPublicSamplePortFamilies GraphBuilderPublicPorts::sample_input_families(GraphBuilderNodeBundles const& b) const {
+constexpr GraphBuilderPublicContinuousPortFamilies GraphBuilderPublicPorts::sample_input_families(GraphBuilderNodeBundles const& b) const {
   auto configs = sample_inputs(b); std::vector<PublicSamplePortMember> members;
   for (auto const& c : configs) {
     members.push_back({
@@ -210,7 +210,7 @@ constexpr GraphBuilderPublicSamplePortFamilies GraphBuilderPublicPorts::sample_i
     for (auto const& info : sample_input_source_infos(index)) if (!std::ranges::contains(family.source_infos, info)) family.source_infos.push_back(info);
   return result;
 }
-constexpr GraphBuilderPublicSamplePortFamilies GraphBuilderPublicPorts::sample_output_families(GraphBuilderNodeBundles const& b) const {
+constexpr GraphBuilderPublicContinuousPortFamilies GraphBuilderPublicPorts::sample_output_families(GraphBuilderNodeBundles const& b) const {
   auto configs = sample_outputs(b);
   auto result = collect_sample_port_families(
       std::span<ContinuousOutputConfig const>{configs},

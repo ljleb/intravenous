@@ -1,7 +1,8 @@
 #include <intravenous/runtime/socket_rpc_json_serialization.h>
 
-#include <intravenous/sample.h>
+#include <intravenous/graph/names.h>
 
+#include <string>
 #include <string_view>
 
 namespace iv {
@@ -22,6 +23,35 @@ std::string_view virtual_port_connectivity_json(VirtualPortConnectivity connecti
 std::string_view channel_type_json(ChannelTypeId channel_type)
 {
     return channel_type_info(channel_type).wire_name;
+}
+
+std::string_view virtual_port_binding_json(VirtualPortBinding binding)
+{
+    switch (binding) {
+    case VirtualPortBinding::interface:
+        return "interface";
+    case VirtualPortBinding::none:
+        return "none";
+    case VirtualPortBinding::virtual_input:
+        return "virtualInput";
+    case VirtualPortBinding::virtual_output:
+        return "virtualOutput";
+    case VirtualPortBinding::mixed:
+        return "mixed";
+    }
+    return "none";
+}
+
+std::string_view continuous_channel_capability_json(
+    ContinuousValueChannelCapability capability)
+{
+    switch (capability) {
+    case ContinuousValueChannelCapability::scalar:
+        return "scalar";
+    case ContinuousValueChannelCapability::audio:
+        return "audio";
+    }
+    return "scalar";
 }
 
 std::string_view package_build_state_json(PackageBuildState state)
@@ -115,34 +145,79 @@ SocketRpcJson iv_package_definitions_json(std::vector<IvPackageInfo> const &pack
     return json;
 }
 
-SocketRpcJson virtual_port_json(VirtualPortInfo const &port)
+namespace {
+
+SocketRpcJson continuous_value_type_json(
+    ContinuousValueIntrospectionMetadata const& metadata)
 {
+    auto const type = continuous_introspection_value_type(metadata);
+    auto const& info = continuous_value_type_info(type);
     SocketRpcJson json = SocketRpcJson::object();
-    json["index"] = port.index;
-    json["name"] = port.name;
-    json["type"] = port.type;
-    json["connectivity"] = std::string(virtual_port_connectivity_json(port.connectivity));
-    json["defaultValue"] = static_cast<Sample::storage>(port.default_value);
-    json["minValue"] = port.min.has_value()
-        ? SocketRpcJson(static_cast<Sample::storage>(*port.min))
-        : SocketRpcJson(nullptr);
-    json["maxValue"] = port.max.has_value()
-        ? SocketRpcJson(static_cast<Sample::storage>(*port.max))
-        : SocketRpcJson(nullptr);
-    json["currentValue"] = static_cast<Sample::storage>(port.current_value);
-    json["hasConcreteOverride"] = port.has_concrete_override;
-    json["stateValue"] = port.state_value;
-    if (port.sample_channel_type.has_value()) {
-        json["sampleChannelType"] = std::string(channel_type_json(*port.sample_channel_type));
+    json["type"] = std::string(info.name);
+    json["rank"] = info.rank;
+    json["channelCapability"] = std::string(
+        continuous_channel_capability_json(info.channel_capability));
+    std::visit([&](auto const& type_metadata) {
+        type_metadata.write_json(json);
+    }, metadata);
+    return json;
+}
+
+SocketRpcJson continuous_value_types_json(
+    std::vector<ContinuousValueIntrospectionMetadata> const& metadata)
+{
+    SocketRpcJson json = SocketRpcJson::array();
+    for (auto const& value : metadata) {
+        json.push_back(continuous_value_type_json(value));
     }
     return json;
 }
 
-SocketRpcJson virtual_ports_json(std::vector<VirtualPortInfo> const &ports)
+} // namespace
+
+SocketRpcJson virtual_continuous_port_json(
+    VirtualContinuousPortInfo const& port)
+{
+    SocketRpcJson json = SocketRpcJson::object();
+    json["index"] = port.index;
+    json["name"] = port.name;
+    json["connectivity"] = std::string(virtual_port_connectivity_json(port.connectivity));
+    json["binding"] = std::string(virtual_port_binding_json(port.binding));
+    json["valueTypes"] = continuous_value_types_json(port.value_types);
+    if (port.channel_type.has_value()) {
+        json["channelType"] = std::string(channel_type_json(*port.channel_type));
+    }
+    return json;
+}
+
+SocketRpcJson virtual_continuous_ports_json(
+    std::vector<VirtualContinuousPortInfo> const& ports)
 {
     SocketRpcJson json = SocketRpcJson::array();
     for (auto const &port : ports) {
-        json.push_back(virtual_port_json(port));
+        json.push_back(virtual_continuous_port_json(port));
+    }
+    return json;
+}
+
+SocketRpcJson virtual_event_port_json(VirtualEventPortInfo const& port)
+{
+    return SocketRpcJson{
+        {"index", port.index},
+        {"name", port.name},
+        {"connectivity", std::string(
+            virtual_port_connectivity_json(port.connectivity))},
+        {"binding", std::string(virtual_port_binding_json(port.binding))},
+        {"eventType", std::string(details::event_type_name(port.type))},
+    };
+}
+
+SocketRpcJson virtual_event_ports_json(
+    std::vector<VirtualEventPortInfo> const& ports)
+{
+    SocketRpcJson json = SocketRpcJson::array();
+    for (auto const& port : ports) {
+        json.push_back(virtual_event_port_json(port));
     }
     return json;
 }
@@ -154,10 +229,12 @@ SocketRpcJson virtual_node_member_json(VirtualNodeMemberInfo const &member)
         {"backingNodeId", member.backing_node_id},
         {"kind", member.kind},
         {"typeIdentity", member.type_identity},
-        {"sampleInputs", virtual_ports_json(member.sample_inputs)},
-        {"sampleOutputs", virtual_ports_json(member.sample_outputs)},
-        {"eventInputs", virtual_ports_json(member.event_inputs)},
-        {"eventOutputs", virtual_ports_json(member.event_outputs)},
+        {"continuousInputs", virtual_continuous_ports_json(
+            member.continuous_inputs)},
+        {"continuousOutputs", virtual_continuous_ports_json(
+            member.continuous_outputs)},
+        {"eventInputs", virtual_event_ports_json(member.event_inputs)},
+        {"eventOutputs", virtual_event_ports_json(member.event_outputs)},
     };
 }
 
@@ -179,10 +256,12 @@ SocketRpcJson virtual_node_json(VirtualNodeInfo const &node)
         {"sourceIdentity", node.source_identity},
         {"typeIdentity", node.type_identity},
         {"sourceSpans", live_source_spans_json(node.source_spans)},
-        {"sampleInputs", virtual_ports_json(node.sample_inputs)},
-        {"sampleOutputs", virtual_ports_json(node.sample_outputs)},
-        {"eventInputs", virtual_ports_json(node.event_inputs)},
-        {"eventOutputs", virtual_ports_json(node.event_outputs)},
+        {"continuousInputs", virtual_continuous_ports_json(
+            node.continuous_inputs)},
+        {"continuousOutputs", virtual_continuous_ports_json(
+            node.continuous_outputs)},
+        {"eventInputs", virtual_event_ports_json(node.event_inputs)},
+        {"eventOutputs", virtual_event_ports_json(node.event_outputs)},
         {"memberCount", node.member_count},
         {"members", virtual_node_members_json(node.members)},
     };

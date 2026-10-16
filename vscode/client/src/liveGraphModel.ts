@@ -1,7 +1,11 @@
-import { VirtualNode, VirtualNodeMember, VirtualPort } from "./graphModel";
+import {
+    VirtualContinuousPort,
+    VirtualEventPort,
+    VirtualNode,
+    VirtualPortBinding,
+} from "./graphModel";
 import {
     SerializedLiveGraphInstance,
-    LiveGraphPortStateFamily,
     SerializedLiveGraphGroup,
     SerializedLiveGraphNode,
     SerializedLiveGraphPort,
@@ -28,151 +32,59 @@ function virtualIdentitySummary(node: VirtualNode): string {
     return identity;
 }
 
-function sampleInputsForMemberView(node: VirtualNode, member: VirtualNodeMember): VirtualPort[] {
-    const virtualInputs = new Map<number, VirtualPort>();
-    for (const input of node.sampleInputs || []) {
-        virtualInputs.set(Number(input.index), input);
-    }
-    return (member.sampleInputs || []).map((input) => {
-        if (input.hasConcreteOverride) {
-            return input;
-        }
-        const virtualInput = virtualInputs.get(Number(input.index));
-        if (!virtualInput || typeof virtualInput.currentValue !== "number") {
-            return input;
-        }
-        return {
-            ...input,
-            currentValue: virtualInput.currentValue,
-        };
-    });
-}
+type PortPresentation = VirtualContinuousPort | VirtualEventPort;
 
-function displayStateSummary(stateValue: string, family: LiveGraphPortStateFamily | null): string {
-    switch (stateValue) {
-    case "default":
-        return "default";
-    case "overridden":
-        return family === "sampleInput" ? "override" : "default";
-    case "virtualFollow":
-        return "follow virtual";
-    case "virtual":
-        return "follow virtual output";
-    case "disconnected":
-        return "disconnected";
-    default:
-        return stateValue;
+function bindingSummary(
+    binding: VirtualPortBinding,
+    connectivity: string,
+): string {
+    switch (binding) {
+    case "interface":
+        return "graph interface";
+    case "virtualInput":
+        return "follow virtual input";
+    case "virtualOutput":
+        return "virtual output";
+    case "mixed":
+        return "mixed built-in and virtual input";
+    case "none":
+        return connectivity === "connected" ? "built-in connection"
+            : connectivity === "mixed" ? "mixed connections"
+                : "disconnected";
     }
 }
 
-type PortUiContext = {
-    builtInConnected: boolean;
-};
+function continuousTypeSummary(port: VirtualContinuousPort): string {
+    const types = port.valueTypes.map((value) => value.type).join(" | ");
+    if (!port.channelType) return types;
+    return types.length > 0 ? `${types} • ${port.channelType}` : port.channelType;
+}
 
-function describePortState(
-    port: VirtualPort,
-    family: LiveGraphPortStateFamily | null,
-    memberIndex: number | null,
-    context: PortUiContext,
-): { summary: string } {
-    const connectivity = typeof port.connectivity === "string" ? port.connectivity : "disconnected";
-    const stateValue = typeof port.stateValue === "string" && port.stateValue.length > 0
-        ? port.stateValue
-        : connectivity;
-
-    if (family === "sampleInput") {
-        if (memberIndex == null) {
-            return { summary: "knob value" };
-        }
-        if (context.builtInConnected) {
-            return {
-                summary: stateValue === "overridden" ? "concrete override"
-                    : stateValue === "virtualFollow" ? "follow virtual value"
-                        : "built-in connection",
-            };
-        }
-        return {
-            summary: stateValue === "disconnected" ? "disconnected"
-                : stateValue === "overridden" ? "concrete override"
-                    : "follow virtual value",
-        };
-    }
-
-    if (family === "eventInput") {
-        if (memberIndex == null) {
-            return {
-                summary: stateValue === "disconnected" ? "disconnected"
-                    : stateValue === "virtualFollow" ? "follow virtual input"
-                        : "default",
-            };
-        }
-        if (context.builtInConnected) {
-            return {
-                summary: stateValue === "virtualFollow" ? "follow virtual input" : "built-in connection",
-            };
-        }
-        return { summary: stateValue === "disconnected" ? "disconnected" : "follow virtual input" };
-    }
-
-    if (family === "sampleOutput" || family === "eventOutput") {
-        if (memberIndex != null && stateValue === "virtual") {
-            return { summary: "virtual output" };
-        }
-        return { summary: displayStateSummary(stateValue, family) };
-    }
-
-    return { summary: displayStateSummary(stateValue, family) };
+function portTypeSummary(port: PortPresentation): string {
+    return "valueTypes" in port
+        ? continuousTypeSummary(port)
+        : port.eventType;
 }
 
 function serializePort(
-    port: VirtualPort,
+    port: PortPresentation,
     index: number,
-    direction: "input" | "output",
-    portKind: "sample" | "event",
-    memberIndex: number | null,
-    context: PortUiContext,
-    forceTweakable = false,
 ): SerializedLiveGraphPort {
-    const stateFamily: LiveGraphPortStateFamily | null =
-        direction === "input" && portKind === "sample" ? "sampleInput"
-            : direction === "input" && portKind === "event" ? "eventInput"
-                : direction === "output" && portKind === "sample" ? "sampleOutput"
-                    : direction === "output" && portKind === "event" ? "eventOutput"
-                        : null;
-    const connectivity = typeof port.connectivity === "string" ? port.connectivity : "disconnected";
-    const stateValue = typeof port.stateValue === "string" && port.stateValue.length > 0
-        ? port.stateValue
-        : connectivity;
-    // Port state remains useful introspection metadata. Keep this view
-    // read-only until canonical project-graph mutations exist.
-    const state = describePortState(port, stateFamily, memberIndex, context);
-
     return {
         name: port.name || `[${index}]`,
-        connectivity,
+        connectivity: port.connectivity,
+        binding: port.binding,
         index: Number.isInteger(port.index) ? Number(port.index) : index,
-        defaultValue: typeof port.defaultValue === "number" ? port.defaultValue : 0,
-        minValue: typeof port.minValue === "number" ? port.minValue : null,
-        maxValue: typeof port.maxValue === "number" ? port.maxValue : null,
-        currentValue: typeof port.currentValue === "number" ? port.currentValue : 0,
-        hasConcreteOverride: Boolean(port.hasConcreteOverride),
-        stateValue,
-        tweakable: false,
-        stateFamily,
-        stateSummary: state.summary,
-        stateActions: [],
-        resetState: null,
+        typeSummary: portTypeSummary(port),
+        bindingSummary: bindingSummary(port.binding, port.connectivity),
     };
 }
 
 function makePortGroup(
     label: string,
-    ports: VirtualPort[] | undefined,
+    ports: PortPresentation[] | undefined,
     direction: "input" | "output",
-    portKind: "sample" | "event",
-    memberIndex: number | null,
-    contextForPort: ((port: VirtualPort) => PortUiContext) | null,
-    forceTweakable = false,
+    portKind: "continuous" | "event",
 ): SerializedLiveGraphGroup | null {
     if (!Array.isArray(ports) || ports.length === 0) {
         return null;
@@ -183,15 +95,7 @@ function makePortGroup(
         count: ports.length,
         direction,
         portKind,
-        ports: ports.map((port, index) => serializePort(
-            port,
-            index,
-            direction,
-            portKind,
-            memberIndex,
-            contextForPort ? contextForPort(port) : { builtInConnected: false },
-            forceTweakable,
-        )),
+        ports: ports.map((port, index) => serializePort(port, index)),
     };
 }
 
@@ -212,10 +116,14 @@ export function serializeLiveGraphNodes(nodes: VirtualNode[]): SerializedLiveGra
         memberCount: Number(node.memberCount || 0),
         icon: Number(node.memberCount || 0) > 1 ? "merged" : "single",
         groups: [
-            makePortGroup("sample inputs", node.sampleInputs, "input", "sample", null, null),
-            makePortGroup("sample outputs", node.sampleOutputs, "output", "sample", null, null),
-            makePortGroup("event inputs", node.eventInputs, "input", "event", null, null),
-            makePortGroup("event outputs", node.eventOutputs, "output", "event", null, null),
+            makePortGroup(
+                "continuous inputs", node.continuousInputs,
+                "input", "continuous"),
+            makePortGroup(
+                "continuous outputs", node.continuousOutputs,
+                "output", "continuous"),
+            makePortGroup("event inputs", node.eventInputs, "input", "event"),
+            makePortGroup("event outputs", node.eventOutputs, "output", "event"),
         ].filter((group): group is SerializedLiveGraphGroup => group !== null),
         members: Array.isArray(node.members)
             ? node.members.map((member) => ({
@@ -225,34 +133,17 @@ export function serializeLiveGraphNodes(nodes: VirtualNode[]): SerializedLiveGra
                 description: `concrete ${Number(member.index || 0)}`,
                 groups: [
                     makePortGroup(
-                        "sample inputs",
-                        sampleInputsForMemberView(node, member),
-                        "input",
-                        "sample",
-                        Number(member.index || 0),
-                        (port) => ({ builtInConnected: port.connectivity === "connected" }),
-                        true),
+                        "continuous inputs", member.continuousInputs,
+                        "input", "continuous"),
                     makePortGroup(
-                        "sample outputs",
-                        member.sampleOutputs,
-                        "output",
-                        "sample",
-                        Number(member.index || 0),
-                        () => ({ builtInConnected: false })),
+                        "continuous outputs", member.continuousOutputs,
+                        "output", "continuous"),
                     makePortGroup(
-                        "event inputs",
-                        member.eventInputs,
-                        "input",
-                        "event",
-                        Number(member.index || 0),
-                        (port) => ({ builtInConnected: port.connectivity === "connected" })),
+                        "event inputs", member.eventInputs,
+                        "input", "event"),
                     makePortGroup(
-                        "event outputs",
-                        member.eventOutputs,
-                        "output",
-                        "event",
-                        Number(member.index || 0),
-                        () => ({ builtInConnected: false })),
+                        "event outputs", member.eventOutputs,
+                        "output", "event"),
                 ].filter((group): group is SerializedLiveGraphGroup => group !== null),
             }))
             : [],

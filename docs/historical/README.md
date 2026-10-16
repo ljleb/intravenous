@@ -62,6 +62,7 @@ These documents are retained because they record deleted architectures, supersed
 
 ## Completed migrations, experiments, and checkpoints
 
+- [Source Introspection With Fake Live Port Values](./source_introspection_fake_live_port_values.md)
 - [Superseded Linear And Saturating Global Index Semantics](./linear_global_index_semantics.md)
 - [Superseded Temporary-Adapter Coordination Policy](./implementation_fronts_temporary_adapter_policy.md)
 - [Historical Sample-Only Port Configuration Sketch](./sample_port_config_before_typed_continuous_api.md)

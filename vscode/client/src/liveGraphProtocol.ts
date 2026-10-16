@@ -1,37 +1,17 @@
-export type LiveGraphPortStateFamily =
-    | "sampleInput"
-    | "eventInput"
-    | "sampleOutput"
-    | "eventOutput";
-
-export type LiveGraphPortStateAction = {
-    state: string;
-    label: string;
-    reset?: boolean;
-};
-
 export type SerializedLiveGraphPort = {
     name: string;
     connectivity: string;
+    binding: string;
     index: number;
-    defaultValue: number;
-    minValue: number | null;
-    maxValue: number | null;
-    currentValue: number;
-    hasConcreteOverride: boolean;
-    stateValue: string;
-    tweakable: boolean;
-    stateFamily: LiveGraphPortStateFamily | null;
-    stateSummary: string;
-    stateActions: LiveGraphPortStateAction[];
-    resetState: string | null;
+    typeSummary: string;
+    bindingSummary: string;
 };
 
 export type SerializedLiveGraphGroup = {
     label: string;
     count: number;
     direction: "input" | "output";
-    portKind: "sample" | "event";
+    portKind: "continuous" | "event";
     ports: SerializedLiveGraphPort[];
 };
 

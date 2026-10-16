@@ -100,6 +100,19 @@ coordinate.
 - Configured continuous records and their properties are named for continuous values
   rather than `Sample`. The existing sample-named execution and storage planner remains
   the explicitly unfinished realization layer.
+- Graph and module source introspection now report continuous input and output records
+  separately from event records. A continuous record contains the full declared
+  value-type domain and type-owned presentation metadata. Sample alternatives can
+  report scalar default, minimum, and maximum values. `FractionalGlobalIndex` reports
+  its scalar default with exact decimal bit strings. `FFTBlock` reports no scalar
+  presentation fields. Finite Sample values use JSON numbers. Non-finite Sample values
+  use the stable strings `nan`, `positiveInfinity`, and `negativeInfinity` because JSON
+  has no non-finite number. The boundary also reports only real configured
+  connectivity and virtual-port binding facts; it does not invent current values or
+  overrides.
+- The VS Code graph model consumes the continuous introspection schema and displays
+  declared types and bindings. The former read-only knobs and state actions were
+  removed because no runtime read or mutation path supplied their values.
 - The unit tests that formerly constructed timing-bearing legacy configs or invoked the
   old connection-analysis signature have been migrated to authored constraints and
   explicit resolved-realization input.
@@ -112,13 +125,9 @@ coordinate.
 - Tick bindings and authored port facades still address Sample storage with the old
   one-frame-per-project-index assumption. They do not yet expose per-port transported
   `block_size()` or the resolved `block_extended()` Sequential view.
-- Graph/module introspection still projects continuous public ports through the old
-  Sample-only `default_value`/`min`/`max` and numeric-current-value schema. The typed
-  port configs no longer give nonzero-dimensional types those fields, but the dynamic
-  introspection boundary still needs a type-owned scalar-presentation variant and a
-  separate non-scalar representation before it can describe
-  `FractionalGlobalIndex` or `FFTBlock` honestly. A Sample-specific compatibility
-  projection must not become the generic boundary.
+- Source introspection cannot report the selected value type, resolved dynamic size,
+  or live runtime value. Those facts become available only after GraphJIT realization
+  and require the planned ProjectGraph/runtime read-model join.
 - Audio sample-rate basis, transport cadence, and per-value sample support are not yet
   independently solved or applied to declaration, initialization, Tick, or Tock
   contexts.

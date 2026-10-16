@@ -6,6 +6,8 @@
 #include <nlohmann/json.hpp>
 
 #include <array>
+#include <cstdint>
+#include <limits>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -250,11 +252,37 @@ TEST(SocketRpcGraphQueryResultBuilder, SerializesNodes)
                 },
             },
         },
-        .sample_inputs = {
-            iv::VirtualPortInfo {
+        .continuous_inputs = {
+            iv::VirtualContinuousPortInfo {
                 .name = "frequency",
-                .type = "sample",
                 .index = 1,
+                .value_types = {
+                    iv::SampleContinuousValueExtension::IntrospectionMetadata{
+                        .default_value = iv::Sample{0.5f},
+                        .min = iv::Sample{
+                            -std::numeric_limits<iv::Sample::storage>::infinity()},
+                        .max = iv::Sample{
+                            std::numeric_limits<iv::Sample::storage>::infinity()},
+                    },
+                    iv::FractionalGlobalIndexContinuousValueExtension::
+                        IntrospectionMetadata{
+                            .default_value = iv::FractionalGlobalIndex::from_parts(
+                                iv::GlobalIndex::from_bits(
+                                    std::uint64_t{9007199254740993ULL}),
+                                std::uint64_t{18446744073709551615ULL}),
+                        },
+                    iv::FFTBlockContinuousValueExtension::IntrospectionMetadata{},
+                },
+                .channel_type = iv::ChannelTypeId::mono,
+                .binding = iv::VirtualPortBinding::interface,
+            },
+        },
+        .event_inputs = {
+            iv::VirtualEventPortInfo{
+                .name = "trigger",
+                .index = 2,
+                .type = iv::EventTypeId::trigger,
+                .binding = iv::VirtualPortBinding::virtual_input,
             },
         },
         .member_count = 1,
@@ -276,8 +304,32 @@ TEST(SocketRpcGraphQueryResultBuilder, SerializesNodes)
     EXPECT_EQ(node["kind"], "Oscillator");
     EXPECT_EQ(node["sourceSpans"][0]["filePath"], "/tmp/module.cpp");
     EXPECT_EQ(node["sourceSpans"][0]["range"]["start"]["line"], 3);
-    EXPECT_EQ(node["sampleInputs"][0]["name"], "frequency");
-    EXPECT_EQ(node["sampleInputs"][0]["index"], 1);
+    auto const& continuous = node["continuousInputs"][0];
+    EXPECT_EQ(continuous["name"], "frequency");
+    EXPECT_EQ(continuous["index"], 1);
+    EXPECT_EQ(continuous["binding"], "interface");
+    EXPECT_EQ(continuous["channelType"], "mono");
+    ASSERT_EQ(continuous["valueTypes"].size(), 3u);
+    EXPECT_EQ(continuous["valueTypes"][0]["type"], "Sample");
+    EXPECT_EQ(continuous["valueTypes"][0]["defaultValue"], 0.5f);
+    EXPECT_EQ(
+        continuous["valueTypes"][0]["minValue"], "negativeInfinity");
+    EXPECT_EQ(
+        continuous["valueTypes"][0]["maxValue"], "positiveInfinity");
+    EXPECT_EQ(
+        continuous["valueTypes"][1]["defaultValue"]["wholeBits"],
+        "9007199254740993");
+    EXPECT_EQ(
+        continuous["valueTypes"][1]["defaultValue"]["fractionBits"],
+        "18446744073709551615");
+    EXPECT_EQ(continuous["valueTypes"][2]["type"], "FFTBlock");
+    EXPECT_EQ(continuous["valueTypes"][2]["rank"], 1);
+    EXPECT_FALSE(continuous["valueTypes"][2].contains("defaultValue"));
+    EXPECT_FALSE(continuous.contains("currentValue"));
+    EXPECT_FALSE(continuous.contains("hasConcreteOverride"));
+    EXPECT_FALSE(continuous.contains("stateValue"));
+    EXPECT_EQ(node["eventInputs"][0]["eventType"], "trigger");
+    EXPECT_EQ(node["eventInputs"][0]["binding"], "virtualInput");
     EXPECT_EQ(node["members"][0]["index"], 4);
 }
 

@@ -131,7 +131,7 @@ TEST(IvModuleSourceIntrospection, QueryBySpansReturnsMatchingLiveNodesWithPorts)
     EXPECT_FALSE(node.kind.empty());
     EXPECT_FALSE(node.source_spans.empty());
     bool has_any_port =
-        !node.sample_inputs.empty() || !node.sample_outputs.empty() || !node.event_inputs.empty() ||
+        !node.continuous_inputs.empty() || !node.continuous_outputs.empty() || !node.event_inputs.empty() ||
         !node.event_outputs.empty();
     EXPECT_TRUE(has_any_port);
 }
@@ -375,7 +375,7 @@ namespace {
             definition->introspection.virtual_nodes,
             [&](auto const& node) {
                 return std::ranges::any_of(
-                    node.sample_inputs,
+                    node.continuous_inputs,
                     [&](auto const& port) {
                         return port.name == port_name
                             && std::ranges::any_of(
@@ -482,9 +482,9 @@ namespace {
         frequency_port.nodes,
         [](auto const& node) { return node.kind.contains("SawOscillator"); });
     ASSERT_NE(frequency_node, frequency_port.nodes.end());
-    ASSERT_EQ(frequency_node->sample_inputs.size(), 1u);
-    EXPECT_EQ(frequency_node->sample_inputs.front().name, "frequency");
-    EXPECT_TRUE(frequency_node->sample_outputs.empty());
+    ASSERT_EQ(frequency_node->continuous_inputs.size(), 1u);
+    EXPECT_EQ(frequency_node->continuous_inputs.front().name, "frequency");
+    EXPECT_TRUE(frequency_node->continuous_outputs.empty());
     EXPECT_TRUE(frequency_node->event_inputs.empty());
     EXPECT_TRUE(frequency_node->event_outputs.empty());
     ASSERT_EQ(frequency_node->source_spans.size(), 1u);
@@ -497,8 +497,8 @@ namespace {
     ASSERT_NE(gate_node, gate_port.nodes.end());
     ASSERT_EQ(gate_node->event_inputs.size(), 1u);
     EXPECT_EQ(gate_node->event_inputs.front().name, "gate");
-    EXPECT_TRUE(gate_node->sample_inputs.empty());
-    EXPECT_TRUE(gate_node->sample_outputs.empty());
+    EXPECT_TRUE(gate_node->continuous_inputs.empty());
+    EXPECT_TRUE(gate_node->continuous_outputs.empty());
     EXPECT_TRUE(gate_node->event_outputs.empty());
     ASSERT_EQ(gate_node->source_spans.size(), 1u);
     EXPECT_EQ(source_text(gate_node->source_spans.front()), "\"gate\"");
@@ -643,13 +643,13 @@ namespace {
         tiled_value.nodes.begin(), tiled_value.nodes.end(),
         [](auto const& node) { return node.type_identity == "sample-port"; });
     ASSERT_NE(port, tiled_value.nodes.end());
-    ASSERT_EQ(port->sample_outputs.size(), 1u);
+    ASSERT_EQ(port->continuous_outputs.size(), 1u);
     EXPECT_EQ(
-        port->sample_outputs.front().sample_channel_type,
+        port->continuous_outputs.front().channel_type,
         iv::ChannelTypeId::stereo);
     ASSERT_EQ(port->members.size(), 1u);
     for (auto const& member : port->members)
-        EXPECT_EQ(member.sample_outputs.size(), 1u);
+        EXPECT_EQ(member.continuous_outputs.size(), 1u);
 
     auto const event_value = app.query_by_spans(
         module_cpp,
@@ -779,7 +779,8 @@ namespace {
     size_t singleton_sum_count = 0;
     for (auto const &node : result.nodes) {
         if (node.member_count == 1 && node.kind.contains("Sum<") &&
-            (node.sample_inputs.size() == 2 || node.sample_inputs.size() == 3)) {
+            (node.continuous_inputs.size() == 2
+             || node.continuous_inputs.size() == 3)) {
             ++singleton_sum_count;
         }
     }
@@ -892,11 +893,14 @@ namespace {
     size_t connected_sum_count = 0;
     size_t disconnected_sum_count = 0;
     for (auto const &node : result.nodes) {
-        if (!node.kind.contains("Sum<") || node.sample_inputs.size() != 1) continue;
+        if (!node.kind.contains("Sum<")
+            || node.continuous_inputs.size() != 1) continue;
         EXPECT_EQ(node.member_count, 1u);
-        if (node.sample_inputs.front().connectivity == iv::VirtualPortConnectivity::connected) {
+        if (node.continuous_inputs.front().connectivity
+            == iv::VirtualPortConnectivity::connected) {
             ++connected_sum_count;
-        } else if (node.sample_inputs.front().connectivity == iv::VirtualPortConnectivity::disconnected) {
+        } else if (node.continuous_inputs.front().connectivity
+                   == iv::VirtualPortConnectivity::disconnected) {
             ++disconnected_sum_count;
         }
     }
@@ -1049,20 +1053,20 @@ void polyphonic_module(iv::GraphBuilder& g)
     EXPECT_EQ(virtual_node.members[1].index, 1u);
     EXPECT_EQ(virtual_node.members[0].kind, "iv::SawOscillator");
     EXPECT_EQ(virtual_node.members[1].kind, "iv::SawOscillator");
-    ASSERT_EQ(virtual_node.sample_inputs.size(), 2u);
-    EXPECT_EQ(virtual_node.sample_inputs[0].name, "phase_offset");
-    EXPECT_EQ(virtual_node.sample_inputs[1].name, "frequency");
-    ASSERT_EQ(virtual_node.sample_outputs.size(), 1u);
-    EXPECT_EQ(virtual_node.sample_outputs[0].name, "out");
+    ASSERT_EQ(virtual_node.continuous_inputs.size(), 2u);
+    EXPECT_EQ(virtual_node.continuous_inputs[0].name, "phase_offset");
+    EXPECT_EQ(virtual_node.continuous_inputs[1].name, "frequency");
+    ASSERT_EQ(virtual_node.continuous_outputs.size(), 1u);
+    EXPECT_EQ(virtual_node.continuous_outputs[0].name, "out");
 
     auto const resolved = app.get_virtual_node(virtual_node.id);
     EXPECT_EQ(resolved.kind, "iv::SawOscillator");
     EXPECT_EQ(resolved.member_count, 2u);
-    ASSERT_EQ(resolved.sample_inputs.size(), 2u);
-    EXPECT_EQ(resolved.sample_inputs[0].name, "phase_offset");
-    EXPECT_EQ(resolved.sample_inputs[1].name, "frequency");
-    ASSERT_EQ(resolved.sample_outputs.size(), 1u);
-    EXPECT_EQ(resolved.sample_outputs[0].name, "out");
+    ASSERT_EQ(resolved.continuous_inputs.size(), 2u);
+    EXPECT_EQ(resolved.continuous_inputs[0].name, "phase_offset");
+    EXPECT_EQ(resolved.continuous_inputs[1].name, "frequency");
+    ASSERT_EQ(resolved.continuous_outputs.size(), 1u);
+    EXPECT_EQ(resolved.continuous_outputs[0].name, "out");
 
     EXPECT_TRUE(std::ranges::none_of(result.nodes, [](auto const &node) {
         return node.kind == "Polyphonic";
