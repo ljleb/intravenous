@@ -5,16 +5,22 @@
 struct ValidBackgroundNode {
     static constexpr auto inputs()
     {
-        return std::array {iv::random_access_sample_input("input")};
+        return std::array {iv::input<iv::Sample>("input", iv::InputAccess::coverage)};
     }
 
     static constexpr auto outputs()
     {
-        return std::array {iv::tock_sample_output("output")};
+        return std::array {iv::output<iv::Sample>("output", iv::OutputProduction::coverage)};
     }
 
-    static constexpr std::size_t num_inputs() { return inputs().size(); }
-    static constexpr std::size_t num_outputs() { return outputs().size(); }
+    static constexpr std::size_t num_inputs()
+    {
+        return iv::port_config_count_v<decltype(inputs())>;
+    }
+    static constexpr std::size_t num_outputs()
+    {
+        return iv::port_config_count_v<decltype(outputs())>;
+    }
 
     void tick_block(iv::TickBlockContext<ValidBackgroundNode> const& ctx) const
     {
@@ -35,14 +41,14 @@ struct ValidBackgroundEventNode {
     static constexpr auto inputs()
     {
         return std::array {
-            iv::random_access_event_input("input", iv::EventTypeId::trigger),
+            iv::event_input("input", iv::EventTypeId::trigger, iv::InputAccess::coverage),
         };
     }
 
     static constexpr auto outputs()
     {
         return std::array {
-            iv::tock_event_output("output", iv::EventTypeId::trigger),
+            iv::event_output("output", iv::EventTypeId::trigger, iv::OutputProduction::coverage),
         };
     }
 
@@ -61,9 +67,9 @@ IV_NODE("iv.test.valid_background_event_node", ValidBackgroundEventNode);
 struct ValidBackgroundInputOnlyNode {
     static constexpr auto inputs()
     {
-        return std::array {
-            iv::random_access_sample_input("samples"),
-            iv::random_access_event_input("events", iv::EventTypeId::trigger),
+        return std::tuple {
+            iv::input<iv::Sample>("samples", iv::InputAccess::coverage),
+            iv::event_input("events", iv::EventTypeId::trigger, iv::InputAccess::coverage),
         };
     }
 
@@ -76,13 +82,12 @@ IV_NODE("iv.test.valid_background_input_only_node", ValidBackgroundInputOnlyNode
 struct ValidPersistedRealtimeNode {
     static constexpr auto inputs()
     {
-        return std::array {iv::sequential_sample_input("input")};
+        return std::array {iv::input<iv::Sample>("input", iv::InputAccess::sequential)};
     }
 
     static constexpr auto outputs()
     {
-        return std::array {iv::tick_sample_output(
-            "recording", {}, {}, iv::OutputRetention::persisted)};
+        return std::array {iv::output<iv::Sample>("recording", iv::OutputProduction::tick, iv::OutputRetention::persisted)};
     }
 
     void tick_block(
@@ -103,11 +108,11 @@ struct ValidReplayableNode {
     static constexpr bool intrinsically_replayable = true;
     static constexpr auto inputs()
     {
-        return std::array {iv::sequential_sample_input("input")};
+        return std::array {iv::input<iv::Sample>("input", iv::InputAccess::sequential)};
     }
     static constexpr auto outputs()
     {
-        return std::array {iv::tick_sample_output("output")};
+        return std::array {iv::output<iv::Sample>("output", iv::OutputProduction::tick)};
     }
     void tick(iv::TickSampleContext<ValidReplayableNode> const&) const {}
 };

@@ -262,16 +262,20 @@ public:
         constexpr auto declaration = details::static_input_declaration_index<Node, Name>();
         constexpr auto kind = details::static_input_port_kind_at<Node, declaration>();
         constexpr bool continuous = kind == PortKind::sample;
-        constexpr bool sequential = !details::static_input_port_is_random_access_at<Node, declaration>();
+        constexpr auto access =
+            details::static_input_port_access_at<Node, declaration>();
+        constexpr bool sequential = access == InputAccessKind::sequential;
+        constexpr bool coverage = access == InputAccessKind::coverage;
         constexpr bool dimensioned = [&] {
             if constexpr (!continuous) return false;
-            else return domain_has_dynamic_dimension(details::static_input_port_properties<Node, Name>().value_types);
+            else return domain_has_dynamic_dimension(
+                details::static_input_port_value_types<Node, Name>());
         }();
         constexpr auto port = [&] {
             if constexpr (continuous) return details::static_input_port_index<Node, Name>();
             else return details::static_event_input_port_index<Node, Name>();
         }();
-        return PortConstraint<continuous, dimensioned, sequential, false, !sequential>(
+        return PortConstraint<continuous, dimensioned, sequential, false, coverage>(
             sink_, {PortConstraintDirection::input, kind, port});
     }
 
@@ -281,16 +285,21 @@ public:
         constexpr auto declaration = details::static_output_declaration_index<Node, Name>();
         constexpr auto kind = details::static_output_port_kind_at<Node, declaration>();
         constexpr bool continuous = kind == PortKind::sample;
-        constexpr bool tick = !details::static_output_port_is_tock_at<Node, declaration>();
+        constexpr auto production =
+            details::static_output_port_production_at<Node, declaration>();
+        constexpr bool tick = production == OutputProductionKind::tick;
+        constexpr bool coverage =
+            production == OutputProductionKind::coverage;
         constexpr bool dimensioned = [&] {
             if constexpr (!continuous) return false;
-            else return domain_has_dynamic_dimension(details::static_output_port_properties<Node, Name>().value_types);
+            else return domain_has_dynamic_dimension(
+                details::static_output_port_value_types<Node, Name>());
         }();
         constexpr auto port = [&] {
             if constexpr (continuous) return details::static_output_port_index<Node, Name>();
             else return details::static_event_output_port_index<Node, Name>();
         }();
-        return PortConstraint<continuous, dimensioned, tick, tick, !tick>(
+        return PortConstraint<continuous, dimensioned, tick, tick, coverage>(
             sink_, {PortConstraintDirection::output, kind, port});
     }
 

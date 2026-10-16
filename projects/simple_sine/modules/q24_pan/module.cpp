@@ -27,10 +27,10 @@ struct LearnedHrtfSource
 
     static constexpr auto inputs()
     {
-        return std::array<InputConfig, 3> {
-            sequential_sample_input("in"),
-            sequential_sample_input("azimuth", {.default_value = 0, .min = -180, .max = 180}),
-            sequential_sample_input("elevation", {.default_value = 0, .min = -180, .max = 180}),
+        return std::array {
+            input<Sample>("in", InputAccess::sequential),
+            input<Sample>("azimuth", InputAccess::sequential, {.default_value = 0, .min = -180, .max = 180}),
+            input<Sample>("elevation", InputAccess::sequential, {.default_value = 0, .min = -180, .max = 180}),
         };
     }
 
@@ -41,8 +41,8 @@ struct LearnedHrtfSource
 
     static constexpr auto outputs()
     {
-        return std::array<OutputConfig, 1> {
-            tick_sample_output("out", {.channel_layout = { .channel_type = ChannelTypeId::stereo }}),
+        return std::array {
+            output<Sample>("out", OutputProduction::tick, {.channel_layout = { .channel_type = ChannelTypeId::stereo }}),
         };
     }
 
@@ -522,8 +522,8 @@ struct BaselineFir256
 
     static constexpr auto inputs()
     {
-        return std::array<InputConfig, 1> {
-            sequential_sample_input("in", {
+        return std::array {
+            input<Sample>("in", InputAccess::sequential, {
                 .channel_layout = {
                     .channel_type = ChannelTypeId::stereo,
                 },
@@ -538,8 +538,8 @@ struct BaselineFir256
 
     static constexpr auto outputs()
     {
-        return std::array<OutputConfig, 1> {
-            tick_sample_output("out", {
+        return std::array {
+            output<Sample>("out", OutputProduction::tick, {
                 .channel_layout = {
                     .channel_type = ChannelTypeId::stereo,
                 },

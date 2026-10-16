@@ -133,6 +133,8 @@ struct IrNodeRecord {
     llvm::Function* tock_coverage = nullptr;
     llvm::Function* propagate_forward_coverage = nullptr;
     llvm::Function* propagate_reverse_coverage = nullptr;
+    llvm::Function* initialize_sequential_input_neutral = nullptr;
+    llvm::Function* combine_sequential_input_values = nullptr;
     std::size_t state_size = 0;
     std::size_t state_alignment = 1;
     std::size_t background_state_size = 0;
@@ -204,7 +206,7 @@ std::unordered_map<NodeCodeKey, IrNodeRecord, NodeCodeKeyHash> scan_node_records
         auto* key = llvm::dyn_cast<llvm::ConstantStruct>(record->getOperand(0));
         auto* operations = llvm::dyn_cast<llvm::ConstantStruct>(record->getOperand(1));
         if (!key || key->getNumOperands() != 2 || !operations
-            || operations->getNumOperands() != 6) {
+            || operations->getNumOperands() != 8) {
             fail(GraphJitDiagnosticStage::package_llvm, "malformed iv_node_types record ABI");
         }
         NodeCodeKey code_key{
@@ -229,6 +231,14 @@ std::unordered_map<NodeCodeKey, IrNodeRecord, NodeCodeKeyHash> scan_node_records
                 operations->getOperand(4), "propagate_forward_coverage", false),
             .propagate_reverse_coverage = compiler_callback(
                 operations->getOperand(5), "propagate_reverse_coverage", false),
+            .initialize_sequential_input_neutral = compiler_callback(
+                operations->getOperand(6),
+                "initialize_sequential_input_neutral",
+                false),
+            .combine_sequential_input_values = compiler_callback(
+                operations->getOperand(7),
+                "combine_sequential_input_values",
+                false),
             .state_size = constant_size(record->getOperand(4), "state size"),
             .state_alignment = constant_size(record->getOperand(5), "state alignment"),
             .background_state_size = constant_size(
@@ -662,10 +672,18 @@ void verify_compiler_record(
         || static_cast<bool>(accepted.operations.propagate_forward_coverage)
             != static_cast<bool>(ir_record.propagate_forward_coverage)
         || static_cast<bool>(accepted.operations.propagate_reverse_coverage)
-            != static_cast<bool>(ir_record.propagate_reverse_coverage)) {
+            != static_cast<bool>(ir_record.propagate_reverse_coverage)
+        || static_cast<bool>(
+                accepted.operations.initialize_sequential_input_neutral)
+            != static_cast<bool>(
+                ir_record.initialize_sequential_input_neutral)
+        || static_cast<bool>(
+                accepted.operations.combine_sequential_input_values)
+            != static_cast<bool>(
+                ir_record.combine_sequential_input_values)) {
         fail(
             GraphJitDiagnosticStage::package_llvm,
-            "NodeCompilerRecord background-callback ABI disagrees with retained package LLVM for node '"
+            "NodeCompilerRecord optional-operation ABI disagrees with retained package LLVM for node '"
                 + captured.identity.node_type_id + "'");
     }
 }
@@ -1127,6 +1145,10 @@ public:
                         record->second.propagate_forward_coverage,
                     .propagate_reverse_coverage =
                         record->second.propagate_reverse_coverage,
+                    .initialize_sequential_input_neutral =
+                        record->second.initialize_sequential_input_neutral,
+                    .combine_sequential_input_values =
+                        record->second.combine_sequential_input_values,
                 });
             }
         } catch (GraphJitCompileError const& error) {

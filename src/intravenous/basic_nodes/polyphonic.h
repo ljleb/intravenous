@@ -76,12 +76,12 @@ namespace iv {
 
         static constexpr auto inputs()
         {
-            return std::array { sequential_event_input("midi", EventTypeId::midi) };
+            return std::array { event_input("midi", EventTypeId::midi, InputAccess::sequential) };
         }
 
         static constexpr auto outputs()
         {
-            return std::array { tick_sample_output("frequency") };
+            return std::array { output<Sample>("frequency", OutputProduction::tick) };
         }
 
         void declare(DeclarationContext<MidiPitch> const& ctx) const
@@ -174,12 +174,12 @@ namespace iv {
 
         static constexpr auto inputs()
         {
-            return std::array { sequential_event_input("midi", EventTypeId::midi) };
+            return std::array { event_input("midi", EventTypeId::midi, InputAccess::sequential) };
         }
 
         static constexpr auto outputs()
         {
-            return std::array { tick_sample_output("gate") };
+            return std::array { output<Sample>("gate", OutputProduction::tick) };
         }
 
         void declare(DeclarationContext<MidiGate> const& ctx) const
@@ -293,16 +293,16 @@ namespace iv {
         static constexpr auto inputs()
         {
             return std::array {
-                sequential_event_input("midi", EventTypeId::midi),
+                event_input("midi", EventTypeId::midi, InputAccess::sequential),
             };
         }
 
         static constexpr auto outputs()
         {
-            return std::array {
-                tick_sample_output("amplitude"),
-                tick_sample_output("frequency"),
-                tick_event_output("trigger", EventTypeId::trigger),
+            return std::tuple {
+                output<Sample>("amplitude", OutputProduction::tick),
+                output<Sample>("frequency", OutputProduction::tick),
+                event_output("trigger", EventTypeId::trigger, OutputProduction::tick),
             };
         }
 

@@ -159,7 +159,7 @@ namespace {
 
         static constexpr auto outputs()
         {
-            return std::array<iv::OutputConfig, 1>{};
+            return std::array<iv::TickOutputConfig<iv::Sample>, 1>{};
         }
 
         void tick(iv::TickSampleContext<AliasedStateNode> const& ctx) const
@@ -173,7 +173,7 @@ namespace {
     struct InheritedStateNode : StateCarrier {
         static constexpr auto outputs()
         {
-            return std::array<iv::OutputConfig, 1>{};
+            return std::array<iv::TickOutputConfig<iv::Sample>, 1>{};
         }
 
         void tick(iv::TickSampleContext<InheritedStateNode> const& ctx) const
@@ -189,7 +189,7 @@ namespace {
 
         static constexpr auto outputs()
         {
-            return std::array<iv::OutputConfig, 1>{};
+            return std::array<iv::TickOutputConfig<iv::Sample>, 1>{};
         }
 
         void initialize(iv::InitializationContext<ScalarStateNode> const& ctx) const
@@ -213,7 +213,7 @@ namespace {
 
         static constexpr auto outputs()
         {
-            return std::array<iv::OutputConfig, 1>{};
+            return std::array<iv::TickOutputConfig<iv::Sample>, 1>{};
         }
 
         void tick(iv::TickSampleContext<BackgroundStateNode> const& ctx) const
@@ -402,8 +402,8 @@ namespace {
     struct TriggerSource {
         static constexpr auto outputs()
         {
-            return std::array<iv::OutputConfig, 1>{
-                iv::tick_event_output("trigger", iv::EventTypeId::trigger)};
+            return std::array{
+                iv::event_output("trigger", iv::EventTypeId::trigger, iv::OutputProduction::tick)};
         }
         void tick(iv::TickSampleContext<TriggerSource> const&) const {}
     };
@@ -411,8 +411,8 @@ namespace {
     struct TriggerSink {
         static constexpr auto inputs()
         {
-            return std::array<iv::InputConfig, 1>{
-                iv::sequential_event_input("gate", iv::EventTypeId::trigger)};
+            return std::array{
+                iv::event_input("gate", iv::EventTypeId::trigger, iv::InputAccess::sequential)};
         }
         void tick(iv::TickSampleContext<TriggerSink> const&) const {}
     };
@@ -607,8 +607,8 @@ namespace {
     {
         static constexpr auto outputs()
         {
-            return std::array<iv::OutputConfig, 1>{
-                iv::tick_event_output("trigger", iv::EventTypeId::trigger)};
+            return std::array{
+                iv::event_output("trigger", iv::EventTypeId::trigger, iv::OutputProduction::tick)};
         }
         void tick(iv::TickSampleContext<TriggerSource> const&) const {}
     };

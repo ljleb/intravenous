@@ -542,8 +542,8 @@ another. This table describes logical capabilities; storage planning may let a
 Tick/persisted callback author a provisioned recording block directly when the current
 Tick representation and queue geometry permit it.
 
-`RandomAccessInputConfig` alone does not state whether node code reads that input
-from Tick, Tock, or both. GraphJit should use statically known callback access when
+`RegionInputConfig` or `CoverageInputConfig` alone does not state whether node code
+reads that input from Tick, Tock, or both. GraphJit should use statically known callback access when
 available. Until that fact is represented precisely, planning must conservatively
 join the requirements of every callback context in which the input can legally be
 read.
@@ -1130,40 +1130,28 @@ contract.
 
 ## Sequential timing is independent of output production and retention
 
-Input access, output production and output retention are independent; sample/event
-data properties remain a separate axis. The **target** declaration shape is:
+Input access, output production and output retention are independent; continuous/event
+data properties remain a separate axis. The declaration shape is:
 
 ```cpp
-struct SequentialInputConfig {};
-struct RandomAccessInputConfig {};
-using InputAccessConfig =
-    std::variant<SequentialInputConfig, RandomAccessInputConfig>;
+SequentialInputConfig<Types...>
+RegionInputConfig<Types...>
+CoverageInputConfig<Types...>
 
-struct TickOutputConfig {};
-struct TockOutputConfig {};
-using OutputProductionConfig =
-    std::variant<TickOutputConfig, TockOutputConfig>;
+TickOutputConfig<Types...>
+RegionOutputConfig<Types...>
+CoverageOutputConfig<Types...>
 
 enum class OutputRetention { ephemeral, persisted };
 
-struct InputConfig {
-    // Name/identity and sample/event data properties omitted.
-    InputAccessConfig access{SequentialInputConfig{}};
-};
-struct OutputConfig {
-    // Name/identity and sample/event data properties omitted.
-    OutputProductionConfig production{TickOutputConfig{}};
-    OutputRetention retention = OutputRetention::ephemeral;
-};
 ```
 
-The current checked-in C++ API still stores finite history/latency directly in these
-configs; that is an implementation checkpoint. The planned contract keeps the static
-access/production alternatives but contributes Sequential input `history()` and Tick
-output `history()`/`latency()` through the configured node's `constrain_ports()` phase. A random-access input
+The static access/production alternatives are separate from instance-authored timing.
+Sequential input `history()` and Tick output `history()`/`latency()` are contributed
+through the configured node's `constrain_ports()` phase. A Region or Coverage input
 can be consumed in either execution callback. A tick-produced output can satisfy
 random-access demand through finalized persisted data or contextually replayable
-computation; a tock-produced output can feed a sequential input if its data is
+computation; a Region/Coverage-produced output can feed a sequential input if its data is
 materialized off the audio thread. Production does not select the consumer's access.
 
 `ephemeral` permits transaction-local addressable materialization but
@@ -1224,7 +1212,8 @@ storage to reserve for the selected temporal representation.
 
 ## Random-access ports use explicit sparse coverage
 
-`TockOutputConfig` publishes exact finite `IndexCoverage`; random-access demand
+`CoverageOutputConfig` publishes exact finite `IndexCoverage`; a
+`RegionOutputConfig` publishes one finite ordered region. Random-access demand
 may also use finalized published `tick/persisted` data or a contextually replayable
 tick output. Outside coverage, a random-access node read is invalid. Coverage and
 exact semantic changed ranges remain independent of physical record boundaries.

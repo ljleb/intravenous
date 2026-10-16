@@ -511,7 +511,7 @@ RegisteredSignature const* node_constructor_signature()
 
 #define IV_NODE_VALIDATE_DECLARATION(Node) \
     static_assert(::iv::details::has_constexpr_port_configs<Node>, \
-        "IV_NODE requires inputs() and outputs() to return static constexpr arrays of InputConfig and OutputConfig. " \
+        "IV_NODE requires inputs() and outputs() to return static constexpr tuples of authored port configs. " \
         "Each array carries both sample and event ports through its config variant. " \
         "Dynamic-arity or configuration-dependent nodes must remain internal lowering nodes."); \
     static_assert(::iv::details::replay_declaration_is_valid_v<Node>, \

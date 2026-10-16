@@ -8,6 +8,7 @@
 #include <intravenous/global_index.h>
 
 #include <cstddef>
+#include <cstdint>
 
 namespace iv {
 
@@ -17,6 +18,7 @@ struct ReflectedNodeTickContext;
 struct ReflectedNodeTockCoverageContext;
 struct ReflectedNodeForwardCoverageContext;
 struct ReflectedNodeReverseCoverageContext;
+enum class ContinuousValueTypeId : std::uint8_t;
 
 namespace details {
 
@@ -40,6 +42,24 @@ struct NodeCompilerOperations {
         void const*, ReflectedNodeForwardCoverageContext const&) = nullptr;
     void (*propagate_reverse_coverage)(
         void const*, ReflectedNodeReverseCoverageContext const&) = nullptr;
+
+    // Executable Sequential fan-in semantics stay in package LLVM. The
+    // configured graph serializes declarative metadata, never native function
+    // pointers. These node-specialized dispatchers accept only one of the
+    // node's declared continuous input/type pairs and reject every other pair.
+    bool (*initialize_sequential_input_neutral)(
+        std::size_t continuous_input,
+        ContinuousValueTypeId,
+        std::byte* destination,
+        std::size_t destination_bytes,
+        std::size_t elements_per_value) = nullptr;
+    bool (*combine_sequential_input_values)(
+        std::size_t continuous_input,
+        ContinuousValueTypeId,
+        std::byte* destination,
+        std::byte const* source,
+        std::size_t byte_count,
+        std::size_t elements_per_value) = nullptr;
 
     constexpr bool valid() const
     {

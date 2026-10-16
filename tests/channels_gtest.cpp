@@ -38,13 +38,12 @@ static_assert(iv::channel_conversion_coefficient(
 struct NamedStereoSource {
     static constexpr auto inputs()
     {
-        return std::array<iv::InputConfig, 0>{};
+        return std::tuple{};
     }
 
     static constexpr auto outputs()
     {
-        return std::array<iv::OutputConfig, 1>{iv::tick_sample_output(
-            "main", {
+        return std::array{iv::output<iv::Sample>("main", iv::OutputProduction::tick, {
                 .channel_layout = {
                     .channel_type = iv::ChannelTypeId::stereo,
                     .sample_layout = iv::SampleStreamLayout::planar,
@@ -58,14 +57,14 @@ struct NamedStereoSource {
 struct MonoPass {
     static constexpr auto inputs()
     {
-        return std::array<iv::InputConfig, 1>{
-            iv::sequential_sample_input("in")};
+        return std::array{
+            iv::input<iv::Sample>("in", iv::InputAccess::sequential)};
     }
 
     static constexpr auto outputs()
     {
-        return std::array<iv::OutputConfig, 1>{
-            iv::tick_sample_output("out")};
+        return std::array{
+            iv::output<iv::Sample>("out", iv::OutputProduction::tick)};
     }
 
     void tick_block(iv::TickBlockContext<MonoPass> const& ctx) const
@@ -144,10 +143,18 @@ TEST(Channels, PositionalInputsUseSeparateSampleAndEventIndexes)
 {
     iv::NodePorts ports;
     ports.input_configs = {
-        iv::sequential_sample_input("first"),
-        iv::sequential_event_input("first-event", iv::EventTypeId::trigger),
-        iv::sequential_sample_input("second"),
-        iv::sequential_event_input("second-event", iv::EventTypeId::trigger),
+        iv::erase_port_config(
+            iv::input<iv::Sample>("first", iv::InputAccess::sequential)),
+        iv::erase_port_config(iv::event_input(
+            "first-event",
+            iv::EventTypeId::trigger,
+            iv::InputAccess::sequential)),
+        iv::erase_port_config(
+            iv::input<iv::Sample>("second", iv::InputAccess::sequential)),
+        iv::erase_port_config(iv::event_input(
+            "second-event",
+            iv::EventTypeId::trigger,
+            iv::InputAccess::sequential)),
     };
 
     EXPECT_EQ(ports.input_port_at(7, 0),

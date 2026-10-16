@@ -1606,7 +1606,7 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
             auto const config = input.graph.node_bundles.resolve_sample_output(
                 {bundle, PortKind::sample, port}).config;
             plan.primitives[i].outputs[port].realtime =
-                is_tick(config.production);
+                is_tick(config);
         }
     }
 
@@ -1670,7 +1670,7 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
         }
         auto const target = input.graph.node_bundles
             .resolve_sample_input(target_port).config;
-        if (!is_sequential(target.access)) {
+        if (!is_sequential(target)) {
             return std::unexpected(
                 "GraphJit sample-edge slice requires realtime sample port declarations");
         }
@@ -1729,7 +1729,7 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
             auto const source = input.graph.node_bundles
                 .resolve_sample_output(source_port).config;
             auto const& group = connections.sample_producer_groups[*group_index];
-            if (!is_tick(source.production)
+            if (!is_tick(source)
                 || source.channel_layout != timing.source_layout
                 || !group.canonical_source_layout
                 || *group.canonical_source_layout != source.channel_layout
@@ -1891,12 +1891,12 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
     struct DisconnectedSampleInput {
         std::size_t primitive = 0;
         std::size_t port = 0;
-        SampleInputConfig config{};
+        ContinuousInputConfig config{};
     };
     struct DisconnectedSampleOutput {
         std::size_t primitive = 0;
         std::size_t port = 0;
-        SampleOutputConfig config{};
+        ContinuousOutputConfig config{};
     };
     std::vector<DisconnectedSampleInput> disconnected_inputs;
     std::vector<DisconnectedSampleOutput> disconnected_outputs;
@@ -1933,7 +1933,7 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
 
             auto const config = input.graph.node_bundles.resolve_sample_input(
                 NodeBundlePortId{bundle, PortKind::sample, port}).config;
-            if (!is_sequential(config.access)) {
+            if (!is_sequential(config)) {
                 return std::unexpected(
                     "GraphJit disconnected background sample input is not supported");
             }
@@ -1944,7 +1944,9 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
             });
             constant_input_requests.push_back(SampleConstantInputRequest{
                 .channel_layout = config.channel_layout,
-                .default_value = config.default_value,
+                .default_value =
+                    sequential_input_metadata<Sample>(
+                        sequential_input_properties(config)).default_value,
                 .execution_position = *execution_position,
             });
         }
@@ -1961,7 +1963,7 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
 
             auto const config = input.graph.node_bundles.resolve_sample_output(
                 NodeBundlePortId{bundle, PortKind::sample, port}).config;
-            if (!is_tick(config.production)) continue;
+            if (!is_tick(config)) continue;
             disconnected_outputs.push_back(DisconnectedSampleOutput{
                 .primitive = primitive_index,
                 .port = port,
@@ -2245,7 +2247,7 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
             auto const config = input.graph.node_bundles.resolve_event_output(
                 {bundle, PortKind::event, port}).config;
             plan.primitives[i].outputs[port].realtime =
-                is_tick(config.production);
+                is_tick(config);
         }
     }
 
@@ -4748,7 +4750,7 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
             NodeBundlePortId const port_id{bundle, PortKind::event, port};
             auto const config = input.graph.node_bundles
                 .resolve_event_input(port_id).config;
-            if (!is_sequential(config.access)) {
+            if (!is_sequential(config)) {
                 return std::unexpected(
                     "GraphJit disconnected background event inputs are not yet supported");
             }
@@ -4771,7 +4773,7 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
             NodeBundlePortId const port_id{bundle, PortKind::event, port};
             auto const config = input.graph.node_bundles
                 .resolve_event_output(port_id).config;
-            IV_ASSERT(is_tick(config.production),
+            IV_ASSERT(is_tick(config),
                 "Tick event storage disagrees with its port declaration");
             auto const& resolved_output = realization.event_output(bundle, port);
             auto const history = resolved_output.history;

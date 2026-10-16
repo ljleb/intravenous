@@ -6,7 +6,7 @@ namespace {
 struct SamplePeriodSource {
     static constexpr auto outputs()
     {
-        return std::array<iv::OutputConfig, 1>{};
+        return std::array<iv::TickOutputConfig<iv::Sample>, 1>{};
     }
 
     void tick(iv::TickSampleContext<SamplePeriodSource> const& ctx) const

@@ -518,8 +518,9 @@ planning components, precomputes forward-change/reverse-demand/evaluation order,
 and emits specialized component executors plus immutable port metadata.
 
 The node port schema separates input access
-(`SequentialInputConfig`/`RandomAccessInputConfig`), output production
-(`TickOutputConfig`/`TockOutputConfig`), and `OutputRetention`. All concrete node
+(`SequentialInputConfig`/`RegionInputConfig`/`CoverageInputConfig`), output production
+(`TickOutputConfig`/`RegionOutputConfig`/`CoverageOutputConfig`), and
+`OutputRetention`. All concrete node
 port schemas are static constexpr, including internal builder-created nodes; the
 number and connectivity of their instances remain dynamic graph data. The checked-in source uses the independent access, production, and retention
 schema above directly.

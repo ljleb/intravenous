@@ -756,9 +756,12 @@ typed configurations and do not acquire continuous-value-only fields for symmetr
 The helper's template arguments determine the option types, so callers use designated
 initializers without spelling framework-internal `*_options` type names. Each
 registered continuous value extension defines the exact options meaningful for that
-type. For example, `Sample` supports scalar `default_value`, `min`, and `max`, while a
-type without a linear ordering does not expose meaningless `min` or `max` fields.
-Attempting to initialize an unsupported field is a compile-time error.
+type. `default_value`, `min`, and `max` are scalar presentation metadata and are legal
+only for rank-zero element types. A rank-zero type exposes only the meaningful subset:
+`Sample` supports all three, while circular `FractionalGlobalIndex` supports a default
+but no context-free minimum or maximum. Any type with a nonzero-dimensional `size()`
+exposes none of these fields. Attempting to initialize an unsupported field is a
+compile-time error.
 
 A multi-type port lists one option initializer per configured type in the same order
 as the adjacent template argument list. Omitting all option initializers selects every
@@ -795,10 +798,11 @@ ordering-preserving node may relate the two in `constrain_ports()`.
 
 ## 8. Sequential reduction is configurable per input
 
-Every registered continuous value extension supplies a default Sequential neutral
-value or neutral-initialization operation and a default `combine_values` operation.
-Those defaults make ordinary additive inputs concise; they do not fix every input to
-addition. Each authored Sequential input may override both parts of its reduction
+Every registered continuous value extension, regardless of rank, supplies a default
+Sequential neutral value or neutral-initialization operation and a default
+`combine_values` operation.
+Those defaults make ordinary additive inputs concise. They do not fix every input to
+addition. Each authored Sequential input can override both parts of its reduction
 algebra.
 
 For a scalar `Sample` input, the intended syntax is:
@@ -827,21 +831,28 @@ executable representations. It must not force every logical value type into the
 scalar `Sample(Sample, Sample)` shape.
 
 For a dynamically sized logical value such as `FFTBlock`, the static declaration
-cannot contain a complete resolved-size neutral block. Its extension may instead
-represent the same contract with a neutral bin/fill operation and a block-combine
-operation over resolved storage. The authored field names retain their semantic
-meaning while the extension supplies their valid types and lowering behavior.
+cannot contain a scalar-style default or a complete resolved-size neutral block. Its
+extension instead types `neutral_value` as a non-owning initializer operation over one
+resolved logical block and `combine_values` as an operation over two resolved logical
+blocks. Realization supplies the resolved bin count before neutral initialization, and
+the initializer is invoked once for each logical value in the destination storage.
+This permits a neutral block to depend on its resolved size and bin position. It is not
+restricted to one repeated bin value. The authored field names retain their semantic
+meaning while the extension supplies their valid types and lowering behavior. The
+superseded uniform-bin interpretation is preserved in
+[historical documentation](./historical/fft_uniform_neutral_fill.md).
 
 The materialized executable configuration contains only the trivially copyable values
 and ordinary function/operation references needed by generated runtime/JIT code. It
 does not store `std::function` or another owning, runtime-erased callable. A configured
-combiner target is compiled into the node/package LLVM module and relocated normally;
-whole-graph LLVM may specialize, devirtualize, or inline a statically known operation.
+combiner target is compiled into the node/package LLVM module and relocated normally.
+Whole-graph LLVM can specialize, devirtualize, or inline a statically known operation.
 
 Frontend/reflection metadata does not need to serialize or expose executable function
 pointers. It records the presentation and value metadata that is semantically useful
-outside the generated DSP module. Executable reduction behavior remains part of the
-compiled node implementation.
+outside the generated DSP module. Both the dynamically sized neutral initializer and
+the block combiner remain executable behavior in the compiled node implementation.
+Their configured metadata alternative is therefore stateless.
 
 ## 9. Persisted and ephemeral random-access sample data stop using pages
 

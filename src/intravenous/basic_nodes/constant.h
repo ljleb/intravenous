@@ -18,7 +18,7 @@ struct Constant {
 
     static constexpr auto outputs()
     {
-        return std::array<OutputConfig, 1>{};
+        return std::array<TickOutputConfig<Sample>, 1>{};
     }
 
     void tick(TickSampleContext<Constant> const& state) const

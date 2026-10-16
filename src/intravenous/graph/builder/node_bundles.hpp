@@ -34,8 +34,8 @@ struct EventPortDescriptor {
   Config config{};
 };
 
-using SampleInputPortDescriptor = SamplePortDescriptor<SampleInputConfig>;
-using SampleOutputPortDescriptor = SamplePortDescriptor<SampleOutputConfig>;
+using SampleInputPortDescriptor = SamplePortDescriptor<ContinuousInputConfig>;
+using SampleOutputPortDescriptor = SamplePortDescriptor<ContinuousOutputConfig>;
 using EventInputPortDescriptor = EventPortDescriptor<EventInputConfig>;
 using EventOutputPortDescriptor = EventPortDescriptor<EventOutputConfig>;
 
@@ -116,20 +116,20 @@ public:
   constexpr std::string_view subgraph_kind() const;
 
   constexpr NodePorts const& boundary_ports() const;
-  constexpr std::vector<SampleInputConfig> boundary_sample_inputs() const;
-  constexpr std::vector<SampleOutputConfig> boundary_sample_outputs() const;
+  constexpr std::vector<ContinuousInputConfig> boundary_sample_inputs() const;
+  constexpr std::vector<ContinuousOutputConfig> boundary_sample_outputs() const;
   constexpr std::vector<EventInputConfig> boundary_event_inputs() const;
   constexpr std::vector<EventOutputConfig> boundary_event_outputs() const;
-  constexpr size_t append_boundary_sample_input(SampleInputConfig);
-  constexpr size_t append_boundary_sample_output(SampleOutputConfig);
+  constexpr size_t append_boundary_sample_input(ContinuousInputConfig);
+  constexpr size_t append_boundary_sample_output(ContinuousOutputConfig);
   constexpr size_t append_boundary_event_input(EventInputConfig);
   constexpr size_t append_boundary_event_output(EventOutputConfig);
   constexpr void clear_boundary_event_outputs();
 
   constexpr ChannelLayout sample_input_layout(size_t) const;
   constexpr ChannelLayout sample_output_layout(size_t) const;
-  constexpr SampleInputConfig sample_input_config(size_t) const;
-  constexpr SampleOutputConfig sample_output_config(size_t) const;
+  constexpr ContinuousInputConfig sample_input_config(size_t) const;
+  constexpr ContinuousOutputConfig sample_output_config(size_t) const;
   constexpr EventInputConfig event_input_config(size_t) const;
   constexpr EventOutputConfig event_output_config(size_t) const;
   constexpr std::string_view type_identity() const;
@@ -350,7 +350,7 @@ constexpr ConcreteNode GraphBuilderNodeBundles::make_concrete_node(
   auto const sample_outputs = description.ports.sample_outputs();
   auto const event_outputs = description.ports.event_outputs();
   validate_output_port_configs(
-      std::span<SampleOutputConfig const>(sample_outputs),
+      std::span<ContinuousOutputConfig const>(sample_outputs),
       description.type_name,
       "sample");
   validate_output_port_configs(
@@ -523,7 +523,7 @@ constexpr NodePorts const& NodeBundle::boundary_ports() const {
   return boundary->ports;
 }
 
-constexpr std::vector<SampleOutputConfig>
+constexpr std::vector<ContinuousOutputConfig>
 NodeBundle::boundary_sample_outputs() const {
   auto const *boundary = _payload
       ? std::get_if<BoundaryNodeBundle>(&*_payload)
@@ -533,7 +533,7 @@ NodeBundle::boundary_sample_outputs() const {
 }
 
 constexpr size_t NodeBundle::append_boundary_sample_output(
-    SampleOutputConfig config) {
+    ContinuousOutputConfig config) {
   auto *boundary = _payload
       ? std::get_if<BoundaryNodeBundle>(&*_payload)
       : nullptr;
@@ -543,7 +543,7 @@ constexpr size_t NodeBundle::append_boundary_sample_output(
   return index;
 }
 
-constexpr std::vector<SampleInputConfig>
+constexpr std::vector<ContinuousInputConfig>
 NodeBundle::boundary_sample_inputs() const {
   auto const *boundary = _payload
       ? std::get_if<BoundaryNodeBundle>(&*_payload)
@@ -560,12 +560,25 @@ NodeBundle::sample_input_descriptor(size_t index) const {
         using Bundle = std::remove_cvref_t<decltype(payload)>;
         if constexpr (std::is_same_v<Bundle, BoundaryNodeBundle>) {
           auto const output = payload.ports.sample_output(index);
-          return {.config = SampleInputConfig{
+          auto const value_types = continuous_value_type_domain(output);
+          auto const access = [&]() -> ContinuousInputAccessProperties {
+            switch (output_production(output)) {
+            case OutputProductionKind::tick:
+              return default_sequential_input_properties(
+                  value_types);
+            case OutputProductionKind::region:
+              return default_region_input_properties(
+                  value_types);
+            case OutputProductionKind::coverage:
+              return default_coverage_input_properties(
+                  value_types);
+            }
+            details::error("invalid boundary continuous output production");
+          }();
+          return {.config = ContinuousInputConfig{
               .name = output.name,
-              .value_types = output.value_types,
               .channel_layout = output.channel_layout,
-              .access = is_tick(output) ? InputAccessConfig{SequentialInputConfig{}}
-                  : InputAccessConfig{RandomAccessInputConfig{}},
+              .access = access,
           }};
         } else if constexpr (std::is_same_v<Bundle, ConcreteNodeBundle>) {
           return {.config = payload.ports.sample_input(index)};
@@ -587,12 +600,25 @@ NodeBundle::sample_output_descriptor(size_t index) const {
         using Bundle = std::remove_cvref_t<decltype(payload)>;
         if constexpr (std::is_same_v<Bundle, BoundaryNodeBundle>) {
           auto const input = payload.ports.sample_input(index);
-          return {.config = SampleOutputConfig{
+          auto const value_types = continuous_value_type_domain(input);
+          auto const production = [&]() -> ContinuousOutputProductionProperties {
+            switch (input_access(input)) {
+            case InputAccessKind::sequential:
+              return default_tick_output_properties(
+                  value_types);
+            case InputAccessKind::region:
+              return default_region_output_properties(
+                  value_types);
+            case InputAccessKind::coverage:
+              return default_coverage_output_properties(
+                  value_types);
+            }
+            details::error("invalid boundary continuous input access");
+          }();
+          return {.config = ContinuousOutputConfig{
               .name = input.name,
-              .value_types = input.value_types,
               .channel_layout = input.channel_layout,
-              .production = is_sequential(input) ? OutputProductionConfig{TickOutputConfig{}}
-                  : OutputProductionConfig{TockOutputConfig{}},
+              .production = production,
           }};
         } else if constexpr (std::is_same_v<Bundle, ConcreteNodeBundle>) {
           return {.config = payload.ports.sample_output(index)};
@@ -693,14 +719,26 @@ namespace iv {
 namespace {
 constexpr EventOutputConfig inward_event_output_config(
     EventInputConfig const &config) {
-  return EventOutputConfig{.name = config.name, .type = config.type, .production = is_sequential(config) ? OutputProductionConfig{TickOutputConfig{}}
-      : OutputProductionConfig{TockOutputConfig{}}};
+  return EventOutputConfig{
+      .name = config.name,
+      .type = config.type,
+      .production = is_sequential(config)
+          ? OutputProductionKind::tick
+          : input_access(config) == InputAccessKind::region
+              ? OutputProductionKind::region
+              : OutputProductionKind::coverage};
 }
 
 constexpr EventInputConfig inward_event_input_config(
     EventOutputConfig const &config) {
-  return EventInputConfig{.name = config.name, .type = config.type, .access = is_tick(config) ? InputAccessConfig{SequentialInputConfig{}}
-      : InputAccessConfig{RandomAccessInputConfig{}}};
+  return EventInputConfig{
+      .name = config.name,
+      .type = config.type,
+      .access = is_tick(config)
+          ? InputAccessKind::sequential
+          : output_production(config) == OutputProductionKind::region
+              ? InputAccessKind::region
+              : InputAccessKind::coverage};
 }
 
 template <class MatchesName>
@@ -809,7 +847,7 @@ NodeBundle::boundary_event_outputs() const {
   return boundary->ports.event_outputs();
 }
 
-constexpr size_t NodeBundle::append_boundary_sample_input(SampleInputConfig config) {
+constexpr size_t NodeBundle::append_boundary_sample_input(ContinuousInputConfig config) {
   auto *boundary = _payload ? std::get_if<BoundaryNodeBundle>(&*_payload) : nullptr;
   if (!boundary) details::error("NodeBundle is not a boundary");
   auto const index = boundary->ports.sample_input_count();
@@ -836,7 +874,7 @@ constexpr void NodeBundle::clear_boundary_event_outputs() {
   auto *boundary = _payload ? std::get_if<BoundaryNodeBundle>(&*_payload) : nullptr;
   if (!boundary) details::error("NodeBundle is not a boundary");
   std::erase_if(boundary->ports.output_configs, [](OutputConfig const& config) {
-    return !is_sample(config);
+    return !is_continuous(config);
   });
 }
 
@@ -846,10 +884,10 @@ constexpr ChannelLayout NodeBundle::sample_input_layout(size_t i) const {
 constexpr ChannelLayout NodeBundle::sample_output_layout(size_t i) const {
   return sample_output_descriptor(i).config.channel_layout;
 }
-constexpr SampleInputConfig NodeBundle::sample_input_config(size_t i) const {
+constexpr ContinuousInputConfig NodeBundle::sample_input_config(size_t i) const {
   return sample_input_descriptor(i).config;
 }
-constexpr SampleOutputConfig NodeBundle::sample_output_config(size_t i) const {
+constexpr ContinuousOutputConfig NodeBundle::sample_output_config(size_t i) const {
   return sample_output_descriptor(i).config;
 }
 constexpr EventInputConfig NodeBundle::event_input_config(size_t i) const {
@@ -997,44 +1035,23 @@ constexpr NodeBundleHandle GraphBuilderNodeBundles::append_tiled(
   };
 
   auto same_input = [](InputConfig const& lhs, InputConfig const& rhs) {
-    if (lhs.name != rhs.name || lhs.access != rhs.access
-        || is_sample(lhs) != is_sample(rhs)) return false;
-    if (is_sample(lhs)) {
-      auto const& a = sample_properties(lhs);
-      auto const& b = sample_properties(rhs);
-      return a.value_types == b.value_types
-          && a.channel_layout == b.channel_layout
-          && a.neutral_value.value == b.neutral_value.value
-          && a.default_value.value == b.default_value.value
-          && a.min.value == b.min.value
-          && a.max.value == b.max.value;
-    }
-    return event_properties(lhs).type == event_properties(rhs).type;
+    return lhs == rhs;
   };
   auto same_output = [](OutputConfig const& lhs, OutputConfig const& rhs) {
-    if (lhs.name != rhs.name || lhs.production != rhs.production
-        || lhs.retention != rhs.retention
-        || is_sample(lhs) != is_sample(rhs)) return false;
-    if (is_sample(lhs)) {
-      auto const& a = sample_properties(lhs);
-      auto const& b = sample_properties(rhs);
-      return a.value_types == b.value_types
-          && a.channel_layout == b.channel_layout;
-    }
-    return event_properties(lhs).type == event_properties(rhs).type;
+    return lhs == rhs;
   };
   auto validate_mono_samples = [](NodePorts const& ports) {
     for (InputConfig const& input : ports.inputs()) {
-      if (is_sample(input)
-          && sample_properties(input).channel_layout.channel_type
+      if (is_continuous(input)
+          && continuous_properties(input).channel_layout.channel_type
               != ChannelTypeId::mono) {
         details::error(
             "tiled NodeBundle members must expose only mono sample inputs");
       }
     }
     for (OutputConfig const& output : ports.outputs()) {
-      if (is_sample(output)
-          && sample_properties(output).channel_layout.channel_type
+      if (is_continuous(output)
+          && continuous_properties(output).channel_layout.channel_type
               != ChannelTypeId::mono) {
         details::error(
             "tiled NodeBundle members must expose only mono sample outputs");
@@ -1050,15 +1067,17 @@ constexpr NodeBundleHandle GraphBuilderNodeBundles::append_tiled(
   payload.type_identity.value = std::string(first.type_identity());
   payload.ports = first_ports;
   for (InputConfig& input : payload.ports.input_configs) {
-    if (is_sample(input)) {
-      std::get<SampleInputProperties>(input.kind).channel_layout =
-          promoted_channel_layout;
+    if (is_continuous(input)) {
+      set_continuous_channel_layout(
+          std::get<ContinuousInputProperties>(input.kind),
+          promoted_channel_layout);
     }
   }
   for (OutputConfig& output : payload.ports.output_configs) {
-    if (is_sample(output)) {
-      std::get<SampleOutputProperties>(output.kind).channel_layout =
-          promoted_channel_layout;
+    if (is_continuous(output)) {
+      set_continuous_channel_layout(
+          std::get<ContinuousOutputProperties>(output.kind),
+          promoted_channel_layout);
     }
   }
 

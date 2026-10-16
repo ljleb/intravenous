@@ -20,7 +20,7 @@ struct ReplayableArchiveNode {
     static constexpr bool intrinsically_replayable = true;
     static constexpr auto outputs()
     {
-        return std::array{iv::tick_sample_output("output")};
+        return std::array{iv::output<iv::Sample>("output", iv::OutputProduction::tick)};
     }
     void tick(iv::TickSampleContext<ReplayableArchiveNode> const&) const {}
 };
@@ -32,21 +32,19 @@ struct ConstrainedArchiveNode {
 
     static constexpr auto inputs()
     {
-        return std::array<iv::InputConfig, 2>{
-            iv::sequential_sample_input(
-                "input", iv::SampleInputProperties{.value_types = domain}),
-            iv::sequential_event_input(
-                "event_input", iv::EventTypeId::trigger),
+        return std::tuple{
+            iv::input<iv::Sample, iv::FractionalGlobalIndex>(
+                "input", iv::InputAccess::sequential),
+            iv::event_input("event_input", iv::EventTypeId::trigger, iv::InputAccess::sequential),
         };
     }
 
     static constexpr auto outputs()
     {
-        return std::array<iv::OutputConfig, 2>{
-            iv::tick_sample_output(
-                "output", iv::SampleOutputProperties{.value_types = domain}),
-            iv::tick_event_output(
-                "event_output", iv::EventTypeId::trigger),
+        return std::tuple{
+            iv::output<iv::Sample, iv::FractionalGlobalIndex>(
+                "output", iv::OutputProduction::tick),
+            iv::event_output("event_output", iv::EventTypeId::trigger, iv::OutputProduction::tick),
         };
     }
 
@@ -144,9 +142,9 @@ TEST(ConfiguredGraphBinaryArchive, RoundTripsNativeScalarsAndRejectsCorruption)
 
     auto const& declared_inputs = decoded.public_ports.inputs(decoded.node_bundles);
     ASSERT_EQ(declared_inputs.size(), 2u);
-    EXPECT_FALSE(iv::is_sample(declared_inputs[0]));
+    EXPECT_FALSE(iv::is_continuous(declared_inputs[0]));
     EXPECT_EQ(declared_inputs[0].name, "trigger");
-    EXPECT_TRUE(iv::is_sample(declared_inputs[1]));
+    EXPECT_TRUE(iv::is_continuous(declared_inputs[1]));
     EXPECT_EQ(declared_inputs[1].name, "gain");
 
     auto const& inputs = decoded.public_ports.inputs(decoded.node_bundles);
@@ -154,14 +152,17 @@ TEST(ConfiguredGraphBinaryArchive, RoundTripsNativeScalarsAndRejectsCorruption)
 
     ASSERT_EQ(inputs.size(), 2u);
     EXPECT_EQ(inputs[0].name, "trigger");
-    ASSERT_FALSE(iv::is_sample(inputs[0]));
+    ASSERT_FALSE(iv::is_continuous(inputs[0]));
     EXPECT_EQ(iv::event_properties(inputs[0]).type, iv::EventTypeId::trigger);
     EXPECT_EQ(inputs[1].name, "gain");
-    ASSERT_TRUE(iv::is_sample(inputs[1]));
-    auto const& gain_properties = iv::sample_properties(inputs[1]);
-    EXPECT_FLOAT_EQ(gain_properties.default_value, 0.25f);
-    EXPECT_TRUE(std::isinf(gain_properties.min.value));
-    EXPECT_TRUE(std::isinf(gain_properties.max.value));
+    ASSERT_TRUE(iv::is_continuous(inputs[1]));
+    auto const& gain_properties = iv::continuous_properties(inputs[1]);
+    auto const& gain_sequential =
+        iv::sequential_input_metadata<iv::Sample>(
+            iv::sequential_input_properties(gain_properties));
+    EXPECT_FLOAT_EQ(gain_sequential.default_value, 0.25f);
+    EXPECT_TRUE(std::isinf(gain_sequential.min.value));
+    EXPECT_TRUE(std::isinf(gain_sequential.max.value));
     ASSERT_EQ(outputs.size(), 2u);
     EXPECT_EQ(outputs[0].name, "gain_out");
     EXPECT_EQ(outputs[1].name, "main");
@@ -258,55 +259,58 @@ TEST(ConfiguredGraphBinaryArchive, RoundTripsConnectionLocalDetachMetadata)
 
 TEST(ConfiguredGraphBinaryArchive, RoundTripsOrthogonalPortAccessConfigs)
 {
-    iv::SampleInputConfig const realtime_input {
-        .name = "realtime-input",
-        .value_types = iv::continuous_value_types<
-            iv::Sample,
-            iv::FractionalGlobalIndex>,
-        .channel_layout = {
-            .channel_type = iv::ChannelTypeId::stereo,
-            .sample_layout = iv::SampleStreamLayout::interleaved,
-        },
-        .access = iv::SequentialInputConfig{},
-        .neutral_value = -0.125f,
-        .default_value = 0.25f,
-    };
-    iv::SampleInputConfig const random_access_input {
-        .name = "background-input",
-        .access = iv::RandomAccessInputConfig{},
-    };
-    iv::SampleOutputConfig const realtime_output {
-        .name = "realtime-output",
-        .value_types = iv::continuous_value_types<iv::FFTBlock>,
-        .production = iv::TickOutputConfig{},
-        .retention = iv::OutputRetention::persisted,
-    };
-    iv::SampleOutputConfig const tock_output {
-        .name = "background-output",
-        .production = iv::TockOutputConfig{},
-        .retention = iv::OutputRetention::ephemeral,
-    };
+    auto const fractional_default = iv::FractionalGlobalIndex::from_parts(
+        iv::GlobalIndex::from_signed(-3), 0x123456789abcdef0ULL);
+    auto const fractional_neutral = iv::FractionalGlobalIndex::from_parts(
+        iv::GlobalIndex::from_signed(7), 0xfedcba9876543210ULL);
+    auto const realtime_input = iv::materialize_continuous_config(
+        iv::erase_port_config(iv::input<iv::Sample, iv::FractionalGlobalIndex>(
+            "realtime-input",
+            iv::InputAccess::sequential,
+            {
+                .channel_layout = {
+                    .channel_type = iv::ChannelTypeId::stereo,
+                    .sample_layout = iv::SampleStreamLayout::interleaved,
+                },
+                .default_value = 0.25f,
+                .neutral_value = -0.125f,
+            },
+            {
+                .default_value = fractional_default,
+                .neutral_value = fractional_neutral,
+            })));
+    auto const random_access_input = iv::materialize_continuous_config(
+        iv::erase_port_config(iv::input<iv::Sample>(
+            "background-input", iv::InputAccess::coverage)));
+    auto const realtime_output = iv::materialize_continuous_config(
+        iv::erase_port_config(iv::output<iv::FFTBlock>(
+            "realtime-output",
+            iv::OutputProduction::tick,
+            iv::OutputRetention::persisted)));
+    auto const tock_output = iv::materialize_continuous_config(
+        iv::erase_port_config(iv::output<iv::Sample>(
+            "background-output", iv::OutputProduction::coverage)));
     iv::EventInputConfig const sequential_event_input {
         .name = "realtime-event-input",
         .type = iv::EventTypeId::trigger,
-        .access = iv::SequentialInputConfig{},
+        .access = iv::InputAccessKind::sequential,
     };
     iv::EventInputConfig const random_access_event_input {
         .name = "background-event-input",
         .type = iv::EventTypeId::trigger,
-        .access = iv::RandomAccessInputConfig{},
+        .access = iv::InputAccessKind::coverage,
     };
     iv::EventOutputConfig const tick_event_output {
         .name = "realtime-event-output",
         .type = iv::EventTypeId::midi,
         .max_events_per_index = 0.24,
-        .production = iv::TickOutputConfig{},
+        .production = iv::OutputProductionKind::tick,
         .retention = iv::OutputRetention::ephemeral,
     };
     iv::EventOutputConfig const tock_event_output {
         .name = "background-event-output",
         .type = iv::EventTypeId::midi,
-        .production = iv::TockOutputConfig{},
+        .production = iv::OutputProductionKind::coverage,
         .retention = iv::OutputRetention::persisted,
     };
 
@@ -333,20 +337,42 @@ TEST(ConfiguredGraphBinaryArchive, RoundTripsOrthogonalPortAccessConfigs)
     reader.finish();
 
     EXPECT_EQ(decoded_realtime_input.name, realtime_input.name);
-    EXPECT_EQ(decoded_realtime_input.value_types, realtime_input.value_types);
+    EXPECT_EQ(
+        iv::continuous_value_type_domain(decoded_realtime_input),
+        iv::continuous_value_type_domain(realtime_input));
     EXPECT_EQ(decoded_realtime_input.channel_layout, realtime_input.channel_layout);
     EXPECT_FALSE(iv::is_random_access(decoded_realtime_input));
-    EXPECT_FLOAT_EQ(static_cast<float>(decoded_realtime_input.neutral_value), -0.125f);
-    EXPECT_FLOAT_EQ(static_cast<float>(decoded_realtime_input.default_value), 0.25f);
+    auto const& decoded_realtime_properties =
+        iv::sequential_input_metadata<iv::Sample>(
+            iv::sequential_input_properties(decoded_realtime_input));
+    EXPECT_FLOAT_EQ(
+        static_cast<float>(decoded_realtime_properties.neutral_value), -0.125f);
+    EXPECT_FLOAT_EQ(
+        static_cast<float>(decoded_realtime_properties.default_value), 0.25f);
+    auto const& decoded_fractional_properties =
+        iv::sequential_input_metadata<iv::FractionalGlobalIndex>(
+            iv::sequential_input_properties(decoded_realtime_input));
+    EXPECT_EQ(
+        decoded_fractional_properties.default_value, fractional_default);
+    EXPECT_EQ(
+        decoded_fractional_properties.neutral_value, fractional_neutral);
     EXPECT_TRUE(iv::is_random_access(decoded_background_input));
-    EXPECT_FALSE(iv::is_sequential(decoded_background_input.access));
+    EXPECT_FALSE(iv::is_sequential(decoded_background_input));
+    EXPECT_TRUE(std::holds_alternative<
+        iv::CoverageContinuousInputProperties>(
+            decoded_background_input.access));
 
     EXPECT_EQ(decoded_realtime_output.name, realtime_output.name);
-    EXPECT_EQ(decoded_realtime_output.value_types, realtime_output.value_types);
+    EXPECT_EQ(
+        iv::continuous_value_type_domain(decoded_realtime_output),
+        iv::continuous_value_type_domain(realtime_output));
     EXPECT_FALSE(iv::is_tock(decoded_realtime_output));
     EXPECT_TRUE(iv::is_persisted(decoded_realtime_output));
     EXPECT_TRUE(iv::is_tock(decoded_background_output));
-    EXPECT_FALSE(iv::is_tick(decoded_background_output.production));
+    EXPECT_FALSE(iv::is_tick(decoded_background_output));
+    EXPECT_TRUE(std::holds_alternative<
+        iv::CoverageContinuousOutputProperties>(
+            decoded_background_output.production));
     EXPECT_FALSE(iv::is_persisted(decoded_background_output));
 
     EXPECT_EQ(decoded_realtime_event_input.type, sequential_event_input.type);
@@ -357,6 +383,35 @@ TEST(ConfiguredGraphBinaryArchive, RoundTripsOrthogonalPortAccessConfigs)
     EXPECT_FALSE(iv::is_persisted(decoded_realtime_event_output));
     EXPECT_TRUE(iv::is_tock(decoded_background_event_output));
     EXPECT_TRUE(iv::is_persisted(decoded_background_event_output));
+}
+
+TEST(ConfiguredGraphBinaryArchive, RejectsRepeatedContinuousMetadataType)
+{
+    auto config = iv::materialize_continuous_config(
+        iv::erase_port_config(iv::input<iv::Sample, iv::FractionalGlobalIndex>(
+            "input", iv::InputAccess::sequential)));
+    auto& metadata = std::get<iv::SequentialContinuousInputProperties>(
+        config.access).value_metadata;
+    metadata.push_back(metadata.front());
+
+    iv::binary_wire_details::Writer writer;
+    EXPECT_THROW(
+        iv::binary_wire_details::write_input(writer, config),
+        std::runtime_error);
+}
+
+TEST(ConfiguredGraphBinaryArchive, RejectsEmptyContinuousMetadataDomain)
+{
+    auto config = iv::materialize_continuous_config(
+        iv::erase_port_config(iv::input<iv::Sample>(
+            "input", iv::InputAccess::sequential)));
+    std::get<iv::SequentialContinuousInputProperties>(
+        config.access).value_metadata.clear();
+
+    iv::binary_wire_details::Writer writer;
+    EXPECT_THROW(
+        iv::binary_wire_details::write_input(writer, config),
+        std::runtime_error);
 }
 
 TEST(ConfiguredGraphBinaryArchive, RoundTripsAuthoredPortConstraints)
@@ -387,8 +442,12 @@ TEST(ConfiguredGraphBinaryArchive, RoundTripsAuthoredPortConstraints)
             ASSERT_EQ(outputs.size(), 1u);
             ASSERT_EQ(event_inputs.size(), 1u);
             ASSERT_EQ(event_outputs.size(), 1u);
-            EXPECT_EQ(inputs.front().value_types, ConstrainedArchiveNode::domain);
-            EXPECT_EQ(outputs.front().value_types, ConstrainedArchiveNode::domain);
+            EXPECT_EQ(
+                continuous_value_type_domain(inputs.front()),
+                ConstrainedArchiveNode::domain);
+            EXPECT_EQ(
+                continuous_value_type_domain(outputs.front()),
+                ConstrainedArchiveNode::domain);
             ASSERT_EQ(
                 view.port_constraints->value_type_equalities.size(), 1u);
             EXPECT_EQ(
@@ -434,26 +493,22 @@ TEST(ConfiguredGraphBinaryArchive, RoundTripsAuthoredPortConstraints)
 TEST(ConfiguredGraphBinaryArchive, RoundTripsEveryOutputAccessRetentionMode)
 {
     std::array const outputs {
-        iv::SampleOutputConfig{
-            .name = "realtime-ephemeral",
-            .production = iv::TickOutputConfig{},
-            .retention = iv::OutputRetention::ephemeral,
-        },
-        iv::SampleOutputConfig{
-            .name = "realtime-persisted",
-            .production = iv::TickOutputConfig{},
-            .retention = iv::OutputRetention::persisted,
-        },
-        iv::SampleOutputConfig{
-            .name = "background-ephemeral",
-            .production = iv::TockOutputConfig{},
-            .retention = iv::OutputRetention::ephemeral,
-        },
-        iv::SampleOutputConfig{
-            .name = "background-persisted",
-            .production = iv::TockOutputConfig{},
-            .retention = iv::OutputRetention::persisted,
-        },
+        iv::materialize_continuous_config(iv::erase_port_config(
+            iv::output<iv::Sample>(
+                "realtime-ephemeral", iv::OutputProduction::tick))),
+        iv::materialize_continuous_config(iv::erase_port_config(
+            iv::output<iv::Sample>(
+                "realtime-persisted",
+                iv::OutputProduction::tick,
+                iv::OutputRetention::persisted))),
+        iv::materialize_continuous_config(iv::erase_port_config(
+            iv::output<iv::Sample>(
+                "background-ephemeral", iv::OutputProduction::coverage))),
+        iv::materialize_continuous_config(iv::erase_port_config(
+            iv::output<iv::Sample>(
+                "background-persisted",
+                iv::OutputProduction::coverage,
+                iv::OutputRetention::persisted))),
     };
     iv::binary_wire_details::Writer writer;
     for (auto const& output : outputs) {

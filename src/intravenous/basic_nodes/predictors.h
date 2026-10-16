@@ -28,12 +28,12 @@ namespace iv {
 
         static constexpr auto inputs()
         {
-            return std::array { sequential_sample_input() };
+            return std::array { input<Sample>("", InputAccess::sequential) };
         }
 
         static constexpr auto outputs()
         {
-            return std::array { tick_sample_output() };
+            return std::array { output<Sample>("", OutputProduction::tick) };
         }
 
         void constrain_ports(ConstrainPortsContext<NlmsPredictor>& ctx) const
@@ -104,12 +104,12 @@ namespace iv {
 
         static constexpr auto inputs()
         {
-            return std::array { sequential_sample_input() };
+            return std::array { input<Sample>("", InputAccess::sequential) };
         }
 
         static constexpr auto outputs()
         {
-            return std::array { tick_sample_output() };
+            return std::array { output<Sample>("", OutputProduction::tick) };
         }
 
         void constrain_ports(ConstrainPortsContext<TanhResidualPredictor>& ctx) const
@@ -208,12 +208,12 @@ namespace iv {
 
         static constexpr auto inputs()
         {
-            return std::array { sequential_sample_input() };
+            return std::array { input<Sample>("", InputAccess::sequential) };
         }
 
         static constexpr auto outputs()
         {
-            return std::array { tick_sample_output() };
+            return std::array { output<Sample>("", OutputProduction::tick) };
         }
 
         void constrain_ports(ConstrainPortsContext<TanhResidualAR2Predictor>& ctx) const
@@ -345,12 +345,12 @@ namespace iv {
 
         static constexpr auto inputs()
         {
-            return std::array { sequential_sample_input() };
+            return std::array { input<Sample>("", InputAccess::sequential) };
         }
 
         static constexpr auto outputs()
         {
-            return std::array { tick_sample_output() };
+            return std::array { output<Sample>("", OutputProduction::tick) };
         }
 
         void constrain_ports(ConstrainPortsContext<PolyResidualPredictor>& ctx) const

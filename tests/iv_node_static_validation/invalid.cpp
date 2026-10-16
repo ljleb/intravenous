@@ -3,14 +3,24 @@
 #include <array>
 
 struct DynamicSamplePortNode {
-    std::array<iv::InputConfig, 1> inputs() const { return {}; }
+    std::array<iv::SequentialInputConfig<iv::Sample>, 1> inputs() const
+    {
+        return {
+            iv::input<iv::Sample>("input", iv::InputAccess::sequential),
+        };
+    }
     void tick_block(iv::TickBlockContext<DynamicSamplePortNode> const&) const {}
 };
 
 struct DynamicEventPortNode {
-    std::array<iv::InputConfig, 1> inputs() const
+    std::array<iv::SequentialEventInputConfig, 1> inputs() const
     {
-        return {iv::sequential_event_input("trigger", iv::EventTypeId::trigger)};
+        return {
+            iv::event_input(
+                "trigger",
+                iv::EventTypeId::trigger,
+                iv::InputAccess::sequential),
+        };
     }
     void tick_block(iv::TickBlockContext<DynamicEventPortNode> const&) const {}
 };
@@ -18,7 +28,7 @@ struct DynamicEventPortNode {
 struct NonConstexprPortNode {
     static auto outputs()
     {
-        return std::array {iv::tick_sample_output("output")};
+        return std::array {iv::output<iv::Sample>("output", iv::OutputProduction::tick)};
     }
 
     void tick_block(iv::TickBlockContext<NonConstexprPortNode> const&) const {}
@@ -27,7 +37,7 @@ struct NonConstexprPortNode {
 struct DynamicPortCountNode {
     static constexpr auto inputs()
     {
-        return std::array {iv::sequential_sample_input("input")};
+        return std::array {iv::input<iv::Sample>("input", iv::InputAccess::sequential)};
     }
 
     std::size_t num_inputs() const { return 1; }
@@ -37,7 +47,7 @@ struct DynamicPortCountNode {
 struct MissingBackgroundTockNode {
     static constexpr auto outputs()
     {
-        return std::array {iv::tock_sample_output("output")};
+        return std::array {iv::output<iv::Sample>("output", iv::OutputProduction::coverage)};
     }
 
     void tick_block(iv::TickBlockContext<MissingBackgroundTockNode> const&) const {}
@@ -47,7 +57,7 @@ struct MissingBackgroundEventTockNode {
     static constexpr auto outputs()
     {
         return std::array {
-            iv::tock_event_output("events", iv::EventTypeId::trigger),
+            iv::event_output("events", iv::EventTypeId::trigger, iv::OutputProduction::coverage),
         };
     }
 
@@ -57,7 +67,7 @@ struct MissingBackgroundEventTockNode {
 struct InvalidBackgroundTockSignatureNode {
     static constexpr auto outputs()
     {
-        return std::array {iv::tock_sample_output("output")};
+        return std::array {iv::output<iv::Sample>("output", iv::OutputProduction::coverage)};
     }
 
     void tick_block(iv::TickBlockContext<InvalidBackgroundTockSignatureNode> const&) const {}

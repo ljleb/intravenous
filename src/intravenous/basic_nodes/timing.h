@@ -18,12 +18,12 @@ namespace iv {
 
         static constexpr auto inputs()
         {
-            return std::array<InputConfig, 1>{};
+            return std::array<SequentialInputConfig<Sample>, 1>{};
         }
 
         static constexpr auto outputs()
         {
-            return std::array<OutputConfig, 1>{};
+            return std::array<TickOutputConfig<Sample>, 1>{};
         }
 
         void declare(DeclarationContext<Latency> const& ctx) const

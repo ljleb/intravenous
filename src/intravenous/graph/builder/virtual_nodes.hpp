@@ -50,13 +50,13 @@ struct VirtualNodeRecord {
 
 struct GraphBuilderVirtualSampleInputPort {
   VirtualPortId id{};
-  SampleInputConfig config{};
+  ContinuousInputConfig config{};
   std::vector<SampleInputChannelId> channels{};
   std::vector<NodeBundlePortId> node_bundle_ports{};
 };
 struct GraphBuilderVirtualSampleOutputPort {
   VirtualPortId id{};
-  SampleOutputConfig config{};
+  ContinuousOutputConfig config{};
   std::vector<SampleOutputChannelId> channels{};
   std::vector<std::vector<SampleOutputChannelId>> member_channels{};
   std::vector<NodeBundlePortId> node_bundle_ports{};
@@ -431,7 +431,7 @@ constexpr GraphBuilderVirtualPorts GraphBuilderVirtualNodes::ports(
       auto const first = mapping.channels.front();
       auto config = bundles.resolve_sample_input(
           {first.bundle, PortKind::sample, first.port}).config;
-      config.channel_layout = mapping.channel_layout;
+      set_continuous_channel_layout(config, mapping.channel_layout);
       result.sample_inputs.push_back({
           .id = {node.id, PortKind::sample, mapping.index},
           .config = std::move(config), .channels = mapping.channels,
@@ -442,7 +442,7 @@ constexpr GraphBuilderVirtualPorts GraphBuilderVirtualNodes::ports(
       auto const first = mapping.channels.front();
       auto config = bundles.resolve_sample_output(
           {first.bundle, PortKind::sample, first.port}).config;
-      config.channel_layout = mapping.channel_layout;
+      set_continuous_channel_layout(config, mapping.channel_layout);
       result.sample_outputs.push_back({
           .id = {node.id, PortKind::sample, mapping.index},
           .config = std::move(config), .channels = mapping.channels,

@@ -30,7 +30,7 @@ struct CStringConfigNode {
 
     static constexpr auto outputs()
     {
-        return std::array<OutputConfig, 1>{};
+        return std::array<TickOutputConfig<Sample>, 1>{};
     }
 
     void tick(TickSampleContext<CStringConfigNode> const& ctx) const
@@ -42,8 +42,8 @@ struct CStringConfigNode {
 struct NodeCallEventSource {
     static constexpr auto outputs()
     {
-        return std::array<OutputConfig, 1>{
-            tick_event_output("trigger", EventTypeId::trigger),
+        return std::array{
+            event_output("trigger", EventTypeId::trigger, iv::OutputProduction::tick),
         };
     }
 
@@ -53,10 +53,10 @@ struct NodeCallEventSource {
 struct NodeCallMixedSink {
     static constexpr auto inputs()
     {
-        return std::array<InputConfig, 3>{
-            sequential_sample_input("left"),
-            sequential_sample_input("right"),
-            sequential_event_input("trigger", EventTypeId::trigger),
+        return std::tuple{
+            input<Sample>("left", iv::InputAccess::sequential),
+            input<Sample>("right", iv::InputAccess::sequential),
+            event_input("trigger", EventTypeId::trigger, iv::InputAccess::sequential),
         };
     }
 
@@ -79,7 +79,7 @@ struct StructuredCStringConfigNode {
 
     static constexpr auto outputs()
     {
-        return std::array<OutputConfig, 1>{};
+        return std::array<TickOutputConfig<Sample>, 1>{};
     }
 
     void tick(TickSampleContext<StructuredCStringConfigNode> const& ctx) const

@@ -9,12 +9,12 @@ namespace iv {
     struct WhackIirThing {
         static constexpr auto inputs()
         {
-            return std::array<InputConfig, 3>{};
+            return std::array<SequentialInputConfig<Sample>, 3>{};
         }
 
         static constexpr auto outputs()
         {
-            return std::array<OutputConfig, 2>{};
+            return std::array<TickOutputConfig<Sample>, 2>{};
         }
 
         void tick(TickSampleContext<WhackIirThing> const& ctx) const
@@ -42,8 +42,8 @@ namespace iv {
         static constexpr auto inputs()
         {
             return std::array {
-                sequential_sample_input("in"),
-                sequential_sample_input("cutoff"),
+                input<Sample>("in", InputAccess::sequential),
+                input<Sample>("cutoff", InputAccess::sequential),
             };
         }
 
@@ -54,7 +54,7 @@ namespace iv {
 
         static constexpr auto outputs()
         {
-            return std::array<OutputConfig, 1>{};
+            return std::array<TickOutputConfig<Sample>, 1>{};
         }
 
         void tick(TickSampleContext<SimpleIirHighPass> const& ctx) const
@@ -85,8 +85,8 @@ namespace iv {
         static constexpr auto inputs()
         {
             return std::array {
-                sequential_sample_input("in"),
-                sequential_sample_input("cutoff"),
+                input<Sample>("in", InputAccess::sequential),
+                input<Sample>("cutoff", InputAccess::sequential),
             };
         }
 
@@ -97,7 +97,7 @@ namespace iv {
 
         static constexpr auto outputs()
         {
-            return std::array { tick_sample_output("out") };
+            return std::array { output<Sample>("out", OutputProduction::tick) };
         }
 
         void tick(TickSampleContext<SimpleIirLowPass> const& ctx) const

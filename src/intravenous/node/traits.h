@@ -114,44 +114,65 @@ namespace iv {
 
     namespace details
     {
+        template<class Tuple, std::size_t... I>
+        consteval bool tuple_contains_only_input_configs(
+            std::index_sequence<I...>)
+        {
+            return (AuthoredInputConfig<
+                std::tuple_element_t<I, std::remove_cvref_t<Tuple>>> && ...);
+        }
+
+        template<class Tuple, std::size_t... I>
+        consteval bool tuple_contains_only_output_configs(
+            std::index_sequence<I...>)
+        {
+            return (AuthoredOutputConfig<
+                std::tuple_element_t<I, std::remove_cvref_t<Tuple>>> && ...);
+        }
+
+        template<class Tuple>
+        concept input_config_tuple =
+            PortConfigTuple<Tuple>
+            && tuple_contains_only_input_configs<Tuple>(
+                std::make_index_sequence<port_config_count_v<Tuple>>{});
+
+        template<class Tuple>
+        concept output_config_tuple =
+            PortConfigTuple<Tuple>
+            && tuple_contains_only_output_configs<Tuple>(
+                std::make_index_sequence<port_config_count_v<Tuple>>{});
+
         template <typename Node>
         concept has_outputs = requires(Node const& node)
         {
-            std::begin(node.outputs());
-            std::end(node.outputs());
+            { node.outputs() };
+            requires output_config_tuple<decltype(node.outputs())>;
         };
 
         template <typename Node>
         concept has_inputs = requires(Node const& node)
         {
-            std::begin(node.inputs());
-            std::end(node.inputs());
+            { node.inputs() };
+            requires input_config_tuple<decltype(node.inputs())>;
         };
-
-        template<typename Range, typename Config>
-        concept port_config_range =
-            std::ranges::input_range<Range>
-            && std::convertible_to<std::ranges::range_value_t<Range>, Config>;
 
         template<typename Node>
         concept has_declared_inputs =
-            has_inputs<Node>
-            && port_config_range<decltype(std::declval<Node const&>().inputs()), InputConfig>;
+            has_inputs<Node>;
 
         template<typename Node>
         concept has_declared_outputs =
-            has_outputs<Node>
-            && port_config_range<decltype(std::declval<Node const&>().outputs()), OutputConfig>;
+            has_outputs<Node>;
 
         template<typename Node>
         concept has_static_port_config_members =
             (!has_inputs<Node> || requires {
                 { Node::inputs() };
-                requires port_config_range<decltype(Node::inputs()), InputConfig>;
+                requires input_config_tuple<decltype(Node::inputs())>;
             })
             && (!has_outputs<Node> || requires {
                 { Node::outputs() };
-                requires port_config_range<decltype(Node::outputs()), OutputConfig>;
+                requires output_config_tuple<decltype(Node::outputs())>;
             });
 
         template<typename Node>
@@ -179,10 +200,9 @@ namespace iv {
             if constexpr (!has_inputs<Node> || !has_constexpr_port_configs<Node>) {
                 return false;
             } else {
-                for (auto const& config : Node::inputs()) {
-                    if (is_random_access(config)) return true;
-                }
-                return false;
+                return any_port_config(
+                    Node::inputs(),
+                    [](auto const& config) { return is_random_access(config); });
             }
         }
 
@@ -192,10 +212,9 @@ namespace iv {
             if constexpr (!has_outputs<Node> || !has_constexpr_port_configs<Node>) {
                 return false;
             } else {
-                for (auto const& config : Node::outputs()) {
-                    if (is_tock(config)) return true;
-                }
-                return false;
+                return any_port_config(
+                    Node::outputs(),
+                    [](auto const& config) { return is_tock(config); });
             }
         }
 
@@ -205,10 +224,9 @@ namespace iv {
             if constexpr (!has_inputs<Node> || !has_constexpr_port_configs<Node>) {
                 return false;
             } else {
-                for (auto const& config : Node::inputs()) {
-                    if (is_sample(config) && is_random_access(config)) return true;
-                }
-                return false;
+                return any_port_config(Node::inputs(), [](auto const& config) {
+                    return is_continuous(config) && is_random_access(config);
+                });
             }
         }
 
@@ -218,10 +236,9 @@ namespace iv {
             if constexpr (!has_outputs<Node> || !has_constexpr_port_configs<Node>) {
                 return false;
             } else {
-                for (auto const& config : Node::outputs()) {
-                    if (is_sample(config) && is_tock(config)) return true;
-                }
-                return false;
+                return any_port_config(Node::outputs(), [](auto const& config) {
+                    return is_continuous(config) && is_tock(config);
+                });
             }
         }
 
@@ -231,10 +248,9 @@ namespace iv {
             if constexpr (!has_inputs<Node> || !has_constexpr_port_configs<Node>) {
                 return false;
             } else {
-                for (auto const& config : Node::inputs()) {
-                    if (!is_sample(config) && is_random_access(config)) return true;
-                }
-                return false;
+                return any_port_config(Node::inputs(), [](auto const& config) {
+                    return !is_continuous(config) && is_random_access(config);
+                });
             }
         }
 
@@ -244,10 +260,9 @@ namespace iv {
             if constexpr (!has_outputs<Node> || !has_constexpr_port_configs<Node>) {
                 return false;
             } else {
-                for (auto const& config : Node::outputs()) {
-                    if (!is_sample(config) && is_tock(config)) return true;
-                }
-                return false;
+                return any_port_config(Node::outputs(), [](auto const& config) {
+                    return !is_continuous(config) && is_tock(config);
+                });
             }
         }
 
@@ -363,14 +378,14 @@ namespace iv {
                 return false;
             } else {
                 if constexpr (has_inputs<Node>) {
-                    for (InputConfig const& config : Node::inputs()) {
-                        if (!is_sequential(config)) return false;
-                    }
+                    if (any_port_config(Node::inputs(), [](auto const& config) {
+                        return !is_sequential(config);
+                    })) return false;
                 }
                 if constexpr (has_outputs<Node>) {
-                    for (OutputConfig const& config : Node::outputs()) {
-                        if (!is_tick(config)) return false;
-                    }
+                    if (any_port_config(Node::outputs(), [](auto const& config) {
+                        return !is_tick(config);
+                    })) return false;
                 }
                 return true;
             }
@@ -433,55 +448,15 @@ namespace iv {
     }
 
     template<typename Node>
-    std::vector<SampleInputConfig> get_inputs(Node const& node)
-    {
-        std::vector<SampleInputConfig> result;
-        for (InputConfig const& input : get_declared_inputs(node)) {
-            if (is_sample(input)) result.push_back(materialize_sample_config(input));
-        }
-        return result;
-    }
-
-    template<typename Node>
-    std::vector<SampleOutputConfig> get_outputs(Node const& node)
-    {
-        std::vector<SampleOutputConfig> result;
-        for (OutputConfig const& output : get_declared_outputs(node)) {
-            if (is_sample(output)) result.push_back(materialize_sample_config(output));
-        }
-        return result;
-    }
-
-    template<typename Node>
-    std::vector<EventInputConfig> get_event_inputs(Node const& node)
-    {
-        std::vector<EventInputConfig> result;
-        for (InputConfig const& input : get_declared_inputs(node)) {
-            if (!is_sample(input)) result.push_back(materialize_event_config(input));
-        }
-        return result;
-    }
-
-    template<typename Node>
-    std::vector<EventOutputConfig> get_event_outputs(Node const& node)
-    {
-        std::vector<EventOutputConfig> result;
-        for (OutputConfig const& output : get_declared_outputs(node)) {
-            if (!is_sample(output)) result.push_back(materialize_event_config(output));
-        }
-        return result;
-    }
-
-    template<typename Node>
     constexpr size_t get_num_inputs(Node const& node)
     {
-        return count_sample_ports(get_declared_inputs(node));
+        return count_continuous_ports(get_declared_inputs(node));
     }
 
     template<typename Node>
     constexpr size_t get_num_outputs(Node const& node)
     {
-        return count_sample_ports(get_declared_outputs(node));
+        return count_continuous_ports(get_declared_outputs(node));
     }
 
     template<typename Node>

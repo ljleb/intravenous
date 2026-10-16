@@ -135,9 +135,13 @@ constexpr std::vector<IntrospectionPortInfo> project_introspection_sample_ports(
         if (inputs) {
             auto const config =
                 node_bundles.resolve_sample_input(first_address).config;
-            default_value = config.default_value;
-            min = config.min;
-            max = config.max;
+            if (is_sequential(config)) {
+                auto const& properties = sequential_input_metadata<Sample>(
+                    sequential_input_properties(config));
+                default_value = properties.default_value;
+                min = properties.min;
+                max = properties.max;
+            }
         }
 
         bool any_connected = false;

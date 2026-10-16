@@ -56,10 +56,12 @@ The central rules are:
 
 > Input access, output production, and output retention are independent authored
 > contracts. `SequentialInputConfig` declares a bounded sequential read window;
-> `RandomAccessInputConfig` declares arbitrary reads within available exact coverage.
+> `RegionInputConfig` declares one finite ordered region; and
+> `CoverageInputConfig` declares arbitrary reads within available exact coverage.
 > `TickOutputConfig` selects sequential production by the existing generated
-> `tick_block()` implementation; `TockOutputConfig` selects demand-driven production
-> by `tock_coverage()`. Either output may be `ephemeral` or `persisted`.
+> `tick_block()` implementation; `RegionOutputConfig` and `CoverageOutputConfig`
+> select demand-driven production by the appropriate Tock callback. Any output may be
+> `ephemeral` or `persisted`.
 
 > All concrete GraphJit node types have static constexpr port schemas. Graph
 > topology, node instance count, and connections remain dynamic graph data.
@@ -137,14 +139,14 @@ when that Tick implementation is replayed in the background.
 
 | Axis | Authored alternatives | Meaning |
 | --- | --- | --- |
-| input access | `SequentialInputConfig`, `RandomAccessInputConfig` | bounded sequential window or arbitrary positions inside coverage |
-| output production | `TickOutputConfig`, `TockOutputConfig` | existing generated tick-block implementation or background tock callback |
+| input access | `SequentialInputConfig`, `RegionInputConfig`, `CoverageInputConfig` | bounded sequential window, one finite ordered region, or arbitrary positions inside coverage |
+| output production | `TickOutputConfig`, `RegionOutputConfig`, `CoverageOutputConfig` | generated Tick data, one finite background region, or background coverage |
 | output retention | `OutputRetention::{ephemeral,persisted}` | whether generated finalized values must be retained |
 | data | registered continuous value type, event type | value/event representation and bounds |
 
-Sequential input history and tick output history/latency are finite timing
-contracts. Random-access input and tock output declarations do not acquire these
-fields. Output retention never selects a callback. The concrete sample/event
+Sequential input history and Tick output history/latency are finite realization
+constraints. Region/Coverage input and output declarations do not acquire these
+properties. Output retention never selects a callback. The concrete sample/event
 schema is in section 13; the direct-connection rule is in section 22.
 
 `tick()` already exists: the node traits generate its `tick_block()` wrapper, and
@@ -588,7 +590,8 @@ memoization history.
 ## 10. Tock coverage evaluation callbacks
 
 `tock_coverage()` is the checked-in one-node background-evaluation callback for
-outputs whose production is `TockOutputConfig`. The planned
+Coverage outputs. Region production uses the corresponding finite-region Tock
+operation. The planned
 `tock_coverage_batch()` form evaluates several compatible nodes as one compiler/runtime
 operation; each lane still carries the exact scalar context for its own node. A
 node's requested `IndexCoverage` is never merged with another lane merely because the
@@ -847,34 +850,23 @@ The port schema has independent input access, output production, and output
 retention. Data properties remain separate for samples and events:
 
 ```cpp
-struct SequentialInputConfig {};
-struct RandomAccessInputConfig {};
-using InputAccessConfig =
-    std::variant<SequentialInputConfig, RandomAccessInputConfig>;
+SequentialInputConfig<Types...>
+RegionInputConfig<Types...>
+CoverageInputConfig<Types...>
 
-struct TickOutputConfig {};
-struct TockOutputConfig {};
-using OutputProductionConfig =
-    std::variant<TickOutputConfig, TockOutputConfig>;
+TickOutputConfig<Types...>
+RegionOutputConfig<Types...>
+CoverageOutputConfig<Types...>
 
 enum class OutputRetention { ephemeral, persisted };
-
-struct InputConfig {
-    // Existing sample/event data properties and name/identity also apply.
-    InputAccessConfig access{SequentialInputConfig{}};
-};
-struct OutputConfig {
-    // Existing sample/event data properties and name/identity also apply.
-    OutputProductionConfig production{TickOutputConfig{}};
-    OutputRetention retention = OutputRetention::ephemeral;
-};
 ```
 
-These are abbreviated target-schema sketches. The checked-in implementation still stores
-Sequential history and Tick output history/latency in the static configs; the planned
-constraint model moves those extents into per-instance `constrain_ports()` realization
-constraints while retaining the access/production alternatives shown here. `InputConfig`
-and `OutputConfig` retain their sample/event data properties and identities.
+These are abbreviated authored-schema sketches. Event declarations have the same
+three access and production forms but remain separate event config types. Sequential
+history and Tick output history/latency are contributed by each configured instance
+through `constrain_ports()` rather than stored in static authored configs. Reflection
+then erases the heterogeneous typed declarations into the configured graph's access
+and production variants.
 Input access, output production and output retention are independent in reflection,
 configured-graph serialization and the compiler record interface. GraphJit classifies
 per-channel compatibility and delivery using those orthogonal contracts; execution of
@@ -884,8 +876,8 @@ the retained background plan begins in step 4.
 | --- | --- | --- |
 | tick | ephemeral | sequential generation; no post-window retention obligation |
 | tick | persisted | sequential generation; every written/voided callback block is retained |
-| tock | ephemeral | background demand-driven generation; transaction-local materialization permitted |
-| tock | persisted | background demand-driven generation; generated covered data retained |
+| region or coverage | ephemeral | background demand-driven generation; transaction-local materialization permitted |
+| region or coverage | persisted | background demand-driven generation; generated covered data retained |
 
 `ephemeral` does not forbid transaction-local materialization. `persisted` is a strict runtime
 retention guarantee, not a best-effort cache or a promise of project-file
@@ -1619,8 +1611,8 @@ so those uses may share storage. In contrast, `Tick/persisted -> Sequential` plu
 `Tick/persisted -> Random Access` requires **both** a current Tick representation and
 a published persisted-data representation: their visibility semantics are different.
 
-`RandomAccessInputConfig` by itself does not reveal whether node code reads that
-input from Tick, Tock, or both. GraphJit should use statically known callback access
+`RegionInputConfig` or `CoverageInputConfig` by itself does not reveal whether node
+code reads that input from Tick, Tock, or both. GraphJit should use statically known callback access
 when available; until that is represented precisely, the safe planner rule is to
 join every legal callback context for that input.
 
@@ -2559,8 +2551,9 @@ recording merely because that planning metadata exists.
 
 1. Concrete GraphJit nodes have static constexpr port schemas; only graph topology
    and instance/connection composition are dynamic.
-2. Input access (`SequentialInputConfig`/`RandomAccessInputConfig`), output
-   production (`TickOutputConfig`/`TockOutputConfig`) and output retention
+2. Input access (`SequentialInputConfig`/`RegionInputConfig`/`CoverageInputConfig`),
+   output production (`TickOutputConfig`/`RegionOutputConfig`/
+   `CoverageOutputConfig`) and output retention
    (`ephemeral`/`persisted`) are independent declarations.
 3. `tick()` already lowers to an imported, optimizable generated `tick_block()`.
    The planned batch layer retains `tick()` as a first-class authoring form and

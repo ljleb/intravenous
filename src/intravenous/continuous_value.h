@@ -1,18 +1,23 @@
 #pragma once
 
+#include <intravenous/channel_layout.h>
 #include <intravenous/global_index.h>
 #include <intravenous/sample.h>
 
 #include <array>
 #include <bit>
 #include <complex>
+#include <concepts>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
 #include <optional>
+#include <span>
 #include <string_view>
+#include <tuple>
 #include <type_traits>
 #include <utility>
+#include <variant>
 
 namespace iv {
 
@@ -29,6 +34,15 @@ enum class ContinuousValueChannelCapability : std::uint8_t {
     audio,
 };
 
+namespace continuous_value_details {
+
+inline constexpr ChannelLayout default_audio_channel_layout {
+    .channel_type = ChannelTypeId::mono,
+    .sample_layout = SampleStreamLayout::planar,
+};
+
+} // namespace continuous_value_details
+
 // A registered value extension owns every type-dependent fact used by generic
 // realization code. Storage elements must remain trivial: generated execution
 // may copy, clear, persist and relocate them without invoking C++ object code.
@@ -39,6 +53,141 @@ struct SampleContinuousValueExtension {
     static constexpr std::size_t rank = 0;
     static constexpr auto channel_capability =
         ContinuousValueChannelCapability::audio;
+
+    using combine_values_type = Sample (*)(Sample, Sample) noexcept;
+
+    [[nodiscard]] static constexpr Sample add(
+        Sample left, Sample right) noexcept
+    {
+        return left + right;
+    }
+
+    struct SequentialInputOptions {
+        ChannelLayout channel_layout =
+            continuous_value_details::default_audio_channel_layout;
+        Sample default_value = 0.0f;
+        Sample min = -std::numeric_limits<Sample::storage>::infinity();
+        Sample max = std::numeric_limits<Sample::storage>::infinity();
+        Sample neutral_value = 0.0f;
+        combine_values_type combine_values = &add;
+
+        constexpr bool operator==(SequentialInputOptions const&) const = default;
+    };
+
+    struct SequentialInputMetadata {
+        Sample default_value = 0.0f;
+        Sample min = -std::numeric_limits<Sample::storage>::infinity();
+        Sample max = std::numeric_limits<Sample::storage>::infinity();
+        Sample neutral_value = 0.0f;
+
+        constexpr bool operator==(SequentialInputMetadata const&) const = default;
+
+        template<class Writer>
+        void write_binary(Writer& writer) const
+        {
+            writer.pod(default_value.value);
+            writer.pod(min.value);
+            writer.pod(max.value);
+            writer.pod(neutral_value.value);
+        }
+
+        template<class Reader>
+        [[nodiscard]] static SequentialInputMetadata read_binary(
+            Reader& reader)
+        {
+            return {
+                .default_value = Sample{
+                    reader.template pod<Sample::storage>()},
+                .min = Sample{reader.template pod<Sample::storage>()},
+                .max = Sample{reader.template pod<Sample::storage>()},
+                .neutral_value = Sample{
+                    reader.template pod<Sample::storage>()},
+            };
+        }
+    };
+
+#define IV_AUDIO_CHANNEL_OPTIONS(Name)                                   \
+    struct Name {                                                        \
+        ChannelLayout channel_layout =                                   \
+            continuous_value_details::default_audio_channel_layout;      \
+        constexpr bool operator==(Name const&) const = default;          \
+    }
+    IV_AUDIO_CHANNEL_OPTIONS(RegionInputOptions);
+    IV_AUDIO_CHANNEL_OPTIONS(CoverageInputOptions);
+    IV_AUDIO_CHANNEL_OPTIONS(TickOutputOptions);
+    IV_AUDIO_CHANNEL_OPTIONS(RegionOutputOptions);
+    IV_AUDIO_CHANNEL_OPTIONS(CoverageOutputOptions);
+#undef IV_AUDIO_CHANNEL_OPTIONS
+
+    struct StatelessMetadata {
+        constexpr bool operator==(StatelessMetadata const&) const = default;
+
+        template<class Writer>
+        void write_binary(Writer&) const
+        {}
+
+        template<class Reader>
+        [[nodiscard]] static StatelessMetadata read_binary(Reader&)
+        {
+            return {};
+        }
+    };
+    using RegionInputMetadata = StatelessMetadata;
+    using CoverageInputMetadata = StatelessMetadata;
+    using TickOutputMetadata = StatelessMetadata;
+    using RegionOutputMetadata = StatelessMetadata;
+    using CoverageOutputMetadata = StatelessMetadata;
+
+    [[nodiscard]] static constexpr SequentialInputMetadata metadata(
+        SequentialInputOptions const& options) noexcept
+    {
+        return {
+            .default_value = options.default_value,
+            .min = options.min,
+            .max = options.max,
+            .neutral_value = options.neutral_value,
+        };
+    }
+
+#define IV_STATELESS_METADATA_OVERLOAD(Options, Metadata)                \
+    [[nodiscard]] static constexpr Metadata metadata(                    \
+        Options const&) noexcept                                         \
+    {                                                                    \
+        return {};                                                       \
+    }
+    IV_STATELESS_METADATA_OVERLOAD(RegionInputOptions, RegionInputMetadata)
+    IV_STATELESS_METADATA_OVERLOAD(CoverageInputOptions, CoverageInputMetadata)
+    IV_STATELESS_METADATA_OVERLOAD(TickOutputOptions, TickOutputMetadata)
+    IV_STATELESS_METADATA_OVERLOAD(RegionOutputOptions, RegionOutputMetadata)
+    IV_STATELESS_METADATA_OVERLOAD(CoverageOutputOptions, CoverageOutputMetadata)
+#undef IV_STATELESS_METADATA_OVERLOAD
+
+    static constexpr bool initialize_sequential_neutral(
+        SequentialInputOptions const& options,
+        std::span<storage_element> destination,
+        std::size_t elements_per_value) noexcept
+    {
+        if (elements_per_value != 1) return false;
+        for (auto& value : destination) value = options.neutral_value;
+        return true;
+    }
+
+    static constexpr bool combine_sequential_values(
+        SequentialInputOptions const& options,
+        std::span<storage_element> destination,
+        std::span<storage_element const> source,
+        std::size_t elements_per_value) noexcept
+    {
+        if (elements_per_value != 1 || destination.size() != source.size()
+            || options.combine_values == nullptr) {
+            return false;
+        }
+        for (std::size_t index = 0; index < destination.size(); ++index) {
+            destination[index] = options.combine_values(
+                destination[index], source[index]);
+        }
+        return true;
+    }
 
     [[nodiscard]] static constexpr bool valid_size(
         std::optional<std::size_t> size) noexcept
@@ -61,6 +210,137 @@ struct FractionalGlobalIndexContinuousValueExtension {
     static constexpr auto channel_capability =
         ContinuousValueChannelCapability::scalar;
 
+    using combine_values_type = FractionalGlobalIndex (*)(
+        FractionalGlobalIndex, FractionalGlobalIndex) noexcept;
+
+    [[nodiscard]] static constexpr FractionalGlobalIndex add(
+        FractionalGlobalIndex left,
+        FractionalGlobalIndex right) noexcept
+    {
+        return left.advanced_by({
+            .whole = right.whole().bits(),
+            .fraction = right.fraction(),
+        });
+    }
+
+    struct SequentialInputOptions {
+        FractionalGlobalIndex default_value {};
+        FractionalGlobalIndex neutral_value {};
+        combine_values_type combine_values = &add;
+
+        constexpr bool operator==(SequentialInputOptions const&) const = default;
+    };
+
+    struct SequentialInputMetadata {
+        FractionalGlobalIndex default_value {};
+        FractionalGlobalIndex neutral_value {};
+
+        constexpr bool operator==(SequentialInputMetadata const&) const = default;
+
+        template<class Writer>
+        void write_binary(Writer& writer) const
+        {
+            writer.pod(default_value.whole().bits());
+            writer.pod(default_value.fraction());
+            writer.pod(neutral_value.whole().bits());
+            writer.pod(neutral_value.fraction());
+        }
+
+        template<class Reader>
+        [[nodiscard]] static SequentialInputMetadata read_binary(
+            Reader& reader)
+        {
+            auto const default_whole = reader.template pod<std::uint64_t>();
+            auto const default_fraction = reader.template pod<std::uint64_t>();
+            auto const neutral_whole = reader.template pod<std::uint64_t>();
+            auto const neutral_fraction = reader.template pod<std::uint64_t>();
+            return {
+                .default_value = FractionalGlobalIndex::from_parts(
+                    GlobalIndex::from_bits(default_whole), default_fraction),
+                .neutral_value = FractionalGlobalIndex::from_parts(
+                    GlobalIndex::from_bits(neutral_whole), neutral_fraction),
+            };
+        }
+    };
+
+    struct RegionInputOptions {
+        constexpr bool operator==(RegionInputOptions const&) const = default;
+
+        template<class Writer>
+        void write_binary(Writer&) const
+        {}
+
+        template<class Reader>
+        [[nodiscard]] static RegionInputOptions read_binary(Reader&)
+        {
+            return {};
+        }
+    };
+    using RegionInputMetadata = RegionInputOptions;
+    using CoverageInputOptions = RegionInputOptions;
+    using CoverageInputMetadata = RegionInputMetadata;
+    struct TickOutputOptions {
+        constexpr bool operator==(TickOutputOptions const&) const = default;
+
+        template<class Writer>
+        void write_binary(Writer&) const
+        {}
+
+        template<class Reader>
+        [[nodiscard]] static TickOutputOptions read_binary(Reader&)
+        {
+            return {};
+        }
+    };
+    using TickOutputMetadata = TickOutputOptions;
+    using RegionOutputOptions = TickOutputOptions;
+    using RegionOutputMetadata = TickOutputMetadata;
+    using CoverageOutputOptions = TickOutputOptions;
+    using CoverageOutputMetadata = TickOutputMetadata;
+
+    [[nodiscard]] static constexpr SequentialInputMetadata metadata(
+        SequentialInputOptions const& options) noexcept
+    {
+        return {
+            .default_value = options.default_value,
+            .neutral_value = options.neutral_value,
+        };
+    }
+
+    static constexpr bool initialize_sequential_neutral(
+        SequentialInputOptions const& options,
+        std::span<storage_element> destination,
+        std::size_t elements_per_value) noexcept
+    {
+        if (elements_per_value != 1) return false;
+        for (auto& value : destination) value = options.neutral_value;
+        return true;
+    }
+
+    static constexpr bool combine_sequential_values(
+        SequentialInputOptions const& options,
+        std::span<storage_element> destination,
+        std::span<storage_element const> source,
+        std::size_t elements_per_value) noexcept
+    {
+        if (elements_per_value != 1 || destination.size() != source.size()
+            || options.combine_values == nullptr) {
+            return false;
+        }
+        for (std::size_t index = 0; index < destination.size(); ++index) {
+            destination[index] = options.combine_values(
+                destination[index], source[index]);
+        }
+        return true;
+    }
+
+    template<class Options>
+    [[nodiscard]] static constexpr Options metadata(
+        Options const& options) noexcept
+    {
+        return options;
+    }
+
     [[nodiscard]] static constexpr bool valid_size(
         std::optional<std::size_t> size) noexcept
     {
@@ -81,6 +361,141 @@ struct FFTBlockContinuousValueExtension {
     static constexpr std::size_t rank = 1;
     static constexpr auto channel_capability =
         ContinuousValueChannelCapability::audio;
+
+    using combine_values_type = void (*)(
+        std::span<FFTBin>, std::span<FFTBin const>) noexcept;
+    using neutral_value_type = void (*)(std::span<FFTBin>) noexcept;
+
+    static constexpr void initialize_zero(
+        std::span<FFTBin> destination) noexcept
+    {
+        for (auto& bin : destination) bin = {};
+    }
+
+    static constexpr void add(
+        std::span<FFTBin> destination,
+        std::span<FFTBin const> source) noexcept
+    {
+        for (std::size_t index = 0; index < destination.size(); ++index) {
+            destination[index] += source[index];
+        }
+    }
+
+    struct SequentialInputOptions {
+        ChannelLayout channel_layout =
+            continuous_value_details::default_audio_channel_layout;
+        neutral_value_type neutral_value = &initialize_zero;
+        combine_values_type combine_values = &add;
+
+        constexpr bool operator==(SequentialInputOptions const&) const = default;
+    };
+
+    struct SequentialInputMetadata {
+        // Neutral initialization and combination are executable package
+        // behavior. The configured graph has no FFT reduction payload to
+        // serialize once scalar presentation metadata is excluded.
+        constexpr bool operator==(SequentialInputMetadata const&) const = default;
+
+        template<class Writer>
+        void write_binary(Writer&) const
+        {}
+
+        template<class Reader>
+        [[nodiscard]] static SequentialInputMetadata read_binary(Reader&)
+        {
+            return {};
+        }
+    };
+
+#define IV_AUDIO_CHANNEL_OPTIONS(Name)                                   \
+    struct Name {                                                        \
+        ChannelLayout channel_layout =                                   \
+            continuous_value_details::default_audio_channel_layout;      \
+        constexpr bool operator==(Name const&) const = default;          \
+    }
+    IV_AUDIO_CHANNEL_OPTIONS(RegionInputOptions);
+    IV_AUDIO_CHANNEL_OPTIONS(CoverageInputOptions);
+    IV_AUDIO_CHANNEL_OPTIONS(TickOutputOptions);
+    IV_AUDIO_CHANNEL_OPTIONS(RegionOutputOptions);
+    IV_AUDIO_CHANNEL_OPTIONS(CoverageOutputOptions);
+#undef IV_AUDIO_CHANNEL_OPTIONS
+
+    struct StatelessMetadata {
+        constexpr bool operator==(StatelessMetadata const&) const = default;
+
+        template<class Writer>
+        void write_binary(Writer&) const
+        {}
+
+        template<class Reader>
+        [[nodiscard]] static StatelessMetadata read_binary(Reader&)
+        {
+            return {};
+        }
+    };
+    using RegionInputMetadata = StatelessMetadata;
+    using CoverageInputMetadata = StatelessMetadata;
+    using TickOutputMetadata = StatelessMetadata;
+    using RegionOutputMetadata = StatelessMetadata;
+    using CoverageOutputMetadata = StatelessMetadata;
+
+    [[nodiscard]] static constexpr SequentialInputMetadata metadata(
+        SequentialInputOptions const&) noexcept
+    {
+        return {};
+    }
+
+#define IV_STATELESS_METADATA_OVERLOAD(Options, Metadata)                \
+    [[nodiscard]] static constexpr Metadata metadata(                    \
+        Options const&) noexcept                                         \
+    {                                                                    \
+        return {};                                                       \
+    }
+    IV_STATELESS_METADATA_OVERLOAD(RegionInputOptions, RegionInputMetadata)
+    IV_STATELESS_METADATA_OVERLOAD(CoverageInputOptions, CoverageInputMetadata)
+    IV_STATELESS_METADATA_OVERLOAD(TickOutputOptions, TickOutputMetadata)
+    IV_STATELESS_METADATA_OVERLOAD(RegionOutputOptions, RegionOutputMetadata)
+    IV_STATELESS_METADATA_OVERLOAD(CoverageOutputOptions, CoverageOutputMetadata)
+#undef IV_STATELESS_METADATA_OVERLOAD
+
+    static constexpr bool initialize_sequential_neutral(
+        SequentialInputOptions const& options,
+        std::span<storage_element> destination,
+        std::size_t elements_per_value) noexcept
+    {
+        if (!valid_size(std::optional{elements_per_value})
+            || destination.size() % elements_per_value != 0
+            || options.neutral_value == nullptr) {
+            return false;
+        }
+        for (std::size_t begin = 0; begin < destination.size();
+             begin += elements_per_value) {
+            options.neutral_value(
+                destination.subspan(begin, elements_per_value));
+        }
+        return true;
+    }
+
+    static constexpr bool combine_sequential_values(
+        SequentialInputOptions const& options,
+        std::span<storage_element> destination,
+        std::span<storage_element const> source,
+        std::size_t elements_per_value) noexcept
+    {
+        if (!valid_size(std::optional{elements_per_value})
+            || destination.size() != source.size()
+            || destination.size() % elements_per_value != 0
+            || options.combine_values == nullptr) {
+            return false;
+        }
+        for (std::size_t begin = 0; begin < destination.size();
+             begin += elements_per_value) {
+            options.combine_values(
+                destination.subspan(begin, elements_per_value),
+                source.subspan(begin, elements_per_value));
+        }
+        return true;
+    }
 
     // The canonical real-transform half-spectrum contains N/2 + 1 explicit
     // complex bins, including DC and Nyquist. A useful transform therefore has
@@ -146,6 +561,58 @@ inline constexpr auto continuous_value_type_registry = std::array {
 #undef IV_CONTINUOUS_VALUE_TYPE_INFO
 };
 
+namespace continuous_value_details {
+
+template<class Value>
+concept HasDefaultMember = requires(Value const& value) {
+    value.default_value;
+};
+
+template<class Value>
+concept HasMinimumMember = requires(Value const& value) {
+    value.min;
+};
+
+template<class Value>
+concept HasMaximumMember = requires(Value const& value) {
+    value.max;
+};
+
+template<class Extension>
+concept HasSequentialReduction = requires(
+    typename Extension::SequentialInputOptions const& options) {
+    options.neutral_value;
+    options.combine_values;
+};
+
+template<class Extension>
+consteval bool valid_metadata_shape()
+{
+    if constexpr (Extension::rank != 0) {
+        using Options = typename Extension::SequentialInputOptions;
+        using Metadata = typename Extension::SequentialInputMetadata;
+        return !HasDefaultMember<Options>
+            && !HasMinimumMember<Options>
+            && !HasMaximumMember<Options>
+            && !HasDefaultMember<Metadata>
+            && !HasMinimumMember<Metadata>
+            && !HasMaximumMember<Metadata>;
+    }
+    return true;
+}
+
+} // namespace continuous_value_details
+
+#define IV_ASSERT_CONTINUOUS_METADATA_SHAPE(key, extension)              \
+    static_assert(continuous_value_details::valid_metadata_shape<         \
+        extension>(),                                                    \
+        "non-scalar continuous values cannot define default/min/max"); \
+    static_assert(continuous_value_details::HasSequentialReduction<       \
+        extension>,                                                      \
+        "every continuous value must define neutral/combine options");
+IV_CONTINUOUS_VALUE_TYPES(IV_ASSERT_CONTINUOUS_METADATA_SHAPE)
+#undef IV_ASSERT_CONTINUOUS_METADATA_SHAPE
+
 static_assert(
     continuous_value_type_registry.size()
     == static_cast<std::size_t>(ContinuousValueTypeId::count));
@@ -202,6 +669,225 @@ concept RegisteredContinuousValue = requires {
 template<RegisteredContinuousValue T>
 inline constexpr ContinuousValueTypeId continuous_value_type_id_v =
     ContinuousValueType<std::remove_cvref_t<T>>::id;
+
+// Reflection erases a leaf node's heterogeneous declaration only after the
+// declaration has been statically checked. These variants are generated from
+// the same sole registry list as ContinuousValueTypeId, so registering a value
+// type never requires editing a second central alternative list. There is no
+// empty alternative: every metadata value identifies one registered type.
+namespace continuous_value_details {
+
+template<class... Extensions>
+struct ExtensionList {};
+
+#define IV_CONTINUOUS_EXTENSION_LIST_ENTRY(key, extension) , extension
+using RegisteredExtensions = ExtensionList<
+    void IV_CONTINUOUS_VALUE_TYPES(IV_CONTINUOUS_EXTENSION_LIST_ENTRY)>;
+#undef IV_CONTINUOUS_EXTENSION_LIST_ENTRY
+
+template<class List>
+struct MetadataVariants;
+
+template<class Ignored, class... Extensions>
+struct MetadataVariants<ExtensionList<Ignored, Extensions...>> {
+    using SequentialInput = std::variant<
+        typename Extensions::SequentialInputMetadata...>;
+    using RegionInput = std::variant<
+        typename Extensions::RegionInputMetadata...>;
+    using CoverageInput = std::variant<
+        typename Extensions::CoverageInputMetadata...>;
+    using TickOutput = std::variant<
+        typename Extensions::TickOutputMetadata...>;
+    using RegionOutput = std::variant<
+        typename Extensions::RegionOutputMetadata...>;
+    using CoverageOutput = std::variant<
+        typename Extensions::CoverageOutputMetadata...>;
+};
+
+using RegisteredMetadataVariants = MetadataVariants<RegisteredExtensions>;
+
+} // namespace continuous_value_details
+
+using ContinuousSequentialInputMetadata =
+    continuous_value_details::RegisteredMetadataVariants::SequentialInput;
+using ContinuousRegionInputMetadata =
+    continuous_value_details::RegisteredMetadataVariants::RegionInput;
+using ContinuousCoverageInputMetadata =
+    continuous_value_details::RegisteredMetadataVariants::CoverageInput;
+using ContinuousTickOutputMetadata =
+    continuous_value_details::RegisteredMetadataVariants::TickOutput;
+using ContinuousRegionOutputMetadata =
+    continuous_value_details::RegisteredMetadataVariants::RegionOutput;
+using ContinuousCoverageOutputMetadata =
+    continuous_value_details::RegisteredMetadataVariants::CoverageOutput;
+
+namespace continuous_value_details {
+
+template<class Variants, class... Extensions, std::size_t... Index>
+consteval bool metadata_variants_match_registry(
+    ExtensionList<void, Extensions...>,
+    std::index_sequence<Index...>)
+{
+    return ((
+        std::same_as<
+            std::variant_alternative_t<Index, typename Variants::SequentialInput>,
+            typename Extensions::SequentialInputMetadata>
+        && std::same_as<
+            std::variant_alternative_t<Index, typename Variants::RegionInput>,
+            typename Extensions::RegionInputMetadata>
+        && std::same_as<
+            std::variant_alternative_t<Index, typename Variants::CoverageInput>,
+            typename Extensions::CoverageInputMetadata>
+        && std::same_as<
+            std::variant_alternative_t<Index, typename Variants::TickOutput>,
+            typename Extensions::TickOutputMetadata>
+        && std::same_as<
+            std::variant_alternative_t<Index, typename Variants::RegionOutput>,
+            typename Extensions::RegionOutputMetadata>
+        && std::same_as<
+            std::variant_alternative_t<Index, typename Variants::CoverageOutput>,
+            typename Extensions::CoverageOutputMetadata>
+        && ContinuousValueType<typename Extensions::value_type>::id
+            == continuous_value_type_registry[Index].id) && ...);
+}
+
+} // namespace continuous_value_details
+
+static_assert(continuous_value_details::metadata_variants_match_registry<
+    continuous_value_details::RegisteredMetadataVariants>(
+        continuous_value_details::RegisteredExtensions{},
+        std::make_index_sequence<
+            continuous_value_type_registry.size()>{}));
+
+static_assert(
+    std::variant_size_v<ContinuousSequentialInputMetadata>
+    == continuous_value_type_registry.size());
+static_assert(
+    std::variant_size_v<ContinuousRegionInputMetadata>
+    == continuous_value_type_registry.size());
+static_assert(
+    std::variant_size_v<ContinuousCoverageInputMetadata>
+    == continuous_value_type_registry.size());
+static_assert(
+    std::variant_size_v<ContinuousTickOutputMetadata>
+    == continuous_value_type_registry.size());
+static_assert(
+    std::variant_size_v<ContinuousRegionOutputMetadata>
+    == continuous_value_type_registry.size());
+static_assert(
+    std::variant_size_v<ContinuousCoverageOutputMetadata>
+    == continuous_value_type_registry.size());
+
+template<class Variant>
+concept ContinuousMetadataVariant =
+    std::same_as<std::remove_cvref_t<Variant>,
+        ContinuousSequentialInputMetadata>
+    || std::same_as<std::remove_cvref_t<Variant>,
+        ContinuousRegionInputMetadata>
+    || std::same_as<std::remove_cvref_t<Variant>,
+        ContinuousCoverageInputMetadata>
+    || std::same_as<std::remove_cvref_t<Variant>,
+        ContinuousTickOutputMetadata>
+    || std::same_as<std::remove_cvref_t<Variant>,
+        ContinuousRegionOutputMetadata>
+    || std::same_as<std::remove_cvref_t<Variant>,
+        ContinuousCoverageOutputMetadata>;
+
+template<ContinuousMetadataVariant Variant>
+[[nodiscard]] constexpr ContinuousValueTypeId continuous_metadata_value_type(
+    Variant const& metadata)
+{
+    if (metadata.valueless_by_exception()
+        || metadata.index() >= continuous_value_type_registry.size()) {
+        throw "continuous metadata has no registered value type";
+    }
+    return continuous_value_type_registry[metadata.index()].id;
+}
+
+#define IV_DEFAULT_CONTINUOUS_METADATA_CASE(Kind, key, extension)        \
+    case ContinuousValueTypeId::key:                                    \
+        return Continuous##Kind##Metadata{                               \
+            extension::metadata(extension::Kind##Options{})};
+
+[[nodiscard]] constexpr ContinuousSequentialInputMetadata
+default_sequential_input_metadata(ContinuousValueTypeId type)
+{
+    switch (type) {
+#define IV_CASE(key, extension)                                          \
+    IV_DEFAULT_CONTINUOUS_METADATA_CASE(SequentialInput, key, extension)
+        IV_CONTINUOUS_VALUE_TYPES(IV_CASE)
+#undef IV_CASE
+    case ContinuousValueTypeId::count: break;
+    }
+    throw "unregistered continuous value type";
+}
+
+[[nodiscard]] constexpr ContinuousRegionInputMetadata
+default_region_input_metadata(ContinuousValueTypeId type)
+{
+    switch (type) {
+#define IV_CASE(key, extension)                                          \
+    IV_DEFAULT_CONTINUOUS_METADATA_CASE(RegionInput, key, extension)
+        IV_CONTINUOUS_VALUE_TYPES(IV_CASE)
+#undef IV_CASE
+    case ContinuousValueTypeId::count: break;
+    }
+    throw "unregistered continuous value type";
+}
+
+[[nodiscard]] constexpr ContinuousCoverageInputMetadata
+default_coverage_input_metadata(ContinuousValueTypeId type)
+{
+    switch (type) {
+#define IV_CASE(key, extension)                                          \
+    IV_DEFAULT_CONTINUOUS_METADATA_CASE(CoverageInput, key, extension)
+        IV_CONTINUOUS_VALUE_TYPES(IV_CASE)
+#undef IV_CASE
+    case ContinuousValueTypeId::count: break;
+    }
+    throw "unregistered continuous value type";
+}
+
+[[nodiscard]] constexpr ContinuousTickOutputMetadata
+default_tick_output_metadata(ContinuousValueTypeId type)
+{
+    switch (type) {
+#define IV_CASE(key, extension)                                          \
+    IV_DEFAULT_CONTINUOUS_METADATA_CASE(TickOutput, key, extension)
+        IV_CONTINUOUS_VALUE_TYPES(IV_CASE)
+#undef IV_CASE
+    case ContinuousValueTypeId::count: break;
+    }
+    throw "unregistered continuous value type";
+}
+
+[[nodiscard]] constexpr ContinuousRegionOutputMetadata
+default_region_output_metadata(ContinuousValueTypeId type)
+{
+    switch (type) {
+#define IV_CASE(key, extension)                                          \
+    IV_DEFAULT_CONTINUOUS_METADATA_CASE(RegionOutput, key, extension)
+        IV_CONTINUOUS_VALUE_TYPES(IV_CASE)
+#undef IV_CASE
+    case ContinuousValueTypeId::count: break;
+    }
+    throw "unregistered continuous value type";
+}
+
+[[nodiscard]] constexpr ContinuousCoverageOutputMetadata
+default_coverage_output_metadata(ContinuousValueTypeId type)
+{
+    switch (type) {
+#define IV_CASE(key, extension)                                          \
+    IV_DEFAULT_CONTINUOUS_METADATA_CASE(CoverageOutput, key, extension)
+        IV_CONTINUOUS_VALUE_TYPES(IV_CASE)
+#undef IV_CASE
+    case ContinuousValueTypeId::count: break;
+    }
+    throw "unregistered continuous value type";
+}
+
+#undef IV_DEFAULT_CONTINUOUS_METADATA_CASE
 
 class ContinuousValueTypeSet {
 public:
@@ -310,6 +996,21 @@ public:
         ContinuousValueTypeSet rhs) noexcept
     {
         lhs &= rhs;
+        return lhs;
+    }
+
+    constexpr ContinuousValueTypeSet& operator|=(
+        ContinuousValueTypeSet other) noexcept
+    {
+        mask_ |= other.mask_;
+        return *this;
+    }
+
+    friend constexpr ContinuousValueTypeSet operator|(
+        ContinuousValueTypeSet lhs,
+        ContinuousValueTypeSet rhs) noexcept
+    {
+        lhs |= rhs;
         return lhs;
     }
 

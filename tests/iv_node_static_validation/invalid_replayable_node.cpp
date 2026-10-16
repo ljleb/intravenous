@@ -7,11 +7,11 @@ struct InvalidReplayWithRandomAccess {
     static constexpr bool intrinsically_replayable = true;
     static constexpr auto inputs()
     {
-        return std::array {iv::random_access_sample_input("input")};
+        return std::array {iv::input<iv::Sample>("input", iv::InputAccess::coverage)};
     }
     static constexpr auto outputs()
     {
-        return std::array {iv::tick_sample_output("output")};
+        return std::array {iv::output<iv::Sample>("output", iv::OutputProduction::tick)};
     }
     void tick(iv::TickSampleContext<InvalidReplayWithRandomAccess> const&) const {}
 };
@@ -22,7 +22,7 @@ struct InvalidReplayWithBlock {
     static constexpr bool intrinsically_replayable = true;
     static constexpr auto outputs()
     {
-        return std::array {iv::tick_sample_output("output")};
+        return std::array {iv::output<iv::Sample>("output", iv::OutputProduction::tick)};
     }
     void tick(iv::TickSampleContext<InvalidReplayWithBlock> const&) const {}
     void tick_block(iv::TickBlockContext<InvalidReplayWithBlock> const&) const {}

@@ -419,23 +419,27 @@ class PortRealizationSolver {
                     auto const config = graph_.node_bundles.resolve_sample_input(
                         {handle, PortKind::sample, index}).config;
                     result.inputs.push_back({
-                        .value_type = add_type_variable(config.value_types),
+                        .value_type = add_type_variable(
+                            continuous_value_type_domain(config)),
                         .size = sizes_.add(),
                         .pace = paces_.add(),
                         .history = is_sequential(config) ? std::optional(histories_.add()) : std::nullopt,
-                        .ordering = is_random_access(config) ? std::optional(orderings_.add()) : std::nullopt,
+                        .ordering = input_access(config) == InputAccessKind::coverage
+                            ? std::optional(orderings_.add()) : std::nullopt,
                     });
                 }
                 for (std::size_t index = 0; index < bundle.sample_output_count(); ++index) {
                     auto const config = graph_.node_bundles.resolve_sample_output(
                         {handle, PortKind::sample, index}).config;
                     result.outputs.push_back({
-                        .value_type = add_type_variable(config.value_types),
+                        .value_type = add_type_variable(
+                            continuous_value_type_domain(config)),
                         .size = sizes_.add(),
                         .pace = paces_.add(),
                         .history = is_tick(config) ? std::optional(histories_.add()) : std::nullopt,
                         .latency = is_tick(config) ? std::optional(latencies_.add()) : std::nullopt,
-                        .ordering = is_tock(config) ? std::optional(orderings_.add()) : std::nullopt,
+                        .ordering = output_production(config) == OutputProductionKind::coverage
+                            ? std::optional(orderings_.add()) : std::nullopt,
                     });
                 }
                 for (std::size_t index = 0; index < bundle.event_input_count(); ++index) {
@@ -443,7 +447,8 @@ class PortRealizationSolver {
                         {handle, PortKind::event, index}).config;
                     result.event_inputs.push_back({
                         .history = is_sequential(config) ? std::optional(histories_.add()) : std::nullopt,
-                        .ordering = is_random_access(config) ? std::optional(orderings_.add()) : std::nullopt,
+                        .ordering = input_access(config) == InputAccessKind::coverage
+                            ? std::optional(orderings_.add()) : std::nullopt,
                     });
                 }
                 for (std::size_t index = 0; index < bundle.event_output_count(); ++index) {
@@ -452,7 +457,8 @@ class PortRealizationSolver {
                     result.event_outputs.push_back({
                         .history = is_tick(config) ? std::optional(histories_.add()) : std::nullopt,
                         .latency = is_tick(config) ? std::optional(latencies_.add()) : std::nullopt,
-                        .ordering = is_tock(config) ? std::optional(orderings_.add()) : std::nullopt,
+                        .ordering = output_production(config) == OutputProductionKind::coverage
+                            ? std::optional(orderings_.add()) : std::nullopt,
                     });
                 }
             });
@@ -674,15 +680,24 @@ class PortRealizationSolver {
     {
         for (auto const& connection : graph_.connections.configured_sample_connections()) {
             std::optional<PortVariables const*> representative;
+            std::optional<std::size_t> ordering_representative;
             auto connect = [&](PortVariables const& candidate) -> std::expected<void, std::string> {
-                if (!representative) { representative = &candidate; return {}; }
-                auto result = equate_continuous_ports(
-                    **representative, candidate, "continuous connection", false);
-                if (!result) return result;
-                if ((**representative).ordering && candidate.ordering)
-                    return orderings_.unite(
-                        *(**representative).ordering, *candidate.ordering,
-                        "continuous connection ordering");
+                if (!representative) {
+                    representative = &candidate;
+                } else {
+                    auto result = equate_continuous_ports(
+                        **representative, candidate,
+                        "continuous connection", false);
+                    if (!result) return result;
+                }
+                if (candidate.ordering) {
+                    if (ordering_representative) {
+                        return orderings_.unite(
+                            *ordering_representative, *candidate.ordering,
+                            "continuous connection ordering");
+                    }
+                    ordering_representative = *candidate.ordering;
+                }
                 return {};
             };
             for (auto const& source : connection.source_channels) {

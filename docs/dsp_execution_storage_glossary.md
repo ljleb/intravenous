@@ -2,14 +2,6 @@
 
 _Status: normative terminology for current DSP, GraphJit, coverage, storage, and executor design documents._
 
-
-> **Planned terminology change:**
-> [Random-Access Port Data, Audio Value Types, And Input Contract Direction](./random_access_port_data_direction.md)
-> introduces Region versus Coverage random-access sample forms and allows Coverage
-> Regions to overlap. Where this glossary describes Coverage as only a set/canonical
-> union of positions, the planned Region/Coverage contract takes precedence for the
-> migration target.
-
 This glossary names independent architectural properties directly. It intentionally
 avoids using one broad adjective to imply several different facts at once.
 
@@ -23,8 +15,8 @@ The port model has three independent authored axes:
 
 | Axis | Terms | Meaning |
 | --- | --- | --- |
-| input access | **Sequential**, **Random Access** | how an input consumes values |
-| output production | **Tick**, **Tock** | how an output's values are produced |
+| input access | **Sequential**, **Region**, **Coverage** | how an input consumes values |
+| output production | **Tick**, **Region**, **Coverage** | how an output's values are produced |
 | output retention | **Ephemeral**, **Persisted** | whether finalized/generated values carry a retention obligation |
 
 None of these terms implies either of the other axes.
@@ -43,15 +35,20 @@ not the output that happens to feed it.
 Sequential consumption does not imply Tick production. A Tock output may feed a
 Sequential input when its data has been materialized before the consuming pass.
 
-### Random-access input / random access
+### Region input / finite-region access
 
-A **Random Access** input may address arbitrary global positions inside its exact
-available coverage.
+A **Region** input consumes one finite ordered region. The region's internal ordering
+is intrinsic; it does not expose a configurable Coverage-ordering constraint.
+
+### Coverage input / coverage access
+
+A **Coverage** input may address arbitrary global positions inside its exact available
+coverage. Its configured realization may constrain the ordering of the Regions that
+form that coverage.
 
 Use **random-access** as an adjective and **random access** as a noun phrase.
-Random access does not imply Tock production or persisted retention. It may consume,
-for example, persisted Tick data, persisted or ephemeral Tock data, or a replayed
-Tick result when the required source data is reproducible.
+Random access is the umbrella for Region and Coverage access; it does not imply
+background production or persisted retention.
 
 ## Output production
 
@@ -69,14 +66,23 @@ When the callback/API distinction matters, use **Tick** or `tick_block()` direct
 When only the ordering behavior matters, describe the value as **sequentially
 produced**.
 
-### Tock output / Tock production
+### Region output / Region production
 
-A **Tock** output uses `TockOutputConfig` and is produced through demand-driven
-background evaluation using `tock_coverage()`.
+A **Region** output publishes one finite ordered region through background evaluation.
+Its ordering is intrinsic rather than configurable.
 
-Tock is a production contract, not a synonym for random access or persistence.
-A Tock output may be ephemeral or persisted, and may feed either Sequential or
-Random Access inputs.
+### Coverage output / Coverage production
+
+A **Coverage** output publishes arbitrary covered Regions through demand-driven
+background evaluation. It may expose a `CoverageOrdering` guarantee.
+
+### Tock callback
+
+A **Tock** callback is the background callback that realizes Region or Coverage
+production. It is not itself an authored output-production alternative.
+
+Background production is not a synonym for random access or persistence. A Region or
+Coverage output may be ephemeral or persisted and may feed any compatible input form.
 
 ### Scalar callback / batch callback
 

@@ -32,7 +32,7 @@ struct GraphBuilderVacantSampleInput {
   NodeBundlePortId target{};
   std::string virtual_node_id{};
   size_t member_index = 0;
-  SampleInputConfig config{};
+  ContinuousInputConfig config{};
 };
 struct GraphBuilderVacantEventInput {
   NodeBundlePortId target{};
@@ -49,7 +49,7 @@ struct GraphBuilderVirtualSampleInput {
   NodeBundlePortId target{};
   std::string virtual_node_id{};
   size_t member_index = 0;
-  SampleInputConfig config{};
+  ContinuousInputConfig config{};
   bool has_existing_connection = false;
 };
 struct GraphBuilderVirtualEventInput {
@@ -73,7 +73,7 @@ struct GraphBuilderVirtualSampleInputFamily {
   size_t member_index = 0;
   size_t family_index = 0;
   std::string family_name{};
-  SampleInputConfig config{};
+  ContinuousInputConfig config{};
   ChannelTypeId channel_type = ChannelTypeId::mono;
   std::vector<GraphBuilderVirtualSampleInputChannel> channels{};
 };
@@ -85,7 +85,7 @@ struct GraphBuilderVirtualSampleOutput {
   NodeBundlePortId source{};
   std::string virtual_node_id{};
   size_t member_index = 0;
-  SampleOutputConfig config{};
+  ContinuousOutputConfig config{};
   bool has_existing_downstream_connection = false;
 };
 struct GraphBuilderVirtualEventOutput {
@@ -109,7 +109,7 @@ struct GraphBuilderVirtualSampleOutputFamily {
   size_t member_index = 0;
   size_t family_index = 0;
   std::string family_name{};
-  SampleOutputConfig config{};
+  ContinuousOutputConfig config{};
   ChannelTypeId channel_type = ChannelTypeId::mono;
   std::vector<GraphBuilderVirtualSampleOutputChannel> channels{};
 };
@@ -344,7 +344,7 @@ GraphBuilderConnections::collect_virtual_sample_input_families(
       auto const first = mapping.channels.front();
       auto config = bundles.resolve_sample_input(
           {first.bundle, PortKind::sample, first.port}).config;
-      config.channel_layout = mapping.channel_layout;
+      set_continuous_channel_layout(config, mapping.channel_layout);
       auto const channel_total = channel_count(mapping.channel_layout.channel_type);
       std::vector<GraphBuilderVirtualSampleInputChannel> channels(channel_total);
       for (auto const target : mapping.channels) {
@@ -410,7 +410,7 @@ GraphBuilderConnections::collect_virtual_sample_output_families(
       auto const first = mapping.channels.front();
       auto config = bundles.resolve_sample_output(
           {first.bundle, PortKind::sample, first.port}).config;
-      config.channel_layout = mapping.channel_layout;
+      set_continuous_channel_layout(config, mapping.channel_layout);
       auto const channel_total = channel_count(mapping.channel_layout.channel_type);
       std::vector<GraphBuilderVirtualSampleOutputChannel> channels(channel_total);
       for (auto const source : mapping.channels) {

@@ -21,6 +21,8 @@
 #include <cstdint>
 #include <array>
 #include <functional>
+#include <tuple>
+#include <type_traits>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -1617,45 +1619,166 @@ namespace iv {
         }
     };
 
-    // The sample/event distinction is one axis of a logical port declaration.
-    // Input access, output production, and output retention are independent.
-    // Sequential inputs and Tick outputs carry temporal history/latency;
-    // RandomAccess inputs and Tock outputs have no Tick timing requirements.
-    struct SampleInputProperties {
-        ContinuousValueTypeSet value_types = sample_value_type;
+    enum class InputAccessKind : std::uint8_t {
+        sequential,
+        region,
+        coverage,
+    };
+
+    enum class OutputProductionKind : std::uint8_t {
+        tick,
+        region,
+        coverage,
+    };
+
+    enum class OutputRetention : std::uint8_t {
+        ephemeral,
+        persisted,
+    };
+
+    using InputAccessConfig = InputAccessKind;
+    using OutputProductionConfig = OutputProductionKind;
+
+    struct SequentialContinuousInputProperties {
+        std::vector<ContinuousSequentialInputMetadata> value_metadata {
+            ContinuousSequentialInputMetadata{
+                SampleContinuousValueExtension::SequentialInputMetadata{}}};
+
+        constexpr bool operator==(
+            SequentialContinuousInputProperties const&) const = default;
+    };
+
+    struct RegionContinuousInputProperties {
+        std::vector<ContinuousRegionInputMetadata> value_metadata {
+            ContinuousRegionInputMetadata{
+                SampleContinuousValueExtension::RegionInputMetadata{}}};
+        constexpr bool operator==(
+            RegionContinuousInputProperties const&) const = default;
+    };
+
+    struct CoverageContinuousInputProperties {
+        std::vector<ContinuousCoverageInputMetadata> value_metadata {
+            ContinuousCoverageInputMetadata{
+                SampleContinuousValueExtension::CoverageInputMetadata{}}};
+        constexpr bool operator==(
+            CoverageContinuousInputProperties const&) const = default;
+    };
+
+    using ContinuousInputAccessProperties = std::variant<
+        SequentialContinuousInputProperties,
+        RegionContinuousInputProperties,
+        CoverageContinuousInputProperties>;
+
+    struct ContinuousInputProperties {
         ChannelLayout channel_layout {
             .channel_type = ChannelTypeId::mono,
             .sample_layout = SampleStreamLayout::planar,
         };
-        // The total-read value for an unavailable or out-of-range background
-        // input. This is deliberately separate from default_value, which is
-        // the value used for an ordinary disconnected sequential input.
-        Sample neutral_value = 0.0;
-        Sample default_value = 0.0;
-        Sample min = -std::numeric_limits<Sample::storage>::infinity();
-        Sample max = std::numeric_limits<Sample::storage>::infinity();
+        ContinuousInputAccessProperties access {};
+
+        constexpr bool operator==(
+            ContinuousInputProperties const&) const = default;
     };
 
-    struct SampleOutputProperties {
-        ContinuousValueTypeSet value_types = sample_value_type;
+    struct TickContinuousOutputProperties {
+        std::vector<ContinuousTickOutputMetadata> value_metadata {
+            ContinuousTickOutputMetadata{
+                SampleContinuousValueExtension::TickOutputMetadata{}}};
+        constexpr bool operator==(
+            TickContinuousOutputProperties const&) const = default;
+    };
+
+    struct RegionContinuousOutputProperties {
+        std::vector<ContinuousRegionOutputMetadata> value_metadata {
+            ContinuousRegionOutputMetadata{
+                SampleContinuousValueExtension::RegionOutputMetadata{}}};
+        constexpr bool operator==(
+            RegionContinuousOutputProperties const&) const = default;
+    };
+
+    struct CoverageContinuousOutputProperties {
+        std::vector<ContinuousCoverageOutputMetadata> value_metadata {
+            ContinuousCoverageOutputMetadata{
+                SampleContinuousValueExtension::CoverageOutputMetadata{}}};
+        constexpr bool operator==(
+            CoverageContinuousOutputProperties const&) const = default;
+    };
+
+    using ContinuousOutputProductionProperties = std::variant<
+        TickContinuousOutputProperties,
+        RegionContinuousOutputProperties,
+        CoverageContinuousOutputProperties>;
+
+    struct ContinuousOutputProperties {
         ChannelLayout channel_layout {
             .channel_type = ChannelTypeId::mono,
             .sample_layout = SampleStreamLayout::planar,
         };
+        ContinuousOutputProductionProperties production {};
+
+        constexpr bool operator==(
+            ContinuousOutputProperties const&) const = default;
     };
 
-    constexpr ChannelLayout effective_channel_layout(SampleInputProperties const& config)
+    template<class Metadata>
+    [[nodiscard]] constexpr ContinuousValueTypeSet
+    continuous_metadata_type_domain(std::vector<Metadata> const& metadata)
+    {
+        if (metadata.empty()) {
+            throw std::invalid_argument(
+                "a continuous port must declare at least one value type");
+        }
+        ContinuousValueTypeSet result;
+        for (auto const& value : metadata) {
+            auto const type = continuous_metadata_value_type(value);
+            if (!is_registered_continuous_value_type(type)
+                || result.contains(type)) {
+                throw std::invalid_argument(
+                    "a continuous port must declare each value type exactly once");
+            }
+            result |= ContinuousValueTypeSet{type};
+        }
+        return result;
+    }
+
+    template<class Properties>
+    [[nodiscard]] constexpr ContinuousValueTypeSet
+    continuous_value_type_domain(Properties const& properties)
+        requires requires { properties.value_metadata; }
+    {
+        return continuous_metadata_type_domain(properties.value_metadata);
+    }
+
+    [[nodiscard]] constexpr ContinuousValueTypeSet
+    continuous_value_type_domain(ContinuousInputProperties const& properties)
+    {
+        return std::visit([](auto const& access) {
+            return continuous_value_type_domain(access);
+        }, properties.access);
+    }
+
+    [[nodiscard]] constexpr ContinuousValueTypeSet
+    continuous_value_type_domain(ContinuousOutputProperties const& properties)
+    {
+        return std::visit([](auto const& production) {
+            return continuous_value_type_domain(production);
+        }, properties.production);
+    }
+
+    constexpr ChannelLayout effective_channel_layout(ContinuousInputProperties const& config)
     {
         return config.channel_layout;
     }
 
-    constexpr ChannelLayout effective_channel_layout(SampleOutputProperties const& config)
+    constexpr ChannelLayout effective_channel_layout(ContinuousOutputProperties const& config)
     {
         return config.channel_layout;
     }
 
     struct EventInputProperties {
         EventTypeId type {};
+        InputAccessConfig access = InputAccessKind::sequential;
+        constexpr bool operator==(EventInputProperties const&) const = default;
     };
 
     struct EventOutputProperties {
@@ -1664,43 +1787,18 @@ namespace iv {
         // GraphJIT reserves ceil(max_events_per_index * W) event entries. This
         // does not constrain how events are distributed among sample timestamps.
         double max_events_per_index = DEFAULT_MAX_EVENTS_PER_SAMPLE;
+        OutputProductionConfig production = OutputProductionKind::tick;
+        constexpr bool operator==(EventOutputProperties const&) const = default;
     };
-
-    struct SequentialInputConfig {
-        constexpr bool operator==(SequentialInputConfig const&) const = default;
-    };
-
-    struct TickOutputConfig {
-        constexpr bool operator==(TickOutputConfig const&) const = default;
-    };
-
-    struct RandomAccessInputConfig {
-        constexpr bool operator==(RandomAccessInputConfig const&) const = default;
-    };
-
-    struct TockOutputConfig {
-        constexpr bool operator==(TockOutputConfig const&) const = default;
-    };
-
-    enum class OutputRetention : std::uint8_t {
-        ephemeral,
-        persisted,
-    };
-
-    inline constexpr RandomAccessInputConfig random_access_input {};
-    inline constexpr TockOutputConfig tock_output {};
-
-    using InputAccessConfig = std::variant<SequentialInputConfig, RandomAccessInputConfig>;
-    using OutputProductionConfig = std::variant<TickOutputConfig, TockOutputConfig>;
 
     [[nodiscard]] constexpr bool is_random_access(InputAccessConfig const& config)
     {
-        return std::holds_alternative<RandomAccessInputConfig>(config);
+        return config != InputAccessKind::sequential;
     }
 
     [[nodiscard]] constexpr bool is_tock(OutputProductionConfig const& config)
     {
-        return std::holds_alternative<TockOutputConfig>(config);
+        return config != OutputProductionKind::tick;
     }
 
     [[nodiscard]] constexpr bool is_persisted(OutputRetention retention)
@@ -1710,12 +1808,108 @@ namespace iv {
 
     [[nodiscard]] constexpr bool is_sequential(InputAccessConfig const& config)
     {
-        return std::holds_alternative<SequentialInputConfig>(config);
+        return config == InputAccessKind::sequential;
     }
 
     [[nodiscard]] constexpr bool is_tick(OutputProductionConfig const& config)
     {
-        return std::holds_alternative<TickOutputConfig>(config);
+        return config == OutputProductionKind::tick;
+    }
+
+    template<class Config>
+    constexpr void set_continuous_channel_layout(
+        Config& config, ChannelLayout layout)
+        requires requires { config.channel_layout; config.access; }
+    {
+        config.channel_layout = layout;
+    }
+
+    template<class Config>
+    constexpr void set_continuous_channel_layout(
+        Config& config, ChannelLayout layout)
+        requires requires { config.channel_layout; config.production; }
+    {
+        config.channel_layout = layout;
+    }
+
+    template<class Metadata, class Factory>
+    constexpr std::vector<Metadata> default_continuous_metadata(
+        ContinuousValueTypeSet value_types,
+        Factory factory)
+    {
+        std::vector<Metadata> result;
+        result.reserve(value_types.size());
+        for (auto const& type : continuous_value_type_registry) {
+            if (!value_types.contains(type.id)) continue;
+            result.push_back(factory(type.id));
+        }
+        return result;
+    }
+
+    [[nodiscard]] inline constexpr SequentialContinuousInputProperties
+    default_sequential_input_properties(ContinuousValueTypeSet value_types)
+    {
+        return {
+            .value_metadata = default_continuous_metadata<
+                ContinuousSequentialInputMetadata>(
+                    value_types,
+                    default_sequential_input_metadata),
+        };
+    }
+
+    [[nodiscard]] inline constexpr RegionContinuousInputProperties
+    default_region_input_properties(ContinuousValueTypeSet value_types)
+    {
+        return {
+            .value_metadata = default_continuous_metadata<
+                ContinuousRegionInputMetadata>(
+                    value_types,
+                    default_region_input_metadata),
+        };
+    }
+
+    [[nodiscard]] inline constexpr CoverageContinuousInputProperties
+    default_coverage_input_properties(ContinuousValueTypeSet value_types)
+    {
+        return {
+            .value_metadata = default_continuous_metadata<
+                ContinuousCoverageInputMetadata>(
+                    value_types,
+                    default_coverage_input_metadata),
+        };
+    }
+
+    [[nodiscard]] inline constexpr TickContinuousOutputProperties
+    default_tick_output_properties(ContinuousValueTypeSet value_types)
+    {
+        return {
+            .value_metadata = default_continuous_metadata<
+                ContinuousTickOutputMetadata>(
+                    value_types,
+                    default_tick_output_metadata),
+        };
+    }
+
+    [[nodiscard]] inline constexpr RegionContinuousOutputProperties
+    default_region_output_properties(ContinuousValueTypeSet value_types)
+    {
+        return {
+            .value_metadata = default_continuous_metadata<
+                ContinuousRegionOutputMetadata>(
+                    value_types,
+                    default_region_output_metadata),
+        };
+    }
+
+    [[nodiscard]] inline constexpr CoverageContinuousOutputProperties
+    default_coverage_output_properties(ContinuousValueTypeSet value_types)
+    {
+        return {
+            .value_metadata = default_continuous_metadata<
+                ContinuousCoverageOutputMetadata>(
+                    value_types,
+                    default_coverage_output_metadata),
+        };
     }
 
     // Authored declarations keep data kind and temporal/access semantics
@@ -1723,8 +1917,7 @@ namespace iv {
     // typed wrappers in tick()/tick_block().
     struct InputConfig {
         std::string name {};
-        std::variant<SampleInputProperties, EventInputProperties> kind {};
-        InputAccessConfig access {SequentialInputConfig{}};
+        std::variant<ContinuousInputProperties, EventInputProperties> kind {};
 
         constexpr InputConfig() = default;
         constexpr explicit InputConfig(std::string name)
@@ -1732,26 +1925,23 @@ namespace iv {
         {}
         constexpr InputConfig(
             std::string name,
-            SampleInputProperties config,
-            InputAccessConfig access = SequentialInputConfig{})
+            ContinuousInputProperties config)
             : name(std::move(name))
             , kind(std::move(config))
-            , access(std::move(access))
         {}
         constexpr InputConfig(
             std::string name,
-            EventInputProperties config,
-            InputAccessConfig access = SequentialInputConfig{})
+            EventInputProperties config)
             : name(std::move(name))
             , kind(std::move(config))
-            , access(std::move(access))
         {}
+
+        constexpr bool operator==(InputConfig const&) const = default;
     };
 
     struct OutputConfig {
         std::string name {};
-        std::variant<SampleOutputProperties, EventOutputProperties> kind {};
-        OutputProductionConfig production {TickOutputConfig{}};
+        std::variant<ContinuousOutputProperties, EventOutputProperties> kind {};
         OutputRetention retention = OutputRetention::ephemeral;
 
         constexpr OutputConfig() = default;
@@ -1760,166 +1950,666 @@ namespace iv {
         {}
         constexpr OutputConfig(
             std::string name,
-            SampleOutputProperties config,
-            OutputProductionConfig production = TickOutputConfig{},
+            ContinuousOutputProperties config,
             OutputRetention retention = OutputRetention::ephemeral)
             : name(std::move(name))
             , kind(std::move(config))
-            , production(std::move(production))
             , retention(retention)
         {}
         constexpr OutputConfig(
             std::string name,
             EventOutputProperties config,
-            OutputProductionConfig production = TickOutputConfig{},
             OutputRetention retention = OutputRetention::ephemeral)
             : name(std::move(name))
             , kind(std::move(config))
-            , production(std::move(production))
             , retention(retention)
         {}
+
+
+        constexpr bool operator==(OutputConfig const&) const = default;
     };
 
-    [[nodiscard]] constexpr InputConfig sample_input(
-        std::string name = {},
-        SampleInputProperties properties = {},
-        InputAccessConfig access = SequentialInputConfig{})
+    // Leaf declarations are heterogeneous and fully typed. Access and
+    // production tokens select the concrete declaration type; only reflection
+    // converts one of these values into the configured-graph representation.
+    struct InputAccess {
+        struct Sequential {};
+        struct Region {};
+        struct Coverage {};
+
+        inline static constexpr Sequential sequential {};
+        inline static constexpr Region region {};
+        inline static constexpr Coverage coverage {};
+    };
+
+    struct OutputProduction {
+        struct Tick {};
+        struct Region {};
+        struct Coverage {};
+
+        inline static constexpr Tick tick {};
+        inline static constexpr Region region {};
+        inline static constexpr Coverage coverage {};
+    };
+
+    template<RegisteredContinuousValue... Types>
+    struct SequentialInputConfig {
+        static_assert(sizeof...(Types) != 0);
+        static_assert(
+            ContinuousValueTypeSet::of<Types...>().size() == sizeof...(Types),
+            "a continuous port must not repeat a value type");
+        using value_types = std::tuple<Types...>;
+        static constexpr auto access = InputAccessKind::sequential;
+        std::string name {};
+        std::tuple<typename ContinuousValueType<Types>::SequentialInputOptions...>
+            options {};
+        constexpr bool operator==(SequentialInputConfig const&) const = default;
+    };
+
+    template<RegisteredContinuousValue... Types>
+    struct RegionInputConfig {
+        static_assert(sizeof...(Types) != 0);
+        static_assert(
+            ContinuousValueTypeSet::of<Types...>().size() == sizeof...(Types),
+            "a continuous port must not repeat a value type");
+        using value_types = std::tuple<Types...>;
+        static constexpr auto access = InputAccessKind::region;
+        std::string name {};
+        std::tuple<typename ContinuousValueType<Types>::RegionInputOptions...>
+            options {};
+        constexpr bool operator==(RegionInputConfig const&) const = default;
+    };
+
+    template<RegisteredContinuousValue... Types>
+    struct CoverageInputConfig {
+        static_assert(sizeof...(Types) != 0);
+        static_assert(
+            ContinuousValueTypeSet::of<Types...>().size() == sizeof...(Types),
+            "a continuous port must not repeat a value type");
+        using value_types = std::tuple<Types...>;
+        static constexpr auto access = InputAccessKind::coverage;
+        std::string name {};
+        std::tuple<typename ContinuousValueType<Types>::CoverageInputOptions...>
+            options {};
+        constexpr bool operator==(CoverageInputConfig const&) const = default;
+    };
+
+    template<RegisteredContinuousValue... Types>
+    struct TickOutputConfig {
+        static_assert(sizeof...(Types) != 0);
+        static_assert(
+            ContinuousValueTypeSet::of<Types...>().size() == sizeof...(Types),
+            "a continuous port must not repeat a value type");
+        using value_types = std::tuple<Types...>;
+        static constexpr auto production = OutputProductionKind::tick;
+        std::string name {};
+        OutputRetention retention = OutputRetention::ephemeral;
+        std::tuple<typename ContinuousValueType<Types>::TickOutputOptions...>
+            options {};
+        constexpr bool operator==(TickOutputConfig const&) const = default;
+    };
+
+    template<RegisteredContinuousValue... Types>
+    struct RegionOutputConfig {
+        static_assert(sizeof...(Types) != 0);
+        static_assert(
+            ContinuousValueTypeSet::of<Types...>().size() == sizeof...(Types),
+            "a continuous port must not repeat a value type");
+        using value_types = std::tuple<Types...>;
+        static constexpr auto production = OutputProductionKind::region;
+        std::string name {};
+        OutputRetention retention = OutputRetention::ephemeral;
+        std::tuple<typename ContinuousValueType<Types>::RegionOutputOptions...>
+            options {};
+        constexpr bool operator==(RegionOutputConfig const&) const = default;
+    };
+
+    template<RegisteredContinuousValue... Types>
+    struct CoverageOutputConfig {
+        static_assert(sizeof...(Types) != 0);
+        static_assert(
+            ContinuousValueTypeSet::of<Types...>().size() == sizeof...(Types),
+            "a continuous port must not repeat a value type");
+        using value_types = std::tuple<Types...>;
+        static constexpr auto production = OutputProductionKind::coverage;
+        std::string name {};
+        OutputRetention retention = OutputRetention::ephemeral;
+        std::tuple<typename ContinuousValueType<Types>::CoverageOutputOptions...>
+            options {};
+        constexpr bool operator==(CoverageOutputConfig const&) const = default;
+    };
+
+    struct SequentialEventInputConfig {
+        std::string name {};
+        EventTypeId type {};
+        static constexpr auto access = InputAccessKind::sequential;
+        constexpr bool operator==(
+            SequentialEventInputConfig const&) const = default;
+    };
+
+    struct RegionEventInputConfig {
+        std::string name {};
+        EventTypeId type {};
+        static constexpr auto access = InputAccessKind::region;
+        constexpr bool operator==(RegionEventInputConfig const&) const = default;
+    };
+
+    struct CoverageEventInputConfig {
+        std::string name {};
+        EventTypeId type {};
+        static constexpr auto access = InputAccessKind::coverage;
+        constexpr bool operator==(CoverageEventInputConfig const&) const = default;
+    };
+
+    struct EventOutputOptions {
+        double max_events_per_index = DEFAULT_MAX_EVENTS_PER_SAMPLE;
+        constexpr bool operator==(EventOutputOptions const&) const = default;
+    };
+
+#define IV_EVENT_OUTPUT_CONFIG(Name, Kind)                               \
+    struct Name {                                                        \
+        std::string name {};                                             \
+        EventTypeId type {};                                             \
+        EventOutputOptions options {};                                   \
+        OutputRetention retention = OutputRetention::ephemeral;          \
+        static constexpr auto production = Kind;                         \
+        constexpr bool operator==(Name const&) const = default;          \
+    }
+    IV_EVENT_OUTPUT_CONFIG(TickEventOutputConfig, OutputProductionKind::tick);
+    IV_EVENT_OUTPUT_CONFIG(RegionEventOutputConfig, OutputProductionKind::region);
+    IV_EVENT_OUTPUT_CONFIG(
+        CoverageEventOutputConfig, OutputProductionKind::coverage);
+#undef IV_EVENT_OUTPUT_CONFIG
+
+    template<class Config>
+    concept AuthoredContinuousInputConfig = requires {
+        typename std::remove_cvref_t<Config>::value_types;
+        std::remove_cvref_t<Config>::access;
+    };
+
+    template<class Config>
+    concept AuthoredContinuousOutputConfig = requires {
+        typename std::remove_cvref_t<Config>::value_types;
+        std::remove_cvref_t<Config>::production;
+    };
+
+    template<class Config>
+    concept AuthoredEventInputConfig =
+        std::same_as<std::remove_cvref_t<Config>, SequentialEventInputConfig>
+        || std::same_as<std::remove_cvref_t<Config>, RegionEventInputConfig>
+        || std::same_as<std::remove_cvref_t<Config>, CoverageEventInputConfig>;
+
+    template<class Config>
+    concept AuthoredEventOutputConfig =
+        std::same_as<std::remove_cvref_t<Config>, TickEventOutputConfig>
+        || std::same_as<std::remove_cvref_t<Config>, RegionEventOutputConfig>
+        || std::same_as<std::remove_cvref_t<Config>, CoverageEventOutputConfig>;
+
+    template<class Config>
+    concept AuthoredInputConfig =
+        AuthoredContinuousInputConfig<Config> || AuthoredEventInputConfig<Config>;
+
+    template<class Config>
+    concept AuthoredOutputConfig =
+        AuthoredContinuousOutputConfig<Config> || AuthoredEventOutputConfig<Config>;
+
+    template<class Tuple>
+    struct ContinuousValueTupleSet;
+
+    template<RegisteredContinuousValue... Types>
+    struct ContinuousValueTupleSet<std::tuple<Types...>> {
+        inline static constexpr auto value =
+            ContinuousValueTypeSet::of<Types...>();
+    };
+
+    template<class Config>
+    requires (
+        AuthoredContinuousInputConfig<Config>
+        || AuthoredContinuousOutputConfig<Config>)
+    inline constexpr auto authored_continuous_value_types_v =
+        ContinuousValueTupleSet<
+            typename std::remove_cvref_t<Config>::value_types>::value;
+
+#define IV_DEFINE_CONTINUOUS_INPUT_HELPERS(Token, Config, Options)       \
+    template<RegisteredContinuousValue... Types>                         \
+    [[nodiscard]] constexpr auto input(                                  \
+        std::string name, InputAccess::Token)                            \
+    {                                                                    \
+        return Config<Types...>{.name = std::move(name)};                \
+    }                                                                    \
+                                                                         \
+    template<RegisteredContinuousValue... Types>                         \
+    [[nodiscard]] constexpr auto input(                                  \
+        std::string name,                                                \
+        InputAccess::Token,                                              \
+        typename ContinuousValueType<Types>::Options... options)         \
+        requires(sizeof...(Types) != 0)                                  \
+    {                                                                    \
+        return Config<Types...>{                                         \
+            .name = std::move(name),                                     \
+            .options = {std::move(options)...},                          \
+        };                                                               \
+    }
+    IV_DEFINE_CONTINUOUS_INPUT_HELPERS(
+        Sequential, SequentialInputConfig, SequentialInputOptions)
+    IV_DEFINE_CONTINUOUS_INPUT_HELPERS(
+        Region, RegionInputConfig, RegionInputOptions)
+    IV_DEFINE_CONTINUOUS_INPUT_HELPERS(
+        Coverage, CoverageInputConfig, CoverageInputOptions)
+#undef IV_DEFINE_CONTINUOUS_INPUT_HELPERS
+
+#define IV_DEFINE_CONTINUOUS_OUTPUT_HELPERS(Token, Config, Options)      \
+    template<RegisteredContinuousValue... Types>                         \
+    [[nodiscard]] constexpr auto output(                                 \
+        std::string name,                                                \
+        OutputProduction::Token,                                         \
+        OutputRetention retention = OutputRetention::ephemeral)          \
+    {                                                                    \
+        return Config<Types...>{                                         \
+            .name = std::move(name),                                     \
+            .retention = retention,                                      \
+        };                                                               \
+    }                                                                    \
+                                                                         \
+    template<RegisteredContinuousValue... Types>                         \
+    [[nodiscard]] constexpr auto output(                                 \
+        std::string name,                                                \
+        OutputProduction::Token,                                         \
+        typename ContinuousValueType<Types>::Options... options)         \
+        requires(sizeof...(Types) != 0)                                  \
+    {                                                                    \
+        return Config<Types...>{                                         \
+            .name = std::move(name),                                     \
+            .options = {std::move(options)...},                          \
+        };                                                               \
+    }                                                                    \
+                                                                         \
+    template<RegisteredContinuousValue... Types>                         \
+    [[nodiscard]] constexpr auto output(                                 \
+        std::string name,                                                \
+        OutputProduction::Token,                                         \
+        OutputRetention retention,                                       \
+        typename ContinuousValueType<Types>::Options... options)         \
+        requires(sizeof...(Types) != 0)                                  \
+    {                                                                    \
+        return Config<Types...>{                                         \
+            .name = std::move(name),                                     \
+            .retention = retention,                                      \
+            .options = {std::move(options)...},                          \
+        };                                                               \
+    }
+    IV_DEFINE_CONTINUOUS_OUTPUT_HELPERS(
+        Tick, TickOutputConfig, TickOutputOptions)
+    IV_DEFINE_CONTINUOUS_OUTPUT_HELPERS(
+        Region, RegionOutputConfig, RegionOutputOptions)
+    IV_DEFINE_CONTINUOUS_OUTPUT_HELPERS(
+        Coverage, CoverageOutputConfig, CoverageOutputOptions)
+#undef IV_DEFINE_CONTINUOUS_OUTPUT_HELPERS
+
+    [[nodiscard]] constexpr SequentialEventInputConfig event_input(
+        std::string name, EventTypeId type, InputAccess::Sequential)
     {
-        return InputConfig{
-            std::move(name), std::move(properties), std::move(access)};
+        return {.name = std::move(name), .type = type};
     }
 
-    [[nodiscard]] constexpr OutputConfig sample_output(
-        std::string name = {},
-        SampleOutputProperties properties = {},
-        OutputProductionConfig production = TickOutputConfig{},
-        OutputRetention retention = OutputRetention::ephemeral)
+    [[nodiscard]] constexpr RegionEventInputConfig event_input(
+        std::string name, EventTypeId type, InputAccess::Region)
     {
-        return OutputConfig{
-            std::move(name),
-            std::move(properties),
-            std::move(production),
-            retention};
+        return {.name = std::move(name), .type = type};
     }
 
-    [[nodiscard]] constexpr InputConfig event_input(
-        std::string name = {},
-        EventTypeId type = {},
-        InputAccessConfig access = SequentialInputConfig{})
+    [[nodiscard]] constexpr CoverageEventInputConfig event_input(
+        std::string name, EventTypeId type, InputAccess::Coverage)
     {
-        return InputConfig{
-            std::move(name),
-            EventInputProperties{.type = type},
-            std::move(access)};
+        return {.name = std::move(name), .type = type};
     }
 
-    [[nodiscard]] constexpr OutputConfig event_output(
-        std::string name = {},
-        EventTypeId type = {},
-        OutputProductionConfig production = TickOutputConfig{},
-        OutputRetention retention = OutputRetention::ephemeral)
+#define IV_DEFINE_EVENT_OUTPUT_HELPER(Token, Config)                     \
+    [[nodiscard]] constexpr Config event_output(                         \
+        std::string name,                                                \
+        EventTypeId type,                                                \
+        OutputProduction::Token,                                         \
+        EventOutputOptions options)                                      \
+    {                                                                    \
+        return {                                                         \
+            .name = std::move(name),                                     \
+            .type = type,                                                \
+            .options = options,                                          \
+        };                                                               \
+    }                                                                    \
+                                                                         \
+    [[nodiscard]] constexpr Config event_output(                         \
+        std::string name,                                                \
+        EventTypeId type,                                                \
+        OutputProduction::Token,                                         \
+        OutputRetention retention = OutputRetention::ephemeral,          \
+        EventOutputOptions options = {})                                 \
+    {                                                                    \
+        return {                                                         \
+            .name = std::move(name),                                     \
+            .type = type,                                                \
+            .options = options,                                          \
+            .retention = retention,                                      \
+        };                                                               \
+    }
+    IV_DEFINE_EVENT_OUTPUT_HELPER(Tick, TickEventOutputConfig)
+    IV_DEFINE_EVENT_OUTPUT_HELPER(Region, RegionEventOutputConfig)
+    IV_DEFINE_EVENT_OUTPUT_HELPER(Coverage, CoverageEventOutputConfig)
+#undef IV_DEFINE_EVENT_OUTPUT_HELPER
+
+    template<class Tuple>
+    concept PortConfigTuple = requires {
+        typename std::tuple_size<std::remove_cvref_t<Tuple>>::type;
+    };
+
+    template<PortConfigTuple Tuple>
+    inline constexpr std::size_t port_config_count_v =
+        std::tuple_size_v<std::remove_cvref_t<Tuple>>;
+
+    template<PortConfigTuple Tuple, class Function>
+    constexpr void for_each_port_config(Tuple&& configs, Function&& function)
     {
-        return OutputConfig{
-            std::move(name),
-            EventOutputProperties{.type = type},
-            std::move(production),
-            retention};
+        std::apply(
+            [&function](auto&&... config) {
+                (std::invoke(function, decltype(config)(config)), ...);
+            },
+            std::forward<Tuple>(configs));
     }
 
-    [[nodiscard]] constexpr OutputConfig event_output(
-        std::string name,
-        EventOutputProperties properties,
-        OutputProductionConfig production = TickOutputConfig{},
-        OutputRetention retention = OutputRetention::ephemeral)
+    template<PortConfigTuple Tuple, class Predicate>
+    [[nodiscard]] constexpr bool any_port_config(
+        Tuple&& configs, Predicate&& predicate)
     {
-        return OutputConfig{
-            std::move(name), std::move(properties), std::move(production), retention};
+        bool result = false;
+        for_each_port_config(
+            std::forward<Tuple>(configs),
+            [&result, &predicate](auto&& config) {
+                result = result || std::invoke(
+                    predicate, decltype(config)(config));
+            });
+        return result;
     }
 
-    [[nodiscard]] constexpr InputConfig random_access_sample_input(
-        std::string name = {},
-        SampleInputProperties properties = {})
+    template<PortConfigTuple Tuple, class Predicate>
+    [[nodiscard]] constexpr std::size_t count_port_configs(
+        Tuple&& configs, Predicate&& predicate)
     {
-        return sample_input(std::move(name), std::move(properties), random_access_input);
+        std::size_t result = 0;
+        for_each_port_config(
+            std::forward<Tuple>(configs),
+            [&result, &predicate](auto&& config) {
+                result += static_cast<std::size_t>(std::invoke(
+                    predicate, decltype(config)(config)));
+            });
+        return result;
     }
 
-    [[nodiscard]] constexpr OutputConfig tock_sample_output(
-        std::string name = {},
-        SampleOutputProperties properties = {},
-        OutputRetention retention = OutputRetention::ephemeral)
+    template<PortConfigTuple Tuple>
+    [[nodiscard]] constexpr std::size_t count_continuous_ports(Tuple const& configs)
     {
-        return sample_output(
-            std::move(name), std::move(properties), TockOutputConfig{}, retention);
+        return count_port_configs(
+            configs, [](auto const& config) { return is_continuous(config); });
     }
 
-    [[nodiscard]] constexpr InputConfig random_access_event_input(
-        std::string name = {},
-        EventTypeId type = {})
+    template<PortConfigTuple Tuple>
+    [[nodiscard]] constexpr std::size_t count_event_ports(Tuple const& configs)
     {
-        return event_input(std::move(name), type, random_access_input);
+        return port_config_count_v<Tuple> - count_continuous_ports(configs);
     }
 
-    [[nodiscard]] constexpr OutputConfig tock_event_output(
-        std::string name = {},
-        EventTypeId type = {},
-        OutputRetention retention = OutputRetention::ephemeral)
+    template<std::size_t Index, PortConfigTuple Tuple>
+    constexpr decltype(auto) port_config_at(Tuple&& configs)
     {
-        return event_output(
-            std::move(name), type, TockOutputConfig{}, retention);
+        return std::get<Index>(std::forward<Tuple>(configs));
     }
 
-    [[nodiscard]] constexpr OutputConfig tock_event_output(
-        std::string name,
-        EventOutputProperties properties,
-        OutputRetention retention = OutputRetention::ephemeral)
+    template<AuthoredContinuousInputConfig Config>
+    [[nodiscard]] constexpr bool is_continuous(Config const&) { return true; }
+
+    template<AuthoredContinuousOutputConfig Config>
+    [[nodiscard]] constexpr bool is_continuous(Config const&) { return true; }
+
+    template<AuthoredEventInputConfig Config>
+    [[nodiscard]] constexpr bool is_continuous(Config const&) { return false; }
+
+    template<AuthoredEventOutputConfig Config>
+    [[nodiscard]] constexpr bool is_continuous(Config const&) { return false; }
+
+    template<AuthoredInputConfig Config>
+    [[nodiscard]] constexpr bool is_random_access(Config const&)
     {
-        return event_output(
-            std::move(name), std::move(properties), TockOutputConfig{}, retention);
+        return Config::access != InputAccessKind::sequential;
     }
 
-    [[nodiscard]] constexpr InputConfig sequential_sample_input(
-        std::string name = {},
-        SampleInputProperties properties = {},
-        SequentialInputConfig access = {})
+    template<AuthoredInputConfig Config>
+    [[nodiscard]] constexpr bool is_sequential(Config const&)
     {
-        return sample_input(std::move(name), std::move(properties), std::move(access));
+        return Config::access == InputAccessKind::sequential;
     }
 
-    [[nodiscard]] constexpr OutputConfig tick_sample_output(
-        std::string name = {},
-        SampleOutputProperties properties = {},
-        TickOutputConfig production = {},
-        OutputRetention retention = OutputRetention::ephemeral)
+    template<AuthoredOutputConfig Config>
+    [[nodiscard]] constexpr bool is_tock(Config const&)
     {
-        return sample_output(
-            std::move(name), std::move(properties), std::move(production), retention);
+        return Config::production != OutputProductionKind::tick;
     }
 
-    [[nodiscard]] constexpr InputConfig sequential_event_input(
-        std::string name = {},
-        EventTypeId type = {},
-        SequentialInputConfig access = {})
+    template<AuthoredOutputConfig Config>
+    [[nodiscard]] constexpr bool is_tick(Config const&)
     {
-        return event_input(std::move(name), type, std::move(access));
+        return Config::production == OutputProductionKind::tick;
     }
 
-    [[nodiscard]] constexpr OutputConfig tick_event_output(
-        std::string name = {},
-        EventTypeId type = {},
-        TickOutputConfig production = {},
-        OutputRetention retention = OutputRetention::ephemeral)
+    template<AuthoredOutputConfig Config>
+    [[nodiscard]] constexpr bool is_persisted(Config const& config)
     {
-        return event_output(std::move(name), type, std::move(production), retention);
+        return is_persisted(config.retention);
     }
 
-    [[nodiscard]] constexpr OutputConfig tick_event_output(
-        std::string name,
-        EventOutputProperties properties,
-        TickOutputConfig production = {},
-        OutputRetention retention = OutputRetention::ephemeral)
+    namespace port_config_details {
+        template<class Options>
+        constexpr void include_channel_layout(
+            std::optional<ChannelLayout>& result,
+            Options const& options)
+        {
+            if constexpr (requires { options.channel_layout; }) {
+                if (result && *result != options.channel_layout) {
+                    throw "continuous alternatives must use one channel layout";
+                }
+                result = options.channel_layout;
+            }
+        }
+
+        template<RegisteredContinuousValue... Types, class Config, std::size_t... I>
+        constexpr ChannelLayout common_channel_layout(
+            Config const& config, std::index_sequence<I...>)
+        {
+            std::optional<ChannelLayout> result;
+            (include_channel_layout(result, std::get<I>(config.options)), ...);
+            return result.value_or(
+                continuous_value_details::default_audio_channel_layout);
+        }
+
+        template<RegisteredContinuousValue... Types, class Config, std::size_t... I>
+        InputConfig erase_continuous_input(
+            Config const& config, std::index_sequence<I...> indices)
+        {
+            ContinuousInputProperties properties {
+                .channel_layout = common_channel_layout<Types...>(config, indices),
+            };
+
+            if constexpr (Config::access == InputAccessKind::sequential) {
+                std::vector<ContinuousSequentialInputMetadata> metadata;
+                metadata.reserve(sizeof...(Types));
+                (metadata.emplace_back(ContinuousValueType<Types>::metadata(
+                    std::get<I>(config.options))), ...);
+                SequentialContinuousInputProperties access {
+                    .value_metadata = std::move(metadata),
+                };
+                properties.access = std::move(access);
+            } else if constexpr (Config::access == InputAccessKind::region) {
+                std::vector<ContinuousRegionInputMetadata> metadata;
+                metadata.reserve(sizeof...(Types));
+                (metadata.emplace_back(ContinuousValueType<Types>::metadata(
+                    std::get<I>(config.options))), ...);
+                properties.access = RegionContinuousInputProperties{
+                    .value_metadata = std::move(metadata),
+                };
+            } else {
+                std::vector<ContinuousCoverageInputMetadata> metadata;
+                metadata.reserve(sizeof...(Types));
+                (metadata.emplace_back(ContinuousValueType<Types>::metadata(
+                    std::get<I>(config.options))), ...);
+                properties.access = CoverageContinuousInputProperties{
+                    .value_metadata = std::move(metadata),
+                };
+            }
+
+            return {
+                config.name,
+                std::move(properties),
+            };
+        }
+
+        template<RegisteredContinuousValue... Types, class Config, std::size_t... I>
+        OutputConfig erase_continuous_output(
+            Config const& config, std::index_sequence<I...> indices)
+        {
+            ContinuousOutputProperties properties {
+                .channel_layout = common_channel_layout<Types...>(config, indices),
+            };
+
+            if constexpr (Config::production == OutputProductionKind::tick) {
+                std::vector<ContinuousTickOutputMetadata> metadata;
+                metadata.reserve(sizeof...(Types));
+                (metadata.emplace_back(ContinuousValueType<Types>::metadata(
+                    std::get<I>(config.options))), ...);
+                properties.production = TickContinuousOutputProperties{
+                    .value_metadata = std::move(metadata),
+                };
+            } else if constexpr (
+                Config::production == OutputProductionKind::region) {
+                std::vector<ContinuousRegionOutputMetadata> metadata;
+                metadata.reserve(sizeof...(Types));
+                (metadata.emplace_back(ContinuousValueType<Types>::metadata(
+                    std::get<I>(config.options))), ...);
+                properties.production = RegionContinuousOutputProperties{
+                    .value_metadata = std::move(metadata),
+                };
+            } else {
+                std::vector<ContinuousCoverageOutputMetadata> metadata;
+                metadata.reserve(sizeof...(Types));
+                (metadata.emplace_back(ContinuousValueType<Types>::metadata(
+                    std::get<I>(config.options))), ...);
+                properties.production = CoverageContinuousOutputProperties{
+                    .value_metadata = std::move(metadata),
+                };
+            }
+
+            return {
+                config.name,
+                std::move(properties),
+                config.retention,
+            };
+        }
+    }
+
+    template<AuthoredContinuousInputConfig Config>
+    [[nodiscard]] constexpr ChannelLayout effective_channel_layout(
+        Config const& config)
     {
-        return event_output(
-            std::move(name), std::move(properties), std::move(production), retention);
+        std::optional<ChannelLayout> result;
+        std::apply([&](auto const&... options) {
+            (port_config_details::include_channel_layout(result, options), ...);
+        }, config.options);
+        return result.value_or(
+            continuous_value_details::default_audio_channel_layout);
+    }
+
+    template<AuthoredContinuousOutputConfig Config>
+    [[nodiscard]] constexpr ChannelLayout effective_channel_layout(
+        Config const& config)
+    {
+        std::optional<ChannelLayout> result;
+        std::apply([&](auto const&... options) {
+            (port_config_details::include_channel_layout(result, options), ...);
+        }, config.options);
+        return result.value_or(
+            continuous_value_details::default_audio_channel_layout);
+    }
+
+    template<RegisteredContinuousValue... Types>
+    [[nodiscard]] InputConfig erase_port_config(
+        SequentialInputConfig<Types...> const& config)
+    {
+        return port_config_details::erase_continuous_input<Types...>(
+            config, std::index_sequence_for<Types...>{});
+    }
+
+    template<RegisteredContinuousValue... Types>
+    [[nodiscard]] InputConfig erase_port_config(
+        RegionInputConfig<Types...> const& config)
+    {
+        return port_config_details::erase_continuous_input<Types...>(
+            config, std::index_sequence_for<Types...>{});
+    }
+
+    template<RegisteredContinuousValue... Types>
+    [[nodiscard]] InputConfig erase_port_config(
+        CoverageInputConfig<Types...> const& config)
+    {
+        return port_config_details::erase_continuous_input<Types...>(
+            config, std::index_sequence_for<Types...>{});
+    }
+
+    template<RegisteredContinuousValue... Types>
+    [[nodiscard]] OutputConfig erase_port_config(
+        TickOutputConfig<Types...> const& config)
+    {
+        return port_config_details::erase_continuous_output<Types...>(
+            config, std::index_sequence_for<Types...>{});
+    }
+
+    template<RegisteredContinuousValue... Types>
+    [[nodiscard]] OutputConfig erase_port_config(
+        RegionOutputConfig<Types...> const& config)
+    {
+        return port_config_details::erase_continuous_output<Types...>(
+            config, std::index_sequence_for<Types...>{});
+    }
+
+    template<RegisteredContinuousValue... Types>
+    [[nodiscard]] OutputConfig erase_port_config(
+        CoverageOutputConfig<Types...> const& config)
+    {
+        return port_config_details::erase_continuous_output<Types...>(
+            config, std::index_sequence_for<Types...>{});
+    }
+
+    template<AuthoredEventInputConfig Config>
+    [[nodiscard]] InputConfig erase_port_config(Config const& config)
+    {
+        return {
+            config.name,
+            EventInputProperties{
+                .type = config.type,
+                .access = static_cast<InputAccessConfig>(Config::access),
+            },
+        };
+    }
+
+    template<AuthoredEventOutputConfig Config>
+    [[nodiscard]] OutputConfig erase_port_config(Config const& config)
+    {
+        return {
+            config.name,
+            EventOutputProperties{
+                .type = config.type,
+                .max_events_per_index = config.options.max_events_per_index,
+                .production = static_cast<OutputProductionConfig>(
+                    Config::production),
+            },
+            config.retention,
+        };
     }
 
     // The configured graph keeps storage sample/event lists because lowering
@@ -1928,110 +2618,224 @@ namespace iv {
     struct EventInputConfig {
         std::string name {};
         EventTypeId type {};
-        InputAccessConfig access {SequentialInputConfig{}};
+        InputAccessConfig access = InputAccessKind::sequential;
+        constexpr bool operator==(EventInputConfig const&) const = default;
     };
 
     struct EventOutputConfig {
         std::string name {};
         EventTypeId type {};
         double max_events_per_index = DEFAULT_MAX_EVENTS_PER_SAMPLE;
-        OutputProductionConfig production {TickOutputConfig{}};
+        OutputProductionConfig production = OutputProductionKind::tick;
         OutputRetention retention = OutputRetention::ephemeral;
+        constexpr bool operator==(EventOutputConfig const&) const = default;
     };
 
-    struct SampleInputConfig {
+    struct ContinuousInputConfig {
         std::string name {};
-        ContinuousValueTypeSet value_types = sample_value_type;
         ChannelLayout channel_layout {
             .channel_type = ChannelTypeId::mono,
             .sample_layout = SampleStreamLayout::planar,
         };
-        InputAccessConfig access {SequentialInputConfig{}};
-        Sample neutral_value = 0.0;
-        Sample default_value = 0.0;
-        Sample min = -std::numeric_limits<Sample::storage>::infinity();
-        Sample max = std::numeric_limits<Sample::storage>::infinity();
+        ContinuousInputAccessProperties access {};
+        constexpr bool operator==(ContinuousInputConfig const&) const = default;
     };
 
-    struct SampleOutputConfig {
+    struct ContinuousOutputConfig {
         std::string name {};
-        ContinuousValueTypeSet value_types = sample_value_type;
         ChannelLayout channel_layout {
             .channel_type = ChannelTypeId::mono,
             .sample_layout = SampleStreamLayout::planar,
         };
-        OutputProductionConfig production {TickOutputConfig{}};
+        ContinuousOutputProductionProperties production {};
         OutputRetention retention = OutputRetention::ephemeral;
+        constexpr bool operator==(ContinuousOutputConfig const&) const = default;
     };
 
-    constexpr ChannelLayout effective_channel_layout(SampleInputConfig const& config)
+    [[nodiscard]] constexpr ContinuousValueTypeSet
+    continuous_value_type_domain(ContinuousInputConfig const& config)
+    {
+        return std::visit([](auto const& access) {
+            return continuous_value_type_domain(access);
+        }, config.access);
+    }
+
+    [[nodiscard]] constexpr ContinuousValueTypeSet
+    continuous_value_type_domain(ContinuousOutputConfig const& config)
+    {
+        return std::visit([](auto const& production) {
+            return continuous_value_type_domain(production);
+        }, config.production);
+    }
+
+    constexpr ChannelLayout effective_channel_layout(ContinuousInputConfig const& config)
     {
         return config.channel_layout;
     }
 
-    constexpr ChannelLayout effective_channel_layout(SampleOutputConfig const& config)
+    constexpr ChannelLayout effective_channel_layout(ContinuousOutputConfig const& config)
     {
         return config.channel_layout;
     }
 
-    [[nodiscard]] constexpr bool is_random_access(InputConfig const& config)
+    [[nodiscard]] constexpr SequentialContinuousInputProperties const&
+    sequential_input_properties(ContinuousInputProperties const& config)
     {
-        return is_random_access(config.access);
+        return std::get<SequentialContinuousInputProperties>(config.access);
     }
 
-    [[nodiscard]] constexpr bool is_tock(OutputConfig const& config)
+    [[nodiscard]] constexpr SequentialContinuousInputProperties const&
+    sequential_input_properties(ContinuousInputConfig const& config)
     {
-        return is_tock(config.production);
+        return std::get<SequentialContinuousInputProperties>(config.access);
     }
 
-    [[nodiscard]] constexpr bool is_random_access(SampleInputConfig const& config)
+    template<RegisteredContinuousValue Type>
+    [[nodiscard]] constexpr auto const& sequential_input_metadata(
+        SequentialContinuousInputProperties const& properties)
     {
-        return is_random_access(config.access);
+        using Metadata =
+            typename ContinuousValueType<Type>::SequentialInputMetadata;
+        for (auto const& metadata : properties.value_metadata) {
+            if (auto const* value = std::get_if<Metadata>(&metadata)) {
+                return *value;
+            }
+        }
+        throw std::invalid_argument(
+            "Sequential input does not declare the requested continuous value type");
     }
 
-    [[nodiscard]] constexpr bool is_tock(SampleOutputConfig const& config)
+    [[nodiscard]] constexpr InputAccessKind input_access(
+        ContinuousInputAccessProperties const& access)
     {
-        return is_tock(config.production);
+        return std::visit([](auto const& properties) {
+            using Properties = std::remove_cvref_t<decltype(properties)>;
+            if constexpr (std::same_as<
+                              Properties,
+                              SequentialContinuousInputProperties>) {
+                return InputAccessKind::sequential;
+            } else if constexpr (std::same_as<
+                                     Properties,
+                                     RegionContinuousInputProperties>) {
+                return InputAccessKind::region;
+            } else {
+                static_assert(std::same_as<
+                    Properties, CoverageContinuousInputProperties>);
+                return InputAccessKind::coverage;
+            }
+        }, access);
     }
 
-    [[nodiscard]] constexpr bool is_random_access(EventInputConfig const& config)
+    [[nodiscard]] constexpr InputAccessKind input_access(
+        ContinuousInputProperties const& config)
     {
-        return is_random_access(config.access);
+        return input_access(config.access);
     }
 
-    [[nodiscard]] constexpr bool is_tock(EventOutputConfig const& config)
+    [[nodiscard]] constexpr InputAccessKind input_access(
+        ContinuousInputConfig const& config)
     {
-        return is_tock(config.production);
+        return input_access(config.access);
     }
 
-    [[nodiscard]] constexpr bool is_sequential(InputConfig const& config)
+    [[nodiscard]] constexpr InputAccessKind input_access(
+        EventInputProperties const& config)
     {
-        return is_sequential(config.access);
+        return config.access;
     }
 
-    [[nodiscard]] constexpr bool is_sequential(SampleInputConfig const& config)
+    [[nodiscard]] constexpr InputAccessKind input_access(
+        EventInputConfig const& config)
     {
-        return is_sequential(config.access);
+        return config.access;
     }
 
-    [[nodiscard]] constexpr bool is_sequential(EventInputConfig const& config)
+    [[nodiscard]] constexpr InputAccessKind input_access(InputConfig const& config)
     {
-        return is_sequential(config.access);
+        return std::visit([](auto const& properties) {
+            return input_access(properties);
+        }, config.kind);
     }
 
-    [[nodiscard]] constexpr bool is_tick(OutputConfig const& config)
+    [[nodiscard]] constexpr OutputProductionKind output_production(
+        ContinuousOutputProductionProperties const& production)
     {
-        return is_tick(config.production);
+        return std::visit([](auto const& properties) {
+            using Properties = std::remove_cvref_t<decltype(properties)>;
+            if constexpr (std::same_as<
+                              Properties,
+                              TickContinuousOutputProperties>) {
+                return OutputProductionKind::tick;
+            } else if constexpr (std::same_as<
+                                     Properties,
+                                     RegionContinuousOutputProperties>) {
+                return OutputProductionKind::region;
+            } else {
+                static_assert(std::same_as<
+                    Properties, CoverageContinuousOutputProperties>);
+                return OutputProductionKind::coverage;
+            }
+        }, production);
     }
 
-    [[nodiscard]] constexpr bool is_tick(SampleOutputConfig const& config)
+    [[nodiscard]] constexpr OutputProductionKind output_production(
+        ContinuousOutputProperties const& config)
     {
-        return is_tick(config.production);
+        return output_production(config.production);
     }
 
-    [[nodiscard]] constexpr bool is_tick(EventOutputConfig const& config)
+    [[nodiscard]] constexpr OutputProductionKind output_production(
+        ContinuousOutputConfig const& config)
     {
-        return is_tick(config.production);
+        return output_production(config.production);
+    }
+
+    [[nodiscard]] constexpr OutputProductionKind output_production(
+        EventOutputProperties const& config)
+    {
+        return config.production;
+    }
+
+    [[nodiscard]] constexpr OutputProductionKind output_production(
+        EventOutputConfig const& config)
+    {
+        return config.production;
+    }
+
+    [[nodiscard]] constexpr OutputProductionKind output_production(
+        OutputConfig const& config)
+    {
+        return std::visit([](auto const& properties) {
+            return output_production(properties);
+        }, config.kind);
+    }
+
+    template<class Config>
+    [[nodiscard]] constexpr bool is_random_access(Config const& config)
+        requires requires { input_access(config); }
+    {
+        return is_random_access(input_access(config));
+    }
+
+    template<class Config>
+    [[nodiscard]] constexpr bool is_tock(Config const& config)
+        requires requires { output_production(config); }
+    {
+        return is_tock(output_production(config));
+    }
+
+    template<class Config>
+    [[nodiscard]] constexpr bool is_sequential(Config const& config)
+        requires requires { input_access(config); }
+    {
+        return is_sequential(input_access(config));
+    }
+
+    template<class Config>
+    [[nodiscard]] constexpr bool is_tick(Config const& config)
+        requires requires { output_production(config); }
+    {
+        return is_tick(output_production(config));
     }
 
     [[nodiscard]] constexpr bool is_persisted(OutputConfig const& config)
@@ -2039,7 +2843,7 @@ namespace iv {
         return is_persisted(config.retention);
     }
 
-    [[nodiscard]] constexpr bool is_persisted(SampleOutputConfig const& config)
+    [[nodiscard]] constexpr bool is_persisted(ContinuousOutputConfig const& config)
     {
         return is_persisted(config.retention);
     }
@@ -2049,31 +2853,25 @@ namespace iv {
         return is_persisted(config.retention);
     }
 
-    [[nodiscard]] constexpr SampleInputConfig materialize_sample_config(
+    [[nodiscard]] constexpr ContinuousInputConfig materialize_continuous_config(
         InputConfig const& config)
     {
-        auto const& properties = std::get<SampleInputProperties>(config.kind);
+        auto const& properties = std::get<ContinuousInputProperties>(config.kind);
         return {
             .name = config.name,
-            .value_types = properties.value_types,
             .channel_layout = properties.channel_layout,
-            .access = config.access,
-            .neutral_value = properties.neutral_value,
-            .default_value = properties.default_value,
-            .min = properties.min,
-            .max = properties.max,
+            .access = properties.access,
         };
     }
 
-    [[nodiscard]] constexpr SampleOutputConfig materialize_sample_config(
+    [[nodiscard]] constexpr ContinuousOutputConfig materialize_continuous_config(
         OutputConfig const& config)
     {
-        auto const& properties = std::get<SampleOutputProperties>(config.kind);
+        auto const& properties = std::get<ContinuousOutputProperties>(config.kind);
         return {
             .name = config.name,
-            .value_types = properties.value_types,
             .channel_layout = properties.channel_layout,
-            .production = config.production,
+            .production = properties.production,
             .retention = config.retention,
         };
     }
@@ -2084,7 +2882,7 @@ namespace iv {
         return {
             .name = config.name,
             .type = std::get<EventInputProperties>(config.kind).type,
-            .access = config.access,
+            .access = input_access(config),
         };
     }
 
@@ -2096,25 +2894,20 @@ namespace iv {
             .name = config.name,
             .type = properties.type,
             .max_events_per_index = properties.max_events_per_index,
-            .production = config.production,
+            .production = output_production(config),
             .retention = config.retention,
         };
     }
 
     [[nodiscard]] constexpr InputConfig make_input_config(
-        SampleInputConfig const& config)
+        ContinuousInputConfig const& config)
     {
         return {
             config.name,
-            SampleInputProperties{
-                .value_types = config.value_types,
+            ContinuousInputProperties{
                 .channel_layout = config.channel_layout,
-                .neutral_value = config.neutral_value,
-                .default_value = config.default_value,
-                .min = config.min,
-                .max = config.max,
+                .access = config.access,
             },
-            config.access,
         };
     }
 
@@ -2123,21 +2916,19 @@ namespace iv {
     {
         return {
             config.name,
-            EventInputProperties{.type = config.type},
-            config.access,
+            EventInputProperties{.type = config.type, .access = config.access},
         };
     }
 
     [[nodiscard]] constexpr OutputConfig make_output_config(
-        SampleOutputConfig const& config)
+        ContinuousOutputConfig const& config)
     {
         return {
             config.name,
-            SampleOutputProperties{
-                .value_types = config.value_types,
+            ContinuousOutputProperties{
                 .channel_layout = config.channel_layout,
+                .production = config.production,
             },
-            config.production,
             config.retention,
         };
     }
@@ -2150,28 +2941,28 @@ namespace iv {
             EventOutputProperties{
                 .type = config.type,
                 .max_events_per_index = config.max_events_per_index,
+                .production = config.production,
             },
-            config.production,
             config.retention,
         };
     }
 
-    [[nodiscard]] constexpr bool is_sample(InputConfig const& config)
+    [[nodiscard]] constexpr bool is_continuous(InputConfig const& config)
     {
-        return std::holds_alternative<SampleInputProperties>(config.kind);
+        return std::holds_alternative<ContinuousInputProperties>(config.kind);
     }
 
-    [[nodiscard]] constexpr bool is_sample(OutputConfig const& config)
+    [[nodiscard]] constexpr bool is_continuous(OutputConfig const& config)
     {
-        return std::holds_alternative<SampleOutputProperties>(config.kind);
+        return std::holds_alternative<ContinuousOutputProperties>(config.kind);
     }
 
     template<typename Ports>
-    constexpr size_t count_sample_ports(Ports const& ports)
+    constexpr size_t count_continuous_ports(Ports const& ports)
     {
         size_t result = 0;
         for (auto const& port : ports) {
-            result += is_sample(port);
+            result += is_continuous(port);
         }
         return result;
     }
@@ -2179,19 +2970,19 @@ namespace iv {
     template<typename Ports>
     constexpr size_t count_event_ports(Ports const& ports)
     {
-        return ports.size() - count_sample_ports(ports);
+        return ports.size() - count_continuous_ports(ports);
     }
 
-    [[nodiscard]] constexpr SampleInputProperties const& sample_properties(
+    [[nodiscard]] constexpr ContinuousInputProperties const& continuous_properties(
         InputConfig const& config)
     {
-        return std::get<SampleInputProperties>(config.kind);
+        return std::get<ContinuousInputProperties>(config.kind);
     }
 
-    [[nodiscard]] constexpr SampleOutputProperties const& sample_properties(
+    [[nodiscard]] constexpr ContinuousOutputProperties const& continuous_properties(
         OutputConfig const& config)
     {
-        return std::get<SampleOutputProperties>(config.kind);
+        return std::get<ContinuousOutputProperties>(config.kind);
     }
 
     [[nodiscard]] constexpr EventInputProperties const& event_properties(

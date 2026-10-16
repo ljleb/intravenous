@@ -4,8 +4,22 @@
 #include <intravenous/ports.h>
 
 #include <cstddef>
+#include <type_traits>
 
 namespace iv::details {
+    template<size_t Limit, PortConfigTuple Tuple, class Predicate>
+    consteval size_t count_static_configs_before(
+        Tuple const& configs, Predicate predicate)
+    {
+        size_t position = 0;
+        size_t result = 0;
+        for_each_port_config(configs, [&](auto const& config) {
+            if (position < Limit && predicate(config)) ++result;
+            ++position;
+        });
+        return result;
+    }
+
     // Port configs own std::strings. Long names allocate during constant
     // evaluation, so a config array cannot be retained in static constexpr
     // storage or exposed by reference. Keep each array local to its consteval
@@ -15,13 +29,16 @@ namespace iv::details {
     {
         auto const configs = Node::inputs();
         size_t found = static_cast<size_t>(-1);
-        for (size_t index = 0; index < configs.size(); ++index) {
-            if (configs[index].name != Name.view()) continue;
-            if (found != static_cast<size_t>(-1)) {
-                throw "duplicate static input port name";
+        size_t index = 0;
+        for_each_port_config(configs, [&](auto const& config) {
+            if (config.name == Name.view()) {
+                if (found != static_cast<size_t>(-1)) {
+                    throw "duplicate static input port name";
+                }
+                found = index;
             }
-            found = index;
-        }
+            ++index;
+        });
         if (found == static_cast<size_t>(-1)) {
             throw "unknown static input port name";
         }
@@ -33,13 +50,16 @@ namespace iv::details {
     {
         auto const configs = Node::outputs();
         size_t found = static_cast<size_t>(-1);
-        for (size_t index = 0; index < configs.size(); ++index) {
-            if (configs[index].name != Name.view()) continue;
-            if (found != static_cast<size_t>(-1)) {
-                throw "duplicate static output port name";
+        size_t index = 0;
+        for_each_port_config(configs, [&](auto const& config) {
+            if (config.name == Name.view()) {
+                if (found != static_cast<size_t>(-1)) {
+                    throw "duplicate static output port name";
+                }
+                found = index;
             }
-            found = index;
-        }
+            ++index;
+        });
         if (found == static_cast<size_t>(-1)) {
             throw "unknown static output port name";
         }
@@ -49,153 +69,153 @@ namespace iv::details {
     template<typename Node, size_t Index>
     consteval PortKind static_input_port_kind_at()
     {
-        static_assert(Index < Node::inputs().size(),
+        static_assert(Index < port_config_count_v<decltype(Node::inputs())>,
             "static input port index is out of bounds");
         auto const configs = Node::inputs();
-        return is_sample(configs[Index])
+        return is_continuous(port_config_at<Index>(configs))
             ? PortKind::sample : PortKind::event;
     }
 
     template<typename Node, size_t Index>
     consteval PortKind static_output_port_kind_at()
     {
-        static_assert(Index < Node::outputs().size(),
+        static_assert(Index < port_config_count_v<decltype(Node::outputs())>,
             "static output port index is out of bounds");
         auto const configs = Node::outputs();
-        return is_sample(configs[Index])
+        return is_continuous(port_config_at<Index>(configs))
             ? PortKind::sample : PortKind::event;
     }
 
     template<typename Node, size_t Index>
     consteval size_t static_sample_input_port_index_at()
     {
-        static_assert(Index < Node::inputs().size(),
+        static_assert(Index < port_config_count_v<decltype(Node::inputs())>,
             "static input port index is out of bounds");
         static_assert(static_input_port_kind_at<Node, Index>() == PortKind::sample,
             "static input port is not a sample port");
         auto const configs = Node::inputs();
-        size_t result = 0;
-        for (size_t index = 0; index < Index; ++index) {
-            if (is_sample(configs[index])) ++result;
-        }
-        return result;
+        return count_static_configs_before<Index>(
+            configs, [](auto const& config) { return is_continuous(config); });
     }
 
     template<typename Node, size_t Index>
     consteval size_t static_event_input_port_index_at()
     {
-        static_assert(Index < Node::inputs().size(),
+        static_assert(Index < port_config_count_v<decltype(Node::inputs())>,
             "static input port index is out of bounds");
         static_assert(static_input_port_kind_at<Node, Index>() == PortKind::event,
             "static input port is not an event port");
         auto const configs = Node::inputs();
-        size_t result = 0;
-        for (size_t index = 0; index < Index; ++index) {
-            if (!is_sample(configs[index])) ++result;
-        }
-        return result;
+        return count_static_configs_before<Index>(
+            configs, [](auto const& config) { return !is_continuous(config); });
     }
 
     template<typename Node, size_t Index>
     consteval size_t static_realtime_sample_output_port_index_at()
     {
-        static_assert(Index < Node::outputs().size(),
+        static_assert(Index < port_config_count_v<decltype(Node::outputs())>,
             "static output port index is out of bounds");
         static_assert(static_output_port_kind_at<Node, Index>() == PortKind::sample,
             "static output port is not a sample port");
-        static_assert(!is_tock(Node::outputs()[Index]),
+        static_assert(!is_tock(port_config_at<Index>(Node::outputs())),
             "static output port is not produced by Tick execution");
         auto const configs = Node::outputs();
-        size_t result = 0;
-        for (size_t index = 0; index < Index; ++index) {
-            if (is_sample(configs[index]) && is_tick(configs[index].production)) {
-                ++result;
-            }
-        }
-        return result;
+        return count_static_configs_before<Index>(configs, [](auto const& config) {
+            return is_continuous(config) && is_tick(config);
+        });
     }
 
     template<typename Node, size_t Index>
     consteval size_t static_realtime_event_output_port_index_at()
     {
-        static_assert(Index < Node::outputs().size(),
+        static_assert(Index < port_config_count_v<decltype(Node::outputs())>,
             "static output port index is out of bounds");
         static_assert(static_output_port_kind_at<Node, Index>() == PortKind::event,
             "static output port is not an event port");
-        static_assert(!is_tock(Node::outputs()[Index]),
+        static_assert(!is_tock(port_config_at<Index>(Node::outputs())),
             "static output port is not produced by Tick execution");
         auto const configs = Node::outputs();
-        size_t result = 0;
-        for (size_t index = 0; index < Index; ++index) {
-            if (!is_sample(configs[index]) && is_tick(configs[index].production)) {
-                ++result;
-            }
-        }
-        return result;
+        return count_static_configs_before<Index>(configs, [](auto const& config) {
+            return !is_continuous(config) && is_tick(config);
+        });
     }
 
     template<typename Node, size_t Index>
     consteval ChannelLayout static_input_port_layout_at()
     {
-        static_assert(Index < Node::inputs().size(),
+        static_assert(Index < port_config_count_v<decltype(Node::inputs())>,
             "static input port index is out of bounds");
         static_assert(static_input_port_kind_at<Node, Index>() == PortKind::sample,
             "static input port is not a sample port");
         auto const configs = Node::inputs();
-        return effective_channel_layout(sample_properties(configs[Index]));
+        return effective_channel_layout(port_config_at<Index>(configs));
     }
 
     template<typename Node, size_t Index>
     consteval ChannelLayout static_declared_output_port_layout_at()
     {
-        static_assert(Index < Node::outputs().size(),
+        static_assert(Index < port_config_count_v<decltype(Node::outputs())>,
             "static output port index is out of bounds");
         static_assert(static_output_port_kind_at<Node, Index>() == PortKind::sample,
             "static output port is not a sample port");
         auto const configs = Node::outputs();
-        return effective_channel_layout(sample_properties(configs[Index]));
+        return effective_channel_layout(port_config_at<Index>(configs));
+    }
+
+    template<typename Node, size_t Index>
+    consteval InputAccessKind static_input_port_access_at()
+    {
+        static_assert(Index < port_config_count_v<decltype(Node::inputs())>,
+            "static input port index is out of bounds");
+        auto const configs = Node::inputs();
+        using Config = std::remove_cvref_t<
+            decltype(port_config_at<Index>(configs))>;
+        return Config::access;
+    }
+
+    template<typename Node, size_t Index>
+    consteval OutputProductionKind static_output_port_production_at()
+    {
+        static_assert(Index < port_config_count_v<decltype(Node::outputs())>,
+            "static output port index is out of bounds");
+        auto const configs = Node::outputs();
+        using Config = std::remove_cvref_t<
+            decltype(port_config_at<Index>(configs))>;
+        return Config::production;
     }
 
     template<typename Node, size_t Index>
     consteval bool static_input_port_is_random_access_at()
     {
-        static_assert(Index < Node::inputs().size(),
-            "static input port index is out of bounds");
-        auto const configs = Node::inputs();
-        return is_random_access(configs[Index]);
+        return static_input_port_access_at<Node, Index>()
+            != InputAccessKind::sequential;
     }
 
     template<typename Node, size_t Index>
     consteval bool static_output_port_is_tock_at()
     {
-        static_assert(Index < Node::outputs().size(),
-            "static output port index is out of bounds");
-        auto const configs = Node::outputs();
-        return is_tock(configs[Index]);
+        return static_output_port_production_at<Node, Index>()
+            != OutputProductionKind::tick;
     }
 
     template<typename Node, size_t Index>
     consteval bool static_output_port_is_recording_at()
     {
-        static_assert(Index < Node::outputs().size(),
+        static_assert(Index < port_config_count_v<decltype(Node::outputs())>,
             "static output port index is out of bounds");
         auto const configs = Node::outputs();
-        auto const& config = configs[Index];
-        return is_tick(config.production) && is_persisted(config.retention);
+        auto const& config = port_config_at<Index>(configs);
+        return is_tick(config) && is_persisted(config);
     }
 
     template<typename Node>
     consteval size_t static_recording_sample_output_count()
     {
         if constexpr (requires { Node::outputs(); }) {
-            size_t result = 0;
-            for (auto const& config : Node::outputs()) {
-                if (is_sample(config) && is_tick(config.production)
-                    && is_persisted(config.retention)) {
-                    ++result;
-                }
-            }
-            return result;
+            return count_port_configs(Node::outputs(), [](auto const& config) {
+                return is_continuous(config) && is_tick(config)
+                    && is_persisted(config);
+            });
         } else {
             return 0;
         }
@@ -205,14 +225,10 @@ namespace iv::details {
     consteval size_t static_recording_event_output_count()
     {
         if constexpr (requires { Node::outputs(); }) {
-            size_t result = 0;
-            for (auto const& config : Node::outputs()) {
-                if (!is_sample(config) && is_tick(config.production)
-                    && is_persisted(config.retention)) {
-                    ++result;
-                }
-            }
-            return result;
+            return count_port_configs(Node::outputs(), [](auto const& config) {
+                return !is_continuous(config) && is_tick(config)
+                    && is_persisted(config);
+            });
         } else {
             return 0;
         }
@@ -229,77 +245,57 @@ namespace iv::details {
     template<typename Node, size_t Index>
     consteval size_t static_recording_sample_output_index_at()
     {
-        static_assert(Index < Node::outputs().size(),
+        static_assert(Index < port_config_count_v<decltype(Node::outputs())>,
             "static output port index is out of bounds");
         static_assert(static_output_port_kind_at<Node, Index>() == PortKind::sample
                 && static_output_port_is_recording_at<Node, Index>(),
             "static output port is not a Tick/persisted sample port");
         auto const configs = Node::outputs();
-        size_t result = 0;
-        for (size_t index = 0; index < Index; ++index) {
-            auto const& config = configs[index];
-            if (is_sample(config) && is_tick(config.production)
-                && is_persisted(config.retention)) {
-                ++result;
-            }
-        }
-        return result;
+        return count_static_configs_before<Index>(configs, [](auto const& config) {
+            return is_continuous(config) && is_tick(config) && is_persisted(config);
+        });
     }
 
     template<typename Node, size_t Index>
     consteval size_t static_recording_event_output_index_at()
     {
-        static_assert(Index < Node::outputs().size(),
+        static_assert(Index < port_config_count_v<decltype(Node::outputs())>,
             "static output port index is out of bounds");
         static_assert(static_output_port_kind_at<Node, Index>() == PortKind::event
                 && static_output_port_is_recording_at<Node, Index>(),
             "static output port is not a Tick/persisted event port");
         auto const configs = Node::outputs();
-        size_t result = 0;
-        for (size_t index = 0; index < Index; ++index) {
-            auto const& config = configs[index];
-            if (!is_sample(config) && is_tick(config.production)
-                && is_persisted(config.retention)) {
-                ++result;
-            }
-        }
-        return result;
+        return count_static_configs_before<Index>(configs, [](auto const& config) {
+            return !is_continuous(config) && is_tick(config) && is_persisted(config);
+        });
     }
 
     template<typename Node, size_t Index>
     consteval size_t static_random_access_input_port_index_at()
     {
-        static_assert(Index < Node::inputs().size(),
+        static_assert(Index < port_config_count_v<decltype(Node::inputs())>,
             "static input port index is out of bounds");
         static_assert(static_input_port_kind_at<Node, Index>() == PortKind::sample
                 && static_input_port_is_random_access_at<Node, Index>(),
             "static input port is not a Random Access sample port");
         auto const configs = Node::inputs();
-        size_t result = 0;
-        for (size_t index = 0; index < Index; ++index) {
-            if (is_sample(configs[index]) && is_random_access(configs[index])) {
-                ++result;
-            }
-        }
-        return result;
+        return count_static_configs_before<Index>(configs, [](auto const& config) {
+            return is_continuous(config) && is_random_access(config);
+        });
     }
 
     template<typename Node, size_t Index>
     consteval size_t static_random_access_event_input_port_index_at()
     {
-        static_assert(Index < Node::inputs().size(),
+        static_assert(Index < port_config_count_v<decltype(Node::inputs())>,
             "static input port index is out of bounds");
         static_assert(static_input_port_kind_at<Node, Index>() == PortKind::event
                 && static_input_port_is_random_access_at<Node, Index>(),
             "static input port is not a Random Access event port");
         auto const configs = Node::inputs();
-        size_t result = 0;
-        for (size_t index = 0; index < Index; ++index) {
-            if (!is_sample(configs[index]) && is_random_access(configs[index])) {
-                ++result;
-            }
-        }
-        return result;
+        return count_static_configs_before<Index>(configs, [](auto const& config) {
+            return !is_continuous(config) && is_random_access(config);
+        });
     }
 
     template<typename Node, fixed_string Name>
@@ -319,7 +315,7 @@ namespace iv::details {
     template<typename Node>
     consteval size_t static_output_count()
     {
-        return count_sample_ports(Node::outputs());
+        return count_continuous_ports(Node::outputs());
     }
 
     template<typename Node>
@@ -331,9 +327,9 @@ namespace iv::details {
         auto const configs = Node::inputs();
         size_t found = static_cast<size_t>(-1);
         size_t sample_index = 0;
-        for (size_t i = 0; i < configs.size(); ++i) {
-            if (is_sample(configs[i])) {
-                if (configs[i].name == Name.view()) {
+        for_each_port_config(configs, [&](auto const& config) {
+            if (is_continuous(config)) {
+                if (config.name == Name.view()) {
                     if (found != static_cast<size_t>(-1)) {
                         throw "duplicate static input port name";
                     }
@@ -341,7 +337,7 @@ namespace iv::details {
                 }
                 ++sample_index;
             }
-        }
+        });
         if (found == static_cast<size_t>(-1)) {
             throw "unknown static sample input port name";
         }
@@ -349,15 +345,19 @@ namespace iv::details {
     }
 
     template<typename Node, fixed_string Name>
-    consteval SampleInputProperties static_input_port_properties()
+    consteval ContinuousValueTypeSet static_input_port_value_types()
     {
         auto const configs = Node::inputs();
-        for (InputConfig const& config : configs) {
-            if (auto const* properties =
-                    std::get_if<SampleInputProperties>(&config.kind);
-                properties != nullptr && config.name == Name.view()) {
-                return *properties;
+        std::optional<ContinuousValueTypeSet> result;
+        for_each_port_config(configs, [&](auto const& config) {
+            if constexpr (AuthoredContinuousInputConfig<decltype(config)>) {
+                if (config.name == Name.view()) {
+                    result = authored_continuous_value_types_v<decltype(config)>;
+                }
             }
+        });
+        if (result) {
+            return *result;
         }
         throw "unknown static sample input port name";
     }
@@ -368,9 +368,9 @@ namespace iv::details {
         auto const configs = Node::outputs();
         size_t found = static_cast<size_t>(-1);
         size_t sample_index = 0;
-        for (size_t i = 0; i < configs.size(); ++i) {
-            if (is_sample(configs[i])) {
-                if (configs[i].name == Name.view()) {
+        for_each_port_config(configs, [&](auto const& config) {
+            if (is_continuous(config)) {
+                if (config.name == Name.view()) {
                     if (found != static_cast<size_t>(-1)) {
                         throw "duplicate static output port name";
                     }
@@ -378,7 +378,7 @@ namespace iv::details {
                 }
                 ++sample_index;
             }
-        }
+        });
         if (found == static_cast<size_t>(-1)) {
             throw "unknown static sample output port name";
         }
@@ -386,15 +386,19 @@ namespace iv::details {
     }
 
     template<typename Node, fixed_string Name>
-    consteval SampleOutputProperties static_output_port_properties()
+    consteval ContinuousValueTypeSet static_output_port_value_types()
     {
         auto const configs = Node::outputs();
-        for (OutputConfig const& config : configs) {
-            if (auto const* properties =
-                    std::get_if<SampleOutputProperties>(&config.kind);
-                properties != nullptr && config.name == Name.view()) {
-                return *properties;
+        std::optional<ContinuousValueTypeSet> result;
+        for_each_port_config(configs, [&](auto const& config) {
+            if constexpr (AuthoredContinuousOutputConfig<decltype(config)>) {
+                if (config.name == Name.view()) {
+                    result = authored_continuous_value_types_v<decltype(config)>;
+                }
             }
+        });
+        if (result) {
+            return *result;
         }
         throw "unknown static sample output port name";
     }
@@ -402,7 +406,9 @@ namespace iv::details {
     template<typename Node, fixed_string Name>
     consteval ChannelLayout static_input_port_layout()
     {
-        return effective_channel_layout(static_input_port_properties<Node, Name>());
+        constexpr auto index = static_input_declaration_index<Node, Name>();
+        auto const configs = Node::inputs();
+        return effective_channel_layout(port_config_at<index>(configs));
     }
 
     template<typename Node, fixed_string Name>
@@ -424,11 +430,18 @@ namespace iv::details {
             "requested static input is not declared background");
         size_t background_index = 0;
         size_t sample_index = 0;
-        for (InputConfig const& config : configs) {
-            if (!is_sample(config)) continue;
-            if (sample_index == port_index) return background_index;
-            if (is_random_access(config)) ++background_index;
-            ++sample_index;
+        std::optional<size_t> result;
+        for_each_port_config(configs, [&](auto const& config) {
+            if (is_continuous(config) && !result) {
+                if (sample_index == port_index) result = background_index;
+                else {
+                    if (is_random_access(config)) ++background_index;
+                    ++sample_index;
+                }
+            }
+        });
+        if (result) {
+            return *result;
         }
         throw "unknown static sample input port name";
     }
@@ -436,7 +449,9 @@ namespace iv::details {
     template<typename Node, fixed_string Name>
     consteval ChannelLayout static_output_port_layout()
     {
-        return effective_channel_layout(static_output_port_properties<Node, Name>());
+        constexpr auto index = static_output_declaration_index<Node, Name>();
+        auto const configs = Node::outputs();
+        return effective_channel_layout(port_config_at<index>(configs));
     }
 
     template<typename Node, fixed_string Name>
@@ -462,11 +477,18 @@ namespace iv::details {
             "requested static sample output is not produced by tick execution");
         size_t realtime_index = 0;
         size_t sample_index = 0;
-        for (OutputConfig const& config : configs) {
-            if (!is_sample(config)) continue;
-            if (sample_index == port_index) return realtime_index;
-            if (is_tick(config.production)) ++realtime_index;
-            ++sample_index;
+        std::optional<size_t> result;
+        for_each_port_config(configs, [&](auto const& config) {
+            if (is_continuous(config) && !result) {
+                if (sample_index == port_index) result = realtime_index;
+                else {
+                    if (is_tick(config)) ++realtime_index;
+                    ++sample_index;
+                }
+            }
+        });
+        if (result) {
+            return *result;
         }
         throw "unknown static sample output port name";
     }
@@ -480,11 +502,18 @@ namespace iv::details {
             "requested static output is not produced by tock_coverage");
         size_t tock_index = 0;
         size_t sample_index = 0;
-        for (OutputConfig const& config : configs) {
-            if (!is_sample(config)) continue;
-            if (sample_index == port_index) return tock_index;
-            if (is_tock(config)) ++tock_index;
-            ++sample_index;
+        std::optional<size_t> result;
+        for_each_port_config(configs, [&](auto const& config) {
+            if (is_continuous(config) && !result) {
+                if (sample_index == port_index) result = tock_index;
+                else {
+                    if (is_tock(config)) ++tock_index;
+                    ++sample_index;
+                }
+            }
+        });
+        if (result) {
+            return *result;
         }
         throw "unknown static sample output port name";
     }
@@ -495,16 +524,17 @@ namespace iv::details {
         auto const configs = Node::inputs();
         size_t found = static_cast<size_t>(-1);
         size_t event_index = 0;
-        for (InputConfig const& config : configs) {
-            if (is_sample(config)) continue;
-            if (config.name == Name.view()) {
-                if (found != static_cast<size_t>(-1)) {
-                    throw "duplicate static input port name";
+        for_each_port_config(configs, [&](auto const& config) {
+            if (!is_continuous(config)) {
+                if (config.name == Name.view()) {
+                    if (found != static_cast<size_t>(-1)) {
+                        throw "duplicate static input port name";
+                    }
+                    found = event_index;
                 }
-                found = event_index;
+                ++event_index;
             }
-            ++event_index;
-        }
+        });
         if (found == static_cast<size_t>(-1)) {
             throw "unknown static event input port name";
         }
@@ -517,16 +547,17 @@ namespace iv::details {
         auto const configs = Node::outputs();
         size_t found = static_cast<size_t>(-1);
         size_t event_index = 0;
-        for (OutputConfig const& config : configs) {
-            if (is_sample(config)) continue;
-            if (config.name == Name.view()) {
-                if (found != static_cast<size_t>(-1)) {
-                    throw "duplicate static output port name";
+        for_each_port_config(configs, [&](auto const& config) {
+            if (!is_continuous(config)) {
+                if (config.name == Name.view()) {
+                    if (found != static_cast<size_t>(-1)) {
+                        throw "duplicate static output port name";
+                    }
+                    found = event_index;
                 }
-                found = event_index;
+                ++event_index;
             }
-            ++event_index;
-        }
+        });
         if (found == static_cast<size_t>(-1)) {
             throw "unknown static event output port name";
         }
@@ -564,11 +595,18 @@ namespace iv::details {
             "requested static event output is not produced by tick execution");
         size_t realtime_index = 0;
         size_t event_index = 0;
-        for (OutputConfig const& config : configs) {
-            if (is_sample(config)) continue;
-            if (event_index == port_index) return realtime_index;
-            if (is_tick(config.production)) ++realtime_index;
-            ++event_index;
+        std::optional<size_t> result;
+        for_each_port_config(configs, [&](auto const& config) {
+            if (!is_continuous(config) && !result) {
+                if (event_index == port_index) result = realtime_index;
+                else {
+                    if (is_tick(config)) ++realtime_index;
+                    ++event_index;
+                }
+            }
+        });
+        if (result) {
+            return *result;
         }
         throw "unknown static event output port name";
     }
@@ -582,11 +620,18 @@ namespace iv::details {
             "requested static event input is not declared background");
         size_t background_index = 0;
         size_t event_index = 0;
-        for (InputConfig const& config : configs) {
-            if (is_sample(config)) continue;
-            if (event_index == port_index) return background_index;
-            if (is_random_access(config)) ++background_index;
-            ++event_index;
+        std::optional<size_t> result;
+        for_each_port_config(configs, [&](auto const& config) {
+            if (!is_continuous(config) && !result) {
+                if (event_index == port_index) result = background_index;
+                else {
+                    if (is_random_access(config)) ++background_index;
+                    ++event_index;
+                }
+            }
+        });
+        if (result) {
+            return *result;
         }
         throw "unknown static event input port name";
     }
@@ -600,11 +645,18 @@ namespace iv::details {
             "requested static event output is not produced by tock_coverage");
         size_t tock_index = 0;
         size_t event_index = 0;
-        for (OutputConfig const& config : configs) {
-            if (is_sample(config)) continue;
-            if (event_index == port_index) return tock_index;
-            if (is_tock(config)) ++tock_index;
-            ++event_index;
+        std::optional<size_t> result;
+        for_each_port_config(configs, [&](auto const& config) {
+            if (!is_continuous(config) && !result) {
+                if (event_index == port_index) result = tock_index;
+                else {
+                    if (is_tock(config)) ++tock_index;
+                    ++event_index;
+                }
+            }
+        });
+        if (result) {
+            return *result;
         }
         throw "unknown static event output port name";
     }
@@ -614,15 +666,18 @@ namespace iv::details {
     {
         auto const configs = Node::outputs();
         size_t sample_index = 0;
-        for (OutputConfig const& config : configs) {
-            if (auto const* properties =
-                    std::get_if<SampleOutputProperties>(&config.kind);
-                properties != nullptr) {
+        std::optional<ChannelLayout> result;
+        for_each_port_config(configs, [&](auto const& config) {
+            if (is_continuous(config) && !result) {
                 if (sample_index == Index) {
-                    return effective_channel_layout(*properties);
+                    result = effective_channel_layout(config);
+                } else {
+                    ++sample_index;
                 }
-                ++sample_index;
             }
+        });
+        if (result) {
+            return *result;
         }
         throw "static output port index is out of bounds";
     }

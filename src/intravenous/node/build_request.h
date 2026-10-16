@@ -16,6 +16,7 @@
 #include <array>
 #include <cstddef>
 #include <concepts>
+#include <cstdint>
 #include <memory>
 #include <optional>
 #include <type_traits>
@@ -81,7 +82,7 @@ template<typename Node>
 consteval std::size_t reflected_sample_input_count()
 {
     if constexpr (has_inputs<Node> && has_constexpr_port_configs<Node>) {
-        return count_sample_ports(Node::inputs());
+        return count_continuous_ports(Node::inputs());
     } else {
         return 0;
     }
@@ -91,11 +92,9 @@ template<typename Node>
 consteval std::size_t reflected_sample_output_count()
 {
     if constexpr (has_outputs<Node> && has_constexpr_port_configs<Node>) {
-        std::size_t count = 0;
-        for (auto const& config : Node::outputs()) {
-            if (is_sample(config) && is_tick(config.production)) ++count;
-        }
-        return count;
+        return count_port_configs(Node::outputs(), [](auto const& config) {
+            return is_continuous(config) && is_tick(config);
+        });
     } else {
         return 0;
     }
@@ -123,11 +122,9 @@ template<typename Node>
 consteval std::size_t reflected_event_output_count()
 {
     if constexpr (has_outputs<Node> && has_constexpr_port_configs<Node>) {
-        std::size_t count = 0;
-        for (auto const& config : Node::outputs()) {
-            if (!is_sample(config) && is_tick(config.production)) ++count;
-        }
-        return count;
+        return count_port_configs(Node::outputs(), [](auto const& config) {
+            return !is_continuous(config) && is_tick(config);
+        });
     } else {
         return 0;
     }
@@ -145,9 +142,14 @@ template<typename Node, std::size_t Index>
 consteval bool reflected_sample_output_is_recording()
 {
     std::size_t tick_sample_index = 0;
-    for (auto const& config : Node::outputs()) {
-        if (!is_sample(config) || !is_tick(config.production)) continue;
-        if (tick_sample_index++ == Index) return is_persisted(config.retention);
+    std::optional<bool> result;
+    for_each_port_config(Node::outputs(), [&](auto const& config) {
+        if (is_continuous(config) && is_tick(config) && !result) {
+            if (tick_sample_index++ == Index) result = is_persisted(config);
+        }
+    });
+    if (result) {
+        return *result;
     }
     throw "reflected Tick sample output index is out of bounds";
 }
@@ -156,9 +158,14 @@ template<typename Node, std::size_t Index>
 consteval bool reflected_event_output_is_recording()
 {
     std::size_t tick_event_index = 0;
-    for (auto const& config : Node::outputs()) {
-        if (is_sample(config) || !is_tick(config.production)) continue;
-        if (tick_event_index++ == Index) return is_persisted(config.retention);
+    std::optional<bool> result;
+    for_each_port_config(Node::outputs(), [&](auto const& config) {
+        if (!is_continuous(config) && is_tick(config) && !result) {
+            if (tick_event_index++ == Index) result = is_persisted(config);
+        }
+    });
+    if (result) {
+        return *result;
     }
     throw "reflected Tick event output index is out of bounds";
 }
@@ -198,7 +205,9 @@ IV_FORCEINLINE auto make_tick_recording_bindings(
 {
     if constexpr (has_outputs<Node>) {
         return make_tick_recording_bindings<Node>(
-            ctx, std::make_index_sequence<Node::outputs().size()>{});
+            ctx,
+            std::make_index_sequence<
+                port_config_count_v<decltype(Node::outputs())>>{});
     } else {
         return TickRecordingBindings<Node>{};
     }
@@ -632,6 +641,281 @@ consteval auto node_propagate_reverse_coverage_operation()
 }
 
 template<class Node>
+consteval bool declares_sequential_continuous_inputs()
+{
+    if constexpr (has_inputs<Node>) {
+        return any_port_config(Node::inputs(), [](auto const& input) {
+            using Config = std::remove_cvref_t<decltype(input)>;
+            if constexpr (AuthoredContinuousInputConfig<Config>) {
+                return Config::access == InputAccessKind::sequential;
+            } else {
+                return false;
+            }
+        });
+    } else {
+        return false;
+    }
+}
+
+template<class Node, std::size_t DeclarationIndex>
+inline constexpr auto sequential_input_options = [] consteval {
+    auto const inputs = Node::inputs();
+    return port_config_at<DeclarationIndex>(inputs).options;
+}();
+
+template<class Extension>
+bool initialize_sequential_storage(
+    typename Extension::SequentialInputOptions const& options,
+    std::byte* destination,
+    std::size_t destination_bytes,
+    std::size_t elements_per_value)
+{
+    using Element = typename Extension::storage_element;
+    if ((destination == nullptr && destination_bytes != 0)
+        || reinterpret_cast<std::uintptr_t>(destination) % alignof(Element) != 0
+        || destination_bytes % sizeof(Element) != 0) {
+        return false;
+    }
+    return Extension::initialize_sequential_neutral(
+        options,
+        std::span<Element>{
+            reinterpret_cast<Element*>(destination),
+            destination_bytes / sizeof(Element)},
+        elements_per_value);
+}
+
+template<class Extension>
+bool combine_sequential_storage(
+    typename Extension::SequentialInputOptions const& options,
+    std::byte* destination,
+    std::byte const* source,
+    std::size_t byte_count,
+    std::size_t elements_per_value)
+{
+    using Element = typename Extension::storage_element;
+    if (((destination == nullptr || source == nullptr) && byte_count != 0)
+        || reinterpret_cast<std::uintptr_t>(destination) % alignof(Element) != 0
+        || reinterpret_cast<std::uintptr_t>(source) % alignof(Element) != 0
+        || byte_count % sizeof(Element) != 0) {
+        return false;
+    }
+    auto const element_count = byte_count / sizeof(Element);
+    return Extension::combine_sequential_values(
+        options,
+        std::span<Element>{
+            reinterpret_cast<Element*>(destination), element_count},
+        std::span<Element const>{
+            reinterpret_cast<Element const*>(source), element_count},
+        elements_per_value);
+}
+
+template<class Node, std::size_t DeclarationIndex, std::size_t TypeIndex>
+bool initialize_sequential_input_type(
+    ContinuousValueTypeId value_type,
+    std::byte* destination,
+    std::size_t destination_bytes,
+    std::size_t elements_per_value)
+{
+    using Config = std::remove_cvref_t<decltype(port_config_at<DeclarationIndex>(
+        std::declval<decltype(Node::inputs()) const&>()))>;
+    using Type = std::tuple_element_t<TypeIndex, typename Config::value_types>;
+    if (value_type != continuous_value_type_id_v<Type>) return false;
+    return initialize_sequential_storage<ContinuousValueType<Type>>(
+        std::get<TypeIndex>(
+            sequential_input_options<Node, DeclarationIndex>),
+        destination,
+        destination_bytes,
+        elements_per_value);
+}
+
+template<class Node, std::size_t DeclarationIndex, std::size_t... TypeIndex>
+bool initialize_sequential_input_types(
+    ContinuousValueTypeId value_type,
+    std::byte* destination,
+    std::size_t destination_bytes,
+    std::size_t elements_per_value,
+    std::index_sequence<TypeIndex...>)
+{
+    return (initialize_sequential_input_type<
+        Node, DeclarationIndex, TypeIndex>(
+            value_type,
+            destination,
+            destination_bytes,
+            elements_per_value) || ...);
+}
+
+template<class Node, std::size_t DeclarationIndex, std::size_t TypeIndex>
+bool combine_sequential_input_type(
+    ContinuousValueTypeId value_type,
+    std::byte* destination,
+    std::byte const* source,
+    std::size_t byte_count,
+    std::size_t elements_per_value)
+{
+    using Config = std::remove_cvref_t<decltype(port_config_at<DeclarationIndex>(
+        std::declval<decltype(Node::inputs()) const&>()))>;
+    using Type = std::tuple_element_t<TypeIndex, typename Config::value_types>;
+    if (value_type != continuous_value_type_id_v<Type>) return false;
+    return combine_sequential_storage<ContinuousValueType<Type>>(
+        std::get<TypeIndex>(
+            sequential_input_options<Node, DeclarationIndex>),
+        destination,
+        source,
+        byte_count,
+        elements_per_value);
+}
+
+template<class Node, std::size_t DeclarationIndex, std::size_t... TypeIndex>
+bool combine_sequential_input_types(
+    ContinuousValueTypeId value_type,
+    std::byte* destination,
+    std::byte const* source,
+    std::size_t byte_count,
+    std::size_t elements_per_value,
+    std::index_sequence<TypeIndex...>)
+{
+    return (combine_sequential_input_type<
+        Node, DeclarationIndex, TypeIndex>(
+            value_type,
+            destination,
+            source,
+            byte_count,
+            elements_per_value) || ...);
+}
+
+template<class Node, std::size_t DeclarationIndex>
+bool initialize_sequential_input_declaration(
+    std::size_t continuous_input,
+    ContinuousValueTypeId value_type,
+    std::byte* destination,
+    std::size_t destination_bytes,
+    std::size_t elements_per_value)
+{
+    using Config = std::remove_cvref_t<decltype(port_config_at<DeclarationIndex>(
+        std::declval<decltype(Node::inputs()) const&>()))>;
+    if constexpr (AuthoredContinuousInputConfig<Config>
+        && Config::access == InputAccessKind::sequential) {
+        if (continuous_input
+            != static_sample_input_port_index_at<Node, DeclarationIndex>()) {
+            return false;
+        }
+        return initialize_sequential_input_types<Node, DeclarationIndex>(
+            value_type,
+            destination,
+            destination_bytes,
+            elements_per_value,
+            std::make_index_sequence<
+                std::tuple_size_v<typename Config::value_types>>{});
+    } else {
+        return false;
+    }
+}
+
+template<class Node, std::size_t DeclarationIndex>
+bool combine_sequential_input_declaration(
+    std::size_t continuous_input,
+    ContinuousValueTypeId value_type,
+    std::byte* destination,
+    std::byte const* source,
+    std::size_t byte_count,
+    std::size_t elements_per_value)
+{
+    using Config = std::remove_cvref_t<decltype(port_config_at<DeclarationIndex>(
+        std::declval<decltype(Node::inputs()) const&>()))>;
+    if constexpr (AuthoredContinuousInputConfig<Config>
+        && Config::access == InputAccessKind::sequential) {
+        if (continuous_input
+            != static_sample_input_port_index_at<Node, DeclarationIndex>()) {
+            return false;
+        }
+        return combine_sequential_input_types<Node, DeclarationIndex>(
+            value_type,
+            destination,
+            source,
+            byte_count,
+            elements_per_value,
+            std::make_index_sequence<
+                std::tuple_size_v<typename Config::value_types>>{});
+    } else {
+        return false;
+    }
+}
+
+template<class Node, std::size_t... DeclarationIndex>
+bool initialize_node_sequential_input_neutral_impl(
+    std::size_t continuous_input,
+    ContinuousValueTypeId value_type,
+    std::byte* destination,
+    std::size_t destination_bytes,
+    std::size_t elements_per_value,
+    std::index_sequence<DeclarationIndex...>)
+{
+    return (initialize_sequential_input_declaration<Node, DeclarationIndex>(
+        continuous_input,
+        value_type,
+        destination,
+        destination_bytes,
+        elements_per_value) || ...);
+}
+
+template<class Node>
+bool initialize_node_sequential_input_neutral(
+    std::size_t continuous_input,
+    ContinuousValueTypeId value_type,
+    std::byte* destination,
+    std::size_t destination_bytes,
+    std::size_t elements_per_value)
+{
+    return initialize_node_sequential_input_neutral_impl<Node>(
+        continuous_input,
+        value_type,
+        destination,
+        destination_bytes,
+        elements_per_value,
+        std::make_index_sequence<
+            port_config_count_v<decltype(Node::inputs())>>{});
+}
+
+template<class Node, std::size_t... DeclarationIndex>
+bool combine_node_sequential_input_values_impl(
+    std::size_t continuous_input,
+    ContinuousValueTypeId value_type,
+    std::byte* destination,
+    std::byte const* source,
+    std::size_t byte_count,
+    std::size_t elements_per_value,
+    std::index_sequence<DeclarationIndex...>)
+{
+    return (combine_sequential_input_declaration<Node, DeclarationIndex>(
+        continuous_input,
+        value_type,
+        destination,
+        source,
+        byte_count,
+        elements_per_value) || ...);
+}
+
+template<class Node>
+bool combine_node_sequential_input_values(
+    std::size_t continuous_input,
+    ContinuousValueTypeId value_type,
+    std::byte* destination,
+    std::byte const* source,
+    std::size_t byte_count,
+    std::size_t elements_per_value)
+{
+    return combine_node_sequential_input_values_impl<Node>(
+        continuous_input,
+        value_type,
+        destination,
+        source,
+        byte_count,
+        elements_per_value,
+        std::make_index_sequence<
+            port_config_count_v<decltype(Node::inputs())>>{});
+}
+
+template<class Node>
 constexpr NodeCompilerOperations node_compiler_operations()
 {
     return {
@@ -643,6 +927,31 @@ constexpr NodeCompilerOperations node_compiler_operations()
             node_propagate_forward_coverage_operation<Node>(),
         .propagate_reverse_coverage =
             node_propagate_reverse_coverage_operation<Node>(),
+        .initialize_sequential_input_neutral = [] {
+            if constexpr (declares_sequential_continuous_inputs<Node>()) {
+                return &initialize_node_sequential_input_neutral<Node>;
+            } else {
+                return static_cast<bool (*)(
+                    std::size_t,
+                    ContinuousValueTypeId,
+                    std::byte*,
+                    std::size_t,
+                    std::size_t)>(nullptr);
+            }
+        }(),
+        .combine_sequential_input_values = [] {
+            if constexpr (declares_sequential_continuous_inputs<Node>()) {
+                return &combine_node_sequential_input_values<Node>;
+            } else {
+                return static_cast<bool (*)(
+                    std::size_t,
+                    ContinuousValueTypeId,
+                    std::byte*,
+                    std::byte const*,
+                    std::size_t,
+                    std::size_t)>(nullptr);
+            }
+        }(),
     };
 }
 
@@ -721,14 +1030,14 @@ void describe_node(void const* node_data, NodeDescriptionSink& sink)
     static_assert(has_constexpr_port_configs<Node>,
         "concrete node ports must be declared by static constexpr inputs() and outputs()");
     if constexpr (has_inputs<Node>) {
-        for (InputConfig const& input : Node::inputs()) {
-            sink.add_input(input);
-        }
+        for_each_port_config(Node::inputs(), [&](auto const& input) {
+            sink.add_input(erase_port_config(input));
+        });
     }
     if constexpr (has_outputs<Node>) {
-        for (OutputConfig const& output : Node::outputs()) {
-            sink.add_output(output);
-        }
+        for_each_port_config(Node::outputs(), [&](auto const& output) {
+            sink.add_output(erase_port_config(output));
+        });
     }
     ConstrainPortsContext<Node> port_constraints(sink.port_constraint_sink());
     if constexpr (requires {

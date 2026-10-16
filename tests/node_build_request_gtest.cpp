@@ -9,7 +9,9 @@
 #include <limits>
 #include <memory>
 #include <optional>
+#include <span>
 #include <string_view>
+#include <tuple>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -39,12 +41,11 @@ struct RequestNode {
 
     static constexpr auto inputs()
     {
-        return std::array{iv::sequential_sample_input("level")};
+        return std::array{iv::input<iv::Sample>("level", iv::InputAccess::sequential)};
     }
     static constexpr auto outputs()
     {
-        return std::array{iv::tick_sample_output(
-            "signal", {}, {}, iv::OutputRetention::persisted)};
+        return std::array{iv::output<iv::Sample>("signal", iv::OutputProduction::tick, iv::OutputRetention::persisted)};
     }
     std::size_t internal_latency() const { return latency; }
     std::optional<std::size_t> ttl_samples() const { return 64; }
@@ -52,17 +53,150 @@ struct RequestNode {
     void tick_block(auto const&) const {}
 };
 
+struct ReductionNode {
+    inline static std::size_t fft_neutral_initializations = 0;
+
+    static constexpr iv::Sample multiply_samples(
+        iv::Sample left, iv::Sample right) noexcept
+    {
+        return left * right;
+    }
+
+    static constexpr void multiply_fft_bins(
+        std::span<iv::FFTBin> destination,
+        std::span<iv::FFTBin const> source) noexcept
+    {
+        for (std::size_t index = 0; index < destination.size(); ++index) {
+            destination[index] *= source[index];
+        }
+    }
+
+    static void initialize_fft_multiply_neutral(
+        std::span<iv::FFTBin> destination) noexcept
+    {
+        ++fft_neutral_initializations;
+        for (auto& bin : destination) bin = iv::FFTBin{1.0f, 0.0f};
+    }
+
+    static constexpr auto inputs()
+    {
+        return std::tuple{
+            iv::event_input(
+                "event", iv::EventTypeId::trigger, iv::InputAccess::sequential),
+            iv::input<iv::Sample>("region", iv::InputAccess::region),
+            iv::input<iv::Sample, iv::FFTBlock>(
+                "product",
+                iv::InputAccess::sequential,
+                {
+                    .neutral_value = 1.0f,
+                    .combine_values = &multiply_samples,
+                },
+                {
+                    .neutral_value = &initialize_fft_multiply_neutral,
+                    .combine_values = &multiply_fft_bins,
+                }),
+        };
+    }
+
+    static constexpr auto outputs() { return std::tuple{}; }
+    void tick_block(auto const&) const {}
+};
+
+struct OrderingConstraintShape {
+    static constexpr auto inputs()
+    {
+        return std::tuple{
+            iv::input<iv::Sample>("region-in", iv::InputAccess::region),
+            iv::input<iv::Sample>("coverage-in", iv::InputAccess::coverage),
+            iv::event_input(
+                "event-region-in", iv::EventTypeId::trigger,
+                iv::InputAccess::region),
+            iv::event_input(
+                "event-coverage-in", iv::EventTypeId::trigger,
+                iv::InputAccess::coverage),
+        };
+    }
+
+    static constexpr auto outputs()
+    {
+        return std::tuple{
+            iv::output<iv::Sample>(
+                "region-out", iv::OutputProduction::region),
+            iv::output<iv::Sample>(
+                "coverage-out", iv::OutputProduction::coverage),
+            iv::event_output(
+                "event-region-out", iv::EventTypeId::trigger,
+                iv::OutputProduction::region),
+            iv::event_output(
+                "event-coverage-out", iv::EventTypeId::trigger,
+                iv::OutputProduction::coverage),
+        };
+    }
+};
+
+template<class Context>
+concept RegionInputHasOrdering = requires(Context const& context) {
+    context.template input<"region-in">().ordering();
+};
+
+template<class Context>
+concept CoverageInputHasOrdering = requires(Context const& context) {
+    context.template input<"coverage-in">().ordering();
+};
+
+template<class Context>
+concept EventRegionInputHasOrdering = requires(Context const& context) {
+    context.template input<"event-region-in">().ordering();
+};
+
+template<class Context>
+concept EventCoverageInputHasOrdering = requires(Context const& context) {
+    context.template input<"event-coverage-in">().ordering();
+};
+
+template<class Context>
+concept RegionOutputHasOrdering = requires(Context const& context) {
+    context.template output<"region-out">().ordering();
+};
+
+template<class Context>
+concept CoverageOutputHasOrdering = requires(Context const& context) {
+    context.template output<"coverage-out">().ordering();
+};
+
+template<class Context>
+concept EventRegionOutputHasOrdering = requires(Context const& context) {
+    context.template output<"event-region-out">().ordering();
+};
+
+template<class Context>
+concept EventCoverageOutputHasOrdering = requires(Context const& context) {
+    context.template output<"event-coverage-out">().ordering();
+};
+
+using OrderingConstraintContext =
+    iv::ConstrainPortsContext<OrderingConstraintShape>;
+
+static_assert(!RegionInputHasOrdering<OrderingConstraintContext>);
+static_assert(CoverageInputHasOrdering<OrderingConstraintContext>);
+static_assert(!EventRegionInputHasOrdering<OrderingConstraintContext>);
+static_assert(EventCoverageInputHasOrdering<OrderingConstraintContext>);
+static_assert(!RegionOutputHasOrdering<OrderingConstraintContext>);
+static_assert(CoverageOutputHasOrdering<OrderingConstraintContext>);
+static_assert(!EventRegionOutputHasOrdering<OrderingConstraintContext>);
+static_assert(EventCoverageOutputHasOrdering<OrderingConstraintContext>);
+
 struct ReplayableNode {
     static constexpr bool intrinsically_replayable = true;
     std::size_t latency = 0;
 
     static constexpr auto inputs()
     {
-        return std::array{iv::sequential_sample_input("input")};
+        return std::array{iv::input<iv::Sample>("input", iv::InputAccess::sequential)};
     }
     static constexpr auto outputs()
     {
-        return std::array{iv::tick_sample_output("output")};
+        return std::array{iv::output<iv::Sample>("output", iv::OutputProduction::tick)};
     }
     void tick(iv::TickSampleContext<ReplayableNode> const&) const {}
     std::size_t internal_latency() const { return latency; }
@@ -78,7 +212,7 @@ struct ReplayWithInputHistory {
     static constexpr bool intrinsically_replayable = true;
     static constexpr auto inputs()
     {
-        return std::array{iv::sequential_sample_input("input")};
+        return std::array{iv::input<iv::Sample>("input", iv::InputAccess::sequential)};
     }
     void constrain_ports(
         iv::ConstrainPortsContext<ReplayWithInputHistory>& ctx) const
@@ -92,7 +226,7 @@ struct ReplayWithOutputLatency {
     static constexpr bool intrinsically_replayable = true;
     static constexpr auto outputs()
     {
-        return std::array{iv::tick_sample_output("output")};
+        return std::array{iv::output<iv::Sample>("output", iv::OutputProduction::tick)};
     }
     void constrain_ports(
         iv::ConstrainPortsContext<ReplayWithOutputLatency>& ctx) const
@@ -135,49 +269,93 @@ TEST(NodeBuildRequest, ValidatesAndReflectsIntrinsicReplayability)
 template<class Config>
 concept HasSampleRange = requires(Config const& config) { config.min; config.max; };
 template<class Config>
+concept HasDefaultValue = requires(Config const& config) {
+    config.default_value;
+};
+template<class Config>
+concept HasNeutralValue = requires(Config const& config) {
+    config.neutral_value;
+};
+template<class Config>
+concept HasCombineValues = requires(Config const& config) {
+    config.combine_values;
+};
+template<class Config>
 concept HasHistory = requires(Config const& config) { config.history; };
 template<class Config>
 concept HasLatency = requires(Config const& config) { config.latency; };
 template<class Config>
 concept HasRetention = requires(Config const& config) { config.retention; };
 
-static_assert(std::same_as<decltype(iv::sequential_sample_input()), iv::InputConfig>);
-static_assert(std::same_as<decltype(iv::random_access_sample_input()), iv::InputConfig>);
 static_assert(std::same_as<
-    decltype(iv::sequential_event_input({}, iv::EventTypeId::empty)), iv::InputConfig>);
+    decltype(iv::input<iv::Sample>("", iv::InputAccess::sequential)),
+    iv::SequentialInputConfig<iv::Sample>>);
 static_assert(std::same_as<
-    decltype(iv::random_access_event_input({}, iv::EventTypeId::empty)), iv::InputConfig>);
-static_assert(std::same_as<decltype(iv::tick_sample_output()), iv::OutputConfig>);
-static_assert(std::same_as<decltype(iv::tock_sample_output()), iv::OutputConfig>);
+    decltype(iv::input<iv::Sample>("", iv::InputAccess::coverage)),
+    iv::CoverageInputConfig<iv::Sample>>);
 static_assert(std::same_as<
-    decltype(iv::tick_event_output({}, iv::EventTypeId::empty)), iv::OutputConfig>);
+    decltype(iv::event_input({}, iv::EventTypeId::empty, iv::InputAccess::sequential)),
+    iv::SequentialEventInputConfig>);
 static_assert(std::same_as<
-    decltype(iv::tock_event_output({}, iv::EventTypeId::empty)), iv::OutputConfig>);
-static_assert(HasSampleRange<iv::SampleInputProperties>);
-static_assert(!HasSampleRange<iv::EventInputProperties>);
-static_assert(!HasHistory<iv::SampleInputProperties>);
-static_assert(!HasHistory<iv::SampleOutputProperties>);
-static_assert(!HasHistory<iv::EventInputProperties>);
-static_assert(!HasHistory<iv::EventOutputProperties>);
-static_assert(!HasLatency<iv::SampleOutputProperties>);
-static_assert(!HasLatency<iv::EventOutputProperties>);
-static_assert(!HasHistory<iv::SequentialInputConfig>);
-static_assert(!HasHistory<iv::TickOutputConfig>);
-static_assert(!HasLatency<iv::TickOutputConfig>);
-static_assert(!HasHistory<iv::RandomAccessInputConfig>);
-static_assert(!HasLatency<iv::TockOutputConfig>);
-static_assert(HasRetention<iv::OutputConfig>);
-static_assert(HasRetention<iv::SampleOutputConfig>);
-static_assert(HasRetention<iv::EventOutputConfig>);
-static_assert(iv::sample_properties(iv::InputConfig {}).neutral_value.value == 0.0f);
-static_assert(iv::is_random_access(iv::random_access_sample_input("background")));
-static_assert(iv::is_tock(iv::tock_event_output(
-    "background", iv::EventTypeId::trigger)));
-static_assert(!iv::is_persisted(iv::tock_sample_output("ephemeral")));
-static_assert(iv::is_persisted(iv::tock_sample_output(
-    "persisted", {}, iv::OutputRetention::persisted)));
-static_assert(iv::is_persisted(iv::tick_sample_output(
-    "persisted", {}, {}, iv::OutputRetention::persisted)));
+    decltype(iv::event_input({}, iv::EventTypeId::empty, iv::InputAccess::coverage)),
+    iv::CoverageEventInputConfig>);
+static_assert(std::same_as<
+    decltype(iv::output<iv::Sample>("", iv::OutputProduction::tick)),
+    iv::TickOutputConfig<iv::Sample>>);
+static_assert(std::same_as<
+    decltype(iv::output<iv::Sample>("", iv::OutputProduction::coverage)),
+    iv::CoverageOutputConfig<iv::Sample>>);
+static_assert(std::same_as<
+    decltype(iv::event_output({}, iv::EventTypeId::empty, iv::OutputProduction::tick)),
+    iv::TickEventOutputConfig>);
+static_assert(std::same_as<
+    decltype(iv::event_output({}, iv::EventTypeId::empty, iv::OutputProduction::coverage)),
+    iv::CoverageEventOutputConfig>);
+static_assert(HasSampleRange<
+    iv::SampleContinuousValueExtension::SequentialInputOptions>);
+static_assert(HasDefaultValue<
+    iv::SampleContinuousValueExtension::SequentialInputOptions>);
+static_assert(HasDefaultValue<
+    iv::FractionalGlobalIndexContinuousValueExtension::SequentialInputOptions>);
+static_assert(!HasDefaultValue<
+    iv::FFTBlockContinuousValueExtension::SequentialInputOptions>);
+static_assert(!HasSampleRange<
+    iv::FFTBlockContinuousValueExtension::SequentialInputOptions>);
+static_assert(!HasDefaultValue<
+    iv::FFTBlockContinuousValueExtension::SequentialInputMetadata>);
+static_assert(!HasSampleRange<
+    iv::FFTBlockContinuousValueExtension::SequentialInputMetadata>);
+static_assert(HasNeutralValue<
+    iv::SampleContinuousValueExtension::SequentialInputOptions>);
+static_assert(HasNeutralValue<
+    iv::FractionalGlobalIndexContinuousValueExtension::SequentialInputOptions>);
+static_assert(HasNeutralValue<
+    iv::FFTBlockContinuousValueExtension::SequentialInputOptions>);
+static_assert(!HasNeutralValue<
+    iv::FFTBlockContinuousValueExtension::SequentialInputMetadata>);
+static_assert(std::same_as<
+    decltype(iv::FFTBlockContinuousValueExtension::SequentialInputOptions{}
+        .neutral_value),
+    iv::FFTBlockContinuousValueExtension::neutral_value_type>);
+static_assert(HasCombineValues<
+    iv::SampleContinuousValueExtension::SequentialInputOptions>);
+static_assert(HasCombineValues<
+    iv::FractionalGlobalIndexContinuousValueExtension::SequentialInputOptions>);
+static_assert(HasCombineValues<
+    iv::FFTBlockContinuousValueExtension::SequentialInputOptions>);
+static_assert(!HasSampleRange<iv::SequentialEventInputConfig>);
+static_assert(!HasHistory<iv::SequentialInputConfig<iv::Sample>>);
+static_assert(!HasHistory<iv::TickOutputConfig<iv::Sample>>);
+static_assert(!HasLatency<iv::TickOutputConfig<iv::Sample>>);
+static_assert(!HasHistory<iv::CoverageInputConfig<iv::Sample>>);
+static_assert(!HasLatency<iv::CoverageOutputConfig<iv::Sample>>);
+static_assert(HasRetention<iv::TickOutputConfig<iv::Sample>>);
+static_assert(HasRetention<iv::TickEventOutputConfig>);
+static_assert(iv::is_random_access(iv::input<iv::Sample>("background", iv::InputAccess::coverage)));
+static_assert(iv::is_tock(iv::event_output("background", iv::EventTypeId::trigger, iv::OutputProduction::coverage)));
+static_assert(!iv::is_persisted(iv::output<iv::Sample>("ephemeral", iv::OutputProduction::coverage)));
+static_assert(iv::is_persisted(iv::output<iv::Sample>("persisted", iv::OutputProduction::coverage, iv::OutputRetention::persisted)));
+static_assert(iv::is_persisted(iv::output<iv::Sample>("persisted", iv::OutputProduction::tick, iv::OutputRetention::persisted)));
 
 TEST(NodeBuildRequest, MaterializesHostOwnedDescriptionFromTypeSpecificCallback)
 {
@@ -204,6 +382,83 @@ TEST(NodeBuildRequest, MaterializesHostOwnedDescriptionFromTypeSpecificCallback)
     ASSERT_TRUE(description.ttl_samples().has_value());
     EXPECT_EQ(*description.ttl_samples(), 64u);
     EXPECT_TRUE(description.can_skip_block());
+}
+
+TEST(NodeBuildRequest, RetainsTypedSequentialReductionOperationsInCompilerRecord)
+{
+    auto const operations =
+        iv::details::node_compiler_operations<ReductionNode>();
+    ASSERT_NE(operations.initialize_sequential_input_neutral, nullptr);
+    ASSERT_NE(operations.combine_sequential_input_values, nullptr);
+
+    std::array<iv::Sample, 3> sample_destination{};
+    std::array<iv::Sample, 3> sample_source{2.0f, 3.0f, 4.0f};
+    EXPECT_TRUE(operations.initialize_sequential_input_neutral(
+        1,
+        iv::ContinuousValueTypeId::sample,
+        reinterpret_cast<std::byte*>(sample_destination.data()),
+        sizeof(sample_destination),
+        1));
+    EXPECT_EQ(sample_destination,
+        (std::array<iv::Sample, 3>{1.0f, 1.0f, 1.0f}));
+    EXPECT_TRUE(operations.combine_sequential_input_values(
+        1,
+        iv::ContinuousValueTypeId::sample,
+        reinterpret_cast<std::byte*>(sample_destination.data()),
+        reinterpret_cast<std::byte const*>(sample_source.data()),
+        sizeof(sample_destination),
+        1));
+    EXPECT_EQ(sample_destination, sample_source);
+
+    std::array<iv::FFTBin, 6> fft_destination{};
+    std::array<iv::FFTBin, 6> fft_source{
+        iv::FFTBin{2.0f, 0.0f},
+        iv::FFTBin{3.0f, 0.0f},
+        iv::FFTBin{4.0f, 0.0f},
+        iv::FFTBin{5.0f, 0.0f},
+        iv::FFTBin{6.0f, 0.0f},
+        iv::FFTBin{7.0f, 0.0f},
+    };
+    ReductionNode::fft_neutral_initializations = 0;
+    EXPECT_TRUE(operations.initialize_sequential_input_neutral(
+        1,
+        iv::ContinuousValueTypeId::fft_block,
+        reinterpret_cast<std::byte*>(fft_destination.data()),
+        sizeof(fft_destination),
+        3));
+    EXPECT_EQ(ReductionNode::fft_neutral_initializations, 2u);
+    EXPECT_EQ(fft_destination,
+        (std::array<iv::FFTBin, 6>{
+            iv::FFTBin{1.0f, 0.0f},
+            iv::FFTBin{1.0f, 0.0f},
+            iv::FFTBin{1.0f, 0.0f},
+            iv::FFTBin{1.0f, 0.0f},
+            iv::FFTBin{1.0f, 0.0f},
+            iv::FFTBin{1.0f, 0.0f},
+        }));
+    EXPECT_TRUE(operations.combine_sequential_input_values(
+        1,
+        iv::ContinuousValueTypeId::fft_block,
+        reinterpret_cast<std::byte*>(fft_destination.data()),
+        reinterpret_cast<std::byte const*>(fft_source.data()),
+        sizeof(fft_destination),
+        3));
+    EXPECT_EQ(fft_destination, fft_source);
+
+    auto const default_fft_options =
+        iv::FFTBlockContinuousValueExtension::SequentialInputOptions{};
+    fft_destination.fill(iv::FFTBin{9.0f, -4.0f});
+    EXPECT_TRUE(
+        iv::FFTBlockContinuousValueExtension::initialize_sequential_neutral(
+            default_fft_options, fft_destination, 3));
+    EXPECT_EQ(fft_destination, (std::array<iv::FFTBin, 6>{}));
+
+    EXPECT_FALSE(operations.initialize_sequential_input_neutral(
+        0,
+        iv::ContinuousValueTypeId::sample,
+        reinterpret_cast<std::byte*>(sample_destination.data()),
+        sizeof(sample_destination),
+        1));
 }
 
 TEST(IndexCoverage, CanonicalizesAndCoalescesRanges)
@@ -317,7 +572,7 @@ struct BackgroundSource {
 
     static constexpr auto outputs()
     {
-        return std::array {iv::tock_sample_output("signal")};
+        return std::array {iv::output<iv::Sample>("signal", iv::OutputProduction::coverage)};
     }
 
     void tick_block(iv::TickBlockContext<BackgroundSource> const&) const {}
@@ -340,20 +595,19 @@ struct BackgroundTransform {
 
     static constexpr auto inputs()
     {
-        return std::array {
-            iv::random_access_sample_input("samples"),
-            iv::random_access_event_input("events", iv::EventTypeId::trigger),
+        return std::tuple {
+            iv::input<iv::Sample>("samples", iv::InputAccess::coverage),
+            iv::event_input("events", iv::EventTypeId::trigger, iv::InputAccess::coverage),
         };
     }
 
     static constexpr auto outputs()
     {
-        return std::array {
-            iv::tock_sample_output(
-                "samples-out", {},
-                iv::OutputRetention::ephemeral),
-            iv::tock_event_output(
+        return std::tuple {
+            iv::output<iv::Sample>("samples-out", iv::OutputProduction::coverage, iv::OutputRetention::ephemeral),
+            iv::event_output(
                 "events-out", iv::EventTypeId::trigger,
+                iv::OutputProduction::coverage,
                 iv::OutputRetention::persisted),
         };
     }
@@ -386,9 +640,9 @@ struct BackgroundTransform {
 struct BackgroundInputOnly {
     static constexpr auto inputs()
     {
-        return std::array {
-            iv::random_access_sample_input("samples"),
-            iv::random_access_event_input("events", iv::EventTypeId::trigger),
+        return std::tuple {
+            iv::input<iv::Sample>("samples", iv::InputAccess::coverage),
+            iv::event_input("events", iv::EventTypeId::trigger, iv::InputAccess::coverage),
         };
     }
     void tick_block(iv::TickBlockContext<BackgroundInputOnly> const&) const {}
@@ -397,7 +651,7 @@ struct BackgroundInputOnly {
 struct MissingBackgroundTock {
     static constexpr auto outputs()
     {
-        return std::array {iv::tock_sample_output("output")};
+        return std::array {iv::output<iv::Sample>("output", iv::OutputProduction::coverage)};
     }
 };
 
@@ -413,7 +667,7 @@ struct StrayForward {
 struct StrayReverse {
     static constexpr auto outputs()
     {
-        return std::array {iv::tock_sample_output("output")};
+        return std::array {iv::output<iv::Sample>("output", iv::OutputProduction::coverage)};
     }
     void tock_coverage(iv::TockCoverageContext<StrayReverse>&) const {}
     void propagate_forward_coverage(
@@ -425,11 +679,11 @@ struct StrayReverse {
 struct PersistedRealtimeNode {
     static constexpr auto outputs()
     {
-        return std::array {
-            iv::tick_sample_output(
-                "samples", {}, {}, iv::OutputRetention::persisted),
-            iv::tick_event_output(
-                "events", iv::EventTypeId::trigger, {},
+        return std::tuple {
+            iv::output<iv::Sample>("samples", iv::OutputProduction::tick, iv::OutputRetention::persisted),
+            iv::event_output(
+                "events", iv::EventTypeId::trigger,
+                iv::OutputProduction::tick,
                 iv::OutputRetention::persisted),
         };
     }
@@ -450,11 +704,11 @@ struct DispositionNode {
 
     static constexpr auto outputs()
     {
-        return std::array {
-            iv::tick_sample_output(
-                "samples", {}, {}, iv::OutputRetention::persisted),
-            iv::tick_event_output(
-                "events", iv::EventTypeId::trigger, {},
+        return std::tuple {
+            iv::output<iv::Sample>("samples", iv::OutputProduction::tick, iv::OutputRetention::persisted),
+            iv::event_output(
+                "events", iv::EventTypeId::trigger,
+                iv::OutputProduction::tick,
                 iv::OutputRetention::persisted),
         };
     }
@@ -471,8 +725,9 @@ struct DispositionNode {
 struct EmptyPersistedEventBlockNode {
     static constexpr auto outputs()
     {
-        return std::array {iv::tick_event_output(
-            "events", iv::EventTypeId::trigger, {},
+        return std::array {iv::event_output(
+            "events", iv::EventTypeId::trigger,
+            iv::OutputProduction::tick,
             iv::OutputRetention::persisted)};
     }
 
@@ -486,11 +741,11 @@ struct EmptyPersistedEventBlockNode {
 struct DefaultSkippedPersistedNode {
     static constexpr auto outputs()
     {
-        return std::array {
-            iv::tick_sample_output(
-                "samples", {}, {}, iv::OutputRetention::persisted),
-            iv::tick_event_output(
-                "events", iv::EventTypeId::trigger, {},
+        return std::tuple {
+            iv::output<iv::Sample>("samples", iv::OutputProduction::tick, iv::OutputRetention::persisted),
+            iv::event_output(
+                "events", iv::EventTypeId::trigger,
+                iv::OutputProduction::tick,
                 iv::OutputRetention::persisted),
         };
     }
@@ -503,9 +758,9 @@ struct DefaultSkippedPersistedNode {
 struct EphemeralOutputNode {
     static constexpr auto outputs()
     {
-        return std::array {
-            iv::tick_sample_output("samples"),
-            iv::tick_event_output("events", iv::EventTypeId::trigger),
+        return std::tuple {
+            iv::output<iv::Sample>("samples", iv::OutputProduction::tick),
+            iv::event_output("events", iv::EventTypeId::trigger, iv::OutputProduction::tick),
         };
     }
 
@@ -520,18 +775,16 @@ struct EphemeralOutputNode {
 struct MixedAccessIndexNode {
     static constexpr auto inputs()
     {
-        return std::array<iv::InputConfig, 0>{};
+        return std::tuple{};
     }
 
     static constexpr auto outputs()
     {
-        return std::array {
-            iv::tock_sample_output("background-sample"),
-            iv::tick_sample_output("realtime-sample"),
-            iv::tock_event_output(
-                "background-event", iv::EventTypeId::trigger),
-            iv::tick_event_output(
-                "realtime-event", iv::EventTypeId::trigger),
+        return std::tuple {
+            iv::output<iv::Sample>("background-sample", iv::OutputProduction::coverage),
+            iv::output<iv::Sample>("realtime-sample", iv::OutputProduction::tick),
+            iv::event_output("background-event", iv::EventTypeId::trigger, iv::OutputProduction::coverage),
+            iv::event_output("realtime-event", iv::EventTypeId::trigger, iv::OutputProduction::tick),
         };
     }
 };
@@ -593,8 +846,10 @@ static_assert(iv::details::reflected_sample_output_count_v<
     MixedAccessIndexNode> == 1);
 static_assert(iv::details::reflected_event_output_count_v<
     MixedAccessIndexNode> == 1);
-static_assert(iv::is_persisted(PersistedRealtimeNode::outputs()[0]));
-static_assert(iv::is_persisted(PersistedRealtimeNode::outputs()[1]));
+static_assert(iv::is_persisted(
+    iv::port_config_at<0>(PersistedRealtimeNode::outputs())));
+static_assert(iv::is_persisted(
+    iv::port_config_at<1>(PersistedRealtimeNode::outputs())));
 static_assert(!ExposesBackgroundState<iv::TickBlockContext<BackgroundSource>>);
 static_assert(!ExposesBackgroundState<
     iv::PropagateForwardCoverageContext<BackgroundSource>>);
@@ -1127,11 +1382,11 @@ TEST(BackgroundDspPorts, ForwardAndReverseContextsKeepExactDisjointCoverage)
 struct DefaultPropagationNode {
     static constexpr auto inputs()
     {
-        return std::array {iv::random_access_sample_input("input")};
+        return std::array {iv::input<iv::Sample>("input", iv::InputAccess::coverage)};
     }
     static constexpr auto outputs()
     {
-        return std::array {iv::tock_sample_output("output")};
+        return std::array {iv::output<iv::Sample>("output", iv::OutputProduction::coverage)};
     }
     void tock_coverage(iv::TockCoverageContext<DefaultPropagationNode>&) const {}
     void propagate_forward_coverage(

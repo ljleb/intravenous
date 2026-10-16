@@ -79,8 +79,8 @@ namespace iv {
     struct GraphBuilderPublicSamplePortFamily {
         size_t family_index = 0;
         std::string family_name {};
-        SampleInputConfig input_config {};
-        SampleOutputConfig output_config {};
+        ContinuousInputConfig input_config {};
+        ContinuousOutputConfig output_config {};
         ChannelTypeId channel_type = ChannelTypeId::mono;
         std::vector<GraphBuilderPublicSamplePortChannel> channels {};
         std::vector<SourceInfo> source_infos {};

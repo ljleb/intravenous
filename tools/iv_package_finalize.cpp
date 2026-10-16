@@ -314,7 +314,7 @@ std::vector<IrNodeRecord> scan_node_records(Module& module)
         auto* key = dyn_cast<ConstantStruct>(record->getOperand(0));
         if (!key || key->getNumOperands() != 2) fail("malformed iv_node_types key");
         auto* operations = dyn_cast<ConstantStruct>(record->getOperand(1));
-        if (!operations || operations->getNumOperands() != 6) {
+        if (!operations || operations->getNumOperands() != 8) {
             fail("malformed iv_node_types operations ABI");
         }
         StringRef name;

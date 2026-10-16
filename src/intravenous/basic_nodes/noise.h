@@ -44,7 +44,7 @@ namespace iv {
 
         static constexpr auto outputs()
         {
-            return std::array<OutputConfig, 1>{};
+            return std::array<TickOutputConfig<Sample>, 1>{};
         }
 
         struct State {
@@ -97,14 +97,14 @@ namespace iv {
         static constexpr auto inputs()
         {
             return std::array {
-                sequential_sample_input("min", {.default_value = -1.0}),
-                sequential_sample_input("max", {.default_value = 1.0}),
+                input<Sample>("min", InputAccess::sequential, {.default_value = -1.0}),
+                input<Sample>("max", InputAccess::sequential, {.default_value = 1.0}),
             };
         }
 
         static constexpr auto outputs()
         {
-            return std::array<OutputConfig, 1>{};
+            return std::array<TickOutputConfig<Sample>, 1>{};
         }
 
         void tick(TickSampleContext<DeterministicUniformNoise> const& state) const
@@ -166,14 +166,14 @@ namespace iv {
         static constexpr auto inputs()
         {
             return std::array {
-                sequential_sample_input("min", {.default_value = -1.0}),
-                sequential_sample_input("max", {.default_value = 1.0}),
+                input<Sample>("min", InputAccess::sequential, {.default_value = -1.0}),
+                input<Sample>("max", InputAccess::sequential, {.default_value = 1.0}),
             };
         }
 
         static constexpr auto outputs()
         {
-            return std::array<OutputConfig, 1>{};
+            return std::array<TickOutputConfig<Sample>, 1>{};
         }
 
         void tick_block(TickBlockContext<DeterministicUniformAESNoise> const& ctx) const
@@ -221,12 +221,12 @@ namespace iv {
 
         static constexpr auto inputs()
         {
-            return std::array<InputConfig, 1>{};
+            return std::array<SequentialInputConfig<Sample>, 1>{};
         }
 
         static constexpr auto outputs()
         {
-            return std::array<OutputConfig, 1>{};
+            return std::array<TickOutputConfig<Sample>, 1>{};
         }
 
         void tick(TickSampleContext<UniformToCauchy> const& state) const
@@ -256,12 +256,12 @@ namespace iv {
 
         static constexpr auto inputs()
         {
-            return std::array<InputConfig, 1>{};
+            return std::array<SequentialInputConfig<Sample>, 1>{};
         }
 
         static constexpr auto outputs()
         {
-            return std::array<OutputConfig, 1>{};
+            return std::array<TickOutputConfig<Sample>, 1>{};
         }
 
         void declare(DeclarationContext<UniformToPower> const& ctx) const
@@ -324,12 +324,12 @@ namespace iv {
 
         static constexpr auto inputs()
         {
-            return std::array<InputConfig, 1>{};
+            return std::array<SequentialInputConfig<Sample>, 1>{};
         }
 
         static constexpr auto outputs()
         {
-            return std::array<OutputConfig, 1>{};
+            return std::array<TickOutputConfig<Sample>, 1>{};
         }
 
         void tick(TickSampleContext<UniformToGaussian> const& state) const
@@ -397,7 +397,7 @@ namespace iv {
 
         static constexpr auto outputs()
         {
-            return std::array<OutputConfig, 1>{};
+            return std::array<TickOutputConfig<Sample>, 1>{};
         }
 
         void tick(TickSampleContext<DeterministicGaussianAESNoise> const& state) const

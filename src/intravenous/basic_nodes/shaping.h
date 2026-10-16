@@ -13,16 +13,16 @@ namespace iv {
         static constexpr auto inputs()
         {
             return std::array {
-                sequential_sample_input("in"),
-                sequential_sample_input("threshold", {.default_value = 1.0}),
+                input<Sample>("in", InputAccess::sequential),
+                input<Sample>("threshold", InputAccess::sequential, {.default_value = 1.0}),
             };
         }
 
         static constexpr auto outputs()
         {
             return std::array {
-                tick_sample_output("anti_aliased"),
-                tick_sample_output("aliased"),
+                output<Sample>("anti_aliased", OutputProduction::tick),
+                output<Sample>("aliased", OutputProduction::tick),
             };
         }
 
@@ -63,12 +63,12 @@ namespace iv {
     struct PhaseIntegrator {
         static constexpr auto inputs()
         {
-            return std::array { sequential_sample_input("delta") };
+            return std::array { input<Sample>("delta", InputAccess::sequential) };
         }
 
         static constexpr auto outputs()
         {
-            return std::array { tick_sample_output("phase") };
+            return std::array { output<Sample>("phase", OutputProduction::tick) };
         }
 
         void constrain_ports(ConstrainPortsContext<PhaseIntegrator>& ctx) const
@@ -97,15 +97,15 @@ namespace iv {
         static constexpr auto inputs()
         {
             return std::array {
-                sequential_sample_input("phase_offset"),
-                sequential_sample_input("frequency", {.min = 0}),
+                input<Sample>("phase_offset", InputAccess::sequential),
+                input<Sample>("frequency", InputAccess::sequential, {.min = 0}),
             };
         }
 
         static constexpr auto outputs()
         {
             return std::array {
-                tick_sample_output("out"),
+                output<Sample>("out", OutputProduction::tick),
             };
         }
 
@@ -153,15 +153,15 @@ namespace iv {
         static constexpr auto inputs()
         {
             return std::array {
-                sequential_sample_input("phase_offset"),
-                sequential_sample_input("frequency", {.min = 0}),
+                input<Sample>("phase_offset", InputAccess::sequential),
+                input<Sample>("frequency", InputAccess::sequential, {.min = 0}),
             };
         }
 
         static constexpr auto outputs()
         {
             return std::array {
-                tick_sample_output("out"),
+                output<Sample>("out", OutputProduction::tick),
             };
         }
 
@@ -270,8 +270,8 @@ namespace iv {
         {
             auto& state = ctx.state();
 
-            auto const f = ctx.template input<1>().get();
-            auto const phi = ctx.template input<0>().get();
+            double const f = ctx.template input<1>().get();
+            double const phi = ctx.template input<0>().get();
             auto const dt = ctx.sample_period();
 
             if (!state.initialized) {
@@ -320,12 +320,12 @@ namespace iv {
 
         static constexpr auto inputs()
         {
-            return std::array { sequential_sample_input("f") };
+            return std::array { input<Sample>("f", InputAccess::sequential) };
         }
 
         static constexpr auto outputs()
         {
-            return std::array { tick_sample_output("offset") };
+            return std::array { output<Sample>("offset", OutputProduction::tick) };
         }
 
         void tick(TickSampleContext<PhaseOffsetPredictor> const& state) const
@@ -340,15 +340,15 @@ namespace iv {
         static constexpr auto inputs()
         {
             return std::array {
-                sequential_sample_input("a"),
-                sequential_sample_input("b"),
-                sequential_sample_input("alpha"),
+                input<Sample>("a", InputAccess::sequential),
+                input<Sample>("b", InputAccess::sequential),
+                input<Sample>("alpha", InputAccess::sequential),
             };
         }
 
         static constexpr auto outputs()
         {
-            return std::array { tick_sample_output("out") };
+            return std::array { output<Sample>("out", OutputProduction::tick) };
         }
 
         void tick(TickSampleContext<Interpolation> const& state) const

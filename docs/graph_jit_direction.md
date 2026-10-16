@@ -139,13 +139,14 @@ reachability, records per-edge history/latency/conversion/boundary/feedback fact
 groups fanout by producer, derives the requirement
 records consumed by the existing sample/event storage choosers, and
 emits semantic transient/persistent/external storage and liveness requests.
-A tock-produced output never becomes a same-slice sequential dependency merely
+A Region- or Coverage-produced output never becomes a same-slice sequential dependency merely
 because a sequential consumer reads its materialized data. The source now uses
-`SequentialInputConfig`/`RandomAccessInputConfig` for consumer access,
-`TickOutputConfig`/`TockOutputConfig` for production, and separate
+typed `SequentialInputConfig`/`RegionInputConfig`/`CoverageInputConfig` forms for
+consumer access, typed `TickOutputConfig`/`RegionOutputConfig`/
+`CoverageOutputConfig` forms for production, and separate
 `OutputRetention::{ephemeral,persisted}`. Connection analysis classifies those
 axes independently per sample source channel and event source/target pair. It
-retains Tick -> Sequential dependencies for Tick scheduling, records Tock ->
+retains Tick -> Sequential dependencies for Tick scheduling, records Region/Coverage ->
 Sequential materialization and random-access materialization separately, treats
 persisted Tick outputs as stored boundaries, and proves contextual replay for
 eligible Tick/ephemeral paths by traversing sequential dependencies. The retained
@@ -1602,9 +1603,10 @@ state or other storage/code optimizations.
 
 The normative port schema and execution semantics are in
 [coverage_and_background_evaluation.md](./coverage_and_background_evaluation.md#13-authored-port-schema-retention-and-replayability).
-`SequentialInputConfig` and `RandomAccessInputConfig` select consumer access;
-`TickOutputConfig` and `TockOutputConfig` select producer callback; the output's
-`OutputRetention` is separate. The checked-in source uses these final independent contracts directly.
+`SequentialInputConfig`, `RegionInputConfig`, and `CoverageInputConfig` select
+consumer access; `TickOutputConfig`, `RegionOutputConfig`, and
+`CoverageOutputConfig` select producer form; the output's `OutputRetention` is
+separate. The checked-in source uses these independent contracts directly.
 
 An ordinary Tick/ephemeral stream may feed a Sequential input. It needs authored
 persistence or an explicit recorder only when it is **unreproducible** and downstream

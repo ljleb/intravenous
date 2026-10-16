@@ -31,7 +31,8 @@ coordinate.
 
 - `ConstrainPortsContext` now has statically restricted proxies for continuous value
   type, dynamic value size, local port pace, Sequential/Tick history, Tick latency, and
-  Random-Access/Tock ordering.
+  Coverage ordering. Region ports are intrinsically ordered and expose no ordering
+  constraint.
 - Reflection and configured-graph serialization retain each property-specific equality
   and anchor without a type-erased property/value mismatch state.
 - `ResolvedPortRealization` now contains selected continuous value types, dynamic sizes,
@@ -57,6 +58,51 @@ coordinate.
   element, resolved-size validity, channel capability, and per-value audio sample
   support. The preliminary `FFTBlock` extension enforces at least explicit DC and
   Nyquist bins and derives `2 * (bin_count - 1)` samples of support.
+- Leaf nodes now declare ports as heterogeneous tuples of concrete typed authored
+  configs. `input<Types...>()` and `output<Types...>()` use scoped access/production
+  tokens, and each registered continuous-value extension owns the option types for
+  every legal access or production form. Homogeneous generic nodes may still return an
+  array of one concrete authored config type.
+- Reflection now erases authored continuous configs into configured continuous records
+  whose Sequential/Region/Coverage or Tick/Region/Coverage alternatives are encoded by
+  distinct variants. Access/production metadata therefore cannot form an invalid
+  cross-product. Event configs remain separate and carry no continuous-only options.
+- Configured Sequential continuous inputs retain scalar default/minimum/maximum
+  presentation metadata only in rank-zero extensions and only where meaningful.
+  Nonzero-dimensional values expose none of those fields. Every extension retains
+  overridable `neutral_value` and `combine_values` reduction semantics. The old
+  parallel Sample-only projection fields have been removed. Existing Sample planning
+  reads the same type-owned metadata that future continuous-value realizations will consume.
+- Configured-graph serialization delegates binary encoding to each type-owned metadata
+  alternative and retains the declarative metadata for every
+  continuous alternative. The metadata alternatives themselves define the configured
+  value-type domain. No parallel bitset can disagree with them, and the
+  archive rejects empty or repeated alternatives. Executable function pointers are not
+  serialized.
+- The erased metadata variants and `ContinuousValueTypeId` use one registry order.
+  Compile-time checks prove that each alternative matches the extension at the same
+  registry position. Graph and archive code ask one shared helper for the value type.
+  They do not cast `std::variant::index()` independently.
+- Audio-capable extensions accept channel layout in their typed authored options, but
+  reflection promotes the common layout to the configured port-level field and removes
+  it from erased type metadata. Configured records therefore have one channel-layout
+  fact rather than synchronized copies in every possible value-type alternative.
+- Each node compiler record now retains optional node-specialized operations for
+  initializing the neutral storage of a Sequential continuous input and combining its
+  storage values. Those operations dispatch only over that node's statically authored
+  continuous-input/type pairs, so per-input `combine_values` overrides remain compiled
+  package behavior without imposing runtime work on unrelated ports.
+- A dynamically sized `FFTBlock` Sequential input represents `neutral_value` as an
+  initializer operation over one resolved logical block rather than one bin copied
+  across the block. The compiler-record initializer invokes that operation once per
+  logical FFT value after realization has supplied its bin count. Neither this
+  executable initializer nor `combine_values` is serialized into configured metadata.
+- Configured continuous records and their properties are named for continuous values
+  rather than `Sample`. The existing sample-named execution and storage planner remains
+  the explicitly unfinished realization layer.
+- The unit tests that formerly constructed timing-bearing legacy configs or invoked the
+  old connection-analysis signature have been migrated to authored constraints and
+  explicit resolved-realization input.
 
 ## Incomplete milestones
 
@@ -66,14 +112,19 @@ coordinate.
 - Tick bindings and authored port facades still address Sample storage with the old
   one-frame-per-project-index assumption. They do not yet expose per-port transported
   `block_size()` or the resolved `block_extended()` Sequential view.
+- Graph/module introspection still projects continuous public ports through the old
+  Sample-only `default_value`/`min`/`max` and numeric-current-value schema. The typed
+  port configs no longer give nonzero-dimensional types those fields, but the dynamic
+  introspection boundary still needs a type-owned scalar-presentation variant and a
+  separate non-scalar representation before it can describe
+  `FractionalGlobalIndex` or `FFTBlock` honestly. A Sample-specific compatibility
+  projection must not become the generic boundary.
 - Audio sample-rate basis, transport cadence, and per-value sample support are not yet
   independently solved or applied to declaration, initialization, Tick, or Tock
   contexts.
-- The remaining unit tests that directly construct timing-bearing legacy configs and
-  directly invoke connection analysis have not yet been migrated to authored constraints
-  and explicit resolved-realization input.
-- Coverage ordering is solved and propagated where both endpoints expose an ordering
-  variable; the Region/Coverage realization that satisfies a sorted requirement remains
+- Coverage ordering is solved and propagated among Coverage endpoints. Region ports
+  carry no ordering variable because a finite Region is intrinsically ordered. The
+  Region/Coverage realization that satisfies a sorted Coverage requirement remains
   owned by Front 3.
 
 ## Resolved implementation friction: rational-rate callback tails
@@ -175,15 +226,18 @@ its provenance in
 
 ## Expected repository state
 
-The repository is **not expected to compile** at this milestone. Expected compiler
-errors belong to this unfinished feature and are concentrated in tests that still use
-removed config timing fields or the old connection-analysis signature. No compatibility
-wrapper should be introduced to make those call sites compile; migrate them after the
-pace-aware execution shape is complete enough to define their final assertions.
+The typed authored/configured port-config migration is intended to compile as one
+coherent feature, but its current working-tree implementation has not been built or
+tested by the implementation agent. The repository owner performs that validation.
+No compatibility aliases or wrappers preserve the removed Sample-only authored-config
+API. The prior expected-broken state is preserved in
+[Port-realization status before typed authored port configs](./historical/port_realization_status_before_typed_port_configs.md).
 
 ## Next bottom-up connection
 
-Carry projected per-port extents into generated Tick bindings and storage planning.
-Then migrate the remaining tests, add execution-path cycle/range/dimension regression
-coverage, and refactor the solver around the stable responsibilities discovered by the
-working execution path.
+Complete type-owned storage and node-facing port access for the resolved continuous
+type, starting with `FractionalGlobalIndex` and the canonical `FFTBlock` representation.
+The existing Sample execution planner must not acquire central switches for those types:
+each extension supplies its storage/access operations, while realization selects and
+specializes one alternative before lowering. After that storage/access path works, carry
+projected per-port extents into generated Tick bindings and storage planning.

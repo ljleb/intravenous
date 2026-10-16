@@ -34,8 +34,9 @@ std::vector<OutputRefConfig> make_sample_output_configs(
         .ref = ref.ref,
         .config = {
             .name = std::string(ref.name),
-            .value_types = ContinuousValueTypeSet::audio_capable(),
             .channel_layout = ref.channel_layout,
+            .production = default_tick_output_properties(
+                ContinuousValueTypeSet::audio_capable()),
         },
         .public_member = {
             .family_name = std::string(ref.family_name),
@@ -98,25 +99,17 @@ void GraphBuilderState::validate_tiled_module_interfaces(
   if (members.empty()) {
     details::error("tiled IV module requires child graphs");
   }
-  auto same_sample_input = [](SampleInputConfig const& lhs, SampleInputConfig const& rhs) {
-    return lhs.name == rhs.name && lhs.value_types == rhs.value_types
-        && lhs.channel_layout == rhs.channel_layout
-        && lhs.access == rhs.access
-        && lhs.neutral_value.value == rhs.neutral_value.value
-        && lhs.default_value.value == rhs.default_value.value
-        && lhs.min.value == rhs.min.value && lhs.max.value == rhs.max.value;
+  auto same_sample_input = [](ContinuousInputConfig const& lhs, ContinuousInputConfig const& rhs) {
+    return lhs == rhs;
   };
-  auto same_sample_output = [](SampleOutputConfig const& lhs, SampleOutputConfig const& rhs) {
-    return lhs.name == rhs.name && lhs.value_types == rhs.value_types
-        && lhs.channel_layout == rhs.channel_layout
-        && lhs.production == rhs.production && lhs.retention == rhs.retention;
+  auto same_sample_output = [](ContinuousOutputConfig const& lhs, ContinuousOutputConfig const& rhs) {
+    return lhs == rhs;
   };
   auto same_event_input = [](EventInputConfig const& lhs, EventInputConfig const& rhs) {
-    return lhs.name == rhs.name && lhs.type == rhs.type && lhs.access == rhs.access;
+    return lhs == rhs;
   };
   auto same_event_output = [](EventOutputConfig const& lhs, EventOutputConfig const& rhs) {
-    return lhs.name == rhs.name && lhs.type == rhs.type
-        && lhs.production == rhs.production && lhs.retention == rhs.retention;
+    return lhs == rhs;
   };
 
   auto const& first = *members.front();
@@ -178,12 +171,19 @@ SamplePortRef GraphBuilderPublicPorts::add_sample_input(
     GraphBuilderState& builder, GraphBuilderNodeBundles& bundles,
     std::string_view name, ChannelLayout channel_layout, Sample value,
     std::optional<Sample> min, std::optional<Sample> max) {
-  auto index = bundles.bundle(_boundary).append_boundary_sample_input({
-      .name = std::string(name),
-      .channel_layout = channel_layout,
-      .default_value = value,
-      .min = min.value_or(-std::numeric_limits<Sample::storage>::infinity()),
-      .max = max.value_or(std::numeric_limits<Sample::storage>::infinity())});
+  auto const authored = input<Sample>(
+      std::string(name),
+      InputAccess::sequential,
+      {
+          .channel_layout = channel_layout,
+          .default_value = value,
+          .min = min.value_or(
+              -std::numeric_limits<Sample::storage>::infinity()),
+          .max = max.value_or(
+              std::numeric_limits<Sample::storage>::infinity()),
+      });
+  auto index = bundles.bundle(_boundary).append_boundary_sample_input(
+      materialize_continuous_config(erase_port_config(authored)));
   _sample_input_source_infos.emplace_back();
   return SamplePortRef(
       builder.facade(), NodeBundlePortId{_boundary, PortKind::sample, index});
@@ -762,7 +762,7 @@ NodeBundlePortId GraphBuilderState::input_port_at(
   return _node_bundles.input_port_at(handle, position);
 }
 
-SampleInputConfig GraphBuilderState::sample_input_config(
+ContinuousInputConfig GraphBuilderState::sample_input_config(
     NodeBundleHandle handle, size_t port) const {
   return _node_bundles.bundle(handle).sample_input_config(port);
 }

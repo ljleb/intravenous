@@ -47,8 +47,8 @@ struct ReflectedNodeDescription {
         return ports.output_configs;
     }
 
-    constexpr std::vector<SampleInputConfig> sample_inputs() const { return ports.sample_inputs(); }
-    constexpr std::vector<SampleOutputConfig> sample_outputs() const { return ports.sample_outputs(); }
+    constexpr std::vector<ContinuousInputConfig> sample_inputs() const { return ports.sample_inputs(); }
+    constexpr std::vector<ContinuousOutputConfig> sample_outputs() const { return ports.sample_outputs(); }
     constexpr std::vector<EventInputConfig> event_inputs() const { return ports.event_inputs(); }
     constexpr std::vector<EventOutputConfig> event_outputs() const { return ports.event_outputs(); }
 

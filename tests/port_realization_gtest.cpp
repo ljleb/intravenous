@@ -16,14 +16,14 @@ struct MixedIdentity {
 
     static constexpr auto inputs()
     {
-        return std::array{iv::sequential_sample_input(
-            "in", iv::SampleInputProperties{.value_types = domain})};
+        return std::array{iv::input<iv::Sample, iv::FractionalGlobalIndex>(
+            "in", iv::InputAccess::sequential)};
     }
 
     static constexpr auto outputs()
     {
-        return std::array{iv::tick_sample_output(
-            "out", iv::SampleOutputProperties{.value_types = domain})};
+        return std::array{iv::output<iv::Sample, iv::FractionalGlobalIndex>(
+            "out", iv::OutputProduction::tick)};
     }
 
     void constrain_ports(
@@ -39,12 +39,8 @@ struct MixedIdentity {
 struct FractionalSource {
     static constexpr auto outputs()
     {
-        return std::array{iv::tick_sample_output(
-            "out",
-            iv::SampleOutputProperties{
-                .value_types =
-                    iv::continuous_value_types<iv::FractionalGlobalIndex>,
-            })};
+        return std::array{iv::output<iv::FractionalGlobalIndex>(
+            "out", iv::OutputProduction::tick)};
     }
 
     void tick_block(iv::TickBlockContext<FractionalSource> const&) const {}
@@ -53,12 +49,8 @@ struct FractionalSource {
 struct FractionalOnly {
     static constexpr auto outputs()
     {
-        return std::array{iv::tick_sample_output(
-            "out",
-            iv::SampleOutputProperties{
-                .value_types =
-                    iv::continuous_value_types<iv::FractionalGlobalIndex>,
-            })};
+        return std::array{iv::output<iv::FractionalGlobalIndex>(
+            "out", iv::OutputProduction::tick)};
     }
 
     void tick_block(iv::TickBlockContext<FractionalOnly> const&) const {}
@@ -70,11 +62,8 @@ struct AnchoredChoice {
 
     static constexpr auto outputs()
     {
-        return std::array{iv::tick_sample_output(
-            "out",
-            iv::SampleOutputProperties{
-                .value_types = MixedIdentity::domain,
-            })};
+        return std::array{iv::output<iv::Sample, iv::FractionalGlobalIndex>(
+            "out", iv::OutputProduction::tick)};
     }
 
     void constrain_ports(
@@ -89,7 +78,7 @@ struct AnchoredChoice {
 struct SampleSource {
     static constexpr auto outputs()
     {
-        return std::array{iv::tick_sample_output("out")};
+        return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::tick)};
     }
     void tick_block(iv::TickBlockContext<SampleSource> const&) const {}
 };
@@ -97,11 +86,11 @@ struct SampleSource {
 struct RateDoubler {
     static constexpr auto inputs()
     {
-        return std::array{iv::sequential_sample_input("in")};
+        return std::array{iv::input<iv::Sample>("in", iv::InputAccess::sequential)};
     }
     static constexpr auto outputs()
     {
-        return std::array{iv::tick_sample_output("out")};
+        return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::tick)};
     }
     void constrain_ports(iv::ConstrainPortsContext<RateDoubler>& ctx) const
     {
@@ -114,11 +103,11 @@ struct RateDoubler {
 struct OrdinaryIdentity {
     static constexpr auto inputs()
     {
-        return std::array{iv::sequential_sample_input("in")};
+        return std::array{iv::input<iv::Sample>("in", iv::InputAccess::sequential)};
     }
     static constexpr auto outputs()
     {
-        return std::array{iv::tick_sample_output("out")};
+        return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::tick)};
     }
     void tick_block(iv::TickBlockContext<OrdinaryIdentity> const&) const {}
 };
@@ -126,11 +115,8 @@ struct OrdinaryIdentity {
 struct FftSizedOutput {
     static constexpr auto outputs()
     {
-        return std::array{iv::tick_sample_output(
-            "out",
-            iv::SampleOutputProperties{
-                .value_types = iv::continuous_value_types<iv::FFTBlock>,
-            })};
+        return std::array{iv::output<iv::FFTBlock>(
+            "out", iv::OutputProduction::tick)};
     }
     void constrain_ports(iv::ConstrainPortsContext<FftSizedOutput>& ctx) const
     {
@@ -142,11 +128,8 @@ struct FftSizedOutput {
 struct InvalidFftSizedOutput {
     static constexpr auto outputs()
     {
-        return std::array{iv::tick_sample_output(
-            "out",
-            iv::SampleOutputProperties{
-                .value_types = iv::continuous_value_types<iv::FFTBlock>,
-            })};
+        return std::array{iv::output<iv::FFTBlock>(
+            "out", iv::OutputProduction::tick)};
     }
     void constrain_ports(
         iv::ConstrainPortsContext<InvalidFftSizedOutput>& ctx) const
@@ -159,7 +142,7 @@ struct InvalidFftSizedOutput {
 struct UnsupportedDyadicPace {
     static constexpr auto outputs()
     {
-        return std::array{iv::tick_sample_output("out")};
+        return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::tick)};
     }
     void constrain_ports(
         iv::ConstrainPortsContext<UnsupportedDyadicPace>& ctx) const
@@ -172,11 +155,11 @@ struct UnsupportedDyadicPace {
 struct TimedPorts {
     static constexpr auto inputs()
     {
-        return std::array{iv::sequential_sample_input("in")};
+        return std::array{iv::input<iv::Sample>("in", iv::InputAccess::sequential)};
     }
     static constexpr auto outputs()
     {
-        return std::array{iv::tick_sample_output("out")};
+        return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::tick)};
     }
     void constrain_ports(iv::ConstrainPortsContext<TimedPorts>& ctx) const
     {
@@ -314,7 +297,7 @@ TEST(PortRealization, PropagatesValueTypesAcrossSubgraphBoundaries)
     auto const boundary = graph.node_bundles.append_boundary();
     graph.node_bundles.bundle(boundary).append_boundary_sample_input({
         .name = "input",
-        .value_types = MixedIdentity::domain,
+        .access = iv::default_sequential_input_properties(MixedIdentity::domain),
     });
     auto const child = append(graph, MixedIdentity{});
     graph.connections.record_configured_sample_connection(

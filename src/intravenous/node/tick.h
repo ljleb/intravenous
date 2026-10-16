@@ -672,7 +672,8 @@ namespace iv {
         {
             if constexpr (has_outputs<Node>) {
                 auto const& ports = TickContextAccess::ports(context);
-                for_each_static_port_index<Node::outputs().size()>(
+                for_each_static_port_index<
+                    port_config_count_v<decltype(Node::outputs())>>(
                     [&]<size_t Index> {
                         if constexpr (static_output_port_kind_at<Node, Index>()
                             == PortKind::sample
@@ -693,7 +694,8 @@ namespace iv {
         {
             if constexpr (has_inputs<Node>) {
                 auto const& ports = TickContextAccess::ports(context);
-                for_each_static_port_index<Node::inputs().size()>(
+                for_each_static_port_index<
+                    port_config_count_v<decltype(Node::inputs())>>(
                     [&]<size_t Index> {
                         if constexpr (static_input_port_kind_at<Node, Index>()
                             == PortKind::sample) {
@@ -711,7 +713,8 @@ namespace iv {
             SkipBlockContext<Node> const& context)
         {
             if constexpr (has_outputs<Node>) {
-                for_each_static_port_index<Node::outputs().size()>(
+                for_each_static_port_index<
+                    port_config_count_v<decltype(Node::outputs())>>(
                     [&]<size_t Index> {
                         if constexpr (!static_output_port_is_tock_at<Node, Index>()) {
                             if constexpr (static_output_port_kind_at<Node, Index>()

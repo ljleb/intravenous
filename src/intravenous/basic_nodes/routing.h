@@ -8,7 +8,7 @@ namespace iv {
     struct DummySink {
         static constexpr auto inputs()
         {
-            return std::array<InputConfig, 1>{};
+            return std::array<SequentialInputConfig<Sample>, 1>{};
         }
 
         void tick(TickSampleContext<DummySink> const&) const
@@ -18,7 +18,7 @@ namespace iv {
     struct DummyEventSink {
         static constexpr auto inputs()
         {
-            return std::array { sequential_event_input({}, EventTypeId::empty) };
+            return std::array { event_input({}, EventTypeId::empty, InputAccess::sequential) };
         }
 
         void tick_block(TickBlockContext<DummyEventSink> const&) const

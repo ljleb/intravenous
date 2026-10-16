@@ -20,6 +20,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <type_traits>
 #include <utility>
 #include <vector>
@@ -217,26 +218,98 @@ inline ChannelLayout read_layout(Reader& r)
     return {.channel_type = read_enum<ChannelTypeId>(r), .sample_layout = read_enum<SampleStreamLayout>(r)};
 }
 
+template<class Metadata>
+void write_continuous_metadata(Writer& w, Metadata const& value)
+{
+    value.write_binary(w);
+}
+
+template<class Metadata>
+Metadata read_continuous_metadata(Reader& r)
+{
+    return Metadata::read_binary(r);
+}
+
+template<class Variant, std::size_t Index = 0>
+Variant read_continuous_metadata_variant(Reader& r, std::size_t selected)
+{
+    if constexpr (Index == std::variant_size_v<Variant>) {
+        throw std::runtime_error(
+            "configured graph archive has invalid continuous metadata type");
+    } else {
+        if (selected == Index) {
+            using Metadata = std::variant_alternative_t<Index, Variant>;
+            return Variant{
+                std::in_place_index<Index>,
+                read_continuous_metadata<Metadata>(r)};
+        }
+        return read_continuous_metadata_variant<Variant, Index + 1>(
+            r, selected);
+    }
+}
+
+template<class Variant>
+void write_continuous_metadata_variant(Writer& w, Variant const& value)
+{
+    write_enum(w, continuous_metadata_value_type(value));
+    std::visit([&](auto const& metadata) {
+        write_continuous_metadata(w, metadata);
+    }, value);
+}
+
+template<class Variant>
+void write_continuous_metadata_list(
+    Writer& w, std::vector<Variant> const& values)
+{
+    w.list(values, [&](auto const& value) {
+        write_continuous_metadata_variant(w, value);
+    });
+}
+
+template<class Variant>
+std::vector<Variant> read_continuous_metadata_list(Reader& r)
+{
+    return read_list<Variant>(r, [&] {
+        auto const type = read_enum<ContinuousValueTypeId>(r);
+        if (!is_registered_continuous_value_type(type)) {
+            throw std::runtime_error(
+                "configured graph archive has invalid continuous value type");
+        }
+        return read_continuous_metadata_variant<Variant>(
+            r, static_cast<std::size_t>(type));
+    });
+}
+
 inline void write_input_access(Writer& w, InputAccessConfig const& value)
 {
-    w.flag(is_random_access(value));
+    write_enum(w, value);
 }
 
 inline InputAccessConfig read_input_access(Reader& r)
 {
-    if (r.flag()) return RandomAccessInputConfig{};
-    return SequentialInputConfig{};
+    auto const value = read_enum<InputAccessKind>(r);
+    if (value < InputAccessKind::sequential
+        || value > InputAccessKind::coverage) {
+        throw std::runtime_error(
+            "configured graph archive has invalid input access");
+    }
+    return value;
 }
 
 inline void write_output_production(Writer& w, OutputProductionConfig const& value)
 {
-    w.flag(is_tock(value));
+    write_enum(w, value);
 }
 
 inline OutputProductionConfig read_output_production(Reader& r)
 {
-    if (r.flag()) return TockOutputConfig{};
-    return TickOutputConfig{};
+    auto const value = read_enum<OutputProductionKind>(r);
+    if (value < OutputProductionKind::tick
+        || value > OutputProductionKind::coverage) {
+        throw std::runtime_error(
+            "configured graph archive has invalid output production");
+    }
+    return value;
 }
 
 inline void write_output_retention(Writer& w, OutputRetention retention)
@@ -255,71 +328,114 @@ inline OutputRetention read_output_retention(Reader& r)
     return retention;
 }
 
-inline void write_continuous_value_types(
-    Writer& w, ContinuousValueTypeSet value)
+template<class Metadata>
+void validate_continuous_metadata(std::vector<Metadata> const& metadata)
 {
-    w.pod(value.bits());
+    if (metadata.empty()) {
+        throw std::runtime_error(
+            "configured graph has an empty continuous value-type domain");
+    }
+    ContinuousValueTypeSet observed;
+    for (auto const& value : metadata) {
+        auto const type = continuous_metadata_value_type(value);
+        if (observed.contains(type)) {
+            throw std::runtime_error(
+                "configured graph repeats continuous metadata for one value type");
+        }
+        observed |= ContinuousValueTypeSet{type};
+    }
 }
 
-inline ContinuousValueTypeSet read_continuous_value_types(Reader& r)
+inline void write_input(Writer& w, ContinuousInputConfig const& value)
 {
-    auto const bits = r.pod<ContinuousValueTypeSet::mask_type>();
-    if ((bits & ~ContinuousValueTypeSet::all().bits()) != 0) {
-        throw std::runtime_error(
-            "configured graph archive has an unregistered continuous value type");
+    w.string(value.name);
+    write_layout(w, value.channel_layout);
+    write_input_access(w, input_access(value));
+    std::visit([&](auto const& access) {
+        validate_continuous_metadata(access.value_metadata);
+        write_continuous_metadata_list(w, access.value_metadata);
+    }, value.access);
+}
+
+inline ContinuousInputConfig read_input(Reader& r)
+{
+    ContinuousInputConfig result {
+        .name = r.string(),
+        .channel_layout = read_layout(r),
+    };
+    switch (read_input_access(r)) {
+    case InputAccessKind::sequential:
+        result.access = SequentialContinuousInputProperties{
+            .value_metadata =
+                read_continuous_metadata_list<ContinuousSequentialInputMetadata>(r),
+        };
+        break;
+    case InputAccessKind::region:
+        result.access = RegionContinuousInputProperties{
+            .value_metadata =
+                read_continuous_metadata_list<ContinuousRegionInputMetadata>(r),
+        };
+        break;
+    case InputAccessKind::coverage:
+        result.access = CoverageContinuousInputProperties{
+            .value_metadata =
+                read_continuous_metadata_list<ContinuousCoverageInputMetadata>(r),
+        };
+        break;
     }
-    auto const result = ContinuousValueTypeSet(bits, std::in_place);
-    if (result.empty()) {
-        throw std::runtime_error(
-            "configured graph archive has an empty continuous value-type domain");
-    }
+    std::visit([&](auto const& access) {
+        validate_continuous_metadata(access.value_metadata);
+    }, result.access);
     return result;
 }
 
-inline void write_input(Writer& w, SampleInputConfig const& value)
+inline void write_output(Writer& w, ContinuousOutputConfig const& value)
 {
     w.string(value.name);
-    write_continuous_value_types(w, value.value_types);
     write_layout(w, value.channel_layout);
-    write_input_access(w, value.access);
-    w.pod(value.neutral_value.value);
-    w.pod(value.default_value.value);
-    w.pod(value.min.value);
-    w.pod(value.max.value);
-}
-
-inline SampleInputConfig read_input(Reader& r)
-{
-    return {
-        .name = r.string(),
-        .value_types = read_continuous_value_types(r),
-        .channel_layout = read_layout(r),
-        .access = read_input_access(r),
-        .neutral_value = Sample{r.pod<Sample::storage>()},
-        .default_value = Sample{r.pod<Sample::storage>()},
-        .min = Sample{r.pod<Sample::storage>()},
-        .max = Sample{r.pod<Sample::storage>()},
-    };
-}
-
-inline void write_output(Writer& w, SampleOutputConfig const& value)
-{
-    w.string(value.name);
-    write_continuous_value_types(w, value.value_types);
-    write_layout(w, value.channel_layout);
-    write_output_production(w, value.production);
+    write_output_production(w, output_production(value));
     write_output_retention(w, value.retention);
+    std::visit([&](auto const& production) {
+        validate_continuous_metadata(production.value_metadata);
+        write_continuous_metadata_list(w, production.value_metadata);
+    }, value.production);
 }
 
-inline SampleOutputConfig read_output(Reader& r)
+inline ContinuousOutputConfig read_output(Reader& r)
 {
-    return {
-        .name = r.string(),
-        .value_types = read_continuous_value_types(r),
-        .channel_layout = read_layout(r),
-        .production = read_output_production(r),
-        .retention = read_output_retention(r),
+    auto name = r.string();
+    auto channel_layout = read_layout(r);
+    auto const production = read_output_production(r);
+    auto const retention = read_output_retention(r);
+    ContinuousOutputConfig result {
+        .name = std::move(name),
+        .channel_layout = channel_layout,
+        .retention = retention,
     };
+    switch (production) {
+    case OutputProductionKind::tick:
+        result.production = TickContinuousOutputProperties{
+            .value_metadata =
+                read_continuous_metadata_list<ContinuousTickOutputMetadata>(r),
+        };
+        break;
+    case OutputProductionKind::region:
+        result.production = RegionContinuousOutputProperties{
+            .value_metadata =
+                read_continuous_metadata_list<ContinuousRegionOutputMetadata>(r),
+        };
+        break;
+    case OutputProductionKind::coverage:
+        result.production = CoverageContinuousOutputProperties{
+            .value_metadata =
+                read_continuous_metadata_list<ContinuousCoverageOutputMetadata>(r),
+        };
+        break;
+    }
+    std::visit([&](auto const& production) {
+        validate_continuous_metadata(production.value_metadata);
+    }, result.production);
+    return result;
 }
 
 inline void write_event_input(Writer& w, EventInputConfig const& value)
@@ -370,8 +486,8 @@ template<class T, class Fn> std::vector<T> read_configs(Reader& r, Fn&& read)
 
 inline void write_input_config(Writer& w, InputConfig const& value)
 {
-    w.flag(is_sample(value));
-    if (is_sample(value)) write_input(w, materialize_sample_config(value));
+    w.flag(is_continuous(value));
+    if (is_continuous(value)) write_input(w, materialize_continuous_config(value));
     else write_event_input(w, materialize_event_config(value));
 }
 
@@ -384,8 +500,8 @@ inline InputConfig read_input_config(Reader& r)
 
 inline void write_output_config(Writer& w, OutputConfig const& value)
 {
-    w.flag(is_sample(value));
-    if (is_sample(value)) write_output(w, materialize_sample_config(value));
+    w.flag(is_continuous(value));
+    if (is_continuous(value)) write_output(w, materialize_continuous_config(value));
     else write_event_output(w, materialize_event_config(value));
 }
 

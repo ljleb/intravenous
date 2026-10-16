@@ -22,12 +22,12 @@ struct DebugProbe {
 
     static constexpr auto inputs()
     {
-        return std::array<iv::InputConfig, 1>{};
+        return std::array<iv::SequentialInputConfig<iv::Sample>, 1>{};
     }
 
     static constexpr auto outputs()
     {
-        return std::array<iv::OutputConfig, 1>{};
+        return std::array<iv::TickOutputConfig<iv::Sample>, 1>{};
     }
 
     void tick(iv::TickSampleContext<DebugProbe> const& ctx) const

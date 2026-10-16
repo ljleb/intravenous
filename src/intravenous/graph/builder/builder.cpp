@@ -343,7 +343,7 @@ NodeBundlePortId GraphBuilder::input_port_at(
     return state(*this).input_port_at(handle, position);
 }
 
-SampleInputConfig GraphBuilder::sample_input_config(
+ContinuousInputConfig GraphBuilder::sample_input_config(
     NodeBundleHandle handle, size_t port) const
 {
     return state(*this).sample_input_config(handle, port);

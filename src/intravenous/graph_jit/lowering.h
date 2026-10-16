@@ -53,6 +53,8 @@ struct NodeImplementation {
     llvm::Function* tock_coverage = nullptr;
     llvm::Function* propagate_forward_coverage = nullptr;
     llvm::Function* propagate_reverse_coverage = nullptr;
+    llvm::Function* initialize_sequential_input_neutral = nullptr;
+    llvm::Function* combine_sequential_input_values = nullptr;
 };
 
 struct ConfigRelocation {

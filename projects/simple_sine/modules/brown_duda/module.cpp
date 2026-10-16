@@ -88,17 +88,17 @@ struct StereoSourceGeometry
 {
     static constexpr auto inputs()
     {
-        return std::array<InputConfig, 3>{
-            sequential_sample_input("center_azimuth"),
-            sequential_sample_input("width"),
-            sequential_sample_input("distance", {.channel_layout = stereo_planar}),
+        return std::array{
+            input<Sample>("center_azimuth", InputAccess::sequential),
+            input<Sample>("width", InputAccess::sequential),
+            input<Sample>("distance", InputAccess::sequential, {.channel_layout = stereo_planar}),
         };
     }
 
     static constexpr auto outputs()
     {
-        return std::array<OutputConfig, 1>{
-            tick_sample_output("azimuth", {.channel_layout = stereo_planar}),
+        return std::array{
+            output<Sample>("azimuth", OutputProduction::tick, {.channel_layout = stereo_planar}),
         };
     }
 
@@ -217,24 +217,24 @@ struct BrownDudaParameters
 
     static constexpr auto inputs()
     {
-        return std::array<InputConfig, 2>{
-            sequential_sample_input("azimuth"),
-            sequential_sample_input("elevation"),
+        return std::array{
+            input<Sample>("azimuth", InputAccess::sequential),
+            input<Sample>("elevation", InputAccess::sequential),
         };
     }
 
     static constexpr auto outputs()
     {
-        return std::array<OutputConfig, 9>{
-            tick_sample_output("head_b0", {.channel_layout = stereo_planar}),
-            tick_sample_output("head_b1", {.channel_layout = stereo_planar}),
-            tick_sample_output("head_feedback"),
-            tick_sample_output("head_delay", {.channel_layout = stereo_planar}),
-            tick_sample_output("d2", {.channel_layout = stereo_planar}),
-            tick_sample_output("d3", {.channel_layout = stereo_planar}),
-            tick_sample_output("d4", {.channel_layout = stereo_planar}),
-            tick_sample_output("d5", {.channel_layout = stereo_planar}),
-            tick_sample_output("d6", {.channel_layout = stereo_planar}),
+        return std::array{
+            output<Sample>("head_b0", OutputProduction::tick, {.channel_layout = stereo_planar}),
+            output<Sample>("head_b1", OutputProduction::tick, {.channel_layout = stereo_planar}),
+            output<Sample>("head_feedback", OutputProduction::tick),
+            output<Sample>("head_delay", OutputProduction::tick, {.channel_layout = stereo_planar}),
+            output<Sample>("d2", OutputProduction::tick, {.channel_layout = stereo_planar}),
+            output<Sample>("d3", OutputProduction::tick, {.channel_layout = stereo_planar}),
+            output<Sample>("d4", OutputProduction::tick, {.channel_layout = stereo_planar}),
+            output<Sample>("d5", OutputProduction::tick, {.channel_layout = stereo_planar}),
+            output<Sample>("d6", OutputProduction::tick, {.channel_layout = stereo_planar}),
         };
     }
 
@@ -595,11 +595,11 @@ struct OnePoleOneZero
 {
     static constexpr auto inputs()
     {
-        return std::array<InputConfig, 4>{
-            sequential_sample_input("in"),
-            sequential_sample_input("b0"),
-            sequential_sample_input("b1"),
-            sequential_sample_input("feedback"),
+        return std::array{
+            input<Sample>("in", InputAccess::sequential),
+            input<Sample>("b0", InputAccess::sequential),
+            input<Sample>("b1", InputAccess::sequential),
+            input<Sample>("feedback", InputAccess::sequential),
         };
     }
 
@@ -610,7 +610,7 @@ struct OnePoleOneZero
 
     static constexpr auto outputs()
     {
-        return std::array<OutputConfig, 1>{tick_sample_output("out")};
+        return std::array{output<Sample>("out", OutputProduction::tick)};
     }
 
     void tick_block(
@@ -674,9 +674,9 @@ struct SampleDelay
 
     static constexpr auto inputs()
     {
-        return std::array<InputConfig, 2>{
-            sequential_sample_input("in"),
-            sequential_sample_input("delay_samples"),
+        return std::array{
+            input<Sample>("in", InputAccess::sequential),
+            input<Sample>("delay_samples", InputAccess::sequential),
         };
     }
 
@@ -687,7 +687,7 @@ struct SampleDelay
 
     static constexpr auto outputs()
     {
-        return std::array<OutputConfig, 1>{tick_sample_output("out")};
+        return std::array{output<Sample>("out", OutputProduction::tick)};
     }
 
     void tick_block(
@@ -747,13 +747,13 @@ struct BrownDudaPinna
 
     static constexpr auto inputs()
     {
-        return std::array<InputConfig, 6>{
-            sequential_sample_input("in"),
-            sequential_sample_input("d2"),
-            sequential_sample_input("d3"),
-            sequential_sample_input("d4"),
-            sequential_sample_input("d5"),
-            sequential_sample_input("d6"),
+        return std::array{
+            input<Sample>("in", InputAccess::sequential),
+            input<Sample>("d2", InputAccess::sequential),
+            input<Sample>("d3", InputAccess::sequential),
+            input<Sample>("d4", InputAccess::sequential),
+            input<Sample>("d5", InputAccess::sequential),
+            input<Sample>("d6", InputAccess::sequential),
         };
     }
 
@@ -764,7 +764,7 @@ struct BrownDudaPinna
 
     static constexpr auto outputs()
     {
-        return std::array<OutputConfig, 1>{tick_sample_output("out")};
+        return std::array{output<Sample>("out", OutputProduction::tick)};
     }
 
     void tick_block(
