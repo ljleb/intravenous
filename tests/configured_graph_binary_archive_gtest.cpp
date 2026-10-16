@@ -1,9 +1,6 @@
-#include <intravenous/basic_nodes/type_erased.h>
 #include <intravenous/basic_nodes/arithmetic.h>
 #include <intravenous/dsl.h>
 #include <intravenous/graph/builder.h>
-#include <intravenous/graph/builder/lowering.hpp>
-#include <intravenous/graph/compiler.h>
 #include <intravenous/module/configured_graph_wire.h>
 
 #include <gtest/gtest.h>
@@ -11,11 +8,64 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdint>
+#include <cstring>
 #include <optional>
 #include <stdexcept>
 #include <vector>
 
 namespace {
+
+struct ReplayableArchiveNode {
+    static constexpr bool intrinsically_replayable = true;
+    static constexpr auto outputs()
+    {
+        return std::array{iv::output<iv::Sample>("output", iv::OutputProduction::tick)};
+    }
+    void tick(iv::TickSampleContext<ReplayableArchiveNode> const&) const {}
+};
+
+struct ConstrainedArchiveNode {
+    static constexpr auto domain = iv::continuous_value_types<
+        iv::Sample,
+        iv::FractionalGlobalIndex>;
+
+    static constexpr auto inputs()
+    {
+        return std::tuple{
+            iv::input<iv::Sample, iv::FractionalGlobalIndex>(
+                "input", iv::InputAccess::sequential),
+            iv::event_input("event_input", iv::EventTypeId::trigger, iv::InputAccess::sequential),
+        };
+    }
+
+    static constexpr auto outputs()
+    {
+        return std::tuple{
+            iv::output<iv::Sample, iv::FractionalGlobalIndex>(
+                "output", iv::OutputProduction::tick),
+            iv::event_output("event_output", iv::EventTypeId::trigger, iv::OutputProduction::tick),
+        };
+    }
+
+    void constrain_ports(
+        iv::ConstrainPortsContext<ConstrainedArchiveNode>& context) const
+    {
+        context.output<"output">().value_type()
+            = context.input<"input">().value_type();
+        context.output<"output">().pace()
+            = context.input<"input">().pace();
+        context.input<"input">().pace() = 512;
+        context.input<"input">().history() = 7;
+        context.output<"output">().history() = 11;
+        context.output<"output">().latency() = 3;
+        context.input<"event_input">().history() = 5;
+        context.output<"event_output">().history() = 13;
+        context.output<"event_output">().latency() = 2;
+    }
+
+    void tick_block(iv::TickBlockContext<ConstrainedArchiveNode> const&) const {}
+};
 
 struct ArchiveFixture {
     iv::SerializedConfiguredGraph archive;
@@ -92,26 +142,27 @@ TEST(ConfiguredGraphBinaryArchive, RoundTripsNativeScalarsAndRejectsCorruption)
 
     auto const& declared_inputs = decoded.public_ports.inputs(decoded.node_bundles);
     ASSERT_EQ(declared_inputs.size(), 2u);
-    EXPECT_FALSE(iv::is_sample(declared_inputs[0]));
+    EXPECT_FALSE(iv::is_continuous(declared_inputs[0]));
     EXPECT_EQ(declared_inputs[0].name, "trigger");
-    EXPECT_TRUE(iv::is_sample(declared_inputs[1]));
+    EXPECT_TRUE(iv::is_continuous(declared_inputs[1]));
     EXPECT_EQ(declared_inputs[1].name, "gain");
 
-    auto plan = iv::GraphCompiler::compile(
-        iv::GraphLowerer::lower(std::move(decoded)));
-    auto const inputs = plan.graph.inputs();
-    auto const outputs = plan.graph.outputs();
+    auto const& inputs = decoded.public_ports.inputs(decoded.node_bundles);
+    auto const& outputs = decoded.public_ports.outputs(decoded.node_bundles);
 
     ASSERT_EQ(inputs.size(), 2u);
     EXPECT_EQ(inputs[0].name, "trigger");
-    ASSERT_FALSE(iv::is_sample(inputs[0]));
+    ASSERT_FALSE(iv::is_continuous(inputs[0]));
     EXPECT_EQ(iv::event_properties(inputs[0]).type, iv::EventTypeId::trigger);
     EXPECT_EQ(inputs[1].name, "gain");
-    ASSERT_TRUE(iv::is_sample(inputs[1]));
-    auto const& gain_properties = iv::sample_properties(inputs[1]);
-    EXPECT_FLOAT_EQ(gain_properties.default_value, 0.25f);
-    EXPECT_TRUE(std::isinf(gain_properties.min.value));
-    EXPECT_TRUE(std::isinf(gain_properties.max.value));
+    ASSERT_TRUE(iv::is_continuous(inputs[1]));
+    auto const& gain_properties = iv::continuous_properties(inputs[1]);
+    auto const& gain_sequential =
+        iv::sequential_input_metadata<iv::Sample>(
+            iv::sequential_input_properties(gain_properties));
+    EXPECT_FLOAT_EQ(gain_sequential.default_value, 0.25f);
+    EXPECT_TRUE(std::isinf(gain_sequential.min.value));
+    EXPECT_TRUE(std::isinf(gain_sequential.max.value));
     ASSERT_EQ(outputs.size(), 2u);
     EXPECT_EQ(outputs[0].name, "gain_out");
     EXPECT_EQ(outputs[1].name, "main");
@@ -119,6 +170,12 @@ TEST(ConfiguredGraphBinaryArchive, RoundTripsNativeScalarsAndRejectsCorruption)
     auto corrupt = fixture.archive.bytes;
     corrupt.front() = std::byte{};
     EXPECT_THROW(fixture.decode(corrupt), std::runtime_error);
+
+    auto previous_version = fixture.archive.bytes;
+    auto const obsolete_version = std::uint32_t{7};
+    std::memcpy(previous_version.data() + sizeof(std::uint32_t),
+        &obsolete_version, sizeof(obsolete_version));
+    EXPECT_THROW(fixture.decode(previous_version), std::runtime_error);
 
     auto truncated = fixture.archive.bytes;
     truncated.pop_back();
@@ -129,66 +186,344 @@ TEST(ConfiguredGraphBinaryArchive, RoundTripsNativeScalarsAndRejectsCorruption)
     EXPECT_THROW(fixture.decode(trailing), std::runtime_error);
 }
 
-TEST(ConfiguredGraphBinaryArchive, RoundTripsCompiledSamplePortCapabilities)
+TEST(ConfiguredGraphBinaryArchive, PreservesIntrinsicReplayMetadata)
 {
-    iv::SampleInputConfig const input {
-        .name = "compiled-input",
-        .channel_layout = {
-            .channel_type = iv::ChannelTypeId::stereo,
-            .sample_layout = iv::SampleStreamLayout::interleaved,
+    using namespace iv;
+    GraphBuilder graph;
+    auto const node = details::configure_concrete_node<ReplayableArchiveNode>(graph);
+    graph.outputs("replay"_P = node);
+    auto const archive = serialize_configured_graph(std::move(graph).finish());
+    std::array const compiler_records{
+        details::node_compiler_record<ReplayableArchiveNode>};
+    auto const decoded = deserialize_configured_graph(
+        archive.bytes, compiler_records, archive.node_configs);
+
+    std::size_t replayable_nodes = 0;
+    decoded.node_bundles.for_each_configured_bundle(
+        [&](ConfiguredNodeBundleView const& view) {
+            if (view.kind != ConfiguredNodeBundleKind::concrete) return;
+            EXPECT_TRUE(view.intrinsically_replayable);
+            ++replayable_nodes;
+        });
+    EXPECT_EQ(replayable_nodes, 1u);
+}
+
+TEST(ConfiguredGraphBinaryArchive, RoundTripsConnectionLocalDetachMetadata)
+{
+    iv::ConfiguredSampleConnection sample{
+        .source_type = iv::ChannelTypeId::mono,
+        .source_channels = {
+            iv::SampleOutputChannelId{.bundle = 4, .port = 1, .channel = 0},
         },
-        .compiled = true,
-        .history = 7,
-        .neutral_value = -0.125f,
-        .default_value = 0.25f,
+        .target_type = iv::ChannelTypeId::mono,
+        .target_channels = {
+            iv::SampleInputChannelId{.bundle = 6, .port = 0, .channel = 0},
+        },
+        .detach = iv::ConfiguredSampleConnectionDetach{
+            .loop_extra_latency = 9,
+            .initial_value_override = iv::Sample{-0.375f},
+        },
     };
-    iv::SampleOutputConfig const output {
-        .name = "compiled-output",
-        .compiled = true,
-        .latency = 3,
-        .history = 11,
+    iv::ConfiguredEventConnection event{
+        .source_type = iv::EventTypeId::trigger,
+        .sources = {iv::EventOutputPortId{.bundle = 7, .port = 2}},
+        .target_type = iv::EventTypeId::trigger,
+        .targets = {iv::EventInputPortId{.bundle = 8, .port = 3}},
+        .detach = iv::ConfiguredEventConnectionDetach{
+            .loop_extra_latency = 11,
+        },
     };
-    iv::EventInputConfig const event_input {
-        .name = "compiled-event-input",
+    iv::ConfiguredGraph configured;
+    configured.connections = iv::GraphBuilderConnections::from_configured_connections(
+        std::array{sample}, std::array{event});
+
+    auto const archive = iv::serialize_configured_graph(configured);
+    auto const decoded = iv::deserialize_configured_graph(
+        archive.bytes,
+        std::span<iv::details::NodeCompilerRecord const>{},
+        archive.node_configs);
+
+    auto const samples = decoded.connections.configured_sample_connections();
+    ASSERT_EQ(samples.size(), 1u);
+    ASSERT_TRUE(samples[0].detach.has_value());
+    EXPECT_EQ(samples[0].detach->loop_extra_latency, 9u);
+    ASSERT_TRUE(samples[0].detach->initial_value_override.has_value());
+    EXPECT_FLOAT_EQ(
+        static_cast<float>(*samples[0].detach->initial_value_override), -0.375f);
+
+    auto const events = decoded.connections.configured_event_connections();
+    ASSERT_EQ(events.size(), 1u);
+    ASSERT_TRUE(events[0].detach.has_value());
+    EXPECT_EQ(events[0].detach->loop_extra_latency, 11u);
+}
+
+TEST(ConfiguredGraphBinaryArchive, RoundTripsOrthogonalPortAccessConfigs)
+{
+    auto const fractional_default = iv::FractionalGlobalIndex::from_parts(
+        iv::GlobalIndex::from_signed(-3), 0x123456789abcdef0ULL);
+    auto const fractional_neutral = iv::FractionalGlobalIndex::from_parts(
+        iv::GlobalIndex::from_signed(7), 0xfedcba9876543210ULL);
+    auto const realtime_input = iv::materialize_continuous_config(
+        iv::erase_port_config(iv::input<iv::Sample, iv::FractionalGlobalIndex>(
+            "realtime-input",
+            iv::InputAccess::sequential,
+            {
+                .channel_layout = {
+                    .channel_type = iv::ChannelTypeId::stereo,
+                    .sample_layout = iv::SampleStreamLayout::interleaved,
+                },
+                .default_value = 0.25f,
+                .neutral_value = -0.125f,
+            },
+            {
+                .default_value = fractional_default,
+                .neutral_value = fractional_neutral,
+            })));
+    auto const random_access_input = iv::materialize_continuous_config(
+        iv::erase_port_config(iv::input<iv::Sample>(
+            "background-input", iv::InputAccess::coverage)));
+    auto const realtime_output = iv::materialize_continuous_config(
+        iv::erase_port_config(iv::output<iv::FFTBlock>(
+            "realtime-output",
+            iv::OutputProduction::tick,
+            iv::OutputRetention::persisted)));
+    auto const tock_output = iv::materialize_continuous_config(
+        iv::erase_port_config(iv::output<iv::Sample>(
+            "background-output", iv::OutputProduction::coverage)));
+    iv::EventInputConfig const sequential_event_input {
+        .name = "realtime-event-input",
         .type = iv::EventTypeId::trigger,
-        .compiled = true,
+        .access = iv::InputAccessKind::sequential,
     };
-    iv::EventOutputConfig const event_output {
-        .name = "compiled-event-output",
+    iv::EventInputConfig const random_access_event_input {
+        .name = "background-event-input",
+        .type = iv::EventTypeId::trigger,
+        .access = iv::InputAccessKind::coverage,
+    };
+    iv::EventOutputConfig const tick_event_output {
+        .name = "realtime-event-output",
         .type = iv::EventTypeId::midi,
-        .compiled = true,
+        .max_events_per_index = 0.24,
+        .production = iv::OutputProductionKind::tick,
+        .retention = iv::OutputRetention::ephemeral,
+    };
+    iv::EventOutputConfig const tock_event_output {
+        .name = "background-event-output",
+        .type = iv::EventTypeId::midi,
+        .production = iv::OutputProductionKind::coverage,
+        .retention = iv::OutputRetention::persisted,
     };
 
     iv::binary_wire_details::Writer writer;
-    iv::binary_wire_details::write_input(writer, input);
-    iv::binary_wire_details::write_output(writer, output);
-    iv::binary_wire_details::write_event_input(writer, event_input);
-    iv::binary_wire_details::write_event_output(writer, event_output);
+    iv::binary_wire_details::write_input(writer, realtime_input);
+    iv::binary_wire_details::write_input(writer, random_access_input);
+    iv::binary_wire_details::write_output(writer, realtime_output);
+    iv::binary_wire_details::write_output(writer, tock_output);
+    iv::binary_wire_details::write_event_input(writer, sequential_event_input);
+    iv::binary_wire_details::write_event_input(writer, random_access_event_input);
+    iv::binary_wire_details::write_event_output(writer, tick_event_output);
+    iv::binary_wire_details::write_event_output(writer, tock_event_output);
     auto const bytes = std::move(writer).take();
 
     iv::binary_wire_details::Reader reader(bytes);
-    auto const decoded_input = iv::binary_wire_details::read_input(reader);
-    auto const decoded_output = iv::binary_wire_details::read_output(reader);
-    auto const decoded_event_input = iv::binary_wire_details::read_event_input(reader);
-    auto const decoded_event_output = iv::binary_wire_details::read_event_output(reader);
+    auto const decoded_realtime_input = iv::binary_wire_details::read_input(reader);
+    auto const decoded_background_input = iv::binary_wire_details::read_input(reader);
+    auto const decoded_realtime_output = iv::binary_wire_details::read_output(reader);
+    auto const decoded_background_output = iv::binary_wire_details::read_output(reader);
+    auto const decoded_realtime_event_input = iv::binary_wire_details::read_event_input(reader);
+    auto const decoded_background_event_input = iv::binary_wire_details::read_event_input(reader);
+    auto const decoded_realtime_event_output = iv::binary_wire_details::read_event_output(reader);
+    auto const decoded_background_event_output = iv::binary_wire_details::read_event_output(reader);
     reader.finish();
 
-    EXPECT_EQ(decoded_input.name, input.name);
-    EXPECT_EQ(decoded_input.channel_layout, input.channel_layout);
-    EXPECT_TRUE(decoded_input.compiled);
-    EXPECT_EQ(decoded_input.history, 7u);
-    EXPECT_FLOAT_EQ(static_cast<float>(decoded_input.neutral_value), -0.125f);
-    EXPECT_FLOAT_EQ(static_cast<float>(decoded_input.default_value), 0.25f);
-    EXPECT_EQ(decoded_output.name, output.name);
-    EXPECT_TRUE(decoded_output.compiled);
-    EXPECT_EQ(decoded_output.latency, 3u);
-    EXPECT_EQ(decoded_output.history, 11u);
-    EXPECT_EQ(decoded_event_input.name, event_input.name);
-    EXPECT_EQ(decoded_event_input.type, event_input.type);
-    EXPECT_TRUE(decoded_event_input.compiled);
-    EXPECT_EQ(decoded_event_output.name, event_output.name);
-    EXPECT_EQ(decoded_event_output.type, event_output.type);
-    EXPECT_TRUE(decoded_event_output.compiled);
+    EXPECT_EQ(decoded_realtime_input.name, realtime_input.name);
+    EXPECT_EQ(
+        iv::continuous_value_type_domain(decoded_realtime_input),
+        iv::continuous_value_type_domain(realtime_input));
+    EXPECT_EQ(decoded_realtime_input.channel_layout, realtime_input.channel_layout);
+    EXPECT_FALSE(iv::is_random_access(decoded_realtime_input));
+    auto const& decoded_realtime_properties =
+        iv::sequential_input_metadata<iv::Sample>(
+            iv::sequential_input_properties(decoded_realtime_input));
+    EXPECT_FLOAT_EQ(
+        static_cast<float>(decoded_realtime_properties.neutral_value), -0.125f);
+    EXPECT_FLOAT_EQ(
+        static_cast<float>(decoded_realtime_properties.default_value), 0.25f);
+    auto const& decoded_fractional_properties =
+        iv::sequential_input_metadata<iv::FractionalGlobalIndex>(
+            iv::sequential_input_properties(decoded_realtime_input));
+    EXPECT_EQ(
+        decoded_fractional_properties.default_value, fractional_default);
+    EXPECT_EQ(
+        decoded_fractional_properties.neutral_value, fractional_neutral);
+    EXPECT_TRUE(iv::is_random_access(decoded_background_input));
+    EXPECT_FALSE(iv::is_sequential(decoded_background_input));
+    EXPECT_TRUE(std::holds_alternative<
+        iv::CoverageContinuousInputProperties>(
+            decoded_background_input.access));
+
+    EXPECT_EQ(decoded_realtime_output.name, realtime_output.name);
+    EXPECT_EQ(
+        iv::continuous_value_type_domain(decoded_realtime_output),
+        iv::continuous_value_type_domain(realtime_output));
+    EXPECT_FALSE(iv::is_tock(decoded_realtime_output));
+    EXPECT_TRUE(iv::is_persisted(decoded_realtime_output));
+    EXPECT_TRUE(iv::is_tock(decoded_background_output));
+    EXPECT_FALSE(iv::is_tick(decoded_background_output));
+    EXPECT_TRUE(std::holds_alternative<
+        iv::CoverageContinuousOutputProperties>(
+            decoded_background_output.production));
+    EXPECT_FALSE(iv::is_persisted(decoded_background_output));
+
+    EXPECT_EQ(decoded_realtime_event_input.type, sequential_event_input.type);
+    EXPECT_TRUE(iv::is_random_access(decoded_background_event_input));
+
+    EXPECT_EQ(decoded_realtime_event_output.type, tick_event_output.type);
+    EXPECT_DOUBLE_EQ(decoded_realtime_event_output.max_events_per_index, 0.24);
+    EXPECT_FALSE(iv::is_persisted(decoded_realtime_event_output));
+    EXPECT_TRUE(iv::is_tock(decoded_background_event_output));
+    EXPECT_TRUE(iv::is_persisted(decoded_background_event_output));
+}
+
+TEST(ConfiguredGraphBinaryArchive, RejectsRepeatedContinuousMetadataType)
+{
+    auto config = iv::materialize_continuous_config(
+        iv::erase_port_config(iv::input<iv::Sample, iv::FractionalGlobalIndex>(
+            "input", iv::InputAccess::sequential)));
+    auto& metadata = std::get<iv::SequentialContinuousInputProperties>(
+        config.access).value_metadata;
+    metadata.push_back(metadata.front());
+
+    iv::binary_wire_details::Writer writer;
+    EXPECT_THROW(
+        iv::binary_wire_details::write_input(writer, config),
+        std::runtime_error);
+}
+
+TEST(ConfiguredGraphBinaryArchive, RejectsEmptyContinuousMetadataDomain)
+{
+    auto config = iv::materialize_continuous_config(
+        iv::erase_port_config(iv::input<iv::Sample>(
+            "input", iv::InputAccess::sequential)));
+    std::get<iv::SequentialContinuousInputProperties>(
+        config.access).value_metadata.clear();
+
+    iv::binary_wire_details::Writer writer;
+    EXPECT_THROW(
+        iv::binary_wire_details::write_input(writer, config),
+        std::runtime_error);
+}
+
+TEST(ConfiguredGraphBinaryArchive, RoundTripsAuthoredPortConstraints)
+{
+    using namespace iv;
+    GraphBuilder graph;
+    auto const node =
+        details::configure_concrete_node<ConstrainedArchiveNode>(graph);
+    graph.outputs("output"_P = node);
+
+    auto const archive = serialize_configured_graph(std::move(graph).finish());
+    std::array const compiler_records{
+        details::node_compiler_record<ConstrainedArchiveNode>};
+    auto const decoded = deserialize_configured_graph(
+        archive.bytes, compiler_records, archive.node_configs);
+
+    std::size_t constrained_nodes = 0;
+    decoded.node_bundles.for_each_configured_bundle(
+        [&](ConfiguredNodeBundleView const& view) {
+            if (view.kind != ConfiguredNodeBundleKind::concrete) return;
+            ASSERT_NE(view.ports, nullptr);
+            ASSERT_NE(view.port_constraints, nullptr);
+            auto const inputs = view.ports->sample_inputs();
+            auto const outputs = view.ports->sample_outputs();
+            auto const event_inputs = view.ports->event_inputs();
+            auto const event_outputs = view.ports->event_outputs();
+            ASSERT_EQ(inputs.size(), 1u);
+            ASSERT_EQ(outputs.size(), 1u);
+            ASSERT_EQ(event_inputs.size(), 1u);
+            ASSERT_EQ(event_outputs.size(), 1u);
+            EXPECT_EQ(
+                continuous_value_type_domain(inputs.front()),
+                ConstrainedArchiveNode::domain);
+            EXPECT_EQ(
+                continuous_value_type_domain(outputs.front()),
+                ConstrainedArchiveNode::domain);
+            ASSERT_EQ(
+                view.port_constraints->value_type_equalities.size(), 1u);
+            EXPECT_EQ(
+                view.port_constraints->value_type_equalities.front(),
+                (ContinuousValueTypeEqualityConstraint{
+                    .first = {
+                        .direction = PortConstraintDirection::output,
+                        .kind = PortKind::sample,
+                        .port_index = 0,
+                    },
+                    .second = {
+                        .direction = PortConstraintDirection::input,
+                        .kind = PortKind::sample,
+                        .port_index = 0,
+                    },
+                }));
+            ASSERT_EQ(view.port_constraints->pace_equalities.size(), 1u);
+            ASSERT_EQ(view.port_constraints->pace_anchors.size(), 1u);
+            EXPECT_EQ(
+                view.port_constraints->pace_anchors.front().value.exponent(),
+                9);
+            ASSERT_EQ(view.port_constraints->history_anchors.size(), 4u);
+            EXPECT_EQ(
+                view.port_constraints->history_anchors,
+                (std::vector<PortHistoryAnchorConstraint>{
+                    {{PortConstraintDirection::input, PortKind::sample, 0}, 7},
+                    {{PortConstraintDirection::output, PortKind::sample, 0}, 11},
+                    {{PortConstraintDirection::input, PortKind::event, 0}, 5},
+                    {{PortConstraintDirection::output, PortKind::event, 0}, 13},
+                }));
+            ASSERT_EQ(view.port_constraints->latency_anchors.size(), 2u);
+            EXPECT_EQ(
+                view.port_constraints->latency_anchors,
+                (std::vector<PortLatencyAnchorConstraint>{
+                    {{PortConstraintDirection::output, PortKind::sample, 0}, 3},
+                    {{PortConstraintDirection::output, PortKind::event, 0}, 2},
+                }));
+            ++constrained_nodes;
+        });
+    EXPECT_EQ(constrained_nodes, 1u);
+}
+
+TEST(ConfiguredGraphBinaryArchive, RoundTripsEveryOutputAccessRetentionMode)
+{
+    std::array const outputs {
+        iv::materialize_continuous_config(iv::erase_port_config(
+            iv::output<iv::Sample>(
+                "realtime-ephemeral", iv::OutputProduction::tick))),
+        iv::materialize_continuous_config(iv::erase_port_config(
+            iv::output<iv::Sample>(
+                "realtime-persisted",
+                iv::OutputProduction::tick,
+                iv::OutputRetention::persisted))),
+        iv::materialize_continuous_config(iv::erase_port_config(
+            iv::output<iv::Sample>(
+                "background-ephemeral", iv::OutputProduction::coverage))),
+        iv::materialize_continuous_config(iv::erase_port_config(
+            iv::output<iv::Sample>(
+                "background-persisted",
+                iv::OutputProduction::coverage,
+                iv::OutputRetention::persisted))),
+    };
+    iv::binary_wire_details::Writer writer;
+    for (auto const& output : outputs) {
+        iv::binary_wire_details::write_output(writer, output);
+    }
+
+    auto const bytes = std::move(writer).take();
+    iv::binary_wire_details::Reader reader(bytes);
+    for (auto const& expected : outputs) {
+        auto const output = iv::binary_wire_details::read_output(reader);
+        EXPECT_EQ(output.name, expected.name);
+        EXPECT_EQ(output.production, expected.production);
+        EXPECT_EQ(output.retention, expected.retention);
+    }
+    reader.finish();
 }
 
 } // namespace

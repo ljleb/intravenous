@@ -1,42 +1,22 @@
-export type LiveGraphPortStateFamily =
-    | "sampleInput"
-    | "eventInput"
-    | "sampleOutput"
-    | "eventOutput";
-
-export type LiveGraphPortStateAction = {
-    state: string;
-    label: string;
-    reset?: boolean;
-};
-
 export type SerializedLiveGraphPort = {
     name: string;
     connectivity: string;
-    ordinal: number;
-    defaultValue: number;
-    minValue: number | null;
-    maxValue: number | null;
-    currentValue: number;
-    hasConcreteOverride: boolean;
-    stateValue: string;
-    tweakable: boolean;
-    stateFamily: LiveGraphPortStateFamily | null;
-    stateSummary: string;
-    stateActions: LiveGraphPortStateAction[];
-    resetState: string | null;
+    binding: string;
+    index: number;
+    typeSummary: string;
+    bindingSummary: string;
 };
 
 export type SerializedLiveGraphGroup = {
     label: string;
     count: number;
     direction: "input" | "output";
-    portKind: "sample" | "event";
+    portKind: "continuous" | "event";
     ports: SerializedLiveGraphPort[];
 };
 
 export type SerializedLiveGraphMember = {
-    ordinal: number;
+    index: number;
     backingNodeId: string;
     kind: string;
     description: string;
@@ -90,46 +70,6 @@ export type LiveGraphUpsertNodesMessage = {
     nodes: SerializedLiveGraphNode[];
 };
 
-export type LiveGraphSetSampleInputValueMessage = {
-    type: "setSampleInputValue";
-    nodeId: string;
-    inputOrdinal: number;
-    value: unknown;
-    memberOrdinal?: number | null;
-};
-
-export type LiveGraphSetSampleInputStateMessage = {
-    type: "setSampleInputState";
-    nodeId: string;
-    inputOrdinal: number;
-    state: string;
-    memberOrdinal?: number | null;
-};
-
-export type LiveGraphSetEventInputStateMessage = {
-    type: "setEventInputState";
-    nodeId: string;
-    inputOrdinal: number;
-    state: string;
-    memberOrdinal?: number | null;
-};
-
-export type LiveGraphSetSampleOutputStateMessage = {
-    type: "setSampleOutputState";
-    nodeId: string;
-    outputOrdinal: number;
-    state: string;
-    memberOrdinal?: number | null;
-};
-
-export type LiveGraphSetEventOutputStateMessage = {
-    type: "setEventOutputState";
-    nodeId: string;
-    outputOrdinal: number;
-    state: string;
-    memberOrdinal?: number | null;
-};
-
 export type LiveGraphSelectInstanceMessage = {
     type: "selectInstance";
     instanceId: string | null;
@@ -141,12 +81,7 @@ export type LiveGraphCreateInstanceMessage = {
 
 export type LiveGraphControlMessage =
     | LiveGraphSelectInstanceMessage
-    | LiveGraphCreateInstanceMessage
-    | LiveGraphSetSampleInputValueMessage
-    | LiveGraphSetSampleInputStateMessage
-    | LiveGraphSetEventInputStateMessage
-    | LiveGraphSetSampleOutputStateMessage
-    | LiveGraphSetEventOutputStateMessage;
+    | LiveGraphCreateInstanceMessage;
 
 export type LiveGraphControlHandler = (message: LiveGraphControlMessage) => Promise<void>;
 
@@ -156,28 +91,8 @@ export function isLiveGraphControlMessage(message: unknown): message is LiveGrap
     }
 
     const candidate = message as Record<string, unknown>;
-    if (typeof candidate.type !== "string" || typeof candidate.nodeId !== "string") {
-        if (candidate.type === "selectInstance") {
-            return candidate.instanceId == null || typeof candidate.instanceId === "string";
-        }
-        if (candidate.type === "createInstance") {
-            return true;
-        }
-        return false;
-    }
-
-    switch (candidate.type) {
-    case "selectInstance":
+    if (candidate.type === "selectInstance") {
         return candidate.instanceId == null || typeof candidate.instanceId === "string";
-    case "setSampleInputValue":
-        return typeof candidate.inputOrdinal === "number";
-    case "setSampleInputState":
-    case "setEventInputState":
-        return typeof candidate.inputOrdinal === "number" && typeof candidate.state === "string";
-    case "setSampleOutputState":
-    case "setEventOutputState":
-        return typeof candidate.outputOrdinal === "number" && typeof candidate.state === "string";
-    default:
-        return false;
     }
+    return candidate.type === "createInstance";
 }

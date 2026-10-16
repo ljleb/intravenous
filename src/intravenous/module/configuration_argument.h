@@ -1,7 +1,9 @@
 #pragma once
 
 #include <array>
+#include <concepts>
 #include <cstddef>
+#include <functional>
 #include <memory>
 #include <span>
 #include <string_view>
@@ -48,6 +50,87 @@ constexpr ConfigurationTypeIdentity const* configuration_type_identity() noexcep
 {
     using Transported = std::remove_cvref_t<T>;
     return std::addressof(configuration_type_identity_storage<Transported>);
+}
+
+
+struct ConfigurationValueOperations {
+    std::size_t size = 0;
+    std::size_t alignment = 1;
+    void (*copy_construct)(void*, void const*) = nullptr;
+    void (*destroy)(void*) noexcept = nullptr;
+    bool (*equal)(void const*, void const*) = nullptr;
+    std::size_t (*hash)(void const*) = nullptr;
+};
+static_assert(std::is_standard_layout_v<ConfigurationValueOperations>);
+static_assert(std::is_trivially_copyable_v<ConfigurationValueOperations>);
+
+template<class T>
+struct ConfigurationValueOperationsStorage {
+    using Value = std::remove_cvref_t<T>;
+
+    static void copy_construct(void* destination, void const* source)
+        requires std::copy_constructible<Value>
+    {
+        ::new (destination) Value(*static_cast<Value const*>(source));
+    }
+
+    static void destroy(void* value) noexcept
+    {
+        static_cast<Value*>(value)->~Value();
+    }
+
+    static bool equal(void const* lhs, void const* rhs)
+        requires requires(Value const& a, Value const& b) {
+            { a == b } -> std::convertible_to<bool>;
+        }
+    {
+        return *static_cast<Value const*>(lhs) == *static_cast<Value const*>(rhs);
+    }
+
+    static std::size_t hash(void const* value)
+        requires requires(Value const& v) {
+            { std::hash<Value>{}(v) } -> std::convertible_to<std::size_t>;
+        }
+    {
+        return std::hash<Value>{}(*static_cast<Value const*>(value));
+    }
+
+    inline static constexpr ConfigurationValueOperations value{
+        .size = sizeof(Value),
+        .alignment = alignof(Value),
+        .copy_construct = [] {
+            if constexpr (std::copy_constructible<Value>) {
+                return &copy_construct;
+            } else {
+                return static_cast<void (*)(void*, void const*)>(nullptr);
+            }
+        }(),
+        .destroy = &destroy,
+        .equal = [] {
+            if constexpr (requires(Value const& a, Value const& b) {
+                { a == b } -> std::convertible_to<bool>;
+            }) {
+                return &equal;
+            } else {
+                return static_cast<bool (*)(void const*, void const*)>(nullptr);
+            }
+        }(),
+        .hash = [] {
+            if constexpr (requires(Value const& v) {
+                { std::hash<Value>{}(v) } -> std::convertible_to<std::size_t>;
+            }) {
+                return &hash;
+            } else {
+                return static_cast<std::size_t (*)(void const*)>(nullptr);
+            }
+        }(),
+    };
+};
+
+template<class T>
+constexpr ConfigurationValueOperations const* configuration_value_operations() noexcept
+{
+    return std::addressof(ConfigurationValueOperationsStorage<std::remove_cvref_t<T>>::value);
 }
 
 struct ConfigurationArgument {

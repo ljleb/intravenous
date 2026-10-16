@@ -5,14 +5,20 @@
 // that build has been finalized.
 
 #include <intravenous/node/code_key.h>
+#include <intravenous/global_index.h>
 
 #include <cstddef>
+#include <cstdint>
 
 namespace iv {
 
 struct NodeLayoutBuilder;
-struct NodeStateStructure;
+struct NodeStateStructures;
 struct ReflectedNodeTickContext;
+struct ReflectedNodeTockCoverageContext;
+struct ReflectedNodeForwardCoverageContext;
+struct ReflectedNodeReverseCoverageContext;
+enum class ContinuousValueTypeId : std::uint8_t;
 
 namespace details {
 
@@ -20,11 +26,40 @@ namespace details {
 // transitional executor adapter lives in graph/reflected_node_operations.h.
 struct NodeCompilerOperations {
     std::size_t (*declare_node)(
-        void const*, NodeStateStructure const*, NodeLayoutBuilder&) = nullptr;
+        void const*, NodeStateStructures const*, NodeLayoutBuilder&) = nullptr;
     void (*tick_block)(
-        void const*, ReflectedNodeTickContext const&, std::size_t, std::size_t) = nullptr;
+        void const*, ReflectedNodeTickContext const&, GlobalIndex, std::size_t) = nullptr;
     void (*skip_block)(
-        void const*, ReflectedNodeTickContext const&, std::size_t, std::size_t) = nullptr;
+        void const*, ReflectedNodeTickContext const&, GlobalIndex, std::size_t) = nullptr;
+
+    // Compiler-facing one-node background callback anchors. Reflected contexts use
+    // explicit pointer/count spans; wrappers reconstruct the Node-specialized
+    // public contexts before entering authored code. Whole-project batching is
+    // a separate root ABI.
+    void (*tock_coverage)(
+        void const*, ReflectedNodeTockCoverageContext const&) = nullptr;
+    void (*propagate_forward_coverage)(
+        void const*, ReflectedNodeForwardCoverageContext const&) = nullptr;
+    void (*propagate_reverse_coverage)(
+        void const*, ReflectedNodeReverseCoverageContext const&) = nullptr;
+
+    // Executable Sequential fan-in semantics stay in package LLVM. The
+    // configured graph serializes declarative metadata, never native function
+    // pointers. These node-specialized dispatchers accept only one of the
+    // node's declared continuous input/type pairs and reject every other pair.
+    bool (*initialize_sequential_input_neutral)(
+        std::size_t continuous_input,
+        ContinuousValueTypeId,
+        std::byte* destination,
+        std::size_t destination_bytes,
+        std::size_t elements_per_value) = nullptr;
+    bool (*combine_sequential_input_values)(
+        std::size_t continuous_input,
+        ContinuousValueTypeId,
+        std::byte* destination,
+        std::byte const* source,
+        std::size_t byte_count,
+        std::size_t elements_per_value) = nullptr;
 
     constexpr bool valid() const
     {
@@ -42,6 +77,13 @@ struct NodeCompilerRecord {
     // received from Clang before publishing it to the graph compiler.
     std::size_t state_size = 0;
     std::size_t state_alignment = 1;
+    // TockState is non-semantic acceleration state available only to
+    // tock_coverage(). It is allocated independently from sequential State.
+    std::size_t background_state_size = 0;
+    std::size_t background_state_alignment = 1;
+    // Authored and statically validated; the project planner must separately
+    // prove that a specific instance can replay its transitive dependencies.
+    bool intrinsically_replayable = false;
 };
 
 } // namespace details

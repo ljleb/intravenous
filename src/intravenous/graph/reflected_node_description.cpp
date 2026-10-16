@@ -56,9 +56,86 @@ void NodeDescriptionSink::set_block_skippable(bool value) const
     description().block_skippable = value;
 }
 
+void NodeDescriptionSink::set_intrinsically_replayable(bool value) const
+{
+    description().intrinsically_replayable = value;
+}
+
 void NodeDescriptionSink::set_static_sample_value(std::optional<Sample> value) const
 {
     description().static_sample_value = value;
+}
+
+ReflectedPortConstraintSink NodeDescriptionSink::port_constraint_sink() const
+{
+    auto* constraints = std::addressof(description().port_constraints);
+    return {
+        .state = constraints,
+        .equal_value_types = +[](
+            void* state,
+            PortConstraintRef first,
+            PortConstraintRef second) {
+            static_cast<NodePortConstraints*>(state)
+                ->value_type_equalities.push_back({first, second});
+        },
+        .anchor_value_types = +[](
+            void* state,
+            PortConstraintRef port,
+            ContinuousValueTypeId value_type) {
+            static_cast<NodePortConstraints*>(state)
+                ->value_type_anchors.push_back({port, value_type});
+        },
+        .equal_sizes = +[](
+            void* state, PortConstraintRef first, PortConstraintRef second) {
+            static_cast<NodePortConstraints*>(state)
+                ->size_equalities.push_back({first, second});
+        },
+        .anchor_sizes = +[](
+            void* state, PortConstraintRef port, std::size_t size) {
+            static_cast<NodePortConstraints*>(state)
+                ->size_anchors.push_back({port, size});
+        },
+        .equal_paces = +[](
+            void* state, PortConstraintRef first, PortConstraintRef second) {
+            static_cast<NodePortConstraints*>(state)
+                ->pace_equalities.push_back({first, second});
+        },
+        .anchor_paces = +[](
+            void* state, PortConstraintRef port, PortPace pace) {
+            static_cast<NodePortConstraints*>(state)
+                ->pace_anchors.push_back({port, pace});
+        },
+        .equal_histories = +[](
+            void* state, PortConstraintRef first, PortConstraintRef second) {
+            static_cast<NodePortConstraints*>(state)
+                ->history_equalities.push_back({first, second});
+        },
+        .anchor_histories = +[](
+            void* state, PortConstraintRef port, std::size_t history) {
+            static_cast<NodePortConstraints*>(state)
+                ->history_anchors.push_back({port, history});
+        },
+        .equal_latencies = +[](
+            void* state, PortConstraintRef first, PortConstraintRef second) {
+            static_cast<NodePortConstraints*>(state)
+                ->latency_equalities.push_back({first, second});
+        },
+        .anchor_latencies = +[](
+            void* state, PortConstraintRef port, std::size_t latency) {
+            static_cast<NodePortConstraints*>(state)
+                ->latency_anchors.push_back({port, latency});
+        },
+        .equal_orderings = +[](
+            void* state, PortConstraintRef first, PortConstraintRef second) {
+            static_cast<NodePortConstraints*>(state)
+                ->ordering_equalities.push_back({first, second});
+        },
+        .anchor_orderings = +[](
+            void* state, PortConstraintRef port, CoverageOrdering ordering) {
+            static_cast<NodePortConstraints*>(state)
+                ->ordering_anchors.push_back({port, ordering});
+        },
+    };
 }
 
 ReflectedNodeDescription materialize_node_description(
@@ -93,6 +170,14 @@ ReflectedNodeDescription materialize_node_description(
     NodeDescriptionBuilder builder(result);
     auto sink = builder.sink();
     request.describe(result.node_storage.get(), sink);
+    if (result.intrinsically_replayable != record.intrinsically_replayable) {
+        throw std::invalid_argument(
+            "node intrinsic replayability disagrees with its compiler record");
+    }
+    if (result.intrinsically_replayable && result.internal_latency_samples != 0) {
+        throw std::invalid_argument(
+            "intrinsically replayable node requires zero configured internal latency");
+    }
     return result;
 }
 

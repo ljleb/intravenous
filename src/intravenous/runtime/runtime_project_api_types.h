@@ -1,7 +1,6 @@
 #pragma once
 
 #include <intravenous/graph/build_types.h>
-#include <intravenous/runtime/lane_view_service.h>
 
 #include <cstddef>
 #include <cstdint>
@@ -12,6 +11,37 @@
 #include <vector>
 
 namespace iv {
+    enum class VirtualPortBinding : std::uint8_t {
+        interface,
+        none,
+        virtual_input,
+        virtual_output,
+        mixed,
+    };
+
+    struct VirtualContinuousPortInfo {
+        std::string name {};
+        VirtualPortConnectivity connectivity =
+            VirtualPortConnectivity::disconnected;
+        size_t index = 0;
+        std::vector<ContinuousValueIntrospectionMetadata> value_types {};
+        std::optional<ChannelTypeId> channel_type {};
+        VirtualPortBinding binding = VirtualPortBinding::none;
+
+        bool operator==(VirtualContinuousPortInfo const&) const = default;
+    };
+
+    struct VirtualEventPortInfo {
+        std::string name {};
+        VirtualPortConnectivity connectivity =
+            VirtualPortConnectivity::disconnected;
+        size_t index = 0;
+        EventTypeId type = EventTypeId::empty;
+        VirtualPortBinding binding = VirtualPortBinding::none;
+
+        bool operator==(VirtualEventPortInfo const&) const = default;
+    };
+
     struct SourcePosition {
         uint32_t line = 1;
         uint32_t column = 1;
@@ -39,14 +69,14 @@ namespace iv {
     };
 
     struct VirtualNodeMemberInfo {
-        size_t ordinal = 0;
+        size_t index = 0;
         std::string backing_node_id{};
         std::string kind{};
         std::string type_identity{};
-        std::vector<VirtualPortInfo> sample_inputs{};
-        std::vector<VirtualPortInfo> sample_outputs{};
-        std::vector<VirtualPortInfo> event_inputs{};
-        std::vector<VirtualPortInfo> event_outputs{};
+        std::vector<VirtualContinuousPortInfo> continuous_inputs{};
+        std::vector<VirtualContinuousPortInfo> continuous_outputs{};
+        std::vector<VirtualEventPortInfo> event_inputs{};
+        std::vector<VirtualEventPortInfo> event_outputs{};
     };
 
     struct VirtualNodeInfo {
@@ -56,75 +86,12 @@ namespace iv {
         std::string source_identity{};
         std::string type_identity{};
         std::vector<LiveSourceSpan> source_spans{};
-        std::vector<VirtualPortInfo> sample_inputs{};
-        std::vector<VirtualPortInfo> sample_outputs{};
-        std::vector<VirtualPortInfo> event_inputs{};
-        std::vector<VirtualPortInfo> event_outputs{};
+        std::vector<VirtualContinuousPortInfo> continuous_inputs{};
+        std::vector<VirtualContinuousPortInfo> continuous_outputs{};
+        std::vector<VirtualEventPortInfo> event_inputs{};
+        std::vector<VirtualEventPortInfo> event_outputs{};
         size_t member_count = 0;
         std::vector<VirtualNodeMemberInfo> members{};
-    };
-
-    // Source-annotated public inputs are not graph nodes, but the source
-    // sidebar presents them using the same virtual/member shape.
-    struct PublicSampleInputInfo {
-        std::string instance_id {};
-        std::string source_identity {};
-        std::vector<SourceInfo> source_infos {};
-        std::string name {};
-        Sample default_value = 0.0f;
-        std::optional<Sample> min {};
-        std::optional<Sample> max {};
-        Sample current_value = 0.0f;
-        std::string virtual_state {};
-        bool graph_connected = false;
-        std::vector<size_t> member_ordinals {};
-        std::vector<bool> member_graph_connected {};
-        std::vector<std::string> member_states {};
-    };
-
-    struct PublicEventInputInfo {
-        std::string instance_id {};
-        std::string source_identity {};
-        std::vector<SourceInfo> source_infos {};
-        std::string name {};
-        EventTypeId type = EventTypeId::trigger;
-        std::string virtual_state {};
-        bool graph_connected = false;
-        std::vector<size_t> member_ordinals {};
-        std::vector<bool> member_graph_connected {};
-        std::vector<std::string> member_states {};
-    };
-
-    struct PublicSampleOutputInfo {
-        std::string instance_id {};
-        std::string source_identity {};
-        std::vector<SourceInfo> source_infos {};
-        std::string name {};
-        std::string virtual_state {};
-        bool graph_connected = false;
-        std::vector<size_t> member_ordinals {};
-        std::vector<bool> member_graph_connected {};
-        std::vector<std::string> member_states {};
-    };
-
-    struct PublicEventOutputInfo {
-        std::string instance_id {};
-        std::string source_identity {};
-        std::vector<SourceInfo> source_infos {};
-        std::string name {};
-        EventTypeId type = EventTypeId::trigger;
-        std::string virtual_state {};
-        bool graph_connected = false;
-        std::vector<size_t> member_ordinals {};
-        std::vector<bool> member_graph_connected {};
-        std::vector<std::string> member_states {};
-    };
-
-    struct GraphInputPublicPortsSnapshot {
-        std::vector<PublicSampleInputInfo> sample_inputs {};
-        std::vector<PublicEventInputInfo> event_inputs {};
-        std::vector<PublicSampleOutputInfo> sample_outputs {};
-        std::vector<PublicEventOutputInfo> event_outputs {};
     };
 
     struct ProjectQueryResult {
@@ -150,10 +117,6 @@ namespace iv {
         std::vector<std::string> deleted_node_ids{};
     };
 
-    struct ProjectLaneViewNotification {
-        LaneViewResult lane_view{};
-    };
-
     struct ProjectVirtualNodesNotification {
         std::vector<VirtualNodeInfo> nodes{};
         std::vector<std::string> replace_instance_ids{};
@@ -162,6 +125,5 @@ namespace iv {
     using ProjectNotification = std::variant<
         ProjectMessageNotification,
         ProjectStatusNotification,
-        ProjectLaneViewNotification,
         ProjectVirtualNodesNotification>;
 } // namespace iv

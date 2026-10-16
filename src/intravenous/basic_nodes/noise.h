@@ -44,7 +44,7 @@ namespace iv {
 
         static constexpr auto outputs()
         {
-            return std::array<OutputConfig, 1>{};
+            return std::array<TickOutputConfig<Sample>, 1>{};
         }
 
         struct State {
@@ -62,7 +62,7 @@ namespace iv {
         void tick(TickSampleContext<UniformNoise> const& ctx) const
         {
             auto& state = ctx.state();
-            ctx.outputs[0].push((state.distribution)(state.generator));
+            ctx.template output<0>().push((state.distribution)(state.generator));
         }
     };
 
@@ -97,22 +97,22 @@ namespace iv {
         static constexpr auto inputs()
         {
             return std::array {
-                sample_input("min", {.default_value = -1.0}),
-                sample_input("max", {.default_value = 1.0}),
+                input<Sample>("min", InputAccess::sequential, {.default_value = -1.0}),
+                input<Sample>("max", InputAccess::sequential, {.default_value = 1.0}),
             };
         }
 
         static constexpr auto outputs()
         {
-            return std::array<OutputConfig, 1>{};
+            return std::array<TickOutputConfig<Sample>, 1>{};
         }
 
         void tick(TickSampleContext<DeterministicUniformNoise> const& state) const
         {
-            auto const min = state.inputs[0].get();
-            auto const max = state.inputs[1].get();
-            uint64_t uniform_int = splitmix64(state.index);
-            state.outputs[0].push(uniform_m11(uniform_int, min, max));
+            auto const min = state.template input<0>().get();
+            auto const max = state.template input<1>().get();
+            uint64_t uniform_int = splitmix64(state.index.bits());
+            state.template output<0>().push(uniform_m11(uniform_int, min, max));
         }
     };
 
@@ -166,47 +166,45 @@ namespace iv {
         static constexpr auto inputs()
         {
             return std::array {
-                sample_input("min", {.default_value = -1.0}),
-                sample_input("max", {.default_value = 1.0}),
+                input<Sample>("min", InputAccess::sequential, {.default_value = -1.0}),
+                input<Sample>("max", InputAccess::sequential, {.default_value = 1.0}),
             };
         }
 
         static constexpr auto outputs()
         {
-            return std::array<OutputConfig, 1>{};
+            return std::array<TickOutputConfig<Sample>, 1>{};
         }
 
         void tick_block(TickBlockContext<DeterministicUniformAESNoise> const& ctx) const
         {
-            auto const min = ctx.inputs[0].get();
-            auto const max = ctx.inputs[1].get();
+            auto const min = ctx.template input<0>().get();
+            auto const max = ctx.template input<1>().get();
             auto const scale = max - min;
-
-            auto const start = ctx.index;
-            auto const end   = start + ctx.block_size;
-
-            auto const first_group = start >> 2;
-            auto const last_group  = (end - 1) >> 2;
 
             auto const to_sample = [&](uint32_t x) -> Sample {
                 return r123::u01<Sample>(x) * scale + min;
             };
 
-            for (uint64_t group = first_group; group <= last_group; ++group) {
+            auto position = ctx.index.bits();
+            auto remaining = ctx.block_size;
+            while (remaining != 0) {
+                auto const group = position >> 2;
                 auto const r = _generator(make_index(group), _seed);
-
                 auto const tmp = std::to_array({
                     to_sample(r[0]),
                     to_sample(r[1]),
                     to_sample(r[2]),
                     to_sample(r[3]),
                 });
-
-                auto const first_lane = (group == first_group) ? (start & 3u) : 0u;
-                auto const last_lane  = (group == last_group)  ? ((end - 1) & 3u) : 3u;
-
-                std::span<Sample const> span{tmp.data() + first_lane, last_lane - first_lane + 1};
-                ctx.outputs[0].push_block(span);
+                auto const first = static_cast<std::size_t>(position & 3u);
+                auto const count = std::min(
+                    tmp.size() - first,
+                    remaining);
+                ctx.template output<0>().push_block(
+                    std::span<Sample const>{tmp}.subspan(first, count));
+                position += count;
+                remaining -= count;
             }
         }
     };
@@ -223,18 +221,18 @@ namespace iv {
 
         static constexpr auto inputs()
         {
-            return std::array<InputConfig, 1>{};
+            return std::array<SequentialInputConfig<Sample>, 1>{};
         }
 
         static constexpr auto outputs()
         {
-            return std::array<OutputConfig, 1>{};
+            return std::array<TickOutputConfig<Sample>, 1>{};
         }
 
         void tick(TickSampleContext<UniformToCauchy> const& state) const
         {
-            Sample uniform = details::clamp_open_unit_interval_pm1(state.inputs[0].get());
-            state.outputs[0].push(_x0 + _gamma * std::tanf(std::numbers::pi_v<float> * uniform * 0.5));
+            Sample uniform = details::clamp_open_unit_interval_pm1(state.template input<0>().get());
+            state.template output<0>().push(_x0 + _gamma * std::tanf(std::numbers::pi_v<float> * uniform * 0.5));
         }
     };
 
@@ -258,12 +256,12 @@ namespace iv {
 
         static constexpr auto inputs()
         {
-            return std::array<InputConfig, 1>{};
+            return std::array<SequentialInputConfig<Sample>, 1>{};
         }
 
         static constexpr auto outputs()
         {
-            return std::array<OutputConfig, 1>{};
+            return std::array<TickOutputConfig<Sample>, 1>{};
         }
 
         void declare(DeclarationContext<UniformToPower> const& ctx) const
@@ -302,7 +300,7 @@ namespace iv {
         {
             auto& state = ctx.state();
             auto const uniform = std::clamp<Sample>(
-                ctx.inputs[0].get() * Sample{0.5} + Sample{0.5},
+                ctx.template input<0>().get() * Sample{0.5} + Sample{0.5},
                 Sample{0},
                 std::nextafter(Sample{1}, Sample{0})
             );
@@ -310,7 +308,7 @@ namespace iv {
                 std::lower_bound(state.weights.begin(), state.weights.end(), uniform) - state.weights.begin()
             );
             auto const exponent = state.min + static_cast<ptrdiff_t>(discrete) * state.sign;
-            ctx.outputs[0].push(std::exp2f(static_cast<Sample>(exponent)));
+            ctx.template output<0>().push(std::exp2f(static_cast<Sample>(exponent)));
         }
     };
 
@@ -326,19 +324,19 @@ namespace iv {
 
         static constexpr auto inputs()
         {
-            return std::array<InputConfig, 1>{};
+            return std::array<SequentialInputConfig<Sample>, 1>{};
         }
 
         static constexpr auto outputs()
         {
-            return std::array<OutputConfig, 1>{};
+            return std::array<TickOutputConfig<Sample>, 1>{};
         }
 
         void tick(TickSampleContext<UniformToGaussian> const& state) const
         {
-            Sample uniform = details::clamp_open_unit_interval_pm1(state.inputs[0].get());
+            Sample uniform = details::clamp_open_unit_interval_pm1(state.template input<0>().get());
             Sample normal = std::numbers::sqrt2_v<float> * erfinvf(uniform);
-            state.outputs[0].push(std::fmaf(normal, _std, _mean));
+            state.template output<0>().push(std::fmaf(normal, _std, _mean));
         }
     };
 
@@ -399,16 +397,16 @@ namespace iv {
 
         static constexpr auto outputs()
         {
-            return std::array<OutputConfig, 1>{};
+            return std::array<TickOutputConfig<Sample>, 1>{};
         }
 
         void tick(TickSampleContext<DeterministicGaussianAESNoise> const& state) const
         {
-            Rng::ctr_type counter = make_index(state.index);
+            Rng::ctr_type counter = make_index(state.index.bits());
             unsigned int uniform_uint = _generator(counter, _seed)[0];
             Sample uniform = details::clamp_open_unit_interval_pm1(r123::uneg11<Sample>(uniform_uint));
             Sample gaussian = std::numbers::sqrt2_v<float> * erfinvf(uniform);
-            state.outputs[0].push(std::fmaf(gaussian, _std, _mean));
+            state.template output<0>().push(std::fmaf(gaussian, _std, _mean));
         }
     };
 }

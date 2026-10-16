@@ -302,16 +302,19 @@ decltype(auto) invoke_linker_event_module(Dispatch&& dispatch)
     IV_INVOKE_LINKER_EVENT_IMPL(true, event_name __VA_OPT__(,) __VA_ARGS__)
 
 #define IV_INVOKE_SINGLETON_EVENT_IMPL(source_, event_name, ...) \
-    do { \
-        auto iv_linker_event_invoke = [&](auto&&... iv_linker_event_args) { \
-            ::iv::details::invoke_linker_event( \
+    ([&]() -> decltype(auto) { \
+        auto iv_linker_event_invoke = [&](auto&&... iv_linker_event_args) \
+            -> decltype(auto) { \
+            return ::iv::details::invoke_linker_event( \
                 #event_name, \
                 IV_LINKER_EVENT_LOCATION, \
                 (source_), \
-                [&] { event_name##_subscriber()(iv_linker_event_args...); }); \
+                [&]() -> decltype(auto) { \
+                    return event_name##_subscriber()(iv_linker_event_args...); \
+                }); \
         }; \
-        iv_linker_event_invoke(__VA_ARGS__); \
-    } while (false)
+        return iv_linker_event_invoke(__VA_ARGS__); \
+    }())
 
 #define IV_INVOKE_SINGLETON_EVENT(event_name, ...) \
     IV_INVOKE_SINGLETON_EVENT_IMPL(false, event_name __VA_OPT__(,) __VA_ARGS__)

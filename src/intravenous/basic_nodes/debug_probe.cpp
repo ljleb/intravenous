@@ -3,8 +3,12 @@
 #include <iostream>
 
 namespace iv::details {
-void write_debug_probe_sample(char const* label, size_t tick_index, Sample sample)
+void write_debug_probe_sample(
+    char const* label,
+    GlobalIndex tick_index,
+    Sample sample)
 {
-    std::cout << label << "[" << tick_index << "] = " << sample << '\n';
+    std::cout << label << "[" << tick_index.signed_value() << "] = "
+              << sample << '\n';
 }
 } // namespace iv::details

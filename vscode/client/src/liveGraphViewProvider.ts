@@ -290,10 +290,6 @@ export class LiveGraphViewProvider {
             outline-offset: -1px;
         }
 
-        body.knob-dragging .tree-row:hover {
-            background: transparent;
-        }
-
         .node {
             border: 0;
             border-bottom: 1px solid transparent;
@@ -359,10 +355,6 @@ export class LiveGraphViewProvider {
             user-select: none;
         }
 
-        .port-row .description {
-            display: none;
-        }
-
         .node-children {
             display: block;
         }
@@ -403,61 +395,6 @@ export class LiveGraphViewProvider {
             padding-left: 42px;
         }
 
-        .port-row.concrete-override .knob-band {
-            stroke: var(--vscode-charts-orange);
-        }
-
-        .port-row.concrete-override .knob,
-        .port-row.concrete-override .knob-value {
-            opacity: 1;
-        }
-
-        .port-row.concrete-inherited .knob,
-        .port-row.concrete-inherited .knob-value {
-            opacity: 0.45;
-        }
-
-        .port-row.concrete-inherited .knob-band {
-            opacity: 0.65;
-        }
-
-        .context-menu {
-            position: fixed;
-            z-index: 10;
-            min-width: 168px;
-            padding: 4px;
-            border: 1px solid var(--vscode-menu-border, var(--vscode-widget-border));
-            background: var(--vscode-menu-background, var(--vscode-dropdown-background));
-            color: var(--vscode-menu-foreground, var(--vscode-foreground));
-            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.28);
-        }
-
-        .context-menu.hidden {
-            display: none;
-        }
-
-        .context-menu button {
-            display: block;
-            width: 100%;
-            border: 0;
-            padding: 4px 8px;
-            background: transparent;
-            color: inherit;
-            text-align: left;
-            font: inherit;
-            cursor: pointer;
-        }
-
-        .context-menu button:hover {
-            background: var(--vscode-menu-selectionBackground, var(--vscode-list-hoverBackground));
-        }
-
-        .context-menu-separator {
-            height: 1px;
-            margin: 4px 2px;
-            background: var(--vscode-menu-separatorBackground, var(--vscode-widget-border));
-        }
-
         .port-icon {
             width: ${portIconSizePx}px;
             flex: 0 0 ${portIconSizePx}px;
@@ -496,90 +433,6 @@ export class LiveGraphViewProvider {
             opacity: 0.95;
         }
 
-        .port-state-icon {
-            width: 64px;
-            margin-left: auto;
-            flex: 0 0 64px;
-            display: inline-flex;
-            align-items: center;
-            color: var(--vscode-descriptionForeground);
-        }
-
-        .port-state-icon svg {
-            width: 18px;
-            height: 18px;
-            fill: none;
-            stroke: currentColor;
-            stroke-width: 1.8;
-            stroke-linecap: round;
-            stroke-linejoin: round;
-        }
-
-        .port-row[data-state="timelineLane"] .port-state-icon {
-            color: var(--vscode-errorForeground);
-        }
-
-        .port-row[data-state="virtualFollow"] .port-state-icon,
-        .port-row[data-state="virtual"] .port-state-icon {
-            color: var(--vscode-charts-blue);
-        }
-
-        .port-row[data-state="overridden"] .port-state-icon {
-            color: var(--vscode-charts-orange);
-        }
-
-        .port-connectivity {
-            margin-left: auto;
-            color: var(--vscode-descriptionForeground);
-            text-transform: none;
-        }
-
-        .knob-wrap {
-            margin-left: auto;
-            display: inline-flex;
-            align-items: center;
-            gap: 6px;
-            min-width: 64px;
-        }
-
-        .knob {
-            width: 18px;
-            height: 18px;
-            display: inline-flex;
-            align-items: center;
-            justify-content: center;
-            cursor: ns-resize;
-            touch-action: none;
-        }
-
-        .knob svg {
-            display: block;
-            width: 18px;
-            height: 18px;
-            overflow: visible;
-            pointer-events: none;
-        }
-
-        body.knob-dragging,
-        body.knob-dragging * {
-            cursor: none !important;
-        }
-
-        .knob-band {
-            stroke: var(--vscode-terminal-ansiBlue);
-            stroke-width: 1.8;
-            stroke-linecap: round;
-            fill: none;
-        }
-
-        .knob-value {
-            min-width: 34px;
-            text-align: right;
-            color: var(--vscode-descriptionForeground);
-            font-variant-numeric: tabular-nums;
-            user-select: none;
-        }
-
     </style>
 </head>
 <body>
@@ -591,12 +444,9 @@ export class LiveGraphViewProvider {
         </div>
         <div id="content" class="content"></div>
     </div>
-    <div id="contextMenu" class="context-menu hidden"></div>
     <script nonce="${nonce}">
         const vscode = acquireVsCodeApi();
-        const root = document.getElementById("root");
         const content = document.getElementById("content");
-        const contextMenu = document.getElementById("contextMenu");
         const instanceSelect = document.getElementById("instanceSelect");
         const createInstance = document.getElementById("createInstance");
         const state = {
@@ -605,19 +455,9 @@ export class LiveGraphViewProvider {
             packageRoot: null,
             nodes: [],
             expanded: new Map(),
-            pendingUpdates: new Map(),
-            activePort: null,
             portRows: new Map(),
             renderedPortRows: new Set(),
         };
-        const knobDrag = {
-            active: null,
-            currentValue: 0,
-            lastClientX: 0,
-            lastClientY: 0,
-            pointerLockRequested: false,
-        };
-        let renderDeferredUntilDragEnd = false;
         const icons = {
             merged: ${JSON.stringify(String(mergedIconUri))},
             single: ${JSON.stringify(String(singleIconUri))},
@@ -669,645 +509,16 @@ export class LiveGraphViewProvider {
             return el;
         }
 
-        function stateIconSvg(port) {
-            if (
-                port.tweakable ||
-                port.stateValue === "disconnected" ||
-                port.stateValue === "default"
-            ) {
-                return "";
-            }
-            if (port.stateValue === "timelineLane") {
-                return '<svg viewBox="0 0 18 18" aria-hidden="true"><path d="M3 9h10"/><path d="m10 5 4 4-4 4"/></svg>';
-            }
-            if (port.stateValue === "virtualFollow" || port.stateValue === "virtual") {
-                return '<svg viewBox="0 0 18 18" aria-hidden="true"><path d="M3 5.5h7.5a2 2 0 0 1 0 4H7.5a2 2 0 0 0 0 4H15"/><path d="m12.5 3 2.5 2.5-2.5 2.5"/></svg>';
-            }
-            if (port.stateValue === "overridden") {
-                return '<svg viewBox="0 0 18 18" aria-hidden="true"><circle cx="9" cy="9" r="4.5"/><path d="M9 4.5v9M4.5 9h9"/></svg>';
-            }
-            return "";
-        }
-
-        function portIsActive(port) {
-            if (port.connectivity === "connected" || port.connectivity === "mixed") {
-                return true;
-            }
-            if (port.stateValue === "disconnected") {
-                return false;
-            }
-            return port.stateValue === "timelineLane"
-                || port.stateValue === "virtualFollow"
-                || port.stateValue === "virtual"
-                || port.stateValue === "overridden";
-        }
-
-        function clamp(value, min, max) {
-            return Math.min(max, Math.max(min, value));
-        }
-
-        function formatValue(value) {
-            return Number(value).toFixed(3).replace(/\.?0+$/, (match) => match === ".000" ? "" : match);
-        }
-
-        const unboundedKnobEpsilon = 1e-6;
-
-        function finiteBound(value) {
-            return typeof value === "number" && Number.isFinite(value) ? value : null;
-        }
-
-        function positiveSkew(position) {
-            return position * Math.abs(position) / (1 - position);
-        }
-
-        function inversePositiveSkew(value) {
-            if (!Number.isFinite(value)) {
-                return value > 0 ? 1 : 0;
-            }
-            if (value <= 0) {
-                return 0;
-            }
-            const root = Math.sqrt(value);
-            return 2 * root / (Math.sqrt(value + 4) + root);
-        }
-
-        function centeredSkew(position) {
-            return position / (1 - position * position);
-        }
-
-        function inverseCenteredSkew(value) {
-            if (!Number.isFinite(value)) {
-                return value > 0 ? 1 : -1;
-            }
-            return value / (0.5 + Math.sqrt(value * value + 0.25));
-        }
-
-        function knobPositionLimits(port) {
-            const min = finiteBound(port.minValue);
-            const max = finiteBound(port.maxValue);
-            if (min != null && max != null) {
-                return { min: 0, max: 1 };
-            }
-            if (min != null || max != null) {
-                return { min: 0, max: 1 - unboundedKnobEpsilon };
-            }
-            return { min: unboundedKnobEpsilon, max: 1 - unboundedKnobEpsilon };
-        }
-
-        function clampKnobPosition(position, port) {
-            const limits = knobPositionLimits(port);
-            return clamp(position, limits.min, limits.max);
-        }
-
-        function valueForKnobPosition(position, port) {
-            const x = clampKnobPosition(Number(position) || 0, port);
-            const min = finiteBound(port.minValue);
-            const max = finiteBound(port.maxValue);
-            if (min != null && max != null) {
-                return max > min ? min + x * (max - min) : min;
-            }
-            if (min != null) {
-                return min + positiveSkew(x);
-            }
-            if (max != null) {
-                return max - positiveSkew(x);
-            }
-            const defaultValue = Number(port.defaultValue);
-            const center = Number.isFinite(defaultValue) ? defaultValue : 0;
-            return center + centeredSkew(2 * x - 1);
-        }
-
-        function knobPositionForValue(value, port) {
-            const actual = Number(value);
-            if (Number.isNaN(actual)) {
-                return 0.5;
-            }
-            const min = finiteBound(port.minValue);
-            const max = finiteBound(port.maxValue);
-            if (min != null && max != null) {
-                return clampKnobPosition(max > min ? (actual - min) / (max - min) : 0.5, port);
-            }
-            if (min != null) {
-                return clampKnobPosition(inversePositiveSkew(actual - min), port);
-            }
-            if (max != null) {
-                return clampKnobPosition(inversePositiveSkew(max - actual), port);
-            }
-            const defaultValue = Number(port.defaultValue);
-            const center = Number.isFinite(defaultValue) ? defaultValue : 0;
-            return clampKnobPosition((inverseCenteredSkew(actual - center) + 1) / 2, port);
-        }
-
-        function knobSvg(value) {
-            const clamped = clamp(value, 0, 1);
-            const circumference = 2 * Math.PI * 7;
-            const visibleLength = circumference * 0.75 * clamped;
-            const hiddenLength = Math.max(circumference - visibleLength, 0.001);
-            return '<svg viewBox="0 0 18 18" aria-hidden="true">' +
-                '<circle class="knob-band" cx="9" cy="9" r="7" ' +
-                    'stroke-dasharray="' + visibleLength.toFixed(3) + ' ' + hiddenLength.toFixed(3) + '" ' +
-                    'transform="rotate(135 9 9)"></circle>' +
-                '</svg>';
-        }
-
-        function queueControlUpdate(nodeId, memberOrdinal, ordinal, value) {
-            const key = String(nodeId) + ":" + String(memberOrdinal == null ? "" : memberOrdinal) + ":" + String(ordinal);
-            const now = Date.now();
-            const existing = state.pendingUpdates.get(key) || {
-                lastSentAt: 0,
-                lastSentValue: null,
-                pendingValue: value,
-                timeoutId: null,
-            };
-            existing.pendingValue = value;
-
-            const sendNow = () => {
-                if (existing.lastSentValue === existing.pendingValue) {
-                    if (existing.timeoutId) {
-                        clearTimeout(existing.timeoutId);
-                        existing.timeoutId = null;
-                    }
-                    return;
-                }
-                existing.lastSentAt = Date.now();
-                existing.lastSentValue = existing.pendingValue;
-                if (existing.timeoutId) {
-                    clearTimeout(existing.timeoutId);
-                    existing.timeoutId = null;
-                }
-                vscode.postMessage({
-                    type: "setSampleInputValue",
-                    nodeId,
-                    memberOrdinal,
-                    inputOrdinal: ordinal,
-                    value: existing.pendingValue,
-                });
-            };
-
-            const elapsed = now - existing.lastSentAt;
-            const intervalMs = 24;
-            if (existing.lastSentValue === value && existing.timeoutId == null) {
-                state.pendingUpdates.set(key, existing);
-                return;
-            }
-            if (elapsed >= intervalMs) {
-                sendNow();
-                state.pendingUpdates.set(key, existing);
-                return;
-            }
-
-            if (existing.timeoutId == null) {
-                existing.timeoutId = setTimeout(() => {
-                    sendNow();
-                    state.pendingUpdates.set(key, existing);
-                }, intervalMs - elapsed);
-            }
-
-            state.pendingUpdates.set(key, existing);
-        }
-
-        function clearPendingUpdate(nodeId, memberOrdinal, ordinal) {
-            const key = String(nodeId) + ":" + String(memberOrdinal == null ? "" : memberOrdinal) + ":" + String(ordinal);
-            const existing = state.pendingUpdates.get(key);
-            if (existing && existing.timeoutId) {
-                clearTimeout(existing.timeoutId);
-            }
-            state.pendingUpdates.delete(key);
-        }
-
-        function setActivePort(portRef) {
-            state.activePort = portRef;
-        }
-
-        function hideContextMenu() {
-            contextMenu.classList.add("hidden");
-            contextMenu.textContent = "";
-        }
-
-        function controlMessageTypeForPort(portRef) {
-            if (!portRef || !portRef.stateFamily) {
-                return null;
-            }
-            switch (portRef.stateFamily) {
-            case "sampleInput":
-                return "setSampleInputState";
-            case "eventInput":
-                return "setEventInputState";
-            case "sampleOutput":
-                return "setSampleOutputState";
-            case "eventOutput":
-                return "setEventOutputState";
-            default:
-                return null;
-            }
-        }
-
-        function runPortStateAction(portRef, action) {
-            const type = controlMessageTypeForPort(portRef);
-            if (!type || !action) {
-                return;
-            }
-            clearPendingUpdate(portRef.nodeId, portRef.memberOrdinal, portRef.ordinal);
-            const message = {
-                nodeId: portRef.nodeId,
-                memberOrdinal: portRef.memberOrdinal,
-                state: action.state,
-                type,
-            };
-            if (portRef.stateFamily === "sampleOutput" || portRef.stateFamily === "eventOutput") {
-                message.outputOrdinal = portRef.ordinal;
-            } else {
-                message.inputOrdinal = portRef.ordinal;
-            }
-            vscode.postMessage(message);
-            hideContextMenu();
-        }
-
-        function resetKnobValue(portRef) {
-            if (!portRef || !portRef.hasKnob || portRef.stateFamily !== "sampleInput") {
-                return;
-            }
-            const value = Number(portRef.defaultValue);
-            if (!Number.isFinite(value)) {
-                return;
-            }
-            clearPendingUpdate(portRef.nodeId, portRef.memberOrdinal, portRef.ordinal);
-            applyLocalControlValue(portRef.nodeId, portRef.memberOrdinal, portRef.ordinal, value);
-            queueControlUpdate(portRef.nodeId, portRef.memberOrdinal, portRef.ordinal, value);
-            hideContextMenu();
-        }
-
-        function updatePortRowValue(portRow, value) {
-            if (!portRow || !portRow.__knobDrag) {
-                return;
-            }
-            const currentValue = Number(value);
-            portRow.__knobDrag.port.currentValue = currentValue;
-            const position = knobPositionForValue(currentValue, portRow.__knobDrag.port);
-            portRow.__knobDrag.knob.innerHTML = knobSvg(position);
-            portRow.__knobDrag.valueEl.textContent = formatValue(currentValue);
-            if (knobDrag.active && knobDrag.active.knob === portRow.__knobDrag.knob) {
-                knobDrag.currentValue = position;
-            }
-        }
-
-        function updateConcreteOverrideVisual(portRow, hasOverride) {
-            if (!portRow || !portRow.__statePortRef) {
-                return;
-            }
-            portRow.__statePortRef.hasConcreteOverride = hasOverride;
-            if (portRow.__knobDrag && portRow.__knobDrag.port) {
-                portRow.__knobDrag.port.hasConcreteOverride = hasOverride;
-            }
-            portRow.classList.toggle("concrete-override", hasOverride);
-            portRow.classList.toggle("concrete-inherited", !hasOverride);
-            const descriptionEl = portRow.querySelector(".description");
-            if (descriptionEl) {
-                descriptionEl.textContent = hasOverride ? "override" : "default";
-            }
-            if (portRow.__knobDrag && portRow.__knobDrag.port) {
-                portRow.title = portRow.__knobDrag.port.name + " • " + (hasOverride ? "override" : "inherited from virtual");
-            }
-        }
-
-        function portRefForRow(portRow) {
-            if (!portRow || !portRow.__statePortRef) {
-                return null;
-            }
-            portRow.__statePortRef.nodeId = portRow.__knobDrag ? portRow.__knobDrag.nodeId : portRow.__statePortRef.nodeId;
-            portRow.__statePortRef.memberOrdinal = portRow.__knobDrag ? portRow.__knobDrag.memberOrdinal : portRow.__statePortRef.memberOrdinal;
-            if (portRow.__knobDrag && portRow.__knobDrag.port) {
-                portRow.__statePortRef.ordinal = portRow.__knobDrag.port.ordinal;
-                portRow.__statePortRef.hasConcreteOverride = Boolean(portRow.__knobDrag.port.hasConcreteOverride);
-            }
-            return portRow.__statePortRef;
-        }
-
-        function applyLocalControlValue(nodeId, memberOrdinal, ordinal, value) {
-            const currentValue = Number(value);
-            for (const node of state.nodes) {
-                if (node.id !== nodeId) {
-                    continue;
-                }
-                const updateInputs = (inputs, markOverride) => {
-                    if (!Array.isArray(inputs)) {
-                        return;
-                    }
-                    for (const input of inputs) {
-                        if (Number(input.ordinal) === Number(ordinal)) {
-                            input.currentValue = currentValue;
-                            if (markOverride != null) {
-                                input.hasConcreteOverride = markOverride;
-                            }
-                        }
-                    }
-                };
-                if (memberOrdinal == null) {
-                    updateInputs(node.sampleInputs, null);
-                    for (const member of node.members || []) {
-                        const memberInputs = Array.isArray(member.sampleInputs) ? member.sampleInputs : [];
-                        for (const input of memberInputs) {
-                            if (Number(input.ordinal) === Number(ordinal) && !input.hasConcreteOverride) {
-                                input.currentValue = currentValue;
-                            }
-                        }
-                    }
-                } else {
-                    const member = (node.members || []).find((candidate) => Number(candidate.ordinal) === Number(memberOrdinal));
-                    updateInputs(member && member.sampleInputs, true);
-                }
-            }
-
-            for (const portRow of state.portRows.values()) {
-                if (!portRow.__knobDrag || portRow.__knobDrag.nodeId !== nodeId) {
-                    continue;
-                }
-                const port = portRow.__knobDrag.port;
-                if (!port || Number(port.ordinal) !== Number(ordinal)) {
-                    continue;
-                }
-                if (memberOrdinal == null) {
-                    if (portRow.__knobDrag.memberOrdinal == null) {
-                        updatePortRowValue(portRow, currentValue);
-                        continue;
-                    }
-                    if (!port.hasConcreteOverride) {
-                        updatePortRowValue(portRow, currentValue);
-                        updateConcreteOverrideVisual(portRow, false);
-                    }
-                    continue;
-                }
-                if (
-                    portRow.__knobDrag.memberOrdinal != null
-                    && Number(portRow.__knobDrag.memberOrdinal) === Number(memberOrdinal)
-                ) {
-                    updatePortRowValue(portRow, currentValue);
-                    updateConcreteOverrideVisual(portRow, true);
-                }
-            }
-        }
-
-        function showContextMenu(event, portRef) {
-            if (!portRef || !Array.isArray(portRef.stateActions) || portRef.stateActions.length === 0) {
-                hideContextMenu();
-                return;
-            }
-            setActivePort(portRef);
-            contextMenu.textContent = "";
-
-            const appendAction = (action) => {
-                const button = document.createElement("button");
-                button.type = "button";
-                button.textContent = action.label;
-                button.addEventListener("click", () => runPortStateAction(portRef, action));
-                contextMenu.appendChild(button);
-            };
-            const currentStateActions = portRef.stateActions.filter((action) => action.reset);
-            const transitionActions = portRef.stateActions.filter((action) => !action.reset);
-
-            if (portRef.hasKnob) {
-                const resetButton = document.createElement("button");
-                resetButton.type = "button";
-                resetButton.textContent = "Reset knob value";
-                resetButton.addEventListener("click", () => resetKnobValue(portRef));
-                contextMenu.appendChild(resetButton);
-            }
-            for (const action of currentStateActions) {
-                appendAction(action);
-            }
-            if ((portRef.hasKnob || currentStateActions.length > 0) && transitionActions.length > 0) {
-                const separator = document.createElement("div");
-                separator.className = "context-menu-separator";
-                contextMenu.appendChild(separator);
-            }
-            for (const action of transitionActions) {
-                appendAction(action);
-            }
-
-            contextMenu.classList.remove("hidden");
-            const maxLeft = Math.max(0, window.innerWidth - contextMenu.offsetWidth - 4);
-            const maxTop = Math.max(0, window.innerHeight - contextMenu.offsetHeight - 4);
-            contextMenu.style.left = String(Math.min(event.clientX, maxLeft)) + "px";
-            contextMenu.style.top = String(Math.min(event.clientY, maxTop)) + "px";
-        }
-
-        function resolvePortRowFromPoint(clientX, clientY) {
-            const hit = document.elementFromPoint(clientX, clientY);
-            if (!(hit instanceof Element)) {
-                return null;
-            }
-            const portRow = hit.closest(".port-row");
-            if (!portRow || !root.contains(portRow) || (!portRow.__knobDrag && !portRow.__statePortRef)) {
-                return null;
-            }
-            return portRow;
-        }
-
-        function beginKnobDrag(lockEl, knob, valueEl, nodeId, memberOrdinal, port, event) {
-            if (event.button !== 0) {
-                return;
-            }
-            event.preventDefault();
-            knobDrag.active = { lockEl, knob, valueEl, nodeId, memberOrdinal, port };
-            knobDrag.currentValue = knobPositionForValue(port.currentValue, port);
-            knobDrag.lastClientX = event.clientX;
-            knobDrag.lastClientY = event.clientY;
-            knobDrag.pointerLockRequested = false;
-            try {
-                if (typeof lockEl.setPointerCapture === "function" && event.pointerId != null) {
-                    lockEl.setPointerCapture(event.pointerId);
-                }
-            } catch (_) {
-            }
-            // Capture makes the release observable even after pointer lock
-            // engages, so a click/double-click cannot leave the cursor held.
-            requestKnobPointerLock();
-        }
-
-        function requestKnobPointerLock() {
-            if (!knobDrag.active || knobDrag.pointerLockRequested) {
-                return;
-            }
-            const lockEl = knobDrag.active.lockEl;
-            if (!lockEl || typeof lockEl.requestPointerLock !== "function") {
-                return;
-            }
-            knobDrag.pointerLockRequested = true;
-            try {
-                lockEl.requestPointerLock();
-            } catch (_) {
-                knobDrag.pointerLockRequested = false;
-            }
-        }
-
-        function endKnobDrag() {
-            if (!knobDrag.active) {
-                return;
-            }
-            const lockEl = knobDrag.active.lockEl;
-            knobDrag.active = null;
-            document.body.classList.remove("knob-dragging");
-            if (document.pointerLockElement === lockEl) {
-                try {
-                    document.exitPointerLock();
-                } catch (_) {
-                }
-            }
-            if (renderDeferredUntilDragEnd) {
-                renderDeferredUntilDragEnd = false;
-                render();
-            }
-        }
-
-        function applyDraggedKnobDelta(delta) {
-            if (!knobDrag.active || delta === 0) {
-                return;
-            }
-            const { nodeId, memberOrdinal, port } = knobDrag.active;
-            knobDrag.currentValue = clampKnobPosition(knobDrag.currentValue + delta, port);
-            const value = valueForKnobPosition(knobDrag.currentValue, port);
-            applyLocalControlValue(nodeId, memberOrdinal, port.ordinal, value);
-            queueControlUpdate(nodeId, memberOrdinal, port.ordinal, value);
-        }
-
-        function applyDraggedKnobEvent(event) {
-            if (!knobDrag.active) {
-                return;
-            }
-            const usePointerLockMovement = document.pointerLockElement != null;
-            if (!usePointerLockMovement && (event.clientX !== knobDrag.lastClientX || event.clientY !== knobDrag.lastClientY)) {
-                requestKnobPointerLock();
-            }
-            const deltaX = usePointerLockMovement
-                ? event.movementX
-                : event.clientX - knobDrag.lastClientX;
-            const deltaY = usePointerLockMovement
-                ? event.movementY
-                : event.clientY - knobDrag.lastClientY;
-            if (!usePointerLockMovement) {
-                knobDrag.lastClientX = event.clientX;
-                knobDrag.lastClientY = event.clientY;
-            }
-            // Keep the same drag gesture, but make each pixel a smaller
-            // normalized movement so bounded controls have substantially more
-            // usable precision.
-            applyDraggedKnobDelta((deltaX - deltaY) / 720);
-        }
-
-        document.addEventListener("pointermove", (event) => {
-            applyDraggedKnobEvent(event);
-        });
-
-        document.addEventListener("mousemove", (event) => {
-            if (window.PointerEvent && document.pointerLockElement == null) {
-                return;
-            }
-            applyDraggedKnobEvent(event);
-        });
-
-        document.addEventListener("mouseup", () => {
-            endKnobDrag();
-        });
-
-        document.addEventListener("pointerup", () => {
-            endKnobDrag();
-        });
-
-        document.addEventListener("pointercancel", () => {
-            endKnobDrag();
-        });
-
-        document.addEventListener("pointerlockchange", () => {
-            if (!knobDrag.active) {
-                return;
-            }
-            if (document.pointerLockElement === knobDrag.active.lockEl) {
-                document.body.classList.add("knob-dragging");
-            } else {
-                document.body.classList.remove("knob-dragging");
-                knobDrag.pointerLockRequested = false;
-            }
-        });
-
-        document.addEventListener("dragstart", (event) => {
-            event.preventDefault();
-        });
-
-        document.addEventListener("pointerdown", (event) => {
-            if (event.button !== 0 || knobDrag.active) {
-                return;
-            }
-            if (!(event.target instanceof Element)) {
-                return;
-            }
-            const resolved = resolvePortRowFromPoint(event.clientX, event.clientY);
-            if (!resolved) {
-                return;
-            }
-            const portRow = resolved;
-            if (portRow.__statePortRef) {
-                setActivePort(portRefForRow(portRow));
-            }
-            if (!portRow.__knobDrag) {
-                return;
-            }
-            const { knob, valueEl, nodeId, memberOrdinal, port } = portRow.__knobDrag;
-            beginKnobDrag(portRow, knob, valueEl, nodeId, memberOrdinal, port, event);
-        }, true);
-
-        function attachKnobBehavior(knob, valueEl, portRow) {
-            const applyPosition = (nextPosition) => {
-                const binding = portRow.__knobDrag;
-                if (!binding) {
-                    return;
-                }
-                const position = clampKnobPosition(nextPosition, binding.port);
-                const value = valueForKnobPosition(position, binding.port);
-                applyLocalControlValue(binding.nodeId, binding.memberOrdinal, binding.port.ordinal, value);
-                queueControlUpdate(binding.nodeId, binding.memberOrdinal, binding.port.ordinal, value);
-                if (knobDrag.active && knobDrag.active.knob === knob) {
-                    knobDrag.currentValue = position;
-                }
-            };
-
-            const binding = portRow.__knobDrag;
-            knob.innerHTML = knobSvg(knobPositionForValue(binding.port.currentValue, binding.port));
-            valueEl.textContent = formatValue(binding.port.currentValue);
-
-            knob.addEventListener("wheel", (event) => {
-                event.preventDefault();
-                const step = event.deltaY < 0 ? 0.005 : -0.005;
-                const currentBinding = portRow.__knobDrag;
-                if (currentBinding) {
-                    applyPosition(knobPositionForValue(currentBinding.port.currentValue, currentBinding.port) + step);
-                }
-            }, { passive: false });
-
-            knob.addEventListener("pointerdown", (event) => {
-                if (event.button !== 1) {
-                    return;
-                }
-                event.preventDefault();
-                event.stopPropagation();
-                const currentBinding = portRow.__knobDrag;
-                if (currentBinding) {
-                    applyPosition(knobPositionForValue(
-                        currentBinding.port.defaultValue,
-                        currentBinding.port));
-                }
-            });
-
-            knob.addEventListener("auxclick", (event) => {
-                if (event.button === 1) {
-                    event.preventDefault();
-                }
-            });
-        }
-
-        function renderPort(parent, nodeId, memberOrdinal, group, port, index) {
-            const memberKeyPart = memberOrdinal == null ? "" : \`/member:\${memberOrdinal}\`;
+        function renderPort(parent, nodeId, memberIndex, group, port, index) {
+            const memberKeyPart = memberIndex == null ? "" : \`/member:\${memberIndex}\`;
             const portKey = \`node:\${nodeId}\${memberKeyPart}/group:\${group.label}/port:\${index}\`;
-            const portDescription = port.stateSummary || port.connectivity;
+            const portDescription = [
+                port.typeSummary,
+                port.bindingSummary,
+                port.connectivity,
+            ]
+                .filter((value) => typeof value === "string" && value.length > 0)
+                .join(" • ");
             state.renderedPortRows.add(portKey);
 
             let portRow = state.portRows.get(portKey);
@@ -1332,110 +543,28 @@ export class LiveGraphViewProvider {
                 descriptionEl.className = "description";
                 portRow.appendChild(descriptionEl);
             }
-            descriptionEl.textContent = "";
+            descriptionEl.textContent = portDescription;
 
             portRow.className = "tree-row port-row";
-            if (memberOrdinal != null) {
+            if (memberIndex != null) {
                 portRow.classList.add("member-port-row");
-                if (port.tweakable) {
-                    portRow.classList.add(port.hasConcreteOverride ? "concrete-override" : "concrete-inherited");
-                }
-            }
-            if (port.tweakable) {
-                portRow.classList.add("has-control");
             }
             portRow.dataset.direction = group.direction;
             portRow.dataset.connectivity = port.connectivity;
-            portRow.dataset.state = port.stateValue || port.connectivity || "default";
-            portRow.dataset.active = String(portIsActive(port));
+            portRow.dataset.binding = port.binding;
+            portRow.dataset.active = String(
+                port.binding !== "none" || port.connectivity !== "disconnected");
             const icon = portRow.__portIcon;
             icon.className = group.direction === "input" ? "port-icon" : "port-icon mirrored";
             icon.innerHTML = icons.arrowRight;
-
-            const stateIconSvgMarkup = stateIconSvg(port);
-            let stateIcon = portRow.__stateIcon;
-            if (stateIconSvgMarkup) {
-                if (!stateIcon) {
-                    stateIcon = document.createElement("div");
-                    stateIcon.className = "port-state-icon";
-                    portRow.appendChild(stateIcon);
-                    portRow.__stateIcon = stateIcon;
-                }
-                stateIcon.innerHTML = stateIconSvgMarkup;
-            } else if (stateIcon) {
-                stateIcon.remove();
-                portRow.__stateIcon = null;
-            }
-
-            if (port.tweakable) {
-                let knobWrap = portRow.__knobWrap;
-                if (!knobWrap) {
-                    knobWrap = document.createElement("div");
-                    knobWrap.className = "knob-wrap";
-
-                    const knob = document.createElement("div");
-                    knob.className = "knob";
-                    knob.title = "Drag vertically or use the mouse wheel to adjust. Middle-click to reset.";
-
-                    const valueEl = document.createElement("div");
-                    valueEl.className = "knob-value";
-
-                    knobWrap.appendChild(knob);
-                    knobWrap.appendChild(valueEl);
-                    portRow.appendChild(knobWrap);
-                    portRow.__knobWrap = knobWrap;
-                    portRow.__knobDrag = { knob, valueEl, nodeId, memberOrdinal, port };
-                    attachKnobBehavior(knob, valueEl, portRow);
-                } else {
-                    portRow.__knobDrag.nodeId = nodeId;
-                    portRow.__knobDrag.memberOrdinal = memberOrdinal;
-                    portRow.__knobDrag.port = port;
-                    const position = knobPositionForValue(port.currentValue, port);
-                    portRow.__knobDrag.knob.innerHTML = knobSvg(position);
-                    portRow.__knobDrag.valueEl.textContent = formatValue(port.currentValue);
-                }
-            } else if (portRow.__knobWrap) {
-                portRow.__knobWrap.remove();
-                portRow.__knobWrap = null;
-                portRow.__knobDrag = null;
-            }
-
-            if (Array.isArray(port.stateActions) && port.stateActions.length > 0) {
-                portRow.tabIndex = 0;
-                if (!portRow.__stateListenersAttached) {
-                    portRow.__statePortRef = {};
-                    portRow.addEventListener("click", () => setActivePort(portRefForRow(portRow)));
-                    portRow.addEventListener("focus", () => setActivePort(portRefForRow(portRow)));
-                    portRow.addEventListener("contextmenu", (event) => {
-                        event.preventDefault();
-                        showContextMenu(event, portRefForRow(portRow));
-                    });
-                    portRow.__stateListenersAttached = true;
-                }
-                if (!portRow.__statePortRef) {
-                    portRow.__statePortRef = {};
-                }
-                portRow.__statePortRef.nodeId = nodeId;
-                portRow.__statePortRef.memberOrdinal = memberOrdinal;
-                portRow.__statePortRef.ordinal = port.ordinal;
-                portRow.__statePortRef.hasConcreteOverride = Boolean(port.hasConcreteOverride);
-                portRow.__statePortRef.hasKnob = Boolean(port.tweakable);
-                portRow.__statePortRef.defaultValue = port.defaultValue;
-                portRow.__statePortRef.stateFamily = port.stateFamily;
-                portRow.__statePortRef.stateActions = Array.isArray(port.stateActions) ? port.stateActions : [];
-                portRow.__statePortRef.resetState = port.resetState || null;
-            } else {
-                portRow.removeAttribute("tabindex");
-                portRow.__statePortRef = null;
-            }
 
             portRow.title = \`\${port.name} • \${portDescription || port.connectivity}\`;
             parent.appendChild(portRow);
             return portKey;
         }
 
-        function renderGroup(parent, nodeId, memberOrdinal, group) {
-            const memberKeyPart = memberOrdinal == null ? "" : \`/member:\${memberOrdinal}\`;
+        function renderGroup(parent, nodeId, memberIndex, group) {
+            const memberKeyPart = memberIndex == null ? "" : \`/member:\${memberIndex}\`;
             const groupKey = \`node:\${nodeId}\${memberKeyPart}/group:\${group.label}\`;
             const isExpanded = expandedValue(groupKey, true);
 
@@ -1444,7 +573,7 @@ export class LiveGraphViewProvider {
 
             const header = row(group.label, String(group.count));
             header.classList.add("group-header");
-            if (memberOrdinal != null) {
+            if (memberIndex != null) {
                 header.classList.add("member-group-header");
             }
             header.prepend(disclosure(isExpanded));
@@ -1454,20 +583,20 @@ export class LiveGraphViewProvider {
             const ports = document.createElement("div");
             ports.className = "group-ports";
             for (let i = 0; i < group.ports.length; ++i) {
-                renderPort(ports, nodeId, memberOrdinal, group, group.ports[i], i);
+                renderPort(ports, nodeId, memberIndex, group, group.ports[i], i);
             }
             groupEl.appendChild(ports);
             parent.appendChild(groupEl);
         }
 
         function renderMember(parent, node, member) {
-            const memberKey = \`node:\${node.id}/member:\${member.ordinal}\`;
+            const memberKey = \`node:\${node.id}/member:\${member.index}\`;
             const isExpanded = expandedValue(memberKey, false);
 
             const memberEl = document.createElement("div");
             memberEl.className = isExpanded ? "group" : "group collapsed";
 
-            const header = row(member.kind || "concrete", member.description || \`concrete \${member.ordinal}\`);
+            const header = row(member.kind || "concrete", member.description || \`concrete \${member.index}\`);
             header.classList.add("member-header");
             header.prepend(disclosure(isExpanded));
             header.addEventListener("click", () => toggleExpanded(memberKey, false));
@@ -1476,7 +605,7 @@ export class LiveGraphViewProvider {
             const groupsEl = document.createElement("div");
             groupsEl.className = "group-ports";
             for (const group of member.groups) {
-                renderGroup(groupsEl, node.id, member.ordinal, group);
+                renderGroup(groupsEl, node.id, member.index, group);
             }
             memberEl.appendChild(groupsEl);
             parent.appendChild(memberEl);
@@ -1616,10 +745,6 @@ export class LiveGraphViewProvider {
             } else {
                 return;
             }
-            if (knobDrag.active) {
-                renderDeferredUntilDragEnd = true;
-                return;
-            }
             render();
         });
 
@@ -1635,27 +760,6 @@ export class LiveGraphViewProvider {
 
         createInstance.addEventListener("click", () => {
             vscode.postMessage({ type: "createInstance" });
-        });
-
-        window.addEventListener("keydown", (event) => {
-            if (event.key === "Escape") {
-                hideContextMenu();
-                return;
-            }
-            if (event.key.toLowerCase() === "d" && state.activePort && state.activePort.resetState) {
-                event.preventDefault();
-                runPortStateAction(state.activePort, {
-                    state: state.activePort.resetState,
-                    label: "Reset",
-                    reset: true,
-                });
-            }
-        });
-
-        window.addEventListener("click", (event) => {
-            if (!contextMenu.contains(event.target)) {
-                hideContextMenu();
-            }
         });
 
         render();

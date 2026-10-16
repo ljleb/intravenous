@@ -13,7 +13,7 @@
 namespace iv {
     // This describes how a concrete public sample port participates in a
     // public declaration. It deliberately lives beside, rather than inside,
-    // SampleOutputConfig describes one physical sample port, whose ordinal
+    // ContinuousOutputConfig describes one storage sample port, whose index
     // is its position in the config array.
     struct PublicSamplePortMember {
         std::string family_name {};
@@ -33,12 +33,12 @@ namespace iv {
 
     struct OutputRefConfig {
         SamplePortRef ref;
-        SampleOutputConfig config;
+        ContinuousOutputConfig config;
         PublicSamplePortMember public_member {};
         // When set, this declaration contributes only one semantic channel to
         // the wider destination port. Completion decides how to materialize
         // the aggregate for the current runtime representation.
-        std::optional<size_t> target_channel_ordinal {};
+        std::optional<size_t> target_channel_index {};
     };
 
     struct EventOutputRefConfig {
@@ -48,7 +48,7 @@ namespace iv {
 
     // Module-facing output declarations carry only borrowed views and fixed
     // size handles. libiv_builder copies the strings and materializes the
-    // owning SampleOutputConfig records before the call returns.
+    // owning ContinuousOutputConfig records before the call returns.
     struct SampleOutputRequest {
         SamplePortRef ref;
         std::string_view name;
@@ -56,10 +56,10 @@ namespace iv {
         std::string_view family_name;
         ChannelTypeId family_channel_type = ChannelTypeId::mono;
         bool whole_stream = true;
-        size_t target_channel_ordinal = std::numeric_limits<size_t>::max();
+        size_t target_channel_index = std::numeric_limits<size_t>::max();
 
         constexpr bool targets_single_channel() const {
-            return target_channel_ordinal != std::numeric_limits<size_t>::max();
+            return target_channel_index != std::numeric_limits<size_t>::max();
         }
     };
 
