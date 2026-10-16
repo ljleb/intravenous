@@ -154,36 +154,19 @@ void GraphBuilderState::validate_tiled_module_interfaces(
   }
 }
 
-SamplePortRef GraphBuilderPublicPorts::add_sample_input(
+SamplePortRef GraphBuilderPublicPorts::add_continuous_input(
     GraphBuilderState& builder, GraphBuilderNodeBundles& bundles,
-    std::string_view name, Sample value, std::optional<Sample> min,
-    std::optional<Sample> max) {
-  return add_sample_input(
-      builder, bundles, name,
-      {
-          .channel_type = ChannelTypeId::mono,
-          .sample_layout = SampleStreamLayout::planar,
-      },
-      value, min, max);
-}
-
-SamplePortRef GraphBuilderPublicPorts::add_sample_input(
-    GraphBuilderState& builder, GraphBuilderNodeBundles& bundles,
-    std::string_view name, ChannelLayout channel_layout, Sample value,
-    std::optional<Sample> min, std::optional<Sample> max) {
-  auto const authored = input<Sample>(
-      std::string(name),
-      InputAccess::sequential,
-      {
-          .channel_layout = channel_layout,
-          .default_value = value,
-          .min = min.value_or(
-              -std::numeric_limits<Sample::storage>::infinity()),
-          .max = max.value_or(
-              std::numeric_limits<Sample::storage>::infinity()),
-      });
+    ContinuousInputConfig config) {
+  if (!is_sequential(config)) {
+    details::error(
+        "graph and subgraph boundary inputs must use Sequential access");
+  }
+  if (continuous_value_type_domain(config).empty()) {
+    details::error(
+        "graph and subgraph boundary inputs must declare a continuous value type");
+  }
   auto index = bundles.bundle(_boundary).append_boundary_sample_input(
-      materialize_continuous_config(erase_port_config(authored)));
+      std::move(config));
   _sample_input_source_infos.emplace_back();
   return SamplePortRef(
       builder.facade(), NodeBundlePortId{_boundary, PortKind::sample, index});
@@ -319,15 +302,11 @@ GraphBuilderState::event_port_sources(EventPortRef const& ref) const
   return expression.sources;
 }
 
-PublicSampleInputRef GraphBuilderState::input() {
-  return input(Sample{0.0f});
-}
-
 PublicSampleInputRef GraphBuilderState::input(
-    Sample value, std::optional<Sample> min, std::optional<Sample> max) {
+    ContinuousInputConfig config) {
   return PublicSampleInputRef(
-      _public_ports.add_sample_input(
-          *this, _node_bundles, {}, value, min, max));
+      _public_ports.add_continuous_input(
+          *this, _node_bundles, std::move(config)));
 }
 
 PublicEventInputRef GraphBuilderState::event_input_named(
@@ -360,12 +339,10 @@ void GraphBuilderState::abandon_subgraph(
 }
 
 PublicSampleInputRef GraphBuilderState::subgraph_input(
-    details::SubgraphBuildScope& scope, std::string_view name,
-    ChannelLayout layout, Sample value, std::optional<Sample> min,
-    std::optional<Sample> max) {
+    details::SubgraphBuildScope& scope, ContinuousInputConfig config) {
   auto& active = require_subgraph_scope(scope);
-  return PublicSampleInputRef(active.ports.add_sample_input(
-      *this, _node_bundles, name, layout, value, min, max));
+  return PublicSampleInputRef(active.ports.add_continuous_input(
+      *this, _node_bundles, std::move(config)));
 }
 
 PublicEventInputRef GraphBuilderState::subgraph_event_input(

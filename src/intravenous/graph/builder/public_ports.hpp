@@ -8,7 +8,6 @@
 
 #include <algorithm>
 #include <limits>
-#include <optional>
 #include <ranges>
 #include <span>
 #include <string>
@@ -37,11 +36,8 @@ public:
       : _boundary(boundary) {}
   constexpr NodeBundleHandle boundary_handle() const { return _boundary; }
 
-  SamplePortRef add_sample_input(GraphBuilderState&, GraphBuilderNodeBundles&,
-      std::string_view, Sample, std::optional<Sample>, std::optional<Sample>);
-  SamplePortRef add_sample_input(
-      GraphBuilderState&, GraphBuilderNodeBundles&, std::string_view,
-      ChannelLayout, Sample, std::optional<Sample>, std::optional<Sample>);
+  SamplePortRef add_continuous_input(
+      GraphBuilderState&, GraphBuilderNodeBundles&, ContinuousInputConfig);
   EventPortRef add_event_input(GraphBuilderState&, GraphBuilderNodeBundles&,
       std::string_view, EventTypeId);
   constexpr bool sample_outputs_defined() const;

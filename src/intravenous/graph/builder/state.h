@@ -116,13 +116,8 @@ class GraphBuilderState {
       GraphBuilderState const& child, std::string_view kind = "Subgraph");
   ConfiguredGraphEmbedding embed_configured_graph(
       ConfiguredGraph const& child, std::string_view kind = "Configured graph");
-  constexpr PublicSampleInputRef input_named(std::string_view name, Sample default_value,
-                                   std::optional<Sample> min,
-                                   std::optional<Sample> max);
   constexpr PublicSampleInputRef input_named(
-      std::string_view name, ChannelLayout channel_layout,
-      Sample default_value, std::optional<Sample> min,
-      std::optional<Sample> max);
+      std::string_view name, ContinuousInputConfig config);
   PublicEventInputRef event_input_named(std::string_view name, EventTypeId type);
 
 public:
@@ -137,10 +132,7 @@ public:
       NodeBundleHandle, RegisteredNodeTypeIdentity);
   void validate_tiled_module_interfaces(
       std::span<GraphBuilderState* const>) const;
-  PublicSampleInputRef input();
-  PublicSampleInputRef input(Sample default_value,
-                             std::optional<Sample> min = std::nullopt,
-                             std::optional<Sample> max = std::nullopt);
+  PublicSampleInputRef input(ContinuousInputConfig config);
   PublicEventInputRef event_input(EventTypeId type);
 
   details::SubgraphBuildScope* begin_subgraph();
@@ -148,8 +140,7 @@ public:
       details::SubgraphBuildScope&, std::string_view kind);
   void abandon_subgraph(details::SubgraphBuildScope*) noexcept;
   PublicSampleInputRef subgraph_input(
-      details::SubgraphBuildScope&, std::string_view, ChannelLayout,
-      Sample, std::optional<Sample>, std::optional<Sample>);
+      details::SubgraphBuildScope&, ContinuousInputConfig);
   PublicEventInputRef subgraph_event_input(
       details::SubgraphBuildScope&, std::string_view, EventTypeId);
   void subgraph_outputs(
@@ -360,17 +351,9 @@ constexpr GraphBuilderState::GraphBuilderState()
 {}
 
 constexpr PublicSampleInputRef GraphBuilderState::input_named(
-    std::string_view name, Sample value, std::optional<Sample> min,
-    std::optional<Sample> max) {
-  return PublicSampleInputRef(
-      _public_ports.add_sample_input(*this, _node_bundles, name, value, min, max));
-}
-
-constexpr PublicSampleInputRef GraphBuilderState::input_named(
-    std::string_view name, ChannelLayout channel_layout, Sample value,
-    std::optional<Sample> min, std::optional<Sample> max) {
-  return PublicSampleInputRef(_public_ports.add_sample_input(
-      *this, _node_bundles, name, channel_layout, value, min, max));
+    std::string_view name, ContinuousInputConfig config) {
+  config.name = name;
+  return input(std::move(config));
 }
 
 constexpr GraphBuilderPublicContinuousPortFamilies

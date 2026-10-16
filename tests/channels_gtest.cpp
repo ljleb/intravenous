@@ -333,17 +333,104 @@ TEST(Channels, TiledDetachStaysConfiguredConnectionMetadata)
 TEST(Channels, NamedPublicInputsRetainRequestedChannelTypes)
 {
     iv::GraphBuilder graph;
+    auto const default_type = graph.input<"default-type">();
     auto const mono = graph.input<"mono">(iv::Sample{0.25f});
     auto const stereo = graph.input<"stereo", iv::stereo>(iv::Sample{0.5f});
     auto const families = iv::host::public_sample_input_families(graph);
 
+    static_assert(std::same_as<iv::DefaultContinuousValueType, iv::Sample>);
+    ASSERT_EQ(families.families.size(), 3u);
+    EXPECT_EQ(iv::continuous_value_type_domain(families.families[0].input_config),
+              iv::ContinuousValueTypeSet::of<iv::DefaultContinuousValueType>());
+    EXPECT_EQ(static_cast<iv::SamplePortRef>(default_type).channel_type,
+              iv::ChannelTypeId::mono);
     EXPECT_EQ(static_cast<iv::SamplePortRef>(mono).channel_type,
               iv::ChannelTypeId::mono);
     EXPECT_EQ(static_cast<iv::SamplePortRef>(stereo).channel_type,
               iv::ChannelTypeId::stereo);
-    ASSERT_EQ(families.families.size(), 2u);
     EXPECT_EQ(families.families[0].channels.size(), 1u);
-    EXPECT_EQ(families.families[1].channels.size(), 2u);
+    EXPECT_EQ(families.families[1].channels.size(), 1u);
+    EXPECT_EQ(families.families[2].channels.size(), 2u);
+}
+
+TEST(Channels, PublicInputsRetainDeclaredContinuousValueDomains)
+{
+    auto const coordinate_default = iv::FractionalGlobalIndex::from_parts(
+        iv::GlobalIndex::from_signed(-2), std::uint64_t{17});
+
+    iv::GraphBuilder graph;
+    auto const coordinate =
+        graph.input<"coordinate", iv::FractionalGlobalIndex>({
+            .default_value = coordinate_default,
+        });
+    auto const spectrum = graph.input<"spectrum", iv::FFTBlock>({
+        .channel_layout = {
+            .channel_type = iv::ChannelTypeId::stereo,
+            .sample_layout = iv::SampleStreamLayout::planar,
+        },
+    });
+    auto const either =
+        graph.input<"either", iv::Sample, iv::FractionalGlobalIndex>(
+            {.default_value = iv::Sample{0.25f}},
+            {.default_value = coordinate_default});
+
+    auto const families = iv::host::public_sample_input_families(graph);
+    ASSERT_EQ(families.families.size(), 3u);
+
+    auto const& coordinate_config = families.families[0].input_config;
+    EXPECT_EQ(coordinate_config.name, "coordinate");
+    EXPECT_EQ(iv::continuous_value_type_domain(coordinate_config),
+              iv::ContinuousValueTypeSet::of<iv::FractionalGlobalIndex>());
+    EXPECT_EQ(iv::sequential_input_metadata<iv::FractionalGlobalIndex>(
+                  iv::sequential_input_properties(coordinate_config))
+                  .default_value,
+              coordinate_default);
+
+    auto const& spectrum_config = families.families[1].input_config;
+    EXPECT_EQ(spectrum_config.name, "spectrum");
+    EXPECT_EQ(iv::continuous_value_type_domain(spectrum_config),
+              iv::ContinuousValueTypeSet::of<iv::FFTBlock>());
+    EXPECT_EQ(spectrum_config.channel_layout.channel_type,
+              iv::ChannelTypeId::stereo);
+
+    auto const& either_config = families.families[2].input_config;
+    EXPECT_EQ(iv::continuous_value_type_domain(either_config),
+              (iv::ContinuousValueTypeSet::of<
+                  iv::Sample, iv::FractionalGlobalIndex>()));
+
+    EXPECT_EQ(static_cast<iv::SamplePortRef>(coordinate).channel_type,
+              iv::ChannelTypeId::mono);
+    EXPECT_EQ(static_cast<iv::SamplePortRef>(spectrum).channel_type,
+              iv::ChannelTypeId::stereo);
+    EXPECT_EQ(static_cast<iv::SamplePortRef>(either).channel_type,
+              iv::ChannelTypeId::mono);
+}
+
+TEST(Channels, SubgraphInputsRetainDeclaredContinuousValueDomains)
+{
+    iv::GraphBuilder graph;
+    auto nested = graph.subgraph([&](iv::SubgraphBuilder& boundary) {
+        auto default_type = boundary.input<"default-type">();
+        auto coordinate =
+            boundary.input<"coordinate", iv::FractionalGlobalIndex>();
+        (void)default_type;
+        (void)coordinate;
+    }, "typed-boundary");
+    auto const nested_handle = nested.node_bundle_handle();
+
+    auto configured = std::move(graph).finish();
+    auto const boundary = configured.node_bundles.bundle(nested_handle)
+        .subgraph_boundary_handle();
+    ASSERT_TRUE(boundary.has_value());
+    auto const inputs = configured.node_bundles.bundle(*boundary)
+        .boundary_sample_inputs();
+    ASSERT_EQ(inputs.size(), 2u);
+    EXPECT_EQ(inputs[0].name, "default-type");
+    EXPECT_EQ(iv::continuous_value_type_domain(inputs[0]),
+              iv::ContinuousValueTypeSet::of<iv::DefaultContinuousValueType>());
+    EXPECT_EQ(inputs[1].name, "coordinate");
+    EXPECT_EQ(iv::continuous_value_type_domain(inputs[1]),
+              iv::ContinuousValueTypeSet::of<iv::FractionalGlobalIndex>());
 }
 
 TEST(Channels, ErasedRefsRuntimeCheckChannelMembers)

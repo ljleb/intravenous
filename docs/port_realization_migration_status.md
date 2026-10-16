@@ -110,6 +110,18 @@ coordinate.
   has no non-finite number. The boundary also reports only real configured
   connectivity and virtual-port binding facts; it does not invent current values or
   overrides.
+- Graph and subgraph boundary inputs now use the same registered continuous-value
+  domain as leaf Sequential inputs. A boundary can declare one or several concrete
+  value alternatives with type-owned boundary options, and the configured boundary
+  retains that complete value-type domain and presentation/default metadata. Boundary
+  options deliberately exclude `neutral_value` and `combine_values`: a boundary is a
+  structural external source, not the leaf input that reduces connected producers.
+  Each extension translates its boundary options into configured Sequential metadata
+  using its default reduction algebra. Omitting the value type selects the first
+  extension in the sole continuous-value registry; a compile-time invariant currently
+  requires that extension to be `Sample`. The overload that accepts Sample
+  default/minimum/maximum arguments remains Sample-specific authoring sugar; it is no
+  longer the implementation path that defines what boundary inputs can represent.
 - The VS Code graph model consumes the continuous introspection schema and displays
   declared types and bindings. The former read-only knobs and state actions were
   removed because no runtime read or mutation path supplied their values.

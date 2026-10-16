@@ -65,6 +65,16 @@ struct SampleContinuousValueExtension {
         return left + right;
     }
 
+    struct BoundaryInputOptions {
+        ChannelLayout channel_layout =
+            continuous_value_details::default_audio_channel_layout;
+        Sample default_value = 0.0f;
+        Sample min = -std::numeric_limits<Sample::storage>::infinity();
+        Sample max = std::numeric_limits<Sample::storage>::infinity();
+
+        constexpr bool operator==(BoundaryInputOptions const&) const = default;
+    };
+
     struct SequentialInputOptions {
         ChannelLayout channel_layout =
             continuous_value_details::default_audio_channel_layout;
@@ -76,6 +86,18 @@ struct SampleContinuousValueExtension {
 
         constexpr bool operator==(SequentialInputOptions const&) const = default;
     };
+
+    [[nodiscard]] static constexpr SequentialInputOptions
+    boundary_input_sequential_options(
+        BoundaryInputOptions const& options) noexcept
+    {
+        return {
+            .channel_layout = options.channel_layout,
+            .default_value = options.default_value,
+            .min = options.min,
+            .max = options.max,
+        };
+    }
 
     struct SequentialInputMetadata {
         Sample default_value = 0.0f;
@@ -283,6 +305,12 @@ struct FractionalGlobalIndexContinuousValueExtension {
         });
     }
 
+    struct BoundaryInputOptions {
+        FractionalGlobalIndex default_value {};
+
+        constexpr bool operator==(BoundaryInputOptions const&) const = default;
+    };
+
     struct SequentialInputOptions {
         FractionalGlobalIndex default_value {};
         FractionalGlobalIndex neutral_value {};
@@ -290,6 +318,13 @@ struct FractionalGlobalIndexContinuousValueExtension {
 
         constexpr bool operator==(SequentialInputOptions const&) const = default;
     };
+
+    [[nodiscard]] static constexpr SequentialInputOptions
+    boundary_input_sequential_options(
+        BoundaryInputOptions const& options) noexcept
+    {
+        return {.default_value = options.default_value};
+    }
 
     struct SequentialInputMetadata {
         FractionalGlobalIndex default_value {};
@@ -471,6 +506,13 @@ struct FFTBlockContinuousValueExtension {
         }
     }
 
+    struct BoundaryInputOptions {
+        ChannelLayout channel_layout =
+            continuous_value_details::default_audio_channel_layout;
+
+        constexpr bool operator==(BoundaryInputOptions const&) const = default;
+    };
+
     struct SequentialInputOptions {
         ChannelLayout channel_layout =
             continuous_value_details::default_audio_channel_layout;
@@ -479,6 +521,13 @@ struct FFTBlockContinuousValueExtension {
 
         constexpr bool operator==(SequentialInputOptions const&) const = default;
     };
+
+    [[nodiscard]] static constexpr SequentialInputOptions
+    boundary_input_sequential_options(
+        BoundaryInputOptions const& options) noexcept
+    {
+        return {.channel_layout = options.channel_layout};
+    }
 
     struct SequentialInputMetadata {
         // Neutral initialization and combination are executable package
@@ -631,6 +680,37 @@ struct FFTBlockContinuousValueExtension {
         FractionalGlobalIndexContinuousValueExtension)                  \
     X(fft_block, FFTBlockContinuousValueExtension)
 
+namespace continuous_value_details {
+
+template<class... Extensions>
+struct ExtensionList {};
+
+#define IV_CONTINUOUS_EXTENSION_LIST_ENTRY(key, extension) , extension
+using RegisteredExtensions = ExtensionList<
+    void IV_CONTINUOUS_VALUE_TYPES(IV_CONTINUOUS_EXTENSION_LIST_ENTRY)>;
+#undef IV_CONTINUOUS_EXTENSION_LIST_ENTRY
+
+template<class List>
+struct FirstRegisteredExtension;
+
+template<class Ignored, class First, class... Rest>
+struct FirstRegisteredExtension<ExtensionList<Ignored, First, Rest...>> {
+    using type = First;
+};
+
+using DefaultContinuousValueExtension =
+    typename FirstRegisteredExtension<RegisteredExtensions>::type;
+
+} // namespace continuous_value_details
+
+// Omitting a value type in authored APIs means the first extension in the sole
+// registry. Sample deliberately occupies that position so the concise default
+// remains the ordinary audio/control value type.
+using DefaultContinuousValueType =
+    typename continuous_value_details::DefaultContinuousValueExtension::value_type;
+static_assert(std::same_as<DefaultContinuousValueType, Sample>,
+    "the first continuous-value extension must remain Sample");
+
 enum class ContinuousValueTypeId : std::uint8_t {
 #define IV_CONTINUOUS_VALUE_TYPE_ID(key, extension) key,
     IV_CONTINUOUS_VALUE_TYPES(IV_CONTINUOUS_VALUE_TYPE_ID)
@@ -692,6 +772,14 @@ concept HasSequentialReduction = requires(
 };
 
 template<class Extension>
+concept HasBoundaryInputOptions = requires(
+    typename Extension::BoundaryInputOptions const& options) {
+    {
+        Extension::boundary_input_sequential_options(options)
+    } -> std::same_as<typename Extension::SequentialInputOptions>;
+};
+
+template<class Extension>
 consteval bool valid_metadata_shape()
 {
     if constexpr (Extension::rank != 0) {
@@ -715,7 +803,10 @@ consteval bool valid_metadata_shape()
         "non-scalar continuous values cannot define default/min/max"); \
     static_assert(continuous_value_details::HasSequentialReduction<       \
         extension>,                                                      \
-        "every continuous value must define neutral/combine options");
+        "every continuous value must define neutral/combine options");  \
+    static_assert(continuous_value_details::HasBoundaryInputOptions<      \
+        extension>,                                                      \
+        "every continuous value must define boundary input options");
 IV_CONTINUOUS_VALUE_TYPES(IV_ASSERT_CONTINUOUS_METADATA_SHAPE)
 #undef IV_ASSERT_CONTINUOUS_METADATA_SHAPE
 
@@ -782,14 +873,6 @@ inline constexpr ContinuousValueTypeId continuous_value_type_id_v =
 // type never requires editing a second central alternative list. There is no
 // empty alternative: every metadata value identifies one registered type.
 namespace continuous_value_details {
-
-template<class... Extensions>
-struct ExtensionList {};
-
-#define IV_CONTINUOUS_EXTENSION_LIST_ENTRY(key, extension) , extension
-using RegisteredExtensions = ExtensionList<
-    void IV_CONTINUOUS_VALUE_TYPES(IV_CONTINUOUS_EXTENSION_LIST_ENTRY)>;
-#undef IV_CONTINUOUS_EXTENSION_LIST_ENTRY
 
 template<class List>
 struct MetadataVariants;

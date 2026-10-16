@@ -171,27 +171,27 @@ GraphBuilder& GraphBuilder::operator=(GraphBuilder&& other) noexcept
     return *this;
 }
 
-PublicSampleInputRef GraphBuilder::input() { return input(Sample{0.0f}); }
+PublicSampleInputRef GraphBuilder::input()
+{
+    return state(*this).input(
+        details::make_default_boundary_input_config({}));
+}
 PublicSampleInputRef GraphBuilder::input(
     Sample value, std::optional<Sample> min, std::optional<Sample> max)
 {
-    return state(*this).input(value, min, max);
+    return state(*this).input(details::make_sample_boundary_input_config({}, {
+        .channel_type = ChannelTypeId::mono,
+        .sample_layout = SampleStreamLayout::planar,
+    }, value, min, max));
 }
 PublicEventInputRef GraphBuilder::event_input(EventTypeId type)
 {
     return state(*this).event_input(type);
 }
 PublicSampleInputRef GraphBuilder::input_named(
-    std::string_view name, Sample value,
-    std::optional<Sample> min, std::optional<Sample> max)
+    std::string_view name, ContinuousInputConfig config)
 {
-    return state(*this).input_named(name, value, min, max);
-}
-PublicSampleInputRef GraphBuilder::input_named(
-    std::string_view name, ChannelLayout layout, Sample value,
-    std::optional<Sample> min, std::optional<Sample> max)
-{
-    return state(*this).input_named(name, layout, value, min, max);
+    return state(*this).input_named(name, std::move(config));
 }
 PublicEventInputRef GraphBuilder::event_input_named(
     std::string_view name, EventTypeId type)
@@ -516,12 +516,10 @@ void GraphBuilder::abandon_subgraph(
 }
 
 PublicSampleInputRef GraphBuilder::subgraph_input(
-    details::SubgraphBuildScope* scope, std::string_view name,
-    ChannelLayout layout, Sample value, std::optional<Sample> min,
-    std::optional<Sample> max)
+    details::SubgraphBuildScope* scope, ContinuousInputConfig config)
 {
     if (!scope) details::error("subgraph build scope is no longer active");
-    return state(*this).subgraph_input(*scope, name, layout, value, min, max);
+    return state(*this).subgraph_input(*scope, std::move(config));
 }
 
 PublicEventInputRef GraphBuilder::subgraph_event_input(
