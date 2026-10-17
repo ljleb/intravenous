@@ -89,6 +89,8 @@ using ContinuousValueSizeEqualityConstraint = PortPropertyEqualityConstraint<Con
 using ContinuousValueSizeAnchorConstraint = PortPropertyAnchorConstraint<ContinuousValueSizeProperty>;
 using PortPaceEqualityConstraint = PortPropertyEqualityConstraint<PortPaceProperty>;
 using PortPaceAnchorConstraint = PortPropertyAnchorConstraint<PortPaceProperty>;
+using AbsolutePortPaceAnchorConstraint =
+    PortPropertyAnchorConstraint<PortPaceProperty>;
 using PortHistoryEqualityConstraint = PortPropertyEqualityConstraint<PortHistoryProperty>;
 using PortHistoryAnchorConstraint = PortPropertyAnchorConstraint<PortHistoryProperty>;
 using PortLatencyEqualityConstraint = PortPropertyEqualityConstraint<PortLatencyProperty>;
@@ -103,6 +105,7 @@ struct NodePortConstraints {
     std::vector<ContinuousValueSizeAnchorConstraint> size_anchors {};
     std::vector<PortPaceEqualityConstraint> pace_equalities {};
     std::vector<PortPaceAnchorConstraint> pace_anchors {};
+    std::vector<AbsolutePortPaceAnchorConstraint> absolute_pace_anchors {};
     std::vector<PortHistoryEqualityConstraint> history_equalities {};
     std::vector<PortHistoryAnchorConstraint> history_anchors {};
     std::vector<PortLatencyEqualityConstraint> latency_equalities {};
@@ -124,6 +127,8 @@ struct ReflectedPortConstraintSink {
     IV_PORT_CONSTRAINT_CALLBACKS(latencies, std::size_t);
     IV_PORT_CONSTRAINT_CALLBACKS(orderings, CoverageOrdering);
 #undef IV_PORT_CONSTRAINT_CALLBACKS
+    void (*anchor_absolute_pace)(
+        void*, PortConstraintRef, PortPace) = nullptr;
 
     template<class Property>
     void equal(PortConstraintRef first, PortConstraintRef second) const
@@ -153,6 +158,28 @@ struct ReflectedPortConstraintSink {
         }();
         if (!callback) throw std::logic_error("port-constraint sink has no anchor callback");
         callback(state, port, value);
+    }
+};
+
+class AbsolutePortPaceConstraint {
+    ReflectedPortConstraintSink const* sink_ = nullptr;
+    PortConstraintRef port_ {};
+
+public:
+    constexpr AbsolutePortPaceConstraint() = default;
+    constexpr AbsolutePortPaceConstraint(
+        ReflectedPortConstraintSink const& sink,
+        PortConstraintRef port) noexcept
+        : sink_(&sink), port_(port)
+    {}
+
+    AbsolutePortPaceConstraint& operator=(PortPace value)
+    {
+        if (!sink_ || !sink_->anchor_absolute_pace)
+            throw std::logic_error(
+                "port-constraint sink has no absolute-pace callback");
+        sink_->anchor_absolute_pace(sink_->state, port_, value);
+        return *this;
     }
 };
 
@@ -188,6 +215,12 @@ public:
     PortPropertyConstraint& operator=(std::type_identity<T>)
     {
         return *this = continuous_value_type_id_v<T>;
+    }
+
+    [[nodiscard]] constexpr AbsolutePortPaceConstraint absolute() const
+        requires std::same_as<Property, PortPaceProperty>
+    {
+        return {sink(), port_};
     }
 };
 

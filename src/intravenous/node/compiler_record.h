@@ -15,6 +15,7 @@ namespace iv {
 struct NodeLayoutBuilder;
 struct NodeStateStructures;
 struct ReflectedNodeTickContext;
+struct ReflectedNodePortRealization;
 struct ReflectedNodeTockCoverageContext;
 struct ReflectedNodeForwardCoverageContext;
 struct ReflectedNodeReverseCoverageContext;
@@ -22,11 +23,20 @@ enum class ContinuousValueTypeId : std::uint8_t;
 
 namespace details {
 
+enum class SequentialInputInitialization : std::uint8_t {
+    disconnected,
+    neutral,
+};
+
 // The compiler record contains only code selected by the node type. The
-// transitional executor adapter lives in graph/reflected_node_operations.h.
+// compiler-facing reflected execution ABI lives in
+// graph/reflected_node_operations.h.
 struct NodeCompilerOperations {
     std::size_t (*declare_node)(
-        void const*, NodeStateStructures const*, NodeLayoutBuilder&) = nullptr;
+        void const*,
+        NodeStateStructures const*,
+        NodeLayoutBuilder&,
+        ReflectedNodePortRealization const&) = nullptr;
     void (*tick_block)(
         void const*, ReflectedNodeTickContext const&, GlobalIndex, std::size_t) = nullptr;
     void (*skip_block)(
@@ -47,9 +57,10 @@ struct NodeCompilerOperations {
     // configured graph serializes declarative metadata, never native function
     // pointers. These node-specialized dispatchers accept only one of the
     // node's declared continuous input/type pairs and reject every other pair.
-    bool (*initialize_sequential_input_neutral)(
+    bool (*initialize_sequential_input)(
         std::size_t continuous_input,
         ContinuousValueTypeId,
+        SequentialInputInitialization,
         std::byte* destination,
         std::size_t destination_bytes,
         std::size_t elements_per_value) = nullptr;
@@ -84,6 +95,14 @@ struct NodeCompilerRecord {
     // Authored and statically validated; the project planner must separately
     // prove that a specific instance can replay its transitive dependencies.
     bool intrinsically_replayable = false;
+    // Pointwise tick() can only be realized when every relevant Sequential
+    // input and Tick output uses one equal absolute pace. Native tick_block()
+    // nodes may observe heterogeneous per-port projections directly.
+    bool pointwise_tick = false;
+    // True when an authored tick_block() or skip_block() callback can request
+    // a complete contiguous input block. Purely pointwise nodes with the
+    // framework's default skip path need no input materialization workspace.
+    bool block_input_access = false;
 };
 
 } // namespace details

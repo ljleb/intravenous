@@ -1205,6 +1205,7 @@ TEST(BackgroundEvaluationCallFrame, ReservesAndValidatesReplaySchedule)
     plan.runtime.replay_invocations = {{
         .node = 0,
         .maximum_block_size = 4,
+        .block_input_access = true,
         .input_bindings = {0, 1},
         .output_bindings = {2, 3},
     }};
@@ -1232,9 +1233,9 @@ TEST(BackgroundEvaluationCallFrame, ReservesAndValidatesReplaySchedule)
         0, {range(0, 4), range(8, 10)}).has_value());
     ASSERT_TRUE(frame.seal().has_value());
     auto const& replay = frame.nodes().front().replay;
-    EXPECT_EQ(replay.sample_input_bindings.size(), 1);
+    EXPECT_EQ(replay.continuous_input_bindings.size(), 1);
     EXPECT_EQ(replay.event_input_bindings.size(), 1);
-    EXPECT_EQ(replay.sample_output_bindings.size(), 1);
+    EXPECT_EQ(replay.continuous_output_bindings.size(), 1);
     EXPECT_EQ(replay.event_output_bindings.size(), 1);
     ASSERT_EQ(frame.nodes().front().replay_regions.size(), 2);
     EXPECT_EQ(frame.nodes().front().replay_regions.data()[1],
@@ -1244,15 +1245,17 @@ TEST(BackgroundEvaluationCallFrame, ReservesAndValidatesReplaySchedule)
     ASSERT_NE(node.prepare_operations, nullptr);
     ASSERT_NE(node.finalize_operations, nullptr);
     node.prepare_operations(node.operation_frame);
-    auto const& sample_input = node.replay.sample_input_bindings.data()[0];
+    auto const& sample_input = node.replay.continuous_input_bindings.data()[0];
+    EXPECT_EQ(sample_input.contiguous_value_capacity, 4u);
+    EXPECT_NE(sample_input.storage.channels[0].contiguous_scratch, nullptr);
     auto* input_values = reinterpret_cast<iv::Sample*>(
         sample_input.storage.channels[0].storage);
     EXPECT_FLOAT_EQ(input_values[0].value, 3.0f);
 
-    auto const& sample_output = node.replay.sample_output_bindings.data()[0];
+    auto const& sample_output = node.replay.continuous_output_bindings.data()[0];
     auto* output_values = reinterpret_cast<iv::Sample*>(
         sample_output.storage.channels[0].storage);
-    output_values[8 & (sample_output.storage.frame_capacity - 1)] =
+    output_values[8 & (sample_output.storage.value_capacity - 1)] =
         iv::Sample{9.0f};
     node.finalize_operations(node.operation_frame);
     EXPECT_FLOAT_EQ(realization.sample_read(2)->at(index(8), 0).value, 9.0f);
@@ -1359,13 +1362,13 @@ TEST(
 
     auto& node = frame.nodes().front();
     node.prepare_operations(node.operation_frame);
-    auto outputs = node.replay.sample_output_bindings;
+    auto outputs = node.replay.continuous_output_bindings;
     ASSERT_EQ(outputs.size(), 2u);
     for (std::size_t output = 0; output < outputs.size(); ++output) {
         auto* values = reinterpret_cast<iv::Sample*>(
             outputs.data()[output].storage.channels[0].storage);
         for (std::size_t index = 0; index < 8; ++index) {
-            values[index & (outputs.data()[output].storage.frame_capacity - 1)] =
+            values[index & (outputs.data()[output].storage.value_capacity - 1)] =
                 iv::Sample{static_cast<float>(10 * output + index)};
         }
     }

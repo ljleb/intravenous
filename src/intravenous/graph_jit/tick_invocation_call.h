@@ -14,7 +14,7 @@ namespace iv::graph_jit {
 struct TickSampleCaptureOperation {
     using Capture = void (*)(
         void* context,
-        ReflectedSampleOutputPortBinding const* output,
+        ReflectedContinuousOutputPortBinding const* output,
         GlobalIndex sample_index,
         std::size_t block_size) noexcept;
 
@@ -43,7 +43,7 @@ static_assert(std::is_trivially_copyable_v<TickEventCaptureOperation>);
 // receives only already-resolved views and cannot recover an executor, persisted-data
 // store, or materialization owner from this record.
 struct TickInvocationCall {
-    ReflectedSpan<ReflectedSampleInputPortBinding const>
+    ReflectedSpan<ReflectedContinuousInputPortBinding const>
         sequential_sample_inputs{};
     ReflectedSpan<ReflectedEventInputPortBinding const>
         sequential_event_inputs{};

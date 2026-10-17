@@ -94,11 +94,11 @@ int main()
         Importer importer;
         StorageResolver resolver;
 
-        iv::do_declare(exporter, builder);
+        iv::do_declare(exporter, builder, {});
         iv::test::require(builder.has_export_array<iv::Sample>("shared"), "shared export should be visible during declaration");
-        iv::do_declare(importer, builder);
+        iv::do_declare(importer, builder, {});
         iv::test::require(builder.has_import_array<iv::Sample>("shared"), "shared import should be visible during declaration");
-        iv::do_declare(resolver, builder);
+        iv::do_declare(resolver, builder, {});
 
         iv::NodeLayout layout = std::move(builder).build();
         auto resources = make_resources();
@@ -120,7 +120,7 @@ int main()
     {
         iv::NodeLayoutBuilder builder(8);
         MissingResolver resolver;
-        iv::do_declare(resolver, builder);
+        iv::do_declare(resolver, builder, {});
 
         iv::NodeLayout layout = std::move(builder).build();
         auto resources = make_resources();

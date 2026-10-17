@@ -18,6 +18,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <expected>
 #include <limits>
 #include <optional>
@@ -39,10 +40,10 @@ constexpr std::string_view root_background_evaluate_symbol =
     "__iv_graph_root_background_evaluate";
 
 struct ReflectedContextByteOffsets {
-    std::size_t sample_input_bindings_data = 0;
-    std::size_t sample_input_bindings_size = 0;
-    std::size_t sample_output_bindings_data = 0;
-    std::size_t sample_output_bindings_size = 0;
+    std::size_t continuous_input_bindings_data = 0;
+    std::size_t continuous_input_bindings_size = 0;
+    std::size_t continuous_output_bindings_data = 0;
+    std::size_t continuous_output_bindings_size = 0;
     std::size_t event_input_bindings_data = 0;
     std::size_t event_input_bindings_size = 0;
     std::size_t event_output_bindings_data = 0;
@@ -122,6 +123,8 @@ struct EmittedRealtimeStorage {
     llvm::Value* sample_transient_base = nullptr;
     llvm::Value* event_transient_base = nullptr;
     std::vector<llvm::Value*> sample_representations{};
+    std::vector<llvm::Value*> producer_authored_extents{};
+    std::vector<llvm::Value*> sequential_pace_cursors{};
     std::vector<llvm::Value*> event_representations{};
     std::vector<llvm::Value*> event_overflow_counts{};
 };
@@ -129,18 +132,18 @@ struct EmittedRealtimeStorage {
 constexpr ReflectedContextByteOffsets reflected_context_byte_offsets() noexcept
 {
     return {
-        .sample_input_bindings_data =
-            offsetof(ReflectedNodeTickContext, sample_input_bindings)
-            + offsetof(ReflectedSpan<ReflectedSampleInputPortBinding const>, pointer),
-        .sample_input_bindings_size =
-            offsetof(ReflectedNodeTickContext, sample_input_bindings)
-            + offsetof(ReflectedSpan<ReflectedSampleInputPortBinding const>, extent),
-        .sample_output_bindings_data =
-            offsetof(ReflectedNodeTickContext, sample_output_bindings)
-            + offsetof(ReflectedSpan<ReflectedSampleOutputPortBinding const>, pointer),
-        .sample_output_bindings_size =
-            offsetof(ReflectedNodeTickContext, sample_output_bindings)
-            + offsetof(ReflectedSpan<ReflectedSampleOutputPortBinding const>, extent),
+        .continuous_input_bindings_data =
+            offsetof(ReflectedNodeTickContext, continuous_input_bindings)
+            + offsetof(ReflectedSpan<ReflectedContinuousInputPortBinding const>, pointer),
+        .continuous_input_bindings_size =
+            offsetof(ReflectedNodeTickContext, continuous_input_bindings)
+            + offsetof(ReflectedSpan<ReflectedContinuousInputPortBinding const>, extent),
+        .continuous_output_bindings_data =
+            offsetof(ReflectedNodeTickContext, continuous_output_bindings)
+            + offsetof(ReflectedSpan<ReflectedContinuousOutputPortBinding const>, pointer),
+        .continuous_output_bindings_size =
+            offsetof(ReflectedNodeTickContext, continuous_output_bindings)
+            + offsetof(ReflectedSpan<ReflectedContinuousOutputPortBinding const>, extent),
         .event_input_bindings_data =
             offsetof(ReflectedNodeTickContext, event_input_bindings)
             + offsetof(ReflectedSpan<ReflectedEventInputPortBinding const>, pointer),
@@ -178,11 +181,11 @@ constexpr TickInvocationByteOffsets tick_invocation_byte_offsets() noexcept
         .sequential_sample_inputs_data =
             offsetof(TickInvocationCall, sequential_sample_inputs)
             + offsetof(
-                ReflectedSpan<ReflectedSampleInputPortBinding const>, pointer),
+                ReflectedSpan<ReflectedContinuousInputPortBinding const>, pointer),
         .sequential_sample_inputs_size =
             offsetof(TickInvocationCall, sequential_sample_inputs)
             + offsetof(
-                ReflectedSpan<ReflectedSampleInputPortBinding const>, extent),
+                ReflectedSpan<ReflectedContinuousInputPortBinding const>, extent),
         .sequential_event_inputs_data =
             offsetof(TickInvocationCall, sequential_event_inputs)
             + offsetof(
@@ -617,7 +620,7 @@ llvm::Value* byte_offset_pointer(
         name);
 }
 
-std::expected<ReflectedSamplePortStorageBinding, std::string>
+std::expected<ReflectedContinuousPortStorageBinding, std::string>
 sample_storage_binding(
     detail::SampleStoragePlan const& plan,
     std::size_t representation_index)
@@ -668,24 +671,25 @@ sample_storage_binding(
         return std::unexpected(
             "GraphJit sample storage has no realized storage");
     }
-    ReflectedSamplePortStorageBinding binding{
-        .frame_capacity = storage.frame_capacity,
+    ReflectedContinuousPortStorageBinding binding{
+        .geometry = storage.geometry,
+        .value_capacity = storage.frame_capacity,
         .storage_latency = 0,
         .channel_layout = storage.channel_layout,
     };
     auto const channels = channel_count(storage.channel_layout);
     for (std::size_t channel = 0; channel < channels; ++channel) {
-        binding.channels[channel].frame_capacity = storage.frame_capacity;
-        binding.channels[channel].frame_stride =
+        binding.channels[channel].value_capacity = storage.frame_capacity;
+        binding.channels[channel].value_stride_bytes =
             storage.channel_layout.sample_layout
                     == SampleStreamLayout::planar
-                ? 1
-                : channels;
+                ? storage.geometry.value_size_bytes
+                : channels * storage.geometry.value_size_bytes;
     }
     return binding;
 }
 
-std::expected<ReflectedSamplePortStorageBinding, std::string>
+std::expected<ReflectedContinuousPortStorageBinding, std::string>
 sample_input_storage_binding(
     detail::SampleStoragePlan const& storage,
     detail::PrimitiveSampleInputBindingPlan const& input)
@@ -696,7 +700,7 @@ sample_input_storage_binding(
             "GraphJit sample input storage has an invalid channel count");
     }
 
-    ReflectedSamplePortStorageBinding binding{
+    ReflectedContinuousPortStorageBinding binding{
         .storage_latency = 0,
         .channel_layout = input.channel_layout,
     };
@@ -717,10 +721,14 @@ sample_input_storage_binding(
         }
         binding.channels[target_channel] =
             source->channels[channel.representation_channel];
-        binding.channels[target_channel].frame_delay = channel.frame_delay;
+        binding.channels[target_channel].value_delay = channel.frame_delay;
         if (target_channel == 0) {
-            binding.frame_capacity =
-                binding.channels[target_channel].frame_capacity;
+            binding.geometry = source->geometry;
+            binding.value_capacity =
+                binding.channels[target_channel].value_capacity;
+        } else if (binding.geometry != source->geometry) {
+            return std::unexpected(
+                "GraphJit continuous input channels disagree on value geometry");
         }
     }
     return binding;
@@ -772,24 +780,24 @@ void store_sample_binding_channel_pointer(
     IV_ASSERT(
         representation_channel < channels,
         "sample source channel is outside its storage");
-    auto const sample_offset = storage.channel_layout.sample_layout
+    auto const value_offset = storage.channel_layout.sample_layout
             == SampleStreamLayout::planar
         ? representation_channel * storage.frame_capacity
         : representation_channel;
-    auto* channel_base = sample_offset == 0
+    auto* channel_base = value_offset == 0
         ? representation_base
         : byte_offset_pointer(
             builder,
             representation_base,
-            sample_offset * sizeof(Sample),
-            "sample.binding.channel");
+            value_offset * storage.geometry.value_size_bytes,
+            "continuous.binding.channel");
     store_runtime_pointer(
         builder,
         binding_bytes,
         storage_binding_offset
-            + offsetof(ReflectedSamplePortStorageBinding, channels)
-            + target_channel * sizeof(ReflectedSampleChannelStorageBinding)
-            + offsetof(ReflectedSampleChannelStorageBinding, storage),
+            + offsetof(ReflectedContinuousPortStorageBinding, channels)
+            + target_channel * sizeof(ReflectedContinuousChannelStorageBinding)
+            + offsetof(ReflectedContinuousChannelStorageBinding, storage),
         channel_base);
 }
 
@@ -833,23 +841,26 @@ std::expected<EmittedSamplePortBindings, std::string> emit_sample_port_bindings(
             [](auto const& output) { return output.realtime; });
 
         if (!primitive.inputs.empty()) {
-            std::vector<ReflectedSampleInputPortBinding> bindings;
+            std::vector<ReflectedContinuousInputPortBinding> bindings;
             bindings.reserve(primitive.inputs.size());
             for (auto const& input : primitive.inputs) {
                 auto storage = sample_input_storage_binding(
                     plan.storage, input);
                 if (!storage) return std::unexpected(std::move(storage.error()));
-                bindings.push_back(ReflectedSampleInputPortBinding{
+                bindings.push_back(ReflectedContinuousInputPortBinding{
                     .storage = *storage,
                     .history = input.history,
                     .read_latency = input.read_latency,
+                    .absolute_pace_exponent = input.absolute_pace_exponent,
+                    .contiguous_value_capacity =
+                        input.contiguous_value_capacity,
                 });
             }
             result.input_bindings = runtime_bytes_copy(
                 builder, module,
                 bindings.data(),
-                bindings.size() * sizeof(ReflectedSampleInputPortBinding),
-                alignof(ReflectedSampleInputPortBinding),
+                bindings.size() * sizeof(ReflectedContinuousInputPortBinding),
+                alignof(ReflectedContinuousInputPortBinding),
                 "__iv_graph_sample_inputs_" + std::to_string(primitive_index));
             for (std::size_t i = 0; i < primitive.inputs.size(); ++i) {
                 auto const& input = primitive.inputs[i];
@@ -866,18 +877,53 @@ std::expected<EmittedSamplePortBindings, std::string> emit_sample_port_bindings(
                     store_sample_binding_channel_pointer(
                         builder,
                         result.input_bindings,
-                        i * sizeof(ReflectedSampleInputPortBinding)
-                            + offsetof(ReflectedSampleInputPortBinding, storage),
+                        i * sizeof(ReflectedContinuousInputPortBinding)
+                            + offsetof(ReflectedContinuousInputPortBinding, storage),
                         target_channel,
                         plan.storage.representations[storage],
                         channel.representation_channel,
                         realtime_storage.sample_representations[storage]);
+                    if (input.has_contiguous_scratch) {
+                        if (realtime_storage.sample_transient_base == nullptr
+                            || input.contiguous_value_capacity
+                                > std::numeric_limits<std::size_t>::max()
+                                    / input.geometry.value_size_bytes) {
+                            return std::unexpected(
+                                "GraphJit continuous input scratch lost its root arena");
+                        }
+                        auto const channel_bytes =
+                            input.contiguous_value_capacity
+                            * input.geometry.value_size_bytes;
+                        auto* scratch = byte_offset_pointer(
+                            builder,
+                            realtime_storage.sample_transient_base,
+                            input.contiguous_scratch_offset
+                                + target_channel * channel_bytes,
+                            "continuous.input.scratch");
+                        store_runtime_pointer(
+                            builder,
+                            result.input_bindings,
+                            i * sizeof(ReflectedContinuousInputPortBinding)
+                                + offsetof(
+                                    ReflectedContinuousInputPortBinding,
+                                    storage)
+                                + offsetof(
+                                    ReflectedContinuousPortStorageBinding,
+                                    channels)
+                                + target_channel
+                                    * sizeof(
+                                        ReflectedContinuousChannelStorageBinding)
+                                + offsetof(
+                                    ReflectedContinuousChannelStorageBinding,
+                                    contiguous_scratch),
+                            scratch);
+                    }
                 }
             }
         }
 
         if (result.output_count != 0) {
-            std::vector<ReflectedSampleOutputPortBinding> bindings;
+            std::vector<ReflectedContinuousOutputPortBinding> bindings;
             bindings.reserve(result.output_count);
             for (auto const& output : primitive.outputs) {
                 if (!output.realtime) continue;
@@ -888,17 +934,18 @@ std::expected<EmittedSamplePortBindings, std::string> emit_sample_port_bindings(
                 auto storage = sample_storage_binding(
                     plan.storage, *output.storage);
                 if (!storage) return std::unexpected(std::move(storage.error()));
-                bindings.push_back(ReflectedSampleOutputPortBinding{
+                bindings.push_back(ReflectedContinuousOutputPortBinding{
                     .storage = *storage,
                     .history = output.history,
                     .latency = output.latency,
+                    .absolute_pace_exponent = output.absolute_pace_exponent,
                 });
             }
             result.output_bindings = runtime_bytes_copy(
                 builder, module,
                 bindings.data(),
-                bindings.size() * sizeof(ReflectedSampleOutputPortBinding),
-                alignof(ReflectedSampleOutputPortBinding),
+                bindings.size() * sizeof(ReflectedContinuousOutputPortBinding),
+                alignof(ReflectedContinuousOutputPortBinding),
                 "__iv_graph_sample_outputs_" + std::to_string(primitive_index));
             std::size_t binding_index = 0;
             for (auto const& output : primitive.outputs) {
@@ -911,8 +958,8 @@ std::expected<EmittedSamplePortBindings, std::string> emit_sample_port_bindings(
                 store_sample_binding_channel_pointers(
                     builder,
                     result.output_bindings,
-                    binding_index * sizeof(ReflectedSampleOutputPortBinding)
-                        + offsetof(ReflectedSampleOutputPortBinding, storage),
+                    binding_index * sizeof(ReflectedContinuousOutputPortBinding)
+                        + offsetof(ReflectedContinuousOutputPortBinding, storage),
                     plan.storage.representations[storage],
                     realtime_storage.sample_representations[storage]);
                 ++binding_index;
@@ -1327,6 +1374,54 @@ llvm::Value* overlay_tick_sequential_bindings(
     return overlaid;
 }
 
+void restore_continuous_input_scratch_bindings(
+    llvm::IRBuilder<>& builder,
+    llvm::Value* target_bindings,
+    llvm::Value* static_bindings,
+    std::size_t binding_count)
+{
+    auto copy_field = [&](std::size_t binding,
+                          std::size_t field_offset,
+                          std::size_t field_size,
+                          std::size_t field_alignment,
+                          llvm::Twine const& name) {
+        auto const offset = binding
+            * sizeof(ReflectedContinuousInputPortBinding) + field_offset;
+        builder.CreateMemCpy(
+            byte_offset_pointer(builder, target_bindings, offset, name + ".target"),
+            llvm::Align(field_alignment),
+            byte_offset_pointer(builder, static_bindings, offset, name + ".source"),
+            llvm::Align(field_alignment),
+            field_size);
+    };
+
+    for (std::size_t binding = 0; binding < binding_count; ++binding) {
+        copy_field(
+            binding,
+            offsetof(
+                ReflectedContinuousInputPortBinding,
+                contiguous_value_capacity),
+            sizeof(std::size_t),
+            alignof(std::size_t),
+            "continuous.scratch.capacity");
+        for (std::size_t channel = 0;
+             channel < maximum_supported_channel_count; ++channel) {
+            copy_field(
+                binding,
+                offsetof(ReflectedContinuousInputPortBinding, storage)
+                    + offsetof(ReflectedContinuousPortStorageBinding, channels)
+                    + channel
+                        * sizeof(ReflectedContinuousChannelStorageBinding)
+                    + offsetof(
+                        ReflectedContinuousChannelStorageBinding,
+                        contiguous_scratch),
+                sizeof(std::byte*),
+                alignof(std::byte*),
+                "continuous.scratch.pointer");
+        }
+    }
+}
+
 void store_context_span(
     llvm::IRBuilder<>& builder,
     llvm::Value* context_storage,
@@ -1347,6 +1442,32 @@ void store_context_span(
         span_size);
 }
 
+llvm::Value* emit_sequential_begin_ordinal(
+    llvm::IRBuilder<>& builder,
+    detail::SampleStoragePlan const& storage,
+    EmittedRealtimeStorage const& realtime_storage,
+    llvm::Value* root_index,
+    llvm::Value* callback_index,
+    std::int32_t pace_exponent,
+    llvm::Twine const& name);
+
+void store_sequential_begin_ordinal(
+    llvm::IRBuilder<>& builder,
+    llvm::Value* bindings,
+    std::size_t binding_index,
+    std::size_t binding_size,
+    std::size_t field_offset,
+    llvm::Value* ordinal,
+    llvm::Twine const& name)
+{
+    auto* pointer = byte_offset_pointer(
+        builder,
+        bindings,
+        binding_index * binding_size + field_offset,
+        name + ".pointer");
+    builder.CreateStore(ordinal, pointer);
+}
+
 void emit_primitive_call(
     llvm::IRBuilder<>& builder,
     llvm::Function* primitive_callback,
@@ -1354,13 +1475,17 @@ void emit_primitive_call(
     detail::PrimitiveStoragePlan const& storage,
     EmittedPrimitiveSamplePorts const& sample_ports,
     EmittedPrimitiveEventPorts const& event_ports,
+    detail::PrimitiveSamplePortPlan const& sample_plan,
+    detail::SampleStoragePlan const& sample_storage,
     BackgroundEvaluationPlan const* tick_background,
     TickNodeInvocationPlan const* tick_invocation,
     llvm::Value* invocation,
-    llvm::Value* storage_base,
+    EmittedRealtimeStorage const& realtime_storage,
+    llvm::Value* root_index,
     llvm::Value* sample_index,
     llvm::Value* block_size)
 {
+    auto* storage_base = realtime_storage.persistent_base;
     auto* size_type = llvm::IntegerType::get(
         builder.getContext(), static_cast<unsigned>(sizeof(std::size_t) * 8));
     auto* context_storage = builder.CreateAlloca(
@@ -1392,24 +1517,88 @@ void emit_primitive_call(
                 tick_invocation->sequential_sample_begin,
                 tick_invocation->sequential_sample_count,
                 *tick_background,
-                sizeof(ReflectedSampleInputPortBinding),
-                alignof(ReflectedSampleInputPortBinding),
+                sizeof(ReflectedContinuousInputPortBinding),
+                alignof(ReflectedContinuousInputPortBinding),
                 "tick.sequential.sample");
+            restore_continuous_input_scratch_bindings(
+                builder,
+                bindings,
+                sample_ports.input_bindings,
+                sample_ports.input_count);
+        }
+        for (std::size_t input = 0; input < sample_plan.inputs.size(); ++input) {
+            auto const external = tick_background != nullptr
+                && tick_invocation != nullptr
+                && std::ranges::any_of(
+                    std::span{
+                        tick_background->tick_runtime.sequential_sample_inputs}
+                        .subspan(
+                            tick_invocation->sequential_sample_begin,
+                            tick_invocation->sequential_sample_count),
+                    [&, input](auto const& selected) {
+                        auto const& port = tick_background->ports[selected.port];
+                        return port.configured_port.port_index == input;
+                    });
+            if (external) continue;
+            auto* ordinal = emit_sequential_begin_ordinal(
+                builder,
+                sample_storage,
+                realtime_storage,
+                root_index,
+                sample_index,
+                sample_plan.inputs[input].absolute_pace_exponent,
+                "continuous.input.sequential");
+            store_sequential_begin_ordinal(
+                builder,
+                bindings,
+                input,
+                sizeof(ReflectedContinuousInputPortBinding),
+                offsetof(
+                    ReflectedContinuousInputPortBinding,
+                    sequential_begin_ordinal),
+                ordinal,
+                "continuous.input.sequential");
         }
         store_context_span_pointer(
             builder,
             context_storage,
-            offsets.sample_input_bindings_data,
-            offsets.sample_input_bindings_size,
+            offsets.continuous_input_bindings_data,
+            offsets.continuous_input_bindings_size,
             bindings,
             sample_ports.input_count);
     }
     if (sample_ports.output_count != 0) {
+        for (std::size_t output = 0;
+             output < sample_plan.outputs.size(); ++output) {
+            if (!sample_plan.outputs[output].realtime) continue;
+            auto* ordinal = emit_sequential_begin_ordinal(
+                builder,
+                sample_storage,
+                realtime_storage,
+                root_index,
+                sample_index,
+                sample_plan.outputs[output].absolute_pace_exponent,
+                "continuous.output.sequential");
+            auto const compact_output = static_cast<std::size_t>(
+                std::ranges::count_if(
+                    std::span{sample_plan.outputs}.first(output),
+                    [](auto const& candidate) { return candidate.realtime; }));
+            store_sequential_begin_ordinal(
+                builder,
+                sample_ports.output_bindings,
+                compact_output,
+                sizeof(ReflectedContinuousOutputPortBinding),
+                offsetof(
+                    ReflectedContinuousOutputPortBinding,
+                    sequential_begin_ordinal),
+                ordinal,
+                "continuous.output.sequential");
+        }
         store_context_span_pointer(
             builder,
             context_storage,
-            offsets.sample_output_bindings_data,
-            offsets.sample_output_bindings_size,
+            offsets.continuous_output_bindings_data,
+            offsets.continuous_output_bindings_size,
             sample_ports.output_bindings,
             sample_ports.output_count);
     }
@@ -1505,10 +1694,13 @@ void emit_sliced_primitive_calls(
     detail::PrimitiveStoragePlan const& storage,
     EmittedPrimitiveSamplePorts const& sample_ports,
     EmittedPrimitiveEventPorts const& event_ports,
+    detail::PrimitiveSamplePortPlan const& sample_plan,
+    detail::SampleStoragePlan const& sample_storage,
     BackgroundEvaluationPlan const* tick_background,
     TickNodeInvocationPlan const* tick_invocation,
     llvm::Value* invocation,
-    llvm::Value* storage_base,
+    EmittedRealtimeStorage const& realtime_storage,
+    llvm::Value* root_index,
     llvm::Value* sample_index,
     llvm::Value* block_size,
     std::size_t maximum_block_size)
@@ -1545,10 +1737,13 @@ void emit_sliced_primitive_calls(
         storage,
         sample_ports,
         event_ports,
+        sample_plan,
+        sample_storage,
         tick_background,
         tick_invocation,
         invocation,
-        storage_base,
+        realtime_storage,
+        root_index,
         slice_index,
         slice_size);
 
@@ -1563,41 +1758,275 @@ void emit_sliced_primitive_calls(
 }
 
 
-llvm::Value* sample_element_pointer(
+bool supports_linear_audio_channel_conversion(
+    ContinuousValueStorageGeometry const& geometry) noexcept
+{
+    return geometry.channel_capability == ContinuousValueChannelCapability::audio
+        && geometry.element_alignment >= alignof(float)
+        && geometry.channel_scalar_lane_count != 0
+        && geometry.value_size_bytes
+            == geometry.channel_scalar_lane_count * sizeof(float);
+}
+
+struct EmittedLatticeProjection {
+    llvm::Value* begin_ordinal = nullptr;
+    llvm::Value* value_count = nullptr;
+};
+
+EmittedLatticeProjection emit_lattice_projection(
+    llvm::IRBuilder<>& builder,
+    llvm::Value* project_index,
+    llvm::Value* project_count,
+    std::int32_t pace_exponent,
+    llvm::Twine const& name)
+{
+    auto* size_type = llvm::IntegerType::get(
+        builder.getContext(), static_cast<unsigned>(sizeof(std::size_t) * 8));
+    if (pace_exponent >= 0) {
+        auto const shift = static_cast<unsigned>(pace_exponent);
+        IV_ASSERT(shift < sizeof(std::size_t) * 8,
+            "continuous pace cannot fit a root-block value count");
+        return {
+            .begin_ordinal = shift == 0
+                ? project_index
+                : builder.CreateShl(
+                    project_index,
+                    llvm::ConstantInt::get(size_type, shift),
+                    name + ".begin"),
+            .value_count = shift == 0
+                ? project_count
+                : builder.CreateShl(
+                    project_count,
+                    llvm::ConstantInt::get(size_type, shift),
+                    name + ".count"),
+        };
+    }
+
+    auto const shift = static_cast<unsigned>(-pace_exponent);
+    IV_ASSERT(shift <= sizeof(std::size_t) * 8,
+        "continuous pace is outside the Q64.64 lattice");
+    llvm::Value* offset = nullptr;
+    llvm::Value* first = nullptr;
+    llvm::Value* ordinal = nullptr;
+    if (shift == sizeof(std::size_t) * 8) {
+        offset = builder.CreateSub(
+            llvm::ConstantInt::get(size_type, 0),
+            project_index,
+            name + ".offset");
+        first = builder.CreateAdd(project_index, offset, name + ".first");
+        ordinal = llvm::ConstantInt::get(size_type, 0);
+    } else {
+        auto const spacing = std::size_t{1} << shift;
+        auto const mask = spacing - 1;
+        auto* remainder = builder.CreateAnd(
+            project_index,
+            llvm::ConstantInt::get(size_type, mask),
+            name + ".remainder");
+        offset = builder.CreateAnd(
+            builder.CreateSub(
+                llvm::ConstantInt::get(size_type, spacing),
+                remainder,
+                name + ".offset.raw"),
+            llvm::ConstantInt::get(size_type, mask),
+            name + ".offset");
+        first = builder.CreateAdd(project_index, offset, name + ".first");
+        ordinal = builder.CreateLShr(
+            first,
+            llvm::ConstantInt::get(size_type, shift),
+            name + ".begin");
+    }
+
+    auto* has_value = builder.CreateICmpULT(
+        offset, project_count, name + ".nonempty");
+    auto* after_first = builder.CreateSub(
+        builder.CreateSub(project_count, offset, name + ".after.offset"),
+        llvm::ConstantInt::get(size_type, 1),
+        name + ".after.first");
+    llvm::Value* additional = shift == sizeof(std::size_t) * 8
+        ? static_cast<llvm::Value*>(llvm::ConstantInt::get(size_type, 0))
+        : builder.CreateLShr(
+            after_first,
+            llvm::ConstantInt::get(size_type, shift),
+            name + ".additional");
+    auto* count = builder.CreateSelect(
+        has_value,
+        builder.CreateAdd(
+            additional,
+            llvm::ConstantInt::get(size_type, 1),
+            name + ".nonempty.count"),
+        llvm::ConstantInt::get(size_type, 0),
+        name + ".count");
+    return {.begin_ordinal = ordinal, .value_count = count};
+}
+
+llvm::Value* emit_sequential_begin_ordinal(
+    llvm::IRBuilder<>& builder,
+    detail::SampleStoragePlan const& storage,
+    EmittedRealtimeStorage const& realtime_storage,
+    llvm::Value* root_index,
+    llvm::Value* callback_index,
+    std::int32_t pace_exponent,
+    llvm::Twine const& name)
+{
+    auto const cursor = std::ranges::find(
+        storage.sequential_pace_cursors,
+        pace_exponent,
+        &detail::SequentialPaceCursorPlan::absolute_pace_exponent);
+    IV_ASSERT(cursor != storage.sequential_pace_cursors.end(),
+        "continuous storage has no cursor for its resolved pace");
+    auto const cursor_index = static_cast<std::size_t>(
+        std::distance(storage.sequential_pace_cursors.begin(), cursor));
+    IV_ASSERT(cursor_index < realtime_storage.sequential_pace_cursors.size(),
+        "continuous Sequential cursor has no root value");
+    auto* root_ordinal = realtime_storage.sequential_pace_cursors[cursor_index];
+    auto* prefix_extent = builder.CreateSub(
+        callback_index, root_index, name + ".prefix.extent");
+    auto const prefix = emit_lattice_projection(
+        builder,
+        root_index,
+        prefix_extent,
+        pace_exponent,
+        name + ".prefix");
+    return builder.CreateAdd(
+        root_ordinal, prefix.value_count, name + ".begin");
+}
+
+llvm::Value* emit_unsigned_min(
+    llvm::IRBuilder<>& builder,
+    llvm::Value* left,
+    llvm::Value* right,
+    llvm::Twine const& name)
+{
+    return builder.CreateSelect(
+        builder.CreateICmpULT(left, right, name + ".left"),
+        left,
+        right,
+        name);
+}
+
+llvm::Value* emit_available_producer_revision(
+    llvm::IRBuilder<>& builder,
+    detail::SampleStoragePlan const& storage,
+    EmittedRealtimeStorage const& realtime_storage,
+    std::size_t source_representation,
+    std::size_t requested_revision_frames,
+    llvm::Value* root_index,
+    llvm::Value* callback_index,
+    llvm::Twine const& name)
+{
+    auto* size_type = llvm::IntegerType::get(
+        builder.getContext(), static_cast<unsigned>(sizeof(std::size_t) * 8));
+    if (requested_revision_frames == 0) {
+        return llvm::ConstantInt::get(size_type, 0);
+    }
+    auto const extent = std::ranges::find(
+        storage.producer_authored_extents,
+        source_representation,
+        &detail::SampleProducerAuthoredExtentPlan::source_representation);
+    IV_ASSERT(extent != storage.producer_authored_extents.end(),
+        "detached continuous revision has no producer authored extent");
+    IV_ASSERT(requested_revision_frames <= extent->maximum_revision_frames,
+        "detached continuous revision exceeds its producer authored extent");
+    auto* maximum = llvm::ConstantInt::get(
+        size_type, extent->maximum_revision_frames);
+    auto* requested = llvm::ConstantInt::get(
+        size_type, requested_revision_frames);
+    auto const extent_index = static_cast<std::size_t>(
+        std::distance(storage.producer_authored_extents.begin(), extent));
+    IV_ASSERT(extent_index < realtime_storage.producer_authored_extents.size(),
+        "detached continuous revision has no root extent value");
+    auto* prior = emit_unsigned_min(
+        builder,
+        realtime_storage.producer_authored_extents[extent_index],
+        maximum,
+        name + ".prior");
+    auto* prefix_extent = builder.CreateSub(
+        callback_index, root_index, name + ".prefix.extent");
+    auto const prefix = emit_lattice_projection(
+        builder,
+        root_index,
+        prefix_extent,
+        extent->absolute_pace_exponent,
+        name + ".prefix");
+    auto* remaining = builder.CreateSub(
+        maximum, prior, name + ".remaining");
+    auto* prefix_increment = emit_unsigned_min(
+        builder,
+        prefix.value_count,
+        remaining,
+        name + ".prefix.increment");
+    auto* available = builder.CreateAdd(
+        prior, prefix_increment, name + ".available");
+    return emit_unsigned_min(
+        builder, available, requested, name + ".requested");
+}
+
+llvm::Value* continuous_value_pointer(
     llvm::IRBuilder<>& builder,
     llvm::Value* representation_base,
-    ReflectedSamplePortStorageBinding const& binding,
-    llvm::Value* absolute_frame,
+    ReflectedContinuousPortStorageBinding const& binding,
+    llvm::Value* absolute_value,
     std::size_t channel,
     llvm::Twine const& name)
 {
     auto& context = builder.getContext();
     auto* size_type = llvm::IntegerType::get(
         context, static_cast<unsigned>(sizeof(std::size_t) * 8));
-    auto* sample_type = llvm::Type::getFloatTy(context);
     auto const channels = channel_count(binding.channel_layout);
-    auto* frame = builder.CreateAnd(
-        absolute_frame,
-        llvm::ConstantInt::get(size_type, binding.frame_capacity - 1),
-        name + ".frame");
-    llvm::Value* element = nullptr;
+    auto* value = builder.CreateAnd(
+        absolute_value,
+        llvm::ConstantInt::get(size_type, binding.value_capacity - 1),
+        name + ".value");
+    llvm::Value* value_offset = nullptr;
     if (binding.channel_layout.sample_layout == SampleStreamLayout::planar) {
-        element = builder.CreateAdd(
-            frame,
+        value_offset = builder.CreateAdd(
+            value,
             llvm::ConstantInt::get(
-                size_type, channel * binding.frame_capacity),
-            name + ".element");
+                size_type, channel * binding.value_capacity),
+            name + ".value.offset");
     } else {
-        element = builder.CreateAdd(
+        value_offset = builder.CreateAdd(
             builder.CreateMul(
-                frame,
+                value,
                 llvm::ConstantInt::get(size_type, channels),
-                name + ".frame.base"),
+                name + ".value.base"),
             llvm::ConstantInt::get(size_type, channel),
-            name + ".element");
+            name + ".value.offset");
     }
+    auto* byte_offset = builder.CreateMul(
+        value_offset,
+        llvm::ConstantInt::get(size_type, binding.geometry.value_size_bytes),
+        name + ".byte.offset");
     return builder.CreateInBoundsGEP(
-        sample_type, representation_base, element, name + ".ptr");
+        llvm::Type::getInt8Ty(context),
+        representation_base,
+        byte_offset,
+        name + ".value.ptr");
+}
+
+llvm::Value* continuous_element_pointer(
+    llvm::IRBuilder<>& builder,
+    llvm::Value* representation_base,
+    ReflectedContinuousPortStorageBinding const& binding,
+    llvm::Value* absolute_value,
+    std::size_t channel,
+    std::size_t element_index,
+    llvm::Twine const& name)
+{
+    auto* value_pointer = continuous_value_pointer(
+        builder,
+        representation_base,
+        binding,
+        absolute_value,
+        channel,
+        name);
+    auto* size_type = llvm::IntegerType::get(
+        builder.getContext(), static_cast<unsigned>(sizeof(std::size_t) * 8));
+    return builder.CreateInBoundsGEP(
+        llvm::Type::getFloatTy(builder.getContext()),
+        value_pointer,
+        llvm::ConstantInt::get(size_type, element_index),
+        name + ".element.ptr");
 }
 
 std::expected<std::vector<llvm::Value*>, std::string>
@@ -1659,13 +2088,10 @@ std::expected<void, std::string> emit_sample_materialization(
     detail::SampleStoragePlan const& storage,
     detail::SampleMaterializationPlan const& materialization,
     EmittedRealtimeStorage const& realtime_storage,
+    llvm::Value* root_index,
     llvm::Value* sample_index,
     llvm::Value* block_size)
 {
-    static_assert(sizeof(Sample) == sizeof(Sample::storage));
-    static_assert(alignof(Sample) == alignof(Sample::storage));
-    static_assert(std::is_same_v<Sample::storage, float>);
-
     if (materialization.source_representation >= storage.representations.size()
         || materialization.target_representation >= storage.representations.size()) {
         return std::unexpected(
@@ -1676,10 +2102,28 @@ std::expected<void, std::string> emit_sample_materialization(
     auto const& target_representation =
         storage.representations[materialization.target_representation];
     if (source_representation.channel_layout != materialization.source_layout
-        || target_representation.channel_layout != materialization.target_layout) {
+        || target_representation.channel_layout != materialization.target_layout
+        || source_representation.geometry != target_representation.geometry
+        || !supports_linear_audio_channel_conversion(
+            source_representation.geometry)) {
         return std::unexpected(
-            "GraphJit sample materialization layout disagrees with its ports");
+            "GraphJit continuous materialization has incompatible layout or value geometry");
     }
+    auto const projection = emit_lattice_projection(
+        builder,
+        sample_index,
+        block_size,
+        target_representation.absolute_pace_exponent,
+        "continuous.materialize.lattice");
+    sample_index = emit_sequential_begin_ordinal(
+        builder,
+        storage,
+        realtime_storage,
+        root_index,
+        sample_index,
+        target_representation.absolute_pace_exponent,
+        "continuous.materialize.sequential");
+    block_size = projection.value_count;
     auto source = sample_storage_binding(
         storage, materialization.source_representation);
     if (!source) return std::unexpected(std::move(source.error()));
@@ -1697,9 +2141,9 @@ std::expected<void, std::string> emit_sample_materialization(
         materialization.source_representation];
     auto* target_base = realtime_storage.sample_representations[
         materialization.target_representation];
-    if (source->frame_capacity == 0 || target->frame_capacity == 0
-        || !is_power_of_2(source->frame_capacity)
-        || !is_power_of_2(target->frame_capacity)) {
+    if (source->value_capacity == 0 || target->value_capacity == 0
+        || !is_power_of_2(source->value_capacity)
+        || !is_power_of_2(target->value_capacity)) {
         return std::unexpected(
             "GraphJit sample materialization requires bounded power-of-two frame capacities");
     }
@@ -1747,52 +2191,66 @@ std::expected<void, std::string> emit_sample_materialization(
     auto* absolute_frame = builder.CreateAdd(
         first_frame, frame_offset, "sample.materialize.absolute");
 
-    auto load_source = [&](std::size_t channel, llvm::Twine const& name) {
+    auto load_source = [&](std::size_t channel,
+                           std::size_t element,
+                           llvm::Twine const& name) {
         return builder.CreateLoad(
             sample_type,
-            sample_element_pointer(
+            continuous_element_pointer(
                 builder,
                 source_base,
                 *source,
                 absolute_frame,
                 channel,
+                element,
                 name),
             name + ".value");
     };
     auto store_target = [&](std::size_t channel,
+                            std::size_t element,
                             llvm::Value* value,
                             llvm::Twine const& name) {
         builder.CreateStore(
             value,
-            sample_element_pointer(
+            continuous_element_pointer(
                 builder,
                 target_base,
                 *target,
                 absolute_frame,
                 channel,
+                element,
                 name));
     };
 
-    std::vector<llvm::Value*> source_values;
-    source_values.reserve(channel_count(materialization.source_layout));
-    for (std::size_t channel = 0;
-         channel < channel_count(materialization.source_layout);
-         ++channel) {
-        source_values.push_back(load_source(
-            channel, "sample.materialize.source." + std::to_string(channel)));
-    }
-    auto converted = emit_channel_conversion(
-        builder,
-        materialization.source_layout.channel_type,
-        materialization.target_layout.channel_type,
-        source_values,
-        "sample.materialize.convert");
-    if (!converted) return std::unexpected(std::move(converted.error()));
-    for (std::size_t channel = 0; channel < converted->size(); ++channel) {
-        store_target(
-            channel,
-            (*converted)[channel],
-            "sample.materialize.target." + std::to_string(channel));
+    for (std::size_t element = 0;
+         element < source_representation.geometry.channel_scalar_lane_count;
+         ++element) {
+        std::vector<llvm::Value*> source_values;
+        source_values.reserve(channel_count(materialization.source_layout));
+        for (std::size_t channel = 0;
+             channel < channel_count(materialization.source_layout);
+             ++channel) {
+            source_values.push_back(load_source(
+                channel,
+                element,
+                "continuous.materialize.source." + std::to_string(channel)
+                    + "." + std::to_string(element)));
+        }
+        auto converted = emit_channel_conversion(
+            builder,
+            materialization.source_layout.channel_type,
+            materialization.target_layout.channel_type,
+            source_values,
+            "continuous.materialize.convert." + std::to_string(element));
+        if (!converted) return std::unexpected(std::move(converted.error()));
+        for (std::size_t channel = 0; channel < converted->size(); ++channel) {
+            store_target(
+                channel,
+                element,
+                (*converted)[channel],
+                "continuous.materialize.target." + std::to_string(channel)
+                    + "." + std::to_string(element));
+        }
     }
 
     auto* next = builder.CreateAdd(
@@ -1823,23 +2281,38 @@ std::expected<void, std::string> emit_sample_composition_write(
     std::size_t target_history,
     bool shift_writes_by_read_latency,
     EmittedRealtimeStorage const& realtime_storage,
+    llvm::Value* root_index,
     llvm::Value* sample_index,
     llvm::Value* block_size)
 {
-    static_assert(sizeof(Sample) == sizeof(Sample::storage));
-    static_assert(alignof(Sample) == alignof(Sample::storage));
-    static_assert(std::is_same_v<Sample::storage, float>);
-
     if (target_representation_index >= storage.representations.size()) {
         return std::unexpected(
             "GraphJit sample composition references a missing target storage");
     }
     auto const& target_representation =
         storage.representations[target_representation_index];
-    if (target_representation.channel_layout != target_layout) {
+    if (target_representation.channel_layout != target_layout
+        || !supports_linear_audio_channel_conversion(
+            target_representation.geometry)) {
         return std::unexpected(
-            "GraphJit sample composition target layout disagrees with its storage");
+            "GraphJit continuous composition target has incompatible layout or value geometry");
     }
+    auto const projection = emit_lattice_projection(
+        builder,
+        sample_index,
+        block_size,
+        target_representation.absolute_pace_exponent,
+        "continuous.compose.lattice");
+    auto* callback_index = sample_index;
+    sample_index = emit_sequential_begin_ordinal(
+        builder,
+        storage,
+        realtime_storage,
+        root_index,
+        sample_index,
+        target_representation.absolute_pace_exponent,
+        "continuous.compose.sequential");
+    block_size = projection.value_count;
     if (contribution_plans.empty()) {
         return std::unexpected(
             "GraphJit sample composition contains no semantic contributions");
@@ -1863,15 +2336,16 @@ std::expected<void, std::string> emit_sample_composition_write(
     }
     auto* target_base = realtime_storage.sample_representations[
         target_representation_index];
-    if (target->frame_capacity == 0
-        || !is_power_of_2(target->frame_capacity)) {
+    if (target->value_capacity == 0
+        || !is_power_of_2(target->value_capacity)) {
         return std::unexpected(
             "GraphJit sample composition requires bounded power-of-two target storage");
     }
 
     struct SourceBinding {
-        ReflectedSamplePortStorageBinding storage{};
+        ReflectedContinuousPortStorageBinding storage{};
         llvm::Value* base = nullptr;
+        std::size_t source_representation = detail::no_sample_representation;
         std::size_t source_channel = 0;
         std::size_t read_latency = 0;
     };
@@ -1881,7 +2355,7 @@ std::expected<void, std::string> emit_sample_composition_write(
         std::vector<SourceBinding> sources{};
         std::vector<std::size_t> target_channels{};
         std::vector<std::size_t> shifted_write_latencies{};
-        std::optional<ReflectedSamplePortStorageBinding> feedback_alignment_storage{};
+        std::optional<ReflectedContinuousPortStorageBinding> feedback_alignment_storage{};
         llvm::Value* feedback_alignment_base = nullptr;
         std::size_t feedback_alignment_write_latency = 0;
     };
@@ -1922,8 +2396,9 @@ std::expected<void, std::string> emit_sample_composition_write(
             auto source = sample_storage_binding(
                 storage, source_plan.source_representation);
             if (!source) return std::unexpected(std::move(source.error()));
-            if (source->frame_capacity == 0
-                || !is_power_of_2(source->frame_capacity)
+            if (source->value_capacity == 0
+                || !is_power_of_2(source->value_capacity)
+                || source->geometry != target->geometry
                 || source_plan.source_channel
                     >= channel_count(source->channel_layout)) {
                 return std::unexpected(
@@ -1933,6 +2408,7 @@ std::expected<void, std::string> emit_sample_composition_write(
                 .storage = *source,
                 .base = realtime_storage.sample_representations[
                     source_plan.source_representation],
+                .source_representation = source_plan.source_representation,
                 .source_channel = source_plan.source_channel,
                 .read_latency = source_plan.read_latency,
             });
@@ -1984,8 +2460,9 @@ std::expected<void, std::string> emit_sample_composition_write(
                     return std::unexpected(std::move(alignment.error()));
                 }
                 if (alignment->channel_layout != contribution.source_layout
-                    || alignment->frame_capacity == 0
-                    || !is_power_of_2(alignment->frame_capacity)) {
+                    || alignment->geometry != target->geometry
+                    || alignment->value_capacity == 0
+                    || !is_power_of_2(alignment->value_capacity)) {
                     return std::unexpected(
                         "GraphJit unequal-latency feedback mixing has invalid alignment storage");
                 }
@@ -2048,14 +2525,38 @@ std::expected<void, std::string> emit_sample_composition_write(
     auto* sample_type = llvm::Type::getFloatTy(context);
     auto* zero = llvm::ConstantInt::get(size_type, 0);
     llvm::Value* history = llvm::ConstantInt::get(size_type, target_history);
-    if (shift_writes_by_read_latency && target_history != 0) {
-        auto* history_limit = history;
-        history = builder.CreateSelect(
-            builder.CreateICmpULT(
-                sample_index, history_limit, "sample.compose.history.before-origin"),
-            sample_index,
-            history_limit,
-            "sample.compose.history.available");
+    std::vector<llvm::Value*> contribution_histories;
+    contribution_histories.reserve(contributions.size());
+    for (std::size_t contribution_index = 0;
+         contribution_index < contributions.size(); ++contribution_index) {
+        llvm::Value* available = history;
+        if (shift_writes_by_read_latency && target_history != 0) {
+            for (std::size_t source_index = 0;
+                 source_index < contributions[contribution_index].sources.size();
+                 ++source_index) {
+                auto const& source =
+                    contributions[contribution_index].sources[source_index];
+                auto* source_available = emit_available_producer_revision(
+                    builder,
+                    storage,
+                    realtime_storage,
+                    source.source_representation,
+                    target_history,
+                    root_index,
+                    callback_index,
+                    "sample.compose.revision."
+                        + std::to_string(contribution_index) + "."
+                        + std::to_string(source_index));
+                available = emit_unsigned_min(
+                    builder,
+                    available,
+                    source_available,
+                    "sample.compose.available."
+                        + std::to_string(contribution_index) + "."
+                        + std::to_string(source_index));
+            }
+        }
+        contribution_histories.push_back(available);
     }
     auto* compose_count = builder.CreateAdd(
         block_size, history, "sample.compose.count");
@@ -2082,120 +2583,180 @@ std::expected<void, std::string> emit_sample_composition_write(
     for (std::size_t contribution_index = 0;
          contribution_index < contributions.size(); ++contribution_index) {
         auto const& contribution = contributions[contribution_index];
-        std::vector<llvm::Value*> source_values;
-        source_values.reserve(contribution.sources.size());
-        for (std::size_t source_index = 0;
-             source_index < contribution.sources.size(); ++source_index) {
-            auto const& source = contribution.sources[source_index];
-            llvm::Value* source_frame = target_frame;
-            if (!shift_writes_by_read_latency) {
-                source_frame = builder.CreateSub(
-                    target_frame,
-                    llvm::ConstantInt::get(size_type, source.read_latency),
-                    "sample.compose.source.frame."
-                        + std::to_string(contribution_index) + "."
-                        + std::to_string(source_index));
-            }
-            auto* source_pointer = sample_element_pointer(
-                builder,
-                source.base,
-                source.storage,
-                source_frame,
-                source.source_channel,
-                "sample.compose.source."
-                    + std::to_string(contribution_index) + "."
-                    + std::to_string(source_index));
-            source_values.push_back(builder.CreateLoad(
-                sample_type,
-                source_pointer,
-                "sample.compose.value."
-                    + std::to_string(contribution_index) + "."
-                    + std::to_string(source_index)));
-        }
-
-        if (contribution.feedback_alignment_storage) {
+        auto* first_authored_offset = builder.CreateSub(
+            history,
+            contribution_histories[contribution_index],
+            "sample.compose.first.authored."
+                + std::to_string(contribution_index));
+        auto* contribution_is_authored = builder.CreateICmpUGE(
+            frame_offset,
+            first_authored_offset,
+            "sample.compose.authored."
+                + std::to_string(contribution_index));
+        for (std::size_t element = 0;
+             element < target->geometry.channel_scalar_lane_count;
+             ++element) {
+            std::vector<llvm::Value*> source_values;
+            source_values.reserve(contribution.sources.size());
             for (std::size_t source_index = 0;
                  source_index < contribution.sources.size(); ++source_index) {
-                auto* alignment_pointer = sample_element_pointer(
+                auto const& source = contribution.sources[source_index];
+                llvm::Value* source_frame = target_frame;
+                if (!shift_writes_by_read_latency) {
+                    source_frame = builder.CreateSub(
+                        target_frame,
+                        llvm::ConstantInt::get(size_type, source.read_latency),
+                        "continuous.compose.source.value."
+                            + std::to_string(contribution_index) + "."
+                            + std::to_string(source_index));
+                }
+                auto* source_pointer = continuous_element_pointer(
                     builder,
-                    contribution.feedback_alignment_base,
-                    *contribution.feedback_alignment_storage,
-                    target_frame,
-                    source_index,
-                    "sample.compose.align.write."
+                    source.base,
+                    source.storage,
+                    source_frame,
+                    source.source_channel,
+                    element,
+                    "continuous.compose.source."
                         + std::to_string(contribution_index) + "."
-                        + std::to_string(source_index));
-                builder.CreateStore(
-                    source_values[source_index], alignment_pointer);
-            }
-
-            for (std::size_t source_index = 0;
-                 source_index < contribution.sources.size(); ++source_index) {
-                auto const latency_delta =
-                    contribution.sources[source_index].read_latency
-                    - contribution.feedback_alignment_write_latency;
-                auto* aligned_frame = builder.CreateSub(
-                    target_frame,
-                    llvm::ConstantInt::get(size_type, latency_delta),
-                    "sample.compose.align.frame."
-                        + std::to_string(contribution_index) + "."
-                        + std::to_string(source_index));
-                auto* alignment_pointer = sample_element_pointer(
-                    builder,
-                    contribution.feedback_alignment_base,
-                    *contribution.feedback_alignment_storage,
-                    aligned_frame,
-                    source_index,
-                    "sample.compose.align.read."
-                        + std::to_string(contribution_index) + "."
-                        + std::to_string(source_index));
-                source_values[source_index] = builder.CreateLoad(
+                        + std::to_string(source_index) + "."
+                        + std::to_string(element));
+                source_values.push_back(builder.CreateLoad(
                     sample_type,
-                    alignment_pointer,
-                    "sample.compose.align.value."
+                    source_pointer,
+                    "continuous.compose.value."
                         + std::to_string(contribution_index) + "."
-                        + std::to_string(source_index));
+                        + std::to_string(source_index) + "."
+                        + std::to_string(element)));
             }
 
-        }
+            if (contribution.feedback_alignment_storage) {
+                for (std::size_t source_index = 0;
+                     source_index < contribution.sources.size(); ++source_index) {
+                    auto* alignment_pointer = continuous_element_pointer(
+                        builder,
+                        contribution.feedback_alignment_base,
+                        *contribution.feedback_alignment_storage,
+                        target_frame,
+                        source_index,
+                        element,
+                        "continuous.compose.align.write."
+                            + std::to_string(contribution_index) + "."
+                            + std::to_string(source_index) + "."
+                            + std::to_string(element));
+                    auto* retained_alignment_value = builder.CreateLoad(
+                        sample_type,
+                        alignment_pointer,
+                        "continuous.compose.align.retained."
+                            + std::to_string(contribution_index) + "."
+                            + std::to_string(source_index) + "."
+                            + std::to_string(element));
+                    builder.CreateStore(
+                        builder.CreateSelect(
+                            contribution_is_authored,
+                            source_values[source_index],
+                            retained_alignment_value,
+                            "continuous.compose.align.selected."
+                                + std::to_string(contribution_index) + "."
+                                + std::to_string(source_index) + "."
+                                + std::to_string(element)),
+                        alignment_pointer);
+                }
 
-        auto converted = emit_channel_conversion(
-            builder,
-            contribution.source_layout.channel_type,
-            contribution.converted_layout.channel_type,
-            source_values,
-            "sample.compose.convert." + std::to_string(contribution_index));
-        if (!converted) return std::unexpected(std::move(converted.error()));
-        auto& converted_values = *converted;
-
-        if (converted_values.size() != contribution.target_channels.size()) {
-            return std::unexpected(
-                "GraphJit sample composition conversion produced an invalid channel count");
-        }
-        for (std::size_t converted_channel = 0;
-             converted_channel < converted_values.size(); ++converted_channel) {
-            llvm::Value* target_storage_frame = target_frame;
-            if (shift_writes_by_read_latency) {
-                target_storage_frame = builder.CreateAdd(
-                    target_frame,
-                    llvm::ConstantInt::get(
-                        size_type,
-                        contribution.shifted_write_latencies[converted_channel]),
-                    "sample.compose.target.frame."
-                        + std::to_string(contribution_index) + "."
-                        + std::to_string(converted_channel));
+                for (std::size_t source_index = 0;
+                     source_index < contribution.sources.size(); ++source_index) {
+                    auto const latency_delta =
+                        contribution.sources[source_index].read_latency
+                        - contribution.feedback_alignment_write_latency;
+                    auto* aligned_frame = builder.CreateSub(
+                        target_frame,
+                        llvm::ConstantInt::get(size_type, latency_delta),
+                        "continuous.compose.align.value."
+                            + std::to_string(contribution_index) + "."
+                            + std::to_string(source_index));
+                    auto* alignment_pointer = continuous_element_pointer(
+                        builder,
+                        contribution.feedback_alignment_base,
+                        *contribution.feedback_alignment_storage,
+                        aligned_frame,
+                        source_index,
+                        element,
+                        "continuous.compose.align.read."
+                            + std::to_string(contribution_index) + "."
+                            + std::to_string(source_index) + "."
+                            + std::to_string(element));
+                    source_values[source_index] = builder.CreateLoad(
+                        sample_type,
+                        alignment_pointer,
+                        "continuous.compose.align.value."
+                            + std::to_string(contribution_index) + "."
+                            + std::to_string(source_index) + "."
+                            + std::to_string(element));
+                }
             }
-            auto* target_pointer = sample_element_pointer(
+
+            auto converted = emit_channel_conversion(
                 builder,
-                target_base,
-                *target,
-                target_storage_frame,
-                contribution.target_channels[converted_channel],
-                "sample.compose.target."
+                contribution.source_layout.channel_type,
+                contribution.converted_layout.channel_type,
+                source_values,
+                "continuous.compose.convert."
                     + std::to_string(contribution_index) + "."
-                    + std::to_string(converted_channel));
-            builder.CreateStore(
-                converted_values[converted_channel], target_pointer);
+                    + std::to_string(element));
+            if (!converted) return std::unexpected(std::move(converted.error()));
+            auto& converted_values = *converted;
+
+            if (converted_values.size() != contribution.target_channels.size()) {
+                return std::unexpected(
+                    "GraphJit continuous composition conversion produced an invalid channel count");
+            }
+            for (std::size_t converted_channel = 0;
+                 converted_channel < converted_values.size(); ++converted_channel) {
+                llvm::Value* target_storage_frame = target_frame;
+                if (shift_writes_by_read_latency) {
+                    target_storage_frame = builder.CreateAdd(
+                        target_frame,
+                        llvm::ConstantInt::get(
+                            size_type,
+                            contribution.shifted_write_latencies[converted_channel]),
+                        "continuous.compose.target.value."
+                            + std::to_string(contribution_index) + "."
+                            + std::to_string(converted_channel));
+                }
+                auto* target_pointer = continuous_element_pointer(
+                    builder,
+                    target_base,
+                    *target,
+                    target_storage_frame,
+                    contribution.target_channels[converted_channel],
+                    element,
+                    "continuous.compose.target."
+                        + std::to_string(contribution_index) + "."
+                        + std::to_string(converted_channel) + "."
+                        + std::to_string(element));
+                if (shift_writes_by_read_latency) {
+                    auto* retained_target_value = builder.CreateLoad(
+                        sample_type,
+                        target_pointer,
+                        "continuous.compose.target.retained."
+                            + std::to_string(contribution_index) + "."
+                            + std::to_string(converted_channel) + "."
+                            + std::to_string(element));
+                    builder.CreateStore(
+                        builder.CreateSelect(
+                            contribution_is_authored,
+                            converted_values[converted_channel],
+                            retained_target_value,
+                            "continuous.compose.target.selected."
+                                + std::to_string(contribution_index) + "."
+                                + std::to_string(converted_channel) + "."
+                                + std::to_string(element)),
+                        target_pointer);
+                } else {
+                    builder.CreateStore(
+                        converted_values[converted_channel], target_pointer);
+                }
+            }
         }
     }
 
@@ -2224,6 +2785,7 @@ std::expected<void, std::string> emit_sample_composition(
     detail::SampleStoragePlan const& storage,
     detail::SampleCompositionPlan const& composition,
     EmittedRealtimeStorage const& realtime_storage,
+    llvm::Value* root_index,
     llvm::Value* sample_index,
     llvm::Value* block_size)
 {
@@ -2236,6 +2798,7 @@ std::expected<void, std::string> emit_sample_composition(
         composition.target_history,
         false,
         realtime_storage,
+        root_index,
         sample_index,
         block_size);
 }
@@ -2245,12 +2808,10 @@ std::expected<void, std::string> emit_sample_feedback_timeline_write(
     detail::SampleStoragePlan const& storage,
     detail::SampleFeedbackTimelinePlan const& timeline,
     EmittedRealtimeStorage const& realtime_storage,
+    llvm::Value* root_index,
     llvm::Value* sample_index,
     llvm::Value* block_size)
 {
-    static_assert(sizeof(Sample) == sizeof(Sample::storage));
-    static_assert(std::is_same_v<Sample::storage, float>);
-
     if (timeline.timeline_representation >= storage.representations.size()) {
         return std::unexpected(
             "GraphJit sample feedback timeline references a missing storage");
@@ -2281,8 +2842,8 @@ std::expected<void, std::string> emit_sample_feedback_timeline_write(
         || allocation.representation_index != timeline.timeline_representation
         || allocation.retained_frames < timeline.retained_frames
         || !allocation.initialize_value
-        || static_cast<float>(*allocation.initialize_value)
-            != static_cast<float>(timeline.initial_value)) {
+        || *allocation.initialize_value != timeline.initial_value
+        || allocation.geometry != timeline_plan.geometry) {
         return std::unexpected(
             "GraphJit sample feedback timeline lost its persistent initialization semantics");
     }
@@ -2306,11 +2867,29 @@ std::expected<void, std::string> emit_sample_feedback_timeline_write(
             timeline.writer.revision_frames,
             true,
             realtime_storage,
+            root_index,
             sample_index,
             block_size);
     case detail::SampleFeedbackTimelineWriterKind::copy:
         break;
     }
+
+    auto const projection = emit_lattice_projection(
+        builder,
+        sample_index,
+        block_size,
+        timeline_plan.absolute_pace_exponent,
+        "continuous.feedback.lattice");
+    auto* callback_index = sample_index;
+    sample_index = emit_sequential_begin_ordinal(
+        builder,
+        storage,
+        realtime_storage,
+        root_index,
+        sample_index,
+        timeline_plan.absolute_pace_exponent,
+        "continuous.feedback.sequential");
+    block_size = projection.value_count;
 
     if (!timeline.writer.composition_contributions.empty()
         || timeline.writer.source_representation >= storage.representations.size()) {
@@ -2319,7 +2898,8 @@ std::expected<void, std::string> emit_sample_feedback_timeline_write(
     }
     auto const& source_plan =
         storage.representations[timeline.writer.source_representation];
-    if (timeline_plan.channel_layout != source_plan.channel_layout) {
+    if (timeline_plan.channel_layout != source_plan.channel_layout
+        || timeline_plan.geometry != source_plan.geometry) {
         return std::unexpected(
             "GraphJit sample feedback copy changed channel layout without composition");
     }
@@ -2346,20 +2926,16 @@ std::expected<void, std::string> emit_sample_feedback_timeline_write(
     auto* function = builder.GetInsertBlock()->getParent();
     auto* size_type = llvm::IntegerType::get(
         context, static_cast<unsigned>(sizeof(std::size_t) * 8));
-    auto* sample_type = llvm::Type::getFloatTy(context);
     auto* zero = llvm::ConstantInt::get(size_type, 0);
-    auto* revision_limit = llvm::ConstantInt::get(
-        size_type, timeline.writer.revision_frames);
-    auto* revision_frames = timeline.writer.revision_frames == 0
-        ? static_cast<llvm::Value*>(zero)
-        : builder.CreateSelect(
-              builder.CreateICmpULT(
-                  sample_index,
-                  revision_limit,
-                  "sample.feedback.copy.revision.before-origin"),
-              sample_index,
-              revision_limit,
-              "sample.feedback.copy.revision.available");
+    auto* revision_frames = emit_available_producer_revision(
+        builder,
+        storage,
+        realtime_storage,
+        timeline.writer.source_representation,
+        timeline.writer.revision_frames,
+        root_index,
+        callback_index,
+        "sample.feedback.copy.revision");
     auto* copy_count = builder.CreateAdd(
         block_size, revision_frames, "sample.feedback.copy.count");
     auto* first_frame = builder.CreateSub(
@@ -2384,25 +2960,26 @@ std::expected<void, std::string> emit_sample_feedback_timeline_write(
 
     auto const channels = channel_count(source_plan.channel_layout);
     for (std::size_t channel = 0; channel < channels; ++channel) {
-        auto* source_pointer = sample_element_pointer(
+        auto* source_pointer = continuous_value_pointer(
             builder,
             source_base,
             *source,
             absolute_frame,
             channel,
             "sample.feedback.source." + std::to_string(channel));
-        auto* value = builder.CreateLoad(
-            sample_type,
-            source_pointer,
-            "sample.feedback.value." + std::to_string(channel));
-        auto* ring_pointer = sample_element_pointer(
+        auto* ring_pointer = continuous_value_pointer(
             builder,
             ring_base,
             *ring,
             absolute_frame,
             channel,
             "sample.feedback.ring." + std::to_string(channel));
-        builder.CreateStore(value, ring_pointer);
+        builder.CreateMemCpy(
+            ring_pointer,
+            llvm::Align(timeline_plan.geometry.element_alignment),
+            source_pointer,
+            llvm::Align(source_plan.geometry.element_alignment),
+            timeline_plan.geometry.value_size_bytes);
     }
 
     auto* next = builder.CreateAdd(
@@ -2448,7 +3025,7 @@ compact_carry_allocation(
     return &allocation;
 }
 
-llvm::Value* compact_carry_element_pointer(
+llvm::Value* compact_carry_value_pointer(
     llvm::IRBuilder<>& builder,
     llvm::Value* storage_base,
     detail::SamplePersistentAllocationPlan const& allocation,
@@ -2459,27 +3036,31 @@ llvm::Value* compact_carry_element_pointer(
     auto& context = builder.getContext();
     auto* size_type = llvm::IntegerType::get(
         context, static_cast<unsigned>(sizeof(std::size_t) * 8));
-    auto* sample_type = llvm::Type::getFloatTy(context);
     auto const channels = channel_count(allocation.channel_layout);
-    llvm::Value* element = nullptr;
+    llvm::Value* value = nullptr;
     if (allocation.channel_layout.sample_layout == SampleStreamLayout::planar) {
-        element = builder.CreateAdd(
+        value = builder.CreateAdd(
             carry_frame,
             llvm::ConstantInt::get(
                 size_type, channel * allocation.retained_frames),
-            name + ".element");
+            name + ".value");
     } else {
-        element = builder.CreateAdd(
+        value = builder.CreateAdd(
             builder.CreateMul(
                 carry_frame,
                 llvm::ConstantInt::get(size_type, channels),
                 name + ".frame.base"),
             llvm::ConstantInt::get(size_type, channel),
-            name + ".element");
+            name + ".value");
     }
     auto* base = byte_offset_pointer(
         builder, storage_base, allocation.storage_offset, name + ".base");
-    return builder.CreateInBoundsGEP(sample_type, base, element, name + ".ptr");
+    auto* byte_offset = builder.CreateMul(
+        value,
+        llvm::ConstantInt::get(size_type, allocation.geometry.value_size_bytes),
+        name + ".byte.offset");
+    return builder.CreateInBoundsGEP(
+        llvm::Type::getInt8Ty(context), base, byte_offset, name + ".ptr");
 }
 
 std::expected<void, std::string> emit_sample_carry_operation(
@@ -2487,13 +3068,11 @@ std::expected<void, std::string> emit_sample_carry_operation(
     detail::SampleStoragePlan const& storage,
     detail::SampleCarryOperationPlan const& operation,
     EmittedRealtimeStorage const& realtime_storage,
+    llvm::Value* root_index,
     llvm::Value* sample_index,
     llvm::Value* block_size,
     bool restore)
 {
-    static_assert(sizeof(Sample) == sizeof(Sample::storage));
-    static_assert(std::is_same_v<Sample::storage, float>);
-
     auto allocation = compact_carry_allocation(storage, operation);
     if (!allocation) return std::unexpected(std::move(allocation.error()));
     auto working = sample_storage_binding(storage, operation.representation_index);
@@ -2505,18 +3084,35 @@ std::expected<void, std::string> emit_sample_carry_operation(
     }
     auto* working_base = realtime_storage.sample_representations[
         operation.representation_index];
-    if (working->frame_capacity == 0
-        || !is_power_of_2(working->frame_capacity)
-        || working->channel_layout != (*allocation)->channel_layout) {
+    if (working->value_capacity == 0
+        || !is_power_of_2(working->value_capacity)
+        || working->channel_layout != (*allocation)->channel_layout
+        || working->geometry != (*allocation)->geometry) {
         return std::unexpected(
             "GraphJit sample carry working storage is invalid");
     }
+    auto const& representation =
+        storage.representations[operation.representation_index];
+    auto const projection = emit_lattice_projection(
+        builder,
+        sample_index,
+        block_size,
+        representation.absolute_pace_exponent,
+        "continuous.carry.lattice");
+    sample_index = emit_sequential_begin_ordinal(
+        builder,
+        storage,
+        realtime_storage,
+        root_index,
+        sample_index,
+        representation.absolute_pace_exponent,
+        "continuous.carry.sequential");
+    block_size = projection.value_count;
 
     auto& context = builder.getContext();
     auto* function = builder.GetInsertBlock()->getParent();
     auto* size_type = llvm::IntegerType::get(
         context, static_cast<unsigned>(sizeof(std::size_t) * 8));
-    auto* sample_type = llvm::Type::getFloatTy(context);
     auto* zero = llvm::ConstantInt::get(size_type, 0);
     auto* preheader = builder.GetInsertBlock();
     auto* loop = llvm::BasicBlock::Create(
@@ -2564,7 +3160,7 @@ std::expected<void, std::string> emit_sample_carry_operation(
 
     auto const channels = channel_count((*allocation)->channel_layout);
     for (std::size_t channel = 0; channel < channels; ++channel) {
-        auto* carry_pointer = compact_carry_element_pointer(
+        auto* carry_pointer = compact_carry_value_pointer(
             builder,
             realtime_storage.persistent_base,
             **allocation,
@@ -2572,7 +3168,7 @@ std::expected<void, std::string> emit_sample_carry_operation(
             channel,
             restore ? "sample.carry.restore.persist"
                     : "sample.carry.commit.persist");
-        auto* working_pointer = sample_element_pointer(
+        auto* working_pointer = continuous_value_pointer(
             builder,
             working_base,
             *working,
@@ -2581,13 +3177,19 @@ std::expected<void, std::string> emit_sample_carry_operation(
             restore ? "sample.carry.restore.working"
                     : "sample.carry.commit.working");
         if (restore) {
-            auto* value = builder.CreateLoad(
-                sample_type, carry_pointer, "sample.carry.restore.value");
-            builder.CreateStore(value, working_pointer);
+            builder.CreateMemCpy(
+                working_pointer,
+                llvm::Align(working->geometry.element_alignment),
+                carry_pointer,
+                llvm::Align((*allocation)->geometry.element_alignment),
+                working->geometry.value_size_bytes);
         } else {
-            auto* value = builder.CreateLoad(
-                sample_type, working_pointer, "sample.carry.commit.value");
-            builder.CreateStore(value, carry_pointer);
+            builder.CreateMemCpy(
+                carry_pointer,
+                llvm::Align((*allocation)->geometry.element_alignment),
+                working_pointer,
+                llvm::Align(working->geometry.element_alignment),
+                working->geometry.value_size_bytes);
         }
     }
 
@@ -3796,7 +4398,7 @@ std::expected<void, std::string> emit_tick_capture_operations(
         if (!binding) return std::unexpected(std::move(binding.error()));
         if (sample_bindings.output_bindings == nullptr
             || *binding > std::numeric_limits<std::size_t>::max()
-                    / sizeof(ReflectedSampleOutputPortBinding)
+                    / sizeof(ReflectedContinuousOutputPortBinding)
             || slot > std::numeric_limits<std::size_t>::max()
                     / sizeof(TickSampleCaptureOperation)) {
             return std::unexpected(
@@ -3805,7 +4407,7 @@ std::expected<void, std::string> emit_tick_capture_operations(
         auto* output = builder.CreateInBoundsGEP(
             byte_type,
             sample_bindings.output_bindings,
-            constant(*binding * sizeof(ReflectedSampleOutputPortBinding)),
+            constant(*binding * sizeof(ReflectedContinuousOutputPortBinding)),
             "tick.capture.sample.output");
         emit_tick_capture_call(
             builder,
@@ -3983,6 +4585,7 @@ std::expected<void, std::string> emit_execution_step(
             plan.sample_ports.storage,
             plan.sample_ports.storage.carry_operations[carry_index],
             realtime_storage,
+            root_index,
             sample_index,
             block_size,
             true);
@@ -4002,6 +4605,7 @@ std::expected<void, std::string> emit_execution_step(
             plan.sample_ports.storage,
             plan.sample_ports.storage.materializations[materialization_index],
             realtime_storage,
+            root_index,
             sample_index,
             block_size);
         if (!materialized) {
@@ -4033,10 +4637,13 @@ std::expected<void, std::string> emit_execution_step(
             plan.declarations.primitive_storage[step.storage_index],
             sample_bindings.primitives[step.configuration_index],
             event_bindings.primitives[step.configuration_index],
+            plan.sample_ports.primitives[step.configuration_index],
+            plan.sample_ports.storage,
             tick_background,
             tick_bindings,
             invocation,
-            realtime_storage.persistent_base,
+            realtime_storage,
+            root_index,
             sample_index,
             block_size,
             step.maximum_block_size);
@@ -4048,10 +4655,13 @@ std::expected<void, std::string> emit_execution_step(
             plan.declarations.primitive_storage[step.storage_index],
             sample_bindings.primitives[step.configuration_index],
             event_bindings.primitives[step.configuration_index],
+            plan.sample_ports.primitives[step.configuration_index],
+            plan.sample_ports.storage,
             tick_background,
             tick_bindings,
             invocation,
-            realtime_storage.persistent_base,
+            realtime_storage,
+            root_index,
             sample_index,
             block_size);
     }
@@ -4078,6 +4688,7 @@ std::expected<void, std::string> emit_execution_step(
             plan.sample_ports.storage,
             plan.sample_ports.storage.materializations[materialization_index],
             realtime_storage,
+            root_index,
             sample_index,
             block_size);
         if (!materialized) {
@@ -4095,6 +4706,7 @@ std::expected<void, std::string> emit_execution_step(
             plan.sample_ports.storage,
             plan.sample_ports.storage.feedback_timelines[timeline_index],
             realtime_storage,
+            root_index,
             sample_index,
             block_size);
         if (!written) {
@@ -4112,6 +4724,7 @@ std::expected<void, std::string> emit_execution_step(
             plan.sample_ports.storage,
             plan.sample_ports.storage.compositions[composition_index],
             realtime_storage,
+            root_index,
             sample_index,
             block_size);
         if (!composed) {
@@ -4129,6 +4742,7 @@ std::expected<void, std::string> emit_execution_step(
             plan.sample_ports.storage,
             plan.sample_ports.storage.carry_operations[carry_index],
             realtime_storage,
+            root_index,
             sample_index,
             block_size,
             false);
@@ -4246,21 +4860,32 @@ std::expected<llvm::Function*, std::string> define_root_operation(
             auto const channels = channel_count(storage.channel_layout);
             if (channels == 0
                 || storage.frame_capacity
-                    > std::numeric_limits<std::size_t>::max() / channels) {
+                    > std::numeric_limits<std::size_t>::max() / channels
+                || storage.constant_value->size()
+                    != storage.geometry.value_size_bytes
+                || channels * storage.frame_capacity
+                    > std::numeric_limits<std::size_t>::max()
+                        / storage.geometry.value_size_bytes) {
                 return std::unexpected(
-                    "GraphJit disconnected sample input buffer size overflows size_t");
+                    "GraphJit disconnected continuous input has invalid storage geometry");
             }
-            auto const sample_count =
+            auto const value_count =
                 channels * storage.frame_capacity;
-            std::vector<Sample> samples(
-                sample_count, *storage.constant_value);
+            std::vector<std::byte> values(
+                value_count * storage.geometry.value_size_bytes);
+            for (std::size_t value = 0; value < value_count; ++value) {
+                std::memcpy(
+                    values.data() + value * storage.geometry.value_size_bytes,
+                    storage.constant_value->data(),
+                    storage.geometry.value_size_bytes);
+            }
             realtime_storage.sample_representations[representation_index] =
                 immutable_bytes_global(
                     module,
-                    samples.data(),
-                    samples.size() * sizeof(Sample),
-                    alignof(Sample),
-                    "__iv_graph_sample_default_"
+                    values.data(),
+                    values.size(),
+                    storage.geometry.element_alignment,
+                    "__iv_graph_continuous_default_"
                         + std::to_string(representation_index));
         } else if (storage.transient_allocation
                    != detail::no_sample_transient_allocation) {
@@ -4339,6 +4964,48 @@ std::expected<llvm::Function*, std::string> define_root_operation(
                     storage.overflow_count_storage_offset,
                     "event.overflow." + std::to_string(representation_index));
         }
+    }
+
+    realtime_storage.producer_authored_extents.reserve(
+        plan.sample_ports.storage.producer_authored_extents.size());
+    for (std::size_t extent_index = 0;
+         extent_index
+            < plan.sample_ports.storage.producer_authored_extents.size();
+         ++extent_index) {
+        auto const& extent = plan.sample_ports.storage
+            .producer_authored_extents[extent_index];
+        auto* pointer = byte_offset_pointer(
+            builder,
+            storage_base,
+            extent.storage_offset,
+            "continuous.authored.extent."
+                + std::to_string(extent_index));
+        realtime_storage.producer_authored_extents.push_back(
+            builder.CreateLoad(
+                size_type,
+                pointer,
+                "continuous.authored.extent.root."
+                    + std::to_string(extent_index)));
+    }
+    realtime_storage.sequential_pace_cursors.reserve(
+        plan.sample_ports.storage.sequential_pace_cursors.size());
+    for (std::size_t cursor_index = 0;
+         cursor_index < plan.sample_ports.storage.sequential_pace_cursors.size();
+         ++cursor_index) {
+        auto const& cursor = plan.sample_ports.storage
+            .sequential_pace_cursors[cursor_index];
+        auto* pointer = byte_offset_pointer(
+            builder,
+            storage_base,
+            cursor.storage_offset,
+            "continuous.sequential.cursor."
+                + std::to_string(cursor_index));
+        realtime_storage.sequential_pace_cursors.push_back(
+            builder.CreateLoad(
+                size_type,
+                pointer,
+                "continuous.sequential.cursor.root."
+                    + std::to_string(cursor_index)));
     }
 
     auto sample_bindings = emit_sample_port_bindings(
@@ -4519,6 +5186,72 @@ std::expected<llvm::Function*, std::string> define_root_operation(
         if (!region_after) {
             return std::unexpected(std::move(region_after.error()));
         }
+    }
+
+    for (std::size_t extent_index = 0;
+         extent_index
+            < plan.sample_ports.storage.producer_authored_extents.size();
+         ++extent_index) {
+        auto const& extent = plan.sample_ports.storage
+            .producer_authored_extents[extent_index];
+        auto* pointer = byte_offset_pointer(
+            builder,
+            storage_base,
+            extent.storage_offset,
+            "continuous.authored.extent");
+        auto* maximum = llvm::ConstantInt::get(
+            size_type, extent.maximum_revision_frames);
+        auto* current = emit_unsigned_min(
+            builder,
+            realtime_storage.producer_authored_extents[extent_index],
+            maximum,
+            "continuous.authored.extent.current");
+        auto const projected = emit_lattice_projection(
+            builder,
+            sample_index,
+            block_size,
+            extent.absolute_pace_exponent,
+            "continuous.authored.extent.advance");
+        auto* remaining = builder.CreateSub(
+            maximum,
+            current,
+            "continuous.authored.extent.remaining");
+        auto* increment = emit_unsigned_min(
+            builder,
+            projected.value_count,
+            remaining,
+            "continuous.authored.extent.increment");
+        builder.CreateStore(
+            builder.CreateAdd(
+                current,
+                increment,
+                "continuous.authored.extent.next"),
+            pointer);
+    }
+
+    for (std::size_t cursor_index = 0;
+         cursor_index < plan.sample_ports.storage.sequential_pace_cursors.size();
+         ++cursor_index) {
+        auto const& cursor = plan.sample_ports.storage
+            .sequential_pace_cursors[cursor_index];
+        auto* pointer = byte_offset_pointer(
+            builder,
+            storage_base,
+            cursor.storage_offset,
+            "continuous.sequential.cursor");
+        auto* current = realtime_storage.sequential_pace_cursors[cursor_index];
+        auto const projected = emit_lattice_projection(
+            builder,
+            sample_index,
+            block_size,
+            cursor.absolute_pace_exponent,
+            "continuous.sequential.cursor.advance");
+        builder.CreateStore(
+            builder.CreateAdd(
+                current,
+                projected.value_count,
+                "continuous.sequential.cursor.next"),
+            pointer);
     }
 
     builder.CreateRetVoid();

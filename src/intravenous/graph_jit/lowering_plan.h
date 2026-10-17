@@ -115,13 +115,23 @@ struct PrimitiveSampleInputBindingPlan {
     // storage.
     std::vector<PrimitiveSampleInputChannelBindingPlan> channels{};
     ChannelLayout channel_layout{};
+    ContinuousValueStorageGeometry geometry{};
+    std::int32_t absolute_pace_exponent = 0;
     std::size_t history = 0;
     std::size_t read_latency = 0;
+    // One planar channel scratch range begins here in the shared continuous
+    // input scratch tail. A zero capacity means every exposed block is a
+    // single direct value and needs no fallback materialization.
+    std::size_t contiguous_scratch_offset = 0;
+    std::size_t contiguous_value_capacity = 0;
+    bool has_contiguous_scratch = false;
 };
 
 struct PrimitiveSampleOutputBindingPlan {
     bool realtime = true;
     std::optional<std::size_t> storage{};
+    ContinuousValueStorageGeometry geometry{};
+    std::int32_t absolute_pace_exponent = 0;
     std::size_t history = 0;
     std::size_t latency = 0;
 };
@@ -138,6 +148,8 @@ struct SamplePortBindingPlan {
     SampleStoragePlan storage{};
     // One entry per analyzed concrete primitive.
     std::vector<PrimitiveSamplePortPlan> primitives{};
+    std::size_t contiguous_input_scratch_size = 0;
+    std::size_t contiguous_input_scratch_alignment = 1;
 
     [[nodiscard]] bool empty() const noexcept
     {

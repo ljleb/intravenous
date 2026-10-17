@@ -231,6 +231,14 @@ struct FractionalGlobalExtent {
         return whole == 0 && fraction == 0;
     }
 
+    [[nodiscard]] constexpr double project_samples() const noexcept
+    {
+        constexpr auto fractional_scale =
+            1.0 / 18446744073709551616.0; // 2^64
+        return static_cast<double>(whole)
+            + static_cast<double>(fraction) * fractional_scale;
+    }
+
     constexpr bool operator==(FractionalGlobalExtent const&) const noexcept = default;
 };
 
@@ -282,6 +290,17 @@ public:
             fraction);
     }
 
+    [[nodiscard]] constexpr FractionalGlobalIndex retreated_by(
+        FractionalGlobalExtent extent) const noexcept
+    {
+        auto const borrow = fraction_ < extent.fraction
+            ? std::uint64_t{1}
+            : std::uint64_t{0};
+        return from_parts(
+            GlobalIndex::from_bits(whole_.bits() - extent.whole - borrow),
+            fraction_ - extent.fraction);
+    }
+
     [[nodiscard]] constexpr FractionalGlobalExtent forward_distance_to(
         FractionalGlobalIndex other) const noexcept
     {
@@ -315,6 +334,10 @@ static_assert(std::is_standard_layout_v<FractionalGlobalIndex>);
 struct FractionalGlobalIndexRange {
     struct LatticeProjection {
         FractionalGlobalIndex begin {};
+        // Low 64 bits of the modular value ordinal on this lattice. Ring
+        // addressing needs only these bits even when a fast lattice contains
+        // more than 2^64 positions in one complete global-index cycle.
+        std::uint64_t begin_ordinal_bits = 0;
         std::size_t count = 0;
 
         constexpr bool operator==(LatticeProjection const&) const noexcept = default;
@@ -355,6 +378,47 @@ struct FractionalGlobalIndexRange {
     // the Q64.64 domain or the value count cannot fit in size_t.
     [[nodiscard]] constexpr std::optional<LatticeProjection>
     try_project_onto_lattice(std::int32_t pace_exponent) const noexcept;
+
+    // Maximum number of values that any integer-aligned global interval of
+    // this extent can expose on the selected lattice. Storage planning uses
+    // the maximum because a slow lattice's actual count depends on the root
+    // interval's phase. An empty optional means that the pace is outside the
+    // Q64.64 domain or the count cannot fit in size_t.
+    [[nodiscard]] static constexpr std::optional<std::size_t>
+    maximum_projection_count(
+        GlobalIndex::extent_type global_extent,
+        std::int32_t pace_exponent) noexcept
+    {
+        if (pace_exponent < minimum_pace_exponent
+            || pace_exponent > maximum_pace_exponent) {
+            return std::nullopt;
+        }
+        if (global_extent == 0) return std::size_t{0};
+
+        constexpr auto digits = std::numeric_limits<std::size_t>::digits;
+        if (pace_exponent >= 0) {
+            auto const shift = static_cast<std::uint32_t>(pace_exponent);
+            if (shift >= digits
+                || global_extent
+                    > (std::numeric_limits<std::size_t>::max() >> shift)) {
+                return std::nullopt;
+            }
+            return static_cast<std::size_t>(global_extent) << shift;
+        }
+
+        auto const shift = static_cast<std::uint32_t>(-pace_exponent);
+        if (shift >= 64) return std::size_t{1};
+        auto const spacing = std::uint64_t{1} << shift;
+        auto const quotient = global_extent / spacing;
+        auto const remainder = global_extent % spacing;
+        if (quotient > std::numeric_limits<std::size_t>::max()
+            || (quotient == std::numeric_limits<std::size_t>::max()
+                && remainder != 0)) {
+            return std::nullopt;
+        }
+        return static_cast<std::size_t>(quotient)
+            + static_cast<std::size_t>(remainder != 0);
+    }
 };
 
 namespace detail {
@@ -429,6 +493,20 @@ namespace detail {
     return {};
 }
 
+[[nodiscard]] constexpr std::uint64_t lattice_ordinal_bits(
+    FractionalGlobalIndex index,
+    std::int32_t pace_exponent) noexcept
+{
+    if (pace_exponent <= 0) {
+        auto const shift = static_cast<std::uint32_t>(-pace_exponent);
+        return shift == 64 ? 0 : index.whole().bits() >> shift;
+    }
+    auto const shift = static_cast<std::uint32_t>(pace_exponent);
+    if (shift == 64) return index.fraction();
+    return (index.whole().bits() << shift)
+        | (index.fraction() >> (64 - shift));
+}
+
 } // namespace detail
 
 constexpr std::optional<FractionalGlobalIndexRange::LatticeProjection>
@@ -439,12 +517,27 @@ FractionalGlobalIndexRange::try_project_onto_lattice(
         || pace_exponent > maximum_pace_exponent) {
         return std::nullopt;
     }
-    if (empty()) return LatticeProjection{.begin = begin};
+    if (empty()) {
+        return LatticeProjection{
+            .begin = begin,
+            .begin_ordinal_bits = detail::lattice_ordinal_bits(
+                begin, pace_exponent),
+        };
+    }
 
     auto const spacing_shift = static_cast<std::uint32_t>(64 - pace_exponent);
     auto const offset = detail::alignment_offset(begin, spacing_shift);
-    if (!(offset < extent))
-        return LatticeProjection{.begin = end()};
+    if (!(offset < extent)) {
+        // An empty projection still begins at its lattice lower bound. Its
+        // ordinal is the insertion position of the first value after this
+        // source interval, not the floor of an unaligned interval end.
+        auto const projection_begin = begin.advanced_by(offset);
+        return LatticeProjection{
+            .begin = projection_begin,
+            .begin_ordinal_bits = detail::lattice_ordinal_bits(
+                projection_begin, pace_exponent),
+        };
+    }
 
     auto const first = begin.advanced_by(offset);
     auto after_first = detail::subtract(extent, offset);
@@ -457,6 +550,8 @@ FractionalGlobalIndexRange::try_project_onto_lattice(
     }
     return LatticeProjection{
         .begin = first,
+        .begin_ordinal_bits = detail::lattice_ordinal_bits(
+            first, pace_exponent),
         .count = static_cast<std::size_t>(additional.fraction) + 1,
     };
 }

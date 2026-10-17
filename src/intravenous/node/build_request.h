@@ -14,9 +14,12 @@
 #include <intravenous/node/port_constraints.h>
 
 #include <array>
+#include <bit>
 #include <cstddef>
 #include <concepts>
 #include <cstdint>
+#include <cstring>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <type_traits>
@@ -64,10 +67,11 @@ template<class Node>
 std::size_t declare_node(
     void const* node_data,
     NodeStateStructures const* state_structures,
-    NodeLayoutBuilder& builder)
+    NodeLayoutBuilder& builder,
+    ReflectedNodePortRealization const& ports)
 {
     auto const& node = *static_cast<Node const*>(node_data);
-    DeclarationContext<Node> ctx(builder, node);
+    DeclarationContext<Node> ctx(builder, node, ports);
     if (state_structures) {
         details::override_node_state_structures(
             builder, ctx.node_index(), *state_structures);
@@ -185,7 +189,7 @@ IV_FORCEINLINE auto make_tick_recording_bindings(
                 constexpr auto recording_index =
                     static_recording_sample_output_index_at<Node, Index>();
                 result.sample_outputs[recording_index] =
-                    &ctx.sample_output_bindings.pointer[output_index].disposition;
+                    &ctx.continuous_output_bindings.pointer[output_index].disposition;
             } else {
                 constexpr auto output_index =
                     static_realtime_event_output_port_index_at<Node, Index>();
@@ -213,108 +217,99 @@ IV_FORCEINLINE auto make_tick_recording_bindings(
     }
 }
 
-IV_FORCEINLINE SamplePortStorageView reflected_sample_storage_view(
-    ReflectedSamplePortStorageBinding const& binding)
-{
-    std::array<SampleChannelStorageView, maximum_supported_channel_count>
-        channels{};
-    auto const count = channel_count(binding.channel_layout);
-    for (std::size_t channel = 0; channel < count; ++channel) {
-        channels[channel] = SampleChannelStorageView{
-            .storage = reinterpret_cast<Sample*>(
-                binding.channels[channel].storage),
-            .frame_capacity = binding.channels[channel].frame_capacity,
-            .frame_stride = binding.channels[channel].frame_stride,
-            .frame_delay = binding.channels[channel].frame_delay,
-        };
-    }
-    return SamplePortStorageView{
-        channels,
-        binding.storage_latency,
-        binding.channel_layout,
-        binding.frame_capacity,
-    };
-}
-
-IV_FORCEINLINE InputPort reflected_sample_input_port(
-    ReflectedSampleInputPortBinding const& binding,
-    GlobalIndex index)
-{
-    return InputPort{
-        reflected_sample_storage_view(binding.storage),
-        binding.history,
-        binding.read_latency,
-        index,
-    };
-}
-
-template<bool Recording>
-IV_FORCEINLINE OutputPort reflected_sample_output_port(
-    ReflectedSampleOutputPortBinding const& binding,
-    GlobalIndex index)
-{
-    if constexpr (Recording) {
-        binding.disposition = OutputDisposition::untouched;
-    }
-    return OutputPort{
-        reflected_sample_storage_view(binding.storage),
-        binding.history,
-        index,
-        binding.latency,
-    };
-}
-
 template<typename Node, std::size_t... I>
-IV_FORCEINLINE auto reflected_sample_inputs(
+IV_FORCEINLINE void reset_reflected_continuous_output_dispositions(
     ReflectedNodeTickContext const& ctx,
-    GlobalIndex index,
     std::index_sequence<I...>)
 {
-    return std::array<InputPort, sizeof...(I)>{
-        reflected_sample_input_port(
-            ctx.sample_input_bindings.pointer[I],
-            index)...
-    };
+    (([&] {
+        if constexpr (reflected_sample_output_is_recording<Node, I>()) {
+            ctx.continuous_output_bindings.pointer[I].disposition =
+                OutputDisposition::untouched;
+        }
+    }()), ...);
 }
 
-template<typename Node, std::size_t... I>
-IV_FORCEINLINE auto reflected_sample_outputs(
-    ReflectedNodeTickContext const& ctx,
-    GlobalIndex index,
-    std::index_sequence<I...>)
-{
-    return std::array<OutputPort, sizeof...(I)>{
-        reflected_sample_output_port<
-            reflected_sample_output_is_recording<Node, I>()>(
-            ctx.sample_output_bindings.pointer[I],
-            index)...
-    };
-}
-
-template<typename Node, typename Fn>
-IV_FORCEINLINE void with_reflected_sample_ports(
-    ReflectedNodeTickContext const& ctx,
-    GlobalIndex index,
-    Fn&& fn)
+template<typename Node>
+IV_FORCEINLINE void validate_reflected_continuous_bindings(
+    ReflectedNodeTickContext const& ctx)
 {
     static_assert(has_constexpr_port_configs<Node>,
         "concrete node ports must be declared by static constexpr inputs() and outputs()");
     constexpr auto input_count = reflected_sample_input_count_v<Node>;
     constexpr auto output_count = reflected_sample_output_count_v<Node>;
-    IV_ASSERT(
-        ctx.sample_input_bindings.size() == input_count,
-        "reflected sample input storage count does not match node declaration");
-    IV_ASSERT(
-        ctx.sample_output_bindings.size() == output_count,
-        "reflected sample output storage count does not match node declaration");
+    IV_ASSERT(ctx.continuous_input_bindings.size() == input_count,
+        "reflected continuous input storage count does not match node declaration");
+    IV_ASSERT(ctx.continuous_output_bindings.size() == output_count,
+        "reflected continuous output storage count does not match node declaration");
+    reset_reflected_continuous_output_dispositions<Node>(
+        ctx, std::make_index_sequence<output_count>{});
+}
 
-    auto inputs = reflected_sample_inputs<Node>(
-        ctx, index, std::make_index_sequence<input_count>{});
-    auto outputs = reflected_sample_outputs<Node>(
-        ctx, index, std::make_index_sequence<output_count>{});
-    std::forward<Fn>(fn)(
-        std::span<InputPort>{inputs},
-        std::span<OutputPort>{outputs});
+IV_FORCEINLINE void prepare_reflected_continuous_inputs(
+    ReflectedNodeTickContext const& ctx,
+    GlobalIndex index,
+    std::size_t block_size)
+{
+    for (auto const& binding :
+         std::span<ReflectedContinuousInputPortBinding const>{
+             ctx.continuous_input_bindings}) {
+        auto const projected = FractionalGlobalIndexRange::from_global_range({
+            .begin = index,
+            .extent = block_size,
+        }).try_project_onto_lattice(binding.absolute_pace_exponent);
+        IV_ASSERT(projected.has_value(),
+            "continuous input projection exceeds the Q64.64 lattice");
+        IV_ASSERT(projected->count
+                <= std::numeric_limits<std::size_t>::max() - binding.history,
+            "continuous input contiguous window overflows size_t");
+        auto const value_count = binding.history + projected->count;
+        IV_ASSERT(value_count <= binding.contiguous_value_capacity,
+            "continuous input contiguous workspace is too small");
+
+        binding.contiguous_begin_ordinal = binding.sequential_begin_ordinal
+            - binding.read_latency - binding.history;
+        binding.contiguous_value_count = value_count;
+
+        auto const channels = channel_count(binding.storage.channel_layout);
+        for (std::size_t channel = 0; channel < channels; ++channel) {
+            auto const& source = binding.storage.channels[channel];
+            IV_ASSERT(source.storage != nullptr
+                    && source.value_capacity != 0
+                    && std::has_single_bit(source.value_capacity),
+                "continuous input source is not a bounded ring");
+            auto const source_begin = binding.contiguous_begin_ordinal
+                - source.value_delay;
+            auto const source_slot = static_cast<std::size_t>(source_begin)
+                & (source.value_capacity - 1);
+            auto const direct = source.value_stride_bytes
+                    == binding.storage.geometry.value_size_bytes
+                && source_slot <= source.value_capacity
+                && value_count <= source.value_capacity - source_slot;
+            if (direct || value_count == 0) {
+                source.contiguous_storage = value_count == 0
+                    ? source.storage
+                    : source.storage
+                        + source_slot * source.value_stride_bytes;
+                continue;
+            }
+
+            if (source.contiguous_scratch == nullptr) {
+                source.contiguous_storage = nullptr;
+                continue;
+            }
+            for (std::size_t value = 0; value < value_count; ++value) {
+                auto const slot = static_cast<std::size_t>(
+                    source_begin + value) & (source.value_capacity - 1);
+                std::memcpy(
+                    source.contiguous_scratch
+                        + value * binding.storage.geometry.value_size_bytes,
+                    source.storage + slot * source.value_stride_bytes,
+                    binding.storage.geometry.value_size_bytes);
+            }
+            source.contiguous_storage = source.contiguous_scratch;
+        }
+    }
 }
 
 template<std::size_t N>
@@ -479,37 +474,35 @@ IV_FORCEINLINE void tick_node_block(
     std::size_t block_size)
 {
     auto const& node = *static_cast<Node const*>(node_data);
-    with_reflected_sample_ports<Node>(
+    validate_reflected_continuous_bindings<Node>(ctx);
+    if constexpr (has_tick_block<Node>) {
+        prepare_reflected_continuous_inputs(ctx, index, block_size);
+    }
+    with_reflected_event_ports<Node>(
         ctx,
         index,
-        [&](std::span<InputPort> inputs, std::span<OutputPort> outputs) {
-            with_reflected_event_ports<Node>(
-                ctx,
-                index,
+        block_size,
+        [&](std::span<EventInputPort> event_inputs,
+            std::span<EventOutputPort> event_outputs) {
+            do_tick_block(node, TickBlockContext<Node> {
+                TickContext<Node> {
+                    TickPortBindings<Node>{
+                        .continuous_inputs = ctx.continuous_input_bindings,
+                        .continuous_outputs = ctx.continuous_output_bindings,
+                        .event_inputs = event_inputs,
+                        .event_outputs = event_outputs,
+                        .random_access_inputs = ctx.random_access_inputs,
+                        .random_access_event_inputs =
+                            ctx.random_access_event_inputs,
+                        .recording = make_tick_recording_bindings<Node>(ctx),
+                    },
+                    ctx.sample_rate,
+                    ctx.scc_feedback_latency,
+                    ctx.state,
+                },
+                FractionalGlobalIndex::from_global(index),
                 block_size,
-                [&](std::span<EventInputPort> event_inputs,
-                    std::span<EventOutputPort> event_outputs) {
-                    do_tick_block(node, TickBlockContext<Node> {
-                        TickContext<Node> {
-                            TickPortBindings<Node>{
-                                .sample_inputs = inputs,
-                                .sample_outputs = outputs,
-                                .event_inputs = event_inputs,
-                                .event_outputs = event_outputs,
-                                .random_access_inputs = ctx.random_access_inputs,
-                                .random_access_event_inputs =
-                                    ctx.random_access_event_inputs,
-                                .recording =
-                                    make_tick_recording_bindings<Node>(ctx),
-                            },
-                            ctx.sample_rate,
-                            ctx.scc_feedback_latency,
-                            ctx.state,
-                        },
-                        index,
-                        block_size,
-                    });
-                });
+            });
         });
 }
 
@@ -521,37 +514,35 @@ IV_FORCEINLINE void skip_node_block(
     std::size_t block_size)
 {
     auto const& node = *static_cast<Node const*>(node_data);
-    with_reflected_sample_ports<Node>(
+    validate_reflected_continuous_bindings<Node>(ctx);
+    if constexpr (has_skip_block<Node>) {
+        prepare_reflected_continuous_inputs(ctx, index, block_size);
+    }
+    with_reflected_event_ports<Node>(
         ctx,
         index,
-        [&](std::span<InputPort> inputs, std::span<OutputPort> outputs) {
-            with_reflected_event_ports<Node>(
-                ctx,
-                index,
+        block_size,
+        [&](std::span<EventInputPort> event_inputs,
+            std::span<EventOutputPort> event_outputs) {
+            do_skip_block(node, SkipBlockContext<Node> {
+                TickContext<Node> {
+                    TickPortBindings<Node>{
+                        .continuous_inputs = ctx.continuous_input_bindings,
+                        .continuous_outputs = ctx.continuous_output_bindings,
+                        .event_inputs = event_inputs,
+                        .event_outputs = event_outputs,
+                        .random_access_inputs = ctx.random_access_inputs,
+                        .random_access_event_inputs =
+                            ctx.random_access_event_inputs,
+                        .recording = make_tick_recording_bindings<Node>(ctx),
+                    },
+                    ctx.sample_rate,
+                    ctx.scc_feedback_latency,
+                    ctx.state,
+                },
+                FractionalGlobalIndex::from_global(index),
                 block_size,
-                [&](std::span<EventInputPort> event_inputs,
-                    std::span<EventOutputPort> event_outputs) {
-                    do_skip_block(node, SkipBlockContext<Node> {
-                        TickContext<Node> {
-                            TickPortBindings<Node>{
-                                .sample_inputs = inputs,
-                                .sample_outputs = outputs,
-                                .event_inputs = event_inputs,
-                                .event_outputs = event_outputs,
-                                .random_access_inputs = ctx.random_access_inputs,
-                                .random_access_event_inputs =
-                                    ctx.random_access_event_inputs,
-                                .recording =
-                                    make_tick_recording_bindings<Node>(ctx),
-                            },
-                            ctx.sample_rate,
-                            ctx.scc_feedback_latency,
-                            ctx.state,
-                        },
-                        index,
-                        block_size,
-                    });
-                });
+            });
         });
 }
 
@@ -666,6 +657,7 @@ inline constexpr auto sequential_input_options = [] consteval {
 template<class Extension>
 bool initialize_sequential_storage(
     typename Extension::SequentialInputOptions const& options,
+    SequentialInputInitialization initialization,
     std::byte* destination,
     std::size_t destination_bytes,
     std::size_t elements_per_value)
@@ -676,12 +668,18 @@ bool initialize_sequential_storage(
         || destination_bytes % sizeof(Element) != 0) {
         return false;
     }
-    return Extension::initialize_sequential_neutral(
-        options,
-        std::span<Element>{
-            reinterpret_cast<Element*>(destination),
-            destination_bytes / sizeof(Element)},
-        elements_per_value);
+    auto values = std::span<Element>{
+        reinterpret_cast<Element*>(destination),
+        destination_bytes / sizeof(Element)};
+    switch (initialization) {
+    case SequentialInputInitialization::disconnected:
+        return Extension::initialize_sequential_disconnected(
+            options, values, elements_per_value);
+    case SequentialInputInitialization::neutral:
+        return Extension::initialize_sequential_neutral(
+            options, values, elements_per_value);
+    }
+    return false;
 }
 
 template<class Extension>
@@ -712,6 +710,7 @@ bool combine_sequential_storage(
 template<class Node, std::size_t DeclarationIndex, std::size_t TypeIndex>
 bool initialize_sequential_input_type(
     ContinuousValueTypeId value_type,
+    SequentialInputInitialization initialization,
     std::byte* destination,
     std::size_t destination_bytes,
     std::size_t elements_per_value)
@@ -723,6 +722,7 @@ bool initialize_sequential_input_type(
     return initialize_sequential_storage<ContinuousValueType<Type>>(
         std::get<TypeIndex>(
             sequential_input_options<Node, DeclarationIndex>),
+        initialization,
         destination,
         destination_bytes,
         elements_per_value);
@@ -731,6 +731,7 @@ bool initialize_sequential_input_type(
 template<class Node, std::size_t DeclarationIndex, std::size_t... TypeIndex>
 bool initialize_sequential_input_types(
     ContinuousValueTypeId value_type,
+    SequentialInputInitialization initialization,
     std::byte* destination,
     std::size_t destination_bytes,
     std::size_t elements_per_value,
@@ -739,6 +740,7 @@ bool initialize_sequential_input_types(
     return (initialize_sequential_input_type<
         Node, DeclarationIndex, TypeIndex>(
             value_type,
+            initialization,
             destination,
             destination_bytes,
             elements_per_value) || ...);
@@ -787,6 +789,7 @@ template<class Node, std::size_t DeclarationIndex>
 bool initialize_sequential_input_declaration(
     std::size_t continuous_input,
     ContinuousValueTypeId value_type,
+    SequentialInputInitialization initialization,
     std::byte* destination,
     std::size_t destination_bytes,
     std::size_t elements_per_value)
@@ -801,6 +804,7 @@ bool initialize_sequential_input_declaration(
         }
         return initialize_sequential_input_types<Node, DeclarationIndex>(
             value_type,
+            initialization,
             destination,
             destination_bytes,
             elements_per_value,
@@ -842,9 +846,10 @@ bool combine_sequential_input_declaration(
 }
 
 template<class Node, std::size_t... DeclarationIndex>
-bool initialize_node_sequential_input_neutral_impl(
+bool initialize_node_sequential_input_impl(
     std::size_t continuous_input,
     ContinuousValueTypeId value_type,
+    SequentialInputInitialization initialization,
     std::byte* destination,
     std::size_t destination_bytes,
     std::size_t elements_per_value,
@@ -853,22 +858,25 @@ bool initialize_node_sequential_input_neutral_impl(
     return (initialize_sequential_input_declaration<Node, DeclarationIndex>(
         continuous_input,
         value_type,
+        initialization,
         destination,
         destination_bytes,
         elements_per_value) || ...);
 }
 
 template<class Node>
-bool initialize_node_sequential_input_neutral(
+bool initialize_node_sequential_input(
     std::size_t continuous_input,
     ContinuousValueTypeId value_type,
+    SequentialInputInitialization initialization,
     std::byte* destination,
     std::size_t destination_bytes,
     std::size_t elements_per_value)
 {
-    return initialize_node_sequential_input_neutral_impl<Node>(
+    return initialize_node_sequential_input_impl<Node>(
         continuous_input,
         value_type,
+        initialization,
         destination,
         destination_bytes,
         elements_per_value,
@@ -927,13 +935,14 @@ constexpr NodeCompilerOperations node_compiler_operations()
             node_propagate_forward_coverage_operation<Node>(),
         .propagate_reverse_coverage =
             node_propagate_reverse_coverage_operation<Node>(),
-        .initialize_sequential_input_neutral = [] {
+        .initialize_sequential_input = [] {
             if constexpr (declares_sequential_continuous_inputs<Node>()) {
-                return &initialize_node_sequential_input_neutral<Node>;
+                return &initialize_node_sequential_input<Node>;
             } else {
                 return static_cast<bool (*)(
                     std::size_t,
                     ContinuousValueTypeId,
+                    SequentialInputInitialization,
                     std::byte*,
                     std::size_t,
                     std::size_t)>(nullptr);
@@ -1019,6 +1028,8 @@ IV_NODE_COMPILER_RECORD_ATTR inline const NodeCompilerRecord
         .background_state_size = node_background_state_size<Node>(),
         .background_state_alignment = node_background_state_alignment<Node>(),
         .intrinsically_replayable = intrinsically_replayable_v<Node>,
+        .pointwise_tick = has_tick<Node> && !has_tick_block<Node>,
+        .block_input_access = has_tick_block<Node> || has_skip_block<Node>,
     };
 
 #undef IV_NODE_COMPILER_RECORD_ATTR

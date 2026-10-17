@@ -1,9 +1,12 @@
 #pragma once
 
 #include <intravenous/channel_ports.h>
+#include <intravenous/node/continuous_port.h>
 #include <intravenous/ports.h>
 
 #include <cstddef>
+#include <cstdint>
+#include <tuple>
 #include <type_traits>
 
 namespace iv::details {
@@ -123,6 +126,18 @@ namespace iv::details {
         return count_static_configs_before<Index>(configs, [](auto const& config) {
             return is_continuous(config) && is_tick(config);
         });
+    }
+
+    template<typename Node, size_t Index>
+    consteval size_t static_sample_output_port_index_at()
+    {
+        static_assert(Index < port_config_count_v<decltype(Node::outputs())>,
+            "static output port index is out of bounds");
+        static_assert(static_output_port_kind_at<Node, Index>() == PortKind::sample,
+            "static output port is not a continuous port");
+        auto const configs = Node::outputs();
+        return count_static_configs_before<Index>(
+            configs, [](auto const& config) { return is_continuous(config); });
     }
 
     template<typename Node, size_t Index>
@@ -1100,6 +1115,545 @@ namespace iv::details {
         constexpr Axis operator[](size_t frame) const requires (Type != ChannelTypeId::mono && Layout == SampleStreamLayout::interleaved)
         {
             return Axis(*this, frame, _block_size);
+        }
+    };
+
+    // Type-owned continuous access used by GraphJit. The selected type is one
+    // immutable realization fact. A single-type declaration therefore exposes
+    // this facade directly; a multi-type declaration exposes it only through
+    // is<T>() / as<T>() below.
+    template<RegisteredContinuousValue Value,
+             ChannelTypeId ChannelType,
+             SampleStreamLayout Layout>
+    class StaticContinuousInputAccess {
+        ContinuousInputPort<Value> port_{};
+
+        class Axis {
+            ContinuousInputPort<Value> const* port_ = nullptr;
+            std::size_t outer_ = 0;
+
+        public:
+            constexpr Axis(
+                ContinuousInputPort<Value> const& port,
+                std::size_t outer) noexcept
+                : port_(&port), outer_(outer)
+            {}
+
+            template<class Channel>
+            [[nodiscard]] constexpr auto operator[](Channel) const noexcept
+            requires (Layout == SampleStreamLayout::interleaved)
+            {
+                return port_->get_value(
+                    outer_, static_channel_index<ChannelType, Channel>());
+            }
+
+            [[nodiscard]] constexpr auto operator[](
+                std::size_t value) const noexcept
+            requires (Layout == SampleStreamLayout::planar)
+            {
+                return port_->get_value(value, outer_);
+            }
+        };
+
+        template<class Channel>
+        static consteval std::size_t selected_channel()
+        {
+            return static_channel_index<ChannelType, Channel>();
+        }
+
+    public:
+        constexpr explicit StaticContinuousInputAccess(
+            ContinuousInputPort<Value> port) noexcept
+            : port_(port)
+        {}
+
+        [[nodiscard]] constexpr auto get(
+            std::size_t history = 0,
+            std::size_t channel = 0) const noexcept
+        {
+            return port_.get(history, channel);
+        }
+
+        [[nodiscard]] constexpr auto get_value(
+            std::size_t value,
+            std::size_t channel = 0) const noexcept
+        {
+            return port_.get_value(value, channel);
+        }
+
+        [[nodiscard]] constexpr auto operator()(
+            std::size_t history = 0) const noexcept
+        requires (ChannelType == ChannelTypeId::mono)
+        {
+            return port_.get(history);
+        }
+
+        template<class Channel>
+        [[nodiscard]] constexpr auto operator()(
+            Channel, std::size_t history = 0) const noexcept
+        requires (ChannelType != ChannelTypeId::mono)
+        {
+            return port_.get(history, selected_channel<Channel>());
+        }
+
+        [[nodiscard]] constexpr auto operator[](
+            std::size_t value) const noexcept
+        requires (ChannelType == ChannelTypeId::mono)
+        {
+            return port_.get_value(value);
+        }
+
+        template<class Channel>
+        [[nodiscard]] constexpr Axis operator[](Channel) const noexcept
+        requires (ChannelType != ChannelTypeId::mono
+            && Layout == SampleStreamLayout::planar)
+        {
+            return Axis{port_, selected_channel<Channel>()};
+        }
+
+        [[nodiscard]] constexpr Axis operator[](
+            std::size_t value) const noexcept
+        requires (ChannelType != ChannelTypeId::mono
+            && Layout == SampleStreamLayout::interleaved)
+        {
+            IV_ASSERT(value < port_.block_size(),
+                "continuous input value index is out of bounds");
+            return Axis{port_, value};
+        }
+
+        template<class Channel>
+        [[nodiscard]] constexpr auto block(Channel) const noexcept
+        requires (ChannelType != ChannelTypeId::mono)
+        {
+            return port_.block(selected_channel<Channel>());
+        }
+
+        [[nodiscard]] constexpr auto block() const noexcept
+        requires (ChannelType == ChannelTypeId::mono)
+        {
+            return port_.block();
+        }
+
+        [[nodiscard]] constexpr auto block(std::size_t channel) const noexcept
+        requires (ChannelType != ChannelTypeId::mono)
+        {
+            return port_.block(channel);
+        }
+
+        template<class Channel>
+        [[nodiscard]] constexpr auto block_extended(Channel) const noexcept
+        requires (ChannelType != ChannelTypeId::mono)
+        {
+            return port_.block_extended(selected_channel<Channel>());
+        }
+
+        [[nodiscard]] constexpr auto block_extended() const noexcept
+        requires (ChannelType == ChannelTypeId::mono)
+        {
+            return port_.block_extended();
+        }
+
+        [[nodiscard]] constexpr FractionalGlobalIndex begin() const noexcept
+        {
+            return port_.begin();
+        }
+
+        [[nodiscard]] constexpr std::size_t block_size() const noexcept
+        {
+            return port_.block_size();
+        }
+
+        [[nodiscard]] constexpr std::uint64_t value_index() const noexcept
+        {
+            return port_.value_index();
+        }
+
+        [[nodiscard]] constexpr std::size_t history() const noexcept
+        {
+            return port_.history();
+        }
+
+        [[nodiscard]] constexpr std::size_t latency() const noexcept
+        {
+            return port_.latency();
+        }
+
+        [[nodiscard]] constexpr ChannelLayout channel_layout() const noexcept
+        {
+            return port_.channel_layout();
+        }
+    };
+
+    template<RegisteredContinuousValue Value,
+             ChannelTypeId ChannelType,
+             SampleStreamLayout Layout,
+             bool Recording>
+    class StaticContinuousOutputAccess
+        : private StaticOutputDispositionObserver<Recording> {
+        ContinuousOutputPort<Value> port_{};
+
+        class Axis {
+            StaticContinuousOutputAccess const* output_ = nullptr;
+            std::size_t outer_ = 0;
+
+        public:
+            constexpr Axis(
+                StaticContinuousOutputAccess const& output,
+                std::size_t outer) noexcept
+                : output_(&output), outer_(outer)
+            {}
+
+            template<class Channel>
+            [[nodiscard]] constexpr decltype(auto) operator[](
+                Channel) const noexcept
+            requires (Layout == SampleStreamLayout::interleaved)
+            {
+                output_->author_write();
+                return output_->port_.value(
+                    outer_, static_channel_index<ChannelType, Channel>());
+            }
+
+            [[nodiscard]] constexpr decltype(auto) operator[](
+                std::size_t value) const noexcept
+            requires (Layout == SampleStreamLayout::planar)
+            {
+                output_->author_write();
+                return output_->port_.value(value, outer_);
+            }
+        };
+
+        template<class Channel>
+        static consteval std::size_t selected_channel()
+        {
+            return static_channel_index<ChannelType, Channel>();
+        }
+
+        constexpr void author_write() const noexcept
+        {
+            if constexpr (Recording) this->observe_write();
+        }
+
+    public:
+        constexpr explicit StaticContinuousOutputAccess(
+            ContinuousOutputPort<Value> port) noexcept
+        requires (!Recording)
+            : StaticOutputDispositionObserver<Recording>()
+            , port_(port)
+        {}
+
+        constexpr StaticContinuousOutputAccess(
+            ContinuousOutputPort<Value> port,
+            OutputDisposition& disposition) noexcept
+        requires Recording
+            : StaticOutputDispositionObserver<Recording>(disposition)
+            , port_(port)
+        {}
+
+        [[nodiscard]] constexpr auto get(
+            std::size_t offset = 0,
+            std::size_t channel = 0) const noexcept
+        {
+            return port_.get(offset, channel);
+        }
+
+        [[nodiscard]] constexpr decltype(auto) value(
+            std::size_t offset = 0,
+            std::size_t channel = 0) const noexcept
+        {
+            author_write();
+            return port_.value(offset, channel);
+        }
+
+        [[nodiscard]] constexpr decltype(auto) operator()() const noexcept
+        requires (ChannelType == ChannelTypeId::mono)
+        {
+            author_write();
+            return port_.value(0);
+        }
+
+        template<class Channel>
+        [[nodiscard]] constexpr decltype(auto) operator()(Channel) const noexcept
+        requires (ChannelType != ChannelTypeId::mono)
+        {
+            author_write();
+            return port_.value(0, selected_channel<Channel>());
+        }
+
+        [[nodiscard]] constexpr decltype(auto) operator[](
+            std::size_t value) const noexcept
+        requires (ChannelType == ChannelTypeId::mono)
+        {
+            author_write();
+            return port_.value(value);
+        }
+
+        template<class Channel>
+        [[nodiscard]] constexpr Axis operator[](Channel) const noexcept
+        requires (ChannelType != ChannelTypeId::mono
+            && Layout == SampleStreamLayout::planar)
+        {
+            return Axis{*this, selected_channel<Channel>()};
+        }
+
+        [[nodiscard]] constexpr Axis operator[](
+            std::size_t value) const noexcept
+        requires (ChannelType != ChannelTypeId::mono
+            && Layout == SampleStreamLayout::interleaved)
+        {
+            IV_ASSERT(value < port_.block_size(),
+                "continuous output value index is out of bounds");
+            return Axis{*this, value};
+        }
+
+        template<class Channel>
+        [[nodiscard]] constexpr auto block(Channel) const noexcept
+        requires (ChannelType != ChannelTypeId::mono)
+        {
+            author_write();
+            return port_.block(selected_channel<Channel>());
+        }
+
+        [[nodiscard]] constexpr auto block() const noexcept
+        requires (ChannelType == ChannelTypeId::mono)
+        {
+            author_write();
+            return port_.block();
+        }
+
+        [[nodiscard]] constexpr auto block(std::size_t channel) const noexcept
+        requires (ChannelType != ChannelTypeId::mono)
+        {
+            author_write();
+            return port_.block(channel);
+        }
+
+        constexpr void push(Value const& value) const noexcept
+        requires (ContinuousValueType<Value>::rank == 0)
+        {
+            author_write();
+            port_.push(value);
+        }
+
+        constexpr void push(FFTBlock value) const noexcept
+        requires std::same_as<Value, FFTBlock>
+        {
+            author_write();
+            port_.push(value);
+        }
+
+        template<class Range>
+            requires requires(Range const& values) {
+                values.size();
+                values[std::size_t{}];
+            }
+        constexpr void push_block(Range const& values) const noexcept
+        requires (ChannelType == ChannelTypeId::mono)
+        {
+            author_write();
+            for (std::size_t value = 0; value < values.size(); ++value) {
+                port_.push(values[value]);
+            }
+        }
+
+        constexpr void update(
+            Value const& value,
+            std::size_t offset = 0,
+            std::size_t channel = 0) const noexcept
+        requires (ContinuousValueType<Value>::rank == 0)
+        {
+            author_write();
+            port_.update(value, offset, channel);
+        }
+
+        constexpr void update(
+            FFTBlock value,
+            std::size_t offset = 0,
+            std::size_t channel = 0) const noexcept
+        requires std::same_as<Value, FFTBlock>
+        {
+            author_write();
+            port_.update(value, offset, channel);
+        }
+
+        constexpr void clear_block() const noexcept
+        {
+            author_write();
+            auto const channels = channel_count(port_.channel_layout());
+            for (std::size_t channel = 0; channel < channels; ++channel) {
+                auto values = port_.block(channel);
+                for (std::size_t index = 0; index < values.size(); ++index) {
+                    ContinuousValueType<Value>::clear_value(values[index]);
+                }
+            }
+        }
+
+        constexpr void write_void() const noexcept requires Recording
+        {
+            this->observe_void();
+        }
+
+        [[nodiscard]] constexpr FractionalGlobalIndex begin() const noexcept
+        {
+            return port_.begin();
+        }
+
+        [[nodiscard]] constexpr std::size_t block_size() const noexcept
+        {
+            return port_.block_size();
+        }
+
+        [[nodiscard]] constexpr std::uint64_t value_index() const noexcept
+        {
+            return port_.value_index();
+        }
+
+        [[nodiscard]] constexpr std::size_t history() const noexcept
+        {
+            return port_.history();
+        }
+
+        [[nodiscard]] constexpr std::size_t latency() const noexcept
+        {
+            return port_.latency();
+        }
+
+        [[nodiscard]] constexpr ChannelLayout channel_layout() const noexcept
+        {
+            return port_.channel_layout();
+        }
+    };
+
+    template<class Tuple, class Binding,
+             ChannelTypeId ChannelType,
+             SampleStreamLayout Layout>
+    class StaticVariantContinuousInputAccess;
+
+    template<class... Values, class Binding,
+             ChannelTypeId ChannelType,
+             SampleStreamLayout Layout>
+    class StaticVariantContinuousInputAccess<
+        std::tuple<Values...>, Binding, ChannelType, Layout> {
+        Binding const* binding_ = nullptr;
+        FractionalGlobalIndex begin_{};
+        std::uint64_t begin_ordinal_ = 0;
+        std::uint64_t sequential_begin_ordinal_ = 0;
+        std::size_t block_size_ = 0;
+
+    public:
+        constexpr StaticVariantContinuousInputAccess(
+            Binding const& binding,
+            FractionalGlobalIndex begin,
+            std::uint64_t begin_ordinal,
+            std::uint64_t sequential_begin_ordinal,
+            std::size_t block_size) noexcept
+            : binding_(&binding)
+            , begin_(begin)
+            , begin_ordinal_(begin_ordinal)
+            , sequential_begin_ordinal_(sequential_begin_ordinal)
+            , block_size_(block_size)
+        {}
+
+        template<RegisteredContinuousValue Value>
+        [[nodiscard]] constexpr bool is() const noexcept
+        requires ((std::same_as<Value, Values> || ...))
+        {
+            return binding_->storage.geometry.value_type
+                == continuous_value_type_id_v<Value>;
+        }
+
+        template<RegisteredContinuousValue Value>
+        [[nodiscard]] constexpr auto as() const noexcept
+        requires ((std::same_as<Value, Values> || ...))
+        {
+            IV_ASSERT(is<Value>(),
+                "continuous input alternative does not match its resolved type");
+            return StaticContinuousInputAccess<Value, ChannelType, Layout>{
+                ContinuousInputPort<Value>{
+                    *binding_,
+                    begin_,
+                    begin_ordinal_,
+                    sequential_begin_ordinal_,
+                    block_size_}};
+        }
+    };
+
+    template<class Tuple, class Binding,
+             ChannelTypeId ChannelType,
+             SampleStreamLayout Layout,
+             bool Recording>
+    class StaticVariantContinuousOutputAccess;
+
+    template<class... Values, class Binding,
+             ChannelTypeId ChannelType,
+             SampleStreamLayout Layout,
+             bool Recording>
+    class StaticVariantContinuousOutputAccess<
+        std::tuple<Values...>, Binding, ChannelType, Layout, Recording> {
+        Binding const* binding_ = nullptr;
+        FractionalGlobalIndex begin_{};
+        std::uint64_t begin_ordinal_ = 0;
+        std::uint64_t sequential_begin_ordinal_ = 0;
+        std::size_t block_size_ = 0;
+        OutputDisposition* disposition_ = nullptr;
+
+    public:
+        constexpr StaticVariantContinuousOutputAccess(
+            Binding const& binding,
+            FractionalGlobalIndex begin,
+            std::uint64_t begin_ordinal,
+            std::uint64_t sequential_begin_ordinal,
+            std::size_t block_size) noexcept
+        requires (!Recording)
+            : binding_(&binding)
+            , begin_(begin)
+            , begin_ordinal_(begin_ordinal)
+            , sequential_begin_ordinal_(sequential_begin_ordinal)
+            , block_size_(block_size)
+        {}
+
+        constexpr StaticVariantContinuousOutputAccess(
+            Binding const& binding,
+            FractionalGlobalIndex begin,
+            std::uint64_t begin_ordinal,
+            std::uint64_t sequential_begin_ordinal,
+            std::size_t block_size,
+            OutputDisposition& disposition) noexcept
+        requires Recording
+            : binding_(&binding)
+            , begin_(begin)
+            , begin_ordinal_(begin_ordinal)
+            , sequential_begin_ordinal_(sequential_begin_ordinal)
+            , block_size_(block_size)
+            , disposition_(&disposition)
+        {}
+
+        template<RegisteredContinuousValue Value>
+        [[nodiscard]] constexpr bool is() const noexcept
+        requires ((std::same_as<Value, Values> || ...))
+        {
+            return binding_->storage.geometry.value_type
+                == continuous_value_type_id_v<Value>;
+        }
+
+        template<RegisteredContinuousValue Value>
+        [[nodiscard]] constexpr auto as() const noexcept
+        requires ((std::same_as<Value, Values> || ...))
+        {
+            IV_ASSERT(is<Value>(),
+                "continuous output alternative does not match its resolved type");
+            auto port = ContinuousOutputPort<Value>{
+                *binding_,
+                begin_,
+                begin_ordinal_,
+                sequential_begin_ordinal_,
+                block_size_};
+            if constexpr (Recording) {
+                return StaticContinuousOutputAccess<
+                    Value, ChannelType, Layout, true>{port, *disposition_};
+            } else {
+                return StaticContinuousOutputAccess<
+                    Value, ChannelType, Layout, false>{port};
+            }
         }
     };
 }

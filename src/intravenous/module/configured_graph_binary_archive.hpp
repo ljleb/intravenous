@@ -582,6 +582,10 @@ inline void write_port_constraints(Writer& w, NodePortConstraints const& value)
         write_port_constraint_ref(w, anchor.port);
         w.pod(anchor.value.exponent());
     });
+    w.list(value.absolute_pace_anchors, [&](auto const& anchor) {
+        write_port_constraint_ref(w, anchor.port);
+        w.pod(anchor.value.exponent());
+    });
     write_equalities(value.history_equalities);
     write_sizes(value.history_anchors);
     write_equalities(value.latency_equalities);
@@ -646,6 +650,15 @@ inline NodePortConstraints read_port_constraints(Reader& r)
             .value = PortPace::from_exponent(exponent),
         };
     });
+    result.absolute_pace_anchors =
+        read_list<AbsolutePortPaceAnchorConstraint>(r, [&] {
+            auto const port = read_port_constraint_ref(r);
+            auto const exponent = r.pod<PortPace::exponent_type>();
+            return AbsolutePortPaceAnchorConstraint{
+                .port = port,
+                .value = PortPace::from_exponent(exponent),
+            };
+        });
     result.history_equalities =
         read_equalities.template operator()<PortHistoryEqualityConstraint>();
     result.history_anchors =

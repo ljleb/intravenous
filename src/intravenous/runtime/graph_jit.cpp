@@ -133,13 +133,15 @@ struct IrNodeRecord {
     llvm::Function* tock_coverage = nullptr;
     llvm::Function* propagate_forward_coverage = nullptr;
     llvm::Function* propagate_reverse_coverage = nullptr;
-    llvm::Function* initialize_sequential_input_neutral = nullptr;
+    llvm::Function* initialize_sequential_input = nullptr;
     llvm::Function* combine_sequential_input_values = nullptr;
     std::size_t state_size = 0;
     std::size_t state_alignment = 1;
     std::size_t background_state_size = 0;
     std::size_t background_state_alignment = 1;
     bool intrinsically_replayable = false;
+    bool pointwise_tick = false;
+    bool block_input_access = false;
 };
 
 std::uint64_t constant_u64(llvm::Value const* value, std::string_view field)
@@ -200,7 +202,7 @@ std::unordered_map<NodeCodeKey, IrNodeRecord, NodeCodeKeyHash> scan_node_records
             continue;
         }
         auto* record = llvm::dyn_cast_or_null<llvm::ConstantStruct>(global.getInitializer());
-        if (!record || record->getNumOperands() != 9) {
+        if (!record || record->getNumOperands() != 11) {
             fail(GraphJitDiagnosticStage::package_llvm, "malformed iv_node_types record");
         }
         auto* key = llvm::dyn_cast<llvm::ConstantStruct>(record->getOperand(0));
@@ -222,6 +224,18 @@ std::unordered_map<NodeCodeKey, IrNodeRecord, NodeCodeKeyHash> scan_node_records
             fail(GraphJitDiagnosticStage::package_llvm,
                 "malformed iv_node_types intrinsic replayability flag");
         }
+        auto const pointwise_marker = constant_u64(
+            record->getOperand(9), "pointwise Tick mode");
+        if (pointwise_marker > 1) {
+            fail(GraphJitDiagnosticStage::package_llvm,
+                "malformed iv_node_types pointwise Tick flag");
+        }
+        auto const block_input_marker = constant_u64(
+            record->getOperand(10), "block input access");
+        if (block_input_marker > 1) {
+            fail(GraphJitDiagnosticStage::package_llvm,
+                "malformed iv_node_types block input access flag");
+        }
         IrNodeRecord parsed{
             .tick_block = compiler_callback(operations->getOperand(1), "tick_block", true),
             .skip_block = compiler_callback(operations->getOperand(2), "skip_block", true),
@@ -231,9 +245,9 @@ std::unordered_map<NodeCodeKey, IrNodeRecord, NodeCodeKeyHash> scan_node_records
                 operations->getOperand(4), "propagate_forward_coverage", false),
             .propagate_reverse_coverage = compiler_callback(
                 operations->getOperand(5), "propagate_reverse_coverage", false),
-            .initialize_sequential_input_neutral = compiler_callback(
+            .initialize_sequential_input = compiler_callback(
                 operations->getOperand(6),
-                "initialize_sequential_input_neutral",
+                "initialize_sequential_input",
                 false),
             .combine_sequential_input_values = compiler_callback(
                 operations->getOperand(7),
@@ -247,6 +261,8 @@ std::unordered_map<NodeCodeKey, IrNodeRecord, NodeCodeKeyHash> scan_node_records
                 record->getOperand(7), "background state alignment"),
             .intrinsically_replayable =
                 replay_marker != 0,
+            .pointwise_tick = pointwise_marker != 0,
+            .block_input_access = block_input_marker != 0,
         };
         if (!result.emplace(code_key, parsed).second) {
             fail(GraphJitDiagnosticStage::package_llvm, "duplicate NodeCodeKey in iv_node_types");
@@ -380,7 +396,10 @@ struct CapturedNode {
     void const* node_data = nullptr;
     NodeStateStructures const* state_structures = nullptr;
     std::size_t (*declare_node)(
-        void const*, NodeStateStructures const*, NodeLayoutBuilder&) = nullptr;
+        void const*,
+        NodeStateStructures const*,
+        NodeLayoutBuilder&,
+        ReflectedNodePortRealization const&) = nullptr;
 };
 
 struct CapturedRelocation {
@@ -661,7 +680,9 @@ void verify_compiler_record(
         || accepted.state_alignment != ir_record.state_alignment
         || accepted.background_state_size != ir_record.background_state_size
         || accepted.background_state_alignment != ir_record.background_state_alignment
-        || accepted.intrinsically_replayable != ir_record.intrinsically_replayable) {
+        || accepted.intrinsically_replayable != ir_record.intrinsically_replayable
+        || accepted.pointwise_tick != ir_record.pointwise_tick
+        || accepted.block_input_access != ir_record.block_input_access) {
         fail(
             GraphJitDiagnosticStage::package_llvm,
             "NodeCompilerRecord state/replay ABI disagrees with retained package LLVM for node '"
@@ -674,9 +695,9 @@ void verify_compiler_record(
         || static_cast<bool>(accepted.operations.propagate_reverse_coverage)
             != static_cast<bool>(ir_record.propagate_reverse_coverage)
         || static_cast<bool>(
-                accepted.operations.initialize_sequential_input_neutral)
+                accepted.operations.initialize_sequential_input)
             != static_cast<bool>(
-                ir_record.initialize_sequential_input_neutral)
+                ir_record.initialize_sequential_input)
         || static_cast<bool>(
                 accepted.operations.combine_sequential_input_values)
             != static_cast<bool>(
@@ -1135,6 +1156,8 @@ public:
                     .background_state_size = record->second.background_state_size,
                     .background_state_alignment = record->second.background_state_alignment,
                     .intrinsically_replayable = record->second.intrinsically_replayable,
+                    .pointwise_tick = record->second.pointwise_tick,
+                    .block_input_access = record->second.block_input_access,
                     .node_data = captured_node.node_data,
                     .state_structures = captured_node.state_structures,
                     .declare_node = captured_node.declare_node,
@@ -1145,10 +1168,13 @@ public:
                         record->second.propagate_forward_coverage,
                     .propagate_reverse_coverage =
                         record->second.propagate_reverse_coverage,
-                    .initialize_sequential_input_neutral =
-                        record->second.initialize_sequential_input_neutral,
+                    .initialize_sequential_input =
+                        record->second.initialize_sequential_input,
                     .combine_sequential_input_values =
                         record->second.combine_sequential_input_values,
+                    .host_initialize_sequential_input =
+                        captured_node.compiler_record.operations
+                            .initialize_sequential_input,
                 });
             }
         } catch (GraphJitCompileError const& error) {

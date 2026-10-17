@@ -132,6 +132,8 @@ struct SampleConnectionPlan {
     // projection/permutation remains in projection_contributions.target_channels.
     std::vector<SampleInputChannelId> target_channels{};
     NodeBundlePortId target_port{};
+    ContinuousValueStorageGeometry geometry{};
+    std::int32_t absolute_pace_exponent = 0;
 
     // Conservative aggregate values retained for whole-port planning. The
     // per-channel timing vector above is authoritative when source_channels
@@ -148,7 +150,7 @@ struct SampleConnectionPlan {
     bool requires_block_materialization = false;
     bool external_boundary = false;
     std::optional<ConfiguredSampleConnectionDetach> detach{};
-    std::optional<Sample> detach_initial_value{};
+    std::optional<std::vector<std::byte>> detach_initial_value{};
     std::optional<std::size_t> detach_region{};
 };
 
@@ -264,6 +266,8 @@ struct SampleProducerGroupPlan {
     // coalescing decision for the node-facing Tick storage.
     std::vector<PortSubsetIndex> source_atom_indices{};
     std::optional<ChannelLayout> canonical_source_layout{};
+    ContinuousValueStorageGeometry geometry{};
+    std::int32_t absolute_pace_exponent = 0;
     std::vector<std::size_t> connection_indices{};
     bool has_realtime_connections = false;
     bool has_background_connections = false;

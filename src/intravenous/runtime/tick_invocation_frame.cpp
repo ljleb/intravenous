@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <bit>
 #include <cassert>
+#include <cstring>
 #include <limits>
 #include <optional>
 #include <stdexcept>
@@ -225,7 +226,7 @@ public:
                 .context = this,
                 .capture = +[](
                     void* opaque,
-                    ReflectedSampleOutputPortBinding const* output,
+                    ReflectedContinuousOutputPortBinding const* output,
                     GlobalIndex sample_index,
                     std::size_t block_size) noexcept {
                     if (!output) return;
@@ -252,7 +253,7 @@ public:
         }
 
         void capture(
-            ReflectedSampleOutputPortBinding const& binding,
+            ReflectedContinuousOutputPortBinding const& binding,
             GlobalIndex sample_index,
             std::size_t block_size) noexcept
         {
@@ -260,10 +261,14 @@ public:
             if (!reserve || !pending
                 || binding.storage.channel_layout != layout
                 || binding.history != history || binding.latency != latency
-                || binding.storage.frame_capacity == 0
-                || !std::has_single_bit(binding.storage.frame_capacity)
+                || binding.absolute_pace_exponent != 0
+                || binding.storage.geometry.value_type
+                    != ContinuousValueTypeId::sample
+                || binding.storage.geometry.value_size_bytes != sizeof(Sample)
+                || binding.storage.value_capacity == 0
+                || !std::has_single_bit(binding.storage.value_capacity)
                 || binding.storage.storage_latency
-                    >= binding.storage.frame_capacity) {
+                    >= binding.storage.value_capacity) {
                 return;
             }
             auto const channels = channel_count(layout);
@@ -275,12 +280,12 @@ public:
             auto const bytes_per_frame = channels * sizeof(Sample);
             for (std::size_t channel = 0; channel < channels; ++channel) {
                 auto const& source = binding.storage.channels[channel];
-                if (!source.storage || source.frame_capacity == 0
-                    || !std::has_single_bit(source.frame_capacity)
-                    || source.frame_stride == 0
-                    || source.frame_delay >= source.frame_capacity
+                if (!source.storage || source.value_capacity == 0
+                    || !std::has_single_bit(source.value_capacity)
+                    || source.value_stride_bytes < sizeof(Sample)
+                    || source.value_delay >= source.value_capacity
                     || binding.storage.storage_latency
-                        >= source.frame_capacity) {
+                        >= source.value_capacity) {
                     return;
                 }
             }
@@ -329,17 +334,18 @@ public:
             auto append_values = [&](auto& writer) noexcept {
                 auto append_sample = [&](std::size_t frame,
                                          std::size_t channel) noexcept {
-                    auto const absolute = window.begin.advanced_by(frame);
                     auto const& source = binding.storage.channels[channel];
-                    auto const logical = absolute.advanced_by(
-                        binding.storage.storage_latency);
-                    auto const delayed = logical.retreated_by(
-                        source.frame_delay);
+                    auto const delayed = binding.sequential_begin_ordinal
+                        + binding.storage.storage_latency + frame
+                        - source.value_delay;
                     auto const source_frame = static_cast<std::size_t>(
-                        delayed.bits() & (source.frame_capacity - 1));
-                    auto const value =
-                        reinterpret_cast<Sample const*>(source.storage)[
-                            source_frame * source.frame_stride];
+                        delayed & (source.value_capacity - 1));
+                    Sample value{};
+                    std::memcpy(
+                        &value,
+                        source.storage
+                            + source_frame * source.value_stride_bytes,
+                        sizeof(value));
                     return writer.append(
                         std::as_bytes(std::span{&value, std::size_t{1}}));
                 };
@@ -586,7 +592,7 @@ public:
         std::size_t capacity = 0;
         Sample neutral{};
         std::vector<Sample> values{};
-        ReflectedSampleInputPortBinding binding{};
+        ReflectedContinuousInputPortBinding binding{};
 
         void initialize_storage()
         {
@@ -603,7 +609,9 @@ public:
             values.assign(capacity * channels, neutral);
             binding = {
                 .storage = {
-                    .frame_capacity = capacity,
+                    .geometry = *continuous_value_storage_geometry(
+                        ContinuousValueTypeId::sample, std::nullopt),
+                    .value_capacity = capacity,
                     .storage_latency = 0,
                     .channel_layout = layout,
                 },
@@ -616,9 +624,10 @@ public:
                 binding.storage.channels[channel] = {
                     .storage = reinterpret_cast<std::byte*>(
                         values.data() + (planar ? channel * capacity : channel)),
-                    .frame_capacity = capacity,
-                    .frame_stride = planar ? 1 : channels,
-                    .frame_delay = 0,
+                    .value_capacity = capacity,
+                    .value_stride_bytes =
+                        (planar ? 1 : channels) * sizeof(Sample),
+                    .value_delay = 0,
                 };
             }
         }
@@ -691,6 +700,11 @@ public:
             GlobalIndex sample_index,
             std::size_t block_size) noexcept
         {
+            // External persisted/materialized playback is rebuilt for this
+            // exact global window, so its private ring deliberately remains
+            // globally addressed. Generated execution leaves this overlaid
+            // binding's ordinal intact.
+            binding.sequential_begin_ordinal = sample_index.bits();
             auto const channels = channel_count(layout);
             auto const begin = sample_index.retreated_by(history);
             auto const count = history + block_size;
@@ -904,7 +918,7 @@ public:
     };
 
     std::vector<SequentialSampleSlot> sequential_sample_slots{};
-    std::vector<ReflectedSampleInputPortBinding> sequential_sample_views{};
+    std::vector<ReflectedContinuousInputPortBinding> sequential_sample_views{};
     std::vector<SequentialEventSlot> sequential_event_slots{};
     std::vector<ReflectedEventInputPortBinding> sequential_event_views{};
     std::vector<SampleSlot> sample_slots{};

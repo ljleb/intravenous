@@ -56,6 +56,7 @@ struct ConstrainedArchiveNode {
         context.output<"output">().pace()
             = context.input<"input">().pace();
         context.input<"input">().pace() = 512;
+        context.input<"input">().pace().absolute() = 2;
         context.input<"input">().history() = 7;
         context.output<"output">().history() = 11;
         context.output<"output">().latency() = 3;
@@ -469,6 +470,12 @@ TEST(ConfiguredGraphBinaryArchive, RoundTripsAuthoredPortConstraints)
             EXPECT_EQ(
                 view.port_constraints->pace_anchors.front().value.exponent(),
                 9);
+            ASSERT_EQ(
+                view.port_constraints->absolute_pace_anchors.size(), 1u);
+            EXPECT_EQ(
+                view.port_constraints->absolute_pace_anchors.front()
+                    .value.exponent(),
+                1);
             ASSERT_EQ(view.port_constraints->history_anchors.size(), 4u);
             EXPECT_EQ(
                 view.port_constraints->history_anchors,

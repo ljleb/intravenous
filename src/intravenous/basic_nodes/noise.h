@@ -111,7 +111,7 @@ namespace iv {
         {
             auto const min = state.template input<0>().get();
             auto const max = state.template input<1>().get();
-            uint64_t uniform_int = splitmix64(state.index.bits());
+            uint64_t uniform_int = splitmix64(state.value_index);
             state.template output<0>().push(uniform_m11(uniform_int, min, max));
         }
     };
@@ -181,13 +181,14 @@ namespace iv {
             auto const min = ctx.template input<0>().get();
             auto const max = ctx.template input<1>().get();
             auto const scale = max - min;
+            auto output = ctx.template output<0>();
 
             auto const to_sample = [&](uint32_t x) -> Sample {
                 return r123::u01<Sample>(x) * scale + min;
             };
 
-            auto position = ctx.index.bits();
-            auto remaining = ctx.block_size;
+            auto position = output.value_index();
+            auto remaining = output.block_size();
             while (remaining != 0) {
                 auto const group = position >> 2;
                 auto const r = _generator(make_index(group), _seed);
@@ -201,7 +202,7 @@ namespace iv {
                 auto const count = std::min(
                     tmp.size() - first,
                     remaining);
-                ctx.template output<0>().push_block(
+                output.push_block(
                     std::span<Sample const>{tmp}.subspan(first, count));
                 position += count;
                 remaining -= count;
@@ -402,7 +403,7 @@ namespace iv {
 
         void tick(TickSampleContext<DeterministicGaussianAESNoise> const& state) const
         {
-            Rng::ctr_type counter = make_index(state.index.bits());
+            Rng::ctr_type counter = make_index(state.value_index);
             unsigned int uniform_uint = _generator(counter, _seed)[0];
             Sample uniform = details::clamp_open_unit_interval_pm1(r123::uneg11<Sample>(uniform_uint));
             Sample gaussian = std::numbers::sqrt2_v<float> * erfinvf(uniform);

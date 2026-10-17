@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <array>
 #include <cstddef>
+#include <cstring>
 #include <iterator>
 #include <memory>
 #include <span>
@@ -472,6 +473,61 @@ struct ReplayableSource {
     }
 
     void tick(iv::TickSampleContext<ReplayableSource> const&) const {}
+};
+
+struct ReplayableFFTSource {
+    static constexpr bool intrinsically_replayable = true;
+
+    static constexpr auto inputs() { return std::tuple{}; }
+
+    static constexpr auto outputs()
+    {
+        return std::array{
+            iv::output<iv::FFTBlock>("out", iv::OutputProduction::tick),
+        };
+    }
+
+    void constrain_ports(
+        iv::ConstrainPortsContext<ReplayableFFTSource>& ctx) const
+    {
+        ctx.output<"out">().size() = 513;
+    }
+
+    void tick(iv::TickSampleContext<ReplayableFFTSource> const&) const {}
+};
+
+struct ReplayableFastSampleSource {
+    static constexpr bool intrinsically_replayable = true;
+
+    static constexpr auto inputs() { return std::tuple{}; }
+
+    static constexpr auto outputs()
+    {
+        return std::array{
+            iv::output<iv::Sample>("out", iv::OutputProduction::tick),
+        };
+    }
+
+    void constrain_ports(
+        iv::ConstrainPortsContext<ReplayableFastSampleSource>& ctx) const
+    {
+        ctx.output<"out">().pace().absolute() = 2;
+    }
+
+    void tick(iv::TickSampleContext<ReplayableFastSampleSource> const&) const {}
+};
+
+struct BackgroundFFTSink {
+    static constexpr auto inputs()
+    {
+        return std::array{
+            iv::input<iv::FFTBlock>("in", iv::InputAccess::coverage),
+        };
+    }
+
+    static constexpr auto outputs() { return std::tuple{}; }
+
+    void tick_block(iv::TickBlockContext<BackgroundFFTSink> const&) const {}
 };
 
 struct ReplayablePass {
@@ -1280,8 +1336,10 @@ TEST(GraphJitConnectionPlan, DerivesSampleDetachExecutionRegion)
     ASSERT_TRUE(detached->detach.has_value());
     EXPECT_EQ(detached->detach->loop_extra_latency, 6u);
     EXPECT_FALSE(detached->detach->initial_value_override.has_value());
-    ASSERT_TRUE(detached->detach_initial_value.has_value());
-    EXPECT_FLOAT_EQ(static_cast<float>(*detached->detach_initial_value), 0.375f);
+    // Type-owned neutral bytes require the target node implementation and are
+    // materialized during lowering, after connection analysis has selected the
+    // resolved value geometry.
+    EXPECT_FALSE(detached->detach_initial_value.has_value());
     ASSERT_TRUE(detached->detach_region.has_value());
     ASSERT_LT(*detached->detach_region, plan->schedule.regions.size());
     auto const& region = plan->schedule.regions[*detached->detach_region];
@@ -1364,8 +1422,13 @@ TEST(GraphJitConnectionPlan, SampleDetachInitialValueOverrideWins)
     EXPECT_FLOAT_EQ(
         static_cast<float>(*detached->detach->initial_value_override), -0.625f);
     ASSERT_TRUE(detached->detach_initial_value.has_value());
-    EXPECT_FLOAT_EQ(
-        static_cast<float>(*detached->detach_initial_value), -0.625f);
+    ASSERT_EQ(detached->detach_initial_value->size(), sizeof(Sample));
+    Sample detached_initial_value{};
+    std::memcpy(
+        &detached_initial_value,
+        detached->detach_initial_value->data(),
+        sizeof(detached_initial_value));
+    EXPECT_FLOAT_EQ(static_cast<float>(detached_initial_value), -0.625f);
 }
 
 TEST(GraphJitConnectionPlan, DerivesEventDetachExecutionRegion)
@@ -2660,6 +2723,45 @@ TEST(GraphJitConnectionPlan, IntrinsicTickReplaySuppliesRandomAccess)
     EXPECT_TRUE(plan->background.nodes[source_node].uses_replay_forward_coverage);
     EXPECT_TRUE(plan->background.nodes[source_node].uses_replay_reverse_coverage);
     EXPECT_TRUE(plan->background.nodes[source_node].uses_imported_tick_block_for_replay);
+}
+
+TEST(GraphJitConnectionPlan, RejectsNonSampleContextualReplayAtReplayBoundary)
+{
+    using namespace iv;
+
+    GraphBuilder graph;
+    auto source = details::configure_concrete_node<ReplayableFFTSource>(graph);
+    auto sink = details::configure_concrete_node<BackgroundFFTSink>(graph);
+    sink(source);
+    graph.outputs();
+
+    auto configured = std::move(graph).finish();
+    auto plan = build_connection_analysis_plan(configured, 64);
+    ASSERT_FALSE(plan.has_value());
+    EXPECT_NE(
+        plan.error().find(
+            "background Tick replay does not yet support continuous type 'FFTBlock'"),
+        std::string::npos);
+}
+
+TEST(GraphJitConnectionPlan, RejectsNonProjectRateContextualReplayAtReplayBoundary)
+{
+    using namespace iv;
+
+    GraphBuilder graph;
+    auto source =
+        details::configure_concrete_node<ReplayableFastSampleSource>(graph);
+    auto sink = details::configure_concrete_node<BackgroundSink>(graph);
+    sink(source);
+    graph.outputs();
+
+    auto configured = std::move(graph).finish();
+    auto plan = build_connection_analysis_plan(configured, 64);
+    ASSERT_FALSE(plan.has_value());
+    EXPECT_NE(
+        plan.error().find(
+            "background Tick replay does not yet support a non-project-rate continuous port"),
+        std::string::npos);
 }
 
 TEST(GraphJitConnectionPlan, ContextualReplayTraversesSequentialDependencies)

@@ -1670,6 +1670,14 @@ persisted data on demand. A coherent pinned snapshot prevents concurrent publica
 mutating memory under an audio callback. The neutral fallback does not authorize
 out-of-coverage arbitrary random-access reads by node code; those remain invalid.
 
+While playback is paused, background-produced Sequential continuous inputs are treated
+as missing and therefore read their own `neutral_value`; background-produced
+Sequential event inputs are empty. Region and Coverage inputs expose empty extents.
+The Tick graph itself continues executing, including live and ephemeral signal paths.
+Resume selects the applicable immutable background snapshot at a callback boundary and
+may jump the shared node-visible `FractionalGlobalIndex`; it does not reset live
+Sequential history or introduce a second node time coordinate.
+
 ### Provisioned queue items and Tick/persisted recording boundaries
 
 Realtime-produced data whose lifetime must escape ordinary current-block execution

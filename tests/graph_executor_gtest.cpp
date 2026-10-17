@@ -378,8 +378,8 @@ void evaluate_replay_probe(
         ++replay_probe_evaluate_calls;
         node.prepare_operations(node.operation_frame);
         auto outputs = static_cast<
-            std::span<iv::ReflectedSampleOutputPortBinding const>>(
-            node.replay.sample_output_bindings);
+            std::span<iv::ReflectedContinuousOutputPortBinding const>>(
+            node.replay.continuous_output_bindings);
         for (auto const region :
              static_cast<std::span<iv::GlobalIndexRange const>>(
                  node.replay_regions)) {
@@ -389,14 +389,16 @@ void evaluate_replay_probe(
                 auto const position = region.begin.advanced_by(offset);
                 for (std::size_t output = 0; output < outputs.size(); ++output) {
                     auto const& storage = outputs[output].storage;
-                    auto* values = reinterpret_cast<iv::Sample*>(
-                        storage.channels[0].storage);
-                    auto const frame = static_cast<std::size_t>(position.bits()) &
-                        (storage.frame_capacity - 1);
-                    values[frame * storage.channels[0].frame_stride] =
-                        iv::Sample{
-                            100.0f * static_cast<float>(output)
-                            + static_cast<float>(position.signed_value())};
+                    auto const& channel = storage.channels[0];
+                    auto const ordinal = position.bits()
+                        + storage.storage_latency - channel.value_delay;
+                    auto const slot = static_cast<std::size_t>(ordinal)
+                        & (channel.value_capacity - 1);
+                    *reinterpret_cast<iv::Sample*>(
+                        channel.storage
+                            + slot * channel.value_stride_bytes) = iv::Sample{
+                                100.0f * static_cast<float>(output)
+                                + static_cast<float>(position.signed_value())};
                 }
             }
         }

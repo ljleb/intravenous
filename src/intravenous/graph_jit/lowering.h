@@ -37,6 +37,8 @@ struct NodeImplementation {
     std::size_t background_state_size = 0;
     std::size_t background_state_alignment = 1;
     bool intrinsically_replayable = false;
+    bool pointwise_tick = false;
+    bool block_input_access = false;
 
     // Host declaration data is part of lowering because the canonical
     // NodeLayout must be finalized before final LLVM is emitted. That lets
@@ -45,7 +47,10 @@ struct NodeImplementation {
     void const* node_data = nullptr;
     NodeStateStructures const* state_structures = nullptr;
     std::size_t (*declare_node)(
-        void const*, NodeStateStructures const*, NodeLayoutBuilder&) = nullptr;
+        void const*,
+        NodeStateStructures const*,
+        NodeLayoutBuilder&,
+        ReflectedNodePortRealization const&) = nullptr;
 
     // Runtime/compiler LLVM anchors imported into the whole-project module.
     llvm::Function* tick_block = nullptr;
@@ -53,8 +58,16 @@ struct NodeImplementation {
     llvm::Function* tock_coverage = nullptr;
     llvm::Function* propagate_forward_coverage = nullptr;
     llvm::Function* propagate_reverse_coverage = nullptr;
-    llvm::Function* initialize_sequential_input_neutral = nullptr;
+    llvm::Function* initialize_sequential_input = nullptr;
     llvm::Function* combine_sequential_input_values = nullptr;
+
+    bool (*host_initialize_sequential_input)(
+        std::size_t,
+        ContinuousValueTypeId,
+        iv::details::SequentialInputInitialization,
+        std::byte*,
+        std::size_t,
+        std::size_t) = nullptr;
 };
 
 struct ConfigRelocation {

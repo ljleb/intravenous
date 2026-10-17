@@ -6,6 +6,7 @@
 #include <gtest/gtest.h>
 
 #include <array>
+#include <cstdint>
 #include <string>
 
 namespace {
@@ -98,6 +99,38 @@ struct RateDoubler {
         ctx.output<"out">().pace() = 2;
     }
     void tick_block(iv::TickBlockContext<RateDoubler> const&) const {}
+};
+
+struct AbsolutelyAnchoredRateDoubler {
+    static constexpr auto outputs()
+    {
+        return std::array{iv::output<iv::Sample>(
+            "out", iv::OutputProduction::tick)};
+    }
+    void constrain_ports(
+        iv::ConstrainPortsContext<AbsolutelyAnchoredRateDoubler>& ctx) const
+    {
+        ctx.output<"out">().pace() = 2;
+        ctx.output<"out">().pace().absolute() = 8;
+    }
+    void tick_block(
+        iv::TickBlockContext<AbsolutelyAnchoredRateDoubler> const&) const {}
+};
+
+struct AbsolutePaceAnchor {
+    std::uint64_t factor = 1;
+
+    static constexpr auto inputs()
+    {
+        return std::array{iv::input<iv::Sample>(
+            "in", iv::InputAccess::sequential)};
+    }
+    void constrain_ports(
+        iv::ConstrainPortsContext<AbsolutePaceAnchor>& ctx) const
+    {
+        ctx.input<"in">().pace().absolute() = factor;
+    }
+    void tick_block(iv::TickBlockContext<AbsolutePaceAnchor> const&) const {}
 };
 
 struct OrdinaryIdentity {
@@ -461,6 +494,46 @@ TEST(PortRealization, ConnectionsRelateAbsoluteRatesNotLocalPaceConstants)
     EXPECT_EQ(realized->output(doubler, 0).sample_support, 1u);
     EXPECT_EQ(realized->input(downstream, 0).local_pace, iv::PortPace(1));
     EXPECT_EQ(realized->input(downstream, 0).absolute_pace, iv::PortPace(2));
+}
+
+TEST(PortRealization, AbsolutePaceAnchorFixesTheComponentScale)
+{
+    auto description = iv::details::reflect_node(
+        AbsolutelyAnchoredRateDoubler{});
+    ASSERT_EQ(
+        description.port_constraints.absolute_pace_anchors.size(), 1u);
+    EXPECT_EQ(
+        description.port_constraints.absolute_pace_anchors.front().value,
+        iv::PortPace(8));
+
+    iv::ConfiguredGraph graph;
+    auto const source = append(graph, AbsolutelyAnchoredRateDoubler{});
+    auto const downstream = append(graph, OrdinaryIdentity{});
+    graph.connections.record_configured_sample_connection(
+        mono_connection(source, 0, downstream, 0));
+
+    auto realized = iv::graph_jit::resolve_port_realization(graph);
+    if (!realized) FAIL() << realized.error();
+    EXPECT_EQ(realized->execution_rate(source), iv::PortPace(4));
+    EXPECT_EQ(realized->output(source, 0).local_pace, iv::PortPace(2));
+    EXPECT_EQ(realized->output(source, 0).absolute_pace, iv::PortPace(8));
+    EXPECT_EQ(realized->execution_rate(downstream), iv::PortPace(8));
+    EXPECT_EQ(realized->input(downstream, 0).absolute_pace, iv::PortPace(8));
+}
+
+TEST(PortRealization, RejectsConflictingAbsolutePaceAnchors)
+{
+    iv::ConfiguredGraph graph;
+    auto const source = append(graph, AbsolutelyAnchoredRateDoubler{});
+    auto const target = append(graph, AbsolutePaceAnchor{.factor = 4});
+    graph.connections.record_configured_sample_connection(
+        mono_connection(source, 0, target, 0));
+
+    auto realized = iv::graph_jit::resolve_port_realization(graph);
+    ASSERT_FALSE(realized.has_value());
+    EXPECT_NE(
+        realized.error().find("absolute pace anchor"),
+        std::string::npos);
 }
 
 } // namespace

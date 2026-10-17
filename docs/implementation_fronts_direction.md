@@ -49,6 +49,9 @@ This front owns:
 - `ConstrainPortsContext<Node>`;
 - dynamic continuous-value `size()` constraints;
 - exact `pace()` constraints and pace-domain solving;
+- local `pace() = n` ratios and explicit `pace().absolute() = n` graph-time anchors,
+  both restricted to power-of-two factors, with one canonical project-rate scale for
+  each wholly unanchored connected pace component;
 - weighted dyadic pace relations in which each port's authored power-of-two factor is
   relative to its owning node's logical step, connections equate absolute base-2 pace
   exponents, and inconsistent exponent sums around cycles are rejected;
@@ -60,11 +63,15 @@ This front owns:
   tiled continuous port without affecting event ports;
 - connection-generated constraints between producer and consumer ports;
 - conflict and unresolved-property diagnostics;
-- the shared Q64.64 `FractionalGlobalIndex` execution/storage and transported-coordinate
-  domain, the initial supported absolute-exponent range `[-64, +64]`, and realization
-  diagnostics for graphs outside that range;
-- audio sample-rate basis, transport cadence, and sample support as separate resolved
-  facts, with node-wide sample-rate access only for proven homogeneous audio bases;
+- the shared Q64.64 `FractionalGlobalIndex` node-visible execution and transported-
+  coordinate domain, the initial supported absolute-exponent range `[-64, +64]`, and
+  realization diagnostics for graphs outside that range;
+- compiler-owned physical Sequential cursors per used dyadic pace, preserving
+  invocation-order storage/history across discontinuous global transport seams without
+  exposing another node time coordinate;
+- one unchanged project/execution sample rate, constrained port pace as the transported-
+  value cadence, and type-owned per-value sample support; distinct physical sample-rate
+  domains and fractional resampling are deferred;
 - per-port Tick block extents;
 - Sequential `block_extended()` realization;
 - the initial continuous-value registry, including `Sample`, `FractionalGlobalIndex` and
@@ -79,6 +86,8 @@ This front owns:
   in-place/destructive operation, scratch storage, canonicalization and normalization,
   so direct library use is selected only when compatible and every other path is
   preplanned rather than allocated dynamically during execution;
+- the backend ownership boundary: core transports `FFTBlock`, while an explicitly
+  selected transform-node IV package alone includes and links its FFT implementation;
 - realization-time selection of one concrete type for multi-type ports before storage
   planning/lowering;
 - graph-resolved FFT dimensions and storage-size information;
@@ -125,6 +134,16 @@ Detailed direction:
 
 Active source migration status:
 [Port Realization Migration Status](./port_realization_migration_status.md).
+
+**Current implementation status:** the working tree now implements the Front 1
+constraint solve, type-owned continuous geometry, per-port dyadic Tick projection,
+physical Sequential cursor realization, bounded `block_extended()` materialization,
+producer-shared detached-revision startup validity, and concrete node-facing
+Tick/Sequential access for `Sample`, `FractionalGlobalIndex`, and `FFTBlock`. The latest
+end-to-end runtime tests await repository-owner validation. Generalized Tick/persisted capture is
+owned by Front 5, Region/Coverage realization is owned by Front 3, and live realized
+introspection is owned by the ProjectGraph/runtime read-model join; those downstream
+features do not keep the Front 1 execution contract open.
 
 ## Front 2: batched primitive callbacks and scheduling
 

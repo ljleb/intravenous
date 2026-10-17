@@ -6,12 +6,20 @@
 #include <optional>
 #include <string>
 #include <utility>
+#include <vector>
 
 namespace {
 
 iv::GlobalIndex global_index(std::uint64_t bits)
 {
     return iv::GlobalIndex::from_bits(bits);
+}
+
+std::vector<std::byte> sample_value_bytes(iv::Sample value)
+{
+    std::vector<std::byte> result(sizeof(value));
+    std::memcpy(result.data(), &value, sizeof(value));
+    return result;
 }
 
 iv::graph_jit::RealtimePortStateRequirement requirement(
@@ -79,7 +87,7 @@ iv::graph_jit::SampleRealtimePortStateRealization constant_sample(
         .authored_storage = iv::graph_jit::SampleRealtimePortStateStorageView{
             .storage = iv::graph_jit::SampleRealtimePortStateStorage::
                 immutable_constant,
-            .constant_value = iv::Sample{value},
+            .constant_value = sample_value_bytes(iv::Sample{value}),
         },
         .retained_access = iv::graph_jit::SampleRealtimePortStateAccess::
             immutable_constant,

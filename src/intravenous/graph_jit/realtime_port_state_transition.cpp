@@ -121,11 +121,12 @@ select_sample_inherited_state_realization(
         }
         if (previous.retained_access
             == SampleRealtimePortStateAccess::immutable_constant) {
-            auto const previous_bits = std::bit_cast<std::uint32_t>(
-                previous.authored_storage.constant_value->value);
-            auto const current_bits = std::bit_cast<std::uint32_t>(
-                current.authored_storage.constant_value->value);
-            if (previous_bits == current_bits) {
+            if (previous.authored_storage.geometry
+                    == current.authored_storage.geometry
+                && previous.authored_storage.absolute_pace_exponent
+                    == current.authored_storage.absolute_pace_exponent
+                && previous.authored_storage.constant_value
+                    == current.authored_storage.constant_value) {
                 return InheritedRealtimePortStateRealization::
                     already_represented;
             }
@@ -406,6 +407,8 @@ bool same_sample_target_geometry(
 {
     return lhs.storage == rhs.storage
         && lhs.channel_layout == rhs.channel_layout
+        && lhs.geometry == rhs.geometry
+        && lhs.absolute_pace_exponent == rhs.absolute_pace_exponent
         && lhs.representation_channel == rhs.representation_channel
         && lhs.working_frame_capacity == rhs.working_frame_capacity
         && lhs.storage_frame_count == rhs.storage_frame_count
@@ -826,9 +829,12 @@ std::expected<void, std::string> execute_realtime_port_state_transfers(
                 == SampleStreamLayout::planar
             ? view.representation_channel * view.storage_frame_count + *frame
             : *frame * channels + view.representation_channel;
-        if (sample >= view.storage_size_bytes / sizeof(Sample)) return nullptr;
+        if (view.geometry.value_size_bytes == 0
+            || sample >= view.storage_size_bytes / view.geometry.value_size_bytes) {
+            return nullptr;
+        }
         return reinterpret_cast<decltype(bytes.data())>(base)
-            + sample * sizeof(Sample);
+            + sample * view.geometry.value_size_bytes;
     };
 
     for (auto const& transfer : plan.sample_transfers) {
@@ -839,11 +845,14 @@ std::expected<void, std::string> execute_realtime_port_state_transfers(
             || transfer.source_storage.size() != 1
             || (transfer.source_access != SampleRealtimePortStateAccess::direct
                 && transfer.source_access
-                    != SampleRealtimePortStateAccess::immutable_constant)) {
+                    != SampleRealtimePortStateAccess::immutable_constant)
+            || transfer.target_storage.absolute_pace_exponent != 0
+            || transfer.target_storage.geometry.value_size_bytes == 0) {
             return std::unexpected(
-                "sample transition transfer has no executable direct storage");
+                "continuous transition transfer has no executable project-rate direct storage");
         }
-        Sample const silence{};
+        std::vector<std::byte> silence(
+            transfer.target_storage.geometry.value_size_bytes);
         for (auto relative = transfer.target_begin;
              relative < transfer.target_end; ++relative) {
             auto const semantic = relative_sample(sample_index, relative);
@@ -855,7 +864,7 @@ std::expected<void, std::string> execute_realtime_port_state_transfers(
                 return std::unexpected(
                     "sample transition target interval lies outside successor storage");
             }
-            std::memcpy(target, &silence, sizeof(silence));
+            std::memcpy(target, silence.data(), silence.size());
         }
         for (auto relative = transfer.inherited_begin;
              relative < transfer.inherited_end; ++relative) {
@@ -868,11 +877,24 @@ std::expected<void, std::string> execute_realtime_port_state_transfers(
                 return std::unexpected(
                     "sample transition target lies outside successor storage");
             }
-            Sample value{};
             auto const& source = transfer.source_storage.front();
+            if (source.geometry != transfer.target_storage.geometry
+                || source.absolute_pace_exponent != 0) {
+                return std::unexpected(
+                    "continuous transition source and target geometry differ");
+            }
             if (transfer.source_access
                 == SampleRealtimePortStateAccess::immutable_constant) {
-                value = *source.constant_value;
+                if (!source.constant_value
+                    || source.constant_value->size()
+                        != source.geometry.value_size_bytes) {
+                    return std::unexpected(
+                        "continuous transition constant has invalid geometry");
+                }
+                std::memcpy(
+                    target,
+                    source.constant_value->data(),
+                    source.geometry.value_size_bytes);
             } else {
                 auto const* address = sample_at(
                     std::span<std::byte const>{previous_storage},
@@ -882,9 +904,9 @@ std::expected<void, std::string> execute_realtime_port_state_transfers(
                     return std::unexpected(
                         "sample transition source lies outside predecessor storage");
                 }
-                std::memcpy(&value, address, sizeof(value));
+                std::memcpy(
+                    target, address, source.geometry.value_size_bytes);
             }
-            std::memcpy(target, &value, sizeof(value));
         }
     }
 

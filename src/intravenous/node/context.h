@@ -1,7 +1,9 @@
 #pragma once
 
 #include <intravenous/compat.h>
+#include <intravenous/graph/reflected_node_operations.h>
 #include <intravenous/node/resources.h>
+#include <intravenous/node/static_port_access.h>
 #include <intravenous/node/traits.h>
 
 #include <concepts>
@@ -258,6 +260,7 @@ namespace iv {
         size_t _node_index = 0;
         State const* _state_marker = nullptr;
         TockState const* _background_state_marker = nullptr;
+        ReflectedNodePortRealization _ports {};
         mutable std::vector<size_t> _direct_nested_node_indices;
         mutable std::optional<size_t> _nested_nodes_region_index;
         mutable std::optional<size_t> _nested_background_nodes_region_index;
@@ -291,10 +294,75 @@ namespace iv {
         }
 
     public:
-        explicit DeclarationContext(NodeLayoutBuilder& builder, Node const& node)
+        class ResolvedContinuousPort {
+            ReflectedContinuousPortRealization const* realization_ = nullptr;
+
+        public:
+            constexpr explicit ResolvedContinuousPort(
+                ReflectedContinuousPortRealization const& realization) noexcept
+                : realization_(&realization)
+            {}
+
+            [[nodiscard]] constexpr ContinuousValueTypeId value_type() const noexcept
+            {
+                return realization_->geometry.value_type;
+            }
+
+            template<RegisteredContinuousValue Value>
+            [[nodiscard]] constexpr bool is() const noexcept
+            {
+                return value_type() == continuous_value_type_id_v<Value>;
+            }
+
+            [[nodiscard]] constexpr std::size_t size() const noexcept
+            {
+                return realization_->geometry.elements_per_value;
+            }
+
+            [[nodiscard]] constexpr PortPace pace() const noexcept
+            {
+                return PortPace::from_exponent(
+                    realization_->absolute_pace_exponent);
+            }
+
+            [[nodiscard]] constexpr PortPace local_pace() const noexcept
+            {
+                return PortPace::from_exponent(
+                    realization_->local_pace_exponent);
+            }
+
+            [[nodiscard]] constexpr std::size_t history() const noexcept
+            {
+                return realization_->history;
+            }
+
+            [[nodiscard]] constexpr std::size_t latency() const noexcept
+            {
+                return realization_->latency;
+            }
+
+            [[nodiscard]] constexpr std::optional<std::size_t>
+            sample_support() const noexcept
+            {
+                return realization_->has_sample_support
+                    ? std::optional{realization_->sample_support}
+                    : std::nullopt;
+            }
+
+            [[nodiscard]] constexpr CoverageOrdering ordering() const noexcept
+            {
+                return realization_->ordering;
+            }
+        };
+
+        explicit DeclarationContext(
+            NodeLayoutBuilder& builder,
+            Node const& node,
+            ReflectedNodePortRealization ports)
             : _builder(&builder)
             , _node_index(details::register_node(
                 builder, details::make_node_registration(node)))
+            , _ports(ports)
         {
             if constexpr (!std::is_void_v<State>) {
                 details::allocate_node_state(
@@ -318,10 +386,12 @@ namespace iv {
                 Node>
         explicit DeclarationContext(
             NodeLayoutBuilder& builder,
-            std::integral_constant<decltype(NodeValue), NodeValue>)
+            std::integral_constant<decltype(NodeValue), NodeValue>,
+            ReflectedNodePortRealization ports)
             : _builder(&builder)
             , _node_index(details::register_node(
                 builder, details::make_reflected_node_registration<NodeValue>()))
+            , _ports(ports)
         {
             if constexpr (!std::is_void_v<State>) {
                 details::allocate_node_state(
@@ -357,10 +427,56 @@ namespace iv {
 
         template<typename Node2>
         DeclarationContext(
-            DeclarationContext<Node2> const& ctx, Node const& node)
-            : DeclarationContext<Node>(*ctx._builder, node)
+            DeclarationContext<Node2> const& ctx,
+            Node const& node,
+            ReflectedNodePortRealization ports)
+            : DeclarationContext<Node>(*ctx._builder, node, ports)
         {
             ctx._direct_nested_node_indices.push_back(_node_index);
+        }
+
+        template<std::size_t Index>
+        [[nodiscard]] ResolvedContinuousPort input() const
+        requires details::has_constexpr_port_configs<Node>
+        {
+            static_assert(
+                details::static_input_port_kind_at<Node, Index>()
+                    == PortKind::sample,
+                "declaration input is not a continuous port");
+            constexpr auto port =
+                details::static_sample_input_port_index_at<Node, Index>();
+            IV_ASSERT(port < _ports.inputs.size(),
+                "resolved declaration input is absent");
+            return ResolvedContinuousPort{_ports.inputs.pointer[port]};
+        }
+
+        template<fixed_string Name>
+        [[nodiscard]] ResolvedContinuousPort input() const
+        requires details::has_constexpr_port_configs<Node>
+        {
+            return input<details::static_input_declaration_index<Node, Name>()>();
+        }
+
+        template<std::size_t Index>
+        [[nodiscard]] ResolvedContinuousPort output() const
+        requires details::has_constexpr_port_configs<Node>
+        {
+            static_assert(
+                details::static_output_port_kind_at<Node, Index>()
+                    == PortKind::sample,
+                "declaration output is not a continuous port");
+            constexpr auto port =
+                details::static_sample_output_port_index_at<Node, Index>();
+            IV_ASSERT(port < _ports.outputs.size(),
+                "resolved declaration output is absent");
+            return ResolvedContinuousPort{_ports.outputs.pointer[port]};
+        }
+
+        template<fixed_string Name>
+        [[nodiscard]] ResolvedContinuousPort output() const
+        requires details::has_constexpr_port_configs<Node>
+        {
+            return output<details::static_output_declaration_index<Node, Name>()>();
         }
 
         NoCopy<State> const& state() const
@@ -496,13 +612,17 @@ namespace iv {
             void const* node_data,
             NodeStateStructures const* state_structures,
             size_t (*declare)(
-                void const*, NodeStateStructures const*, NodeLayoutBuilder&)) const
+                void const*,
+                NodeStateStructures const*,
+                NodeLayoutBuilder&,
+                ReflectedNodePortRealization const&),
+            ReflectedNodePortRealization const& ports) const
         {
             IV_ASSERT(node_data, "reflected child node data cannot be null");
             IV_ASSERT(
                 declare, "reflected child declaration callback cannot be null");
             _direct_nested_node_indices.push_back(
-                declare(node_data, state_structures, *_builder));
+                declare(node_data, state_structures, *_builder, ports));
         }
 
         size_t max_block_size() const

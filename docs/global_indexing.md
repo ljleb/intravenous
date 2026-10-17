@@ -54,16 +54,45 @@ ordinary linear integer types.
 ## Fractional global coordinates
 
 `FractionalGlobalIndex` extends the same circular global domain with 64 binary
-fractional bits. It is the Q64.64 coordinate used to address multirate execution and
-continuous storage, and it may also be transported as ordinary graph data whose value
-names a coordinate. Those are contextual roles of one number rather than distinct
-coordinate concepts.
+fractional bits. It is the one node-visible Q64.64 coordinate for Tick and Tock
+execution, and it may also be transported as ordinary graph data whose value names a
+coordinate. Those are contextual roles of one number rather than distinct coordinate
+concepts.
 
 A resolved absolute pace exponent `+k` selects a lattice using `k` fractional bits; a
 negative exponent selects an aligned subset of integer project positions. The initial
 realizable exponent range is `[-64, +64]`, and graph compilation rejects a revision
 outside it. Port pace constrains which `FractionalGlobalIndex` values belong to a
-particular execution/storage lattice; it does not define another index type.
+particular global execution lattice; it does not define another index type.
+
+## Sequential execution order
+
+Tick is an ordered sequence of invocations. Normally one invocation's global interval
+ends where the next begins. A pause/resume, seek, loop, or other transport seam may
+instead make the next `FractionalGlobalIndex` jump to any global coordinate. The Tick
+graph continues running while playback is paused; on resume it observes the selected
+global coordinate immediately.
+
+The global coordinate and Sequential order are intentionally different facts:
+
+```text
+node-visible position       FractionalGlobalIndex
+physical Sequential order  compiler-owned linear cursor
+```
+
+The cursor is not a second node time coordinate and is not exposed to node authors. It
+only addresses rings, carries, invocation queues, and other representations whose
+meaning is "the preceding/following transported value in Tick invocation order". One
+cursor may be shared by all representations on the same resolved dyadic pace. The
+compiler retains separate cursors only where distinct pace lattices consume different
+numbers of values.
+
+Within one callback, each port's node-visible beginning and value count are still the
+projection of the selected global interval onto that port's lattice. After a global
+seam, a slow lattice therefore resumes at its next legal global lattice point. Its
+physical storage cursor nevertheless follows the preceding Tick value, so Sequential
+history crosses the seam without being cleared or reinterpreted as a globally adjacent
+range.
 
 ## Finite ranges
 
@@ -85,15 +114,18 @@ range.contains(index)
 range.offset_of(index)
 ```
 
-Tick history/current-block/latency windows use this representation. For callback
-origin `B`, history `H`, block size `N`, and latency `L`, the legal window is:
+Globally addressed Region/Coverage and persisted ranges use this representation. Inside
+one uninterrupted Tick segment, a callback at origin `B` with history `H`, block size
+`N`, and latency `L` has the global window:
 
 ```text
 begin  = B retreated by H
 extent = H + N + L
 ```
 
-It is not clamped at signed or unsigned zero.
+It is not clamped at signed or unsigned zero. Across a Tick discontinuity,
+Sequential history/latency are instead relative to invocation order and need not form
+one globally contiguous `GlobalIndexRange` with the current block.
 
 ## Explicit orderings
 
@@ -143,9 +175,10 @@ SampleRegion
 SampleCoverage
 ```
 
-`FractionalGlobalIndex` may itself locate execution/storage or be transported as a
-continuous port value. When transported, its value may name a coordinate other than
-the `FractionalGlobalIndex` position at which it is stored.
+`FractionalGlobalIndex` may itself locate execution or be transported as a continuous
+port value. When transported, its value may name a coordinate other than the
+`FractionalGlobalIndex` position at which it is stored. Physical Sequential storage is
+addressed by its hidden invocation-order cursor, not by either coordinate value.
 
 ## Lowering, persistence, and reload
 
@@ -161,3 +194,14 @@ wrap-aware page-number arithmetic.
 Generation cutover and state migration describe surviving timeline data relative to a
 cutover origin or by modular ranges. Reload logic must not classify inherited data by
 raw unsigned comparison against zero or the cutover coordinate.
+
+Tick generation migration also preserves the physical Sequential cursors for surviving
+pace domains. Fresh representations begin with initialized prehistory; migrated
+representations retain their authored frontier. A generated writer must not overwrite
+fresh initialized prehistory with unauthored producer storage merely because both
+representations have allocated ring slots. The frontier is one saturating extent per
+revising producer and is shared by all of that producer's detached branches; it is not
+per-connection validity state.
+
+The superseded direct-global-storage interpretation is preserved in
+[Global Timeline As Sequential Storage Address](./historical/global_timeline_as_sequential_storage_address.md).

@@ -34,8 +34,9 @@ struct DebugProbe {
     {
         auto const sample = ctx.template input<0>().get();
         if (every_n_ticks != 0
-            && (ctx.index.bits() % every_n_ticks) == 0) {
-            iv::details::write_debug_probe_sample(label, ctx.index, sample);
+            && (ctx.value_index % every_n_ticks) == 0) {
+            iv::details::write_debug_probe_sample(
+                label, ctx.index.whole(), sample);
         }
         ctx.template output<0>().push(sample);
     }

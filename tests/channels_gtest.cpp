@@ -69,7 +69,7 @@ struct MonoPass {
 
     void tick_block(iv::TickBlockContext<MonoPass> const& ctx) const
     {
-        ctx.template output<0>().push_block(ctx.template input<0>().get_block(ctx.block_size));
+        ctx.template output<0>().push_block(ctx.template input<0>().block());
     }
 };
 

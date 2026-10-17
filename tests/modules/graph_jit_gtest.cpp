@@ -59,6 +59,23 @@ iv::IndexCoverage index_coverage(
     return result;
 }
 
+std::vector<std::byte> sample_value_bytes(iv::Sample value)
+{
+    std::vector<std::byte> result(sizeof(value));
+    std::memcpy(result.data(), &value, sizeof(value));
+    return result;
+}
+
+iv::Sample sample_value_from_bytes(std::span<std::byte const> bytes)
+{
+    EXPECT_EQ(bytes.size(), sizeof(iv::Sample));
+    iv::Sample result{};
+    if (bytes.size() == sizeof(result)) {
+        std::memcpy(&result, bytes.data(), sizeof(result));
+    }
+    return result;
+}
+
 std::expected<iv::graph_jit::detail::ConnectionAnalysisPlan, std::string>
 build_connection_analysis_plan(
     iv::ConfiguredGraph const& graph,
@@ -105,6 +122,10 @@ constexpr char graph_jit_latency_conversion_fanout_module_id[] = "iv.test.graph_
 constexpr char graph_jit_composed_latency_module_id[] = "iv.test.graph_jit.state_context.composed_latency_module";
 constexpr char graph_jit_composed_history_module_id[] = "iv.test.graph_jit.state_context.composed_history_module";
 constexpr char graph_jit_projected_composition_module_id[] = "iv.test.graph_jit.state_context.projected_composition_module";
+constexpr char graph_jit_fft_value_module_id[] = "iv.test.graph_jit.state_context.fft_value_module";
+constexpr char graph_jit_fractional_index_value_module_id[] = "iv.test.graph_jit.state_context.fractional_index_value_module";
+constexpr char graph_jit_persisted_fft_value_module_id[] = "iv.test.graph_jit.state_context.persisted_fft_value_module";
+constexpr char graph_jit_persisted_non_project_rate_sample_module_id[] = "iv.test.graph_jit.state_context.persisted_non_project_rate_sample_module";
 constexpr char graph_jit_direct_event_module_id[] = "iv.test.graph_jit.state_context.direct_event_module";
 constexpr char graph_jit_transient_event_module_id[] = "iv.test.graph_jit.state_context.transient_event_module";
 constexpr char graph_jit_converted_event_fanout_module_id[] = "iv.test.graph_jit.state_context.converted_event_fanout_module";
@@ -162,6 +183,28 @@ struct BackgroundExecutionProbeStateMirror {
     std::uint64_t sample_rate = 0;
 };
 
+struct alignas(256) FFTValueConsumerStateMirror {
+    std::uint64_t calls = 0;
+    std::uint64_t root_block_size = 0;
+    std::uint64_t input_block_size = 0;
+    std::uint64_t extended_block_size = 0;
+    std::uint64_t value_index = 0;
+    float preceding_bin = 0.0f;
+    float first_bin = 0.0f;
+    float last_bin = 0.0f;
+};
+
+struct alignas(512) FractionalIndexConsumerStateMirror {
+    std::uint64_t calls = 0;
+    std::uint64_t root_block_size = 0;
+    std::uint64_t input_block_size = 0;
+    std::uint64_t value_index = 0;
+    std::uint64_t first_whole = 0;
+    std::uint64_t first_fraction = 0;
+    std::uint64_t last_whole = 0;
+    std::uint64_t last_fraction = 0;
+};
+
 struct BackgroundOperationHookCapture {
     BackgroundExecutionProbeStateMirror const* state = nullptr;
     std::size_t prepare_calls = 0;
@@ -207,7 +250,7 @@ struct GeneratedTickCaptureProbe {
 
 void capture_generated_tick_samples(
     void* opaque,
-    iv::ReflectedSampleOutputPortBinding const* output,
+    iv::ReflectedContinuousOutputPortBinding const* output,
     iv::GlobalIndex sample_index,
     std::size_t block_size) noexcept
 {
@@ -220,30 +263,29 @@ void capture_generated_tick_samples(
     probe.sample_latency = output->latency;
     auto const& storage = output->storage;
     if (storage.channel_layout.channel_type != iv::ChannelTypeId::mono
-        || storage.frame_capacity == 0
-        || !std::has_single_bit(storage.frame_capacity)) {
+        || storage.geometry.value_type != iv::ContinuousValueTypeId::sample
+        || storage.value_capacity == 0
+        || !std::has_single_bit(storage.value_capacity)) {
         return;
     }
-    auto read = [&](iv::GlobalIndex position) {
+    auto read = [&](std::uint64_t ordinal) {
         auto const& channel = storage.channels[0];
-        if (!channel.storage || channel.frame_capacity == 0
-            || !std::has_single_bit(channel.frame_capacity)
-            || channel.frame_stride == 0
-            || channel.frame_delay >= channel.frame_capacity) {
+        if (!channel.storage || channel.value_capacity == 0
+            || !std::has_single_bit(channel.value_capacity)
+            || channel.value_stride_bytes < sizeof(iv::Sample)
+            || channel.value_delay >= channel.value_capacity) {
             return 0.0f;
         }
-        auto const logical = position.advanced_by(storage.storage_latency);
-        auto const delayed = logical.retreated_by(channel.frame_delay);
-        auto const frame = static_cast<std::size_t>(
-            delayed.bits() & (channel.frame_capacity - 1));
-        return static_cast<float>(
-            reinterpret_cast<iv::Sample const*>(channel.storage)[
-                frame * channel.frame_stride]);
+        auto const storage_ordinal = ordinal
+            + storage.storage_latency - channel.value_delay;
+        auto const slot = static_cast<std::size_t>(storage_ordinal)
+            & (channel.value_capacity - 1);
+        return static_cast<float>(*reinterpret_cast<iv::Sample const*>(
+            channel.storage + slot * channel.value_stride_bytes));
     };
-    // Output latency extends the mutation window; it does not shift the
-    // absolute positions written by push().
-    probe.first_sample = read(sample_index);
-    probe.last_sample = read(sample_index.advanced_by(block_size - 1));
+    probe.first_sample = read(output->sequential_begin_ordinal);
+    probe.last_sample = read(
+        output->sequential_begin_ordinal + block_size - 1);
 }
 
 void capture_generated_tick_events(
@@ -1303,7 +1345,14 @@ TEST(GraphJitSampleStoragePlan, PacksExactTransientByteRangesAcrossLifetimes)
     auto finalized = finalize_sample_storage(layout, *storage);
     ASSERT_TRUE(finalized.has_value())
         << (finalized ? std::string{} : finalized.error());
-    EXPECT_TRUE(layout.regions.empty());
+    EXPECT_TRUE(storage->persistent_allocations.empty());
+    ASSERT_EQ(storage->sequential_pace_cursors.size(), 1u);
+    EXPECT_EQ(layout.regions.size(), storage->sequential_pace_cursors.size());
+    EXPECT_EQ(storage->sequential_pace_cursors[0].absolute_pace_exponent, 0);
+    ASSERT_TRUE(storage->sequential_pace_cursors[0].region.valid());
+    ASSERT_LT(
+        storage->sequential_pace_cursors[0].region.index,
+        layout.regions.size());
 }
 
 TEST(GraphJitSampleStoragePlan, LeavesBackgroundAccessBranchesUnresolved)
@@ -1516,7 +1565,7 @@ TEST(GraphJitSampleStoragePlan, RealizesCompactPersistentCarryExactly)
     auto finalized = finalize_sample_storage(layout, *storage);
     ASSERT_TRUE(finalized.has_value())
         << (finalized ? std::string{} : finalized.error());
-    ASSERT_EQ(layout.regions.size(), 1u);
+    ASSERT_EQ(layout.regions.size(), 2u);
     auto const& persistent_region = layout.regions[persistent.region.index];
     EXPECT_EQ(
         persistent_region.migration_identity,
@@ -1588,9 +1637,10 @@ TEST(GraphJitSampleStoragePlan, RealizesLargeRetentionAsPersistentRing)
     auto finalized = finalize_sample_storage(layout, *first);
     ASSERT_TRUE(finalized.has_value())
         << (finalized ? std::string{} : finalized.error());
-    ASSERT_EQ(layout.regions.size(), 1u);
-    EXPECT_EQ(layout.regions[0].size, 8192u * sizeof(iv::Sample));
-    EXPECT_FALSE(layout.regions[0].migration_identity.empty());
+    ASSERT_EQ(layout.regions.size(), 2u);
+    auto const& persistent_region = layout.regions[persistent.region.index];
+    EXPECT_EQ(persistent_region.size, 8192u * sizeof(iv::Sample));
+    EXPECT_FALSE(persistent_region.migration_identity.empty());
 }
 
 TEST(GraphJitSampleStoragePlan, RealizesDetachedBranchAsPersistentFeedbackRing)
@@ -1639,7 +1689,7 @@ TEST(GraphJitSampleStoragePlan, RealizesDetachedBranchAsPersistentFeedbackRing)
         .loop_extra_latency = 5,
         .initial_value_override = iv::Sample{0.25f},
     };
-    feedback.detach_initial_value = iv::Sample{0.25f};
+    feedback.detach_initial_value = sample_value_bytes(iv::Sample{0.25f});
     connections.sample_connections.push_back(feedback);
 
     SampleProducerGroupPlan group;
@@ -1665,6 +1715,10 @@ TEST(GraphJitSampleStoragePlan, RealizesDetachedBranchAsPersistentFeedbackRing)
     ASSERT_EQ(storage->transient_allocations.size(), 1u);
     ASSERT_EQ(storage->persistent_allocations.size(), 1u);
     ASSERT_EQ(storage->feedback_timelines.size(), 1u);
+    ASSERT_EQ(storage->producer_authored_extents.size(), 1u);
+    EXPECT_EQ(
+        storage->producer_authored_extents.front().maximum_revision_frames,
+        2u);
     ASSERT_TRUE(storage->connection_representations[0].has_value());
 
     auto const canonical = storage->producer_groups[0]->canonical_representation;
@@ -1692,7 +1746,9 @@ TEST(GraphJitSampleStoragePlan, RealizesDetachedBranchAsPersistentFeedbackRing)
     EXPECT_EQ(persistent.size_bytes, 32u * sizeof(iv::Sample));
     ASSERT_TRUE(persistent.initialize_value.has_value());
     EXPECT_FLOAT_EQ(
-        static_cast<float>(*persistent.initialize_value), 0.25f);
+        static_cast<float>(sample_value_from_bytes(
+            *persistent.initialize_value)),
+        0.25f);
     EXPECT_NE(
         persistent.migration_identity.find("graphjit.sample.feedback:"),
         std::string::npos);
@@ -1703,7 +1759,9 @@ TEST(GraphJitSampleStoragePlan, RealizesDetachedBranchAsPersistentFeedbackRing)
     EXPECT_EQ(timeline.channel_layout, mono);
     EXPECT_EQ(timeline.retained_frames, 10u);
     EXPECT_EQ(timeline.loop_extra_latency, 5u);
-    EXPECT_FLOAT_EQ(static_cast<float>(timeline.initial_value), 0.25f);
+    EXPECT_FLOAT_EQ(
+        static_cast<float>(sample_value_from_bytes(timeline.initial_value)),
+        0.25f);
     EXPECT_EQ(timeline.writer.kind, SampleFeedbackTimelineWriterKind::copy);
     EXPECT_EQ(timeline.writer.revision_frames, 2u);
     EXPECT_EQ(timeline.writer.source_representation, canonical);
@@ -1725,7 +1783,7 @@ TEST(GraphJitSampleStoragePlan, RealizesDetachedBranchAsPersistentFeedbackRing)
     auto finalized = finalize_sample_storage(layout, *storage);
     ASSERT_TRUE(finalized.has_value())
         << (finalized ? std::string{} : finalized.error());
-    ASSERT_EQ(layout.regions.size(), 1u);
+    ASSERT_EQ(layout.regions.size(), 3u);
     auto const& persistent_region = layout.regions[persistent.region.index];
     EXPECT_EQ(persistent_region.size, 32u * sizeof(iv::Sample));
     EXPECT_EQ(
@@ -1794,7 +1852,7 @@ TEST(GraphJitSampleStoragePlan, ZeroInitializedFeedbackUsesProducerHomeAndCopies
             .loop_extra_latency = latency,
             .initial_value_override = initial_value,
         };
-        feedback.detach_initial_value = initial_value;
+        feedback.detach_initial_value = sample_value_bytes(initial_value);
         return feedback;
     };
 
@@ -1867,7 +1925,9 @@ TEST(GraphJitSampleStoragePlan, ZeroInitializedFeedbackUsesProducerHomeAndCopies
     EXPECT_EQ(copied->writer.kind, SampleFeedbackTimelineWriterKind::copy);
     EXPECT_EQ(copied->writer.source_representation, canonical);
     EXPECT_EQ(copied->writer.after_execution_position, 0u);
-    EXPECT_FLOAT_EQ(static_cast<float>(copied->initial_value), 0.5f);
+    EXPECT_FLOAT_EQ(
+        static_cast<float>(sample_value_from_bytes(copied->initial_value)),
+        0.5f);
 
     auto const producer_home_count = std::ranges::count_if(
         storage->feedback_timelines,
@@ -1884,7 +1944,9 @@ TEST(GraphJitSampleStoragePlan, ZeroInitializedFeedbackUsesProducerHomeAndCopies
     EXPECT_EQ(home.retained_frames, 12u);
     EXPECT_EQ(home.frame_capacity, 32u);
     ASSERT_TRUE(home.initialize_value.has_value());
-    EXPECT_FLOAT_EQ(static_cast<float>(*home.initialize_value), 0.0f);
+    EXPECT_FLOAT_EQ(
+        static_cast<float>(sample_value_from_bytes(*home.initialize_value)),
+        0.0f);
     EXPECT_NE(home.migration_identity.find("graphjit.sample:"), std::string::npos);
     EXPECT_EQ(
         home.migration_identity.find("graphjit.sample.feedback:"),
@@ -1979,7 +2041,7 @@ TEST(GraphJitSampleStoragePlan, DetachedCompositionUsesPersistentShiftedTimeline
         .loop_extra_latency = 5,
         .initial_value_override = iv::Sample{0.25f},
     };
-    feedback.detach_initial_value = iv::Sample{0.25f};
+    feedback.detach_initial_value = sample_value_bytes(iv::Sample{0.25f});
     connections.sample_connections.push_back(feedback);
 
     auto append_group = [&](iv::SampleOutputChannelId source,
@@ -2036,7 +2098,10 @@ TEST(GraphJitSampleStoragePlan, DetachedCompositionUsesPersistentShiftedTimeline
     EXPECT_EQ(persistent.retained_frames, 15u);
     EXPECT_EQ(persistent.frame_capacity, 32u);
     ASSERT_TRUE(persistent.initialize_value.has_value());
-    EXPECT_FLOAT_EQ(static_cast<float>(*persistent.initialize_value), 0.25f);
+    EXPECT_FLOAT_EQ(
+        static_cast<float>(sample_value_from_bytes(
+            *persistent.initialize_value)),
+        0.25f);
     EXPECT_NE(
         persistent.migration_identity.find("graphjit.sample.composed_feedback:"),
         std::string::npos);
@@ -2047,7 +2112,9 @@ TEST(GraphJitSampleStoragePlan, DetachedCompositionUsesPersistentShiftedTimeline
     EXPECT_EQ(timeline.channel_layout, stereo);
     EXPECT_EQ(timeline.retained_frames, 15u);
     EXPECT_EQ(timeline.loop_extra_latency, 5u);
-    EXPECT_FLOAT_EQ(static_cast<float>(timeline.initial_value), 0.25f);
+    EXPECT_FLOAT_EQ(
+        static_cast<float>(sample_value_from_bytes(timeline.initial_value)),
+        0.25f);
     EXPECT_EQ(
         timeline.writer.kind,
         SampleFeedbackTimelineWriterKind::composition);
@@ -2160,7 +2227,7 @@ TEST(GraphJitSampleStoragePlan, DetachedMixingAlignsUnequalSourceLatencies)
         .loop_extra_latency = 5,
         .initial_value_override = iv::Sample{0.25f},
     };
-    feedback.detach_initial_value = iv::Sample{0.25f};
+    feedback.detach_initial_value = sample_value_bytes(iv::Sample{0.25f});
     connections.sample_connections.push_back(feedback);
 
     auto append_group = [&](iv::SampleOutputChannelId source,
@@ -2215,7 +2282,9 @@ TEST(GraphJitSampleStoragePlan, DetachedMixingAlignsUnequalSourceLatencies)
     EXPECT_EQ(alignment_allocation.retained_frames, 5u);
     ASSERT_TRUE(alignment_allocation.initialize_value.has_value());
     EXPECT_FLOAT_EQ(
-        static_cast<float>(*alignment_allocation.initialize_value), 0.25f);
+        static_cast<float>(sample_value_from_bytes(
+            *alignment_allocation.initialize_value)),
+        0.25f);
 
     iv::NodeLayoutBuilder builder(8);
     auto declared = declare_sample_storage(builder, *storage);
@@ -2292,7 +2361,7 @@ TEST(GraphJitSampleStoragePlan, ConvertedFeedbackUsesCompactCarryTimeline)
         .loop_extra_latency = 6,
         .initial_value_override = iv::Sample{-0.25f},
     };
-    feedback.detach_initial_value = iv::Sample{-0.25f};
+    feedback.detach_initial_value = sample_value_bytes(iv::Sample{-0.25f});
     connections.sample_connections.push_back(feedback);
 
     SampleProducerGroupPlan group;
@@ -2699,7 +2768,7 @@ struct StatefulProbe {
     {
         auto& state = ctx.state();
         ++state.tick_calls;
-        state.last_index = ctx.index.bits();
+        state.last_index = ctx.index.whole().bits();
         state.last_block_size = ctx.block_size;
         state.sample_rate = ctx.sample_rate;
         state.observed_state_extent = ctx.buffer.size();
@@ -2710,7 +2779,7 @@ struct StatefulProbe {
     {
         auto& state = ctx.state();
         ++state.skip_calls;
-        state.last_index = ctx.index.bits();
+        state.last_index = ctx.index.whole().bits();
         state.last_block_size = ctx.block_size;
         state.sample_rate = ctx.sample_rate;
         state.observed_state_extent = ctx.buffer.size();
@@ -2939,7 +3008,7 @@ struct LimitedBlockProbe {
         auto& state = ctx.state();
         auto const index = state.tick_calls++;
         if (index < state.tick_indices.size()) {
-            state.tick_indices[index] = ctx.index.bits();
+            state.tick_indices[index] = ctx.index.whole().bits();
             state.tick_sizes[index] = ctx.block_size;
         }
     }
@@ -2949,7 +3018,7 @@ struct LimitedBlockProbe {
         auto& state = ctx.state();
         auto const index = state.skip_calls++;
         if (index < state.skip_indices.size()) {
-            state.skip_indices[index] = ctx.index.bits();
+            state.skip_indices[index] = ctx.index.whole().bits();
             state.skip_sizes[index] = ctx.block_size;
         }
     }
@@ -2968,9 +3037,11 @@ struct SampleRampSource {
 
     void tick_block(iv::TickBlockContext<SampleRampSource> const& ctx) const
     {
+        auto output = ctx.template output<0>();
         for (std::size_t i = 0; i < ctx.block_size; ++i) {
-            ctx.template output<0>().push(iv::Sample{
-                static_cast<float>(ctx.index.advanced_by(i).signed_value())});
+            output.push(iv::Sample{
+                static_cast<float>(ctx.index.advanced_by({.whole = i})
+                    .whole().signed_value())});
         }
     }
 };
@@ -2996,7 +3067,7 @@ struct RevisingSampleSource {
     {
         auto output = ctx.template output<0>();
         for (std::size_t i = 0; i < ctx.block_size; ++i) {
-            auto const position = ctx.index.advanced_by(i);
+            auto const position = ctx.index.advanced_by({.whole = i}).whole();
             if (position != iv::GlobalIndex{}) {
                 output.update(iv::Sample{
                     static_cast<float>(99 + position.signed_value())});
@@ -3034,7 +3105,8 @@ struct TickCaptureSource {
         auto samples = ctx.template output<"samples">();
         for (std::size_t i = 0; i < ctx.block_size; ++i) {
             samples[i] = iv::Sample{
-                static_cast<float>(ctx.index.advanced_by(i).signed_value())
+                static_cast<float>(ctx.index.advanced_by({.whole = i})
+                    .whole().signed_value())
                     + 0.5f};
         }
         if (ctx.block_size > 3) {
@@ -3065,7 +3137,7 @@ struct PersistentRevisingSampleSource {
     {
         auto output = ctx.template output<0>();
         for (std::size_t i = 0; i < ctx.block_size; ++i) {
-            auto const position = ctx.index.advanced_by(i);
+            auto const position = ctx.index.advanced_by({.whole = i}).whole();
             if (position != iv::GlobalIndex{}) {
                 output.update(iv::Sample{
                     static_cast<float>(99 + position.signed_value())});
@@ -3097,11 +3169,12 @@ struct TickFallbackSampleSource {
     void tick(iv::TickSampleContext<TickFallbackSampleSource> const& ctx) const
     {
         auto output = ctx.template output<0>();
-        if (ctx.index != iv::GlobalIndex{}) {
+        auto const index = ctx.index.whole();
+        if (index != iv::GlobalIndex{}) {
             output.update(iv::Sample{
-                static_cast<float>(99 + ctx.index.signed_value())});
+                static_cast<float>(99 + index.signed_value())});
         }
-        output.push(iv::Sample{static_cast<float>(ctx.index.signed_value())});
+        output.push(iv::Sample{static_cast<float>(index.signed_value())});
     }
 };
 
@@ -3120,9 +3193,11 @@ struct LimitedSampleRampSource {
 
     void tick_block(iv::TickBlockContext<LimitedSampleRampSource> const& ctx) const
     {
+        auto output = ctx.template output<0>();
         for (std::size_t i = 0; i < ctx.block_size; ++i) {
-            ctx.template output<0>().push(iv::Sample{
-                static_cast<float>(ctx.index.advanced_by(i).signed_value())});
+            output.push(iv::Sample{
+                static_cast<float>(ctx.index.advanced_by({.whole = i})
+                    .whole().signed_value())});
         }
     }
 };
@@ -3150,9 +3225,9 @@ struct SampleConsumerProbe {
     void tick_block(iv::TickBlockContext<SampleConsumerProbe> const& ctx) const
     {
         auto& state = ctx.state();
-        auto const block = ctx.template input<0>().get_block(ctx.block_size);
+        auto const block = ctx.template input<0>().block();
         ++state.calls;
-        state.last_index = ctx.index.bits();
+        state.last_index = ctx.index.whole().bits();
         state.last_block_size = ctx.block_size;
         state.first = block.empty() ? iv::Sample{0} : block[0];
         state.last = block.empty() ? iv::Sample{0} : block[block.size() - 1];
@@ -3187,10 +3262,10 @@ struct SampleFeedbackA {
     void tick_block(iv::TickBlockContext<SampleFeedbackA> const& ctx) const
     {
         auto& state = ctx.state();
-        auto const input = ctx.template input<0>().get_block(ctx.block_size);
+        auto const input = ctx.template input<0>().block();
         auto const index = static_cast<std::size_t>(state.calls);
         if (index < state.indices.size()) {
-            state.indices[index] = ctx.index.bits();
+            state.indices[index] = ctx.index.whole().bits();
             state.block_sizes[index] = ctx.block_size;
             state.first_inputs[index] = input.empty()
                 ? 0.0f
@@ -3202,8 +3277,9 @@ struct SampleFeedbackA {
         ++state.calls;
         state.scc_feedback_latency = ctx.scc_feedback_latency;
         state.marker = 0x5a11ce01u;
+        auto output = ctx.template output<0>();
         for (auto const sample : input) {
-            ctx.template output<0>().push(sample + 1.0f);
+            output.push(sample + 1.0f);
         }
     }
 };
@@ -3233,10 +3309,10 @@ struct SampleFeedbackB {
     void tick_block(iv::TickBlockContext<SampleFeedbackB> const& ctx) const
     {
         auto& state = ctx.state();
-        auto const input = ctx.template input<0>().get_block(ctx.block_size);
+        auto const input = ctx.template input<0>().block();
         auto const index = static_cast<std::size_t>(state.calls);
         if (index < state.indices.size()) {
-            state.indices[index] = ctx.index.bits();
+            state.indices[index] = ctx.index.whole().bits();
             state.block_sizes[index] = ctx.block_size;
             state.first_inputs[index] = input.empty()
                 ? 0.0f
@@ -3248,8 +3324,9 @@ struct SampleFeedbackB {
         ++state.calls;
         state.scc_feedback_latency = ctx.scc_feedback_latency;
         state.marker = 0x5b22ce02ull;
+        auto output = ctx.template output<0>();
         for (auto const sample : input) {
-            ctx.template output<0>().push(sample);
+            output.push(sample);
         }
     }
 };
@@ -3286,12 +3363,12 @@ struct MultiBranchSampleFeedback {
     void tick_block(iv::TickBlockContext<MultiBranchSampleFeedback> const& ctx) const
     {
         auto& state = ctx.state();
-        auto const fast = ctx.template input<0>().get_block(ctx.block_size);
-        auto const slow = ctx.template input<1>().get_block(ctx.block_size);
-        auto const initialized = ctx.template input<2>().get_block(ctx.block_size);
+        auto const fast = ctx.template input<0>().block();
+        auto const slow = ctx.template input<1>().block();
+        auto const initialized = ctx.template input<2>().block();
         auto const index = static_cast<std::size_t>(state.calls);
         if (index < state.indices.size()) {
-            state.indices[index] = ctx.index.bits();
+            state.indices[index] = ctx.index.whole().bits();
             state.block_sizes[index] = ctx.block_size;
             if (!fast.empty()) {
                 state.first_fast[index] = static_cast<float>(fast[0]);
@@ -3305,8 +3382,9 @@ struct MultiBranchSampleFeedback {
         ++state.calls;
         state.scc_feedback_latency = ctx.scc_feedback_latency;
         state.marker = 0x6d756c74u;
+        auto output = ctx.template output<0>();
         for (auto const sample : fast) {
-            ctx.template output<0>().push(sample + 1.0f);
+            output.push(sample + 1.0f);
         }
     }
 };
@@ -3344,10 +3422,10 @@ struct TemporalSampleFeedback {
     void tick_block(iv::TickBlockContext<TemporalSampleFeedback> const& ctx) const
     {
         auto& state = ctx.state();
-        auto const input = ctx.template input<0>().get_block(ctx.block_size);
+        auto const input = ctx.template input<0>().block();
         auto const index = static_cast<std::size_t>(state.calls);
         if (index < state.indices.size()) {
-            state.indices[index] = ctx.index.bits();
+            state.indices[index] = ctx.index.whole().bits();
             state.block_sizes[index] = ctx.block_size;
             state.current_inputs[index] = static_cast<float>(ctx.template input<0>().get());
             state.history_3_inputs[index] =
@@ -3362,8 +3440,9 @@ struct TemporalSampleFeedback {
         ++state.calls;
         state.scc_feedback_latency = ctx.scc_feedback_latency;
         state.marker = 0x7e4fba11u;
+        auto output = ctx.template output<0>();
         for (auto const sample : input) {
-            ctx.template output<0>().push(sample + 1.0f);
+            output.push(sample + 1.0f);
         }
     }
 };
@@ -3398,8 +3477,8 @@ struct RevisingSampleFeedback {
         auto& state = ctx.state();
         auto const index = static_cast<std::size_t>(state.calls);
         if (index < state.indices.size()) {
-            state.indices[index] = ctx.index.bits();
-            auto const block = ctx.template input<0>().get_block(ctx.block_size);
+            state.indices[index] = ctx.index.whole().bits();
+            auto const block = ctx.template input<0>().block();
             state.first_inputs[index] = block.empty()
                 ? 0.0f
                 : static_cast<float>(block[0]);
@@ -3411,14 +3490,15 @@ struct RevisingSampleFeedback {
         state.marker = 0x5a17e001u;
 
         auto output = ctx.template output<0>();
-        if (ctx.index == iv::GlobalIndex::from_bits(4)) {
+        if (ctx.index == iv::FractionalGlobalIndex::from_global(
+                iv::GlobalIndex::from_bits(4))) {
             // Frame 3 was authored by the preceding root call and remains
             // revisable because the output declares two frames of latency.
             output.update(iv::Sample{103.0f});
         }
         for (std::size_t i = 0; i < ctx.block_size; ++i) {
             output.push(iv::Sample{
-                static_cast<float>(ctx.index.advanced_by(i).signed_value())});
+                static_cast<float>(ctx.index.advanced_by({.whole = i}).whole().signed_value())});
         }
     }
 };
@@ -3460,28 +3540,29 @@ struct ProjectedRevisingSampleFeedback {
         auto& state = ctx.state();
         auto const index = static_cast<std::size_t>(state.calls);
         if (index < state.indices.size()) {
-            state.indices[index] = ctx.index.bits();
+            state.indices[index] = ctx.index.whole().bits();
             if (ctx.block_size != 0) {
                 state.first_left[index] =
-                    static_cast<float>(ctx.template input<0>().get_frame(0, 0));
+                    static_cast<float>(ctx.template input<0>().get_value(0, 0));
                 state.first_right[index] =
-                    static_cast<float>(ctx.template input<0>().get_frame(0, 1));
+                    static_cast<float>(ctx.template input<0>().get_value(0, 1));
                 state.last_left[index] = static_cast<float>(
-                    ctx.template input<0>().get_frame(ctx.block_size - 1, 0));
+                    ctx.template input<0>().get_value(ctx.block_size - 1, 0));
                 state.last_right[index] = static_cast<float>(
-                    ctx.template input<0>().get_frame(ctx.block_size - 1, 1));
+                    ctx.template input<0>().get_value(ctx.block_size - 1, 1));
             }
         }
         ++state.calls;
         state.marker = 0x52e71e55u;
 
         auto output = ctx.template output<0>();
-        if (ctx.index == iv::GlobalIndex::from_bits(4)) {
+        if (ctx.index == iv::FractionalGlobalIndex::from_global(
+                iv::GlobalIndex::from_bits(4))) {
             output.update(iv::Sample{103.0f});
         }
         for (std::size_t i = 0; i < ctx.block_size; ++i) {
             output.push(iv::Sample{
-                static_cast<float>(ctx.index.advanced_by(i).signed_value())});
+                static_cast<float>(ctx.index.advanced_by({.whole = i}).whole().signed_value())});
         }
     }
 };
@@ -3518,26 +3599,27 @@ struct ConvertedSampleFeedback {
         auto& state = ctx.state();
         auto const index = static_cast<std::size_t>(state.calls);
         if (index < state.indices.size()) {
-            state.indices[index] = ctx.index.bits();
+            state.indices[index] = ctx.index.whole().bits();
             state.block_sizes[index] = ctx.block_size;
             if (ctx.block_size != 0) {
                 state.first_left[index] =
-                    static_cast<float>(ctx.template input<0>().get_frame(0, 0));
+                    static_cast<float>(ctx.template input<0>().get_value(0, 0));
                 state.first_right[index] =
-                    static_cast<float>(ctx.template input<0>().get_frame(0, 1));
+                    static_cast<float>(ctx.template input<0>().get_value(0, 1));
                 state.last_left[index] = static_cast<float>(
-                    ctx.template input<0>().get_frame(ctx.block_size - 1, 0));
+                    ctx.template input<0>().get_value(ctx.block_size - 1, 0));
                 state.last_right[index] = static_cast<float>(
-                    ctx.template input<0>().get_frame(ctx.block_size - 1, 1));
+                    ctx.template input<0>().get_value(ctx.block_size - 1, 1));
             }
         }
         ++state.calls;
         state.scc_feedback_latency = ctx.scc_feedback_latency;
         state.marker = 0xc04e7ed1u;
+        auto output = ctx.template output<0>();
         for (std::size_t i = 0; i < ctx.block_size; ++i) {
-            auto const left = ctx.template input<0>().get_frame(i, 0);
-            auto const right = ctx.template input<0>().get_frame(i, 1);
-            ctx.template output<0>().push((left + right) * 0.5f + 1.0f);
+            auto const left = ctx.template input<0>().get_value(i, 0);
+            auto const right = ctx.template input<0>().get_value(i, 1);
+            output.push((left + right) * 0.5f + 1.0f);
         }
     }
 };
@@ -3569,9 +3651,9 @@ struct MonoInterleavedConsumerProbe {
     void tick_block(iv::TickBlockContext<MonoInterleavedConsumerProbe> const& ctx) const
     {
         auto& state = ctx.state();
-        auto const block = ctx.template input<0>().get_block(ctx.block_size);
+        auto const block = ctx.template input<0>().block();
         ++state.calls;
-        state.last_index = ctx.index.bits();
+        state.last_index = ctx.index.whole().bits();
         state.last_block_size = ctx.block_size;
         state.first = block.empty() ? 0.0f : static_cast<float>(block[0]);
         state.last = block.empty()
@@ -3599,14 +3681,16 @@ struct StereoRampSource {
 
     void tick_block(iv::TickBlockContext<StereoRampSource> const& ctx) const
     {
+        auto output = ctx.template output<0>();
         for (std::size_t i = 0; i < ctx.block_size; ++i) {
-            auto const position = ctx.index.advanced_by(i);
+            auto const position = ctx.index.advanced_by({.whole = i}).whole();
             std::array<iv::Sample, 2> frame{
                 iv::Sample{static_cast<float>(position.signed_value())},
                 iv::Sample{
                     static_cast<float>(position.signed_value()) + 1000.0f},
             };
-            ctx.template output<0>().push_frame(frame);
+            output.value(i, 0) = frame[0];
+            output.value(i, 1) = frame[1];
         }
     }
 };
@@ -3642,21 +3726,21 @@ struct StereoPlanarConsumerProbe {
     {
         auto& state = ctx.state();
         ++state.calls;
-        state.last_index = ctx.index.bits();
+        state.last_index = ctx.index.whole().bits();
         state.last_block_size = ctx.block_size;
         state.sum_left = 0.0f;
         state.sum_right = 0.0f;
         if (ctx.block_size != 0) {
-            state.first_left = static_cast<float>(ctx.template input<0>().get_frame(0, 0));
-            state.first_right = static_cast<float>(ctx.template input<0>().get_frame(0, 1));
+            state.first_left = static_cast<float>(ctx.template input<0>().get_value(0, 0));
+            state.first_right = static_cast<float>(ctx.template input<0>().get_value(0, 1));
             state.last_left = static_cast<float>(
-                ctx.template input<0>().get_frame(ctx.block_size - 1, 0));
+                ctx.template input<0>().get_value(ctx.block_size - 1, 0));
             state.last_right = static_cast<float>(
-                ctx.template input<0>().get_frame(ctx.block_size - 1, 1));
+                ctx.template input<0>().get_value(ctx.block_size - 1, 1));
         }
         for (std::size_t i = 0; i < ctx.block_size; ++i) {
-            state.sum_left += static_cast<float>(ctx.template input<0>().get_frame(i, 0));
-            state.sum_right += static_cast<float>(ctx.template input<0>().get_frame(i, 1));
+            state.sum_left += static_cast<float>(ctx.template input<0>().get_value(i, 0));
+            state.sum_right += static_cast<float>(ctx.template input<0>().get_value(i, 1));
         }
     }
 };
@@ -3692,21 +3776,21 @@ struct StereoSampleConsumerProbe {
     {
         auto& state = ctx.state();
         ++state.calls;
-        state.last_index = ctx.index.bits();
+        state.last_index = ctx.index.whole().bits();
         state.last_block_size = ctx.block_size;
         state.sum_left = 0.0f;
         state.sum_right = 0.0f;
         if (ctx.block_size != 0) {
-            state.first_left = static_cast<float>(ctx.template input<0>().get_frame(0, 0));
-            state.first_right = static_cast<float>(ctx.template input<0>().get_frame(0, 1));
+            state.first_left = static_cast<float>(ctx.template input<0>().get_value(0, 0));
+            state.first_right = static_cast<float>(ctx.template input<0>().get_value(0, 1));
             state.last_left = static_cast<float>(
-                ctx.template input<0>().get_frame(ctx.block_size - 1, 0));
+                ctx.template input<0>().get_value(ctx.block_size - 1, 0));
             state.last_right = static_cast<float>(
-                ctx.template input<0>().get_frame(ctx.block_size - 1, 1));
+                ctx.template input<0>().get_value(ctx.block_size - 1, 1));
         }
         for (std::size_t i = 0; i < ctx.block_size; ++i) {
-            state.sum_left += static_cast<float>(ctx.template input<0>().get_frame(i, 0));
-            state.sum_right += static_cast<float>(ctx.template input<0>().get_frame(i, 1));
+            state.sum_left += static_cast<float>(ctx.template input<0>().get_value(i, 0));
+            state.sum_right += static_cast<float>(ctx.template input<0>().get_value(i, 1));
         }
     }
 };
@@ -3738,12 +3822,13 @@ struct HistoryRampSource {
     void tick_block(iv::TickBlockContext<HistoryRampSource> const& ctx) const
     {
         auto& state = ctx.state();
+        auto output = ctx.template output<0>();
         ++state.calls;
-        state.previous_output = static_cast<float>(ctx.template output<0>().get());
+        state.previous_output = static_cast<float>(output.get());
         state.marker = 0x91a2b3c4u;
         for (std::size_t i = 0; i < ctx.block_size; ++i) {
-            ctx.template output<0>().push(iv::Sample{
-                static_cast<float>(ctx.index.advanced_by(i).signed_value())});
+            output.push(iv::Sample{
+                static_cast<float>(ctx.index.advanced_by({.whole = i}).whole().signed_value())});
         }
     }
 };
@@ -3778,7 +3863,7 @@ struct HistoryConsumerProbe {
     {
         auto& state = ctx.state();
         ++state.calls;
-        state.last_index = ctx.index.bits();
+        state.last_index = ctx.index.whole().bits();
         state.current = static_cast<float>(ctx.template input<0>().get(0));
         state.history_1 = static_cast<float>(ctx.template input<0>().get(1));
         state.history_5 = static_cast<float>(ctx.template input<0>().get(5));
@@ -3821,7 +3906,7 @@ struct StereoHistoryConsumerProbe {
     {
         auto& state = ctx.state();
         ++state.calls;
-        state.last_index = ctx.index.bits();
+        state.last_index = ctx.index.whole().bits();
         state.current_left = static_cast<float>(ctx.template input<0>().get(0, 0));
         state.current_right = static_cast<float>(ctx.template input<0>().get(0, 1));
         state.history_5_left = static_cast<float>(ctx.template input<0>().get(5, 0));
@@ -3843,9 +3928,10 @@ struct LargeHistoryRampSource {
 
     void tick_block(iv::TickBlockContext<LargeHistoryRampSource> const& ctx) const
     {
+        auto output = ctx.template output<0>();
         for (std::size_t i = 0; i < ctx.block_size; ++i) {
-            ctx.template output<0>().push(iv::Sample{
-                static_cast<float>(ctx.index.advanced_by(i).signed_value())});
+            output.push(iv::Sample{
+                static_cast<float>(ctx.index.advanced_by({.whole = i}).whole().signed_value())});
         }
     }
 };
@@ -3879,7 +3965,7 @@ struct LargeHistoryConsumerProbe {
     {
         auto& state = ctx.state();
         ++state.calls;
-        state.last_index = ctx.index.bits();
+        state.last_index = ctx.index.whole().bits();
         state.current = static_cast<float>(ctx.template input<0>().get(0));
         state.history_1 = static_cast<float>(ctx.template input<0>().get(1));
         state.history_5000 = static_cast<float>(ctx.template input<0>().get(5000));
@@ -3910,14 +3996,15 @@ struct FiveSampleDelay {
 
     void tick_block(iv::TickBlockContext<FiveSampleDelay> const& ctx) const
     {
-        auto const input = ctx.template input<0>().get_block(ctx.block_size);
+        auto const input = ctx.template input<0>().block();
+        auto output = ctx.template output<0>();
         auto& memory = ctx.state().memory;
         for (std::size_t i = 0; i < ctx.block_size; ++i) {
             auto const index = static_cast<std::size_t>(
-                ctx.index.advanced_by(i).bits());
+                ctx.index.advanced_by({.whole = i}).whole().bits());
             auto const delayed = memory[index & 7u];
             memory[(index + 5u) & 7u] = input[i];
-            ctx.template output<0>().push(delayed);
+            output.push(delayed);
         }
     }
 };
@@ -3953,10 +4040,10 @@ struct FiveSampleDelay {
     void tick_block(iv::TickBlockContext<LatencyCompensationProbe> const& ctx) const
     {
         auto& state = ctx.state();
-        auto const fast = ctx.template input<0>().get_block(ctx.block_size);
-        auto const slow = ctx.template input<1>().get_block(ctx.block_size);
+        auto const fast = ctx.template input<0>().block();
+        auto const slow = ctx.template input<1>().block();
         ++state.calls;
-        state.last_index = ctx.index.bits();
+        state.last_index = ctx.index.whole().bits();
         state.last_block_size = ctx.block_size;
         state.marker = 0x71ac0deu;
         if (ctx.block_size != 0) {
@@ -4015,10 +4102,10 @@ struct InterleavedLatencyCompensationProbe {
         iv::TickBlockContext<InterleavedLatencyCompensationProbe> const& ctx) const
     {
         auto& state = ctx.state();
-        auto const fast = ctx.template input<0>().get_block(ctx.block_size);
-        auto const slow = ctx.template input<1>().get_block(ctx.block_size);
+        auto const fast = ctx.template input<0>().block();
+        auto const slow = ctx.template input<1>().block();
         ++state.calls;
-        state.last_index = ctx.index.bits();
+        state.last_index = ctx.index.whole().bits();
         state.last_block_size = ctx.block_size;
         state.marker = 0x1a7e2e0u;
         if (ctx.block_size != 0) {
@@ -4079,9 +4166,9 @@ struct DisconnectedSampleInputProbe {
     {
         auto& state = ctx.state();
         auto input = ctx.template input<0>();
-        auto const block = input.get_block(ctx.block_size);
+        auto const block = input.block(std::size_t{0});
         ++state.calls;
-        state.last_index = ctx.index.bits();
+        state.last_index = ctx.index.whole().bits();
         state.last_block_size = ctx.block_size;
         state.current_left = input.get(0, 0);
         state.current_right = input.get(0, 1);
@@ -4252,7 +4339,7 @@ struct EventFeedbackA {
         auto const index = static_cast<std::size_t>(state.calls);
         auto const events = ctx.template input<0>().events();
         if (index < state.indices.size()) {
-            state.indices[index] = ctx.index.bits();
+            state.indices[index] = ctx.index.whole().bits();
             state.block_sizes[index] = ctx.block_size;
             state.input_counts[index] = events.size();
             state.first_input_times[index] =
@@ -4297,9 +4384,9 @@ struct RetainedFanInEventFeedbackA {
         auto const index = static_cast<std::size_t>(state.calls);
         constexpr std::size_t history = 8;
         auto const events = ctx.template input<0>().events(
-            ctx.index.retreated_by(history), ctx.block_size + history);
+            ctx.index.retreated_by({.whole = history}).whole(), ctx.block_size + history);
         if (index < state.indices.size()) {
-            state.indices[index] = ctx.index.bits();
+            state.indices[index] = ctx.index.whole().bits();
             state.block_sizes[index] = ctx.block_size;
             state.input_counts[index] = events.size();
             state.first_input_times[index] =
@@ -4351,7 +4438,7 @@ struct LatentEventFeedbackA {
         auto const index = static_cast<std::size_t>(state.calls);
         auto const events = ctx.template input<0>().events();
         if (index < state.indices.size()) {
-            state.indices[index] = ctx.index.bits();
+            state.indices[index] = ctx.index.whole().bits();
             state.block_sizes[index] = ctx.block_size;
             state.input_counts[index] = events.size();
             state.first_input_times[index] =
@@ -4405,7 +4492,7 @@ struct PersistentLatentEventFeedbackA {
         auto const index = static_cast<std::size_t>(state.calls);
         auto const events = ctx.template input<0>().events();
         if (index < state.indices.size()) {
-            state.indices[index] = ctx.index.bits();
+            state.indices[index] = ctx.index.whole().bits();
             state.block_sizes[index] = ctx.block_size;
             state.input_counts[index] = events.size();
             state.first_input_times[index] =
@@ -4537,7 +4624,7 @@ struct EventFeedbackB {
         auto const index = static_cast<std::size_t>(state.calls);
         auto const events = ctx.template input<0>().events();
         if (index < state.indices.size()) {
-            state.indices[index] = ctx.index.bits();
+            state.indices[index] = ctx.index.whole().bits();
             state.block_sizes[index] = ctx.block_size;
             state.input_counts[index] = events.size();
             state.first_input_times[index] =
@@ -4595,12 +4682,12 @@ struct RetainedDualEventFeedbackA {
         auto& state = ctx.state();
         auto const index = static_cast<std::size_t>(state.calls++);
         constexpr std::size_t history = 8;
-        auto const begin = ctx.index.retreated_by(history);
+        auto const begin = ctx.index.retreated_by({.whole = history}).whole();
         auto const count = ctx.block_size + history;
         auto const exact = ctx.template input<0>().events(begin, count);
         auto const converted = ctx.template input<1>().events(begin, count);
         if (index < state.indices.size()) {
-            state.indices[index] = ctx.index.bits();
+            state.indices[index] = ctx.index.whole().bits();
             state.block_sizes[index] = ctx.block_size;
             state.exact_counts[index] = exact.size();
             state.converted_counts[index] = converted.size();
@@ -4680,7 +4767,7 @@ struct TriggerEventConsumer {
         auto& state = ctx.state();
         auto const events = ctx.template input<0>().events();
         ++state.calls;
-        state.last_index = ctx.index.bits();
+        state.last_index = ctx.index.whole().bits();
         state.last_block_size = ctx.block_size;
         state.event_count = events.size();
         state.trigger_count = 0;
@@ -4732,8 +4819,8 @@ struct RetainedMidiEventConsumer {
         if (index >= state.indices.size()) return;
         constexpr std::size_t history = 160;
         auto const events = ctx.template input<0>().events(
-            ctx.index.retreated_by(history), ctx.block_size + history);
-        state.indices[index] = ctx.index.bits();
+            ctx.index.retreated_by({.whole = history}).whole(), ctx.block_size + history);
+        state.indices[index] = ctx.index.whole().bits();
         state.event_counts[index] = events.size();
         state.midi_counts[index] = 0;
         if (!events.empty()) {
@@ -4825,7 +4912,7 @@ struct LimitedTriggerEventConsumer {
         auto const index = state.calls++;
         if (index >= state.indices.size()) return;
         auto const events = ctx.template input<0>().events();
-        state.indices[index] = ctx.index.bits();
+        state.indices[index] = ctx.index.whole().bits();
         state.block_sizes[index] = ctx.block_size;
         state.event_counts[index] = events.size();
         state.trigger_counts[index] = 0;
@@ -4909,8 +4996,8 @@ struct RetainedTriggerEventConsumer {
         if (index >= state.indices.size()) return;
         constexpr std::size_t history = 8;
         auto const events = ctx.template input<0>().events(
-            ctx.index.retreated_by(history), ctx.block_size + history);
-        state.indices[index] = ctx.index.bits();
+            ctx.index.retreated_by({.whole = history}).whole(), ctx.block_size + history);
+        state.indices[index] = ctx.index.whole().bits();
         state.event_counts[index] = events.size();
         if (!events.empty()) {
             state.first_times[index] = events[0].time.bits();
@@ -4981,8 +5068,8 @@ struct PersistentEventRingConsumer {
         if (index >= state.indices.size()) return;
         constexpr std::size_t history = 160;
         auto const events = ctx.template input<0>().events(
-            ctx.index.retreated_by(history), ctx.block_size + history);
-        state.indices[index] = ctx.index.bits();
+            ctx.index.retreated_by({.whole = history}).whole(), ctx.block_size + history);
+        state.indices[index] = ctx.index.whole().bits();
         state.event_counts[index] = events.size();
         if (!events.empty()) {
             state.first_times[index] = events[0].time.bits();
@@ -5027,8 +5114,8 @@ struct PersistentEventFeedbackConsumer {
         if (index >= state.indices.size()) return;
         constexpr std::size_t history = 320;
         auto const events = ctx.template input<0>().events(
-            ctx.index.retreated_by(history), ctx.block_size + history);
-        state.indices[index] = ctx.index.bits();
+            ctx.index.retreated_by({.whole = history}).whole(), ctx.block_size + history);
+        state.indices[index] = ctx.index.whole().bits();
         state.event_counts[index] = events.size();
         if (!events.empty()) {
             state.first_times[index] = events[0].time.bits();
@@ -5466,13 +5553,292 @@ IV_MODULE("iv.test.graph_jit.state_context.persistent_event_ring_module", persis
 IV_MODULE("iv.test.graph_jit.state_context.retained_converted_event_fanout_module", retained_converted_event_fanout_module);
 IV_MODULE("iv.test.graph_jit.state_context.ported_module", ported_module);
 )cpp";
+    static constexpr std::string_view part_3 = R"cpp(
+#include <intravenous/dsl.h>
+
+#include <array>
+#include <cstdint>
+
+namespace {
+
+struct FFTValueProducer {
+    static constexpr auto inputs()
+    {
+        return std::array{
+            iv::input<iv::Sample>("samples", iv::InputAccess::sequential),
+        };
+    }
+
+    static constexpr auto outputs()
+    {
+        return std::array{
+            iv::output<iv::FFTBlock>("spectra", iv::OutputProduction::tick),
+        };
+    }
+
+    void constrain_ports(iv::ConstrainPortsContext<FFTValueProducer>& ctx) const
+    {
+        ctx.input<"samples">().pace() = 4;
+        ctx.input<"samples">().history() = 4;
+        ctx.output<"spectra">().pace() = 1;
+        ctx.output<"spectra">().size() = 3;
+    }
+
+    void tick_block(iv::TickBlockContext<FFTValueProducer> const& ctx) const
+    {
+        auto const input = ctx.input<"samples">();
+        auto const samples = input.block_extended().elements();
+        auto output = ctx.output<"spectra">();
+        auto spectra = output.block();
+        for (std::size_t value = 0; value < spectra.size(); ++value) {
+            auto const transform_end = (output.value_index() + value) * 4;
+            auto const input_offset = static_cast<std::size_t>(
+                transform_end - input.value_index());
+            IV_ASSERT(input_offset <= samples.size()
+                    && 4 <= samples.size() - input_offset,
+                "FFT-value test producer lost its input history window");
+            auto spectrum = spectra[value];
+            IV_ASSERT(spectrum.size() == 3,
+                "FFT-value test producer received the wrong resolved size");
+            for (std::size_t bin = 0; bin < spectrum.size(); ++bin) {
+                spectrum[bin] = iv::FFTBin{
+                    static_cast<float>(samples[input_offset + bin]),
+                    static_cast<float>(bin),
+                };
+            }
+        }
+    }
+};
+
+struct FFTValueConsumer {
+    struct alignas(256) State {
+        std::uint64_t calls = 0;
+        std::uint64_t root_block_size = 0;
+        std::uint64_t input_block_size = 0;
+        std::uint64_t extended_block_size = 0;
+        std::uint64_t value_index = 0;
+        float preceding_bin = 0.0f;
+        float first_bin = 0.0f;
+        float last_bin = 0.0f;
+    };
+
+    static constexpr auto inputs()
+    {
+        return std::array{
+            iv::input<iv::Sample, iv::FFTBlock>(
+                "spectra", iv::InputAccess::sequential),
+        };
+    }
+
+    static constexpr auto outputs() { return std::tuple{}; }
+
+    void constrain_ports(iv::ConstrainPortsContext<FFTValueConsumer>& ctx) const
+    {
+        ctx.input<"spectra">().size() = 3;
+        ctx.input<"spectra">().history() = 1;
+        ctx.input<"spectra">().pace() = 1;
+    }
+
+    void tick_block(iv::TickBlockContext<FFTValueConsumer> const& ctx) const
+    {
+        auto const selected = ctx.input<"spectra">();
+        IV_ASSERT(selected.template is<iv::FFTBlock>(),
+            "FFT-value test consumer selected the wrong continuous type");
+        auto const input = selected.template as<iv::FFTBlock>();
+        auto const values = input.block();
+        auto const extended = input.block_extended();
+        auto& state = ctx.state();
+        ++state.calls;
+        state.root_block_size = ctx.block_size;
+        state.input_block_size = values.size();
+        state.extended_block_size = extended.size();
+        state.value_index = input.value_index();
+        if (!extended.empty()) {
+            state.preceding_bin = extended[0][0].real();
+        }
+        if (!values.empty()) {
+            state.first_bin = values[0][0].real();
+            state.last_bin = values[values.size() - 1][0].real();
+        }
+    }
+};
+
+struct FractionalIndexProducer {
+    static constexpr auto inputs() { return std::tuple{}; }
+
+    static constexpr auto outputs()
+    {
+        return std::array{iv::output<iv::FractionalGlobalIndex>(
+            "coordinates", iv::OutputProduction::tick)};
+    }
+
+    void constrain_ports(
+        iv::ConstrainPortsContext<FractionalIndexProducer>& ctx) const
+    {
+        ctx.output<"coordinates">().pace() = 2;
+    }
+
+    void tick_block(
+        iv::TickBlockContext<FractionalIndexProducer> const& ctx) const
+    {
+        auto output = ctx.output<"coordinates">();
+        auto values = output.block();
+        for (std::size_t offset = 0; offset < values.size(); ++offset) {
+            auto const ordinal = output.value_index() + offset;
+            values[offset] = iv::FractionalGlobalIndex::from_parts(
+                iv::GlobalIndex::from_bits(ordinal),
+                ordinal ^ 0x8000000000000000ull);
+        }
+    }
+};
+
+struct FractionalIndexConsumer {
+    struct alignas(512) State {
+        std::uint64_t calls = 0;
+        std::uint64_t root_block_size = 0;
+        std::uint64_t input_block_size = 0;
+        std::uint64_t value_index = 0;
+        std::uint64_t first_whole = 0;
+        std::uint64_t first_fraction = 0;
+        std::uint64_t last_whole = 0;
+        std::uint64_t last_fraction = 0;
+    };
+
+    static constexpr auto inputs()
+    {
+        return std::array{iv::input<iv::FractionalGlobalIndex>(
+            "coordinates", iv::InputAccess::sequential)};
+    }
+
+    static constexpr auto outputs() { return std::tuple{}; }
+
+    void constrain_ports(
+        iv::ConstrainPortsContext<FractionalIndexConsumer>& ctx) const
+    {
+        ctx.input<"coordinates">().pace() = 1;
+    }
+
+    void tick_block(
+        iv::TickBlockContext<FractionalIndexConsumer> const& ctx) const
+    {
+        auto const input = ctx.input<"coordinates">();
+        auto const values = input.block();
+        auto& state = ctx.state();
+        ++state.calls;
+        state.root_block_size = ctx.block_size;
+        state.input_block_size = values.size();
+        state.value_index = input.value_index();
+        if (!values.empty()) {
+            auto const first = values[0];
+            auto const last = values[values.size() - 1];
+            state.first_whole = first.whole().bits();
+            state.first_fraction = first.fraction();
+            state.last_whole = last.whole().bits();
+            state.last_fraction = last.fraction();
+        }
+    }
+};
+
+struct PersistedFFTValueProducer {
+    static constexpr auto inputs() { return std::tuple{}; }
+
+    static constexpr auto outputs()
+    {
+        return std::array{iv::output<iv::FFTBlock>(
+            "spectra",
+            iv::OutputProduction::tick,
+            iv::OutputRetention::persisted)};
+    }
+
+    void constrain_ports(
+        iv::ConstrainPortsContext<PersistedFFTValueProducer>& ctx) const
+    {
+        ctx.output<"spectra">().size() = 3;
+    }
+
+    void tick_block(
+        iv::TickBlockContext<PersistedFFTValueProducer> const& ctx) const
+    {
+        ctx.output<"spectra">().write_void();
+    }
+};
+
+struct PersistedNonProjectRateSampleProducer {
+    static constexpr auto inputs() { return std::tuple{}; }
+
+    static constexpr auto outputs()
+    {
+        return std::array{iv::output<iv::Sample>(
+            "samples",
+            iv::OutputProduction::tick,
+            iv::OutputRetention::persisted)};
+    }
+
+    void constrain_ports(
+        iv::ConstrainPortsContext<PersistedNonProjectRateSampleProducer>& ctx) const
+    {
+        ctx.output<"samples">().pace() = 2;
+    }
+
+    void tick_block(
+        iv::TickBlockContext<PersistedNonProjectRateSampleProducer> const& ctx) const
+    {
+        ctx.output<"samples">().write_void();
+    }
+};
+
+void fft_value_module(iv::GraphBuilder& graph)
+{
+    auto source = graph.node<"iv.test.graph_jit.state_context.sample_ramp_source">();
+    auto transform = graph.node<"iv.test.graph_jit.state_context.fft_value_producer">();
+    auto sink = graph.node<"iv.test.graph_jit.state_context.fft_value_consumer">();
+    transform(source);
+    sink(transform);
+    graph.outputs();
+}
+
+void fractional_index_value_module(iv::GraphBuilder& graph)
+{
+    auto source = graph.node<"iv.test.graph_jit.state_context.fractional_index_producer">();
+    auto sink = graph.node<"iv.test.graph_jit.state_context.fractional_index_consumer">();
+    sink(source);
+    graph.outputs();
+}
+
+void persisted_fft_value_module(iv::GraphBuilder& graph)
+{
+    (void)graph.node<"iv.test.graph_jit.state_context.persisted_fft_value_producer">();
+    graph.outputs();
+}
+
+void persisted_non_project_rate_sample_module(iv::GraphBuilder& graph)
+{
+    (void)graph.node<"iv.test.graph_jit.state_context.persisted_non_project_rate_sample_producer">();
+    graph.outputs();
+}
+
+} // namespace
+
+IV_NODE("iv.test.graph_jit.state_context.fft_value_producer", FFTValueProducer);
+IV_NODE("iv.test.graph_jit.state_context.fft_value_consumer", FFTValueConsumer);
+IV_NODE("iv.test.graph_jit.state_context.fractional_index_producer", FractionalIndexProducer);
+IV_NODE("iv.test.graph_jit.state_context.fractional_index_consumer", FractionalIndexConsumer);
+IV_NODE("iv.test.graph_jit.state_context.persisted_fft_value_producer", PersistedFFTValueProducer);
+IV_NODE("iv.test.graph_jit.state_context.persisted_non_project_rate_sample_producer", PersistedNonProjectRateSampleProducer);
+IV_MODULE("iv.test.graph_jit.state_context.fft_value_module", fft_value_module);
+IV_MODULE("iv.test.graph_jit.state_context.fractional_index_value_module", fractional_index_value_module);
+IV_MODULE("iv.test.graph_jit.state_context.persisted_fft_value_module", persisted_fft_value_module);
+IV_MODULE("iv.test.graph_jit.state_context.persisted_non_project_rate_sample_module", persisted_non_project_rate_sample_module);
+)cpp";
     static_assert(part_1.size() < 60 * 1024);
     static_assert(part_2.size() < 60 * 1024);
+    static_assert(part_3.size() < 60 * 1024);
     static std::string const source = [] {
         std::string result;
-        result.reserve(part_1.size() + part_2.size());
+        result.reserve(part_1.size() + part_2.size() + part_3.size());
         result.append(part_1);
         result.append(part_2);
+        result.append(part_3);
         return result;
     }();
     return std::string_view{source};
@@ -6665,6 +7031,11 @@ TEST(GraphJitSharedRuntimeFixture, BuildPackage)
     EXPECT_TRUE(has_module_definition(graph_jit_composed_latency_module_id));
     EXPECT_TRUE(has_module_definition(graph_jit_composed_history_module_id));
     EXPECT_TRUE(has_module_definition(graph_jit_projected_composition_module_id));
+    EXPECT_TRUE(has_module_definition(graph_jit_fft_value_module_id));
+    EXPECT_TRUE(has_module_definition(graph_jit_fractional_index_value_module_id));
+    EXPECT_TRUE(has_module_definition(graph_jit_persisted_fft_value_module_id));
+    EXPECT_TRUE(has_module_definition(
+        graph_jit_persisted_non_project_rate_sample_module_id));
     EXPECT_TRUE(has_leaf_definition(
         "iv.test.graph_jit.state_context.trigger_event_source"));
     EXPECT_TRUE(has_leaf_definition(
@@ -7091,7 +7462,7 @@ TEST_F(GraphJitRuntimeFixture, DisconnectedSampleInputUsesDeclaredDefault)
         << (compiled.diagnostics.empty()
                 ? ""
                 : compiled.diagnostics.front().message);
-    EXPECT_EQ(count_raw_regions(compiled.compiled_graph->node_layout), 0u);
+    EXPECT_EQ(count_raw_regions(compiled.compiled_graph->node_layout), 1u);
 
     auto const& requirements =
         compiled.compiled_graph->realtime_port_state_requirements.states;
@@ -7123,7 +7494,8 @@ TEST_F(GraphJitRuntimeFixture, DisconnectedSampleInputUsesDeclaredDefault)
         EXPECT_EQ(found->authored_storage.timeline_offset_frames, 0);
         ASSERT_TRUE(found->authored_storage.constant_value);
         EXPECT_FLOAT_EQ(
-            static_cast<float>(*found->authored_storage.constant_value),
+            static_cast<float>(sample_value_from_bytes(
+                *found->authored_storage.constant_value)),
             0.375f);
         EXPECT_FALSE(found->authored_storage.node_storage_offset);
         EXPECT_FALSE(found->authored_storage.callback_arena_offset);
@@ -7178,7 +7550,7 @@ TEST_F(GraphJitRuntimeFixture, DisconnectedSampleOutputKeepsDeclaredHistory)
         << (compiled.diagnostics.empty()
                 ? ""
                 : compiled.diagnostics.front().message);
-    ASSERT_EQ(count_raw_regions(compiled.compiled_graph->node_layout), 1u);
+    ASSERT_EQ(count_raw_regions(compiled.compiled_graph->node_layout), 2u);
     auto const raw = std::ranges::find_if(
         compiled.compiled_graph->node_layout.regions,
         [](iv::NodeLayout::Region const& region) {
@@ -7297,6 +7669,147 @@ TEST_F(GraphJitRuntimeFixture, GeneratedRootInvokesPersistedTickCaptures)
     EXPECT_EQ(probe.event_latency, 1u);
     EXPECT_EQ(probe.event_count, 1u);
     EXPECT_EQ(probe.first_event_time, index(67));
+
+    compiled.compiled_graph->root_operations.tick_block(
+        storage.buffer().data(), &invocation, index(1000), 4);
+    EXPECT_EQ(probe.sample_calls, 2u);
+    EXPECT_EQ(probe.event_calls, 2u);
+    EXPECT_EQ(probe.sample_index, index(1000));
+    EXPECT_EQ(probe.block_size, 4u);
+    EXPECT_FLOAT_EQ(probe.first_sample, 1000.5f);
+    EXPECT_FLOAT_EQ(probe.last_sample, 1003.5f);
+    EXPECT_EQ(probe.event_count, 1u);
+    EXPECT_EQ(probe.first_event_time, index(1003));
+}
+
+TEST_F(GraphJitRuntimeFixture, TypeOwnedFFTBlockStorageUsesProjectedPortExtents)
+{
+    auto compiled = compile(graph_jit_fft_value_module_id, 301);
+    ASSERT_TRUE(compiled.succeeded())
+        << (compiled.diagnostics.empty()
+                ? ""
+                : compiled.diagnostics.front().message);
+    auto storage = compiled.compiled_graph->node_layout.create_storage(resources);
+    storage.initialize();
+
+    FFTValueConsumerStateMirror* state = nullptr;
+    for (std::size_t node = 0;
+         node < compiled.compiled_graph->node_layout.nodes.size(); ++node) {
+        if (compiled.compiled_graph->node_layout.nodes[node].state_size
+            == sizeof(FFTValueConsumerStateMirror)) {
+            ASSERT_EQ(state, nullptr);
+            state = static_cast<FFTValueConsumerStateMirror*>(
+                storage.state_ptr(node));
+        }
+    }
+    ASSERT_NE(state, nullptr);
+
+    compiled.compiled_graph->root_operations.tick_block(
+        storage.buffer().data(), &empty_tick_invocation, index(0), 64);
+    EXPECT_EQ(state->calls, 1u);
+    EXPECT_EQ(state->root_block_size, 64u);
+    EXPECT_EQ(state->input_block_size, 16u);
+    EXPECT_EQ(state->extended_block_size, 17u);
+    EXPECT_EQ(state->value_index, 0u);
+    EXPECT_FLOAT_EQ(state->first_bin, 0.0f);
+    EXPECT_FLOAT_EQ(state->last_bin, 56.0f);
+
+    compiled.compiled_graph->root_operations.tick_block(
+        storage.buffer().data(), &empty_tick_invocation, index(64), 32);
+    EXPECT_EQ(state->calls, 2u);
+    EXPECT_EQ(state->root_block_size, 32u);
+    EXPECT_EQ(state->input_block_size, 8u);
+    EXPECT_EQ(state->extended_block_size, 9u);
+    EXPECT_EQ(state->value_index, 16u);
+    EXPECT_FLOAT_EQ(state->preceding_bin, 56.0f);
+    EXPECT_FLOAT_EQ(state->first_bin, 60.0f);
+    EXPECT_FLOAT_EQ(state->last_bin, 88.0f);
+
+    compiled.compiled_graph->root_operations.tick_block(
+        storage.buffer().data(), &empty_tick_invocation, index(97), 1);
+    EXPECT_EQ(state->calls, 3u);
+    EXPECT_EQ(state->root_block_size, 1u);
+    EXPECT_EQ(state->input_block_size, 0u);
+    EXPECT_EQ(state->extended_block_size, 1u);
+    EXPECT_EQ(state->value_index, 25u);
+    EXPECT_FLOAT_EQ(state->preceding_bin, 88.0f);
+
+    // A transport seam changes the node-visible global lattice immediately,
+    // while both the producer's sample history and the consumer's slow FFT
+    // history remain contiguous in invocation order. This test producer anchors
+    // each spectrum at the preceding four-sample Sequential window.
+    compiled.compiled_graph->root_operations.tick_block(
+        storage.buffer().data(), &empty_tick_invocation, index(1000), 4);
+    EXPECT_EQ(state->calls, 4u);
+    EXPECT_EQ(state->root_block_size, 4u);
+    EXPECT_EQ(state->input_block_size, 1u);
+    EXPECT_EQ(state->extended_block_size, 2u);
+    EXPECT_EQ(state->value_index, 250u);
+    EXPECT_FLOAT_EQ(state->preceding_bin, 88.0f);
+    EXPECT_FLOAT_EQ(state->first_bin, 93.0f);
+    EXPECT_FLOAT_EQ(state->last_bin, 93.0f);
+}
+
+TEST_F(GraphJitRuntimeFixture, TypeOwnedFractionalIndexStorageSupportsFastPace)
+{
+    auto compiled = compile(graph_jit_fractional_index_value_module_id, 302);
+    ASSERT_TRUE(compiled.succeeded())
+        << (compiled.diagnostics.empty()
+                ? ""
+                : compiled.diagnostics.front().message);
+    auto storage = compiled.compiled_graph->node_layout.create_storage(resources);
+    storage.initialize();
+
+    FractionalIndexConsumerStateMirror* state = nullptr;
+    for (std::size_t node = 0;
+         node < compiled.compiled_graph->node_layout.nodes.size(); ++node) {
+        if (compiled.compiled_graph->node_layout.nodes[node].state_size
+            == sizeof(FractionalIndexConsumerStateMirror)) {
+            ASSERT_EQ(state, nullptr);
+            state = static_cast<FractionalIndexConsumerStateMirror*>(
+                storage.state_ptr(node));
+        }
+    }
+    ASSERT_NE(state, nullptr);
+
+    compiled.compiled_graph->root_operations.tick_block(
+        storage.buffer().data(), &empty_tick_invocation, index(0), 3);
+    EXPECT_EQ(state->calls, 1u);
+    EXPECT_EQ(state->root_block_size, 3u);
+    EXPECT_EQ(state->input_block_size, 6u);
+    EXPECT_EQ(state->value_index, 0u);
+    EXPECT_EQ(state->first_whole, 0u);
+    EXPECT_EQ(state->first_fraction, 0x8000000000000000ull);
+    EXPECT_EQ(state->last_whole, 5u);
+    EXPECT_EQ(state->last_fraction, 0x8000000000000005ull);
+
+    compiled.compiled_graph->root_operations.tick_block(
+        storage.buffer().data(), &empty_tick_invocation, index(3), 2);
+    EXPECT_EQ(state->calls, 2u);
+    EXPECT_EQ(state->root_block_size, 2u);
+    EXPECT_EQ(state->input_block_size, 4u);
+    EXPECT_EQ(state->value_index, 6u);
+    EXPECT_EQ(state->first_whole, 6u);
+    EXPECT_EQ(state->first_fraction, 0x8000000000000006ull);
+    EXPECT_EQ(state->last_whole, 9u);
+    EXPECT_EQ(state->last_fraction, 0x8000000000000009ull);
+}
+
+TEST_F(GraphJitRuntimeFixture, NonSamplePersistedTickCaptureIsRejectedAtItsBoundary)
+{
+    auto compiled = compile(graph_jit_persisted_fft_value_module_id, 303);
+    expect_lowering_failure(
+        compiled,
+        "persisted Tick capture does not yet support continuous type 'FFTBlock'");
+}
+
+TEST_F(GraphJitRuntimeFixture, NonProjectRatePersistedTickCaptureIsRejectedAtItsBoundary)
+{
+    auto compiled = compile(
+        graph_jit_persisted_non_project_rate_sample_module_id, 304);
+    expect_lowering_failure(
+        compiled,
+        "persisted Tick capture does not yet support a non-project-rate continuous output");
 }
 
 TEST_F(GraphJitRuntimeFixture, DirectSampleStorage)
@@ -7329,7 +7842,7 @@ TEST_F(GraphJitRuntimeFixture, DirectSampleStorage)
     ASSERT_TRUE(direct.succeeded())
         << (direct.diagnostics.empty() ? "" : direct.diagnostics.front().message);
     ASSERT_EQ(direct.compiled_graph->node_layout.nodes.size(), 2u);
-    ASSERT_EQ(count_raw_regions(direct.compiled_graph->node_layout), 0u);
+    ASSERT_EQ(count_raw_regions(direct.compiled_graph->node_layout), 1u);
 
     auto direct_storage = direct.compiled_graph->node_layout.create_storage(resources);
     direct_storage.initialize();
@@ -7390,7 +7903,7 @@ TEST_F(GraphJitRuntimeFixture, TransientSampleStorage)
                 ? ""
                 : transient.diagnostics.front().message);
     ASSERT_EQ(transient.compiled_graph->node_layout.nodes.size(), 2u);
-    ASSERT_EQ(count_raw_regions(transient.compiled_graph->node_layout), 0u);
+    ASSERT_EQ(count_raw_regions(transient.compiled_graph->node_layout), 1u);
     auto transient_storage =
         transient.compiled_graph->node_layout.create_storage(resources);
     transient_storage.initialize();
@@ -7467,7 +7980,7 @@ TEST_F(GraphJitRuntimeFixture, TransientArenaReuse)
                 ? ""
                 : reused_arena.diagnostics.front().message);
     ASSERT_EQ(reused_arena.compiled_graph->node_layout.nodes.size(), 4u);
-    ASSERT_EQ(count_raw_regions(reused_arena.compiled_graph->node_layout), 0u);
+    ASSERT_EQ(count_raw_regions(reused_arena.compiled_graph->node_layout), 1u);
 
     auto reused_storage =
         reused_arena.compiled_graph->node_layout.create_storage(resources);
@@ -7507,7 +8020,7 @@ TEST_F(GraphJitRuntimeFixture, StackBudgetUsesPackedSampleLifetimes)
         .sample_rate = 88200,
         .block_size = 64,
         .realtime_storage_cost_model = iv::RealtimeStorageCostModel{
-            .stack_budget_bytes = 64u * sizeof(iv::Sample),
+            .stack_budget_bytes = 2u * 64u * sizeof(iv::Sample),
         },
     });
     auto compiled = budgeted_jit.compile(iv::GraphJitCompileRequest{
@@ -7521,9 +8034,10 @@ TEST_F(GraphJitRuntimeFixture, StackBudgetUsesPackedSampleLifetimes)
                 : compiled.diagnostics.front().message);
 
     // The two producer buffers are each 64 samples, but their lifetimes do not
-    // overlap. The final packed stack therefore fits one 64-sample range and
-    // must not force either producer into NodeStorage.
-    EXPECT_EQ(count_raw_regions(compiled.compiled_graph->node_layout), 0u);
+    // overlap, so they pack into one 64-sample range. The block consumers share
+    // a second 64-sample contiguous-input scratch range. Both ranges fit the
+    // budget, so neither producer is forced into NodeStorage.
+    EXPECT_EQ(count_raw_regions(compiled.compiled_graph->node_layout), 1u);
 
     auto storage = compiled.compiled_graph->node_layout.create_storage(resources);
     storage.initialize();
@@ -7704,7 +8218,7 @@ TEST_F(GraphJitRuntimeFixture, SampleFanoutConversion)
     ASSERT_TRUE(fanout.succeeded())
         << (fanout.diagnostics.empty() ? "" : fanout.diagnostics.front().message);
     ASSERT_EQ(fanout.compiled_graph->node_layout.nodes.size(), 5u);
-    ASSERT_EQ(count_raw_regions(fanout.compiled_graph->node_layout), 0u);
+    ASSERT_EQ(count_raw_regions(fanout.compiled_graph->node_layout), 1u);
 
     auto fanout_storage =
         fanout.compiled_graph->node_layout.create_storage(resources);
@@ -7831,7 +8345,7 @@ TEST_F(GraphJitRuntimeFixture, StereoSampleConversion)
                 : stereo_conversion.diagnostics.front().message);
     ASSERT_EQ(stereo_conversion.compiled_graph->node_layout.nodes.size(), 3u);
     ASSERT_EQ(
-        count_raw_regions(stereo_conversion.compiled_graph->node_layout), 0u);
+        count_raw_regions(stereo_conversion.compiled_graph->node_layout), 1u);
 
     auto stereo_conversion_storage =
         stereo_conversion.compiled_graph->node_layout.create_storage(resources);
@@ -8911,7 +9425,9 @@ TEST_F(GraphJitRuntimeFixture, ExactSampleDetachFeedback)
     EXPECT_EQ(detached->detach->loop_extra_latency, 6u);
     ASSERT_TRUE(detached->detach_initial_value.has_value());
     EXPECT_FLOAT_EQ(
-        static_cast<float>(*detached->detach_initial_value), -0.625f);
+        static_cast<float>(sample_value_from_bytes(
+            *detached->detach_initial_value)),
+        -0.625f);
     ASSERT_TRUE(detached->detach_region.has_value());
     ASSERT_LT(*detached->detach_region, analysis->schedule.regions.size());
     auto const& region = analysis->schedule.regions[*detached->detach_region];
@@ -9169,19 +9685,26 @@ TEST_F(GraphJitRuntimeFixture, MultipleSampleDetachBranchesShareProducerHomeAndF
         fast->writer.kind,
         iv::graph_jit::detail::SampleFeedbackTimelineWriterKind::producer_home);
     EXPECT_EQ(fast->timeline_representation, canonical);
-    EXPECT_FLOAT_EQ(static_cast<float>(fast->initial_value), 0.0f);
+    EXPECT_FLOAT_EQ(
+        static_cast<float>(sample_value_from_bytes(fast->initial_value)),
+        0.0f);
     EXPECT_EQ(
         slow->writer.kind,
         iv::graph_jit::detail::SampleFeedbackTimelineWriterKind::producer_home);
     EXPECT_EQ(slow->timeline_representation, canonical);
-    EXPECT_FLOAT_EQ(static_cast<float>(slow->initial_value), 0.0f);
+    EXPECT_FLOAT_EQ(
+        static_cast<float>(sample_value_from_bytes(slow->initial_value)),
+        0.0f);
 
     EXPECT_EQ(
         initialized->writer.kind,
         iv::graph_jit::detail::SampleFeedbackTimelineWriterKind::copy);
     EXPECT_NE(initialized->timeline_representation, canonical);
     EXPECT_EQ(initialized->writer.source_representation, canonical);
-    EXPECT_FLOAT_EQ(static_cast<float>(initialized->initial_value), -2.0f);
+    EXPECT_FLOAT_EQ(
+        static_cast<float>(sample_value_from_bytes(
+            initialized->initial_value)),
+        -2.0f);
 
     auto compiled = compile_graph(feedback_graph, 135);
     ASSERT_TRUE(compiled.succeeded())
@@ -9352,7 +9875,9 @@ TEST_F(GraphJitRuntimeFixture, SampleDetachFeedbackPreservesSourceLatencyAndTarg
     EXPECT_EQ(connection.target_history, 3u);
     ASSERT_TRUE(connection.detach_initial_value.has_value());
     EXPECT_FLOAT_EQ(
-        static_cast<float>(*connection.detach_initial_value), -0.625f);
+        static_cast<float>(sample_value_from_bytes(
+            *connection.detach_initial_value)),
+        -0.625f);
 
     ASSERT_EQ(analysis->sample_producer_groups.size(), 1u);
     auto const& producer = analysis->sample_producer_groups.front();
@@ -9371,6 +9896,13 @@ TEST_F(GraphJitRuntimeFixture, SampleDetachFeedbackPreservesSourceLatencyAndTarg
         << (sample_plan ? std::string{} : sample_plan.error());
     ASSERT_EQ(sample_plan->feedback_timelines.size(), 1u);
     ASSERT_EQ(sample_plan->persistent_allocations.size(), 2u);
+    ASSERT_EQ(sample_plan->producer_authored_extents.size(), 1u);
+    EXPECT_EQ(
+        sample_plan->producer_authored_extents.front().source_representation,
+        sample_plan->producer_groups.front()->canonical_representation);
+    EXPECT_EQ(
+        sample_plan->producer_authored_extents.front().maximum_revision_frames,
+        2u);
     auto const& timeline = sample_plan->feedback_timelines.front();
     EXPECT_EQ(
         timeline.writer.kind,
@@ -9815,7 +10347,9 @@ TEST_F(GraphJitRuntimeFixture, ProjectedSampleDetachFeedback)
     EXPECT_EQ(carry->future_frames, 2u);
     ASSERT_TRUE(persistent.initialize_value.has_value());
     EXPECT_FLOAT_EQ(
-        static_cast<float>(*persistent.initialize_value), -0.25f);
+        static_cast<float>(sample_value_from_bytes(
+            *persistent.initialize_value)),
+        -0.25f);
 
     auto const& timeline = sample_plan->feedback_timelines.front();
     EXPECT_EQ(timeline.connection_index, detached_index);
@@ -13004,7 +13538,7 @@ TEST_F(GraphJitRuntimeFixture, SampleHistoryCarryAndMigration)
     ASSERT_TRUE(history.succeeded())
         << (history.diagnostics.empty() ? "" : history.diagnostics.front().message);
     ASSERT_EQ(history.compiled_graph->node_layout.nodes.size(), 3u);
-    ASSERT_EQ(count_raw_regions(history.compiled_graph->node_layout), 1u);
+    ASSERT_EQ(count_raw_regions(history.compiled_graph->node_layout), 2u);
     auto history_persistent_region = std::ranges::find_if(
         history.compiled_graph->node_layout.regions,
         [](iv::NodeLayout::Region const& region) {
@@ -13106,6 +13640,17 @@ TEST_F(GraphJitRuntimeFixture, SampleHistoryCarryAndMigration)
     EXPECT_FLOAT_EQ(migrated_mono->history_1, 133.0f);
     EXPECT_FLOAT_EQ(migrated_mono->history_5, 129.0f);
 
+    // Tick remains Sequential across a playback seam. The callback observes
+    // the selected global coordinate, while latency/history address the values
+    // immediately preceding this callback in invocation order.
+    history_next.compiled_graph->root_operations.tick_block(
+        history_next_storage.buffer().data(), &empty_tick_invocation, index(1000), 4);
+    EXPECT_EQ(migrated_mono->last_index, 1000u);
+    EXPECT_FLOAT_EQ(migrated_source->previous_output, 139.0f);
+    EXPECT_FLOAT_EQ(migrated_mono->current, 138.0f);
+    EXPECT_FLOAT_EQ(migrated_mono->history_1, 137.0f);
+    EXPECT_FLOAT_EQ(migrated_mono->history_5, 133.0f);
+
 }
 
 TEST_F(GraphJitRuntimeFixture, PersistentSampleHistory)
@@ -13137,7 +13682,7 @@ TEST_F(GraphJitRuntimeFixture, PersistentSampleHistory)
         << (persistent_history.diagnostics.empty()
                 ? ""
                 : persistent_history.diagnostics.front().message);
-    ASSERT_EQ(count_raw_regions(persistent_history.compiled_graph->node_layout), 1u);
+    ASSERT_EQ(count_raw_regions(persistent_history.compiled_graph->node_layout), 2u);
     auto const persistent_ring_region = std::ranges::find_if(
         persistent_history.compiled_graph->node_layout.regions,
         [](iv::NodeLayout::Region const& region) {

@@ -19,55 +19,61 @@
 namespace iv::graph_jit::detail {
 namespace {
 
-void initialize_sample_raw_region(
+void initialize_continuous_raw_region(
     std::span<std::byte> storage,
     std::span<std::byte const> data)
 {
-    if (data.size() != sizeof(Sample)
-        || storage.size() % sizeof(Sample) != 0) {
+    if (data.empty() || storage.size() % data.size() != 0) {
         throw std::logic_error(
-            "GraphJit sample raw-region initializer received invalid storage");
+            "GraphJit continuous raw-region initializer received invalid storage");
     }
-    Sample value{};
-    std::memcpy(&value, data.data(), sizeof(value));
-    auto samples = std::span<Sample>{
-        reinterpret_cast<Sample*>(storage.data()),
-        storage.size() / sizeof(Sample)};
-    std::ranges::fill(samples, value);
-}
-
-std::vector<std::byte> sample_initialize_data(Sample value)
-{
-    static_assert(std::is_trivially_copyable_v<Sample>);
-    std::vector<std::byte> data(sizeof(value));
-    std::memcpy(data.data(), &value, sizeof(value));
-    return data;
+    for (std::size_t offset = 0; offset < storage.size(); offset += data.size()) {
+        std::memcpy(storage.data() + offset, data.data(), data.size());
+    }
 }
 
 std::expected<std::size_t, std::string> sample_bytes(
     ChannelLayout layout,
-    std::size_t frames,
+    ContinuousValueStorageGeometry geometry,
+    std::size_t values,
     bool require_power_of_two)
 {
     if (!is_valid_channel_type(layout.channel_type)
         || !is_valid_sample_stream_layout(layout.sample_layout)
-        || frames == 0
-        || (require_power_of_two && !is_power_of_2(frames))) {
+        || geometry.value_size_bytes == 0
+        || geometry.element_alignment == 0
+        || !std::has_single_bit(geometry.element_alignment)
+        || values == 0
+        || (require_power_of_two && !is_power_of_2(values))) {
         return std::unexpected(
             "GraphJit sample storage plan has an invalid bounded representation");
     }
     auto const channels = channel_count(layout);
     if (channels == 0
-        || frames > std::numeric_limits<std::size_t>::max() / channels) {
+        || values > std::numeric_limits<std::size_t>::max() / channels) {
         return std::unexpected(
             "GraphJit sample storage sample count overflows size_t");
     }
-    auto const count = sample_storage_size(layout, frames);
-    if (count > std::numeric_limits<std::size_t>::max() / sizeof(Sample)) {
+    auto const count = sample_storage_size(layout, values);
+    if (count > std::numeric_limits<std::size_t>::max()
+            / geometry.value_size_bytes) {
         return std::unexpected(
             "GraphJit sample storage size overflows size_t");
     }
-    return count * sizeof(Sample);
+    return count * geometry.value_size_bytes;
+}
+
+std::expected<std::size_t, std::string> maximum_projected_value_count(
+    std::size_t project_block_size,
+    std::int32_t pace_exponent)
+{
+    auto const count = FractionalGlobalIndexRange::maximum_projection_count(
+        project_block_size, pace_exponent);
+    if (!count) {
+        return std::unexpected(
+            "GraphJit continuous block projection cannot fit size_t");
+    }
+    return *count;
 }
 
 std::expected<std::size_t, std::string> working_ring_capacity(
@@ -106,8 +112,42 @@ std::string persistent_identity(
             << static_cast<unsigned>(group.canonical_source_layout->sample_layout);
     }
     out << ":kind=" << static_cast<unsigned>(kind)
+        << ":value_type=" << static_cast<unsigned>(group.geometry.value_type)
+        << ":value_elements=" << group.geometry.elements_per_value
+        << ":pace=" << group.absolute_pace_exponent
         << ":retained=" << retained_frames
         << ":capacity=" << frame_capacity;
+    return std::move(out).str();
+}
+
+std::string producer_authored_extent_identity(
+    ConnectionAnalysisPlan const& connections,
+    SampleProducerGroupPlan const& group)
+{
+    if (!group.source_port) return {};
+    auto const node = std::ranges::find(
+        connections.nodes,
+        group.source_port->node_bundle_handle,
+        &PlannedGraphNode::bundle);
+    if (node == connections.nodes.end() || !node->stable_identity) return {};
+    auto const& stable = *node->stable_identity;
+    std::ostringstream out;
+    out << "graphjit.sample.authored_extent:graph=" << stable.graph.size()
+        << ':' << stable.graph
+        << ":node=" << stable.virtual_node.size() << ':' << stable.virtual_node
+        << ":member=" << stable.direct_member
+        << ":port=" << group.source_port->port_index;
+    out << ":type=" << static_cast<unsigned>(group.geometry.value_type)
+        << ":elements=" << group.geometry.elements_per_value
+        << ":pace=" << group.absolute_pace_exponent;
+    if (group.canonical_source_layout) {
+        out << ":layout="
+            << static_cast<unsigned>(
+                group.canonical_source_layout->channel_type)
+            << '.'
+            << static_cast<unsigned>(
+                group.canonical_source_layout->sample_layout);
+    }
     return std::move(out).str();
 }
 
@@ -115,7 +155,7 @@ std::string feedback_identity(
     SampleProducerGroupPlan const& group,
     SampleConnectionPlan const& connection,
     SamplePersistentStorageKind kind,
-    Sample initial_value,
+    std::span<std::byte const> initial_value,
     std::size_t frame_capacity)
 {
     std::ostringstream out;
@@ -140,9 +180,15 @@ std::string feedback_identity(
     }
     out
         << ":latency=" << connection.detach->loop_extra_latency
+        << ":value_type=" << static_cast<unsigned>(connection.geometry.value_type)
+        << ":value_elements=" << connection.geometry.elements_per_value
+        << ":pace=" << connection.absolute_pace_exponent
         << ":kind=" << static_cast<unsigned>(kind)
-        << ":initial_bits="
-        << std::bit_cast<std::uint32_t>(static_cast<float>(initial_value))
+        << ":initial=";
+    for (auto value : initial_value) {
+        out << std::hex << static_cast<unsigned>(value) << '.';
+    }
+    out << std::dec
         << ":capacity=" << frame_capacity;
     return std::move(out).str();
 }
@@ -150,7 +196,7 @@ std::string feedback_identity(
 std::string composition_feedback_identity(
     SampleConnectionPlan const& connection,
     SamplePersistentStorageKind kind,
-    Sample initial_value,
+    std::span<std::byte const> initial_value,
     std::size_t frame_capacity)
 {
     std::ostringstream out;
@@ -180,9 +226,15 @@ std::string composition_feedback_identity(
     }
     out << ":latency=" << connection.detach->loop_extra_latency
         << ":history=" << connection.target_history
+        << ":value_type=" << static_cast<unsigned>(connection.geometry.value_type)
+        << ":value_elements=" << connection.geometry.elements_per_value
+        << ":pace=" << connection.absolute_pace_exponent
         << ":kind=" << static_cast<unsigned>(kind)
-        << ":initial_bits="
-        << std::bit_cast<std::uint32_t>(static_cast<float>(initial_value))
+        << ":initial=";
+    for (auto value : initial_value) {
+        out << std::hex << static_cast<unsigned>(value) << '.';
+    }
+    out << std::dec
         << ":capacity=" << frame_capacity;
     return std::move(out).str();
 }
@@ -309,9 +361,9 @@ bool feedback_can_use_producer_buffer(
     return is_entirely_realtime_delivery(connection)
         && connection.detach
         && connection.detach_initial_value
-        && std::bit_cast<std::uint32_t>(
-            static_cast<float>(*connection.detach_initial_value))
-            == std::bit_cast<std::uint32_t>(0.0f)
+        && std::ranges::all_of(
+            *connection.detach_initial_value,
+            [](std::byte value) { return value == std::byte{}; })
         && group.source_port
         && connection.canonical_source_port
         && *connection.canonical_source_port == *group.source_port
@@ -525,7 +577,7 @@ std::string composition_feedback_alignment_identity(
     std::size_t minimum_latency,
     std::size_t maximum_latency,
     std::size_t frame_capacity,
-    Sample initial_value)
+    std::span<std::byte const> initial_value)
 {
     std::ostringstream out;
     out << "graphjit.sample.composed_feedback_alignment:target="
@@ -536,9 +588,14 @@ std::string composition_feedback_alignment_identity(
         << static_cast<unsigned>(source_layout.sample_layout)
         << ":min_latency=" << minimum_latency
         << ":max_latency=" << maximum_latency
+        << ":value_type=" << static_cast<unsigned>(connection.geometry.value_type)
+        << ":value_elements=" << connection.geometry.elements_per_value
+        << ":pace=" << connection.absolute_pace_exponent
         << ":capacity=" << frame_capacity
-        << ":initial_bits="
-        << std::bit_cast<std::uint32_t>(static_cast<float>(initial_value));
+        << ":initial=";
+    for (auto value : initial_value) {
+        out << std::hex << static_cast<unsigned>(value) << '.';
+    }
     return std::move(out).str();
 }
 
@@ -615,13 +672,16 @@ std::expected<SampleStoragePlan, std::string> build_sample_storage_plan(
     auto append_transient_representation = [&](SampleRepresentationPlan representation)
         -> std::expected<std::size_t, std::string> {
         auto bytes = sample_bytes(
-            representation.channel_layout, representation.frame_capacity, true);
+            representation.channel_layout,
+            representation.geometry,
+            representation.frame_capacity,
+            true);
         if (!bytes) return std::unexpected(std::move(bytes.error()));
         auto const index = append_representation(std::move(representation));
         auto const request_index = transient_requests.size();
         transient_requests.push_back(TransientArenaAllocationRequest{
             .size_bytes = *bytes,
-            .alignment = alignof(Sample),
+            .alignment = plan.representations.back().geometry.element_alignment,
             .live_interval = plan.representations.back().live_interval,
         });
         transient_representations.push_back(index);
@@ -639,6 +699,7 @@ std::expected<SampleStoragePlan, std::string> build_sample_storage_plan(
         }
         auto bytes = sample_bytes(
             plan.representations[representation_index].channel_layout,
+            plan.representations[representation_index].geometry,
             plan.representations[representation_index].frame_capacity,
             true);
         if (!bytes) return std::unexpected(std::move(bytes.error()));
@@ -657,22 +718,29 @@ std::expected<SampleStoragePlan, std::string> build_sample_storage_plan(
         std::size_t retained_frames,
         std::size_t frame_capacity,
         std::string migration_identity = {},
-        std::optional<Sample> initialize_value = std::nullopt)
+        std::optional<std::vector<std::byte>> initialize_value = std::nullopt)
         -> std::expected<std::size_t, std::string> {
+        if (initialize_value
+            && initialize_value->size() != group.geometry.value_size_bytes) {
+            return std::unexpected(
+                "GraphJit continuous persistent initializer has the wrong value size");
+        }
         auto const storage_frames = kind == SamplePersistentStorageKind::compact_carry
             ? retained_frames
             : frame_capacity;
-        auto bytes = sample_bytes(layout, storage_frames, false);
+        auto bytes = sample_bytes(
+            layout, group.geometry, storage_frames, false);
         if (!bytes) return std::unexpected(std::move(bytes.error()));
         auto const allocation_index = plan.persistent_allocations.size();
         plan.persistent_allocations.push_back(SamplePersistentAllocationPlan{
             .representation_index = representation_index,
             .kind = kind,
             .channel_layout = layout,
+            .geometry = group.geometry,
             .retained_frames = retained_frames,
             .frame_capacity = frame_capacity,
             .size_bytes = *bytes,
-            .alignment = alignof(Sample),
+            .alignment = group.geometry.element_alignment,
             .migration_identity = migration_identity.empty()
                 ? persistent_identity(
                     group, kind, retained_frames, frame_capacity)
@@ -689,26 +757,33 @@ std::expected<SampleStoragePlan, std::string> build_sample_storage_plan(
         std::size_t retained_frames,
         std::size_t frame_capacity,
         std::string migration_identity,
-        std::optional<Sample> initialize_value)
+        ContinuousValueStorageGeometry geometry,
+        std::optional<std::vector<std::byte>> initialize_value)
         -> std::expected<std::size_t, std::string> {
         if (migration_identity.empty()) {
             return std::unexpected(
                 "GraphJit synthetic sample persistent allocation requires a migration identity");
         }
+        if (initialize_value
+            && initialize_value->size() != geometry.value_size_bytes) {
+            return std::unexpected(
+                "GraphJit synthetic continuous initializer has the wrong value size");
+        }
         auto const storage_frames = kind == SamplePersistentStorageKind::compact_carry
             ? retained_frames
             : frame_capacity;
-        auto bytes = sample_bytes(layout, storage_frames, false);
+        auto bytes = sample_bytes(layout, geometry, storage_frames, false);
         if (!bytes) return std::unexpected(std::move(bytes.error()));
         auto const allocation_index = plan.persistent_allocations.size();
         plan.persistent_allocations.push_back(SamplePersistentAllocationPlan{
             .representation_index = representation_index,
             .kind = kind,
             .channel_layout = layout,
+            .geometry = geometry,
             .retained_frames = retained_frames,
             .frame_capacity = frame_capacity,
             .size_bytes = *bytes,
-            .alignment = alignof(Sample),
+            .alignment = geometry.element_alignment,
             .migration_identity = std::move(migration_identity),
             .initialize_value = initialize_value,
         });
@@ -726,6 +801,11 @@ std::expected<SampleStoragePlan, std::string> build_sample_storage_plan(
         if (!group.canonical_source_layout) {
             return std::unexpected(
                 "GraphJit sample storage plan requires a canonical realtime source layout");
+        }
+        auto current_value_count = maximum_projected_value_count(
+            kernel_block_size, group.absolute_pace_exponent);
+        if (!current_value_count) {
+            return std::unexpected(std::move(current_value_count.error()));
         }
 
         auto const has_feedback_branch = std::ranges::any_of(
@@ -804,10 +884,10 @@ std::expected<SampleStoragePlan, std::string> build_sample_storage_plan(
             }
         }
 
-        std::size_t canonical_capacity = kernel_block_size;
+        std::size_t canonical_capacity = *current_value_count;
         if (group.storage_requirements.retained_frames != 0) {
             auto capacity = working_ring_capacity(
-                kernel_block_size, group.storage_requirements.retained_frames);
+                *current_value_count, group.storage_requirements.retained_frames);
             if (!capacity) return std::unexpected(std::move(capacity.error()));
             canonical_capacity = *capacity;
         }
@@ -830,9 +910,9 @@ std::expected<SampleStoragePlan, std::string> build_sample_storage_plan(
                 if (!is_entirely_realtime_delivery(connection)
                     || !connection.detach
                     || !connection.detach_initial_value
-                    || std::bit_cast<std::uint32_t>(
-                        static_cast<float>(*connection.detach_initial_value))
-                        != std::bit_cast<std::uint32_t>(0.0f)
+                    || !std::ranges::all_of(
+                        *connection.detach_initial_value,
+                        [](std::byte value) { return value == std::byte{}; })
                     || !group.source_port
                     || !connection.canonical_source_port
                     || *connection.canonical_source_port != *group.source_port
@@ -861,16 +941,16 @@ std::expected<SampleStoragePlan, std::string> build_sample_storage_plan(
             if (has_feedback_home) {
                 home_feedback_storage = choose_sample_connection_storage_plan(
                     SampleConnectionStorageRequirements{
-                        .current_block_frames = kernel_block_size,
+                        .current_block_frames = *current_value_count,
                         .retained_frames = home_feedback_retained_frames,
                         .channel_count = channel_count(*group.canonical_source_layout),
-                        .value_size_bytes = sizeof(Sample),
+                        .value_size_bytes = group.geometry.value_size_bytes,
                         .operations = sample_producer_operation_counts(
-                            connections, group, kernel_block_size, true),
+                            connections, group, *current_value_count, true),
                     },
                     cost_model);
                 auto capacity = working_ring_capacity(
-                    kernel_block_size, home_feedback_retained_frames);
+                    *current_value_count, home_feedback_retained_frames);
                 if (!capacity) {
                     return std::unexpected(std::move(capacity.error()));
                 }
@@ -879,8 +959,11 @@ std::expected<SampleStoragePlan, std::string> build_sample_storage_plan(
         }
 
         auto producer_storage_requirements = group.storage_requirements;
+        producer_storage_requirements.current_block_frames = *current_value_count;
+        producer_storage_requirements.value_size_bytes =
+            group.geometry.value_size_bytes;
         producer_storage_requirements.operations = sample_producer_operation_counts(
-            connections, group, kernel_block_size, false);
+            connections, group, *current_value_count, false);
         auto const producer_storage_plan = has_feedback_home
             ? home_feedback_storage
             : choose_sample_connection_storage_plan(
@@ -903,6 +986,8 @@ std::expected<SampleStoragePlan, std::string> build_sample_storage_plan(
                     .canonical_producer_representation = true,
                     .storage = home_feedback_storage.kind,
                     .channel_layout = *group.canonical_source_layout,
+                    .geometry = group.geometry,
+                    .absolute_pace_exponent = group.absolute_pace_exponent,
                     .frame_capacity = home_feedback_capacity,
                     .live_interval = group.live_interval,
                 });
@@ -918,7 +1003,7 @@ std::expected<SampleStoragePlan, std::string> build_sample_storage_plan(
                         SamplePersistentStorageKind::ring,
                         home_feedback_retained_frames,
                         home_feedback_capacity),
-                    Sample{});
+                    std::vector<std::byte>(group.geometry.value_size_bytes));
                 if (!persistent) {
                     return std::unexpected(std::move(persistent.error()));
                 }
@@ -935,6 +1020,8 @@ std::expected<SampleStoragePlan, std::string> build_sample_storage_plan(
                         .canonical_producer_representation = true,
                         .storage = home_feedback_storage.kind,
                         .channel_layout = *group.canonical_source_layout,
+                        .geometry = group.geometry,
+                        .absolute_pace_exponent = group.absolute_pace_exponent,
                         .frame_capacity = home_feedback_capacity,
                         .live_interval = canonical_live,
                     });
@@ -954,7 +1041,7 @@ std::expected<SampleStoragePlan, std::string> build_sample_storage_plan(
                         SamplePersistentStorageKind::compact_carry,
                         home_feedback_retained_frames,
                         home_feedback_capacity),
-                    Sample{});
+                    std::vector<std::byte>(group.geometry.value_size_bytes));
                 if (!persistent) {
                     return std::unexpected(std::move(persistent.error()));
                 }
@@ -977,6 +1064,8 @@ std::expected<SampleStoragePlan, std::string> build_sample_storage_plan(
                 .canonical_producer_representation = true,
                 .storage = producer_storage_plan.kind,
                 .channel_layout = *group.canonical_source_layout,
+                .geometry = group.geometry,
+                .absolute_pace_exponent = group.absolute_pace_exponent,
                 .frame_capacity = canonical_capacity,
                 .live_interval = group.live_interval,
             });
@@ -996,6 +1085,8 @@ std::expected<SampleStoragePlan, std::string> build_sample_storage_plan(
                 .canonical_producer_representation = true,
                 .storage = producer_storage_plan.kind,
                 .channel_layout = *group.canonical_source_layout,
+                .geometry = group.geometry,
+                .absolute_pace_exponent = group.absolute_pace_exponent,
                 .frame_capacity = canonical_capacity,
                 .live_interval = canonical_live,
             });
@@ -1134,7 +1225,7 @@ std::expected<SampleStoragePlan, std::string> build_sample_storage_plan(
             auto const retained_before = connection.target_history
                 + connection.read_latency;
             auto derived_capacity = working_ring_capacity(
-                kernel_block_size, retained_before);
+                *current_value_count, retained_before);
             if (!derived_capacity) {
                 return std::unexpected(std::move(derived_capacity.error()));
             }
@@ -1146,6 +1237,9 @@ std::expected<SampleStoragePlan, std::string> build_sample_storage_plan(
                         .canonical_producer_representation = false,
                         .storage = RealtimeBufferStorageKind::transient_stack,
                         .channel_layout = connection.target_layout,
+                        .geometry = connection.geometry,
+                        .absolute_pace_exponent =
+                            connection.absolute_pace_exponent,
                         .frame_capacity = *derived_capacity,
                         .live_interval = ConnectionLiveIntervalPlan{
                             .begin = canonical_live.begin,
@@ -1187,7 +1281,7 @@ std::expected<SampleStoragePlan, std::string> build_sample_storage_plan(
                 materialization.latest_read_latency = std::min(
                     materialization.latest_read_latency, connection.read_latency);
                 auto widened_capacity = working_ring_capacity(
-                    kernel_block_size, materialization.retained_before);
+                    *current_value_count, materialization.retained_before);
                 if (!widened_capacity) {
                     return std::unexpected(std::move(widened_capacity.error()));
                 }
@@ -1258,7 +1352,7 @@ std::expected<SampleStoragePlan, std::string> build_sample_storage_plan(
             auto const retained_frames =
                 latency + connection.read_latency + connection.target_history;
             auto working_capacity = working_ring_capacity(
-                kernel_block_size, retained_frames);
+                *current_value_count, retained_frames);
             if (!working_capacity) {
                 return std::unexpected(std::move(working_capacity.error()));
             }
@@ -1268,14 +1362,14 @@ std::expected<SampleStoragePlan, std::string> build_sample_storage_plan(
                 ? producer_storage_plan
                 : choose_sample_connection_storage_plan(
                     SampleConnectionStorageRequirements{
-                        .current_block_frames = kernel_block_size,
+                        .current_block_frames = *current_value_count,
                         .retained_frames = retained_frames,
                         .channel_count = channel_count(*group.canonical_source_layout),
-                        .value_size_bytes = sizeof(Sample),
+                        .value_size_bytes = group.geometry.value_size_bytes,
                         .operations = copied_feedback_buffer_operation_counts(
                             connection,
                             *group.canonical_source_layout,
-                            kernel_block_size),
+                            *current_value_count),
                     },
                     cost_model);
             std::size_t timeline_representation = canonical;
@@ -1298,6 +1392,8 @@ std::expected<SampleStoragePlan, std::string> build_sample_storage_plan(
                         .canonical_producer_representation = false,
                         .storage = feedback_storage.kind,
                         .channel_layout = *group.canonical_source_layout,
+                        .geometry = group.geometry,
+                        .absolute_pace_exponent = group.absolute_pace_exponent,
                         .frame_capacity = *working_capacity,
                         .live_interval = ConnectionLiveIntervalPlan{
                             .begin = producer_position,
@@ -1334,6 +1430,8 @@ std::expected<SampleStoragePlan, std::string> build_sample_storage_plan(
                         .canonical_producer_representation = false,
                         .storage = feedback_storage.kind,
                         .channel_layout = *group.canonical_source_layout,
+                        .geometry = group.geometry,
+                        .absolute_pace_exponent = group.absolute_pace_exponent,
                         .frame_capacity = *working_capacity,
                         .live_interval = ConnectionLiveIntervalPlan{
                             .begin = std::min(producer_position, consumer_position),
@@ -1410,6 +1508,9 @@ std::expected<SampleStoragePlan, std::string> build_sample_storage_plan(
                         .canonical_producer_representation = false,
                         .storage = RealtimeBufferStorageKind::transient_stack,
                         .channel_layout = connection.target_layout,
+                        .geometry = connection.geometry,
+                        .absolute_pace_exponent =
+                            connection.absolute_pace_exponent,
                         .frame_capacity = *working_capacity,
                         .live_interval = ConnectionLiveIntervalPlan{
                             .begin = consumer_position,
@@ -1485,6 +1586,11 @@ std::expected<SampleStoragePlan, std::string> build_sample_storage_plan(
             != connection.source_channels.size()) {
             return std::unexpected(
                 "GraphJit sample composition lost normalized projection metadata");
+        }
+        auto current_value_count = maximum_projected_value_count(
+            kernel_block_size, connection.absolute_pace_exponent);
+        if (!current_value_count) {
+            return std::unexpected(std::move(current_value_count.error()));
         }
         for (std::size_t channel = 0;
              channel < connection.target_channels.size(); ++channel) {
@@ -1657,7 +1763,7 @@ std::expected<SampleStoragePlan, std::string> build_sample_storage_plan(
                 }
 
                 auto capacity = working_ring_capacity(
-                    kernel_block_size, connection.target_history);
+                    *current_value_count, connection.target_history);
                 if (!capacity) {
                     return std::unexpected(std::move(capacity.error()));
                 }
@@ -1667,6 +1773,9 @@ std::expected<SampleStoragePlan, std::string> build_sample_storage_plan(
                         .canonical_producer_representation = false,
                         .storage = RealtimeBufferStorageKind::transient_stack,
                         .channel_layout = converted_layout,
+                        .geometry = connection.geometry,
+                        .absolute_pace_exponent =
+                            connection.absolute_pace_exponent,
                         .frame_capacity = *capacity,
                         .live_interval = ConnectionLiveIntervalPlan{
                             .begin = composition_begin,
@@ -1759,19 +1868,19 @@ std::expected<SampleStoragePlan, std::string> build_sample_storage_plan(
             feedback_retained_frames = detach_latency
                 + connection.target_history + max_read_latency;
             auto capacity = working_ring_capacity(
-                kernel_block_size, feedback_retained_frames);
+                *current_value_count, feedback_retained_frames);
             if (!capacity) {
                 return std::unexpected(std::move(capacity.error()));
             }
 
             feedback_storage = choose_sample_connection_storage_plan(
                 SampleConnectionStorageRequirements{
-                    .current_block_frames = kernel_block_size,
+                    .current_block_frames = *current_value_count,
                     .retained_frames = feedback_retained_frames,
                     .channel_count = channel_count(connection.target_layout),
-                    .value_size_bytes = sizeof(Sample),
+                    .value_size_bytes = connection.geometry.value_size_bytes,
                     .operations = composed_feedback_buffer_operation_counts(
-                        connection, kernel_block_size, max_source_latency),
+                        connection, *current_value_count, max_source_latency),
                 },
                 cost_model);
             if (feedback_storage->kind
@@ -1782,6 +1891,9 @@ std::expected<SampleStoragePlan, std::string> build_sample_storage_plan(
                         .canonical_producer_representation = false,
                         .storage = feedback_storage->kind,
                         .channel_layout = connection.target_layout,
+                        .geometry = connection.geometry,
+                        .absolute_pace_exponent =
+                            connection.absolute_pace_exponent,
                         .frame_capacity = *capacity,
                         .live_interval = ConnectionLiveIntervalPlan{
                             .begin = std::min(begin, end),
@@ -1800,6 +1912,7 @@ std::expected<SampleStoragePlan, std::string> build_sample_storage_plan(
                         SamplePersistentStorageKind::ring,
                         *connection.detach_initial_value,
                         *capacity),
+                    connection.geometry,
                     *connection.detach_initial_value);
                 if (!persistent) {
                     return std::unexpected(std::move(persistent.error()));
@@ -1814,6 +1927,9 @@ std::expected<SampleStoragePlan, std::string> build_sample_storage_plan(
                         .canonical_producer_representation = false,
                         .storage = feedback_storage->kind,
                         .channel_layout = connection.target_layout,
+                        .geometry = connection.geometry,
+                        .absolute_pace_exponent =
+                            connection.absolute_pace_exponent,
                         .frame_capacity = *capacity,
                         .live_interval = ConnectionLiveIntervalPlan{
                             .begin = std::min(begin, end),
@@ -1836,6 +1952,7 @@ std::expected<SampleStoragePlan, std::string> build_sample_storage_plan(
                         SamplePersistentStorageKind::compact_carry,
                         *connection.detach_initial_value,
                         *capacity),
+                    connection.geometry,
                     *connection.detach_initial_value);
                 if (!persistent) {
                     return std::unexpected(std::move(persistent.error()));
@@ -1856,7 +1973,7 @@ std::expected<SampleStoragePlan, std::string> build_sample_storage_plan(
             }
         } else {
             auto capacity = working_ring_capacity(
-                kernel_block_size, connection.target_history);
+                *current_value_count, connection.target_history);
             if (!capacity) {
                 return std::unexpected(std::move(capacity.error()));
             }
@@ -1866,6 +1983,9 @@ std::expected<SampleStoragePlan, std::string> build_sample_storage_plan(
                     .canonical_producer_representation = false,
                     .storage = RealtimeBufferStorageKind::transient_stack,
                     .channel_layout = connection.target_layout,
+                    .geometry = connection.geometry,
+                    .absolute_pace_exponent =
+                        connection.absolute_pace_exponent,
                     .frame_capacity = *capacity,
                     .live_interval = ConnectionLiveIntervalPlan{
                         .begin = begin,
@@ -1987,7 +2107,7 @@ std::expected<SampleStoragePlan, std::string> build_sample_storage_plan(
                     auto const alignment_history =
                         maximum_latency - minimum_latency;
                     auto alignment_capacity = working_ring_capacity(
-                        kernel_block_size, alignment_history);
+                        *current_value_count, alignment_history);
                     if (!alignment_capacity) {
                         return std::unexpected(
                             std::move(alignment_capacity.error()));
@@ -1998,6 +2118,9 @@ std::expected<SampleStoragePlan, std::string> build_sample_storage_plan(
                             .canonical_producer_representation = false,
                             .storage = RealtimeBufferStorageKind::full_node_storage,
                             .channel_layout = source_layout,
+                            .geometry = connection.geometry,
+                            .absolute_pace_exponent =
+                                connection.absolute_pace_exponent,
                             .frame_capacity = *alignment_capacity,
                             .live_interval = ConnectionLiveIntervalPlan{
                                 .begin = std::min(begin, end),
@@ -2021,6 +2144,7 @@ std::expected<SampleStoragePlan, std::string> build_sample_storage_plan(
                         alignment_history,
                         *alignment_capacity,
                         identity + ":samples",
+                        connection.geometry,
                         *connection.detach_initial_value);
                     if (!persistent) {
                         return std::unexpected(std::move(persistent.error()));
@@ -2071,11 +2195,83 @@ std::expected<SampleStoragePlan, std::string> build_sample_storage_plan(
         plan.connection_representations[connection_index] = target_representation;
     }
 
+    std::vector<std::size_t> producer_revision_horizons(
+        plan.producer_groups.size(), 0);
+    auto require_authored_extent = [&] (
+        std::size_t source_representation,
+        std::size_t revision_frames) -> std::expected<void, std::string> {
+        if (revision_frames == 0) return {};
+        if (source_representation >= plan.representations.size()) {
+            return std::unexpected(
+                "GraphJit detached continuous writer references a missing producer representation");
+        }
+        auto const& source = plan.representations[source_representation];
+        if (!source.canonical_producer_representation
+            || source.producer_group_index >= plan.producer_groups.size()
+            || !plan.producer_groups[source.producer_group_index]
+            || plan.producer_groups[source.producer_group_index]
+                    ->canonical_representation != source_representation) {
+            return std::unexpected(
+                "GraphJit detached continuous revision does not originate at a canonical producer");
+        }
+        producer_revision_horizons[source.producer_group_index] = std::max(
+            producer_revision_horizons[source.producer_group_index],
+            revision_frames);
+        return {};
+    };
+    for (auto const& timeline : plan.feedback_timelines) {
+        if (timeline.writer.revision_frames == 0) continue;
+        if (timeline.writer.kind == SampleFeedbackTimelineWriterKind::copy) {
+            auto required = require_authored_extent(
+                timeline.writer.source_representation,
+                timeline.writer.revision_frames);
+            if (!required) {
+                return std::unexpected(std::move(required.error()));
+            }
+            continue;
+        }
+        if (timeline.writer.kind
+            == SampleFeedbackTimelineWriterKind::composition) {
+            for (auto const& contribution :
+                 timeline.writer.composition_contributions) {
+                for (auto const& source : contribution.sources) {
+                    auto required = require_authored_extent(
+                        source.source_representation,
+                        timeline.writer.revision_frames);
+                    if (!required) {
+                        return std::unexpected(std::move(required.error()));
+                    }
+                }
+            }
+        }
+    }
+    for (std::size_t group_index = 0;
+         group_index < producer_revision_horizons.size(); ++group_index) {
+        auto const horizon = producer_revision_horizons[group_index];
+        if (horizon == 0) continue;
+        auto const& producer = *plan.producer_groups[group_index];
+        auto const& group = connections.sample_producer_groups[group_index];
+        plan.producer_authored_extents.push_back(
+            SampleProducerAuthoredExtentPlan{
+                .producer_group_index = group_index,
+                .source_representation = producer.canonical_representation,
+                .absolute_pace_exponent = group.absolute_pace_exponent,
+                .maximum_revision_frames = horizon,
+                .migration_identity = producer_authored_extent_identity(
+                    connections, group),
+            });
+    }
+
     plan.constant_input_representations.reserve(constant_inputs.size());
     for (auto const& input : constant_inputs) {
         if (input.execution_position >= connections.nodes.size()) {
             return std::unexpected(
                 "GraphJit disconnected sample input has no execution position");
+        }
+        auto current_value_count = maximum_projected_value_count(
+            kernel_block_size, input.absolute_pace_exponent);
+        if (!current_value_count) {
+            return std::unexpected(std::move(current_value_count.error()));
         }
         auto const representation = append_representation(
             SampleRepresentationPlan{
@@ -2083,7 +2279,9 @@ std::expected<SampleStoragePlan, std::string> build_sample_storage_plan(
                 .canonical_producer_representation = false,
                 .storage = RealtimeBufferStorageKind::transient_stack,
                 .channel_layout = input.channel_layout,
-                .frame_capacity = kernel_block_size,
+                .geometry = input.geometry,
+                .absolute_pace_exponent = input.absolute_pace_exponent,
+                .frame_capacity = *current_value_count,
                 .live_interval = ConnectionLiveIntervalPlan{
                     .begin = input.execution_position,
                     .end = input.execution_position,
@@ -2110,16 +2308,21 @@ std::expected<SampleStoragePlan, std::string> build_sample_storage_plan(
                 "GraphJit disconnected sample output retained extent overflows size_t");
         }
         auto const retained_frames = sink.history + sink.latency;
+        auto current_value_count = maximum_projected_value_count(
+            kernel_block_size, sink.absolute_pace_exponent);
+        if (!current_value_count) {
+            return std::unexpected(std::move(current_value_count.error()));
+        }
         auto capacity = working_ring_capacity(
-            kernel_block_size, retained_frames);
+            *current_value_count, retained_frames);
         if (!capacity) return std::unexpected(std::move(capacity.error()));
 
         auto const storage = choose_sample_connection_storage_plan(
             SampleConnectionStorageRequirements{
-                .current_block_frames = kernel_block_size,
+                .current_block_frames = *current_value_count,
                 .retained_frames = retained_frames,
                 .channel_count = channel_count(sink.channel_layout),
-                .value_size_bytes = sizeof(Sample),
+                .value_size_bytes = sink.geometry.value_size_bytes,
             },
             cost_model);
         // The writable stack buffer exists only while this callback runs.
@@ -2136,6 +2339,10 @@ std::expected<SampleStoragePlan, std::string> build_sample_storage_plan(
             std::ostringstream out;
             out << sink.migration_identity
                 << ":kind=" << static_cast<unsigned>(kind)
+                << ":value_type="
+                << static_cast<unsigned>(sink.geometry.value_type)
+                << ":value_elements=" << sink.geometry.elements_per_value
+                << ":pace=" << sink.absolute_pace_exponent
                 << ":retained=" << retained_frames
                 << ":capacity=" << *capacity;
             return std::move(out).str();
@@ -2148,6 +2355,8 @@ std::expected<SampleStoragePlan, std::string> build_sample_storage_plan(
                 .canonical_producer_representation = false,
                 .storage = storage.kind,
                 .channel_layout = sink.channel_layout,
+                .geometry = sink.geometry,
+                .absolute_pace_exponent = sink.absolute_pace_exponent,
                 .frame_capacity = *capacity,
                 .live_interval = live,
             });
@@ -2158,6 +2367,7 @@ std::expected<SampleStoragePlan, std::string> build_sample_storage_plan(
                 retained_frames,
                 *capacity,
                 persistent_identity(SamplePersistentStorageKind::ring),
+                sink.geometry,
                 std::nullopt);
             if (!persistent) {
                 return std::unexpected(std::move(persistent.error()));
@@ -2171,6 +2381,8 @@ std::expected<SampleStoragePlan, std::string> build_sample_storage_plan(
                     .canonical_producer_representation = false,
                     .storage = storage.kind,
                     .channel_layout = sink.channel_layout,
+                    .geometry = sink.geometry,
+                    .absolute_pace_exponent = sink.absolute_pace_exponent,
                     .frame_capacity = *capacity,
                     .live_interval = live,
                 });
@@ -2188,6 +2400,7 @@ std::expected<SampleStoragePlan, std::string> build_sample_storage_plan(
                     *capacity,
                     persistent_identity(
                         SamplePersistentStorageKind::compact_carry),
+                    sink.geometry,
                     std::nullopt);
                 if (!persistent) {
                     return std::unexpected(std::move(persistent.error()));
@@ -2235,6 +2448,23 @@ std::expected<SampleStoragePlan, std::string> build_sample_storage_plan(
             allocation_index;
     }
 
+    for (auto const& representation : plan.representations) {
+        auto const pace = representation.absolute_pace_exponent;
+        if (std::ranges::none_of(
+                plan.sequential_pace_cursors,
+                [pace](auto const& cursor) {
+                    return cursor.absolute_pace_exponent == pace;
+                })) {
+            plan.sequential_pace_cursors.push_back({
+                .absolute_pace_exponent = pace,
+            });
+        }
+    }
+    std::ranges::sort(
+        plan.sequential_pace_cursors,
+        {},
+        &SequentialPaceCursorPlan::absolute_pace_exponent);
+
     return plan;
 }
 
@@ -2243,18 +2473,17 @@ std::expected<void, std::string> declare_sample_storage(
     SampleStoragePlan& plan)
 {
     try {
-        if (plan.transient_allocations.empty()) {
-            if (plan.transient_arena_size != 0) {
+        if (plan.transient_arena_size == 0) {
+            if (!plan.transient_allocations.empty()) {
                 return std::unexpected(
-                    "GraphJit empty transient sample plan has a non-zero arena size");
+                    "GraphJit sample transient allocations have no arena");
             }
         } else {
-            if (plan.transient_arena_size == 0
-                || plan.transient_arena_alignment == 0
+            if (plan.transient_arena_alignment == 0
                 || (plan.transient_arena_alignment
                         & (plan.transient_arena_alignment - 1)) != 0) {
                 return std::unexpected(
-                    "GraphJit sample transient arena has invalid size/alignment");
+                    "GraphJit sample transient arena has invalid alignment");
             }
             for (auto const& allocation : plan.transient_allocations) {
                 if (allocation.representation_index >= plan.representations.size()
@@ -2283,10 +2512,42 @@ std::expected<void, std::string> declare_sample_storage(
                 allocation.size_bytes,
                 allocation.alignment,
                 allocation.migration_identity,
-                allocation.initialize_value ? initialize_sample_raw_region : nullptr,
                 allocation.initialize_value
-                    ? sample_initialize_data(*allocation.initialize_value)
+                    ? initialize_continuous_raw_region
+                    : nullptr,
+                allocation.initialize_value
+                    ? *allocation.initialize_value
                     : std::vector<std::byte>{});
+        }
+        for (auto& extent : plan.producer_authored_extents) {
+            if (extent.source_representation >= plan.representations.size()
+                || extent.producer_group_index >= plan.producer_groups.size()
+                || !plan.producer_groups[extent.producer_group_index]
+                || extent.maximum_revision_frames == 0) {
+                return std::unexpected(
+                    "GraphJit continuous producer authored extent is invalid");
+            }
+            auto const zero = std::uint64_t{0};
+            std::vector<std::byte> initial(sizeof(zero));
+            std::memcpy(initial.data(), &zero, sizeof(zero));
+            extent.region = builder.declare_raw_region(
+                sizeof(zero),
+                alignof(std::uint64_t),
+                extent.migration_identity,
+                initialize_continuous_raw_region,
+                std::move(initial));
+        }
+        for (auto& cursor : plan.sequential_pace_cursors) {
+            auto const zero = std::uint64_t{0};
+            std::vector<std::byte> initial(sizeof(zero));
+            std::memcpy(initial.data(), &zero, sizeof(zero));
+            cursor.region = builder.declare_raw_region(
+                sizeof(zero),
+                alignof(std::uint64_t),
+                "graph_jit:sequential_pace_cursor:"
+                    + std::to_string(cursor.absolute_pace_exponent),
+                initialize_continuous_raw_region,
+                std::move(initial));
         }
         return {};
     } catch (std::exception const& e) {
@@ -2300,23 +2561,16 @@ std::expected<void, std::string> finalize_sample_storage(
     NodeLayout const& layout,
     SampleStoragePlan& plan)
 {
-    if (plan.transient_allocations.empty()) {
-        if (plan.transient_arena_size != 0) {
+    for (auto const& allocation : plan.transient_allocations) {
+        if (allocation.region_relative_offset > plan.transient_arena_size
+            || allocation.size_bytes
+                > plan.transient_arena_size - allocation.region_relative_offset) {
             return std::unexpected(
-                "GraphJit empty sample transient plan has a non-zero stack arena");
+                "GraphJit sample transient allocation lies outside its stack arena");
         }
-    } else {
-        for (auto const& allocation : plan.transient_allocations) {
-            if (allocation.region_relative_offset > plan.transient_arena_size
-                || allocation.size_bytes
-                    > plan.transient_arena_size - allocation.region_relative_offset) {
-                return std::unexpected(
-                    "GraphJit sample transient allocation lies outside its stack arena");
-            }
-            if (allocation.region_relative_offset % allocation.alignment != 0) {
-                return std::unexpected(
-                    "GraphJit sample transient stack allocation lost alignment");
-            }
+        if (allocation.region_relative_offset % allocation.alignment != 0) {
+            return std::unexpected(
+                "GraphJit sample transient stack allocation lost alignment");
         }
     }
 
@@ -2334,7 +2588,9 @@ std::expected<void, std::string> finalize_sample_storage(
             || static_cast<bool>(region.raw_initialize_fn)
                 != allocation.initialize_value.has_value()
             || region.raw_initialize_data.size()
-                != (allocation.initialize_value ? sizeof(Sample) : 0u)) {
+                != (allocation.initialize_value
+                    ? allocation.geometry.value_size_bytes
+                    : 0u)) {
             return std::unexpected(
                 "GraphJit finalized sample persistent region changed semantics");
         }
@@ -2343,6 +2599,39 @@ std::expected<void, std::string> finalize_sample_storage(
             return std::unexpected(
                 "GraphJit finalized sample persistent allocation lost alignment");
         }
+    }
+    for (auto& extent : plan.producer_authored_extents) {
+        if (!extent.region.valid() || extent.region.index >= layout.regions.size()) {
+            return std::unexpected(
+                "GraphJit continuous producer authored extent region was lost during NodeLayout finalization");
+        }
+        auto const& region = layout.regions[extent.region.index];
+        if (region.kind != NodeLayout::Region::Kind::raw
+            || region.size != sizeof(std::uint64_t)
+            || region.alignment != alignof(std::uint64_t)
+            || region.migration_identity != extent.migration_identity
+            || !region.raw_initialize_fn
+            || region.raw_initialize_data.size() != sizeof(std::uint64_t)) {
+            return std::unexpected(
+                "GraphJit finalized continuous producer authored extent changed semantics");
+        }
+        extent.storage_offset = region.storage_offset;
+    }
+    for (auto& cursor : plan.sequential_pace_cursors) {
+        if (!cursor.region.valid() || cursor.region.index >= layout.regions.size()) {
+            return std::unexpected(
+                "GraphJit Sequential pace cursor region was lost during NodeLayout finalization");
+        }
+        auto const& region = layout.regions[cursor.region.index];
+        if (region.kind != NodeLayout::Region::Kind::raw
+            || region.size != sizeof(std::uint64_t)
+            || region.alignment != alignof(std::uint64_t)
+            || !region.raw_initialize_fn
+            || region.raw_initialize_data.size() != sizeof(std::uint64_t)) {
+            return std::unexpected(
+                "GraphJit finalized Sequential pace cursor changed semantics");
+        }
+        cursor.storage_offset = region.storage_offset;
     }
     return {};
 }

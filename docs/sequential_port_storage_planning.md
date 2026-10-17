@@ -95,10 +95,12 @@ materialization when SSA/SROA/loop optimization proves it unnecessary.
 The planner therefore chooses the **minimum correct storage requirement**, not a
 mandatory final machine representation.
 
-### Planned pace-aware `tick_block()` contract
+### Pace-aware `tick_block()` contract
 
-The checked-in Tick path still assumes one common block size across every sequential
-sample input/output. Planned port pacing removes that assumption.
+Generated Tick execution projects one root interval independently onto every
+Sequential continuous input and output. It does not impose one common transported-value
+count on every port. The superseded equal-block implementation status is preserved in
+[Port Realization Status Before Type-Owned Tick Execution](./historical/port_realization_status_before_type_owned_tick_execution.md).
 
 Port pace is resolved by GraphJit from the node's `constrain_ports()` relations and
 graph connections before storage planning. It is a power-of-two transport factor,
@@ -107,7 +109,7 @@ execution selects one half-open interval in the shared dyadic global-time domain
 rate-changing node may therefore consume and produce different numbers of values in
 that same temporal interval, including zero values on a sufficiently slow port.
 
-The specialized `TickBlockContext<Node>` should expose the resolved amount per port:
+The specialized `TickBlockContext<Node>` exposes the resolved amount per port:
 
 ```cpp
 auto input_count  = ctx.input<"in">().block_size();
@@ -119,11 +121,14 @@ For scalar `Sample`, this is the number of samples. For an FFT-block port,
 `block_size()` is the number of FFT blocks while `size()` is the number of complex
 frequency bins in each block.
 
-A Sequential input whose resolved history is nonzero should additionally provide a
-contiguous history-inclusive block view, provisionally named `block_extended()`.
+A Sequential input whose resolved history is nonzero additionally provides the
+contiguous history-inclusive `block_extended()` view.
 `block()` contains only the newly consumed `block_size()` values;
-`block_extended()` contains the immediately preceding `history()` followed by that
-current block. This is a Sequential view, not a Region/Coverage object. The planner may
+`block_extended()` contains the preceding `history()` values in Tick invocation order
+followed by that current block. The preceding values remain adjacent across a
+pause/resume, seek, loop, or other global-coordinate seam even though their global
+coordinates need not be adjacent to the current block. This is a Sequential view, not
+a Region/Coverage object. The planner may
 alias producer/circular storage directly when the requested range is already contiguous,
 or materialize only that finite range into transient storage when wraparound or another
 layout would otherwise make it non-contiguous. Node source does not need to copy overlap
@@ -149,6 +154,45 @@ algorithms needing earlier values use declared history and `block_extended()`.
 Resampling and non-power-of-two conversion remain explicit DSP and are not implied by
 pace.
 
+### Global coordinates and physical Sequential cursors
+
+Every Tick and Tock node observes one coordinate type: `FractionalGlobalIndex`. Tick
+normally advances it, but resume/seek may make it jump. This does not reset the Tick
+graph's Sequential state.
+
+Physical continuous rings and compact carries use compiler-owned linear value cursors,
+not projected global ordinal bits. Generated execution maintains one cumulative cursor
+for each resolved dyadic pace used by the generation. For an SCC or primitive slice it
+derives the slice's physical beginning from the root callback's pace cursor plus the
+number of global-lattice values in the preceding root prefix. It advances each pace
+cursor once after the complete root callback.
+
+This separation has three required consequences:
+
+- `begin()` and the node callback index remain global `FractionalGlobalIndex` values;
+- `value_index()` remains the global-lattice ordinal associated with the current
+  node-visible position; and
+- `get()`, `block()`, `block_extended()`, output revision, feedback, and carry address
+  physical storage through the hidden Sequential cursor.
+
+The hidden cursor is shared by pace domain rather than allocated per connection or
+detach. A feedback writer also distinguishes initialized prehistory from source values
+that have actually been authored. Fresh and migrated producer state may have different
+authored frontiers at generation activation; allocated bytes alone are not evidence
+that a source value is valid. The implementation stores one saturating authored extent
+for each producer whose output-revision horizon is observed by any detached branch.
+All branches from that producer share the extent. Within an SCC callback, the usable
+extent is the migrated/prior-root extent plus the projected value count in the root
+prefix preceding the current slice. The stored extent advances once after the complete
+root callback, so mutable warm-up state scales with relevant producers rather than
+detach connections.
+
+Sequential events require the same invocation-order rule but retain explicit global
+timestamps in `TimedEvent`. Their seam mapping must preserve both facts: retained order
+for Sequential delivery and original global position for persistence/Random Access.
+That event representation work remains a named dependency rather than a reason to add
+a second node-visible time type.
+
 A node defining pointwise `tick()` may be lowered only when the configured graph
 revision resolves its relevant sequential ports to a compatible equal pace. That
 legality check belongs to graph compilation because constructor/configuration and
@@ -157,13 +201,20 @@ and reports a diagnostic rather than requiring source introspection to reject th
 definition. Nodes that can legitimately operate with heterogeneous paces should
 implement native adaptive `tick_block()`.
 
-Resolved pace domains determine transported-value cadence. Audio sample-rate basis and
-the sample support represented by one value are separate realization facts. A
-node-wide `ctx.sample_rate` convenience is legal only when the relevant audio ports are
-proven to share one basis; otherwise the node uses port-specific resolved basis data.
-Declaration, initialization, and execution contexts should observe that effective
-rate: a node in a 2x oversampled region sees 2x the project/device base rate. This is
-necessary for rate-dependent filters and other DSP to remain correct.
+Equal pace does not imply one shared physical address. The generated pointwise loop
+applies its current value offset to each port binding's own hidden Sequential beginning.
+This permits an invocation-local persisted/materialized playback ring and a live output
+ring to use different physical origins while the node still observes one semantic
+global value position.
+
+Resolved pace domains determine transported-value cadence. They do not change the
+project sample rate. `ctx.sample_rate` remains the same project/execution parameter for
+every node, including nodes with faster or slower port lattices. Per-value sample
+support remains type-owned geometry and does not become another constrained rate.
+Fractional sample-rate conversion is deferred and, when introduced, must be explicit
+DSP rather than a consequence of pace. The earlier per-port sample-rate-basis proposal
+is preserved in
+[Per-Port Audio Sample-Rate Basis Proposal](./historical/per_port_audio_sample_rate_basis_proposal.md).
 
 ### Planned batched Tick callback contract
 

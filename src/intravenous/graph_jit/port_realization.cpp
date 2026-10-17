@@ -145,6 +145,9 @@ class WeightedRateSolver {
         std::size_t parent = 0;
         // exponent(this) - exponent(parent)
         PortPace parent_difference {};
+        // Present only on a root. This is the absolute execution pace of the
+        // root itself, not of an arbitrary member of the component.
+        std::optional<PortPace> absolute_rate {};
     };
     std::vector<Variable> variables_ {};
 
@@ -203,8 +206,42 @@ public:
             *root_difference, second_found->difference);
         if (!root_difference)
             return std::unexpected(std::move(root_difference.error()));
-        variables_[second_found->root].parent = first_found->root;
-        variables_[second_found->root].parent_difference = *root_difference;
+        auto& first_root = variables_[first_found->root];
+        auto& second_root = variables_[second_found->root];
+        if (second_root.absolute_rate) {
+            auto translated = subtract_exponents(
+                *second_root.absolute_rate, *root_difference);
+            if (!translated)
+                return std::unexpected(std::move(translated.error()));
+            if (first_root.absolute_rate
+                && *first_root.absolute_rate != *translated) {
+                return std::unexpected(
+                    std::move(context) + " conflicts with absolute pace anchors");
+            }
+            first_root.absolute_rate = *translated;
+        }
+        second_root.parent = first_found->root;
+        second_root.parent_difference = *root_difference;
+        second_root.absolute_rate.reset();
+        return {};
+    }
+
+    [[nodiscard]] std::expected<void, std::string> anchor(
+        std::size_t variable,
+        PortPace absolute_rate,
+        std::string context)
+    {
+        auto found = find(variable);
+        if (!found) return std::unexpected(std::move(found.error()));
+        auto root_rate = subtract_exponents(absolute_rate, found->difference);
+        if (!root_rate)
+            return std::unexpected(std::move(root_rate.error()));
+        auto& existing = variables_[found->root].absolute_rate;
+        if (existing && *existing != *root_rate) {
+            return std::unexpected(
+                std::move(context) + " conflicts with another absolute pace anchor");
+        }
+        existing = *root_rate;
         return {};
     }
 
@@ -212,9 +249,12 @@ public:
     {
         auto found = find(variable);
         if (!found) return std::unexpected(std::move(found.error()));
-        // Every otherwise-unanchored component chooses root rate 1. Relative
-        // rates remain exact and deterministic.
-        return found->difference;
+        // Only the one uniform scale of an otherwise-unanchored component
+        // defaults to project pace one. Every internal ratio has already been
+        // established by local port constraints and connection differences.
+        return add_exponents(
+            variables_[found->root].absolute_rate.value_or(PortPace{}),
+            found->difference);
     }
 };
 
@@ -767,6 +807,30 @@ class PortRealizationSolver {
                         "continuous connection pace");
                     if (!result) return std::unexpected(std::move(result.error()));
                 }
+            }
+        }
+        for (NodeBundleHandle bundle = 0; bundle < bundles_.size(); ++bundle) {
+            auto const* constraints = bundles_[bundle].authored_constraints;
+            if (!constraints) continue;
+            for (auto const& anchor : constraints->absolute_pace_anchors) {
+                auto target = port(bundle, anchor.port);
+                if (!target)
+                    return std::unexpected(std::move(target.error()));
+                if (!(**target).pace) {
+                    return std::unexpected(
+                        "absolute pace constraint requires a continuous port: "
+                        + port_name(bundle, anchor.port));
+                }
+                auto execution_rate = subtract_exponents(
+                    anchor.value, resolved_local_pace(**target));
+                if (!execution_rate)
+                    return std::unexpected(std::move(execution_rate.error()));
+                auto result = rates.anchor(
+                    bundle,
+                    *execution_rate,
+                    "authored absolute pace constraint for "
+                        + port_name(bundle, anchor.port));
+                if (!result) return std::unexpected(std::move(result.error()));
             }
         }
         std::vector<PortPace> result;

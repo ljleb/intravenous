@@ -75,6 +75,22 @@ TEST(FractionalGlobalIndexRange, SlowLatticeCanProduceZeroValuesForAnInvocation)
     EXPECT_EQ(next_position->count, 1u);
 }
 
+TEST(FractionalGlobalIndexRange, EmptyProjectionKeepsItsLatticeInsertionOrdinal)
+{
+    auto const projected =
+        iv::FractionalGlobalIndexRange::from_global_range({
+            .begin = index(97),
+            .extent = 1,
+        }).try_project_onto_lattice(-2);
+
+    ASSERT_TRUE(projected.has_value());
+    EXPECT_EQ(
+        projected->begin,
+        iv::FractionalGlobalIndex::from_global(index(100)));
+    EXPECT_EQ(projected->begin_ordinal_bits, 25u);
+    EXPECT_EQ(projected->count, 0u);
+}
+
 TEST(FractionalGlobalIndexRange, ProjectionPreservesFractionalAndWrappingIntervals)
 {
     iv::FractionalGlobalIndexRange const fractional{

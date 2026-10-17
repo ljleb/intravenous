@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <array>
 #include <cstddef>
+#include <cstring>
 #include <exception>
 #include <limits>
 #include <iterator>
@@ -424,6 +425,14 @@ std::expected<void, std::string> inventory_sample_connections(
                 "configured sample connection target spans multiple input ports");
         }
 
+        auto const& resolved_target = realization.input(
+            first_target.bundle, first_target.port);
+        auto const target_geometry = continuous_value_storage_geometry(
+            resolved_target.value_type, resolved_target.size);
+        if (!target_geometry) {
+            return std::unexpected(
+                "configured continuous connection has invalid target value geometry");
+        }
         SampleConnectionPlan connection_plan{
             .configured_connection_index = i,
             .source_type = connection.source_type,
@@ -432,6 +441,9 @@ std::expected<void, std::string> inventory_sample_connections(
             .target_channels = connection.target_channels,
             .target_port = NodeBundlePortId{
                 first_target.bundle, PortKind::sample, first_target.port},
+            .geometry = *target_geometry,
+            .absolute_pace_exponent =
+                resolved_target.absolute_pace.exponent(),
         };
 
         try {
@@ -449,10 +461,19 @@ std::expected<void, std::string> inventory_sample_connections(
                         "GraphJit sample detach latency must be at least one sample");
                 connection_plan.detach = connection.detach;
                 if (is_sequential(target)) {
-                    connection_plan.detach_initial_value =
-                        connection.detach->initial_value_override.value_or(
-                            sequential_input_metadata<Sample>(
-                                sequential_input_properties(target)).neutral_value);
+                    if (connection.detach->initial_value_override) {
+                        if (resolved_target.value_type
+                            != continuous_value_type_id_v<Sample>) {
+                            return std::unexpected(
+                                "Sample detach initial-value override cannot initialize a non-Sample continuous connection");
+                        }
+                        connection_plan.detach_initial_value.emplace(
+                            sizeof(Sample));
+                        std::memcpy(
+                            connection_plan.detach_initial_value->data(),
+                            &*connection.detach->initial_value_override,
+                            sizeof(Sample));
+                    }
                 }
             }
             auto const target_access = destination_access(input_access(target));
@@ -468,6 +489,14 @@ std::expected<void, std::string> inventory_sample_connections(
                     graph.node_bundles.resolve_sample_output(source_port).config;
                 auto const& resolved_source =
                     realization.output(source_channel.bundle, source_channel.port);
+                auto const source_geometry = continuous_value_storage_geometry(
+                    resolved_source.value_type, resolved_source.size);
+                if (!source_geometry || *source_geometry != *target_geometry
+                    || resolved_source.absolute_pace
+                        != resolved_target.absolute_pace) {
+                    return std::unexpected(
+                        "configured continuous connection disagrees on value geometry or pace");
+                }
                 auto const source_history = resolved_source.history;
                 auto const source_latency = resolved_source.latency;
                 auto const production = source_production(output_production(source));
@@ -626,6 +655,8 @@ std::expected<void, std::string> normalize_sample_target_projections(
             .target_channels = {
                 canonical_targets.begin(), canonical_targets.end()},
             .target_port = target_port,
+            .geometry = first.geometry,
+            .absolute_pace_exponent = first.absolute_pace_exponent,
             .target_history = target_history,
             .destination_access = first.destination_access,
             .requires_conversion = true,
@@ -638,6 +669,9 @@ std::expected<void, std::string> normalize_sample_target_projections(
         for (auto const connection_index : group_indices) {
             auto const& connection = plan.sample_connections[connection_index];
             if (connection.target_layout != target.channel_layout
+                || connection.geometry != first.geometry
+                || connection.absolute_pace_exponent
+                    != first.absolute_pace_exponent
                 || connection.target_history != target_history
                 || connection.destination_access != first.destination_access
                 || connection.detach != detach) {
@@ -1080,6 +1114,55 @@ std::expected<void, std::string> derive_contextual_replayability(
                 return replay;
             }
             delivery.contextually_replayable = true;
+        }
+    }
+    return {};
+}
+
+std::expected<void, std::string> validate_contextual_replay_realization(
+    ConfiguredGraph const& graph,
+    ResolvedPortRealization const& realization,
+    ConnectionAnalysisPlan const& plan)
+{
+    for (auto const& node : plan.nodes) {
+        if (!node.contextually_replayable) continue;
+        auto const bundle = node.bundle;
+        for (std::size_t port = 0; port < node.sample_input_count; ++port) {
+            auto const config = graph.node_bundles.resolve_sample_input(
+                {bundle, PortKind::sample, port}).config;
+            if (!is_sequential(config)) continue;
+            auto const& selected = realization.input(bundle, port);
+            if (selected.value_type != continuous_value_type_id_v<Sample>) {
+                return std::unexpected(
+                    "GraphJit background Tick replay does not yet support continuous type '"
+                    + std::string(continuous_value_type_info(
+                        selected.value_type).name)
+                    + "'");
+            }
+            if (selected.absolute_pace != PortPace{}) {
+                return std::unexpected(
+                    "GraphJit background Tick replay does not yet support a non-project-rate continuous port");
+            }
+        }
+        for (std::size_t port = 0; port < node.sample_output_count; ++port) {
+            auto const config = graph.node_bundles.resolve_sample_output(
+                {bundle, PortKind::sample, port}).config;
+            if (!is_tick(config)
+                || config.retention != OutputRetention::ephemeral) {
+                continue;
+            }
+            auto const& selected = realization.output(bundle, port);
+            if (selected.value_type != continuous_value_type_id_v<Sample>) {
+                return std::unexpected(
+                    "GraphJit background Tick replay does not yet support continuous type '"
+                    + std::string(continuous_value_type_info(
+                        selected.value_type).name)
+                    + "'");
+            }
+            if (selected.absolute_pace != PortPace{}) {
+                return std::unexpected(
+                    "GraphJit background Tick replay does not yet support a non-project-rate continuous port");
+            }
         }
     }
     return {};
@@ -3493,7 +3576,7 @@ void plan_port_atoms(
     }
 }
 
-void plan_sample_groups(
+std::expected<void, std::string> plan_sample_groups(
     ConnectionAnalysisPlan& plan,
     std::size_t kernel_block_size,
     RealtimeStorageCostModel const& cost_model)
@@ -3539,6 +3622,20 @@ void plan_sample_groups(
             append_unique(connected_source_ports, atom.port);
         }
     }
+    auto connection_for_source_port = [&](NodeBundlePortId port)
+        -> SampleConnectionPlan const* {
+        auto const found = std::ranges::find_if(
+            plan.sample_connections,
+            [&](SampleConnectionPlan const& connection) {
+                return std::ranges::any_of(
+                    connection.source_channels,
+                    [&](SampleOutputChannelId channel) {
+                        return channel.bundle == port.node_bundle_handle
+                            && channel.port == port.port_index;
+                    });
+            });
+        return found == plan.sample_connections.end() ? nullptr : &*found;
+    };
     for (PortSubsetIndex atom_index = 0;
          atom_index < plan.background.sample_source_subsets.size(); ++atom_index) {
         auto const& atom = plan.background.sample_source_subsets[atom_index];
@@ -3550,10 +3647,16 @@ void plan_sample_groups(
                     && *candidate.source_port == atom.port;
             });
         if (group == plan.sample_producer_groups.end()) {
+            auto const* connection = connection_for_source_port(atom.port);
+            IV_ASSERT(connection != nullptr,
+                "continuous producer group has no connection realization");
             plan.sample_producer_groups.push_back(SampleProducerGroupPlan{
                 .source_port = atom.port,
                 .source_type = atom.source_layout.channel_type,
                 .canonical_source_layout = atom.source_layout,
+                .geometry = connection->geometry,
+                .absolute_pace_exponent =
+                    connection->absolute_pace_exponent,
             });
             group = std::prev(plan.sample_producer_groups.end());
         } else if (!group->canonical_source_layout
@@ -3623,13 +3726,20 @@ void plan_sample_groups(
             external = external || connection.external_boundary;
             retained = std::max(retained, connection_retained);
         }
+        auto const current_value_count =
+            FractionalGlobalIndexRange::maximum_projection_count(
+                kernel_block_size, group.absolute_pace_exponent);
+        if (!current_value_count) {
+            return std::unexpected(
+                "GraphJit continuous producer block projection cannot fit size_t");
+        }
         group.storage_requirements = SampleConnectionStorageRequirements{
-            .current_block_frames = kernel_block_size,
+            .current_block_frames = *current_value_count,
             .retained_frames = retained,
             .channel_count = group.canonical_source_layout
                 ? channel_count(*group.canonical_source_layout)
                 : channel_count(group.source_type),
-            .value_size_bytes = sizeof(Sample),
+            .value_size_bytes = group.geometry.value_size_bytes,
         };
         if (!group.has_realtime_connections) continue;
         if (!external) {
@@ -3652,20 +3762,22 @@ void plan_sample_groups(
                 .current_block_frames = current_block_frames,
                 .retained_extent = retained_extent_value,
                 .channel_count = group.storage_requirements.channel_count,
-                .value_size_bytes = sizeof(Sample),
+                .value_size_bytes = group.geometry.value_size_bytes,
             });
         };
         if (external) {
             append_storage(
                 ConnectionStorageLifetime::external,
-                kernel_block_size,
+                *current_value_count,
                 group.storage_requirements.retained_frames);
             continue;
         }
         switch (group.storage_plan->kind) {
         case RealtimeBufferStorageKind::transient_stack:
             append_storage(
-                ConnectionStorageLifetime::transient, kernel_block_size, 0);
+                ConnectionStorageLifetime::transient,
+                *current_value_count,
+                0);
             break;
         case RealtimeBufferStorageKind::stack_with_persistent_carry:
             append_storage(
@@ -3673,16 +3785,19 @@ void plan_sample_groups(
                 0,
                 group.storage_requirements.retained_frames);
             append_storage(
-                ConnectionStorageLifetime::transient, kernel_block_size, 0);
+                ConnectionStorageLifetime::transient,
+                *current_value_count,
+                0);
             break;
         case RealtimeBufferStorageKind::full_node_storage:
             append_storage(
                 ConnectionStorageLifetime::persistent,
-                kernel_block_size,
+                *current_value_count,
                 group.storage_requirements.retained_frames);
             break;
         }
     }
+    return {};
 }
 
 std::expected<void, std::string> plan_event_groups(
@@ -3965,6 +4080,10 @@ std::expected<ConnectionAnalysisPlan, std::string> build_connection_analysis_pla
     if (auto replay = derive_contextual_replayability(graph, plan); !replay) {
         return std::unexpected(std::move(replay.error()));
     }
+    if (auto replay = validate_contextual_replay_realization(
+            graph, port_realization, plan); !replay) {
+        return std::unexpected(std::move(replay.error()));
+    }
     if (retained_background_plan) {
         if (retained_background_plan->semantic_nodes.size()
                 != plan.nodes.size()
@@ -4015,7 +4134,10 @@ std::expected<ConnectionAnalysisPlan, std::string> build_connection_analysis_pla
         return std::unexpected(std::move(latency.error()));
     }
     plan_port_atoms(graph, plan);
-    plan_sample_groups(plan, kernel_block_size, cost_model);
+    if (auto samples = plan_sample_groups(
+            plan, kernel_block_size, cost_model); !samples) {
+        return std::unexpected(std::move(samples.error()));
+    }
     if (auto events = plan_event_groups(
             plan, kernel_block_size, cost_model); !events) {
         return std::unexpected(std::move(events.error()));

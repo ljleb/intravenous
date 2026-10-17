@@ -326,6 +326,15 @@ preferred where the toolchain permits it.
 `SubgraphClosure` is explicitly intended to be passable as a construction
 argument through nested module scopes.
 
+One planned consumer is a paired STFT module. It accepts transform size, hop size,
+inverse/window configuration, and a spectral-processing `SubgraphClosure`; internally
+it constructs explicit forward and inverse FFT nodes with the same transform and hop
+arguments and places the supplied closure between their `FFTBlock` ports. The closure
+therefore removes duplicated user configuration without turning FFT conversion into an
+implicit port operation or making hop size an inferred pace variable. This module is
+implemented only after the general `SubgraphClosure` transport and lifetime contract in
+this document exists.
+
 For example, A may create an A-local source and a construction closure that uses
 it, then pass that closure to B. B may invoke the closure several times:
 

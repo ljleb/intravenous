@@ -1,6 +1,7 @@
 #pragma once
 
 #include <intravenous/channel_layout.h>
+#include <intravenous/continuous_value.h>
 #include <intravenous/graph/port_ids.h>
 #include <intravenous/graph_jit/stable_graph_identity.h>
 #include <intravenous/sample.h>
@@ -90,6 +91,8 @@ struct SampleRealtimePortStateStorageView {
     SampleRealtimePortStateStorage storage =
         SampleRealtimePortStateStorage::callback_transient;
     ChannelLayout channel_layout{};
+    ContinuousValueStorageGeometry geometry{};
+    std::int32_t absolute_pace_exponent = 0;
     std::size_t representation_channel = 0;
 
     // Physical absolute-frame coordinate for semantic position P is
@@ -112,7 +115,7 @@ struct SampleRealtimePortStateStorageView {
     std::optional<std::size_t> node_storage_offset{};
     std::optional<std::size_t> callback_arena_offset{};
     std::size_t storage_size_bytes = 0;
-    std::optional<Sample> constant_value{};
+    std::optional<std::vector<std::byte>> constant_value{};
 };
 
 struct SampleRealtimePortStateMaterialization {

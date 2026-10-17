@@ -35,20 +35,21 @@ namespace {
 }
 
 [[nodiscard]] bool valid_replay_sample_storage(
-    ReflectedSamplePortStorageBinding const& storage) noexcept
+    ReflectedContinuousPortStorageBinding const& storage) noexcept
 {
     if (!is_valid_channel_type(storage.channel_layout.channel_type) ||
         !is_valid_sample_stream_layout(storage.channel_layout.sample_layout) ||
-        storage.frame_capacity == 0 ||
-        !std::has_single_bit(storage.frame_capacity)) {
+        storage.geometry.value_type != ContinuousValueTypeId::sample ||
+        storage.value_capacity == 0 ||
+        !std::has_single_bit(storage.value_capacity)) {
         return false;
     }
     auto const count = channel_count(storage.channel_layout);
     for (std::size_t channel = 0; channel < count; ++channel) {
         auto const& binding = storage.channels[channel];
-        if (binding.storage == nullptr || binding.frame_capacity == 0 ||
-            !std::has_single_bit(binding.frame_capacity) ||
-            binding.frame_stride == 0) {
+        if (binding.storage == nullptr || binding.value_capacity == 0 ||
+            !std::has_single_bit(binding.value_capacity) ||
+            binding.value_stride_bytes < sizeof(Sample)) {
             return false;
         }
     }
@@ -266,9 +267,16 @@ struct BackgroundEvaluationCallFrame::ReplayFrameStorage {
         ChannelLayout layout{};
         std::size_t capacity = 0;
         std::vector<Sample> values{};
+        std::size_t contiguous_capacity = 0;
+        std::vector<Sample> contiguous_values{};
 
-        SampleStorage(ChannelLayout selected_layout, std::size_t selected_capacity)
-            : layout(selected_layout), capacity(selected_capacity)
+        SampleStorage(
+            ChannelLayout selected_layout,
+            std::size_t selected_capacity,
+            std::size_t selected_contiguous_capacity = 0)
+            : layout(selected_layout)
+            , capacity(selected_capacity)
+            , contiguous_capacity(selected_contiguous_capacity)
         {
             auto const channels = channel_count(layout);
             if (capacity != 0
@@ -278,12 +286,21 @@ struct BackgroundEvaluationCallFrame::ReplayFrameStorage {
                     "background replay raw sample storage is too large");
             }
             values.resize(channels * capacity);
+            if (contiguous_capacity != 0
+                && channels > std::numeric_limits<std::size_t>::max()
+                    / contiguous_capacity) {
+                throw std::length_error(
+                    "background replay contiguous sample storage is too large");
+            }
+            contiguous_values.resize(channels * contiguous_capacity);
         }
 
-        [[nodiscard]] ReflectedSamplePortStorageBinding binding() noexcept
+        [[nodiscard]] ReflectedContinuousPortStorageBinding binding() noexcept
         {
-            ReflectedSamplePortStorageBinding result{
-                .frame_capacity = capacity,
+            ReflectedContinuousPortStorageBinding result{
+                .geometry = *continuous_value_storage_geometry(
+                    ContinuousValueTypeId::sample, std::nullopt),
+                .value_capacity = capacity,
                 .channel_layout = layout,
             };
             auto const channels = channel_count(layout);
@@ -295,11 +312,16 @@ struct BackgroundEvaluationCallFrame::ReplayFrameStorage {
                 result.channels[channel] = {
                     .storage = reinterpret_cast<std::byte*>(
                         values.data() + offset),
-                    .frame_capacity = capacity,
-                    .frame_stride = layout.sample_layout
+                    .value_capacity = capacity,
+                    .value_stride_bytes = (layout.sample_layout
                             == SampleStreamLayout::planar
                         ? 1
-                        : channels,
+                        : channels) * sizeof(Sample),
+                    .contiguous_scratch = contiguous_capacity == 0
+                        ? nullptr
+                        : reinterpret_cast<std::byte*>(
+                            contiguous_values.data()
+                            + channel * contiguous_capacity),
                 };
             }
             return result;
@@ -371,8 +393,8 @@ struct BackgroundEvaluationCallFrame::ReplayFrameStorage {
         }
     };
 
-    std::vector<ReflectedSampleInputPortBinding> sample_inputs{};
-    std::vector<ReflectedSampleOutputPortBinding> sample_outputs{};
+    std::vector<ReflectedContinuousInputPortBinding> sample_inputs{};
+    std::vector<ReflectedContinuousOutputPortBinding> sample_outputs{};
     std::vector<ReflectedEventInputPortBinding> event_inputs{};
     std::vector<ReflectedEventOutputPortBinding> event_outputs{};
     std::vector<GlobalIndexRange> regions{};
@@ -517,7 +539,7 @@ BackgroundEvaluationCallFrame::BackgroundEvaluationCallFrame(
 
 BackgroundEvaluationCallFrame::~BackgroundEvaluationCallFrame() = default;
 
-std::span<ReflectedSampleInputPortBinding>
+std::span<ReflectedContinuousInputPortBinding>
 BackgroundEvaluationCallFrame::replay_sample_inputs(
     graph_jit::BackgroundReplayInvocationSlot slot)
 {
@@ -530,7 +552,7 @@ BackgroundEvaluationCallFrame::replay_sample_inputs(
     return replay_storage_[slot]->sample_inputs;
 }
 
-std::span<ReflectedSampleOutputPortBinding>
+std::span<ReflectedContinuousOutputPortBinding>
 BackgroundEvaluationCallFrame::replay_sample_outputs(
     graph_jit::BackgroundReplayInvocationSlot slot)
 {
@@ -944,8 +966,18 @@ std::expected<void, std::string> BackgroundEvaluationCallFrame::seal()
                 if (binding.kind == PortKind::sample) {
                     auto raw = std::make_unique<
                         ReplayFrameStorage::SampleStorage>(
-                            port.sample_layout, sample_capacity);
-                    storage.sample_inputs[sample_input].storage = raw->binding();
+                            port.sample_layout,
+                            sample_capacity,
+                            replay.block_input_access
+                                ? replay.maximum_block_size
+                                : 0);
+                    storage.sample_inputs[sample_input] = {
+                        .storage = raw->binding(),
+                        .contiguous_value_capacity =
+                            replay.block_input_access
+                                ? replay.maximum_block_size
+                                : 0,
+                    };
                     storage.sample_input_adapters.push_back(adapter);
                     storage.sample_input_storage.push_back(std::move(raw));
                     ++sample_input;
@@ -995,12 +1027,27 @@ std::expected<void, std::string> BackgroundEvaluationCallFrame::seal()
                 &storage, &prepare_replay, &finalize_replay);
             if (!std::ranges::all_of(
                     storage.sample_inputs,
-                    [](ReflectedSampleInputPortBinding const& binding) {
-                        return valid_replay_sample_storage(binding.storage);
+                    [](ReflectedContinuousInputPortBinding const& binding) {
+                        if (!valid_replay_sample_storage(binding.storage)) {
+                            return false;
+                        }
+                        if (binding.contiguous_value_capacity == 0) {
+                            return true;
+                        }
+                        auto const channels = channel_count(
+                            binding.storage.channel_layout);
+                        for (std::size_t channel = 0;
+                             channel < channels; ++channel) {
+                            if (binding.storage.channels[channel]
+                                    .contiguous_scratch == nullptr) {
+                                return false;
+                            }
+                        }
+                        return true;
                     }) ||
                 !std::ranges::all_of(
                     storage.sample_outputs,
-                    [](ReflectedSampleOutputPortBinding const& binding) {
+                    [](ReflectedContinuousOutputPortBinding const& binding) {
                         return valid_replay_sample_storage(binding.storage);
                     }) ||
                 !std::ranges::all_of(
@@ -1017,8 +1064,8 @@ std::expected<void, std::string> BackgroundEvaluationCallFrame::seal()
                     "background replay schedule has unbound raw storage");
             }
         }
-        frame.replay.sample_input_bindings = storage.sample_inputs;
-        frame.replay.sample_output_bindings = storage.sample_outputs;
+        frame.replay.continuous_input_bindings = storage.sample_inputs;
+        frame.replay.continuous_output_bindings = storage.sample_outputs;
         frame.replay.event_input_bindings = storage.event_inputs;
         frame.replay.event_output_bindings = storage.event_outputs;
         frame.replay.sample_rate = selection_.sample_rate;

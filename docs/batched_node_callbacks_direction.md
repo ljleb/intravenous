@@ -352,7 +352,7 @@ example:
 - resolved port value types and dynamic value sizes;
 - resolved port paces;
 - resolved history and latency;
-- resolved audio sample-rate basis, transport cadence, and sample support;
+- the common project sample rate, resolved port pace, and type-owned sample support;
 - resolved per-port block extents for the selected dyadic interval;
 - execution/SCC phase facts that affect callback-visible semantics.
 

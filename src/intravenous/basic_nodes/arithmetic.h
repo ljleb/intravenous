@@ -108,7 +108,7 @@ namespace iv {
                     ((result += ctx.template input<Index>().get(
                         0, channel)), ...);
                 }(std::make_index_sequence<NumInputs>{});
-                ctx.template output<0>().write_frame(0, channel, result);
+                ctx.template output<0>().value(0, channel) = result;
             }
         }
     };

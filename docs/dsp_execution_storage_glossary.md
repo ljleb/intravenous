@@ -182,6 +182,12 @@ connections. Connections equate absolute pace exponents, and exponent difference
 around a cycle must sum to zero. Non-power-of-two conversion is explicit resampling or
 coordinate-driven Random Access sampling, not port pace.
 
+Authored `port.pace() = n` constrains the local ratio between that port and one logical
+step of its node. Authored `port.pace().absolute() = n` instead anchors that port's
+graph-wide transported-value pace. Both accept only power-of-two factors. One absolute
+anchor fixes the otherwise-free uniform scale of a connected pace component; a wholly
+unanchored component defaults that one scale to project pace one.
+
 ### Fractional global coordinate
 
 `FractionalGlobalIndex` is the Q64.64 circular coordinate used to address generated
@@ -208,19 +214,19 @@ name is `block_extended()`. It is a Sequential view, not a Region or Coverage;
 GraphJit may alias existing storage or materialize the finite view when contiguity
 requires it.
 
-### Audio sample-rate basis, transport cadence, and sample support
+### Project sample rate, transport cadence, and sample support
 
-An audio port's **sample-rate basis** is the physical rate of the time-domain signal it
-represents. Its **transport cadence** is the number of port values per second. Its
-**sample support** is the number or interval of basis samples represented by one value.
-These are distinct: at a 48 kHz basis an overlap FFT with length 1024 and hop 512 has a
-93.75-block/second transport cadence, while every `FFTBlock` represents 1024 samples.
+The **project sample rate** is the one execution parameter exposed as
+`ctx.sample_rate`. Port pace does not change it. A port's **transport cadence** is the
+number of values selected from its dyadic lattice per unit of project time. Its
+**sample support** is the number of time-domain project samples represented by one
+value. Only pace is constrained in the initial design. For example, at a 48 kHz
+project rate an overlap FFT with length 1024 and hop 512 transports 93.75 `FFTBlock`
+values per second, while every block represents 1024 samples.
 
-A node-wide `ctx.sample_rate` convenience is valid only when its relevant audio ports
-are proven to share one sample-rate basis. A 2x oversampler instead has different input
-and output bases and uses port-specific resolved basis data. These facts are resolved
-after `constrain_ports()`; they are not constants available while constraints are
-being authored.
+Distinct physical sample-rate domains and fractional resampling are deferred. The
+superseded per-port-basis proposal is preserved in
+[Per-Port Audio Sample-Rate Basis Proposal](./historical/per_port_audio_sample_rate_basis_proposal.md).
 
 ## Graph relations and execution structures
 

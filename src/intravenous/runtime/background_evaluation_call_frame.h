@@ -83,9 +83,9 @@ public:
     // replay regions. Mutable access remains available for focused frame/ABI
     // validation before seal. Ordering is the corresponding replay plan's
     // input/output binding order, filtered by port kind.
-    [[nodiscard]] std::span<ReflectedSampleInputPortBinding>
+    [[nodiscard]] std::span<ReflectedContinuousInputPortBinding>
     replay_sample_inputs(graph_jit::BackgroundReplayInvocationSlot slot);
-    [[nodiscard]] std::span<ReflectedSampleOutputPortBinding>
+    [[nodiscard]] std::span<ReflectedContinuousOutputPortBinding>
     replay_sample_outputs(graph_jit::BackgroundReplayInvocationSlot slot);
     [[nodiscard]] std::span<ReflectedEventInputPortBinding>
     replay_event_inputs(graph_jit::BackgroundReplayInvocationSlot slot);

@@ -36,6 +36,95 @@ iv::IndexCoverage index_coverage(
     return result;
 }
 
+iv::ReflectedContinuousPortStorageBinding sample_storage_binding(
+    std::span<iv::Sample> samples)
+{
+    auto geometry = iv::continuous_value_storage_geometry(
+        iv::ContinuousValueTypeId::sample, std::nullopt);
+    IV_ASSERT(geometry.has_value(),
+        "Sample must have a registered continuous storage geometry");
+    iv::ReflectedContinuousPortStorageBinding result{
+        .geometry = *geometry,
+        .value_capacity = samples.size(),
+        .channel_layout = iv::mono_planar_channel_layout,
+    };
+    result.channels[0] = {
+        .storage = reinterpret_cast<std::byte*>(samples.data()),
+        .value_capacity = samples.size(),
+        .value_stride_bytes = sizeof(iv::Sample),
+    };
+    return result;
+}
+
+iv::ReflectedContinuousInputPortBinding sample_input_binding(
+    std::span<iv::Sample> samples)
+{
+    return {
+        .storage = sample_storage_binding(samples),
+    };
+}
+
+iv::ReflectedContinuousOutputPortBinding sample_output_binding(
+    std::span<iv::Sample> samples)
+{
+    return {
+        .storage = sample_storage_binding(samples),
+    };
+}
+
+struct PointwisePhysicalOriginNode {
+    static constexpr auto inputs()
+    {
+        return std::array{
+            iv::input<iv::Sample>("input", iv::InputAccess::sequential)};
+    }
+
+    static constexpr auto outputs()
+    {
+        return std::array{
+            iv::output<iv::Sample>("output", iv::OutputProduction::tick)};
+    }
+
+    void tick(iv::TickSampleContext<PointwisePhysicalOriginNode> const& ctx) const
+    {
+        ctx.output<"output">().push(ctx.input<"input">().get());
+    }
+};
+
+TEST(TickPointwiseExecution, AppliesValueOffsetToEachPortPhysicalOrigin)
+{
+    std::array<iv::Sample, 16> input_storage{};
+    std::array<iv::Sample, 16> output_storage{};
+    input_storage[5] = 10.0f;
+    input_storage[6] = 11.0f;
+    input_storage[7] = 12.0f;
+    input_storage[8] = 13.0f;
+
+    std::array inputs{sample_input_binding(std::span{input_storage})};
+    std::array outputs{sample_output_binding(std::span{output_storage})};
+    inputs[0].sequential_begin_ordinal = 5;
+    outputs[0].sequential_begin_ordinal = 13;
+
+    iv::do_tick_block(
+        PointwisePhysicalOriginNode{},
+        iv::TickBlockContext<PointwisePhysicalOriginNode>{
+            iv::TickContext<PointwisePhysicalOriginNode>{
+                iv::details::TickPortBindings<PointwisePhysicalOriginNode>{
+                    .continuous_inputs = inputs,
+                    .continuous_outputs = outputs,
+                },
+            },
+            iv::FractionalGlobalIndex::from_global(index(1000)),
+            4,
+        });
+
+    EXPECT_FLOAT_EQ(output_storage[13], 10.0f);
+    EXPECT_FLOAT_EQ(output_storage[14], 11.0f);
+    EXPECT_FLOAT_EQ(output_storage[15], 12.0f);
+    EXPECT_FLOAT_EQ(output_storage[0], 13.0f);
+    EXPECT_FLOAT_EQ(output_storage[5], 0.0f);
+}
+
 struct RequestNode {
     std::size_t latency = 0;
 
@@ -388,14 +477,15 @@ TEST(NodeBuildRequest, RetainsTypedSequentialReductionOperationsInCompilerRecord
 {
     auto const operations =
         iv::details::node_compiler_operations<ReductionNode>();
-    ASSERT_NE(operations.initialize_sequential_input_neutral, nullptr);
+    ASSERT_NE(operations.initialize_sequential_input, nullptr);
     ASSERT_NE(operations.combine_sequential_input_values, nullptr);
 
     std::array<iv::Sample, 3> sample_destination{};
     std::array<iv::Sample, 3> sample_source{2.0f, 3.0f, 4.0f};
-    EXPECT_TRUE(operations.initialize_sequential_input_neutral(
+    EXPECT_TRUE(operations.initialize_sequential_input(
         1,
         iv::ContinuousValueTypeId::sample,
+        iv::details::SequentialInputInitialization::neutral,
         reinterpret_cast<std::byte*>(sample_destination.data()),
         sizeof(sample_destination),
         1));
@@ -420,9 +510,10 @@ TEST(NodeBuildRequest, RetainsTypedSequentialReductionOperationsInCompilerRecord
         iv::FFTBin{7.0f, 0.0f},
     };
     ReductionNode::fft_neutral_initializations = 0;
-    EXPECT_TRUE(operations.initialize_sequential_input_neutral(
+    EXPECT_TRUE(operations.initialize_sequential_input(
         1,
         iv::ContinuousValueTypeId::fft_block,
+        iv::details::SequentialInputInitialization::neutral,
         reinterpret_cast<std::byte*>(fft_destination.data()),
         sizeof(fft_destination),
         3));
@@ -453,9 +544,10 @@ TEST(NodeBuildRequest, RetainsTypedSequentialReductionOperationsInCompilerRecord
             default_fft_options, fft_destination, 3));
     EXPECT_EQ(fft_destination, (std::array<iv::FFTBin, 6>{}));
 
-    EXPECT_FALSE(operations.initialize_sequential_input_neutral(
+    EXPECT_FALSE(operations.initialize_sequential_input(
         0,
         iv::ContinuousValueTypeId::sample,
+        iv::details::SequentialInputInitialization::neutral,
         reinterpret_cast<std::byte*>(sample_destination.data()),
         sizeof(sample_destination),
         1));
@@ -802,7 +894,7 @@ static_assert(iv::details::node_background_state_alignment<BackgroundSource>()
     == alignof(BackgroundSource::TockState));
 static_assert(std::same_as<
     decltype(iv::TickBlockContext<BackgroundSource>::index),
-    iv::GlobalIndex>);
+    iv::FractionalGlobalIndex>);
 static_assert(iv::details::declares_tock_sample_outputs_v<BackgroundSource>);
 static_assert(!iv::details::declares_random_access_inputs_v<BackgroundSource>);
 static_assert(iv::details::declares_random_access_inputs_v<BackgroundTransform>);
@@ -919,10 +1011,10 @@ void write_event(void* data, iv::TimedEvent const& event)
 TEST(BackgroundDspPorts, PersistedRealtimeOutputsUseOrdinaryTickBindings)
 {
     std::array<iv::Sample, 256> sample_storage {};
-    iv::SharedPortData sample_shared(sample_storage, 0);
     iv::OutputDisposition sample_disposition{};
-    std::array sample_outputs {iv::OutputPort(
-        sample_shared, 0, index(128))};
+    std::array sample_outputs{
+        sample_output_binding(std::span{sample_storage})};
+    sample_outputs[0].sequential_begin_ordinal = 128;
     std::array<iv::TimedEvent, 16> event_storage {};
     iv::EventSharedPortData event_shared {
         event_storage, 0, 0, iv::EventTypeId::trigger,
@@ -944,12 +1036,12 @@ TEST(BackgroundDspPorts, PersistedRealtimeOutputsUseOrdinaryTickBindings)
         iv::TickBlockContext<PersistedRealtimeNode>{
             iv::TickContext<PersistedRealtimeNode>{
                 iv::details::TickPortBindings<PersistedRealtimeNode>{
-                    .sample_outputs = sample_outputs,
+                    .continuous_outputs = sample_outputs,
                     .event_outputs = event_outputs,
                     .recording = recording,
                 },
             },
-            index(128),
+            iv::FractionalGlobalIndex::from_global(index(128)),
             4,
         });
 
@@ -957,7 +1049,6 @@ TEST(BackgroundDspPorts, PersistedRealtimeOutputsUseOrdinaryTickBindings)
     EXPECT_FLOAT_EQ(sample_storage[129], 1.0f);
     EXPECT_FLOAT_EQ(sample_storage[130], 2.0f);
     EXPECT_FLOAT_EQ(sample_storage[131], 3.0f);
-    EXPECT_EQ(sample_outputs[0].position(), 132u);
     EXPECT_EQ(sample_disposition, iv::OutputDisposition::written);
     ASSERT_EQ(event_shared.write_index, 1u);
     EXPECT_EQ(event_storage[0].time, index(130));
@@ -967,14 +1058,9 @@ TEST(BackgroundDspPorts, PersistedRealtimeOutputsUseOrdinaryTickBindings)
 TEST(BackgroundDspPorts, ReflectedOutputsExposeFinalInvocationDisposition)
 {
     std::array<iv::Sample, 8> sample_storage{};
-    std::array<iv::ReflectedSampleOutputPortBinding, 1> sample_bindings{};
+    std::array sample_bindings{
+        sample_output_binding(std::span{sample_storage})};
     auto& sample = sample_bindings[0];
-    sample.storage.channels[0] = {
-        .storage = reinterpret_cast<std::byte*>(sample_storage.data()),
-        .frame_capacity = sample_storage.size(),
-    };
-    sample.storage.frame_capacity = sample_storage.size();
-    sample.storage.channel_layout = iv::mono_planar_channel_layout;
 
     struct EventStorage {
         std::size_t count = 0;
@@ -991,7 +1077,7 @@ TEST(BackgroundDspPorts, ReflectedOutputsExposeFinalInvocationDisposition)
         .source_type = iv::EventTypeId::trigger,
     }}};
     auto context = iv::ReflectedNodeTickContext{
-        .sample_output_bindings = sample_bindings,
+        .continuous_output_bindings = sample_bindings,
         .event_output_bindings = event_bindings,
     };
     auto const operations =
@@ -1044,13 +1130,8 @@ TEST(BackgroundDspPorts, ExplicitEmptyEventBlockIsAnOrdinaryWrite)
 TEST(BackgroundDspPorts, GeneratedPersistedSkipOutputsAreOrdinaryWrites)
 {
     std::array<iv::Sample, 8> samples{};
-    std::array<iv::ReflectedSampleOutputPortBinding, 1> bindings{};
-    bindings[0].storage.channels[0] = {
-        .storage = reinterpret_cast<std::byte*>(samples.data()),
-        .frame_capacity = samples.size(),
-    };
-    bindings[0].storage.frame_capacity = samples.size();
-    bindings[0].storage.channel_layout = iv::mono_planar_channel_layout;
+    std::array bindings{
+        sample_output_binding(std::span{samples})};
     struct EventStorage {
         std::size_t count = 0;
         std::array<iv::TimedEvent, 8> events{};
@@ -1073,7 +1154,7 @@ TEST(BackgroundDspPorts, GeneratedPersistedSkipOutputsAreOrdinaryWrites)
     operations.skip_block(
         &node,
         iv::ReflectedNodeTickContext{
-            .sample_output_bindings = bindings,
+            .continuous_output_bindings = bindings,
             .event_output_bindings = event_bindings,
         },
         index(0),
@@ -1088,14 +1169,8 @@ TEST(BackgroundDspPorts, GeneratedPersistedSkipOutputsAreOrdinaryWrites)
 TEST(BackgroundDspPorts, EphemeralWritesDoNotObserveOutputDisposition)
 {
     std::array<iv::Sample, 8> samples{};
-    std::array<iv::ReflectedSampleOutputPortBinding, 1> sample_bindings{};
-    sample_bindings[0].storage.channels[0] = {
-        .storage = reinterpret_cast<std::byte*>(samples.data()),
-        .frame_capacity = samples.size(),
-    };
-    sample_bindings[0].storage.frame_capacity = samples.size();
-    sample_bindings[0].storage.channel_layout =
-        iv::mono_planar_channel_layout;
+    std::array sample_bindings{
+        sample_output_binding(std::span{samples})};
     sample_bindings[0].disposition = iv::OutputDisposition::voided;
 
     struct EventStorage {
@@ -1120,7 +1195,7 @@ TEST(BackgroundDspPorts, EphemeralWritesDoNotObserveOutputDisposition)
     operations.tick_block(
         &node,
         iv::ReflectedNodeTickContext{
-            .sample_output_bindings = sample_bindings,
+            .continuous_output_bindings = sample_bindings,
             .event_output_bindings = event_bindings,
         },
         index(0),
@@ -1136,7 +1211,7 @@ TEST(BackgroundDspPorts, EphemeralWritesDoNotObserveOutputDisposition)
     operations.skip_block(
         &node,
         iv::ReflectedNodeTickContext{
-            .sample_output_bindings = sample_bindings,
+            .continuous_output_bindings = sample_bindings,
             .event_output_bindings = event_bindings,
         },
         index(4),
@@ -1153,14 +1228,8 @@ TEST(BackgroundDspPorts, BackgroundInputsRemainAvailableFromTickBlock)
     std::array<iv::Sample, 8> realtime_samples {
         10.0f, 11.0f, 12.0f, 13.0f, 14.0f, 15.0f, 16.0f, 17.0f,
     };
-    iv::SharedPortData sample_shared {
-        realtime_samples,
-        0,
-        {.channel_type = iv::ChannelTypeId::mono,
-         .sample_layout = iv::SampleStreamLayout::planar},
-        8,
-    };
-    std::array realtime_inputs {iv::InputPort(sample_shared, 7)};
+    std::array realtime_inputs{
+        sample_input_binding(std::span{realtime_samples})};
 
     std::array<iv::TimedEvent, 8> realtime_event_storage {};
     realtime_event_storage[0] = {
@@ -1193,13 +1262,13 @@ TEST(BackgroundDspPorts, BackgroundInputsRemainAvailableFromTickBlock)
     iv::TickBlockContext<BackgroundInputOnly> context {
         iv::TickContext<BackgroundInputOnly> {
             iv::details::TickPortBindings<BackgroundInputOnly>{
-                .sample_inputs = realtime_inputs,
+                .continuous_inputs = realtime_inputs,
                 .event_inputs = realtime_event_inputs,
                 .random_access_inputs = random_access_inputs,
                 .random_access_event_inputs = random_access_event_inputs,
             },
         },
-        index(8),
+        iv::FractionalGlobalIndex::from_global(index(8)),
         8,
     };
 

@@ -427,13 +427,19 @@ or reuse scratch with destination storage when ordinary alias, lifetime, and mut
 analysis proves that safe, but the node-facing `FFTBlock` view exposes only its
 logical complex bins.
 
-Backend-specific normalization is handled by the transform node/adapter so that
-changing the chosen library does not change the authored node's numerical contract.
+Backend-specific normalization is handled by the explicit transform node and its
+owning IV package so that changing the chosen library does not change the graph value's
+numerical meaning. A continuous-value extension does not own or select an FFT backend.
 Likewise, direct compatibility must come from a C++ or library guarantee; equal
 `sizeof` and `alignof` values alone do not authorize reinterpretation. This keeps
 library interoperability and zero-copy execution available without making JUCE,
 FFTW, vDSP, PFFFT, or any other backend's scratch representation part of the graph
 type system.
+
+Forward and inverse FFTs are explicit nodes. Core does not insert a transform because
+a connection crosses between `Sample` and `FFTBlock`, and the `FFTBlock` extension
+does not link an implementation library. An FFT node's IV package alone owns its
+backend include files, native library dependency, plans, scratch and conversions.
 
 Do not generate a distinct C++/registry type for every FFT size. `FFTBlock` remains
 one registered value type; a particular 1024-sample real-transform realization

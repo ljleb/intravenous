@@ -304,8 +304,8 @@ namespace {
             auto const& state = ctx.state();
             NestedLeaf a;
             NestedLeaf b;
-            do_declare(a, ctx);
-            do_declare(b, ctx);
+            do_declare(a, ctx, {});
+            do_declare(b, ctx, {});
             ctx.nested_node_states(state.nested);
             ctx.nested_node_background_states(state.nested_background);
         }
@@ -619,9 +619,9 @@ int main()
         std::vector<int> order;
         Consumer consumer { &order };
 
-        iv::do_declare(producer, builder);
+        iv::do_declare(producer, builder, {});
         iv::test::require(builder.has_export_array<float>("values"), "producer export should be visible during declaration");
-        iv::do_declare(consumer, builder);
+        iv::do_declare(consumer, builder, {});
         iv::test::require(builder.has_import_array<float>("values"), "consumer import should be visible during declaration");
 
         iv::NodeLayout layout = std::move(builder).build();
@@ -654,7 +654,7 @@ int main()
     {
         iv::NodeLayoutBuilder builder(4);
         LocalOnly node;
-        iv::do_declare(node, builder);
+        iv::do_declare(node, builder, {});
 
         iv::NodeLayout layout = std::move(builder).build();
         auto resources = make_resources();
@@ -672,7 +672,7 @@ int main()
     {
         iv::NodeLayoutBuilder builder(4);
         Movable node;
-        iv::do_declare(node, builder);
+        iv::do_declare(node, builder, {});
 
         iv::NodeLayout layout = std::move(builder).build();
         auto resources = make_resources();
@@ -698,7 +698,7 @@ int main()
     {
         iv::NodeLayoutBuilder builder(4);
         AutoMovable node;
-        iv::do_declare(node, builder);
+        iv::do_declare(node, builder, {});
 
         iv::NodeLayout layout = std::move(builder).build();
         auto resources = make_resources();
@@ -728,8 +728,8 @@ int main()
         iv::NodeLayoutBuilder original_builder(4);
         IdentifiedMovable original_a { .id = "moved-later" };
         IdentifiedMovable original_b { .id = "kept" };
-        iv::do_declare(original_a, original_builder);
-        iv::do_declare(original_b, original_builder);
+        iv::do_declare(original_a, original_builder, {});
+        iv::do_declare(original_b, original_builder, {});
 
         iv::NodeLayout original_layout = std::move(original_builder).build();
         auto resources = make_resources();
@@ -748,9 +748,9 @@ int main()
         LocalOnly inserted;
         IdentifiedMovable reloaded_b { .id = "kept" };
         IdentifiedMovable reloaded_a { .id = "moved-later" };
-        iv::do_declare(inserted, reloaded_builder);
-        iv::do_declare(reloaded_b, reloaded_builder);
-        iv::do_declare(reloaded_a, reloaded_builder);
+        iv::do_declare(inserted, reloaded_builder, {});
+        iv::do_declare(reloaded_b, reloaded_builder, {});
+        iv::do_declare(reloaded_a, reloaded_builder, {});
 
         iv::NodeLayout reloaded_layout = std::move(reloaded_builder).build();
         iv::NodeStorage reloaded = reloaded_layout.create_storage(resources);
@@ -772,7 +772,7 @@ int main()
     {
         iv::NodeLayoutBuilder original_builder(4);
         IdentifiedAutoMovable original_node { .id = "same-name" };
-        iv::do_declare(original_node, original_builder);
+        iv::do_declare(original_node, original_builder, {});
 
         iv::NodeLayout original_layout = std::move(original_builder).build();
         auto resources = make_resources();
@@ -785,7 +785,7 @@ int main()
 
         iv::NodeLayoutBuilder reloaded_builder(4);
         DifferentTypeSameIdentity changed_node { .id = "same-name" };
-        iv::do_declare(changed_node, reloaded_builder);
+        iv::do_declare(changed_node, reloaded_builder, {});
 
         iv::NodeLayout reloaded_layout = std::move(reloaded_builder).build();
         iv::NodeStorage reloaded = reloaded_layout.create_storage(resources);
@@ -800,8 +800,8 @@ int main()
         iv::NodeLayoutBuilder builder(8);
         BackgroundStorageProducer producer;
         BackgroundStorageConsumer consumer;
-        iv::do_declare(producer, builder);
-        iv::do_declare(consumer, builder);
+        iv::do_declare(producer, builder, {});
+        iv::do_declare(consumer, builder, {});
 
         auto layout = std::move(builder).build();
         auto resources = make_resources();
@@ -832,7 +832,7 @@ int main()
         iv::NodeLayoutBuilder builder(4);
         auto const leading = builder.declare_raw_region(13, 32);
         LocalOnly node;
-        iv::do_declare(node, builder);
+        iv::do_declare(node, builder, {});
         auto const trailing = builder.declare_raw_region(7, 8);
 
         iv::NodeLayout layout = std::move(builder).build();
@@ -888,7 +888,7 @@ int main()
 
         iv::NodeLayoutBuilder builder(4);
         BackgroundLifecycleNode node { .id = "background-state" };
-        iv::do_declare(node, builder);
+        iv::do_declare(node, builder, {});
         iv::NodeLayout layout = std::move(builder).build();
         iv::test::require(
             layout.nodes.front().background_state_structure.has_value(),
@@ -968,7 +968,7 @@ int main()
     {
         iv::NodeLayoutBuilder builder(4);
         NestedParent node;
-        iv::do_declare(node, builder);
+        iv::do_declare(node, builder, {});
 
         iv::NodeLayout layout = std::move(builder).build();
         auto resources = make_resources();

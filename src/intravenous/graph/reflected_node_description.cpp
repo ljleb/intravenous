@@ -135,6 +135,11 @@ ReflectedPortConstraintSink NodeDescriptionSink::port_constraint_sink() const
             static_cast<NodePortConstraints*>(state)
                 ->ordering_anchors.push_back({port, ordering});
         },
+        .anchor_absolute_pace = +[](
+            void* state, PortConstraintRef port, PortPace pace) {
+            static_cast<NodePortConstraints*>(state)
+                ->absolute_pace_anchors.push_back({port, pace});
+        },
     };
 }
 

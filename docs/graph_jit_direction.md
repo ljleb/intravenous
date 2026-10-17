@@ -362,6 +362,21 @@ ctx.input<"in">().pace() = 1;
 ctx.output<"out">().pace() = 2;
 ```
 
+`pace()` names that local port-to-node ratio. A node whose port is an external
+reference for the project timeline may instead anchor the port's absolute transported-
+value pace:
+
+```cpp
+ctx.output<"audio">().pace().absolute() = 1;
+```
+
+Both forms accept only power-of-two factors. The chained `absolute()` operation does
+not change the meaning of `pace()` elsewhere: assigning `pace()` directly remains a
+local ratio, while assigning `pace().absolute()` fixes the resolved graph-wide pace of
+that particular port. Device input/output nodes and other true timeline references are
+the normal authors of absolute anchors; ordinary processing nodes should express only
+their local ratios.
+
 or an STFT may bind its scalar input pace to a configured hop size and its FFT output
 pace to one when that hop is a power of two. Non-dyadic ratios are explicit resampling
 or coordinate-driven Random Access sampling rather than port pace. Pace arithmetic is
@@ -383,11 +398,18 @@ exponent one greater than the oversampler's input-domain exponent; it does not p
 the false contradiction `2 == 1`. Exponent differences around a cycle must sum to zero.
 Otherwise graph compilation rejects the revision.
 
-Each otherwise-unanchored connected rate component receives a deterministic canonical
-exponent of zero. External/project-rate anchors fix that exponent where present. A
-resolved absolute exponent must remain in the range supported by the dyadic global-time
-coordinate; the initial Q64.64 coordinate supports exponents from -64 through +64.
-Graphs outside that range are rejected during realization rather than allowed to
+After all local ratios and connections have been applied, each connected rate
+component has at most one remaining degree of freedom: uniform scaling of every
+absolute pace in that component. An explicit `pace().absolute()` constraint fixes that
+scale. A component without an absolute anchor receives the canonical project-rate
+scale of one. Several disconnected unanchored components each receive that same
+canonical scale independently. The solver must not default an unresolved ratio inside
+a component; such a ratio is a missing local node constraint, not component-wide scale
+freedom. Conflicting absolute anchors reject the graph revision.
+
+A resolved absolute exponent must remain in the range supported by the dyadic global-
+time coordinate; the initial Q64.64 coordinate supports exponents from -64 through
++64. Graphs outside that range are rejected during realization rather than allowed to
 overflow or alias their global positions.
 
 Generated Tick execution covers one half-open dyadic global-time interval. Every node
@@ -437,24 +459,21 @@ again, storage to be replanned, and the overlapping still-visible node-owned por
 to migrate under the ordinary graph-revision rules. No special history/latency mutation
 path is required.
 
-Audio sample-rate basis, transported-value cadence, and the sample support represented
-by one value are separate realization facts. Scalar `Sample` normally has one-sample
-support and an audio basis equal to its transport lattice. An `FFTBlock` has a much
-slower block cadence while preserving the audio sample-rate basis of the time-domain
-signal it represents. For an overlap FFT with transform length 1024 and hop 512 at
-48 kHz, the input cadence is 48000 samples/second, the FFT output cadence is 93.75
-blocks/second, and both ports have a 48 kHz audio basis; one FFT value has 1024-sample
-support while consecutive values advance by 512 samples.
+Port pace, the project sample rate, and the sample support represented by one value
+have separate meanings. Only pace is a graph-constrained property in the initial
+design. It determines transported-value cadence and the lattice positions that fall in
+one execution interval. `ctx.sample_rate` remains the unchanged project/execution
+sample rate for every node; a faster or slower port pace does not rewrite it and does
+not imply resampling. The continuous-value extension owns only the sample-support
+relationship intrinsic to its representation. For example, an overlap FFT with
+transform length 1024 and hop 512 at a 48 kHz project rate transports 93.75 FFT values
+per second, and each value represents 1024 time-domain samples.
 
-The continuous-value extension owns whether a value participates in an audio basis and
-the exact sample-support relationship intrinsic to its representation. Node constraints
-propagate or transform the audio basis where it is semantic: an FFT preserves its input
-basis on the spectral output, while an explicit 2x oversampler changes the output basis
-from 48 kHz to 96 kHz. Connections require compatible resolved bases. A node-level
-`ctx.sample_rate` convenience is valid only where the node's relevant audio ports are
-proven to share one basis; heterogeneous nodes use the corresponding port realization.
-None of these resolved numbers is available while `constrain_ports()` is constructing
-the solve.
+Fractional sample-rate conversion and distinct physical sample-rate domains are
+deferred. A future feature that needs them must add explicit resampling semantics and a
+separate accepted representation; it must not reinterpret pace. The superseded
+per-port sample-rate-basis proposal is preserved in
+[Per-Port Audio Sample-Rate Basis Proposal](./historical/per_port_audio_sample_rate_basis_proposal.md).
 
 The preliminary canonical `FFTBlock` layout is the complete nonredundant spectrum of a
 real-valued time-domain block: `N / 2 + 1` homogeneous complex `FFTBin` values including
@@ -462,10 +481,12 @@ explicit DC and Nyquist bins. `FFTBlock::size()` is that complex-bin count, so t
 represented even time-domain transform length is `2 * (size() - 1)`. A 1024-sample
 transform therefore stores 513 complex bins, or 1026 scalar `Sample::storage` values.
 The mathematically-zero imaginary components of DC and Nyquist remain present; there is
-no special packed endpoint representation in the semantic port value. FFT-library
-adapters owned by the continuous-value extension may consume/produce a library's native
-packed form or convert it at the boundary. Benchmarking may later select faster adapter
-paths without changing this canonical graph representation.
+no special packed endpoint representation in the semantic port value. An explicit FFT
+node's IV package may consume or produce its library's native packed form and convert it
+at the node boundary. The continuous-value extension owns no FFT implementation.
+Benchmarking may later select faster adapter paths without changing this canonical
+graph representation. No transform is inserted implicitly because a connection
+crosses between `Sample` and `FFTBlock`.
 
 Pacing and resampling remain separate operations. Dyadic pacing establishes the exact
 global-time lattice and transported-value count of each port. A resampler is explicit
@@ -508,12 +529,29 @@ auto analysis = ctx.input<"audio">().block_extended();
 ```
 
 `block()` covers the newly consumed `block_size()` values. `block_extended()` covers
-the immediately preceding resolved `history()` plus the current block. It remains a
+the preceding resolved `history()` in Tick invocation order plus the current block. A
+resume/seek seam may make those retained values globally non-adjacent while they remain
+Sequentially adjacent. It remains a
 Sequential-input API, not a Region/Coverage view. GraphJit should satisfy the contiguous
 view by directly aliasing suitable producer/ring storage when possible and by
 materializing a transient contiguous buffer only when the selected backing wraps or is
 otherwise non-contiguous. Requesting history therefore does not imply a node-owned
 `State` copy.
+
+Tick and Tock expose the same `FractionalGlobalIndex` coordinate concept. The Tick graph
+continues running while playback is paused and normally advances that coordinate; on
+resume or seek the next Tick callback may observe an abrupt global jump. Sequential
+sample storage does not use the global bits as its ring cursor. Generated execution
+uses hidden linear cursors per resolved pace so node history, output revision, and
+feedback remain continuous across the jump. These cursors are storage-order facts, not
+another node-facing timeline.
+
+Playback-paused background data do not freeze Tick or make the audio thread consult
+Tock. A Sequential continuous input whose source is background-produced reads its own
+`neutral_value`; a Sequential event input reads an empty block. Region/Coverage inputs
+are empty while playback is paused. On resume, the next Tick callback adopts the
+selected background snapshot at the ordinary callback boundary and observes the new
+global coordinate, while its live Sequential state remains invocation-contiguous.
 
 For delayed block-valued outputs, the generalized Tick-output facade should preserve the
 existing `OutputPort::update()` semantic: a value within the resolved latency horizon may
@@ -521,9 +559,11 @@ be revised by a later invocation. The exact FFT-block API can be type-specialize
 complete-window FFT with one-block latency must be able to replace/finalize the
 provisional output block authored by the preceding call.
 
-The checked-in lowering currently assumes one common `block_size` for every
-sequential sample port. That is an implementation checkpoint superseded by this
-planned pace-aware contract.
+The checked-in lowering projects one root interval independently for every continuous
+port and supplies each binding's resulting `block_size()`, global lattice beginning,
+and hidden physical Sequential beginning. The earlier common-block implementation
+checkpoint is retained in
+[Port-realization status before type-owned Tick execution](./historical/port_realization_status_before_type_owned_tick_execution.md).
 
 ### Tick/Sequential port realization rules
 
@@ -744,11 +784,10 @@ when the callback returns. A node that implements only `tick()` is executed by
 `do_tick_block()` as one-sample context per frame, advancing input/output
 cursors after every call. Primitive maximum-block slicing reconstructs the same
 facades at each slice index, so authored-latency revision must remain valid across
-both slice and root-call boundaries. The checked-in implementation currently publishes exactly one sample frame per output
-per `tick()`, or one common `block_size` per output per `tick_block()`. The planned
-pace-aware contract above supersedes that equal-block assumption: pointwise `tick()`
-is valid only for a realization whose relevant ports resolve to equal pace, while
-native `tick_block()` consumes/produces each port's resolved per-port `block_size()`.
+both slice and root-call boundaries. The generated implementation publishes exactly
+one transported value per output per pointwise `tick()`. Native `tick_block()` receives
+each continuous port's independently projected `block_size()`. Pointwise `tick()` is
+valid only for a realization whose relevant ports resolve to one compatible pace.
 Release execution still need not maintain a redundant dynamic production-count check
 once GraphJit has proven and lowered those counts.
 
@@ -772,13 +811,15 @@ checks remain entirely inside the node trait/helper API. See
 Fresh compiler-owned persistent connection state is lifecycle-owned. Sample
 feedback/carry/alignment raw regions and persistent event representations install
 `NodeLayout` raw initializers; exact-shape persistent regions skip initialization
-when migration restores their bytes. The generated Tick root contains no
-first-call initialization guard. Transient event sequences and feedback cursors
-are fixed stack/SSA state for one root call and reset there. Unequal-latency
-sample-feedback alignment uses the initialized alignment-ring samples directly as
-branch prehistory. As real source frames arrive they overwrite those entries
-naturally, so no validity counter, warmup branch, or post-activation
-initialization state is required.
+when migration restores their bytes. The generated Tick root contains no per-detach
+first-call initialization guard. Transient event sequences and feedback cursors are
+fixed stack/SSA state for one root call and reset there. Initialized feedback samples
+remain authoritative until the corresponding producer values have actually been
+authored. Generated execution keeps one migratable, saturating authored extent for
+each producer whose revision horizon is read by detached feedback. All detach writers
+from that producer share it. SCC slices add their projected root-prefix count when
+deciding which revision frames are valid, and the stored extent advances once per
+complete root callback. There is no mutable warmup counter per detach.
 
 ### Ordered implementation sequence
 

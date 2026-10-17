@@ -33,6 +33,8 @@ struct SampleRepresentationPlan {
     RealtimeBufferStorageKind storage =
         RealtimeBufferStorageKind::transient_stack;
     ChannelLayout channel_layout{};
+    ContinuousValueStorageGeometry geometry{};
+    std::int32_t absolute_pace_exponent = 0;
     std::size_t frame_capacity = 0;
     ConnectionLiveIntervalPlan live_interval{};
 
@@ -43,7 +45,7 @@ struct SampleRepresentationPlan {
     // timeline. It needs neither stack storage nor retained NodeStorage: every
     // addressable frame has the same declared default value. The generated
     // module materializes this bounded representation as read-only data.
-    std::optional<Sample> constant_value{};
+    std::optional<std::vector<std::byte>> constant_value{};
 };
 
 // A disconnected output still exposes its declared history/latency window to
@@ -52,6 +54,8 @@ struct SampleRepresentationPlan {
 // the same placement/capacity planner as connected producer representations.
 struct SampleSinkStorageRequest {
     ChannelLayout channel_layout{};
+    ContinuousValueStorageGeometry geometry{};
+    std::int32_t absolute_pace_exponent = 0;
     std::size_t history = 0;
     std::size_t latency = 0;
     std::size_t execution_position = 0;
@@ -63,7 +67,9 @@ struct SampleSinkStorageRequest {
 // instead of reserving stack or NodeStorage bytes.
 struct SampleConstantInputRequest {
     ChannelLayout channel_layout{};
-    Sample default_value{};
+    ContinuousValueStorageGeometry geometry{};
+    std::int32_t absolute_pace_exponent = 0;
+    std::vector<std::byte> default_value{};
     std::size_t execution_position = 0;
 };
 
@@ -161,7 +167,7 @@ struct SampleCompositionPlan {
 struct SampleTransientAllocationPlan {
     std::size_t representation_index = no_sample_representation;
     std::size_t size_bytes = 0;
-    std::size_t alignment = alignof(Sample);
+    std::size_t alignment = 1;
     std::size_t region_relative_offset = 0;
 };
 
@@ -178,12 +184,13 @@ struct SamplePersistentAllocationPlan {
     std::size_t representation_index = no_sample_representation;
     SamplePersistentStorageKind kind = SamplePersistentStorageKind::ring;
     ChannelLayout channel_layout{};
+    ContinuousValueStorageGeometry geometry{};
     std::size_t retained_frames = 0;
     std::size_t frame_capacity = 0;
     std::size_t size_bytes = 0;
-    std::size_t alignment = alignof(Sample);
+    std::size_t alignment = 1;
     std::string migration_identity{};
-    std::optional<Sample> initialize_value{};
+    std::optional<std::vector<std::byte>> initialize_value{};
     NodeLayout::RegionHandle region{};
 
     // Assigned after canonical NodeLayout finalization.
@@ -249,8 +256,32 @@ struct SampleFeedbackTimelinePlan {
     ChannelLayout channel_layout{};
     std::size_t retained_frames = 0;
     std::size_t loop_extra_latency = 1;
-    Sample initial_value{};
+    std::vector<std::byte> initial_value{};
     SampleFeedbackTimelineWriterPlan writer{};
+};
+
+// One generation-owned physical Sequential cursor for every dyadic pace used by
+// continuous realtime storage. The raw region has a stable pace identity, so an
+// exact pace domain survives hot reload without tying storage order to the new
+// generation's first global coordinate.
+struct SequentialPaceCursorPlan {
+    std::int32_t absolute_pace_exponent = 0;
+    NodeLayout::RegionHandle region{};
+    std::size_t storage_offset = 0;
+};
+
+// The number of values this canonical producer has actually authored before
+// the current root invocation, saturated at the largest revision horizon any
+// detached consumer can request. One producer extent is shared by every
+// detached branch; branch count does not create mutable warm-up state.
+struct SampleProducerAuthoredExtentPlan {
+    std::size_t producer_group_index = no_sample_producer_group;
+    std::size_t source_representation = no_sample_representation;
+    std::int32_t absolute_pace_exponent = 0;
+    std::size_t maximum_revision_frames = 0;
+    std::string migration_identity{};
+    NodeLayout::RegionHandle region{};
+    std::size_t storage_offset = 0;
 };
 
 struct SampleStoragePlan {
@@ -290,9 +321,12 @@ struct SampleStoragePlan {
     // scheduled write; copy/composition writers are emitted after their source
     // execution position.
     std::vector<SampleFeedbackTimelinePlan> feedback_timelines{};
+    std::vector<SampleProducerAuthoredExtentPlan> producer_authored_extents{};
+    std::vector<SequentialPaceCursorPlan> sequential_pace_cursors{};
     // Unequal-latency feedback mixing uses ordinary persistent sample
     // allocations as source-layout alignment rings. Their initialized contents
-    // are the branch prehistory; no separate validity/warmup state is needed.
+    // remain branch prehistory until the shared producer-authored extent proves
+    // the corresponding source values exist.
 
     // One exact range per transient representation. The arena high-water mark
     // is independent of any individual representation's maximum size.

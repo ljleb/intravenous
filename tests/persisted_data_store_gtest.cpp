@@ -14,6 +14,7 @@
 #include <initializer_list>
 #include <limits>
 #include <memory>
+#include <optional>
 #include <span>
 #include <stdexcept>
 #include <type_traits>
@@ -54,6 +55,40 @@ iv::PersistedOutputId local_output(
         .generation = 1,
         .port = port,
         .kind = kind,
+    };
+}
+
+iv::ReflectedContinuousPortStorageBinding sample_storage_binding(
+    std::span<iv::Sample> samples)
+{
+    auto const geometry = iv::continuous_value_storage_geometry(
+        iv::ContinuousValueTypeId::sample, std::nullopt);
+    IV_ASSERT(geometry.has_value(),
+        "Sample must have a registered continuous storage geometry");
+    iv::ReflectedContinuousPortStorageBinding result{
+        .geometry = *geometry,
+        .value_capacity = samples.size(),
+        .channel_layout = iv::mono_planar_channel_layout,
+    };
+    result.channels[0] = {
+        .storage = reinterpret_cast<std::byte*>(samples.data()),
+        .value_capacity = samples.size(),
+        .value_stride_bytes = sizeof(iv::Sample),
+    };
+    return result;
+}
+
+iv::ReflectedContinuousOutputPortBinding sample_output_binding(
+    std::span<iv::Sample> samples,
+    std::size_t history,
+    std::size_t latency,
+    iv::OutputDisposition disposition)
+{
+    return {
+        .storage = sample_storage_binding(samples),
+        .history = history,
+        .latency = latency,
+        .disposition = disposition,
     };
 }
 
@@ -308,17 +343,19 @@ iv::graph_jit::BackgroundEvaluationPlan sequential_tick_sample_plan()
 }
 
 iv::Sample sequential_sample_at(
-    iv::ReflectedSampleInputPortBinding const& binding,
+    iv::ReflectedContinuousInputPortBinding const& binding,
     iv::GlobalIndex position,
     std::size_t channel = 0)
 {
     auto const& selected = binding.storage.channels[channel];
-    auto const logical = position.advanced_by(binding.storage.storage_latency);
-    auto const frame = static_cast<std::size_t>(
-        logical.retreated_by(selected.frame_delay).bits()
-        & (selected.frame_capacity - 1));
-    auto const* values = reinterpret_cast<iv::Sample const*>(selected.storage);
-    return values[frame * selected.frame_stride];
+    auto const ordinal = position.bits()
+        + binding.storage.storage_latency
+        - selected.value_delay;
+    auto const slot = static_cast<std::size_t>(
+        ordinal & (selected.value_capacity - 1));
+    auto const* value = reinterpret_cast<iv::Sample const*>(
+        selected.storage + slot * selected.value_stride_bytes);
+    return *value;
 }
 
 void publish_record(
@@ -791,7 +828,7 @@ TEST(TickInvocationWorkspace,
         index(5),
         3};
     auto const inputs = static_cast<
-        std::span<iv::ReflectedSampleInputPortBinding const>>(
+        std::span<iv::ReflectedContinuousInputPortBinding const>>(
         frame.call().sequential_sample_inputs);
     ASSERT_EQ(inputs.size(), 1u);
     EXPECT_FLOAT_EQ(sequential_sample_at(inputs[0], index(3)).value, -0.25f);
@@ -822,20 +859,9 @@ TEST(TickInvocationWorkspace,
     std::array<iv::Sample, 8> source{
         100.0f, 101.0f, 102.0f, 103.0f,
         104.0f, 105.0f, 106.0f, 107.0f};
-    iv::ReflectedSampleOutputPortBinding binding{
-        .storage = {
-            .frame_capacity = source.size(),
-            .channel_layout = iv::mono_planar_channel_layout,
-        },
-        .history = 1,
-        .latency = 1,
-        .disposition = iv::OutputDisposition::written,
-    };
-    binding.storage.channels[0] = {
-        .storage = reinterpret_cast<std::byte*>(source.data()),
-        .frame_capacity = source.size(),
-        .frame_stride = 1,
-    };
+    auto binding = sample_output_binding(
+        std::span{source}, 1, 1, iv::OutputDisposition::written);
+    binding.sequential_begin_ordinal = 6;
     auto const begin = iv::GlobalIndex::from_bits(
         std::numeric_limits<std::uint64_t>::max() - 1);
 
@@ -947,20 +973,8 @@ TEST(TickInvocationWorkspace,
         0, reserve, pending, reservation_failed);
 
     std::array<iv::Sample, 8> source{};
-    iv::ReflectedSampleOutputPortBinding binding{
-        .storage = {
-            .frame_capacity = source.size(),
-            .channel_layout = iv::mono_planar_channel_layout,
-        },
-        .history = 1,
-        .latency = 1,
-        .disposition = iv::OutputDisposition::written,
-    };
-    binding.storage.channels[0] = {
-        .storage = reinterpret_cast<std::byte*>(source.data()),
-        .frame_capacity = source.size(),
-        .frame_stride = 1,
-    };
+    auto binding = sample_output_binding(
+        std::span{source}, 1, 1, iv::OutputDisposition::written);
 
     {
         iv::TickInvocationFrame frame{
@@ -992,20 +1006,8 @@ TEST(TickInvocationWorkspace,
         0, reserve, pending, reservation_failed);
 
     std::array<iv::Sample, 8> source{};
-    iv::ReflectedSampleOutputPortBinding binding{
-        .storage = {
-            .frame_capacity = source.size(),
-            .channel_layout = iv::mono_planar_channel_layout,
-        },
-        .history = 1,
-        .latency = 1,
-        .disposition = iv::OutputDisposition::voided,
-    };
-    binding.storage.channels[0] = {
-        .storage = reinterpret_cast<std::byte*>(source.data()),
-        .frame_capacity = source.size(),
-        .frame_stride = 1,
-    };
+    auto binding = sample_output_binding(
+        std::span{source}, 1, 1, iv::OutputDisposition::voided);
 
     {
         iv::TickInvocationFrame frame{

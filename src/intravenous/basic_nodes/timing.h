@@ -44,10 +44,10 @@ namespace iv {
             auto& state = ctx.state();
             size_t const mask = state.memory.size() - 1;
 
-            state.memory[ctx.index.advanced_by(_latency).bits() & mask] =
+            state.memory[(ctx.value_index + _latency) & mask] =
                 ctx.template input<0>().get();
             ctx.template output<0>().push(
-                state.memory[ctx.index.bits() & mask]);
+                state.memory[ctx.value_index & mask]);
         }
     };
 }

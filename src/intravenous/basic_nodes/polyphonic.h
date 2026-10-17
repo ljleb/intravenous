@@ -148,7 +148,7 @@ namespace iv {
             auto const events = ctx.template input<0>().events();
             for (TimedEvent const& event : events) {
                 size_t const event_offset = static_cast<size_t>(
-                    ctx.index.forward_distance_to(event.time));
+                    ctx.index.whole().forward_distance_to(event.time));
                 size_t const next = std::min(event_offset, ctx.block_size);
                 std::fill(state.block.begin() + static_cast<std::ptrdiff_t>(cursor), state.block.begin() + static_cast<std::ptrdiff_t>(next), value);
                 cursor = next;
@@ -217,7 +217,7 @@ namespace iv {
             auto const events = ctx.template input<0>().events();
             for (TimedEvent const& event : events) {
                 size_t const event_offset = static_cast<size_t>(
-                    ctx.index.forward_distance_to(event.time));
+                    ctx.index.whole().forward_distance_to(event.time));
                 size_t const next = std::min(event_offset, ctx.block_size);
                 std::fill(state.block.begin() + static_cast<std::ptrdiff_t>(cursor), state.block.begin() + static_cast<std::ptrdiff_t>(next), value);
                 cursor = next;
@@ -309,11 +309,13 @@ namespace iv {
         void tick_block(TickBlockContext<MidiVoiceAllocator> const& ctx) const
         {
             auto& state = ctx.state();
+            auto amplitude_output = ctx.template output<0>();
+            auto frequency_output = ctx.template output<1>();
 
             auto push_until = [&](size_t until, size_t& cursor) {
                 while (cursor < until) {
-                    ctx.template output<0>().push(state.amplitude);
-                    ctx.template output<1>().push(state.frequency);
+                    amplitude_output.push(state.amplitude);
+                    frequency_output.push(state.frequency);
                     ++cursor;
                 }
             };
@@ -351,7 +353,7 @@ namespace iv {
             auto const events = ctx.template input<0>().events();
             for (TimedEvent const& event : events) {
                 size_t const event_offset = static_cast<size_t>(
-                    ctx.index.forward_distance_to(event.time));
+                    ctx.index.whole().forward_distance_to(event.time));
                 size_t const next = std::min(event_offset, ctx.block_size);
                 push_until(next, cursor);
 

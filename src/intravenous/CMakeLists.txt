@@ -182,10 +182,12 @@ function(iv_add_host_runtime_objects target)
     iv_link_stacktrace_support(${target})
 endfunction()
 
-# Built-ins are a single shipped IV package rather than code linked directly
-# into iv_builder. Stage only the package inputs in the build tree: copying the
-# whole source directory would also copy any old compile database or build/ tree
-# left behind by an earlier direct-loader invocation.
+# The default built-ins are one shipped IV package rather than code linked
+# directly into iv_builder. Stage only that package's inputs in the build tree.
+# Sibling source packages under builtin_packages are optional and must not enter
+# the default discovery root. Copying the whole source directory would both
+# enable those packages implicitly and copy any old compile database or build/
+# tree left behind by an earlier direct-loader invocation.
 set(IV_BUILTIN_PACKAGE_SOURCE_ROOT
     "${CMAKE_CURRENT_SOURCE_DIR}/builtin_packages")
 set(IV_BUILTIN_PACKAGE_SEARCH_ROOT

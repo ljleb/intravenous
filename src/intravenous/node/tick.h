@@ -1,13 +1,18 @@
 #pragma once
 
+#include <intravenous/graph/reflected_node_operations.h>
 #include <intravenous/node/coverage_port_context.h>
 #include <intravenous/node/traits.h>
 #include <intravenous/node/resources.h>
 #include <intravenous/node/static_port_access.h>
 
 #include <array>
+#include <cstdint>
 #include <memory>
+#include <optional>
 #include <span>
+#include <tuple>
+#include <type_traits>
 #include <utility>
 
 namespace iv {
@@ -29,8 +34,10 @@ namespace iv {
 
         template<typename Node>
         struct TickPortBindings {
-            std::span<InputPort> sample_inputs {};
-            std::span<OutputPort> sample_outputs {};
+            std::span<ReflectedContinuousInputPortBinding const>
+                continuous_inputs {};
+            std::span<ReflectedContinuousOutputPortBinding const>
+                continuous_outputs {};
             std::span<EventInputPort> event_inputs {};
             std::span<EventOutputPort> event_outputs {};
             std::span<RandomAccessSampleInputPort const> random_access_inputs {};
@@ -115,54 +122,157 @@ namespace iv {
             }
         };
 
-        template<ChannelTypeId Type>
-        class StaticBackgroundInputSampleTickAccess
-            : public StaticInputSamplePortAccess<Type> {
+        [[nodiscard]] IV_FORCEINLINE
+        FractionalGlobalIndexRange::LatticeProjection project_tick_port(
+            std::int32_t pace_exponent,
+            FractionalGlobalIndex root_index,
+            std::size_t root_block_size)
+        {
+            auto const projected = FractionalGlobalIndexRange{
+                .begin = root_index,
+                .extent = {.whole = root_block_size},
+            }.try_project_onto_lattice(pace_exponent);
+            IV_ASSERT(projected.has_value(),
+                "continuous port projection exceeds the supported Q64.64 lattice");
+            return *projected;
+        }
+
+        [[nodiscard]] constexpr FractionalGlobalExtent tick_lattice_step(
+            std::int32_t pace_exponent) noexcept
+        {
+            IV_ASSERT(
+                pace_exponent >= FractionalGlobalIndexRange::minimum_pace_exponent
+                    && pace_exponent <= FractionalGlobalIndexRange::maximum_pace_exponent,
+                "pointwise Tick pace is outside the Q64.64 lattice");
+            if (pace_exponent >= 0) {
+                if (pace_exponent == 0) {
+                    return {.whole = 1};
+                }
+                return {
+                    .fraction = std::uint64_t{1} << (64 - pace_exponent),
+                };
+            }
+            if (pace_exponent == -64) return {};
+            return {
+                .whole = std::uint64_t{1} << -pace_exponent,
+            };
+        }
+
+        template<typename Node, std::size_t DeclarationIndex,
+                 class Binding>
+        IV_FORCEINLINE auto make_continuous_input_access(
+            Binding const& binding,
+            FractionalGlobalIndex begin,
+            std::uint64_t begin_ordinal,
+            std::uint64_t sequential_begin_ordinal,
+            std::size_t block_size)
+        {
+            constexpr auto layout =
+                static_input_port_layout_at<Node, DeclarationIndex>();
+            using Config = std::remove_cvref_t<decltype(port_config_at<
+                DeclarationIndex>(
+                    std::declval<decltype(Node::inputs()) const&>()))>;
+            using Values = typename Config::value_types;
+            if constexpr (std::tuple_size_v<Values> == 1) {
+                using Value = std::tuple_element_t<0, Values>;
+                return StaticContinuousInputAccess<
+                    Value, layout.channel_type, layout.sample_layout>{
+                        ContinuousInputPort<Value>{
+                            binding,
+                            begin,
+                            begin_ordinal,
+                            sequential_begin_ordinal,
+                            block_size}};
+            } else {
+                return StaticVariantContinuousInputAccess<
+                    Values,
+                    Binding,
+                    layout.channel_type,
+                    layout.sample_layout>{
+                        binding,
+                        begin,
+                        begin_ordinal,
+                        sequential_begin_ordinal,
+                        block_size};
+            }
+        }
+
+        template<typename Node, std::size_t DeclarationIndex,
+                 bool Recording, class Binding>
+        IV_FORCEINLINE auto make_continuous_output_access(
+            Binding const& binding,
+            FractionalGlobalIndex begin,
+            std::uint64_t begin_ordinal,
+            std::uint64_t sequential_begin_ordinal,
+            std::size_t block_size,
+            OutputDisposition* disposition = nullptr)
+        {
+            constexpr auto layout =
+                static_declared_output_port_layout_at<Node, DeclarationIndex>();
+            using Config = std::remove_cvref_t<decltype(port_config_at<
+                DeclarationIndex>(
+                    std::declval<decltype(Node::outputs()) const&>()))>;
+            using Values = typename Config::value_types;
+            if constexpr (std::tuple_size_v<Values> == 1) {
+                using Value = std::tuple_element_t<0, Values>;
+                auto port = ContinuousOutputPort<Value>{
+                    binding,
+                    begin,
+                    begin_ordinal,
+                    sequential_begin_ordinal,
+                    block_size};
+                if constexpr (Recording) {
+                    IV_ASSERT(disposition != nullptr,
+                        "recording continuous output has no disposition");
+                    return StaticContinuousOutputAccess<
+                        Value, layout.channel_type, layout.sample_layout, true>{
+                            port, *disposition};
+                } else {
+                    return StaticContinuousOutputAccess<
+                        Value, layout.channel_type, layout.sample_layout, false>{
+                            port};
+                }
+            } else {
+                if constexpr (Recording) {
+                    IV_ASSERT(disposition != nullptr,
+                        "recording continuous output has no disposition");
+                    return StaticVariantContinuousOutputAccess<
+                        Values,
+                        Binding,
+                        layout.channel_type,
+                        layout.sample_layout,
+                        true>{
+                            binding,
+                            begin,
+                            begin_ordinal,
+                            sequential_begin_ordinal,
+                            block_size,
+                            *disposition};
+                } else {
+                    return StaticVariantContinuousOutputAccess<
+                        Values,
+                        Binding,
+                        layout.channel_type,
+                        layout.sample_layout,
+                        false>{
+                            binding,
+                            begin,
+                            begin_ordinal,
+                            sequential_begin_ordinal,
+                            block_size};
+                }
+            }
+        }
+
+        template<class Current, ChannelTypeId Type>
+        class StaticBackgroundContinuousInputTickAccess : public Current {
             RandomAccessSampleInputPort const* _background = nullptr;
 
         public:
-            StaticBackgroundInputSampleTickAccess(
-                InputPort const& current, RandomAccessSampleInputPort const* background)
-                : StaticInputSamplePortAccess<Type>(current)
-                , _background(background)
-            {}
-
-            [[nodiscard]] IndexCoverage const& coverage() const noexcept
-            {
-                IV_ASSERT(_background != nullptr,
-                    "background sample input has no arbitrary-access binding");
-                return _background->coverage();
-            }
-
-            [[nodiscard]] Sample at(GlobalIndex index) const noexcept
-            requires (Type == ChannelTypeId::mono)
-            {
-                IV_ASSERT(_background != nullptr,
-                    "background sample input has no arbitrary-access binding");
-                return _background->at(index);
-            }
-
-            template<class Channel>
-            [[nodiscard]] Sample at(Channel, GlobalIndex index) const noexcept
-            requires (Type != ChannelTypeId::mono)
-            {
-                IV_ASSERT(_background != nullptr,
-                    "background sample input has no arbitrary-access binding");
-                return _background->at(index, static_channel_index<Type, Channel>());
-            }
-        };
-
-        template<ChannelTypeId Type, SampleStreamLayout Layout>
-        class StaticBackgroundInputBlockTickAccess
-            : public StaticInputBlockPortAccess<Type, Layout> {
-            RandomAccessSampleInputPort const* _background = nullptr;
-
-        public:
-            StaticBackgroundInputBlockTickAccess(
-                InputPort const& current,
-                std::size_t block_size,
+            StaticBackgroundContinuousInputTickAccess(
+                Current current,
                 RandomAccessSampleInputPort const* background)
-                : StaticInputBlockPortAccess<Type, Layout>(current, block_size)
+                : Current(std::move(current))
                 , _background(background)
             {}
 
@@ -327,9 +437,37 @@ namespace iv {
 
     template<typename Node>
     struct TickSampleContext : public TickContext<Node> {
-        GlobalIndex index;
+        FractionalGlobalIndex index;
+        std::uint64_t value_index = 0;
 
-        TickSampleContext(TickContext<Node> base, GlobalIndex index);
+    private:
+        // This offset selects one value inside each port binding's own
+        // compiler-owned Sequential domain. It is not a second node-visible
+        // coordinate.
+        std::size_t sequential_value_offset_ = 0;
+
+    public:
+
+        TickSampleContext(
+            TickContext<Node> base,
+            FractionalGlobalIndex index,
+            std::uint64_t value_index,
+            std::size_t sequential_value_offset);
+
+        TickSampleContext(TickContext<Node> base, GlobalIndex index)
+            : TickSampleContext(
+                base,
+                FractionalGlobalIndex::from_global(index),
+                index.bits(),
+                0)
+        {}
+
+        [[nodiscard]] GlobalIndex event_index() const noexcept
+        {
+            IV_ASSERT(index.fraction() == 0,
+                "event access from pointwise tick() requires project-rate pace");
+            return index.whole();
+        }
 
         template<size_t Index>
         auto input() const
@@ -339,28 +477,34 @@ namespace iv {
                 details::static_input_port_kind_at<Node, Index>();
             auto const& ports = this->port_bindings();
             if constexpr (port_kind == PortKind::sample) {
-                constexpr auto layout =
-                    details::static_input_port_layout_at<Node, Index>();
                 constexpr auto port_index =
                     details::static_sample_input_port_index_at<Node, Index>();
-                IV_ASSERT(port_index < ports.sample_inputs.size(),
+                IV_ASSERT(port_index < ports.continuous_inputs.size(),
                     "static input port is absent from execution context");
-                IV_ASSERT(ports.sample_inputs[port_index].channel_layout() == layout,
-                    "static input port layout does not match execution context");
+                auto const& binding = ports.continuous_inputs[port_index];
+                auto current = details::make_continuous_input_access<Node, Index>(
+                    binding,
+                    this->index,
+                    this->value_index,
+                    binding.sequential_begin_ordinal
+                        + this->sequential_value_offset_,
+                    1);
                 constexpr bool background =
                     details::static_input_port_is_random_access_at<Node, Index>();
                 if constexpr (background) {
                     constexpr auto background_index =
                         details::static_random_access_input_port_index_at<
                             Node, Index>();
+                    constexpr auto layout =
+                        details::static_input_port_layout_at<Node, Index>();
                     auto const* background_port =
                         background_index < ports.random_access_inputs.size()
                         ? &ports.random_access_inputs[background_index] : nullptr;
-                    return details::StaticBackgroundInputSampleTickAccess<layout.channel_type>(
-                        ports.sample_inputs[port_index], background_port);
+                    return details::StaticBackgroundContinuousInputTickAccess<
+                        decltype(current), layout.channel_type>{
+                            std::move(current), background_port};
                 } else {
-                    return details::StaticInputSamplePortAccess<layout.channel_type>(
-                        ports.sample_inputs[port_index]);
+                    return current;
                 }
             } else {
                 constexpr auto port_index =
@@ -377,10 +521,11 @@ namespace iv {
                         background_index < ports.random_access_event_inputs.size()
                         ? &ports.random_access_event_inputs[background_index] : nullptr;
                     return details::StaticBackgroundEventInputBlockTickAccess(
-                        ports.event_inputs[port_index], this->index, 1, background_port);
+                        ports.event_inputs[port_index], this->event_index(), 1,
+                        background_port);
                 } else {
                     return details::StaticEventInputBlockTickAccess(
-                        ports.event_inputs[port_index], this->index, 1);
+                        ports.event_inputs[port_index], this->event_index(), 1);
                 }
             }
         }
@@ -410,19 +555,30 @@ namespace iv {
                         Node, Index>();
                 constexpr bool recording =
                     details::static_output_port_is_recording_at<Node, Index>();
-                IV_ASSERT(port_index < ports.sample_outputs.size(),
+                IV_ASSERT(port_index < ports.continuous_outputs.size(),
                     "static output port is absent from execution context");
-                IV_ASSERT(ports.sample_outputs[port_index].channel_layout() == layout,
+                auto const& binding = ports.continuous_outputs[port_index];
+                IV_ASSERT(binding.storage.channel_layout == layout,
                     "static output port layout does not match execution context");
                 if constexpr (recording) {
-                    return details::StaticOutputSamplePortAccess<
-                        layout.channel_type, true>(
-                            ports.sample_outputs[port_index],
-                            this->template recording_disposition<Index>());
+                    return details::make_continuous_output_access<
+                        Node, Index, true>(
+                            binding,
+                            this->index,
+                            this->value_index,
+                            binding.sequential_begin_ordinal
+                                + this->sequential_value_offset_,
+                            1,
+                            &this->template recording_disposition<Index>());
                 } else {
-                    return details::StaticOutputSamplePortAccess<
-                        layout.channel_type, false>(
-                            ports.sample_outputs[port_index]);
+                    return details::make_continuous_output_access<
+                        Node, Index, false>(
+                            binding,
+                            this->index,
+                            this->value_index,
+                            binding.sequential_begin_ordinal
+                                + this->sequential_value_offset_,
+                            1);
                 }
             } else {
                 static_assert(!details::static_output_port_is_tock_at<Node, Index>(),
@@ -437,12 +593,12 @@ namespace iv {
                 if constexpr (recording) {
                     return details::StaticEventOutputBlockTickAccess<true>(
                         ports.event_outputs[port_index],
-                        this->index,
+                        this->event_index(),
                         1,
                         this->template recording_disposition<Index>());
                 } else {
                     return details::StaticEventOutputBlockTickAccess<false>(
-                        ports.event_outputs[port_index], this->index, 1);
+                        ports.event_outputs[port_index], this->event_index(), 1);
                 }
             }
         }
@@ -458,14 +614,21 @@ namespace iv {
 
     template<typename Node>
     struct TickBlockContext : public TickContext<Node> {
-        GlobalIndex index;
+        FractionalGlobalIndex index;
         size_t block_size;
 
         TickBlockContext(
             TickContext<Node> base,
-            GlobalIndex index,
+            FractionalGlobalIndex index,
             size_t block_size
         );
+
+        [[nodiscard]] GlobalIndex event_index() const noexcept
+        {
+            IV_ASSERT(index.fraction() == 0,
+                "event access from tick_block() requires a project-sample boundary");
+            return index.whole();
+        }
 
         template<size_t Index>
         auto input() const
@@ -475,32 +638,37 @@ namespace iv {
                 details::static_input_port_kind_at<Node, Index>();
             auto const& ports = this->port_bindings();
             if constexpr (port_kind == PortKind::sample) {
-                constexpr auto layout =
-                    details::static_input_port_layout_at<Node, Index>();
                 constexpr auto port_index =
                     details::static_sample_input_port_index_at<Node, Index>();
-                IV_ASSERT(port_index < ports.sample_inputs.size(),
+                IV_ASSERT(port_index < ports.continuous_inputs.size(),
                     "static input port is absent from execution context");
-                IV_ASSERT(ports.sample_inputs[port_index].channel_layout() == layout,
-                    "static input port layout does not match execution context");
+                auto const& binding = ports.continuous_inputs[port_index];
+                auto const projected = details::project_tick_port(
+                    binding.absolute_pace_exponent,
+                    this->index,
+                    this->block_size);
+                auto current = details::make_continuous_input_access<Node, Index>(
+                    binding,
+                    projected.begin,
+                    projected.begin_ordinal_bits,
+                    binding.sequential_begin_ordinal,
+                    projected.count);
                 constexpr bool background =
                     details::static_input_port_is_random_access_at<Node, Index>();
                 if constexpr (background) {
                     constexpr auto background_index =
                         details::static_random_access_input_port_index_at<
                             Node, Index>();
+                    constexpr auto layout =
+                        details::static_input_port_layout_at<Node, Index>();
                     auto const* background_port =
                         background_index < ports.random_access_inputs.size()
                         ? &ports.random_access_inputs[background_index] : nullptr;
-                    return details::StaticBackgroundInputBlockTickAccess<
-                        layout.channel_type, layout.sample_layout>(
-                            ports.sample_inputs[port_index],
-                            this->block_size,
-                            background_port);
+                    return details::StaticBackgroundContinuousInputTickAccess<
+                        decltype(current), layout.channel_type>{
+                            std::move(current), background_port};
                 } else {
-                    return details::StaticInputBlockPortAccess<
-                        layout.channel_type, layout.sample_layout>(
-                            ports.sample_inputs[port_index], this->block_size);
+                    return current;
                 }
             } else {
                 constexpr auto port_index =
@@ -518,13 +686,13 @@ namespace iv {
                         ? &ports.random_access_event_inputs[background_index] : nullptr;
                     return details::StaticBackgroundEventInputBlockTickAccess(
                         ports.event_inputs[port_index],
-                        this->index,
+                        this->event_index(),
                         this->block_size,
                         background_port);
                 } else {
                     return details::StaticEventInputBlockTickAccess(
                         ports.event_inputs[port_index],
-                        this->index,
+                        this->event_index(),
                         this->block_size);
                 }
             }
@@ -556,20 +724,32 @@ namespace iv {
                         Node, Index>();
                 constexpr bool recording =
                     details::static_output_port_is_recording_at<Node, Index>();
-                IV_ASSERT(port_index < ports.sample_outputs.size(),
+                IV_ASSERT(port_index < ports.continuous_outputs.size(),
                     "static output port is absent from execution context");
-                IV_ASSERT(ports.sample_outputs[port_index].channel_layout() == layout,
+                auto const& binding = ports.continuous_outputs[port_index];
+                IV_ASSERT(binding.storage.channel_layout == layout,
                     "static output port layout does not match execution context");
+                auto const projected = details::project_tick_port(
+                    binding.absolute_pace_exponent,
+                    this->index,
+                    this->block_size);
                 if constexpr (recording) {
-                    return details::StaticOutputBlockPortAccess<
-                        layout.channel_type, layout.sample_layout, true>(
-                            ports.sample_outputs[port_index],
-                            this->block_size,
-                            this->template recording_disposition<Index>());
+                    return details::make_continuous_output_access<
+                        Node, Index, true>(
+                            binding,
+                            projected.begin,
+                            projected.begin_ordinal_bits,
+                            binding.sequential_begin_ordinal,
+                            projected.count,
+                            &this->template recording_disposition<Index>());
                 } else {
-                    return details::StaticOutputBlockPortAccess<
-                        layout.channel_type, layout.sample_layout, false>(
-                            ports.sample_outputs[port_index], this->block_size);
+                    return details::make_continuous_output_access<
+                        Node, Index, false>(
+                            binding,
+                            projected.begin,
+                            projected.begin_ordinal_bits,
+                            binding.sequential_begin_ordinal,
+                            projected.count);
                 }
             } else {
                 static_assert(
@@ -585,13 +765,13 @@ namespace iv {
                 if constexpr (recording) {
                     return details::StaticEventOutputBlockTickAccess<true>(
                         ports.event_outputs[port_index],
-                        this->index,
+                        this->event_index(),
                         this->block_size,
                         this->template recording_disposition<Index>());
                 } else {
                     return details::StaticEventOutputBlockTickAccess<false>(
                         ports.event_outputs[port_index],
-                        this->index,
+                        this->event_index(),
                         this->block_size);
                 }
             }
@@ -613,7 +793,7 @@ namespace iv {
 
         SkipBlockContext(
             TickContext<Node> base,
-            GlobalIndex index,
+            FractionalGlobalIndex index,
             size_t block_size)
             : TickBlockContext<Node>(base, index, block_size)
         {}
@@ -630,14 +810,20 @@ namespace iv {
 
     template<typename Node>
     IV_FORCEINLINE TickSampleContext<Node>::TickSampleContext(
-        TickContext<Node> base, GlobalIndex index)
-    : TickContext<Node>(base), index(index)
+        TickContext<Node> base,
+        FractionalGlobalIndex index,
+        std::uint64_t value_index,
+        std::size_t sequential_value_offset)
+    : TickContext<Node>(base)
+    , index(index)
+    , value_index(value_index)
+    , sequential_value_offset_(sequential_value_offset)
     {}
 
     template<typename Node>
     IV_FORCEINLINE TickBlockContext<Node>::TickBlockContext(
         TickContext<Node> base,
-        GlobalIndex index,
+        FractionalGlobalIndex index,
         size_t block_size
     )
     : TickContext<Node>(base)
@@ -652,6 +838,29 @@ namespace iv {
     void do_skip_block(Node const& node, SkipBlockContext<Node> const& state);
 
     namespace details {
+        template<typename Node>
+        [[nodiscard]] IV_FORCEINLINE std::int32_t pointwise_tick_pace(
+            TickContext<Node> const& context)
+        {
+            auto const& ports = TickContextAccess::ports(context);
+            std::optional<std::int32_t> pace;
+            auto accept = [&](std::int32_t candidate) {
+                IV_ASSERT(!pace || *pace == candidate,
+                    "pointwise tick() received incompatible port paces");
+                pace = candidate;
+            };
+            for (auto const& input : ports.continuous_inputs) {
+                accept(input.absolute_pace_exponent);
+            }
+            for (auto const& output : ports.continuous_outputs) {
+                accept(output.absolute_pace_exponent);
+            }
+            if (!ports.event_inputs.empty() || !ports.event_outputs.empty()) {
+                accept(0);
+            }
+            return pace.value_or(0);
+        }
+
         template<size_t Count, typename Fn, size_t... Index>
         IV_FORCEINLINE constexpr void for_each_static_port_index_impl(
             Fn&& fn, std::index_sequence<Index...>)
@@ -667,48 +876,6 @@ namespace iv {
         }
 
         template<typename Node>
-        IV_FORCEINLINE void finish_tick_sample_outputs(
-            TickContext<Node> const& context, size_t frame_count)
-        {
-            if constexpr (has_outputs<Node>) {
-                auto const& ports = TickContextAccess::ports(context);
-                for_each_static_port_index<
-                    port_config_count_v<decltype(Node::outputs())>>(
-                    [&]<size_t Index> {
-                        if constexpr (static_output_port_kind_at<Node, Index>()
-                            == PortKind::sample
-                            && !static_output_port_is_tock_at<Node, Index>()) {
-                            constexpr auto output_index =
-                                static_realtime_sample_output_port_index_at<
-                                    Node, Index>();
-                            ports.sample_outputs[output_index].finish_direct_write(
-                                frame_count);
-                        }
-                    });
-            }
-        }
-
-        template<typename Node>
-        IV_FORCEINLINE void advance_tick_sample_inputs(
-            TickContext<Node> const& context, size_t frame_count)
-        {
-            if constexpr (has_inputs<Node>) {
-                auto const& ports = TickContextAccess::ports(context);
-                for_each_static_port_index<
-                    port_config_count_v<decltype(Node::inputs())>>(
-                    [&]<size_t Index> {
-                        if constexpr (static_input_port_kind_at<Node, Index>()
-                            == PortKind::sample) {
-                            constexpr auto input_index =
-                                static_sample_input_port_index_at<Node, Index>();
-                            advance_input(
-                                ports.sample_inputs[input_index], frame_count);
-                        }
-                    });
-            }
-        }
-
-        template<typename Node>
         IV_FORCEINLINE void author_default_skip_outputs(
             SkipBlockContext<Node> const& context)
         {
@@ -719,8 +886,26 @@ namespace iv {
                         if constexpr (!static_output_port_is_tock_at<Node, Index>()) {
                             if constexpr (static_output_port_kind_at<Node, Index>()
                                 == PortKind::sample) {
-                                context.template output<Index>().push_silence(
-                                    context.block_size);
+                                auto output = context.template output<Index>();
+                                using Config = std::remove_cvref_t<decltype(
+                                    port_config_at<Index>(
+                                        std::declval<decltype(Node::outputs()) const&>()))>;
+                                using Values = typename Config::value_types;
+                                if constexpr (std::tuple_size_v<Values> == 1) {
+                                    output.clear_block();
+                                } else {
+                                    [&]<std::size_t... TypeIndex>(
+                                        std::index_sequence<TypeIndex...>) {
+                                        (([&] {
+                                            using Value = std::tuple_element_t<
+                                                TypeIndex, Values>;
+                                            if (output.template is<Value>()) {
+                                                output.template as<Value>().clear_block();
+                                            }
+                                        }()), ...);
+                                    }(std::make_index_sequence<
+                                        std::tuple_size_v<Values>>{});
+                                }
                             } else {
                                 context.template output<Index>().push_block(
                                     BlockView<TimedEvent const>{});
@@ -740,32 +925,18 @@ namespace iv {
     // A native tick_block() callback instead receives facades anchored at the
     // block's first sample for its entire call. Inputs advance only after the
     // callback returns; block accessors address later frames explicitly.
-    // Sequential OutputPort::push* calls advance their own authored cursor, while
-    // static/direct block writes are committed once at callback return. A
-    // well-formed realtime node authors exactly one frame per output per tick(),
-    // or block_size frames per output per tick_block(); the runtime deliberately
-    // does not add release-time accounting for under/over-production.
+    // Sequential continuous-output push calls advance the retained facade's
+    // authored cursor, while indexed block writes are committed once at callback
+    // return. A well-formed realtime node authors exactly one value per output per
+    // tick(), or each output's projected block_size() values per tick_block(); the
+    // runtime deliberately does not add release-time accounting for
+    // under/over-production.
     template<typename Node>
     IV_FORCEINLINE void do_tick(Node const& node, TickSampleContext<Node> const& ctx)
     {
-        if constexpr (details::has_tick<Node>)
-        {
-            node.tick(ctx);
-            details::finish_tick_sample_outputs<Node>(ctx, 1);
-            details::advance_tick_sample_inputs<Node>(ctx, 1);
-        }
-        else if constexpr (details::has_tick_block<Node>)
-        {
-            do_tick_block(node, {
-                static_cast<TickContext<Node> const&>(ctx),
-                ctx.index,
-                1,
-            });
-        }
-        else
-        {
-            static_assert(details::has_tick<Node> || details::has_tick_block<Node>, "node must implement tick() or tick_block()");
-        }
+        static_assert(details::has_tick<Node>,
+            "do_tick() requires an authored pointwise tick() callback");
+        node.tick(ctx);
     }
 
     template<typename Node>
@@ -774,21 +945,28 @@ namespace iv {
         if (ctx.block_size == 0) {
             return;
         }
-        validate_block_size(ctx.block_size);
 
         if constexpr (details::has_tick_block<Node>)
         {
             node.tick_block(ctx);
-            details::finish_tick_sample_outputs<Node>(ctx, ctx.block_size);
-            details::advance_tick_sample_inputs<Node>(ctx, ctx.block_size);
         }
         else
         {
-            for (size_t i = 0; i < ctx.block_size; ++i) {
+            auto const pace = details::pointwise_tick_pace<Node>(ctx);
+            auto const projected = details::project_tick_port(
+                pace, ctx.index, ctx.block_size);
+            auto const step = details::tick_lattice_step(pace);
+            auto value_coordinate = projected.begin;
+            for (size_t i = 0; i < projected.count; ++i) {
                 do_tick(node, {
                     static_cast<TickContext<Node> const&>(ctx),
-                    ctx.index.advanced_by(i),
+                    value_coordinate,
+                    projected.begin_ordinal_bits + i,
+                    i,
                 });
+                if (i + 1 < projected.count) {
+                    value_coordinate = value_coordinate.advanced_by(step);
+                }
             }
         }
     }
@@ -803,7 +981,6 @@ namespace iv {
         if (ctx.block_size == 0) {
             return;
         }
-        validate_block_size(ctx.block_size);
 
         if constexpr (details::has_skip_block<Node>)
         {
@@ -814,7 +991,5 @@ namespace iv {
             details::author_default_skip_outputs<Node>(ctx);
         }
 
-        details::finish_tick_sample_outputs<Node>(ctx, ctx.block_size);
-        details::advance_tick_sample_inputs<Node>(ctx, ctx.block_size);
     }
 }

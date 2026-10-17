@@ -3,7 +3,9 @@
 // Compiler-selected operations and binding records for one concrete node.
 
 #include <intravenous/node/compiler_record.h>
+#include <intravenous/node/continuous_port.h>
 #include <intravenous/node/coverage_port_context.h>
+#include <intravenous/node/port_constraints.h>
 #include <intravenous/ports.h>
 
 #include <array>
@@ -52,51 +54,42 @@ struct ReflectedSpan {
 static_assert(std::is_standard_layout_v<ReflectedSpan<std::byte>>);
 static_assert(std::is_trivially_copyable_v<ReflectedSpan<std::byte>>);
 
-struct ReflectedSampleChannelStorageBinding {
-    // Resolved address of logical frame zero for one semantic channel.
-    // frame_stride is measured in Sample elements, so planar channels normally
-    // use stride 1 while an interleaved N-channel representation uses stride N.
-    // Different channels may name unrelated producer representations.
-    std::byte* storage = nullptr;
-    std::size_t frame_capacity = 0;
-    std::size_t frame_stride = 1;
-    // Additional logical delay between the port timeline and this backing
-    // channel. Zero preserves the ordinary whole-representation mapping; a
-    // future channel alias may bind an independently delayed producer channel.
-    std::size_t frame_delay = 0;
-};
+using ReflectedContinuousChannelStorageBinding =
+    ContinuousChannelStorageBinding;
+using ReflectedContinuousPortStorageBinding = ContinuousPortStorageBinding;
+using ReflectedContinuousInputPortBinding = ContinuousInputPortBinding;
 
-struct ReflectedSamplePortStorageBinding {
-    // Channel-granular resolved backing. The first channel_count(channel_layout)
-    // entries are active; unused entries remain null. This deliberately avoids
-    // requiring one contiguous representation base for a logical sample port.
-    std::array<
-        ReflectedSampleChannelStorageBinding,
-        maximum_supported_channel_count> channels{};
-    std::size_t frame_capacity = 0;
-    std::size_t storage_latency = 0;
-    ChannelLayout channel_layout {
-        .channel_type = ChannelTypeId::mono,
-        .sample_layout = SampleStreamLayout::planar,
-    };
-};
-
-struct ReflectedSampleInputPortBinding {
-    ReflectedSamplePortStorageBinding storage {};
-    std::size_t history = 0;
-    std::size_t read_latency = 0;
-};
-
-struct ReflectedSampleOutputPortBinding {
-    ReflectedSamplePortStorageBinding storage {};
+struct ReflectedContinuousOutputPortBinding {
+    ReflectedContinuousPortStorageBinding storage {};
     std::size_t history = 0;
     std::size_t latency = 0;
+    std::int32_t absolute_pace_exponent = 0;
+    // Physical invocation-order ordinal selected by generated execution for
+    // this callback. The node-facing coordinate remains the projected global
+    // lattice coordinate carried separately by the Tick context.
+    mutable std::uint64_t sequential_begin_ordinal = 0;
     // For Tick/persisted outputs only, the imported primitive wrapper resets
     // this before each node invocation and passes its address only to that
     // output's statically specialized facade. Ephemeral/Tock output facades
     // carry no disposition state. The generated post-step operation observes
     // the finalized value.
     mutable OutputDisposition disposition = OutputDisposition::untouched;
+};
+
+struct ReflectedContinuousPortRealization {
+    ContinuousValueStorageGeometry geometry{};
+    std::size_t sample_support = 0;
+    bool has_sample_support = false;
+    std::int32_t local_pace_exponent = 0;
+    std::int32_t absolute_pace_exponent = 0;
+    std::size_t history = 0;
+    std::size_t latency = 0;
+    CoverageOrdering ordering = CoverageOrdering::unspecified;
+};
+
+struct ReflectedNodePortRealization {
+    ReflectedSpan<ReflectedContinuousPortRealization const> inputs{};
+    ReflectedSpan<ReflectedContinuousPortRealization const> outputs{};
 };
 
 // Fixed compiler-owned event storage binding. Ordinary bounded sequences
@@ -143,20 +136,20 @@ struct ReflectedEventOutputPortBinding {
     mutable OutputDisposition disposition = OutputDisposition::untouched;
 };
 
-static_assert(std::is_standard_layout_v<ReflectedSampleChannelStorageBinding>);
-static_assert(std::is_trivially_copyable_v<ReflectedSampleChannelStorageBinding>);
-static_assert(std::is_standard_layout_v<ReflectedSamplePortStorageBinding>);
-static_assert(std::is_trivially_copyable_v<ReflectedSamplePortStorageBinding>);
+static_assert(std::is_standard_layout_v<ReflectedContinuousChannelStorageBinding>);
+static_assert(std::is_trivially_copyable_v<ReflectedContinuousChannelStorageBinding>);
+static_assert(std::is_standard_layout_v<ReflectedContinuousPortStorageBinding>);
+static_assert(std::is_trivially_copyable_v<ReflectedContinuousPortStorageBinding>);
 static_assert(
     sizeof(std::array<
-        ReflectedSampleChannelStorageBinding,
+        ReflectedContinuousChannelStorageBinding,
         maximum_supported_channel_count>)
-    == sizeof(ReflectedSampleChannelStorageBinding)
+    == sizeof(ReflectedContinuousChannelStorageBinding)
         * maximum_supported_channel_count);
-static_assert(std::is_standard_layout_v<ReflectedSampleInputPortBinding>);
-static_assert(std::is_trivially_copyable_v<ReflectedSampleInputPortBinding>);
-static_assert(std::is_standard_layout_v<ReflectedSampleOutputPortBinding>);
-static_assert(std::is_trivially_copyable_v<ReflectedSampleOutputPortBinding>);
+static_assert(std::is_standard_layout_v<ReflectedContinuousInputPortBinding>);
+static_assert(std::is_trivially_copyable_v<ReflectedContinuousInputPortBinding>);
+static_assert(std::is_standard_layout_v<ReflectedContinuousOutputPortBinding>);
+static_assert(std::is_trivially_copyable_v<ReflectedContinuousOutputPortBinding>);
 static_assert(std::is_standard_layout_v<ReflectedEventPortStorageBinding>);
 static_assert(std::is_trivially_copyable_v<ReflectedEventPortStorageBinding>);
 static_assert(std::is_standard_layout_v<ReflectedEventInputPortBinding>);
@@ -171,10 +164,10 @@ struct ReflectedNodeTickContext {
     // from these bindings and the current absolute sample index. This avoids
     // persistent façade/cursor state and makes implementation constants visible
     // to whole-project O3 after inlining.
-    ReflectedSpan<ReflectedSampleInputPortBinding const> sample_input_bindings {};
+    ReflectedSpan<ReflectedContinuousInputPortBinding const> continuous_input_bindings {};
     // Output spans are compact realtime-only indices. Background outputs are
     // bound only by background callback contexts.
-    ReflectedSpan<ReflectedSampleOutputPortBinding const> sample_output_bindings {};
+    ReflectedSpan<ReflectedContinuousOutputPortBinding const> continuous_output_bindings {};
 
     // GraphJit event bindings mirror the sample binding architecture.
     ReflectedSpan<ReflectedEventInputPortBinding const> event_input_bindings {};
@@ -230,7 +223,10 @@ struct ReflectedNodeRuntimeOperations {
     void const* node_data = nullptr;
     NodeStateStructures const* state_structures = nullptr;
     std::size_t (*declare_node)(
-        void const*, NodeStateStructures const*, NodeLayoutBuilder&) = nullptr;
+        void const*,
+        NodeStateStructures const*,
+        NodeLayoutBuilder&,
+        ReflectedNodePortRealization const&) = nullptr;
     void (*tick_block)(
         void const*, ReflectedNodeTickContext const&, GlobalIndex, std::size_t) = nullptr;
     void (*skip_block)(

@@ -78,11 +78,11 @@ namespace iv {
 
         void tick_block(TickBlockContext<PhaseIntegrator> const& ctx) const
         {
-            auto const delta = ctx.template input<0>().get_block(ctx.block_size);
+            auto const delta = ctx.template input<0>().block();
             auto out = ctx.template output<0>();
 
             Sample phase = out.get();
-            for (size_t i = 0; i < ctx.block_size; ++i) {
+            for (size_t i = 0; i < delta.size(); ++i) {
                 phase = warp_pm1(phase + delta[i], 1.0f);
                 out.push(phase);
             }
@@ -174,7 +174,7 @@ namespace iv {
 
         struct State {
             double anchor_phase = 0.0;
-            GlobalIndex anchor_index{};
+            FractionalGlobalIndex anchor_index{};
             double frequency = 0.0;
             bool initialized = false;
         };
@@ -283,9 +283,8 @@ namespace iv {
 
             // Re-anchor if frequency changed.
             if (f != state.frequency) {
-                double const elapsed =
-                    static_cast<double>(
-                        state.anchor_index.forward_distance_to(ctx.index));
+                double const elapsed = state.anchor_index
+                    .forward_distance_to(ctx.index).project_samples();
 
                 state.anchor_phase = wrap(
                     state.anchor_phase +
@@ -296,9 +295,8 @@ namespace iv {
                 state.frequency = f;
             }
 
-            auto const elapsed =
-                static_cast<double>(
-                    state.anchor_index.forward_distance_to(ctx.index));
+            auto const elapsed = state.anchor_index
+                .forward_distance_to(ctx.index).project_samples();
 
             auto const phase =
                 state.anchor_phase +

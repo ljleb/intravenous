@@ -26,11 +26,111 @@ namespace iv {
 
 using FFTBin = std::complex<Sample::storage>;
 
-// One rank-one frequency-domain continuous value.  Its complete node-facing
-// view is defined together with type-specialized port access; the registry
-// needs only its stable C++ identity here.  Keeping it incomplete prevents an
-// accidental empty marker object's sizeof from becoming storage semantics.
-class FFTBlock;
+// One canonical nonredundant real-transform spectrum. FFTBlock is a read-only
+// value view; MutableFFTBlock is the corresponding authored-output view. The
+// transported storage is the referenced FFTBin sequence, never the span object
+// itself. Keeping the view here makes the value extension self-contained and
+// prevents an FFT backend from leaking its packed/native representation into
+// graph storage or node source.
+class FFTBlock {
+    std::span<FFTBin const> bins_ {};
+
+public:
+    constexpr FFTBlock() noexcept = default;
+    constexpr explicit FFTBlock(std::span<FFTBin const> bins) noexcept
+        : bins_(bins)
+    {}
+
+    [[nodiscard]] constexpr FFTBin const* data() const noexcept
+    {
+        return bins_.data();
+    }
+
+    [[nodiscard]] constexpr std::size_t size() const noexcept
+    {
+        return bins_.size();
+    }
+
+    [[nodiscard]] constexpr bool empty() const noexcept
+    {
+        return bins_.empty();
+    }
+
+    [[nodiscard]] constexpr FFTBin const& operator[](
+        std::size_t index) const noexcept
+    {
+        return bins_[index];
+    }
+
+    [[nodiscard]] constexpr auto begin() const noexcept
+    {
+        return bins_.begin();
+    }
+
+    [[nodiscard]] constexpr auto end() const noexcept
+    {
+        return bins_.end();
+    }
+
+    [[nodiscard]] constexpr std::span<FFTBin const> bins() const noexcept
+    {
+        return bins_;
+    }
+};
+
+class MutableFFTBlock {
+    std::span<FFTBin> bins_ {};
+
+public:
+    constexpr MutableFFTBlock() noexcept = default;
+    constexpr explicit MutableFFTBlock(std::span<FFTBin> bins) noexcept
+        : bins_(bins)
+    {}
+
+    [[nodiscard]] constexpr FFTBin* data() const noexcept
+    {
+        return bins_.data();
+    }
+
+    [[nodiscard]] constexpr std::size_t size() const noexcept
+    {
+        return bins_.size();
+    }
+
+    [[nodiscard]] constexpr bool empty() const noexcept
+    {
+        return bins_.empty();
+    }
+
+    [[nodiscard]] constexpr FFTBin& operator[](
+        std::size_t index) const noexcept
+    {
+        return bins_[index];
+    }
+
+    [[nodiscard]] constexpr auto begin() const noexcept
+    {
+        return bins_.begin();
+    }
+
+    [[nodiscard]] constexpr auto end() const noexcept
+    {
+        return bins_.end();
+    }
+
+    [[nodiscard]] constexpr std::span<FFTBin> bins() const noexcept
+    {
+        return bins_;
+    }
+
+    [[nodiscard]] constexpr operator FFTBlock() const noexcept
+    {
+        return FFTBlock{bins_};
+    }
+};
+
+static_assert(std::is_trivially_copyable_v<FFTBlock>);
+static_assert(std::is_trivially_copyable_v<MutableFFTBlock>);
 
 enum class ContinuousValueChannelCapability : std::uint8_t {
     scalar,
@@ -52,12 +152,32 @@ inline constexpr ChannelLayout default_audio_channel_layout {
 struct SampleContinuousValueExtension {
     using value_type = Sample;
     using storage_element = Sample;
+    using const_reference = Sample;
+    using mutable_reference = Sample&;
     static constexpr std::string_view name = "Sample";
     static constexpr std::size_t rank = 0;
     static constexpr auto channel_capability =
         ContinuousValueChannelCapability::audio;
+    static constexpr std::size_t channel_scalar_lanes_per_element = 1;
 
     using combine_values_type = Sample (*)(Sample, Sample) noexcept;
+
+    [[nodiscard]] static constexpr const_reference read_value(
+        std::span<storage_element const> elements) noexcept
+    {
+        return elements.front();
+    }
+
+    [[nodiscard]] static constexpr mutable_reference write_value(
+        std::span<storage_element> elements) noexcept
+    {
+        return elements.front();
+    }
+
+    static constexpr void clear_value(mutable_reference value) noexcept
+    {
+        value = {};
+    }
 
     [[nodiscard]] static constexpr Sample add(
         Sample left, Sample right) noexcept
@@ -254,6 +374,16 @@ struct SampleContinuousValueExtension {
         return true;
     }
 
+    static constexpr bool initialize_sequential_disconnected(
+        SequentialInputOptions const& options,
+        std::span<storage_element> destination,
+        std::size_t elements_per_value) noexcept
+    {
+        if (elements_per_value != 1) return false;
+        for (auto& value : destination) value = options.default_value;
+        return true;
+    }
+
     static constexpr bool combine_sequential_values(
         SequentialInputOptions const& options,
         std::span<storage_element> destination,
@@ -287,13 +417,33 @@ struct SampleContinuousValueExtension {
 struct FractionalGlobalIndexContinuousValueExtension {
     using value_type = FractionalGlobalIndex;
     using storage_element = FractionalGlobalIndex;
+    using const_reference = FractionalGlobalIndex;
+    using mutable_reference = FractionalGlobalIndex&;
     static constexpr std::string_view name = "FractionalGlobalIndex";
     static constexpr std::size_t rank = 0;
     static constexpr auto channel_capability =
         ContinuousValueChannelCapability::scalar;
+    static constexpr std::size_t channel_scalar_lanes_per_element = 0;
 
     using combine_values_type = FractionalGlobalIndex (*)(
         FractionalGlobalIndex, FractionalGlobalIndex) noexcept;
+
+    [[nodiscard]] static constexpr const_reference read_value(
+        std::span<storage_element const> elements) noexcept
+    {
+        return elements.front();
+    }
+
+    [[nodiscard]] static constexpr mutable_reference write_value(
+        std::span<storage_element> elements) noexcept
+    {
+        return elements.front();
+    }
+
+    static constexpr void clear_value(mutable_reference value) noexcept
+    {
+        value = {};
+    }
 
     [[nodiscard]] static constexpr FractionalGlobalIndex add(
         FractionalGlobalIndex left,
@@ -442,6 +592,16 @@ struct FractionalGlobalIndexContinuousValueExtension {
         return true;
     }
 
+    static constexpr bool initialize_sequential_disconnected(
+        SequentialInputOptions const& options,
+        std::span<storage_element> destination,
+        std::size_t elements_per_value) noexcept
+    {
+        if (elements_per_value != 1) return false;
+        for (auto& value : destination) value = options.default_value;
+        return true;
+    }
+
     static constexpr bool combine_sequential_values(
         SequentialInputOptions const& options,
         std::span<storage_element> destination,
@@ -482,14 +642,34 @@ struct FractionalGlobalIndexContinuousValueExtension {
 struct FFTBlockContinuousValueExtension {
     using value_type = FFTBlock;
     using storage_element = FFTBin;
+    using const_reference = FFTBlock;
+    using mutable_reference = MutableFFTBlock;
     static constexpr std::string_view name = "FFTBlock";
     static constexpr std::size_t rank = 1;
     static constexpr auto channel_capability =
         ContinuousValueChannelCapability::audio;
+    static constexpr std::size_t channel_scalar_lanes_per_element = 2;
 
     using combine_values_type = void (*)(
         std::span<FFTBin>, std::span<FFTBin const>) noexcept;
     using neutral_value_type = void (*)(std::span<FFTBin>) noexcept;
+
+    [[nodiscard]] static constexpr const_reference read_value(
+        std::span<storage_element const> elements) noexcept
+    {
+        return FFTBlock{elements};
+    }
+
+    [[nodiscard]] static constexpr mutable_reference write_value(
+        std::span<storage_element> elements) noexcept
+    {
+        return MutableFFTBlock{elements};
+    }
+
+    static constexpr void clear_value(mutable_reference value) noexcept
+    {
+        for (auto& bin : value.bins()) bin = {};
+    }
 
     static constexpr void initialize_zero(
         std::span<FFTBin> destination) noexcept
@@ -631,6 +811,15 @@ struct FFTBlockContinuousValueExtension {
         return true;
     }
 
+    static constexpr bool initialize_sequential_disconnected(
+        SequentialInputOptions const& options,
+        std::span<storage_element> destination,
+        std::size_t elements_per_value) noexcept
+    {
+        return initialize_sequential_neutral(
+            options, destination, elements_per_value);
+    }
+
     static constexpr bool combine_sequential_values(
         SequentialInputOptions const& options,
         std::span<storage_element> destination,
@@ -726,6 +915,7 @@ struct ContinuousValueTypeInfo {
         ContinuousValueChannelCapability::scalar;
     std::size_t storage_element_size = 0;
     std::size_t storage_element_alignment = 1;
+    std::size_t channel_scalar_lanes_per_element = 0;
     bool (*valid_size)(std::optional<std::size_t>) noexcept = nullptr;
     std::optional<std::size_t> (*sample_support)(
         std::optional<std::size_t>) noexcept = nullptr;
@@ -740,6 +930,8 @@ inline constexpr auto continuous_value_type_registry = std::array {
         .channel_capability = extension::channel_capability,             \
         .storage_element_size = sizeof(extension::storage_element),      \
         .storage_element_alignment = alignof(extension::storage_element),\
+        .channel_scalar_lanes_per_element =                       \
+            extension::channel_scalar_lanes_per_element,          \
         .valid_size = &extension::valid_size,                            \
         .sample_support = &extension::sample_support,                    \
     },
@@ -795,6 +987,19 @@ consteval bool valid_metadata_shape()
     return true;
 }
 
+template<class Extension>
+consteval bool valid_channel_algebra_shape()
+{
+    if constexpr (Extension::channel_capability
+        == ContinuousValueChannelCapability::audio) {
+        return Extension::channel_scalar_lanes_per_element != 0
+            && sizeof(typename Extension::storage_element)
+                == Extension::channel_scalar_lanes_per_element * sizeof(float)
+            && alignof(typename Extension::storage_element) >= alignof(float);
+    }
+    return Extension::channel_scalar_lanes_per_element == 0;
+}
+
 } // namespace continuous_value_details
 
 #define IV_ASSERT_CONTINUOUS_METADATA_SHAPE(key, extension)              \
@@ -806,7 +1011,10 @@ consteval bool valid_metadata_shape()
         "every continuous value must define neutral/combine options");  \
     static_assert(continuous_value_details::HasBoundaryInputOptions<      \
         extension>,                                                      \
-        "every continuous value must define boundary input options");
+        "every continuous value must define boundary input options");   \
+    static_assert(continuous_value_details::valid_channel_algebra_shape< \
+        extension>(),                                                    \
+        "audio continuous values require tightly packed float channel lanes");
 IV_CONTINUOUS_VALUE_TYPES(IV_ASSERT_CONTINUOUS_METADATA_SHAPE)
 #undef IV_ASSERT_CONTINUOUS_METADATA_SHAPE
 
@@ -824,6 +1032,8 @@ static_assert([] {
     return true;
 }());
 static_assert(std::is_trivially_copyable_v<FFTBin>);
+static_assert(sizeof(FFTBin) == 2 * sizeof(Sample::storage));
+static_assert(alignof(FFTBin) >= alignof(Sample::storage));
 
 #define IV_ASSERT_CONTINUOUS_STORAGE_IS_TRIVIAL(key, extension)           \
     static_assert(std::is_trivially_copyable_v<extension::storage_element>);
@@ -844,6 +1054,61 @@ IV_CONTINUOUS_VALUE_TYPES(IV_ASSERT_CONTINUOUS_STORAGE_IS_TRIVIAL)
         throw "unregistered continuous value type";
     }
     return continuous_value_type_registry[static_cast<std::size_t>(id)];
+}
+
+// Complete byte geometry of one resolved transported value. A scalar has one
+// storage element; a rank-one value has exactly its resolved size elements.
+// Channel layout is deliberately absent: it describes how several values are
+// arranged, while this record describes one value of one registered type.
+struct ContinuousValueStorageGeometry {
+    ContinuousValueTypeId value_type = ContinuousValueTypeId::sample;
+    std::size_t elements_per_value = 1;
+    std::size_t element_size = sizeof(Sample);
+    std::size_t element_alignment = alignof(Sample);
+    std::size_t value_size_bytes = sizeof(Sample);
+    std::size_t channel_scalar_lane_count = 1;
+    ContinuousValueChannelCapability channel_capability =
+        ContinuousValueChannelCapability::audio;
+
+    constexpr bool operator==(
+        ContinuousValueStorageGeometry const&) const = default;
+};
+
+[[nodiscard]] constexpr std::optional<ContinuousValueStorageGeometry>
+continuous_value_storage_geometry(
+    ContinuousValueTypeId value_type,
+    std::optional<std::size_t> resolved_size) noexcept
+{
+    if (!is_registered_continuous_value_type(value_type)) return std::nullopt;
+    auto const& info = continuous_value_type_registry[
+        static_cast<std::size_t>(value_type)];
+    if (!info.valid_size || !info.valid_size(resolved_size)
+        || info.storage_element_size == 0
+        || info.storage_element_alignment == 0
+        || !std::has_single_bit(info.storage_element_alignment)) {
+        return std::nullopt;
+    }
+    auto const elements = info.rank == 0
+        ? std::size_t{1}
+        : resolved_size.value_or(0);
+    if (elements == 0
+        || elements > std::numeric_limits<std::size_t>::max()
+                / info.storage_element_size
+        || (info.channel_scalar_lanes_per_element != 0
+            && elements > std::numeric_limits<std::size_t>::max()
+                / info.channel_scalar_lanes_per_element)) {
+        return std::nullopt;
+    }
+    return ContinuousValueStorageGeometry{
+        .value_type = value_type,
+        .elements_per_value = elements,
+        .element_size = info.storage_element_size,
+        .element_alignment = info.storage_element_alignment,
+        .value_size_bytes = elements * info.storage_element_size,
+        .channel_scalar_lane_count =
+            elements * info.channel_scalar_lanes_per_element,
+        .channel_capability = info.channel_capability,
+    };
 }
 
 template<class T>

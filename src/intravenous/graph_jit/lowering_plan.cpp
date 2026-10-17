@@ -6,10 +6,13 @@
 #include <llvm/IR/Function.h>
 
 #include <algorithm>
+#include <bit>
 #include <cstddef>
 #include <cstdint>
 #include <cmath>
+#include <cstring>
 #include <limits>
+#include <memory>
 #include <optional>
 #include <span>
 #include <string>
@@ -229,6 +232,7 @@ std::expected<GraphAnalysis, std::string> analyze_graph(
 std::expected<DeclarationPlan, std::string> plan_declarations(
     LoweringInput const& input,
     GraphAnalysis const& analysis,
+    ResolvedPortRealization const& port_realization,
     SamplePortBindingPlan& sample_ports,
     EventPortBindingPlan& event_ports)
 {
@@ -243,10 +247,52 @@ std::expected<DeclarationPlan, std::string> plan_declarations(
     declared_node_indices.reserve(analysis.primitives.size());
     for (auto const& primitive : analysis.primitives) {
         auto const& implementation = *primitive.implementation;
+        auto const bundle = primitive.bundle.node_bundle;
+        auto const& configured = input.graph.node_bundles.bundle(bundle);
+        std::vector<ReflectedContinuousPortRealization> inputs;
+        std::vector<ReflectedContinuousPortRealization> outputs;
+        inputs.reserve(configured.sample_input_count());
+        outputs.reserve(configured.sample_output_count());
+        auto reflect = [](ResolvedContinuousPortRealization const& resolved)
+            -> std::expected<ReflectedContinuousPortRealization, std::string> {
+            auto geometry = continuous_value_storage_geometry(
+                resolved.value_type, resolved.size);
+            if (!geometry) {
+                return std::unexpected(
+                    "GraphJit declaration received invalid resolved continuous-value geometry");
+            }
+            return ReflectedContinuousPortRealization{
+                .geometry = *geometry,
+                .sample_support = resolved.sample_support.value_or(0),
+                .has_sample_support = resolved.sample_support.has_value(),
+                .local_pace_exponent = resolved.local_pace.exponent(),
+                .absolute_pace_exponent = resolved.absolute_pace.exponent(),
+                .history = resolved.history,
+                .latency = resolved.latency,
+                .ordering = resolved.ordering,
+            };
+        };
+        for (std::size_t port = 0;
+             port < configured.sample_input_count(); ++port) {
+            auto reflected = reflect(port_realization.input(bundle, port));
+            if (!reflected) return std::unexpected(std::move(reflected.error()));
+            inputs.push_back(*reflected);
+        }
+        for (std::size_t port = 0;
+             port < configured.sample_output_count(); ++port) {
+            auto reflected = reflect(port_realization.output(bundle, port));
+            if (!reflected) return std::unexpected(std::move(reflected.error()));
+            outputs.push_back(*reflected);
+        }
+        ReflectedNodePortRealization reflected_ports{
+            .inputs = inputs,
+            .outputs = outputs,
+        };
         declared_node_indices.push_back(implementation.declare_node(
             implementation.node_data,
             implementation.state_structures,
-            layout_builder));
+            layout_builder,
+            reflected_ports));
     }
 
     for (auto const& primitive : sample_ports.primitives) {
@@ -356,16 +402,17 @@ std::expected<DeclarationPlan, std::string> plan_declarations(
     }
     auto sample_storage_owns_region =
         [&](std::size_t region_index) {
-            if (std::any_of(
-                    sample_ports.storage.persistent_allocations.begin(),
-                    sample_ports.storage.persistent_allocations.end(),
-                    [&](SamplePersistentAllocationPlan const& allocation) {
-                        return allocation.region.valid()
-                            && allocation.region.index == region_index;
-                    })) {
-                return true;
-            }
-            return false;
+            auto owns = [region_index](auto const& records) {
+                return std::ranges::any_of(
+                    records,
+                    [region_index](auto const& record) {
+                        return record.region.valid()
+                            && record.region.index == region_index;
+                    });
+            };
+            return owns(sample_ports.storage.persistent_allocations)
+                || owns(sample_ports.storage.producer_authored_extents)
+                || owns(sample_ports.storage.sequential_pace_cursors);
         };
 
     for (std::size_t region_index = 0;
@@ -581,6 +628,8 @@ plan_sample_realtime_port_state_realizations(
 
         SampleRealtimePortStateStorageView view{
             .channel_layout = representation.channel_layout,
+            .geometry = representation.geometry,
+            .absolute_pace_exponent = representation.absolute_pace_exponent,
             .representation_channel = representation_channel,
             .timeline_offset_frames = timeline_offset,
             .working_frame_capacity = representation.frame_capacity,
@@ -1602,11 +1651,33 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
         plan.primitives[i].inputs.resize(node->sample_input_count);
         plan.primitives[i].outputs.resize(node->sample_output_count);
         auto const bundle = analysis.primitives[i].bundle.node_bundle;
+        for (std::size_t port = 0; port < node->sample_input_count; ++port) {
+            auto const& resolved = realization.input(bundle, port);
+            auto geometry = continuous_value_storage_geometry(
+                resolved.value_type, resolved.size);
+            if (!geometry) {
+                return std::unexpected(
+                    "GraphJit continuous input has invalid resolved storage geometry");
+            }
+            plan.primitives[i].inputs[port].geometry = *geometry;
+            plan.primitives[i].inputs[port].absolute_pace_exponent =
+                resolved.absolute_pace.exponent();
+        }
         for (std::size_t port = 0; port < node->sample_output_count; ++port) {
             auto const config = input.graph.node_bundles.resolve_sample_output(
                 {bundle, PortKind::sample, port}).config;
             plan.primitives[i].outputs[port].realtime =
                 is_tick(config);
+            auto const& resolved = realization.output(bundle, port);
+            auto geometry = continuous_value_storage_geometry(
+                resolved.value_type, resolved.size);
+            if (!geometry) {
+                return std::unexpected(
+                    "GraphJit continuous output has invalid resolved storage geometry");
+            }
+            plan.primitives[i].outputs[port].geometry = *geometry;
+            plan.primitives[i].outputs[port].absolute_pace_exponent =
+                resolved.absolute_pace.exponent();
         }
     }
 
@@ -1942,11 +2013,43 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
                 .port = port,
                 .config = config,
             });
+            auto const& input_plan =
+                plan.primitives[primitive_index].inputs[port];
+            auto const& geometry = input_plan.geometry;
+            auto const* implementation =
+                analysis.primitives[primitive_index].implementation;
+            if (!implementation
+                || !implementation->host_initialize_sequential_input) {
+                return std::unexpected(
+                    "GraphJit disconnected continuous input has no type-owned initializer");
+            }
+            std::vector<std::byte> unaligned(
+                geometry.value_size_bytes + geometry.element_alignment - 1);
+            void* aligned = unaligned.data();
+            auto space = unaligned.size();
+            if (!std::align(
+                    geometry.element_alignment,
+                    geometry.value_size_bytes,
+                    aligned,
+                    space)
+                || !implementation->host_initialize_sequential_input(
+                    port,
+                    geometry.value_type,
+                    iv::details::SequentialInputInitialization::disconnected,
+                    static_cast<std::byte*>(aligned),
+                    geometry.value_size_bytes,
+                    geometry.elements_per_value)) {
+                return std::unexpected(
+                    "GraphJit disconnected continuous input initializer rejected its resolved geometry");
+            }
+            std::vector<std::byte> default_value(geometry.value_size_bytes);
+            std::memcpy(
+                default_value.data(), aligned, geometry.value_size_bytes);
             constant_input_requests.push_back(SampleConstantInputRequest{
                 .channel_layout = config.channel_layout,
-                .default_value =
-                    sequential_input_metadata<Sample>(
-                        sequential_input_properties(config)).default_value,
+                .geometry = geometry,
+                .absolute_pace_exponent = input_plan.absolute_pace_exponent,
+                .default_value = std::move(default_value),
                 .execution_position = *execution_position,
             });
         }
@@ -1972,6 +2075,9 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
             auto const& resolved_output = realization.output(bundle, port);
             sink_requests.push_back(SampleSinkStorageRequest{
                 .channel_layout = config.channel_layout,
+                .geometry = plan.primitives[primitive_index].outputs[port].geometry,
+                .absolute_pace_exponent = plan.primitives[primitive_index]
+                    .outputs[port].absolute_pace_exponent,
                 .history = resolved_output.history,
                 .latency = resolved_output.latency,
                 .execution_position = *execution_position,
@@ -1982,8 +2088,59 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
         }
     }
 
+    auto storage_connections = connections;
+    for (auto& connection : storage_connections.sample_connections) {
+        if (!connection.detach) continue;
+        if (connection.detach_initial_value) {
+            if (connection.detach_initial_value->size()
+                != connection.geometry.value_size_bytes) {
+                return std::unexpected(
+                    "GraphJit detach initial value does not match resolved continuous geometry");
+            }
+            continue;
+        }
+        auto const target_primitive = primitive_index_for_bundle(
+            connection.target_port.node_bundle_handle);
+        if (!target_primitive) {
+            return std::unexpected(
+                "GraphJit detached continuous input has no concrete target initializer");
+        }
+        auto const* implementation =
+            analysis.primitives[*target_primitive].implementation;
+        if (!implementation
+            || !implementation->host_initialize_sequential_input) {
+            return std::unexpected(
+                "GraphJit detached continuous input has no type-owned neutral initializer");
+        }
+        auto const& geometry = connection.geometry;
+        std::vector<std::byte> unaligned(
+            geometry.value_size_bytes + geometry.element_alignment - 1);
+        void* aligned = unaligned.data();
+        auto space = unaligned.size();
+        if (!std::align(
+                geometry.element_alignment,
+                geometry.value_size_bytes,
+                aligned,
+                space)
+            || !implementation->host_initialize_sequential_input(
+                connection.target_port.port_index,
+                geometry.value_type,
+                iv::details::SequentialInputInitialization::neutral,
+                static_cast<std::byte*>(aligned),
+                geometry.value_size_bytes,
+                geometry.elements_per_value)) {
+            return std::unexpected(
+                "GraphJit detached continuous neutral initializer rejected its resolved geometry");
+        }
+        connection.detach_initial_value.emplace(geometry.value_size_bytes);
+        std::memcpy(
+            connection.detach_initial_value->data(),
+            aligned,
+            geometry.value_size_bytes);
+    }
+
     auto storage = build_sample_storage_plan(
-        connections,
+        storage_connections,
         input.specialization.block_size,
         sink_requests,
         constant_input_requests,
@@ -2181,6 +2338,115 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
             return std::unexpected(
                 "GraphJit sample port planning left an unresolved primitive port");
         }
+    }
+
+    auto align_up = [](std::size_t value, std::size_t alignment)
+        -> std::optional<std::size_t> {
+        if (alignment == 0 || !std::has_single_bit(alignment)) {
+            return std::nullopt;
+        }
+        auto const mask = alignment - 1;
+        if (value > std::numeric_limits<std::size_t>::max() - mask) {
+            return std::nullopt;
+        }
+        return (value + mask) & ~mask;
+    };
+
+    std::size_t shared_scratch_size = 0;
+    std::size_t shared_scratch_alignment = 1;
+    for (std::size_t primitive_index = 0;
+         primitive_index < plan.primitives.size(); ++primitive_index) {
+        auto& primitive = plan.primitives[primitive_index];
+        auto const& analyzed = analysis.primitives[primitive_index];
+        auto const* node = planned_node_for_bundle(
+            analyzed.bundle.node_bundle);
+        IV_ASSERT(node != nullptr && analyzed.implementation != nullptr,
+            "continuous input scratch planning lost its primitive");
+        std::size_t primitive_scratch_size = 0;
+        for (auto& input_binding : primitive.inputs) {
+            auto const requires_contiguous_workspace =
+                analyzed.implementation->block_input_access;
+            // The node limit bounds one invocation; it is not the size of an
+            // invocation. Most nodes retain MAX_BLOCK_SIZE as their authored
+            // limit, while the generated root can expose at most one kernel
+            // block here (and may split that block further for an SCC).
+            auto const maximum_invocation_extent = std::min(
+                input.specialization.block_size,
+                node->maximum_block_size);
+            auto const current_values =
+                FractionalGlobalIndexRange::maximum_projection_count(
+                    maximum_invocation_extent,
+                    input_binding.absolute_pace_exponent);
+            if (!current_values
+                || *current_values
+                    > std::numeric_limits<std::size_t>::max()
+                        - input_binding.history) {
+                return std::unexpected(
+                    "GraphJit continuous input scratch value count overflows size_t");
+            }
+            auto const value_capacity =
+                input_binding.history + *current_values;
+            input_binding.contiguous_value_capacity = value_capacity;
+            if (!requires_contiguous_workspace) continue;
+
+            auto const channels = channel_count(input_binding.channel_layout);
+            if (channels == 0
+                || value_capacity
+                    > std::numeric_limits<std::size_t>::max()
+                        / input_binding.geometry.value_size_bytes
+                || channels
+                    > std::numeric_limits<std::size_t>::max()
+                        / (value_capacity
+                            * input_binding.geometry.value_size_bytes)) {
+                return std::unexpected(
+                    "GraphJit continuous input scratch byte size overflows size_t");
+            }
+            auto const aligned = align_up(
+                primitive_scratch_size,
+                input_binding.geometry.element_alignment);
+            if (!aligned) {
+                return std::unexpected(
+                    "GraphJit continuous input scratch alignment overflows size_t");
+            }
+            auto const bytes = channels * value_capacity
+                * input_binding.geometry.value_size_bytes;
+            if (bytes > std::numeric_limits<std::size_t>::max() - *aligned) {
+                return std::unexpected(
+                    "GraphJit continuous input scratch extent overflows size_t");
+            }
+            input_binding.contiguous_scratch_offset = *aligned;
+            input_binding.has_contiguous_scratch = true;
+            primitive_scratch_size = *aligned + bytes;
+            shared_scratch_alignment = std::max(
+                shared_scratch_alignment,
+                input_binding.geometry.element_alignment);
+        }
+        shared_scratch_size = std::max(
+            shared_scratch_size, primitive_scratch_size);
+    }
+
+    if (shared_scratch_size != 0) {
+        auto const scratch_base = align_up(
+            plan.storage.transient_arena_size,
+            shared_scratch_alignment);
+        if (!scratch_base
+            || shared_scratch_size
+                > std::numeric_limits<std::size_t>::max() - *scratch_base) {
+            return std::unexpected(
+                "GraphJit continuous input scratch arena overflows size_t");
+        }
+        for (auto& primitive : plan.primitives) {
+            for (auto& input_binding : primitive.inputs) {
+                if (!input_binding.has_contiguous_scratch) continue;
+                input_binding.contiguous_scratch_offset += *scratch_base;
+            }
+        }
+        plan.contiguous_input_scratch_size = shared_scratch_size;
+        plan.contiguous_input_scratch_alignment = shared_scratch_alignment;
+        plan.storage.transient_arena_size = *scratch_base + shared_scratch_size;
+        plan.storage.transient_arena_alignment = std::max(
+            plan.storage.transient_arena_alignment,
+            shared_scratch_alignment);
     }
 
     return plan;
@@ -5656,6 +5922,47 @@ std::expected<LoweringPlan, std::string> build_lowering_plan(
         return std::unexpected(std::move(port_realization.error()));
     }
 
+    for (auto const& primitive : analysis->primitives) {
+        auto const& implementation = *primitive.implementation;
+        if (!implementation.pointwise_tick) continue;
+        auto const bundle = primitive.bundle.node_bundle;
+        auto const& configured = input.graph.node_bundles.bundle(bundle);
+        std::optional<std::int32_t> pointwise_pace;
+        auto accept_pace = [&](PortPace pace) {
+            if (!pointwise_pace) {
+                pointwise_pace = pace.exponent();
+                return true;
+            }
+            return *pointwise_pace == pace.exponent();
+        };
+        for (std::size_t port = 0;
+             port < configured.sample_input_count(); ++port) {
+            auto const config = input.graph.node_bundles.resolve_sample_input(
+                {bundle, PortKind::sample, port}).config;
+            if (is_sequential(config)
+                && !accept_pace(port_realization->input(bundle, port).absolute_pace)) {
+                return std::unexpected(
+                    "pointwise tick() node resolves incompatible continuous-port paces");
+            }
+        }
+        for (std::size_t port = 0;
+             port < configured.sample_output_count(); ++port) {
+            auto const config = input.graph.node_bundles.resolve_sample_output(
+                {bundle, PortKind::sample, port}).config;
+            if (is_tick(config)
+                && !accept_pace(port_realization->output(bundle, port).absolute_pace)) {
+                return std::unexpected(
+                    "pointwise tick() node resolves incompatible continuous-port paces");
+            }
+        }
+        if (pointwise_pace && *pointwise_pace != 0
+            && (configured.event_input_count() != 0
+                || configured.event_output_count() != 0)) {
+            return std::unexpected(
+                "pointwise tick() with event ports requires project-rate continuous pace because event time is integer-valued");
+        }
+    }
+
     std::vector<bool> intrinsically_replayable(
         input.graph.node_bundles.size(), false);
     std::size_t reflected_bundle = 0;
@@ -5665,30 +5972,30 @@ std::expected<LoweringPlan, std::string> build_lowering_plan(
                 view.intrinsically_replayable;
         });
 
-    // The selected type is now a single immutable graph fact.  Existing
-    // storage planning below is still the Sample implementation; reject every
-    // other selected registered type here rather than silently allocating
-    // Sample storage for it. Type-owned storage realizations are the next
-    // consumer-side part of Front 1.
+    // Persisted Tick capture still publishes the canonical project-rate
+    // scalar-Sample store owned by the recording front. Keep that unfinished
+    // consumer boundary explicit without disabling the type-owned realtime
+    // storage path for ephemeral FractionalGlobalIndex and FFTBlock ports.
     for (NodeBundleHandle bundle = 0;
          bundle < input.graph.node_bundles.size(); ++bundle) {
         auto const& configured = input.graph.node_bundles.bundle(bundle);
         for (std::size_t port = 0;
-             port < configured.sample_input_count(); ++port) {
-            auto const selected = port_realization->input(bundle, port).value_type;
-            if (selected != continuous_value_type_id_v<Sample>) {
-                return std::unexpected(
-                    "GraphJit continuous input storage does not yet realize selected type '"
-                    + std::string(continuous_value_type_info(selected).name) + "'");
-            }
-        }
-        for (std::size_t port = 0;
              port < configured.sample_output_count(); ++port) {
             auto const selected = port_realization->output(bundle, port).value_type;
-            if (selected != continuous_value_type_id_v<Sample>) {
+            auto const output = input.graph.node_bundles.resolve_sample_output(
+                {bundle, PortKind::sample, port}).config;
+            if (is_tick(output) && is_persisted(output.retention)
+                && selected != continuous_value_type_id_v<Sample>) {
                 return std::unexpected(
-                    "GraphJit continuous output storage does not yet realize selected type '"
-                    + std::string(continuous_value_type_info(selected).name) + "'");
+                    "GraphJit persisted Tick capture does not yet support continuous type '"
+                    + std::string(continuous_value_type_info(selected).name)
+                    + "'");
+            }
+            if (is_tick(output) && is_persisted(output.retention)
+                && port_realization->output(bundle, port).absolute_pace
+                    != PortPace{}) {
+                return std::unexpected(
+                    "GraphJit persisted Tick capture does not yet support a non-project-rate continuous output");
             }
         }
         if (intrinsically_replayable[bundle]) {
@@ -5730,6 +6037,35 @@ std::expected<LoweringPlan, std::string> build_lowering_plan(
 
     std::optional<BackgroundEvaluationPlan> retained_background_plan;
 
+    auto configure_background_replay = [&](ConnectionAnalysisPlan& connections)
+        -> std::expected<void, std::string> {
+        auto& background = connections.background;
+        for (auto& replay : background.runtime.replay_invocations) {
+            if (replay.node >= background.nodes.size()) {
+                return std::unexpected(
+                    "GraphJit background replay invocation references an invalid node");
+            }
+            auto const bundle = background.nodes[replay.node].bundle;
+            auto const primitive = std::ranges::find_if(
+                analysis->primitives,
+                [&](PrimitiveAnalysis const& candidate) {
+                    return candidate.bundle.node_bundle == bundle;
+                });
+            if (primitive == analysis->primitives.end()
+                || primitive->implementation == nullptr) {
+                return std::unexpected(
+                    "GraphJit background replay invocation has no primitive implementation");
+            }
+
+            // Replay invokes the imported Tick wrapper, never skip_block().
+            // A non-pointwise implementation therefore has authored block
+            // input access and needs one bounded contiguous workspace.
+            replay.block_input_access =
+                !primitive->implementation->pointwise_tick;
+        }
+        return {};
+    };
+
     auto plan_realtime_ports = [&](RealtimeStorageCostModel const& cost_model)
         -> std::expected<RealtimePortPlans, std::string> {
         auto connections = build_connection_analysis_plan(
@@ -5740,6 +6076,9 @@ std::expected<LoweringPlan, std::string> build_lowering_plan(
             retained_background_plan ? &*retained_background_plan : nullptr);
         if (!connections) {
             return std::unexpected(std::move(connections.error()));
+        }
+        if (auto replay = configure_background_replay(*connections); !replay) {
+            return std::unexpected(std::move(replay.error()));
         }
         if (!retained_background_plan) {
             retained_background_plan = connections->background;
@@ -5863,6 +6202,7 @@ std::expected<LoweringPlan, std::string> build_lowering_plan(
     auto declarations = plan_declarations(
         input,
         *analysis,
+        *port_realization,
         realtime_ports->sample_ports,
         realtime_ports->event_ports);
     if (!declarations) return std::unexpected(std::move(declarations.error()));
