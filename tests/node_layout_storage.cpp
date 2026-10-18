@@ -969,8 +969,16 @@ int main()
         iv::NodeLayoutBuilder builder(4);
         NestedParent node;
         iv::do_declare(node, builder, {});
+        auto const transition = builder.declare_transition_raw_region(4096, 64);
 
         iv::NodeLayout layout = std::move(builder).build();
+        iv::test::require(
+            layout.steady_storage_size < layout.storage_size,
+            "transition storage should be a suffix after steady node storage");
+        iv::test::require(
+            layout.regions[transition.index].storage_offset
+                >= layout.steady_storage_size,
+            "transition storage should start at or after the steady boundary");
         auto resources = make_resources();
         iv::NodeStorage storage = layout.create_storage(resources);
         storage.initialize();
@@ -980,6 +988,13 @@ int main()
         iv::test::require(state.nested_background.size() == 2, "nested_node_background_states should record the same directly declared child nodes");
         iv::test::require(state.nested[0].data() != nullptr, "first nested node state pointer should be patched");
         iv::test::require(state.nested[1].data() != nullptr, "second nested node state pointer should be patched");
+        auto* steady_end = storage.buffer().data() + layout.steady_storage_size;
+        iv::test::require(
+            state.nested[0].data() + state.nested[0].size() == steady_end,
+            "first nested node state should stop at the steady-storage boundary");
+        iv::test::require(
+            state.nested[1].data() + state.nested[1].size() == steady_end,
+            "second nested node state should stop at the steady-storage boundary");
         iv::test::require(state.nested_background[0].size() == sizeof(NestedLeaf::TockState), "first nested background-state span should have the exact TockState size");
         iv::test::require(state.nested_background[1].size() == sizeof(NestedLeaf::TockState), "second nested background-state span should have the exact TockState size");
         auto& first = *reinterpret_cast<NestedLeaf::State*>(state.nested[0].data());

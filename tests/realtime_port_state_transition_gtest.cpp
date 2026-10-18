@@ -411,6 +411,15 @@ TEST(RealtimePortStateTransition, NewStateSharingSampleTargetRequiresTransitionS
         iv::graph_jit::InheritedRealtimePortStateRealization::
             transition_only_storage);
     EXPECT_TRUE(planned->sample_transfers.empty());
+
+    std::vector<std::byte> previous_storage(128);
+    std::vector<std::byte> current_storage(1024);
+    auto prepared = iv::graph_jit::prepare_realtime_port_state_transfers(
+        std::move(*planned), previous_storage, current_storage);
+    ASSERT_FALSE(prepared.has_value());
+    EXPECT_NE(
+        prepared.error().find("transition-only storage suffix"),
+        std::string::npos);
 }
 
 TEST(RealtimePortStateTransition, EmptyEventsNeedNoTransferIntoPrivateStorage)
@@ -573,6 +582,11 @@ TEST(RealtimePortStateTransition, ExecutesDirectSampleRingTransferAtCutover)
         .storage_size_bytes = 8 * sizeof(iv::Sample),
     };
     iv::graph_jit::RealtimePortStateTransitionPlan plan{
+        .sample_states = {{
+            .inherited_state_realization =
+                iv::graph_jit::InheritedRealtimePortStateRealization::
+                    transfer_to_steady_storage,
+        }},
         .sample_transfers = {{
             .source_access =
                 iv::graph_jit::SampleRealtimePortStateAccess::direct,
@@ -585,11 +599,12 @@ TEST(RealtimePortStateTransition, ExecutesDirectSampleRingTransferAtCutover)
         }},
     };
 
-    auto executed = iv::graph_jit::execute_realtime_port_state_transfers(
-        plan, previous, current, global_index(10));
-
-    ASSERT_TRUE(executed.has_value())
-        << (executed ? std::string{} : executed.error());
+    auto prepared = iv::graph_jit::prepare_realtime_port_state_transfers(
+        plan, previous, current);
+    ASSERT_TRUE(prepared.has_value())
+        << (prepared ? std::string{} : prepared.error());
+    iv::graph_jit::execute_realtime_port_state_transfers(
+        *prepared, previous, current, global_index(10));
     EXPECT_EQ(read_sample(current, 5), 0.0f);
     for (std::size_t semantic = 6; semantic < 10; ++semantic) {
         EXPECT_EQ(read_sample(current, semantic % 8), semantic);
@@ -647,6 +662,11 @@ TEST(RealtimePortStateTransition, ExecutesDirectSampleCompactCarryTransfer)
         .storage_size_bytes = current.size(),
     };
     iv::graph_jit::RealtimePortStateTransitionPlan plan{
+        .sample_states = {{
+            .inherited_state_realization =
+                iv::graph_jit::InheritedRealtimePortStateRealization::
+                    transfer_to_steady_storage,
+        }},
         .sample_transfers = {{
             .source_access =
                 iv::graph_jit::SampleRealtimePortStateAccess::direct,
@@ -659,11 +679,12 @@ TEST(RealtimePortStateTransition, ExecutesDirectSampleCompactCarryTransfer)
         }},
     };
 
-    auto executed = iv::graph_jit::execute_realtime_port_state_transfers(
-        plan, previous, current, global_index(20));
-
-    ASSERT_TRUE(executed.has_value())
-        << (executed ? std::string{} : executed.error());
+    auto prepared = iv::graph_jit::prepare_realtime_port_state_transfers(
+        plan, previous, current);
+    ASSERT_TRUE(prepared.has_value())
+        << (prepared ? std::string{} : prepared.error());
+    iv::graph_jit::execute_realtime_port_state_transfers(
+        *prepared, previous, current, global_index(20));
     EXPECT_EQ(read_sample(current, 0), 0.0f);
     EXPECT_EQ(read_sample(current, 1), 17.0f);
     EXPECT_EQ(read_sample(current, 2), 18.0f);
@@ -763,21 +784,29 @@ TEST(RealtimePortStateTransition, ExecutesDirectEventRingTransferAtCutover)
         .node_storage_offset = 0,
     };
     iv::graph_jit::RealtimePortStateTransitionPlan plan{
+        .event_states = {{
+            .inherited_state_realization =
+                iv::graph_jit::InheritedRealtimePortStateRealization::
+                    transfer_to_steady_storage,
+        }},
         .event_transfers = {{
             .source_access =
                 iv::graph_jit::EventRealtimePortStateAccess::direct,
             .source_storage = view,
             .target_storage = view,
+            .target_begin = -8,
+            .target_end = 0,
             .inherited_begin = -8,
             .inherited_end = 0,
         }},
     };
 
-    auto executed = iv::graph_jit::execute_realtime_port_state_transfers(
-        plan, previous, current, global_index(108));
-
-    ASSERT_TRUE(executed.has_value())
-        << (executed ? std::string{} : executed.error());
+    auto prepared = iv::graph_jit::prepare_realtime_port_state_transfers(
+        plan, previous, current);
+    ASSERT_TRUE(prepared.has_value())
+        << (prepared ? std::string{} : prepared.error());
+    iv::graph_jit::execute_realtime_port_state_transfers(
+        *prepared, previous, current, global_index(108));
     std::size_t read = 1;
     std::size_t write = 0;
     std::memcpy(&read, current.data() + read_offset, sizeof(read));

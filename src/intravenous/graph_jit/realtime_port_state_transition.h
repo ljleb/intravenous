@@ -103,6 +103,47 @@ struct RealtimePortStateTransitionPlan {
     std::vector<EventRealtimePortStateTransfer> event_transfers{};
 };
 
+// Fully checked cutover program. Construction validates every cold descriptor,
+// storage extent, and supported realization before the realtime boundary. The
+// executor can therefore run the contained transfers without allocation or a
+// recoverable failure path.
+class PreparedRealtimePortStateTransition {
+    RealtimePortStateTransitionPlan plan_{};
+    std::size_t previous_storage_size_ = 0;
+    std::size_t current_storage_size_ = 0;
+
+    PreparedRealtimePortStateTransition(
+        RealtimePortStateTransitionPlan plan,
+        std::size_t previous_storage_size,
+        std::size_t current_storage_size);
+
+    friend std::expected<PreparedRealtimePortStateTransition, std::string>
+    prepare_realtime_port_state_transfers(
+        RealtimePortStateTransitionPlan,
+        std::span<std::byte const>,
+        std::span<std::byte>);
+    friend void execute_realtime_port_state_transfers(
+        PreparedRealtimePortStateTransition const&,
+        std::span<std::byte const>,
+        std::span<std::byte>,
+        GlobalIndex) noexcept;
+
+public:
+    PreparedRealtimePortStateTransition(
+        PreparedRealtimePortStateTransition&&) noexcept = default;
+    PreparedRealtimePortStateTransition& operator=(
+        PreparedRealtimePortStateTransition&&) noexcept = default;
+    PreparedRealtimePortStateTransition(
+        PreparedRealtimePortStateTransition const&) = delete;
+    PreparedRealtimePortStateTransition& operator=(
+        PreparedRealtimePortStateTransition const&) = delete;
+
+    [[nodiscard]] RealtimePortStateTransitionPlan const& plan() const noexcept
+    {
+        return plan_;
+    }
+};
+
 [[nodiscard]] std::expected<RealtimePortStateTransitionPlan, std::string>
 plan_realtime_port_state_transition(
     RealtimePortStateRequirements const& previous_requirements,
@@ -110,14 +151,23 @@ plan_realtime_port_state_transition(
     RealtimePortStateRequirements const& current_requirements,
     RealtimePortStateRealizations const& current_realizations);
 
-// Executes bounded transfers between canonical persistent sample storage and
-// between canonical persistent event rings. sample_index is the first sample
-// processed by the successor generation.
-[[nodiscard]] std::expected<void, std::string>
-execute_realtime_port_state_transfers(
-    RealtimePortStateTransitionPlan const& plan,
+// Validates and owns the complete bounded cutover program before activation.
+// Transition-only and unavailable inherited state are rejected until their
+// suffix realizations have been added to the plan.
+[[nodiscard]] std::expected<PreparedRealtimePortStateTransition, std::string>
+prepare_realtime_port_state_transfers(
+    RealtimePortStateTransitionPlan plan,
+    std::span<std::byte const> previous_storage,
+    std::span<std::byte> current_storage);
+
+// Executes already-prepared transfers between canonical persistent sample
+// storage and event rings. sample_index is the first sample processed by the
+// successor generation. All validation, allocation, and diagnostic creation
+// happens in prepare_realtime_port_state_transfers().
+void execute_realtime_port_state_transfers(
+    PreparedRealtimePortStateTransition const& transition,
     std::span<std::byte const> previous_storage,
     std::span<std::byte> current_storage,
-    GlobalIndex sample_index);
+    GlobalIndex sample_index) noexcept;
 
 } // namespace iv::graph_jit

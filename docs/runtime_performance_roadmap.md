@@ -43,8 +43,8 @@ The governing performance invariant is:
    Small bounded migration copies are valid; synchronous copying of whole histories or
    unrelated raw regions is not. Prepared generations now own the cold semantic match
    of surviving sample/event port-state identities, including exact inherited timeline
-   intervals and growing/shrinking extents; physical transition realization and bounded
-   cutover execution remain to be implemented from that plan. Each inherited
+   intervals and growing/shrinking extents; remaining physical transition realizations
+   and bounded transition expiry still need implementation from that plan. Each inherited
    state is now also classified as already represented, transferable into one
    successor steady-storage view, requiring transition-only storage, or
    unavailable from the predecessor; shared successor views cannot be selected
@@ -56,6 +56,44 @@ The governing performance invariant is:
    boundary. Materialized sample histories and converted/indexed event
    representations remain transition-only until their bounded reconstruction is
    implemented.
+
+   **Implementation-friction review (2026-10-18; unresolved):** the required fact is
+   bounded inherited semantic state, not necessarily two complete compiled
+   realizations. A separate transition/steady pair remains the documented way to keep
+   the final realization free of temporary storage and work, but it has not yet been
+   justified against either one successor realization with an expiring prepared
+   overlay or deliberately private successor state. The latter removes the second
+   handoff but may impose permanent copies/storage; the overlay may impose dynamic
+   binding or branch cost. Complete the allocation-free direct-cutover path and one
+   representative rewiring/fan-in transition before selecting among them. Record the
+   measured lifetime, compile-time, steady-state and realtime-cutover costs here; do
+   not add multi-realization ownership merely because the current single-realization
+   types cannot express the first alternative.
+
+   The leading overlay candidate is a stable steady-state `NodeStorage` prefix plus a
+   compile-time-bounded transition-only suffix, shared by separately emitted
+   transition and steady root entrypoints. This removes the second node-state
+   migration: expiry only changes the selected entrypoint. Before adopting it, add an
+   explicit steady-prefix boundary for nested-node state spans and quantify the dead
+   suffix capacity retained by the contiguous allocation after expiry. The boundary
+   and transition-only region declaration now exist in `NodeLayout`, but GraphJit does
+   not yet allocate or bind a suffix. The tail must also remain discoverable as a
+   semantic source when a newer revision supersedes an active transition; it must not
+   acquire an ordinary persistent raw-region identity.
+
+   Direct project-rate ring/carry cutovers now have a cold preparation stage which
+   validates descriptors and storage bounds and rejects unsupported inherited-state
+   forms before publication. The prepared realtime transfer performs no allocation and
+   exposes no recoverable error path. `NodeStorage` lifecycle commit can still fail, so
+   this does not yet make the complete activation boundary non-failing.
+
+   **Implementation friction:** predecessor reconciliation currently begins in the
+   executor only after successor lowering and allocation, too late to determine a
+   transition suffix or emit a transition root. The same layout also creates the
+   background storage instance, which would duplicate an appended realtime-only tail.
+   Move immutable predecessor semantic inventories into the compile request and add a
+   steady-only allocation extent for background storage before connecting suffix
+   lowering.
 3. Complete realtime persisted playback and recording span operations. Persisted
    playback now clears only requested sample windows, traverses relevant sample
    regions, copies ring-wrap runs, and binary-searches clipped event chunks. Realtime

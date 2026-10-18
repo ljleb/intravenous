@@ -294,6 +294,76 @@ This is correctness work, not an optimization pass.
 **Dependencies:** current executor infrastructure; consumes front 1's solved
 realization and front 3's final persistence representation as those land.
 
+**Current implementation status (2026-10-18):** cold semantic inventories, stable
+sample/event port-state identities, old/new interval matching, physical realization
+descriptors, direct steady-storage transfer plans, and executor cutover integration are
+present. The implementation classifies inherited state as already represented,
+transferable to private steady storage, requiring transition-only storage, or
+unavailable from the predecessor. Direct project-rate sample ring/compact-carry and
+event-ring transfers execute at the cutover position. Their descriptors and storage
+extents are now validated and owned by a prepared cutover program before publication;
+the realtime transfer routine neither allocates nor has a recoverable error path.
+Unsupported transition-only or unavailable inherited state is rejected during cold
+staging rather than being silently omitted at cutover. Materialized/composed sample
+state, converted/indexed event state, non-project-rate continuous state, transition
+suffix lowering, and the transition expiry path remain incomplete. Activation as a
+whole can still fail through ordinary `NodeStorage` lifecycle callbacks, so the final
+cutover boundary is not yet completely non-failing.
+
+**Active implementation friction (unresolved; 2026-10-18):** preserving bounded
+inherited port state is necessary, but the source does not yet demonstrate that this
+requires a separately compiled transition realization plus a separately compiled
+steady realization. That two-realization scheme is one mechanism for retaining
+steady-state aliasing and eliminating transition costs after inherited state expires;
+it is not itself the semantic continuity requirement. The implementation should compare
+three forms before expanding `CompiledGraph`/`ExecutionGeneration` ownership:
+
+1. the currently documented transition/steady realization pair;
+2. one successor physical realization with bounded transition-only carries or
+   materializations and prepared bindings/operations that stop using them at expiry;
+3. deliberately private successor port state that can directly receive inherited
+   values, accepting permanent steady-state storage/copy cost.
+
+The leading concrete form of option 2 is one successor `NodeLayout` whose ordinary
+steady-state regions form a stable prefix and whose bounded transition-only regions
+form a suffix in the same `NodeStorage` allocation. GraphJit can emit a transition
+root and a steady root against the same offsets and authored `State`; expiry then
+switches root entrypoints without another node-state migration. Transition suffix
+regions must be compile-time bounded, initialized before activation, excluded from
+ordinary persistent raw-region migration, and exposed as semantic sources if another
+revision arrives before expiry.
+
+This form has two explicit costs which must not be hidden. First, current nested-node
+state spans previously extended from a child state to `NodeLayout::storage_size`.
+`NodeLayout` now records `steady_storage_size`, transition-only raw declarations form
+a checked suffix, and nested spans stop at the steady boundary. Second, one ordinary
+contiguous `NodeStorage` allocation cannot release only its suffix. Expiry can remove
+all access and cache traffic, but the reserved bytes remain until the execution
+generation retires. Measure the maximum
+tail size before deciding whether that bounded retained capacity is acceptable or
+whether later off-thread reclamation/segmented ownership is justified.
+
+**New implementation friction (unresolved; 2026-10-18):** the current compilation
+request contains only the new logical graph. Reconciliation is first planned later by
+`ExecutionGeneration`, after the successor `NodeLayout` has been finalized and both
+realtime and background `NodeStorage` objects have been allocated. Transition suffix
+shape and transition-root bindings therefore cannot be added truthfully at that late
+stage. In addition, `BackgroundGeneration` currently creates storage from the same
+layout, so a suffix appended without an allocation-extent distinction would be paid
+twice even though the background root never addresses it. Before suffix lowering, pass
+the active predecessor's semantic inventories into compilation (without giving the
+compiler mutable executor ownership) and let background storage allocate only the
+steady prefix. This moves transition planning ahead of final layout/emission while
+retaining one canonical offset model.
+
+The comparison must preserve allocation-free, non-failing realtime activation;
+replacement while a transition is still active; static exclusion of transition work
+from unaffected graphs and ports; and no accidental permanent copy/memory cost merely
+to simplify migration. Until a hostile rewiring/fan-in case has been implemented end to
+end, do not treat the current one-`CompiledGraph` limitation as proof that the runtime
+must grow a two-realization container. This review does not change Front 6's semantic
+scope or its position as the next execution-correctness front.
+
 ## Front 7: remaining GraphJit and node execution semantics
 
 **Primary ownership:** legal authored node/layout constructs that still have explicit

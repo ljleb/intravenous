@@ -46,6 +46,10 @@ namespace iv {
             size_t size = 0;
             size_t alignment = 1;
             size_t element_count = 0;
+            // Transition-only regions are a contiguous suffix of NodeStorage.
+            // They are addressed by prepared transition roots, never treated as
+            // authored/nested steady state, and never migrated by raw identity.
+            bool transition_only = false;
             // Optional stable identity for compiler-owned raw regions whose
             // bytes are semantic persistent state rather than scratch. Exact-
             // shape matches are copied during NodeStorage migration; transient
@@ -98,6 +102,9 @@ namespace iv {
         };
 
         size_t storage_size = 0;
+        // End of the ordinary long-lived prefix. storage_size may additionally
+        // include a bounded transition-only suffix.
+        size_t steady_storage_size = 0;
         size_t storage_alignment = 1;
         size_t max_block_size = 1;
         size_t default_silence_ttl_samples = std::numeric_limits<size_t>::max();
@@ -127,6 +134,12 @@ namespace iv {
             size_t size,
             size_t alignment = 1,
             std::string migration_identity = {},
+            NodeLayout::Region::RawInitializeFn initialize_fn = nullptr,
+            std::vector<std::byte> initialize_data = {});
+
+        NodeLayout::RegionHandle declare_transition_raw_region(
+            size_t size,
+            size_t alignment = 1,
             NodeLayout::Region::RawInitializeFn initialize_fn = nullptr,
             std::vector<std::byte> initialize_data = {});
 
@@ -166,6 +179,7 @@ namespace iv {
         size_t _event_port_buffer_base_multiplier =
             DEFAULT_EVENT_PORT_BUFFER_BASE_MULTIPLIER;
         size_t _storage_alignment = 1;
+        bool _transition_suffix_started = false;
         std::vector<NodeLayout::NodeRecord> _nodes;
         std::vector<NodeLayout::Region> _regions;
         std::vector<NodeLayout::ArrayBinding> _imports;

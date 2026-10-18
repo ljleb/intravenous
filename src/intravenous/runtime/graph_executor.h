@@ -128,9 +128,10 @@ class GraphExecutor {
         std::unique_ptr<RealtimePersistedState> initial_persisted_state{};
         std::optional<NodeStorage::Migration> realtime_migration{};
         std::optional<NodeStorage::Migration> background_migration{};
-        // Semantic ownership/range reconciliation for the realtime cutover;
-        // retained after activation for the eventual transition realization.
-        std::optional<graph_jit::RealtimePortStateTransitionPlan>
+        // Fully checked ownership/range reconciliation and physical transfer
+        // program for the realtime cutover. Preparation performs every
+        // recoverable validation before publication to the audio thread.
+        std::optional<graph_jit::PreparedRealtimePortStateTransition>
             realtime_port_state_transition{};
         bool realtime_initialized = false;
         bool background_initialized = false;

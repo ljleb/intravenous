@@ -51,6 +51,10 @@ namespace iv {
         NodeLayout::Region::RawInitializeFn initialize_fn,
         std::vector<std::byte> initialize_data)
     {
+        if (_transition_suffix_started) {
+            throw std::logic_error(
+                "ordinary node-layout regions cannot follow the transition suffix");
+        }
         if (alignment == 0 || (alignment & (alignment - 1)) != 0) {
             throw std::invalid_argument(
                 "node layout raw-region alignment must be a non-zero power of two");
@@ -68,6 +72,36 @@ namespace iv {
             throw std::invalid_argument(
                 "node layout raw-region initialize data requires a callback");
         }
+
+        _storage_alignment = std::max(_storage_alignment, alignment);
+        _regions.push_back(std::move(region));
+        return NodeLayout::RegionHandle { .index = _regions.size() - 1 };
+    }
+
+    NodeLayout::RegionHandle NodeLayoutBuilder::declare_transition_raw_region(
+        size_t size,
+        size_t alignment,
+        NodeLayout::Region::RawInitializeFn initialize_fn,
+        std::vector<std::byte> initialize_data)
+    {
+        if (alignment == 0 || (alignment & (alignment - 1)) != 0) {
+            throw std::invalid_argument(
+                "node layout transition-region alignment must be a non-zero power of two");
+        }
+        if (!initialize_fn && !initialize_data.empty()) {
+            throw std::invalid_argument(
+                "node layout transition-region initialize data requires a callback");
+        }
+
+        _transition_suffix_started = true;
+        NodeLayout::Region region;
+        region.kind = NodeLayout::Region::Kind::raw;
+        region.owner_node = NodeLayout::no_owner_node;
+        region.size = size;
+        region.alignment = alignment;
+        region.transition_only = true;
+        region.raw_initialize_fn = initialize_fn;
+        region.raw_initialize_data = std::move(initialize_data);
 
         _storage_alignment = std::max(_storage_alignment, alignment);
         _regions.push_back(std::move(region));
@@ -443,7 +477,20 @@ namespace iv {
         layout.exported_arrays = std::move(_exports);
 
         size_t storage_size = 0;
+        std::optional<size_t> steady_storage_size;
         for (auto& region : layout.regions) {
+            if (region.transition_only) {
+                if (region.kind != NodeLayout::Region::Kind::raw
+                    || region.owner_node != NodeLayout::no_owner_node
+                    || !region.migration_identity.empty()) {
+                    throw std::logic_error(
+                        "node layout transition suffix contains an invalid region");
+                }
+                if (!steady_storage_size) steady_storage_size = storage_size;
+            } else if (steady_storage_size) {
+                throw std::logic_error(
+                    "ordinary node-layout regions cannot follow the transition suffix");
+            }
             storage_size = align_up(storage_size, region.alignment);
             region.storage_offset = storage_size;
             storage_size += region.size;
@@ -458,6 +505,8 @@ namespace iv {
         }
 
         layout.storage_size = storage_size;
+        layout.steady_storage_size =
+            steady_storage_size.value_or(storage_size);
 
         for (auto const& import_binding : layout.imported_arrays) {
             for (auto const& export_binding : layout.exported_arrays) {
@@ -881,11 +930,14 @@ namespace iv {
                 IV_ASSERT(
                     nested_state != nullptr,
                     "nested child state pointer must resolve during storage initialization");
+                auto* steady_end = storage.storage.get()
+                    + storage.layout->steady_storage_size;
+                IV_ASSERT(
+                    nested_state <= steady_end,
+                    "nested child state lies outside steady node storage");
                 nested_node_states[i] = {
                     nested_state,
-                    static_cast<size_t>(
-                        (storage.storage.get() + storage.layout->storage_size) -
-                        nested_state),
+                    static_cast<size_t>(steady_end - nested_state),
                 };
             }
         }

@@ -186,7 +186,18 @@ void GraphExecutor::ExecutionGeneration::prepare_realtime_migration_from(
             "GraphExecutor could not reconcile realtime port state: "
             + std::move(transition.error()));
     }
-    realtime_port_state_transition.emplace(std::move(*transition));
+    auto prepared_transition =
+        graph_jit::prepare_realtime_port_state_transfers(
+            std::move(*transition),
+            previous.realtime.storage.buffer(),
+            realtime.storage.buffer());
+    if (!prepared_transition) {
+        throw std::runtime_error(
+            "GraphExecutor could not prepare realtime port-state cutover: "
+            + std::move(prepared_transition.error()));
+    }
+    realtime_port_state_transition.emplace(
+        std::move(*prepared_transition));
     realtime_migration.emplace(
         realtime.storage.prepare_migration_from(previous.realtime.storage));
 }
@@ -211,16 +222,11 @@ void GraphExecutor::ExecutionGeneration::commit_realtime_migration(
             "GraphExecutor realtime generation migration is not prepared");
     }
     realtime_migration->commit();
-    auto transferred = graph_jit::execute_realtime_port_state_transfers(
+    graph_jit::execute_realtime_port_state_transfers(
         *realtime_port_state_transition,
         realtime_migration->previous->buffer(),
         realtime.storage.buffer(),
         sample_index);
-    if (!transferred) {
-        throw std::runtime_error(
-            "GraphExecutor could not transfer realtime port state: "
-            + std::move(transferred.error()));
-    }
     realtime_migration.reset();
     realtime_initialized = true;
 }
