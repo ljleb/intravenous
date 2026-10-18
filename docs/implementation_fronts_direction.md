@@ -575,6 +575,22 @@ Candidate work includes:
 - measured builder/package reload optimization;
 - runtime PGO experiments if profiling demonstrates a worthwhile target.
 
+Node-facing Tick port capabilities are another candidate for this front. The complete
+legal API remains enabled by default. The intended explicit configuration must make
+both common cases concise: opt out of individual capabilities, or disable all
+capabilities and enable only a short named set, most likely through a typed bit mask
+and an `only(...)`-style helper. Exact names and grouping remain deliberately
+unsettled until the generated structures and measured costs are stable.
+
+Capability inference and explicit declarations may coexist. Inference lets a new node
+prototype pay only for operations its compiled callbacks actually use. An explicit
+capability set is a contract: detected use outside that set must reject the node or
+graph rather than silently re-enable an accidentally used operation. Prefer a C++
+source diagnostic when the toolchain can establish the conflict; otherwise GraphJit
+must return a precise compilation diagnostic. The inferred capability summary and the
+explicit allowed set must remain separate facts so optimization cannot weaken the
+author's enforcement contract.
+
 Runtime PGO remains an optional discovery direction rather than a prerequisite for the
 architecture.
 

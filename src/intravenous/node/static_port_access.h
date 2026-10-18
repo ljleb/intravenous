@@ -1118,13 +1118,19 @@ namespace iv::details {
         }
     };
 
+    enum class TickPortAccessKind : std::uint8_t {
+        point,
+        block,
+    };
+
     // Type-owned continuous access used by GraphJit. The selected type is one
     // immutable realization fact. A single-type declaration therefore exposes
     // this facade directly; a multi-type declaration exposes it only through
     // is<T>() / as<T>() below.
     template<RegisteredContinuousValue Value,
              ChannelTypeId ChannelType,
-             SampleStreamLayout Layout>
+             SampleStreamLayout Layout,
+             TickPortAccessKind Access>
     class StaticContinuousInputAccess {
         ContinuousInputPort<Value> port_{};
 
@@ -1177,6 +1183,7 @@ namespace iv::details {
         [[nodiscard]] constexpr auto get_value(
             std::size_t value,
             std::size_t channel = 0) const noexcept
+        requires (Access == TickPortAccessKind::block)
         {
             return port_.get_value(value, channel);
         }
@@ -1198,14 +1205,16 @@ namespace iv::details {
 
         [[nodiscard]] constexpr auto operator[](
             std::size_t value) const noexcept
-        requires (ChannelType == ChannelTypeId::mono)
+        requires (Access == TickPortAccessKind::block
+            && ChannelType == ChannelTypeId::mono)
         {
             return port_.get_value(value);
         }
 
         template<class Channel>
         [[nodiscard]] constexpr Axis operator[](Channel) const noexcept
-        requires (ChannelType != ChannelTypeId::mono
+        requires (Access == TickPortAccessKind::block
+            && ChannelType != ChannelTypeId::mono
             && Layout == SampleStreamLayout::planar)
         {
             return Axis{port_, selected_channel<Channel>()};
@@ -1213,7 +1222,8 @@ namespace iv::details {
 
         [[nodiscard]] constexpr Axis operator[](
             std::size_t value) const noexcept
-        requires (ChannelType != ChannelTypeId::mono
+        requires (Access == TickPortAccessKind::block
+            && ChannelType != ChannelTypeId::mono
             && Layout == SampleStreamLayout::interleaved)
         {
             IV_ASSERT(value < port_.block_size(),
@@ -1223,19 +1233,22 @@ namespace iv::details {
 
         template<class Channel>
         [[nodiscard]] constexpr auto block(Channel) const noexcept
-        requires (ChannelType != ChannelTypeId::mono)
+        requires (Access == TickPortAccessKind::block
+            && ChannelType != ChannelTypeId::mono)
         {
             return port_.block(selected_channel<Channel>());
         }
 
         [[nodiscard]] constexpr auto block() const noexcept
-        requires (ChannelType == ChannelTypeId::mono)
+        requires (Access == TickPortAccessKind::block
+            && ChannelType == ChannelTypeId::mono)
         {
             return port_.block();
         }
 
         [[nodiscard]] constexpr auto block(std::size_t channel) const noexcept
-        requires (ChannelType != ChannelTypeId::mono)
+        requires (Access == TickPortAccessKind::block
+            && ChannelType != ChannelTypeId::mono)
         {
             return port_.block(channel);
         }
@@ -1259,6 +1272,7 @@ namespace iv::details {
         }
 
         [[nodiscard]] constexpr std::size_t block_size() const noexcept
+        requires (Access == TickPortAccessKind::block)
         {
             return port_.block_size();
         }
@@ -1287,6 +1301,7 @@ namespace iv::details {
     template<RegisteredContinuousValue Value,
              ChannelTypeId ChannelType,
              SampleStreamLayout Layout,
+             TickPortAccessKind Access,
              bool Recording>
     class StaticContinuousOutputAccess
         : private StaticOutputDispositionObserver<Recording> {
@@ -1359,6 +1374,7 @@ namespace iv::details {
         [[nodiscard]] constexpr decltype(auto) value(
             std::size_t offset = 0,
             std::size_t channel = 0) const noexcept
+        requires (Access == TickPortAccessKind::block)
         {
             author_write();
             return port_.value(offset, channel);
@@ -1379,9 +1395,17 @@ namespace iv::details {
             return port_.value(0, selected_channel<Channel>());
         }
 
+        [[nodiscard]] constexpr decltype(auto) operator()(
+            std::size_t channel) const noexcept
+        {
+            author_write();
+            return port_.value(0, channel);
+        }
+
         [[nodiscard]] constexpr decltype(auto) operator[](
             std::size_t value) const noexcept
-        requires (ChannelType == ChannelTypeId::mono)
+        requires (Access == TickPortAccessKind::block
+            && ChannelType == ChannelTypeId::mono)
         {
             author_write();
             return port_.value(value);
@@ -1389,7 +1413,8 @@ namespace iv::details {
 
         template<class Channel>
         [[nodiscard]] constexpr Axis operator[](Channel) const noexcept
-        requires (ChannelType != ChannelTypeId::mono
+        requires (Access == TickPortAccessKind::block
+            && ChannelType != ChannelTypeId::mono
             && Layout == SampleStreamLayout::planar)
         {
             return Axis{*this, selected_channel<Channel>()};
@@ -1397,7 +1422,8 @@ namespace iv::details {
 
         [[nodiscard]] constexpr Axis operator[](
             std::size_t value) const noexcept
-        requires (ChannelType != ChannelTypeId::mono
+        requires (Access == TickPortAccessKind::block
+            && ChannelType != ChannelTypeId::mono
             && Layout == SampleStreamLayout::interleaved)
         {
             IV_ASSERT(value < port_.block_size(),
@@ -1407,21 +1433,24 @@ namespace iv::details {
 
         template<class Channel>
         [[nodiscard]] constexpr auto block(Channel) const noexcept
-        requires (ChannelType != ChannelTypeId::mono)
+        requires (Access == TickPortAccessKind::block
+            && ChannelType != ChannelTypeId::mono)
         {
             author_write();
             return port_.block(selected_channel<Channel>());
         }
 
         [[nodiscard]] constexpr auto block() const noexcept
-        requires (ChannelType == ChannelTypeId::mono)
+        requires (Access == TickPortAccessKind::block
+            && ChannelType == ChannelTypeId::mono)
         {
             author_write();
             return port_.block();
         }
 
         [[nodiscard]] constexpr auto block(std::size_t channel) const noexcept
-        requires (ChannelType != ChannelTypeId::mono)
+        requires (Access == TickPortAccessKind::block
+            && ChannelType != ChannelTypeId::mono)
         {
             author_write();
             return port_.block(channel);
@@ -1447,7 +1476,8 @@ namespace iv::details {
                 values[std::size_t{}];
             }
         constexpr void push_block(Range const& values) const noexcept
-        requires (ChannelType == ChannelTypeId::mono)
+        requires (Access == TickPortAccessKind::block
+            && ChannelType == ChannelTypeId::mono)
         {
             author_write();
             for (std::size_t value = 0; value < values.size(); ++value) {
@@ -1476,6 +1506,7 @@ namespace iv::details {
         }
 
         constexpr void clear_block() const noexcept
+        requires (Access == TickPortAccessKind::block)
         {
             author_write();
             auto const channels = channel_count(port_.channel_layout());
@@ -1498,6 +1529,7 @@ namespace iv::details {
         }
 
         [[nodiscard]] constexpr std::size_t block_size() const noexcept
+        requires (Access == TickPortAccessKind::block)
         {
             return port_.block_size();
         }
@@ -1525,14 +1557,16 @@ namespace iv::details {
 
     template<class Tuple, class Binding,
              ChannelTypeId ChannelType,
-             SampleStreamLayout Layout>
+             SampleStreamLayout Layout,
+             TickPortAccessKind Access>
     class StaticVariantContinuousInputAccess;
 
     template<class... Values, class Binding,
              ChannelTypeId ChannelType,
-             SampleStreamLayout Layout>
+             SampleStreamLayout Layout,
+             TickPortAccessKind Access>
     class StaticVariantContinuousInputAccess<
-        std::tuple<Values...>, Binding, ChannelType, Layout> {
+        std::tuple<Values...>, Binding, ChannelType, Layout, Access> {
         Binding const* binding_ = nullptr;
         FractionalGlobalIndex begin_{};
         std::uint64_t begin_ordinal_ = 0;
@@ -1567,7 +1601,8 @@ namespace iv::details {
         {
             IV_ASSERT(is<Value>(),
                 "continuous input alternative does not match its resolved type");
-            return StaticContinuousInputAccess<Value, ChannelType, Layout>{
+            return StaticContinuousInputAccess<
+                Value, ChannelType, Layout, Access>{
                 ContinuousInputPort<Value>{
                     *binding_,
                     begin_,
@@ -1580,15 +1615,17 @@ namespace iv::details {
     template<class Tuple, class Binding,
              ChannelTypeId ChannelType,
              SampleStreamLayout Layout,
+             TickPortAccessKind Access,
              bool Recording>
     class StaticVariantContinuousOutputAccess;
 
     template<class... Values, class Binding,
              ChannelTypeId ChannelType,
              SampleStreamLayout Layout,
+             TickPortAccessKind Access,
              bool Recording>
     class StaticVariantContinuousOutputAccess<
-        std::tuple<Values...>, Binding, ChannelType, Layout, Recording> {
+        std::tuple<Values...>, Binding, ChannelType, Layout, Access, Recording> {
         Binding const* binding_ = nullptr;
         FractionalGlobalIndex begin_{};
         std::uint64_t begin_ordinal_ = 0;
@@ -1649,10 +1686,11 @@ namespace iv::details {
                 block_size_};
             if constexpr (Recording) {
                 return StaticContinuousOutputAccess<
-                    Value, ChannelType, Layout, true>{port, *disposition_};
+                    Value, ChannelType, Layout, Access, true>{
+                        port, *disposition_};
             } else {
                 return StaticContinuousOutputAccess<
-                    Value, ChannelType, Layout, false>{port};
+                    Value, ChannelType, Layout, Access, false>{port};
             }
         }
     };

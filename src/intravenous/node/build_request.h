@@ -246,6 +246,7 @@ IV_FORCEINLINE void validate_reflected_continuous_bindings(
         ctx, std::make_index_sequence<output_count>{});
 }
 
+template<bool CompleteBlockAccess>
 IV_FORCEINLINE void prepare_reflected_continuous_inputs(
     ReflectedNodeTickContext const& ctx,
     GlobalIndex index,
@@ -254,12 +255,21 @@ IV_FORCEINLINE void prepare_reflected_continuous_inputs(
     for (auto const& binding :
          std::span<ReflectedContinuousInputPortBinding const>{
              ctx.continuous_input_bindings}) {
+        if constexpr (!CompleteBlockAccess) {
+            // Pointwise block_extended() needs preparation only when it has
+            // history. With zero history its one current value is directly
+            // addressable from the ring for every point callback.
+            if (binding.history == 0) continue;
+        }
         auto const projected = FractionalGlobalIndexRange::from_global_range({
             .begin = index,
             .extent = block_size,
         }).try_project_onto_lattice(binding.absolute_pace_exponent);
         IV_ASSERT(projected.has_value(),
             "continuous input projection exceeds the Q64.64 lattice");
+        if constexpr (!CompleteBlockAccess) {
+            if (projected->count == 0) continue;
+        }
         IV_ASSERT(projected->count
                 <= std::numeric_limits<std::size_t>::max() - binding.history,
             "continuous input contiguous window overflows size_t");
@@ -475,9 +485,8 @@ IV_FORCEINLINE void tick_node_block(
 {
     auto const& node = *static_cast<Node const*>(node_data);
     validate_reflected_continuous_bindings<Node>(ctx);
-    if constexpr (has_tick_block<Node>) {
-        prepare_reflected_continuous_inputs(ctx, index, block_size);
-    }
+    prepare_reflected_continuous_inputs<has_tick_block<Node>>(
+        ctx, index, block_size);
     with_reflected_event_ports<Node>(
         ctx,
         index,
@@ -516,7 +525,7 @@ IV_FORCEINLINE void skip_node_block(
     auto const& node = *static_cast<Node const*>(node_data);
     validate_reflected_continuous_bindings<Node>(ctx);
     if constexpr (has_skip_block<Node>) {
-        prepare_reflected_continuous_inputs(ctx, index, block_size);
+        prepare_reflected_continuous_inputs<true>(ctx, index, block_size);
     }
     with_reflected_event_ports<Node>(
         ctx,

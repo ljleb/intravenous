@@ -537,6 +537,14 @@ view by directly aliasing suitable producer/ring storage when possible and by
 materializing a transient contiguous buffer only when the selected backing wraps or is
 otherwise non-contiguous. Requesting history therefore does not imply a node-owned
 `State` copy.
+With zero declared history, the same operation is available and equals `block()`.
+
+Pointwise `tick()` has the same `block_extended()` operation, defined as declared
+history followed by its one current value. It does not expose operations whose meaning
+requires a block: `block()`, `block_size()`, indexed current-block access, block event
+subranges, event insertion at a block offset, or bulk block output. A batch lane has
+block semantics and therefore uses the block facade. Operations meaningful in both
+point and block callbacks keep one name, signature, and definition.
 
 Tick and Tock expose the same `FractionalGlobalIndex` coordinate concept. The Tick graph
 continues running while playback is paused and normally advances that coordinate; on

@@ -100,8 +100,9 @@ struct NodeCompilerRecord {
     // nodes may observe heterogeneous per-port projections directly.
     bool pointwise_tick = false;
     // True when an authored tick_block() or skip_block() callback can request
-    // a complete contiguous input block. Purely pointwise nodes with the
-    // framework's default skip path need no input materialization workspace.
+    // a complete contiguous input block. A pointwise callback can request
+    // block_extended() as history plus its one current value; the storage
+    // planner accounts for that separately when resolved history is nonzero.
     bool block_input_access = false;
 };
 

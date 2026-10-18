@@ -964,19 +964,30 @@ std::expected<void, std::string> BackgroundEvaluationCallFrame::seal()
                 auto const& port = plan.ports[binding.port];
                 auto* adapter = adapters[binding_slot].get();
                 if (binding.kind == PortKind::sample) {
+                    auto const needs_contiguous_input =
+                        replay.block_input_access
+                        || port.sequential_history != 0;
+                    if (needs_contiguous_input
+                        && port.sequential_history
+                            > std::numeric_limits<std::size_t>::max()
+                                - replay.maximum_block_size) {
+                        return std::unexpected(
+                            "background replay contiguous input capacity overflows size_t");
+                    }
+                    auto const contiguous_value_capacity =
+                        needs_contiguous_input
+                            ? port.sequential_history
+                                + replay.maximum_block_size
+                            : 0;
                     auto raw = std::make_unique<
                         ReplayFrameStorage::SampleStorage>(
                             port.sample_layout,
                             sample_capacity,
-                            replay.block_input_access
-                                ? replay.maximum_block_size
-                                : 0);
+                            contiguous_value_capacity);
                     storage.sample_inputs[sample_input] = {
                         .storage = raw->binding(),
                         .contiguous_value_capacity =
-                            replay.block_input_access
-                                ? replay.maximum_block_size
-                                : 0,
+                            contiguous_value_capacity,
                     };
                     storage.sample_input_adapters.push_back(adapter);
                     storage.sample_input_storage.push_back(std::move(raw));

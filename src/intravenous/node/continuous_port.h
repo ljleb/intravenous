@@ -296,26 +296,28 @@ class ContinuousInputPort {
         std::size_t channel) const noexcept
     {
         auto const* base = storage_->channels[channel].contiguous_storage;
-        if (base == nullptr) {
-            IV_ASSERT(history_ == 0 && requested_count <= 1,
-                "continuous input block was not prepared contiguously");
-            return {
-                *storage_,
-                requested_begin,
-                requested_count,
-                channel,
-            };
+        if (base != nullptr) {
+            auto const offset_bits =
+                requested_begin - contiguous_begin_ordinal_;
+            if (offset_bits <= contiguous_value_count_
+                && requested_count
+                    <= contiguous_value_count_ - offset_bits) {
+                auto const offset = static_cast<std::size_t>(offset_bits);
+                return {
+                    base + offset * storage_->geometry.value_size_bytes,
+                    storage_->geometry,
+                    requested_count,
+                };
+            }
         }
 
-        auto const offset_bits = requested_begin - contiguous_begin_ordinal_;
-        IV_ASSERT(offset_bits <= contiguous_value_count_
-                && requested_count <= contiguous_value_count_ - offset_bits,
-            "continuous input block lies outside its prepared window");
-        auto const offset = static_cast<std::size_t>(offset_bits);
+        IV_ASSERT(history_ == 0 && requested_count <= 1,
+            "continuous input block was not prepared contiguously");
         return {
-            base + offset * storage_->geometry.value_size_bytes,
-            storage_->geometry,
+            *storage_,
+            requested_begin,
             requested_count,
+            channel,
         };
     }
 

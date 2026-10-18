@@ -133,6 +133,8 @@ alias producer/circular storage directly when the requested range is already con
 or materialize only that finite range into transient storage when wraparound or another
 layout would otherwise make it non-contiguous. Node source does not need to copy overlap
 windows into `State` merely to call a contiguous-buffer FFT library.
+The operation remains available when `history() == 0`; in that case it is exactly the
+current block and does not require history materialization.
 
 Examples:
 
@@ -206,6 +208,16 @@ applies its current value offset to each port binding's own hidden Sequential be
 This permits an invocation-local persisted/materialized playback ring and a live output
 ring to use different physical origins while the node still observes one semantic
 global value position.
+
+The pointwise and block callback facades expose only operations that have meaning for
+their callback shape. Pointwise `tick()` does not expose `block()`, `block_size()`,
+indexed current-block access, block event subranges, offset event insertion, or bulk
+block output. It does expose `block_extended()`: for a point callback that view is the
+declared Sequential history followed by exactly one current value. Native
+`tick_block()` exposes the block operations, and its `block_extended()` uses the same
+definition and function signature with the complete projected current block. Common
+point/block operations are one shared API rather than analogous operations with
+different names or signatures.
 
 Resolved pace domains determine transported-value cadence. They do not change the
 project sample rate. `ctx.sample_rate` remains the same project/execution parameter for

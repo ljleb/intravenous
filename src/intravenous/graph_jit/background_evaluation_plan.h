@@ -449,9 +449,9 @@ struct BackgroundNodeOperationPlacementPlan {
 struct BackgroundReplayInvocationPlan {
     BackgroundNodeIndex node = 0;
     std::size_t maximum_block_size = 0;
-    // The imported block wrapper materializes history-inclusive contiguous
-    // input windows only for an authored block callback. Pointwise replay
-    // reads its ring bindings directly and must not pay for that workspace.
+    // True for an authored block callback. Pointwise replay additionally
+    // materializes any input with nonzero history so block_extended() remains
+    // available as history plus its one current value.
     bool block_input_access = false;
     std::vector<BackgroundBindingSlot> input_bindings{};
     std::vector<BackgroundBindingSlot> output_bindings{};

@@ -159,6 +159,7 @@ namespace iv {
         }
 
         template<typename Node, std::size_t DeclarationIndex,
+                 TickPortAccessKind Access,
                  class Binding>
         IV_FORCEINLINE auto make_continuous_input_access(
             Binding const& binding,
@@ -176,7 +177,10 @@ namespace iv {
             if constexpr (std::tuple_size_v<Values> == 1) {
                 using Value = std::tuple_element_t<0, Values>;
                 return StaticContinuousInputAccess<
-                    Value, layout.channel_type, layout.sample_layout>{
+                    Value,
+                    layout.channel_type,
+                    layout.sample_layout,
+                    Access>{
                         ContinuousInputPort<Value>{
                             binding,
                             begin,
@@ -188,7 +192,8 @@ namespace iv {
                     Values,
                     Binding,
                     layout.channel_type,
-                    layout.sample_layout>{
+                    layout.sample_layout,
+                    Access>{
                         binding,
                         begin,
                         begin_ordinal,
@@ -198,7 +203,7 @@ namespace iv {
         }
 
         template<typename Node, std::size_t DeclarationIndex,
-                 bool Recording, class Binding>
+                 TickPortAccessKind Access, bool Recording, class Binding>
         IV_FORCEINLINE auto make_continuous_output_access(
             Binding const& binding,
             FractionalGlobalIndex begin,
@@ -225,11 +230,19 @@ namespace iv {
                     IV_ASSERT(disposition != nullptr,
                         "recording continuous output has no disposition");
                     return StaticContinuousOutputAccess<
-                        Value, layout.channel_type, layout.sample_layout, true>{
+                        Value,
+                        layout.channel_type,
+                        layout.sample_layout,
+                        Access,
+                        true>{
                             port, *disposition};
                 } else {
                     return StaticContinuousOutputAccess<
-                        Value, layout.channel_type, layout.sample_layout, false>{
+                        Value,
+                        layout.channel_type,
+                        layout.sample_layout,
+                        Access,
+                        false>{
                             port};
                 }
             } else {
@@ -241,6 +254,7 @@ namespace iv {
                         Binding,
                         layout.channel_type,
                         layout.sample_layout,
+                        Access,
                         true>{
                             binding,
                             begin,
@@ -254,6 +268,7 @@ namespace iv {
                         Binding,
                         layout.channel_type,
                         layout.sample_layout,
+                        Access,
                         false>{
                             binding,
                             begin,
@@ -301,13 +316,14 @@ namespace iv {
             }
         };
 
-        class StaticEventInputBlockTickAccess {
+        template<TickPortAccessKind Access>
+        class StaticEventInputTickAccess {
             EventInputPort const& _port;
             GlobalIndex _index{};
             std::size_t _block_size = 0;
 
         public:
-            constexpr StaticEventInputBlockTickAccess(
+            constexpr StaticEventInputTickAccess(
                 EventInputPort const& port,
                 GlobalIndex index,
                 std::size_t block_size)
@@ -322,6 +338,7 @@ namespace iv {
 
             [[nodiscard]] auto events(
                 GlobalIndex begin, std::size_t count) const
+            requires (Access == TickPortAccessKind::block)
             {
                 return _port.get_block(
                     begin, count);
@@ -338,19 +355,21 @@ namespace iv {
 
         };
 
-        class StaticBackgroundEventInputBlockTickAccess
-            : public StaticEventInputBlockTickAccess {
+        template<TickPortAccessKind Access>
+        class StaticBackgroundEventInputTickAccess
+            : public StaticEventInputTickAccess<Access> {
             RandomAccessEventInputPort const* _background = nullptr;
 
         public:
-            using StaticEventInputBlockTickAccess::for_each;
+            using StaticEventInputTickAccess<Access>::for_each;
 
-            StaticBackgroundEventInputBlockTickAccess(
+            StaticBackgroundEventInputTickAccess(
                 EventInputPort const& current,
                 GlobalIndex index,
                 std::size_t block_size,
                 RandomAccessEventInputPort const* background)
-                : StaticEventInputBlockTickAccess(current, index, block_size)
+                : StaticEventInputTickAccess<Access>(
+                    current, index, block_size)
                 , _background(background)
             {}
 
@@ -371,15 +390,15 @@ namespace iv {
 
         };
 
-        template<bool Recording>
-        class StaticEventOutputBlockTickAccess
+        template<TickPortAccessKind Access, bool Recording>
+        class StaticEventOutputTickAccess
             : private StaticOutputDispositionObserver<Recording> {
             EventOutputPort& _port;
             GlobalIndex _index{};
             std::size_t _block_size = 0;
 
         public:
-            constexpr StaticEventOutputBlockTickAccess(
+            constexpr StaticEventOutputTickAccess(
                 EventOutputPort& port,
                 GlobalIndex index,
                 std::size_t block_size)
@@ -388,7 +407,7 @@ namespace iv {
                 , _port(port), _index(index), _block_size(block_size)
             {}
 
-            constexpr StaticEventOutputBlockTickAccess(
+            constexpr StaticEventOutputTickAccess(
                 EventOutputPort& port,
                 GlobalIndex index,
                 std::size_t block_size,
@@ -398,7 +417,14 @@ namespace iv {
                 , _port(port), _index(index), _block_size(block_size)
             {}
 
-            void push(Event event, std::size_t sample_offset = 0) const
+            void push(Event event) const
+            {
+                if constexpr (Recording) this->observe_write();
+                _port.push(std::move(event), 0, _index, _block_size);
+            }
+
+            void push(Event event, std::size_t sample_offset) const
+            requires (Access == TickPortAccessKind::block)
             {
                 if constexpr (Recording) this->observe_write();
                 _port.push(
@@ -418,6 +444,7 @@ namespace iv {
             }
 
             void push_block(BlockView<TimedEvent const> events) const
+            requires (Access == TickPortAccessKind::block)
             {
                 if constexpr (Recording) this->observe_write();
                 _port.push_block(
@@ -482,7 +509,8 @@ namespace iv {
                 IV_ASSERT(port_index < ports.continuous_inputs.size(),
                     "static input port is absent from execution context");
                 auto const& binding = ports.continuous_inputs[port_index];
-                auto current = details::make_continuous_input_access<Node, Index>(
+                auto current = details::make_continuous_input_access<
+                    Node, Index, details::TickPortAccessKind::point>(
                     binding,
                     this->index,
                     this->value_index,
@@ -520,11 +548,13 @@ namespace iv {
                     auto const* background_port =
                         background_index < ports.random_access_event_inputs.size()
                         ? &ports.random_access_event_inputs[background_index] : nullptr;
-                    return details::StaticBackgroundEventInputBlockTickAccess(
+                    return details::StaticBackgroundEventInputTickAccess<
+                        details::TickPortAccessKind::point>(
                         ports.event_inputs[port_index], this->event_index(), 1,
                         background_port);
                 } else {
-                    return details::StaticEventInputBlockTickAccess(
+                    return details::StaticEventInputTickAccess<
+                        details::TickPortAccessKind::point>(
                         ports.event_inputs[port_index], this->event_index(), 1);
                 }
             }
@@ -562,7 +592,10 @@ namespace iv {
                     "static output port layout does not match execution context");
                 if constexpr (recording) {
                     return details::make_continuous_output_access<
-                        Node, Index, true>(
+                        Node,
+                        Index,
+                        details::TickPortAccessKind::point,
+                        true>(
                             binding,
                             this->index,
                             this->value_index,
@@ -572,7 +605,10 @@ namespace iv {
                             &this->template recording_disposition<Index>());
                 } else {
                     return details::make_continuous_output_access<
-                        Node, Index, false>(
+                        Node,
+                        Index,
+                        details::TickPortAccessKind::point,
+                        false>(
                             binding,
                             this->index,
                             this->value_index,
@@ -591,13 +627,15 @@ namespace iv {
                 IV_ASSERT(port_index < ports.event_outputs.size(),
                     "static event output port is absent from execution context");
                 if constexpr (recording) {
-                    return details::StaticEventOutputBlockTickAccess<true>(
+                    return details::StaticEventOutputTickAccess<
+                        details::TickPortAccessKind::point, true>(
                         ports.event_outputs[port_index],
                         this->event_index(),
                         1,
                         this->template recording_disposition<Index>());
                 } else {
-                    return details::StaticEventOutputBlockTickAccess<false>(
+                    return details::StaticEventOutputTickAccess<
+                        details::TickPortAccessKind::point, false>(
                         ports.event_outputs[port_index], this->event_index(), 1);
                 }
             }
@@ -647,7 +685,8 @@ namespace iv {
                     binding.absolute_pace_exponent,
                     this->index,
                     this->block_size);
-                auto current = details::make_continuous_input_access<Node, Index>(
+                auto current = details::make_continuous_input_access<
+                    Node, Index, details::TickPortAccessKind::block>(
                     binding,
                     projected.begin,
                     projected.begin_ordinal_bits,
@@ -684,13 +723,15 @@ namespace iv {
                     auto const* background_port =
                         background_index < ports.random_access_event_inputs.size()
                         ? &ports.random_access_event_inputs[background_index] : nullptr;
-                    return details::StaticBackgroundEventInputBlockTickAccess(
+                    return details::StaticBackgroundEventInputTickAccess<
+                        details::TickPortAccessKind::block>(
                         ports.event_inputs[port_index],
                         this->event_index(),
                         this->block_size,
                         background_port);
                 } else {
-                    return details::StaticEventInputBlockTickAccess(
+                    return details::StaticEventInputTickAccess<
+                        details::TickPortAccessKind::block>(
                         ports.event_inputs[port_index],
                         this->event_index(),
                         this->block_size);
@@ -735,7 +776,10 @@ namespace iv {
                     this->block_size);
                 if constexpr (recording) {
                     return details::make_continuous_output_access<
-                        Node, Index, true>(
+                        Node,
+                        Index,
+                        details::TickPortAccessKind::block,
+                        true>(
                             binding,
                             projected.begin,
                             projected.begin_ordinal_bits,
@@ -744,7 +788,10 @@ namespace iv {
                             &this->template recording_disposition<Index>());
                 } else {
                     return details::make_continuous_output_access<
-                        Node, Index, false>(
+                        Node,
+                        Index,
+                        details::TickPortAccessKind::block,
+                        false>(
                             binding,
                             projected.begin,
                             projected.begin_ordinal_bits,
@@ -763,13 +810,15 @@ namespace iv {
                 IV_ASSERT(port_index < ports.event_outputs.size(),
                     "static event output port is absent from execution context");
                 if constexpr (recording) {
-                    return details::StaticEventOutputBlockTickAccess<true>(
+                    return details::StaticEventOutputTickAccess<
+                        details::TickPortAccessKind::block, true>(
                         ports.event_outputs[port_index],
                         this->event_index(),
                         this->block_size,
                         this->template recording_disposition<Index>());
                 } else {
-                    return details::StaticEventOutputBlockTickAccess<false>(
+                    return details::StaticEventOutputTickAccess<
+                        details::TickPortAccessKind::block, false>(
                         ports.event_outputs[port_index],
                         this->event_index(),
                         this->block_size);

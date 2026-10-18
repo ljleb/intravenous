@@ -2364,8 +2364,13 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
             "continuous input scratch planning lost its primitive");
         std::size_t primitive_scratch_size = 0;
         for (auto& input_binding : primitive.inputs) {
+            // A native block callback can request block() even with no
+            // history. Pointwise tick() exposes only block_extended(), whose
+            // zero-history, one-value view is directly ring-addressable.
             auto const requires_contiguous_workspace =
-                analyzed.implementation->block_input_access;
+                analyzed.implementation->block_input_access
+                || (analyzed.implementation->pointwise_tick
+                    && input_binding.history != 0);
             // The node limit bounds one invocation; it is not the size of an
             // invocation. Most nodes retain MAX_BLOCK_SIZE as their authored
             // limit, while the generated root can expose at most one kernel

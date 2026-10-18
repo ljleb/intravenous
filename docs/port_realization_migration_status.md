@@ -170,8 +170,12 @@ internal ratio.
 - Pointwise `tick()` lowering accepts only one graph-proven continuous pace for the
   relevant ports and project pace when integer-timed events participate. Native
   `tick_block()` callbacks may observe heterogeneous per-port projections directly.
-  Contiguous input-window preparation is compiled only into authored block callbacks;
-  pointwise `tick()` nodes and generated default skip behavior do not pay that work.
+  Their facades are now distinct: point callbacks do not expose block-only indexing,
+  extents, event offsets, or bulk operations, while block callbacks do. Both expose
+  the same `block_extended()` operation. For pointwise execution it contains resolved
+  history plus one current value. Zero-history point inputs continue to read their
+  ring binding directly; nonzero-history point inputs reserve and prepare the bounded
+  history-inclusive window. Generated default skip behavior does not prepare inputs.
 - Runtime GraphJit coverage now exercises an `FFTBlock` producer/consumer with slow
   zero-value callbacks, history-inclusive contiguous access, and a multi-type input;
   it also exercises a fast `FractionalGlobalIndex` producer/consumer. These tests were
@@ -192,8 +196,9 @@ internal ratio.
   as project-rate `Sample` rings. Connection analysis rejects a non-Sample or
   non-project-rate continuous replay binding immediately after contextual replay proof,
   before publishing a background runtime plan. Existing Sample replay allocates
-  contiguous input scratch only for an authored `tick_block()` callback; pointwise
-  replay continues to read the bounded ring directly. Generalized background replay
+  contiguous input scratch for an authored `tick_block()` callback and for a pointwise
+  input with nonzero history; zero-history pointwise replay continues to read the
+  bounded ring directly. Generalized background replay
   invocation and temporary continuous storage belong to Front 7, consuming Front 1's
   resolved port realization and Front 3's eventual Region/Coverage materialization;
   they do not belong to the port-realization front itself.

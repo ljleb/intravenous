@@ -61,6 +61,7 @@ iv::ReflectedContinuousInputPortBinding sample_input_binding(
 {
     return {
         .storage = sample_storage_binding(samples),
+        .contiguous_value_capacity = samples.size(),
     };
 }
 
@@ -88,6 +89,110 @@ struct PointwisePhysicalOriginNode {
     void tick(iv::TickSampleContext<PointwisePhysicalOriginNode> const& ctx) const
     {
         ctx.output<"output">().push(ctx.input<"input">().get());
+    }
+};
+
+template<class Access>
+concept HasBlock = requires(Access const& access) { access.block(); };
+
+template<class Access>
+concept HasBlockExtended = requires(Access const& access) {
+    access.block_extended();
+};
+
+template<class Access>
+concept HasBlockSize = requires(Access const& access) {
+    access.block_size();
+};
+
+template<class Access>
+concept HasCurrentBlockIndex = requires(Access const& access) {
+    access[std::size_t{}];
+};
+
+template<class Access>
+concept HasInputValueOffset = requires(Access const& access) {
+    access.get_value(std::size_t{}, std::size_t{});
+};
+
+template<class Access>
+concept HasOutputValueOffset = requires(Access const& access) {
+    access.value(std::size_t{}, std::size_t{});
+};
+
+template<class Access>
+concept HasCurrentOutput = requires(Access const& access) {
+    access();
+};
+
+template<class Access>
+concept HasDynamicChannelCurrentOutput = requires(Access const& access) {
+    access(std::size_t{});
+};
+
+using PointSampleInput = decltype(
+    std::declval<iv::TickSampleContext<PointwisePhysicalOriginNode> const&>()
+        .template input<0>());
+using BlockSampleInput = decltype(
+    std::declval<iv::TickBlockContext<PointwisePhysicalOriginNode> const&>()
+        .template input<0>());
+using PointSampleOutput = decltype(
+    std::declval<iv::TickSampleContext<PointwisePhysicalOriginNode> const&>()
+        .template output<0>());
+using BlockSampleOutput = decltype(
+    std::declval<iv::TickBlockContext<PointwisePhysicalOriginNode> const&>()
+        .template output<0>());
+
+static_assert(!HasBlock<PointSampleInput>);
+static_assert(HasBlockExtended<PointSampleInput>);
+static_assert(!HasBlockSize<PointSampleInput>);
+static_assert(!HasCurrentBlockIndex<PointSampleInput>);
+static_assert(!HasInputValueOffset<PointSampleInput>);
+static_assert(HasBlock<BlockSampleInput>);
+static_assert(HasBlockExtended<BlockSampleInput>);
+static_assert(HasBlockSize<BlockSampleInput>);
+static_assert(HasCurrentBlockIndex<BlockSampleInput>);
+static_assert(HasInputValueOffset<BlockSampleInput>);
+
+static_assert(!HasBlock<PointSampleOutput>);
+static_assert(!HasBlockSize<PointSampleOutput>);
+static_assert(!HasCurrentBlockIndex<PointSampleOutput>);
+static_assert(!HasOutputValueOffset<PointSampleOutput>);
+static_assert(HasCurrentOutput<PointSampleOutput>);
+static_assert(HasDynamicChannelCurrentOutput<PointSampleOutput>);
+static_assert(HasBlock<BlockSampleOutput>);
+static_assert(HasBlockSize<BlockSampleOutput>);
+static_assert(HasCurrentBlockIndex<BlockSampleOutput>);
+static_assert(HasOutputValueOffset<BlockSampleOutput>);
+static_assert(HasCurrentOutput<BlockSampleOutput>);
+static_assert(HasDynamicChannelCurrentOutput<BlockSampleOutput>);
+
+struct PointwiseExtendedHistoryNode {
+    static constexpr auto inputs()
+    {
+        return std::array{
+            iv::input<iv::Sample>("input", iv::InputAccess::sequential)};
+    }
+
+    static constexpr auto outputs()
+    {
+        return std::array{
+            iv::output<iv::Sample>("output", iv::OutputProduction::tick)};
+    }
+
+    void constrain_ports(
+        iv::ConstrainPortsContext<PointwiseExtendedHistoryNode>& ctx) const
+    {
+        ctx.input<"input">().history() = 2;
+    }
+
+    void tick(
+        iv::TickSampleContext<PointwiseExtendedHistoryNode> const& ctx) const
+    {
+        auto const extended = ctx.input<"input">().block_extended();
+        iv::Sample total = 0.0f;
+        for (auto const value : extended) total += value;
+        ctx.output<"output">().push(total);
     }
 };
 
@@ -123,6 +228,35 @@ TEST(TickPointwiseExecution, AppliesValueOffsetToEachPortPhysicalOrigin)
     EXPECT_FLOAT_EQ(output_storage[15], 12.0f);
     EXPECT_FLOAT_EQ(output_storage[0], 13.0f);
     EXPECT_FLOAT_EQ(output_storage[5], 0.0f);
+}
+
+TEST(TickPointwiseExecution, ExposesHistoryPlusOneCurrentValue)
+{
+    std::array<iv::Sample, 8> input_storage{
+        0.0f, 1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f, 7.0f};
+    std::array<iv::Sample, 8> output_storage{};
+    std::array<iv::Sample, 4> contiguous_scratch{};
+
+    std::array inputs{sample_input_binding(std::span{input_storage})};
+    std::array outputs{sample_output_binding(std::span{output_storage})};
+    inputs[0].history = 2;
+    inputs[0].sequential_begin_ordinal = 7;
+    inputs[0].contiguous_value_capacity = contiguous_scratch.size();
+    inputs[0].storage.channels[0].contiguous_scratch =
+        reinterpret_cast<std::byte*>(contiguous_scratch.data());
+
+    auto const context = iv::ReflectedNodeTickContext{
+        .continuous_input_bindings = inputs,
+        .continuous_output_bindings = outputs,
+    };
+    auto const operations =
+        iv::details::node_compiler_operations<PointwiseExtendedHistoryNode>();
+    PointwiseExtendedHistoryNode node;
+    operations.tick_block(
+        &node, context, index(100), 2);
+
+    EXPECT_FLOAT_EQ(output_storage[0], 18.0f);
+    EXPECT_FLOAT_EQ(output_storage[1], 13.0f);
 }
 
 struct RequestNode {
@@ -863,6 +997,64 @@ struct EphemeralOutputNode {
         context.output<"events">().push(iv::TriggerEvent{}, 0);
     }
 };
+
+struct EventTickAccessShapeNode {
+    static constexpr auto inputs()
+    {
+        return std::tuple{iv::event_input(
+            "in", iv::EventTypeId::trigger, iv::InputAccess::sequential)};
+    }
+
+    static constexpr auto outputs()
+    {
+        return std::tuple{iv::event_output(
+            "out", iv::EventTypeId::trigger, iv::OutputProduction::tick)};
+    }
+};
+
+template<class Access>
+concept HasEventSubrange = requires(
+    Access const& access, iv::GlobalIndex begin) {
+    access.events(begin, std::size_t{});
+};
+
+template<class Access>
+concept HasEventOffsetPush = requires(Access const& access) {
+    access.push(iv::TriggerEvent{}, std::size_t{});
+};
+
+template<class Access>
+concept HasCurrentEventPush = requires(Access const& access) {
+    access.push(iv::TriggerEvent{});
+};
+
+template<class Access>
+concept HasEventBlockPush = requires(
+    Access const& access, iv::BlockView<iv::TimedEvent const> events) {
+    access.push_block(events);
+};
+
+using PointEventInput = decltype(
+    std::declval<iv::TickSampleContext<EventTickAccessShapeNode> const&>()
+        .template input<0>());
+using BlockEventInput = decltype(
+    std::declval<iv::TickBlockContext<EventTickAccessShapeNode> const&>()
+        .template input<0>());
+using PointEventOutput = decltype(
+    std::declval<iv::TickSampleContext<EventTickAccessShapeNode> const&>()
+        .template output<0>());
+using BlockEventOutput = decltype(
+    std::declval<iv::TickBlockContext<EventTickAccessShapeNode> const&>()
+        .template output<0>());
+
+static_assert(!HasEventSubrange<PointEventInput>);
+static_assert(HasEventSubrange<BlockEventInput>);
+static_assert(HasCurrentEventPush<PointEventOutput>);
+static_assert(HasCurrentEventPush<BlockEventOutput>);
+static_assert(!HasEventOffsetPush<PointEventOutput>);
+static_assert(!HasEventBlockPush<PointEventOutput>);
+static_assert(HasEventOffsetPush<BlockEventOutput>);
+static_assert(HasEventBlockPush<BlockEventOutput>);
 
 struct MixedAccessIndexNode {
     static constexpr auto inputs()
