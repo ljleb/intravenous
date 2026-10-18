@@ -5579,6 +5579,7 @@ struct FFTValueProducer {
     void constrain_ports(iv::ConstrainPortsContext<FFTValueProducer>& ctx) const
     {
         ctx.input<"samples">().pace() = 4;
+        ctx.input<"samples">().pace().absolute() = 1;
         ctx.input<"samples">().history() = 4;
         ctx.output<"spectra">().pace() = 1;
         ctx.output<"spectra">().size() = 3;
@@ -5676,6 +5677,7 @@ struct FractionalIndexProducer {
         iv::ConstrainPortsContext<FractionalIndexProducer>& ctx) const
     {
         ctx.output<"coordinates">().pace() = 2;
+        ctx.output<"coordinates">().pace().absolute() = 2;
     }
 
     void tick_block(

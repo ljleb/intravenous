@@ -407,6 +407,12 @@ canonical scale independently. The solver must not default an unresolved ratio i
 a component; such a ratio is a missing local node constraint, not component-wide scale
 freedom. Conflicting absolute anchors reject the graph revision.
 
+Canonical unanchored scaling is independent of bundle and connection insertion order.
+After solving the relative execution exponents of one component, GraphJit translates
+them together so the component's slowest logical node has execution exponent zero
+(project pace one). This translation preserves every port ratio and connection
+equality. An explicit absolute anchor replaces this default normalization.
+
 A resolved absolute exponent must remain in the range supported by the dyadic global-
 time coordinate; the initial Q64.64 coordinate supports exponents from -64 through
 +64. Graphs outside that range are rejected during realization rather than allowed to

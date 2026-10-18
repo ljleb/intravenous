@@ -41,6 +41,11 @@ connections are solved, an unanchored connected component defaults only its one 
 absolute scale to one. The solver does not use that default to invent an unresolved
 internal ratio.
 
+The implemented canonicalization does not depend on union roots, bundle insertion
+order, or connection insertion order. It translates all relative execution exponents
+in an unanchored component together until the slowest logical node has project pace
+one. Explicitly anchored components retain their authored absolute scale.
+
 ## Implemented internal milestones
 
 - `ConstrainPortsContext` now has statically restricted proxies for continuous value

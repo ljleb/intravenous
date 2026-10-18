@@ -7,7 +7,11 @@
 
 #include <array>
 #include <cstdint>
+#include <optional>
 #include <string>
+#include <tuple>
+#include <utility>
+#include <vector>
 
 namespace {
 
@@ -201,6 +205,122 @@ struct TimedPorts {
         ctx.output<"out">().latency() = 2;
     }
     void tick_block(iv::TickBlockContext<TimedPorts> const&) const {}
+};
+
+struct PaceRelation {
+    std::uint64_t input_factor = 1;
+    std::uint64_t output_factor = 1;
+    std::uint64_t absolute_input_factor = 0;
+
+    static constexpr auto inputs()
+    {
+        return std::array{iv::input<iv::Sample>(
+            "in", iv::InputAccess::sequential)};
+    }
+
+    static constexpr auto outputs()
+    {
+        return std::array{iv::output<iv::Sample>(
+            "out", iv::OutputProduction::tick)};
+    }
+
+    void constrain_ports(iv::ConstrainPortsContext<PaceRelation>& ctx) const
+    {
+        ctx.input<"in">().pace() = input_factor;
+        ctx.output<"out">().pace() = output_factor;
+        if (absolute_input_factor != 0)
+            ctx.input<"in">().pace().absolute() = absolute_input_factor;
+    }
+
+    void tick_block(iv::TickBlockContext<PaceRelation> const&) const {}
+};
+
+struct MixedCoverageOrderingSource {
+    static constexpr auto outputs()
+    {
+        return std::tuple{
+            iv::output<iv::Sample>(
+                "samples", iv::OutputProduction::coverage),
+            iv::event_output(
+                "events", iv::EventTypeId::trigger,
+                iv::OutputProduction::coverage),
+        };
+    }
+
+    void tick_block(
+        iv::TickBlockContext<MixedCoverageOrderingSource> const&) const {}
+    void tock_coverage(
+        iv::TockCoverageContext<MixedCoverageOrderingSource>&) const {}
+    void propagate_forward_coverage(
+        iv::PropagateForwardCoverageContext<
+            MixedCoverageOrderingSource>&) const {}
+};
+
+struct MixedCoverageOrderingRelay {
+    static constexpr auto inputs()
+    {
+        return std::tuple{
+            iv::input<iv::Sample>(
+                "samples", iv::InputAccess::coverage),
+            iv::event_input(
+                "events", iv::EventTypeId::trigger,
+                iv::InputAccess::coverage),
+        };
+    }
+
+    static constexpr auto outputs()
+    {
+        return std::tuple{
+            iv::output<iv::Sample>(
+                "samples", iv::OutputProduction::coverage),
+            iv::event_output(
+                "events", iv::EventTypeId::trigger,
+                iv::OutputProduction::coverage),
+        };
+    }
+
+    void constrain_ports(
+        iv::ConstrainPortsContext<MixedCoverageOrderingRelay>& ctx) const
+    {
+        ctx.output<"samples">().ordering()
+            = ctx.input<"samples">().ordering();
+        ctx.output<"events">().ordering()
+            = ctx.input<"events">().ordering();
+    }
+
+    void tick_block(
+        iv::TickBlockContext<MixedCoverageOrderingRelay> const&) const {}
+    void tock_coverage(
+        iv::TockCoverageContext<MixedCoverageOrderingRelay>&) const {}
+    void propagate_forward_coverage(
+        iv::PropagateForwardCoverageContext<
+            MixedCoverageOrderingRelay>&) const {}
+    void propagate_reverse_coverage(
+        iv::PropagateReverseCoverageContext<
+            MixedCoverageOrderingRelay>&) const {}
+};
+
+struct MixedSortedCoverageSink {
+    static constexpr auto inputs()
+    {
+        return std::tuple{
+            iv::input<iv::Sample>(
+                "samples", iv::InputAccess::coverage),
+            iv::event_input(
+                "events", iv::EventTypeId::trigger,
+                iv::InputAccess::coverage),
+        };
+    }
+
+    void constrain_ports(
+        iv::ConstrainPortsContext<MixedSortedCoverageSink>& ctx) const
+    {
+        ctx.input<"samples">().ordering() = iv::CoverageOrdering::sorted;
+        ctx.input<"events">().ordering() = iv::CoverageOrdering::sorted;
+    }
+
+    void tick_block(
+        iv::TickBlockContext<MixedSortedCoverageSink> const&) const {}
 };
 
 template<class Node>
@@ -534,6 +654,275 @@ TEST(PortRealization, RejectsConflictingAbsolutePaceAnchors)
     EXPECT_NE(
         realized.error().find("absolute pace anchor"),
         std::string::npos);
+}
+
+TEST(PortRealization, RejectsInconsistentWeightedPaceCycleInEveryInsertionOrder)
+{
+    constexpr std::array permutations{
+        std::array<std::size_t, 3>{0, 1, 2},
+        std::array<std::size_t, 3>{0, 2, 1},
+        std::array<std::size_t, 3>{1, 0, 2},
+        std::array<std::size_t, 3>{1, 2, 0},
+        std::array<std::size_t, 3>{2, 0, 1},
+        std::array<std::size_t, 3>{2, 1, 0},
+    };
+
+    for (auto const& order : permutations) {
+        SCOPED_TRACE(
+            std::to_string(order[0]) + std::to_string(order[1])
+            + std::to_string(order[2]));
+        iv::ConfiguredGraph graph;
+        auto const first = append(graph, PaceRelation{1, 2});
+        auto const second = append(graph, PaceRelation{1, 2});
+        auto const third = append(graph, PaceRelation{1, 2});
+        std::array const connections{
+            mono_connection(first, 0, second, 0),
+            mono_connection(second, 0, third, 0),
+            mono_connection(third, 0, first, 0),
+        };
+        for (auto const connection : order) {
+            graph.connections.record_configured_sample_connection(
+                connections[connection]);
+        }
+
+        auto realized = iv::graph_jit::resolve_port_realization(graph);
+        ASSERT_FALSE(realized.has_value());
+        EXPECT_NE(
+            realized.error().find("inconsistent pace cycle"),
+            std::string::npos);
+    }
+}
+
+TEST(PortRealization, ConsistentWeightedPaceCycleIsInsertionOrderInvariant)
+{
+    constexpr std::array permutations{
+        std::array<std::size_t, 3>{0, 1, 2},
+        std::array<std::size_t, 3>{0, 2, 1},
+        std::array<std::size_t, 3>{1, 0, 2},
+        std::array<std::size_t, 3>{1, 2, 0},
+        std::array<std::size_t, 3>{2, 0, 1},
+        std::array<std::size_t, 3>{2, 1, 0},
+    };
+    using Snapshot = std::array<iv::PortPace::exponent_type, 9>;
+    std::optional<Snapshot> reference;
+
+    for (auto const& node_order : permutations) {
+        for (auto const& connection_order : permutations) {
+            SCOPED_TRACE(
+                "nodes " + std::to_string(node_order[0])
+                + std::to_string(node_order[1])
+                + std::to_string(node_order[2]) + ", connections "
+                + std::to_string(connection_order[0])
+                + std::to_string(connection_order[1])
+                + std::to_string(connection_order[2]));
+            iv::ConfiguredGraph graph;
+            // The three connection differences are -1, 0 and +1. Their sum
+            // is zero, but the union-find paths include a negative relative
+            // exponent and are compressed in different directions.
+            constexpr std::array relations{
+                PaceRelation{1, 2},
+                PaceRelation{4, 1},
+                PaceRelation{1, 2},
+            };
+            std::array<iv::NodeBundleHandle, 3> nodes{};
+            for (auto const role : node_order)
+                nodes[role] = append(graph, relations[role]);
+            auto const [first, second, third] = nodes;
+            std::array const connections{
+                mono_connection(first, 0, second, 0),
+                mono_connection(second, 0, third, 0),
+                mono_connection(third, 0, first, 0),
+            };
+            for (auto const connection : connection_order) {
+                graph.connections.record_configured_sample_connection(
+                    connections[connection]);
+            }
+
+            auto realized = iv::graph_jit::resolve_port_realization(graph);
+            if (!realized) FAIL() << realized.error();
+
+            EXPECT_EQ(realized->execution_rate(first), iv::PortPace(2));
+            EXPECT_EQ(realized->execution_rate(second), iv::PortPace(1));
+            EXPECT_EQ(realized->execution_rate(third), iv::PortPace(1));
+            EXPECT_EQ(
+                realized->output(first, 0).absolute_pace,
+                realized->input(second, 0).absolute_pace);
+            EXPECT_EQ(
+                realized->output(second, 0).absolute_pace,
+                realized->input(third, 0).absolute_pace);
+            EXPECT_EQ(
+                realized->output(third, 0).absolute_pace,
+                realized->input(first, 0).absolute_pace);
+
+            Snapshot const snapshot{
+                realized->execution_rate(first).exponent(),
+                realized->execution_rate(second).exponent(),
+                realized->execution_rate(third).exponent(),
+                realized->input(first, 0).absolute_pace.exponent(),
+                realized->output(first, 0).absolute_pace.exponent(),
+                realized->input(second, 0).absolute_pace.exponent(),
+                realized->output(second, 0).absolute_pace.exponent(),
+                realized->input(third, 0).absolute_pace.exponent(),
+                realized->output(third, 0).absolute_pace.exponent(),
+            };
+            if (!reference) reference = snapshot;
+            EXPECT_EQ(snapshot, *reference);
+        }
+    }
+}
+
+TEST(PortRealization, AbsolutePaceAnchorDominatesEveryWeightedCycleUnionOrder)
+{
+    constexpr std::array permutations{
+        std::array<std::size_t, 3>{0, 1, 2},
+        std::array<std::size_t, 3>{0, 2, 1},
+        std::array<std::size_t, 3>{1, 0, 2},
+        std::array<std::size_t, 3>{1, 2, 0},
+        std::array<std::size_t, 3>{2, 0, 1},
+        std::array<std::size_t, 3>{2, 1, 0},
+    };
+
+    for (auto const& order : permutations) {
+        SCOPED_TRACE(
+            std::to_string(order[0]) + std::to_string(order[1])
+            + std::to_string(order[2]));
+        iv::ConfiguredGraph graph;
+        auto const first = append(graph, PaceRelation{1, 2, 8});
+        auto const second = append(graph, PaceRelation{4, 1});
+        auto const third = append(graph, PaceRelation{1, 2});
+        std::array const connections{
+            mono_connection(first, 0, second, 0),
+            mono_connection(second, 0, third, 0),
+            mono_connection(third, 0, first, 0),
+        };
+        for (auto const connection : order) {
+            graph.connections.record_configured_sample_connection(
+                connections[connection]);
+        }
+
+        auto realized = iv::graph_jit::resolve_port_realization(graph);
+        if (!realized) FAIL() << realized.error();
+
+        EXPECT_EQ(realized->input(first, 0).absolute_pace, iv::PortPace(8));
+        EXPECT_EQ(realized->execution_rate(first), iv::PortPace(8));
+        EXPECT_EQ(realized->execution_rate(second), iv::PortPace(4));
+        EXPECT_EQ(realized->execution_rate(third), iv::PortPace(4));
+        EXPECT_EQ(
+            realized->output(first, 0).absolute_pace,
+            realized->input(second, 0).absolute_pace);
+        EXPECT_EQ(
+            realized->output(second, 0).absolute_pace,
+            realized->input(third, 0).absolute_pace);
+        EXPECT_EQ(
+            realized->output(third, 0).absolute_pace,
+            realized->input(first, 0).absolute_pace);
+    }
+}
+
+TEST(PortRealization, SortedCoverageRequirementCrossesMixedFanInAndRelay)
+{
+    constexpr std::array scenarios{
+        std::pair{false, false},
+        std::pair{false, true},
+        std::pair{true, false},
+        std::pair{true, true},
+    };
+    for (auto const [reverse_sources, downstream_first] : scenarios) {
+        SCOPED_TRACE(
+            std::string(reverse_sources ? "reverse sources, " : "forward sources, ")
+            + (downstream_first ? "downstream first" : "upstream first"));
+        iv::ConfiguredGraph graph;
+        auto const first = append(graph, MixedCoverageOrderingSource{});
+        auto const second = append(graph, MixedCoverageOrderingSource{});
+        auto const isolated = append(graph, MixedCoverageOrderingSource{});
+        auto const relay = append(graph, MixedCoverageOrderingRelay{});
+        auto const sink = append(graph, MixedSortedCoverageSink{});
+
+        iv::ConfiguredSampleConnection sample_fan_in{
+            .source_type = iv::ChannelTypeId::stereo,
+            .source_channels = reverse_sources
+                ? std::vector<iv::SampleOutputChannelId>{
+                    {second, 0, 0}, {first, 0, 0}}
+                : std::vector<iv::SampleOutputChannelId>{
+                    {first, 0, 0}, {second, 0, 0}},
+            .target_type = iv::ChannelTypeId::mono,
+            .target_channels = {{relay, 0, 0}},
+        };
+        auto const sample_to_sink = mono_connection(relay, 0, sink, 0);
+        if (downstream_first) {
+            graph.connections.record_configured_sample_connection(
+                sample_to_sink);
+        }
+        graph.connections.record_configured_sample_connection(
+            std::move(sample_fan_in));
+        if (!downstream_first) {
+            graph.connections.record_configured_sample_connection(
+                sample_to_sink);
+        }
+
+        iv::ConfiguredEventConnection event_fan_in{
+            .source_type = iv::EventTypeId::trigger,
+            .sources = reverse_sources
+                ? std::vector<iv::EventOutputPortId>{
+                    {second, 0}, {first, 0}}
+                : std::vector<iv::EventOutputPortId>{
+                    {first, 0}, {second, 0}},
+            .target_type = iv::EventTypeId::trigger,
+            .targets = {{relay, 0}},
+        };
+        iv::ConfiguredEventConnection const event_to_sink{
+            .source_type = iv::EventTypeId::trigger,
+            .sources = {{relay, 0}},
+            .target_type = iv::EventTypeId::trigger,
+            .targets = {{sink, 0}},
+        };
+        if (downstream_first) {
+            graph.connections.record_configured_event_connection(
+                event_to_sink);
+        }
+        graph.connections.record_configured_event_connection(
+            std::move(event_fan_in));
+        if (!downstream_first) {
+            graph.connections.record_configured_event_connection(
+                event_to_sink);
+        }
+
+        auto realized = iv::graph_jit::resolve_port_realization(graph);
+        if (!realized) FAIL() << realized.error();
+
+        for (auto const source : {first, second}) {
+            EXPECT_EQ(
+                realized->output(source, 0).ordering,
+                iv::CoverageOrdering::sorted);
+            EXPECT_EQ(
+                realized->event_output(source, 0).ordering,
+                iv::CoverageOrdering::sorted);
+        }
+        EXPECT_EQ(
+            realized->input(relay, 0).ordering,
+            iv::CoverageOrdering::sorted);
+        EXPECT_EQ(
+            realized->output(relay, 0).ordering,
+            iv::CoverageOrdering::sorted);
+        EXPECT_EQ(
+            realized->input(sink, 0).ordering,
+            iv::CoverageOrdering::sorted);
+        EXPECT_EQ(
+            realized->event_input(relay, 0).ordering,
+            iv::CoverageOrdering::sorted);
+        EXPECT_EQ(
+            realized->event_output(relay, 0).ordering,
+            iv::CoverageOrdering::sorted);
+        EXPECT_EQ(
+            realized->event_input(sink, 0).ordering,
+            iv::CoverageOrdering::sorted);
+        EXPECT_EQ(
+            realized->output(isolated, 0).ordering,
+            iv::CoverageOrdering::unspecified);
+        EXPECT_EQ(
+            realized->event_output(isolated, 0).ordering,
+            iv::CoverageOrdering::unspecified);
+    }
 }
 
 } // namespace

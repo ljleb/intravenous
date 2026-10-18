@@ -245,15 +245,42 @@ public:
         return {};
     }
 
+    [[nodiscard]] std::expected<void, std::string>
+    default_unanchored_components()
+    {
+        // Union roots and bundle handles are construction details and therefore
+        // cannot define graph semantics. Normalize every wholly unanchored
+        // component so its slowest logical node executes at project pace one.
+        // This fixes only the remaining uniform scale; every solved relative
+        // difference remains unchanged.
+        std::vector<std::optional<PortPace>> minimum_difference(
+            variables_.size());
+        for (std::size_t variable = 0; variable < variables_.size(); ++variable) {
+            auto found = find(variable);
+            if (!found) return std::unexpected(std::move(found.error()));
+            auto& minimum = minimum_difference[found->root];
+            if (!minimum
+                || found->difference.exponent() < minimum->exponent()) {
+                minimum = found->difference;
+            }
+        }
+        for (std::size_t root = 0; root < variables_.size(); ++root) {
+            if (!minimum_difference[root] || variables_[root].absolute_rate)
+                continue;
+            auto rate = subtract_exponents(
+                PortPace{}, *minimum_difference[root]);
+            if (!rate) return std::unexpected(std::move(rate.error()));
+            variables_[root].absolute_rate = *rate;
+        }
+        return {};
+    }
+
     [[nodiscard]] std::expected<PortPace, std::string> rate(std::size_t variable)
     {
         auto found = find(variable);
         if (!found) return std::unexpected(std::move(found.error()));
-        // Only the one uniform scale of an otherwise-unanchored component
-        // defaults to project pace one. Every internal ratio has already been
-        // established by local port constraints and connection differences.
         return add_exponents(
-            variables_[found->root].absolute_rate.value_or(PortPace{}),
+            variables_[found->root].absolute_rate.value(),
             found->difference);
     }
 };
@@ -833,6 +860,8 @@ class PortRealizationSolver {
                 if (!result) return std::unexpected(std::move(result.error()));
             }
         }
+        if (auto result = rates.default_unanchored_components(); !result)
+            return std::unexpected(std::move(result.error()));
         std::vector<PortPace> result;
         result.reserve(bundles_.size());
         for (NodeBundleHandle bundle = 0; bundle < bundles_.size(); ++bundle) {
