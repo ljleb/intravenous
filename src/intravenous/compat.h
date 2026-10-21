@@ -9,6 +9,7 @@
 #pragma clang diagnostic pop
 #endif
 
+#include <cstddef>
 #include <iosfwd>
 #include <string>
 #include <string_view>
@@ -31,6 +32,14 @@ namespace iv {
     bool diagnostic_flag_enabled(char const* name);
     void print_stacktrace(std::ostream& out);
     std::string wrap_exception(std::string_view context, std::exception const& cause);
+    // Records context for an exception which escaped an authored lifecycle
+    // callback, then enters the process-wide terminate handler while that
+    // exception remains active. This is deliberately fatal: lifecycle callers
+    // cannot roll back a partially committed graph generation.
+    [[noreturn]] IV_NOINLINE void terminate_node_lifecycle_exception(
+        char const* operation,
+        char const* node_type,
+        std::size_t node_index) noexcept;
     [[noreturn]] void assertion_failed(
         char const* expression,
         char const* message,

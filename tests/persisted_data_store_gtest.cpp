@@ -1109,6 +1109,131 @@ TEST(BackgroundEvaluationTransaction,
 }
 
 TEST(BackgroundEvaluationTransaction,
+     RetiresADisappearedDestinationInTheSuccessorReconciliationCommit)
+{
+    iv::CompiledGraph graph;
+    graph.project_generation = 2;
+    graph.specialization.sample_rate = 48000;
+    iv::BackgroundCoverageState coverage{0};
+    iv::BackgroundPropagationWorkspace propagation{
+        graph.background_evaluation_plan, graph.specialization.sample_rate};
+    iv::PersistedDataStore data;
+    auto reader = data.register_reader();
+    auto const output = data.resolve_output(
+        local_output(iv::PortKind::sample, 0));
+    auto initial = data.begin_candidate(1);
+    initial.overwrite(iv::PersistedSampleRegion{
+        .output = output,
+        .range = range(2, 2),
+        .layout = iv::mono_planar_channel_layout,
+        .values = {iv::Sample{10.0f}, iv::Sample{11.0f}},
+    });
+    ASSERT_EQ(
+        data.publish(std::move(initial)),
+        iv::PersistedDataPublishResult::published);
+
+    iv::TickMaterializationStore materializations;
+    std::array retired{output};
+    iv::BackgroundEvaluationTransaction transaction{
+        graph,
+        nullptr,
+        coverage,
+        propagation,
+        data,
+        materializations,
+        iv::BackgroundTransactionInputs{
+            .retired_outputs = retired,
+        },
+        {},
+        {},
+    };
+    auto result = transaction.execute();
+    ASSERT_TRUE(result.has_value()) << result.error();
+    ASSERT_EQ(result->status, iv::BackgroundEvaluationStatus::committed);
+    ASSERT_TRUE(result->published_data.has_value());
+    ASSERT_TRUE(result->promoted_tick_materialization.has_value());
+
+    auto published = reader.pin();
+    EXPECT_EQ(published->sample_region_count(), 0u);
+    EXPECT_EQ(published->find_sample_region(output, index(2)), nullptr);
+}
+
+TEST(BackgroundEvaluationTransaction,
+     RetiresInheritedDestinationBeforeApplyingSuccessorWrites)
+{
+    auto graph = queued_persisted_graph(iv::PortKind::sample);
+    iv::BackgroundCoverageState coverage{1};
+    iv::BackgroundPropagationWorkspace propagation{
+        graph.background_evaluation_plan, graph.specialization.sample_rate};
+    iv::PersistedDataStore data;
+    auto reader = data.register_reader();
+    auto const output = data.resolve_output(
+        local_output(iv::PortKind::sample, 0));
+    auto initial = data.begin_candidate(1);
+    initial.overwrite(iv::PersistedSampleRegion{
+        .output = output,
+        .range = range(2, 2),
+        .layout = iv::mono_planar_channel_layout,
+        .values = {iv::Sample{10.0f}, iv::Sample{11.0f}},
+    });
+    ASSERT_EQ(
+        data.publish(std::move(initial)),
+        iv::PersistedDataPublishResult::published);
+
+    iv::ProducerReserve reserve{iv::realtime_produced_block_storage_size};
+    iv::AsyncCapacityManager manager{1};
+    iv::AsyncWorkSignal work_signal;
+    iv::PendingQueue pending{reserve, work_signal};
+    ASSERT_EQ(manager.maintain(reserve, {1, 1, 2}), 2u);
+    std::array<iv::Sample, 2> successor_values{40.0f, 41.0f};
+    publish_record(
+        reserve,
+        pending,
+        {
+            .payload_kind = iv::RealtimeProducedPayloadKind::samples,
+            .record_block_count = 1,
+            .payload_size = sizeof(successor_values),
+            .begin = index(10),
+            .sample_count = successor_values.size(),
+            .sample_layout = iv::mono_planar_channel_layout,
+        },
+        std::as_bytes(std::span{successor_values}));
+
+    iv::TickMaterializationStore materializations;
+    std::array retired{output};
+    std::array routes{iv::BackgroundProducedInputRoute{
+        .output = output,
+        .port = 0,
+        .kind = iv::PortKind::sample,
+    }};
+    std::array selections{pending.pin()};
+    iv::BackgroundEvaluationTransaction transaction{
+        graph,
+        nullptr,
+        coverage,
+        propagation,
+        data,
+        materializations,
+        iv::BackgroundTransactionInputs{
+            .retired_outputs = retired,
+        },
+        routes,
+        selections,
+    };
+    auto result = transaction.execute();
+    ASSERT_TRUE(result.has_value()) << result.error();
+    ASSERT_EQ(result->status, iv::BackgroundEvaluationStatus::committed);
+
+    auto published = reader.pin();
+    EXPECT_EQ(published->find_sample_region(output, index(2)), nullptr);
+    auto const* successor =
+        published->find_sample_region(output, index(10));
+    ASSERT_NE(successor, nullptr);
+    EXPECT_FLOAT_EQ(successor->at(index(10), 0).value, 40.0f);
+    EXPECT_FLOAT_EQ(successor->at(index(11), 0).value, 41.0f);
+}
+
+TEST(BackgroundEvaluationTransaction,
      EmptyQueuedEventWindowAuthoritativelyReplacesExistingEvents)
 {
     auto graph = queued_persisted_graph(iv::PortKind::event);

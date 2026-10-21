@@ -108,6 +108,11 @@ export class WorkspaceSession {
     private serverStdoutLines: string[] = [];
     private serverStderrLines: string[] = [];
     private readonly maxCapturedServerLogLines = 20;
+    private readonly serverDiagnosticLogPath = process.env.IV_LOG_FILE
+        || path.join(
+            fs.mkdtempSync(path.join(os.tmpdir(), "intravenous-server-")),
+            "diagnostics.log",
+        );
     private serverReadyReceived = false;
     private serverReadyWaiters: Array<{
         resolve: () => void;
@@ -689,11 +694,15 @@ export class WorkspaceSession {
         const childEnv = {
             ...process.env,
             INTRAVENOUS_DIR: process.env.INTRAVENOUS_DIR || serverDir,
+            IV_LOG_FILE: this.serverDiagnosticLogPath,
         };
 
         this.resetCapturedServerLogs();
         this.outputChannel.appendLine(`starting Intravenous server: ${binary}`);
         this.outputChannel.appendLine(`Intravenous server cwd: ${this.workspaceRoot()}`);
+        this.outputChannel.appendLine(
+            `Intravenous server diagnostic log: ${this.serverDiagnosticLogPath}`,
+        );
         this.process = childProcess.spawn(binary, args, {
             cwd: this.workspaceRoot(),
             env: childEnv,

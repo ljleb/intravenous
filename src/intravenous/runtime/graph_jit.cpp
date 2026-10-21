@@ -393,6 +393,8 @@ struct CapturedNode {
     std::shared_ptr<PackageRevision const> revision{};
     details::NodeCompilerRecord compiler_record{};
     RegisteredNodeTypeIdentity identity{};
+    std::uint64_t provider_version = 0;
+    std::shared_ptr<void const> configuration_identity{};
     void const* node_data = nullptr;
     NodeStateStructures const* state_structures = nullptr;
     std::size_t (*declare_node)(
@@ -583,6 +585,10 @@ CapturedInputs capture_inputs(GraphJitCompileRequest const& request)
                                 .revision = revision->second,
                                 .compiler_record = leaf->compiler_record,
                                 .identity = identity,
+                                .provider_version = definition->second.version,
+                                .configuration_identity = view.node_storage
+                                    ? *view.node_storage
+                                    : std::shared_ptr<void const>{},
                                 .node_data = view.operations->runtime.node_data,
                                 .state_structures =
                                     view.operations->runtime.state_structures,
@@ -815,6 +821,14 @@ void validate_lowering_output(
     auto* block_type = root_block_operation_type(module.getContext());
     validate_root_operation(
         module, output.root_symbols.tick_block, block_type, "tick_block", true);
+    validate_root_operation(
+        module,
+        output.root_symbols.transition_tick_block,
+        block_type,
+        "transition tick_block",
+        output.transition
+            && !output.transition->state_transition
+                    .sample_expiry_cursors.empty());
 
     auto* background_type = root_background_operation_type(module.getContext());
     auto const background_required = !output.background_evaluation_plan.empty();
@@ -979,6 +993,11 @@ MaterializedProjectCode materialize_project_module(
         CompiledGraphRootOperations root_operations{
             .tick_block = symbol.template operator()<CompiledGraphBlockFunction>(
                 root_symbols.tick_block, "root tick_block"),
+            .transition_tick_block = root_symbols.transition_tick_block.empty()
+                ? nullptr
+                : symbol.template operator()<CompiledGraphBlockFunction>(
+                    root_symbols.transition_tick_block,
+                    "transition root tick_block"),
         };
         if (!root_operations.valid()) {
             fail(
@@ -1029,6 +1048,12 @@ MaterializedProjectCode materialize_project_module(
 } // namespace
 
 class GraphJit::Impl {
+    struct TransitionCompilation {
+        std::shared_ptr<CompiledGraph const> active_predecessor{};
+        CompiledGraphRealtimePhase active_predecessor_phase =
+            CompiledGraphRealtimePhase::steady;
+    };
+
     GraphJitKernelSpecialization specialization_{};
     RealtimeStorageCostModel realtime_storage_cost_model_{};
     std::unique_ptr<llvm::TargetMachine> optimization_target_{};
@@ -1080,7 +1105,9 @@ public:
         return specialization_;
     }
 
-    GraphJitCompileResult compile(GraphJitCompileRequest const& request)
+    GraphJitCompileResult compile_impl(
+        GraphJitCompileRequest const& request,
+        TransitionCompilation const* transition)
     {
         std::lock_guard compile_lock(compile_mutex_);
         GraphJitCompileResult result{.attempted = true};
@@ -1150,6 +1177,9 @@ public:
                     .identity = captured_node.identity,
                     .code_key = captured_node.compiler_record.code_key,
                     .revision = captured_node.revision,
+                    .provider_version = captured_node.provider_version,
+                    .configuration_identity =
+                        captured_node.configuration_identity,
                     .package_module = package_modules[parsed_index->second].module.get(),
                     .state_size = record->second.state_size,
                     .state_alignment = record->second.state_alignment,
@@ -1225,6 +1255,35 @@ public:
         output->setDataLayout(shared_jit_->jit->getDataLayout());
         output->setTargetTriple(shared_jit_->jit->getTargetTriple());
 
+        std::optional<graph_jit::LoweringTransitionInput> transition_input;
+        if (transition != nullptr) {
+            auto const* predecessor_realizations =
+                &transition->active_predecessor
+                    ->realtime_port_state_realizations;
+            if (transition->active_predecessor_phase
+                == CompiledGraphRealtimePhase::transition) {
+                auto const& predecessor_cutover =
+                    transition->active_predecessor->cutover;
+                if (!predecessor_cutover
+                    || predecessor_cutover->state_transition
+                        .sample_expiry_cursors.empty()
+                    || !transition->active_predecessor->root_operations
+                        .transition_tick_block) {
+                    result.diagnostics.push_back(diagnostic(
+                        GraphJitDiagnosticStage::input_capture,
+                        "active predecessor has no transition realization"));
+                    return result;
+                }
+                predecessor_realizations =
+                    &predecessor_cutover->transition_realizations;
+            }
+            transition_input.emplace(graph_jit::LoweringTransitionInput{
+                .predecessor_requirements = transition->active_predecessor
+                    ->realtime_port_state_requirements,
+                .predecessor_realizations = *predecessor_realizations,
+            });
+        }
+
         graph_jit::LoweringInput lowering_input{
             .graph = *request.graph,
             .specialization = specialization_,
@@ -1232,6 +1291,7 @@ public:
             .packages = package_modules,
             .node_implementations = implementations,
             .config_relocations = relocations,
+            .transition = transition_input ? &*transition_input : nullptr,
         };
         auto lowering = graph_jit::lower_configured_graph_to_llvm(lowering_input, *output);
         if (!lowering) {
@@ -1269,6 +1329,24 @@ public:
                 package_revisions,
                 lowering->root_symbols,
                 request.project_generation);
+            std::optional<CompiledGraphCutover> cutover;
+            if (lowering->transition) {
+                if (transition == nullptr) {
+                    fail(
+                        GraphJitDiagnosticStage::lowering,
+                        "GraphJit transition lowering lost its compiler input");
+                }
+                cutover.emplace(CompiledGraphCutover{
+                    .predecessor = transition->active_predecessor,
+                    .predecessor_phase =
+                        transition->active_predecessor_phase,
+                    .state_transition = std::move(
+                        lowering->transition->state_transition),
+                    .transition_realizations = std::move(
+                        lowering->transition
+                            ->realtime_port_state_realizations),
+                });
+            }
             result.compiled_graph = std::make_shared<CompiledGraph>(CompiledGraph{
                 .project_generation = request.project_generation,
                 .definitions_generation = request.definitions->generation,
@@ -1282,6 +1360,7 @@ public:
                     std::move(lowering->realtime_port_state_requirements),
                 .realtime_port_state_realizations =
                     std::move(lowering->realtime_port_state_realizations),
+                .cutover = std::move(cutover),
                 .root_operations = materialized.root_operations,
                 .background_operations = materialized.background_operations,
                 .code_lifetime = std::move(materialized.lifetime),
@@ -1290,6 +1369,58 @@ public:
             result.diagnostics.push_back(diagnostic(error.stage, error.what()));
         }
         return result;
+    }
+
+    GraphJitCompileResult compile(GraphJitCompileRequest const& request)
+    {
+        return compile_impl(request, nullptr);
+    }
+
+    GraphJitCompileResult compile_transition(
+        GraphJitTransitionCompileRequest const& request)
+    {
+        GraphJitCompileResult result{.attempted = true};
+        auto const& successor = request.successor;
+        if (!request.steady_successor || !request.active_predecessor) {
+            result.diagnostics.push_back(diagnostic(
+                GraphJitDiagnosticStage::input_capture,
+                "transition compilation requires steady successor and active predecessor artifacts"));
+            return result;
+        }
+        if (request.steady_successor->cutover
+            || request.steady_successor->project_generation
+                != successor.project_generation
+            || request.steady_successor->configured_graph != successor.graph
+            || !successor.definitions
+            || request.steady_successor->definitions_generation
+                != successor.definitions->generation) {
+            result.diagnostics.push_back(diagnostic(
+                GraphJitDiagnosticStage::input_capture,
+                "transition compilation successor does not match its steady artifact"));
+            return result;
+        }
+        if (request.active_predecessor->project_generation
+            >= successor.project_generation) {
+            result.diagnostics.push_back(diagnostic(
+                GraphJitDiagnosticStage::input_capture,
+                "transition compilation predecessor is not older than its successor"));
+            return result;
+        }
+        TransitionCompilation transition{
+            .active_predecessor = request.active_predecessor,
+            .active_predecessor_phase =
+                request.active_predecessor_phase,
+        };
+        auto compiled = compile_impl(successor, &transition);
+        if (compiled.compiled_graph
+            && compiled.compiled_graph->node_layout.steady_storage_size
+                != request.steady_successor->node_layout.storage_size) {
+            compiled.compiled_graph.reset();
+            compiled.diagnostics.push_back(diagnostic(
+                GraphJitDiagnosticStage::lowering,
+                "transition specialization changed the steady NodeStorage extent"));
+        }
+        return compiled;
     }
 };
 
@@ -1309,6 +1440,12 @@ GraphJitKernelSpecialization const& GraphJit::specialization() const noexcept
 GraphJitCompileResult GraphJit::compile(GraphJitCompileRequest const& request)
 {
     return impl_->compile(request);
+}
+
+GraphJitCompileResult GraphJit::compile_transition(
+    GraphJitTransitionCompileRequest const& request)
+{
+    return impl_->compile_transition(request);
 }
 
 GraphJitCompileResult GraphJit::handle_project_graph_transaction(

@@ -11,7 +11,28 @@
 #include <span>
 #include <stdexcept>
 #include <string>
+#include <type_traits>
+#include <utility>
 #include <vector>
+
+static_assert(std::is_nothrow_invocable_v<
+    decltype(iv::NodeLifecycleCallbacks::move_fn),
+    void const*,
+    size_t,
+    size_t,
+    iv::NodeStorage&,
+    iv::NodeStorage const&>);
+static_assert(std::is_nothrow_invocable_v<
+    decltype(iv::NodeLifecycleCallbacks::initialize_fn),
+    void const*,
+    size_t,
+    iv::NodeStorage&>);
+static_assert(std::is_nothrow_invocable_v<
+    decltype(iv::NodeLifecycleCallbacks::release_fn),
+    void const*,
+    size_t,
+    iv::NodeStorage&>);
+static_assert(noexcept(std::declval<iv::NodeStorage::Migration&>().commit()));
 
 namespace {
     inline iv::ResourceContext make_resources()
@@ -966,10 +987,52 @@ int main()
     }
 
     {
+        iv::NodeLayoutBuilder steady_builder(4);
+        NestedParent node;
+        iv::do_declare(node, steady_builder, {});
+        auto steady_layout = std::move(steady_builder).build();
+        auto const steady_size = steady_layout.storage_size;
+        std::vector<std::size_t> steady_offsets;
+        for (auto const& region : steady_layout.regions) {
+            steady_offsets.push_back(region.storage_offset);
+        }
+
+        iv::NodeLayoutTransitionBuilder transition_builder(
+            std::move(steady_layout));
+        auto const transition = transition_builder.declare_raw_region(31, 64);
+        auto specialized = std::move(transition_builder).build();
+
+        iv::test::require(
+            specialized.steady_storage_size == steady_size,
+            "specialization should preserve the finalized steady boundary");
+        for (std::size_t i = 0; i < steady_offsets.size(); ++i) {
+            iv::test::require(
+                specialized.regions[i].storage_offset == steady_offsets[i],
+                "specialization should preserve every steady region offset");
+        }
+        iv::test::require(
+            specialized.regions[transition.index].transition_only,
+            "specialization should append only transition-owned regions");
+        iv::test::require(
+            specialized.regions[transition.index].storage_offset >= steady_size,
+            "specialization should append storage after the steady prefix");
+        iv::test::require(
+            specialized.storage_size
+                == specialized.regions[transition.index].storage_offset + 31,
+            "specialization should include tail alignment in its full extent");
+    }
+
+    {
         iv::NodeLayoutBuilder builder(4);
         NestedParent node;
         iv::do_declare(node, builder, {});
-        auto const transition = builder.declare_transition_raw_region(4096, 64);
+        auto initialize_transition = +[](
+            std::span<std::byte> storage,
+            std::span<std::byte const>) {
+            std::fill(storage.begin(), storage.end(), std::byte{0x6d});
+        };
+        auto const transition = builder.declare_transition_raw_region(
+            4096, 64, initialize_transition);
 
         iv::NodeLayout layout = std::move(builder).build();
         iv::test::require(
@@ -982,6 +1045,21 @@ int main()
         auto resources = make_resources();
         iv::NodeStorage storage = layout.create_storage(resources);
         storage.initialize();
+        for (auto const byte : storage.region_bytes(transition)) {
+            iv::test::require(
+                byte == std::byte{0x6d},
+                "full storage should initialize its transition-only suffix");
+        }
+
+        auto steady_storage = layout.create_storage(
+            resources, iv::NodeStorageExtent::steady_prefix);
+        iv::test::require(
+            steady_storage.buffer().size() == layout.steady_storage_size,
+            "steady-only storage should omit the transition suffix allocation");
+        iv::test::require(
+            steady_storage.region_bytes(transition).empty(),
+            "steady-only storage must not expose transition-only region bytes");
+        steady_storage.initialize();
 
         auto& state = *static_cast<NestedParent::State*>(storage.state_ptr(0));
         iv::test::require(state.nested.size() == 2, "nested_node_states should record directly declared child nodes");
@@ -995,6 +1073,14 @@ int main()
         iv::test::require(
             state.nested[1].data() + state.nested[1].size() == steady_end,
             "second nested node state should stop at the steady-storage boundary");
+        auto& steady_state = *static_cast<NestedParent::State*>(
+            steady_storage.state_ptr(0));
+        auto* steady_allocation_end = steady_storage.buffer().data()
+            + steady_storage.buffer().size();
+        iv::test::require(
+            steady_state.nested[0].data() + steady_state.nested[0].size()
+                == steady_allocation_end,
+            "nested node state should fit exactly inside steady-only storage");
         iv::test::require(state.nested_background[0].size() == sizeof(NestedLeaf::TockState), "first nested background-state span should have the exact TockState size");
         iv::test::require(state.nested_background[1].size() == sizeof(NestedLeaf::TockState), "second nested background-state span should have the exact TockState size");
         auto& first = *reinterpret_cast<NestedLeaf::State*>(state.nested[0].data());

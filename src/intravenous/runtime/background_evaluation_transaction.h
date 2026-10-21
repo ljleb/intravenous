@@ -23,6 +23,9 @@ namespace iv {
 struct BackgroundTransactionInputs {
     std::optional<std::uint64_t> semantic_version{};
     CoveragePropagationRequest roots{};
+    // Generation-cutover reconciliation removes these destinations only after
+    // every closed predecessor queue has committed its finite tail.
+    std::span<PersistedOutputHandle const> retired_outputs{};
 };
 
 enum class BackgroundEvaluationStatus : std::uint8_t {

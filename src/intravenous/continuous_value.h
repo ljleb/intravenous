@@ -919,7 +919,36 @@ struct ContinuousValueTypeInfo {
     bool (*valid_size)(std::optional<std::size_t>) noexcept = nullptr;
     std::optional<std::size_t> (*sample_support)(
         std::optional<std::size_t>) noexcept = nullptr;
+    // Optional semantic conversion of one transported value across resolved
+    // shapes of this same registered type. A null operation explicitly means
+    // that a shape change starts fresh Sequential state.
+    bool (*migrate_value_shape)(
+        void* destination,
+        std::size_t destination_elements,
+        void const* source,
+        std::size_t source_elements) noexcept = nullptr;
 };
+
+namespace continuous_value_details {
+
+template<class Extension>
+consteval auto shape_migration_operation() noexcept
+{
+    if constexpr (requires {
+        static_cast<bool (*)(
+            void*, std::size_t, void const*, std::size_t) noexcept>(
+                &Extension::migrate_value_shape);
+    }) {
+        return static_cast<bool (*)(
+            void*, std::size_t, void const*, std::size_t) noexcept>(
+                &Extension::migrate_value_shape);
+    } else {
+        return static_cast<bool (*)(
+            void*, std::size_t, void const*, std::size_t) noexcept>(nullptr);
+    }
+}
+
+} // namespace continuous_value_details
 
 inline constexpr auto continuous_value_type_registry = std::array {
 #define IV_CONTINUOUS_VALUE_TYPE_INFO(key, extension)                    \
@@ -934,6 +963,9 @@ inline constexpr auto continuous_value_type_registry = std::array {
             extension::channel_scalar_lanes_per_element,          \
         .valid_size = &extension::valid_size,                            \
         .sample_support = &extension::sample_support,                    \
+        .migrate_value_shape =                                           \
+            continuous_value_details::shape_migration_operation<         \
+                extension>(),                                            \
     },
     IV_CONTINUOUS_VALUE_TYPES(IV_CONTINUOUS_VALUE_TYPE_INFO)
 #undef IV_CONTINUOUS_VALUE_TYPE_INFO

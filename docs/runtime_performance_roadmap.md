@@ -91,9 +91,198 @@ The governing performance invariant is:
    executor only after successor lowering and allocation, too late to determine a
    transition suffix or emit a transition root. The same layout also creates the
    background storage instance, which would duplicate an appended realtime-only tail.
-   Move immutable predecessor semantic inventories into the compile request and add a
-   steady-only allocation extent for background storage before connecting suffix
-   lowering.
+   A steady-only allocation extent is now implemented: background `NodeStorage`
+   instances omit the transition suffix even though they retain the canonical layout.
+   The predecessor must not simply come from the prior `ProjectGraph` generation,
+   because pending generations can be superseded and the executor's active predecessor
+   can be older. `GraphExecutor` already distinguishes `realtime_active_` from the
+   replaceable `pending_generation_`. `prepare_stage()` now snapshots only the former
+   into an immutable compiler-coordination context, and `stage()` rejects that context
+   if realtime activated a different predecessor while specialization was in flight.
+   Pending replacement does not invalidate it. Before transition-root expiry is
+   connected, extend the same context token to distinguish that active transition
+   realization from the later steady realization of the same logical generation. A
+   finalized steady `NodeLayout` can now
+   be extended through `NodeLayoutTransitionBuilder`, which preserves all prefix
+   offsets and admits only a transition suffix. The representative project-rate direct-
+   ring sample case can now allocate a private suffix target when the steady target is
+   shared, and the prepared cutover transfer populates it. Connect these completed
+   primitives to GraphJit transition binding/root emission; do not force every graph
+   edit to activate or reserve all possible transition tails.
+
+   **Representative connection implemented (2026-10-18; verification pending):**
+   cold transition specialization now binds feed-forward project-rate direct `Sample`
+   input histories to private suffix rings, emits a transition root which mirrors new
+   producer samples into those rings, and emits the unchanged steady root beside it in
+   the same module. `GraphExecutor` activates that root from a prevalidated cutover,
+   exposes the suffix as the active semantic realization to a newer specialization, and
+   switches to the steady entrypoint at a callback boundary after the finite history
+   horizon. The staging token includes the active transition/steady phase, so expiry
+   during compilation invalidates the result even when the logical predecessor graph is
+   unchanged. Expiry after staging but before activation likewise discards the prepared
+   generation at the quiescent boundary and requires cold respecialization; a stale
+   suffix is never committed. Background storage continues to allocate only the steady
+   prefix.
+
+   This path currently rejects output history/latency, feedback producer order,
+   materialized/composed and non-project-rate samples, and event transition storage.
+   Specialization also repeats cold package parsing/lowering; record its measured cost
+   before deciding whether a reusable host-side lowering artifact is justified. The
+   application-side staging owner still has to call the now-complete
+   context-to-specialization-to-stage contract when that runtime integration front is
+   connected.
+
+   Initial full-suite verification compiled and passed 529 of 530 tests. The remaining
+   generated-root test used directly configured concrete nodes, which do not carry the
+   virtual-node identity currently required for cross-generation matching. Its
+   corrected fixture uses a registered module graph, preserves that identity across a
+   copied connection rewrite, and the subsequent full-suite run passed all 530 tests.
+
+   The next expansion reconstructs retained linear sample materializations during
+   prepared cutover, groups disjoint state roles/channels of one authored port into one
+   suffix timeline, and supports shared Tick sample output history/latency by mirroring
+   transition writes into the ordinary producer representation before existing fanout
+   and carry operations. A dedicated late mirror slot follows feedback/composition
+   writes, so transition history no longer assumes producer-before-consumer schedule
+   order. Verification of this expansion is intentionally deferred to the human-run
+   build and suite. Composed predecessor state, non-project-rate state, and event
+   transition suffixes remain open.
+
+   A subsequent cursor audit found that both cutover ring selection and transition
+   expiry still used node-visible project coordinates. The expansion now records each
+   sample realization's persistent per-pace Sequential cursor. Reconstruction reads the
+   predecessor and successor cursors independently, so transport seeks and resolved
+   pace changes do not reinterpret ring contents. Transition lifetime is no longer a
+   scalar `GlobalIndex` distance: the executor preallocates one progress record per
+   affected pace, snapshots its migrated cursor at activation, and selects the steady
+   root only after every required transported-value count has advanced. The realtime
+   checks remain bounded and allocation-free. A pre-consumer feedback materialization
+   can also feed its transition mirror in the existing ordered before-callback phase.
+   Human compilation and suite verification are pending for this expansion.
+
+   Further Front 6 work had exposed two semantic contracts rather than storage
+   optimizations. Sequential event retention will keep an expected-next-position marker
+   and rebase its bounded ephemeral `TimedEvent` values by the transport seek delta.
+   This keeps the node-facing window globally sorted while durable persistence and
+   Random Access retain authored timestamps. The marker plays the role of the continuous
+   private cursor; no per-event ordinal sidecar is required. Dynamically sized continuous
+   values now use an optional type-owned shape-migration operation. Absence explicitly
+   means fresh initialized successor state; `FFTBlock` currently uses that default, so
+   generic transition code never invents a raw byte-prefix policy.
+
+   Human verification of the cursor/output-window expansion compiled and passed 532 of
+   533 tests. The failure occurred before transition lowering because its disconnected
+   producer expression had no named source declaration and therefore no stable virtual
+   identity. The fixture now names that declaration and checks the two output-window
+   identities before expecting a transition root; verification is pending.
+
+   The next source-level expansion implements those two contracts. Ephemeral
+   Sequential event storage now rebases live ring/carry timestamps from a persistent
+   expected-position marker, while transition expiry counts processed callback extents.
+   Direct, compact, converted, and indexed event cutovers merge into steady storage;
+   producer-index sidecars preserve recoverability for retained fan-in. Only derived
+   event inputs need a private transition suffix. Continuous cutover now evaluates
+   flattened composed sources, and dynamic shapes use the optional type-owned migration
+   hook or explicitly start fresh. Focused tests cover these paths, but compilation and
+   suite execution remain with the human collaborator.
+
+   The generation handoff now also prepares stable-output coverage mappings and commits
+   them only after the predecessor's finite queue tails drain. Incompatible or vanished
+   persisted destinations are retired in the successor reconciliation transaction;
+   sample compatibility includes the complete selected channel set as well as its
+   layout. A successor with no queued inputs still performs one reconciliation
+   publication. This closes the gap where late old-generation recording could reach the
+   canonical store but remain invisible to the newer realtime generation until
+   unrelated future work. Verification remains with the human collaborator.
+
+   Reconciliation now erases an incompatible inherited destination before applying any
+   successor records for the same stable handle. An empty successor can execute this as
+   a retirement-only transaction and publish the matching empty Tick-materialization
+   root without generated background operations. The transition/steady phase observed
+   by cold staging is an atomic token; mutable progress remains realtime-owned.
+
+   One correctness boundary remains before this front can be declared complete.
+   Background plans do not yet carry enough reconciliation input to distinguish
+   unchanged Tock semantics from changed code, configuration, or upstream computation
+   when output identity and storage shape are equal. Do not substitute graph generation
+   or package-wide revision numbers: those would invalidate unrelated stable outputs and
+   conflate recompilation with semantic invalidation. Either carry the explicit stable
+   semantic-change set owned by the application mutation path through compilation and
+   staging, or define a canonical per-computation/dependency fingerprint in the compiled
+   plan. The first option matches the external invalidation-root ownership already
+   specified by the coverage design; the second makes compiled generations
+   self-describing. Choose that ownership and define its exact invalidation-root
+   contract before completing this handoff.
+
+   **Resolved in source (2026-10-19; human verification pending):** compiled
+   generations now carry stable local semantic facts rather than a transitive
+   fingerprint. Registered primitive identity, provider-definition version, reusable
+   typed-configuration ownership, compiled background execution mode, and semantic
+   port shape classify local-node continuity. `NodeInstances` retains a configuration
+   across snapshot publication only while its complete recursive definition closure
+   retains the same versions, so a package rebuild invalidates every affected use but
+   an unrelated refresh preserves cache identity. Stable input ports separately carry
+   normalized connection descriptions. Handoff comparison with the exact active
+   predecessor emits local-node roots and exact input-change roots; existing coverage
+   propagation supplies transitive invalidation. The input root uses the union of old
+   and new input coverage after predecessor drain, and a sample-rate change roots the
+   full background plan. This keeps ordinary small edits proportional to their affected
+   graph while still handling large structured edits and broadly reused rebuilt node
+   kinds without a special path.
+
+   **Remaining lifecycle friction (2026-10-19):** realtime activation still calls
+   `NodeStorage::Migration::commit()`, whose authored move/release/deferred-initialize
+   callbacks can throw and whose initialize path may allocate `TockState`. Partial
+   callback execution is not rollback-safe. Do not solve this with exception catching
+   at the cutover boundary. Define either a separated background/Tock preparation plus
+   statically non-throwing realtime `State` commit, or a real transactional lifecycle
+   contract, before calling Front 6's activation path complete.
+
+   **Resolved in source (2026-10-21; human verification pending):** lifecycle callback
+   failure is now an explicitly fatal contract. The erased initialize/move/release
+   function pointers are `noexcept` wrappers around arbitrary authored exceptions. An
+   escaped exception takes a cold reporting path which writes the operation, node type,
+   node index, active exception, and stacktrace to the server diagnostic log before
+   aborting. VS Code assigns and reports that log path through `IV_LOG_FILE`; an
+   operator-supplied path wins, and crash-handler installation opens the stream before
+   lifecycle work. `NodeStorage::Migration::commit()` and realtime
+   migration commit are `noexcept`. No `std::expected` is returned because no valid
+   recovery or rollback action exists after partial lifecycle execution, and avoiding
+   it also avoids a result branch on every successful cutover.
+
+   This leaves Front 6 source-complete pending the collaborator's compilation and full
+   suite run. Verification failure reopens the front at the failing boundary; a clean
+   run closes it without another implementation pass.
+
+   **Verification follow-up (2026-10-21; human re-run pending):** the first full run
+   found six failures among 548 tests. Two required source corrections: shared event
+   targets now receive a cold-computed earliest ordering origin so the realtime merge
+   remains a direct metadata lookup, and retained Tick sample-output views no longer
+   apply the callback latency offset a second time. Four failures were corrected test
+   contracts (steady-storage materialization, required stable port identity, and two
+   malformed persisted sample ranges). No new realtime allocation, graph walk, or
+   exception branch was introduced. Front 6 stays open through re-verification.
+
+   **Second verification follow-up (2026-10-21; human re-run pending):** 546 of 548
+   tests passed. The remaining coverage fixture now supplies complete stable fan-in
+   connection descriptions instead of propagation-only placeholders. The remaining
+   runtime failure revealed that disconnected Tick output compact carry reserved its
+   latency frames but did not classify them as future frames; `future_frames` now uses
+   the output latency. This is metadata-only on the realtime path and preserves the
+   existing single copy loop and shared Sequential pace cursor.
+
+   **Sequential cursor scope:** GraphJit continuous Tick storage already uses the
+   proposed seek-independent scheme: one monotonic `uint64_t` cursor per distinct
+   absolute pace, shared by every graph-owned continuous port at that pace. The
+   `sequential_begin_ordinal` inside each reflected port binding is not independent
+   persistent ring state; generated execution overwrites it with that callback's
+   derived start ordinal before entering authored code. A later cleanup may group
+   those per-port stores into one per-node/per-pace invocation value if measurement
+   justifies the ABI change. Do not collapse all paces into one integer cursor, because
+   their projected value counts differ, and do not force externally materialized Tick
+   inputs into this domain: those private playback rings are intentionally rebuilt in
+   visible `GlobalIndex` coordinates for each requested window.
+
 3. Complete realtime persisted playback and recording span operations. Persisted
    playback now clears only requested sample windows, traverses relevant sample
    regions, copies ring-wrap runs, and binary-searches clipped event chunks. Realtime

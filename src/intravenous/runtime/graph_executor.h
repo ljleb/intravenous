@@ -20,6 +20,7 @@
 #include <mutex>
 #include <optional>
 #include <thread>
+#include <utility>
 #include <vector>
 
 namespace iv {
@@ -27,6 +28,59 @@ namespace iv {
 enum class GraphExecutorStageResult : std::uint8_t {
     staged,
     ignored_stale,
+    active_predecessor_changed,
+};
+
+class GraphExecutor;
+
+// Stable cold-compilation input for one prospective successor. The predecessor
+// is the generation which has crossed a realtime activation boundary, never a
+// replaceable pending generation. GraphExecutor validates the snapshot again
+// when the resulting successor is staged.
+class GraphExecutorStageContext {
+    GraphExecutor const* executor_ = nullptr;
+    std::uint64_t successor_generation_ = 0;
+    std::shared_ptr<CompiledGraph const> active_predecessor_{};
+    CompiledGraphRealtimePhase active_predecessor_phase_ =
+        CompiledGraphRealtimePhase::steady;
+
+    GraphExecutorStageContext(
+        GraphExecutor const& executor,
+        std::uint64_t successor_generation,
+        std::shared_ptr<CompiledGraph const> active_predecessor,
+        CompiledGraphRealtimePhase active_predecessor_phase) noexcept
+        : executor_(&executor)
+        , successor_generation_(successor_generation)
+        , active_predecessor_(std::move(active_predecessor))
+        , active_predecessor_phase_(active_predecessor_phase)
+    {}
+
+    friend class GraphExecutor;
+
+public:
+    [[nodiscard]] std::uint64_t successor_generation() const noexcept
+    {
+        return successor_generation_;
+    }
+
+    [[nodiscard]] std::shared_ptr<CompiledGraph const> const&
+    active_predecessor() const noexcept
+    {
+        return active_predecessor_;
+    }
+
+    [[nodiscard]] CompiledGraphRealtimePhase active_predecessor_phase()
+        const noexcept
+    {
+        return active_predecessor_phase_;
+    }
+
+    // Constructs the compiler request from this exact active realization.
+    // The caller still owns scheduling the cold compilation and must return
+    // its result through GraphExecutor::stage() with this same context.
+    [[nodiscard]] GraphJitTransitionCompileRequest transition_compile_request(
+        GraphJitCompileRequest successor,
+        std::shared_ptr<CompiledGraph const> steady_successor) const;
 };
 
 struct GraphExecutorReclaimedSnapshots {
@@ -94,15 +148,25 @@ class GraphExecutor {
     };
 
     struct BackgroundGeneration {
+        // Uses the canonical layout's steady prefix. Transition-only realtime
+        // suffix bytes are neither allocated nor addressable in this instance.
         NodeStorage storage{};
         BackgroundCoverageState coverage{};
         BackgroundPropagationWorkspace propagation;
         std::vector<std::unique_ptr<PendingQueue>> pending_inputs{};
         std::vector<BackgroundProducedInputRoute> input_routes{};
         std::vector<PinnedBlockPrefix> input_selections{};
+        std::vector<PersistedOutputHandle> retired_outputs{};
+        // Prepared from the exact active predecessor. These roots are retried
+        // unchanged until the one required successor reconciliation commits.
+        CoveragePropagationRequest reconciliation_roots{};
         // A failed or stale transaction keeps this exact cross-queue set for
         // retry. Later producer publications remain outside every fixed prefix.
         bool input_selection_active = false;
+        // Set after a background cutover until one successor transaction has
+        // rebound migrated coverage/materialization state to this generation
+        // and published a coherent realtime-visible pair.
+        bool reconciliation_required = false;
 
         BackgroundGeneration(
             CompiledGraph const& graph,
@@ -128,11 +192,23 @@ class GraphExecutor {
         std::unique_ptr<RealtimePersistedState> initial_persisted_state{};
         std::optional<NodeStorage::Migration> realtime_migration{};
         std::optional<NodeStorage::Migration> background_migration{};
+        std::optional<BackgroundCoverageState::Migration>
+            background_coverage_migration{};
         // Fully checked ownership/range reconciliation and physical transfer
         // program for the realtime cutover. Preparation performs every
         // recoverable validation before publication to the audio thread.
         std::optional<graph_jit::PreparedRealtimePortStateTransition>
             realtime_port_state_transition{};
+        struct TransitionCursorProgress {
+            graph_jit::SampleRealtimePortStateExpiryCursor expiry{};
+            std::uint64_t activation_ordinal = 0;
+        };
+        // Allocated during cold generation construction. Activation only
+        // snapshots the already-migrated cursor values.
+        std::vector<TransitionCursorProgress> transition_cursor_progress{};
+        std::uint64_t transition_event_progress = 0;
+        std::atomic<CompiledGraphRealtimePhase> realtime_phase{
+            CompiledGraphRealtimePhase::steady};
         bool realtime_initialized = false;
         bool background_initialized = false;
         std::unique_ptr<ExecutionGeneration> successor_owner{};
@@ -149,9 +225,13 @@ class GraphExecutor {
 
         void initialize_first_generation();
         void prepare_realtime_migration_from(ExecutionGeneration& previous);
-        void prepare_background_migration_from(ExecutionGeneration& previous);
-        void commit_realtime_migration(GlobalIndex sample_index);
+        void prepare_background_migration_from(
+            ExecutionGeneration& previous,
+            PersistedDataStore& data);
+        void commit_realtime_migration(GlobalIndex sample_index) noexcept;
         void commit_background_migration();
+        void update_realtime_phase(
+            std::size_t event_samples_advanced = 0) noexcept;
         void publish_successor(
             std::unique_ptr<ExecutionGeneration> successor);
         [[nodiscard]] ExecutionGeneration* successor() const noexcept;
@@ -267,10 +347,20 @@ public:
     GraphExecutor(GraphExecutor&&) = delete;
     GraphExecutor& operator=(GraphExecutor&&) = delete;
 
+    // Snapshots the activated predecessor against which cold transition
+    // specialization must be compiled. Pending generations are intentionally
+    // excluded: they have not established semantic execution history and may
+    // be superseded before activation.
+    [[nodiscard]] GraphExecutorStageContext prepare_stage(
+        std::uint64_t successor_generation) const noexcept;
+
     // Builds a complete pending execution generation and prepares both storage
     // migrations without copying mutable active state. A newer pending
     // generation supersedes an older one without disturbing the active one.
+    // If realtime activated a different predecessor after prepare_stage(), the
+    // caller must specialize again from a fresh context.
     GraphExecutorStageResult stage(
+        GraphExecutorStageContext const& context,
         std::shared_ptr<CompiledGraph const> compiled_graph);
 
     // At the caller-provided quiescent boundary, commits the prepared realtime
@@ -279,7 +369,9 @@ public:
     // root, appends the pending
     // generation to the ordered cutover chain and switches realtime. Background
     // migration commits only after those closed queues drain. Returns false when
-    // no generation is pending.
+    // no generation is pending or when transition-phase expiry made its
+    // prepared predecessor realization stale; a stale pending generation is
+    // discarded and must be specialized again.
     bool activate_pending(GlobalIndex sample_index);
 
     [[nodiscard]] std::optional<std::uint64_t> active_generation() const noexcept;

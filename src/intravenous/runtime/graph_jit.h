@@ -6,6 +6,7 @@
 #include <intravenous/graph_jit/background_evaluation_plan.h>
 #include <intravenous/graph_jit/port_realization.h>
 #include <intravenous/graph_jit/realtime_port_state_plan.h>
+#include <intravenous/graph_jit/realtime_port_state_transition.h>
 #include <intravenous/graph_jit/tick_invocation_call.h>
 #include <intravenous/node/layout.h>
 #include <intravenous/runtime/node_definition_types.h>
@@ -13,6 +14,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -67,11 +69,30 @@ using CompiledGraphBlockFunction = void (*)(
 
 struct CompiledGraphRootOperations {
     CompiledGraphBlockFunction tick_block = nullptr;
+    CompiledGraphBlockFunction transition_tick_block = nullptr;
 
     [[nodiscard]] bool valid() const noexcept
     {
         return tick_block != nullptr;
     }
+};
+
+enum class CompiledGraphRealtimePhase : std::uint8_t {
+    transition,
+    steady,
+};
+
+struct CompiledGraph;
+
+// Cold cutover program specialized against one exact active predecessor
+// realization. The weak predecessor reference validates staging without
+// retaining obsolete generated code for the successor's entire lifetime.
+struct CompiledGraphCutover {
+    std::weak_ptr<CompiledGraph const> predecessor{};
+    CompiledGraphRealtimePhase predecessor_phase =
+        CompiledGraphRealtimePhase::steady;
+    graph_jit::RealtimePortStateTransitionPlan state_transition{};
+    graph_jit::RealtimePortStateRealizations transition_realizations{};
 };
 
 // Background roots consume one executor-owned logical batch. storage_base is
@@ -113,6 +134,7 @@ struct CompiledGraph {
     // semantic port state before activating a replacement realization.
     graph_jit::RealtimePortStateRequirements realtime_port_state_requirements{};
     graph_jit::RealtimePortStateRealizations realtime_port_state_realizations{};
+    std::optional<CompiledGraphCutover> cutover{};
     CompiledGraphRootOperations root_operations{};
     CompiledGraphBackgroundOperations background_operations{};
     std::shared_ptr<void const> code_lifetime{};
@@ -122,6 +144,17 @@ struct GraphJitCompileRequest {
     std::uint64_t project_generation = 0;
     std::shared_ptr<ConfiguredGraph const> graph{};
     std::shared_ptr<NodeDefinitionsSnapshot const> definitions{};
+};
+
+// A transition specialization augments an already compiled steady successor.
+// Recompilation is cold and deterministic; the steady artifact remains the
+// ProjectGraph-owned desired/diagnostic result.
+struct GraphJitTransitionCompileRequest {
+    GraphJitCompileRequest successor{};
+    std::shared_ptr<CompiledGraph const> steady_successor{};
+    std::shared_ptr<CompiledGraph const> active_predecessor{};
+    CompiledGraphRealtimePhase active_predecessor_phase =
+        CompiledGraphRealtimePhase::steady;
 };
 
 struct GraphJitCompileResult {
@@ -152,6 +185,8 @@ public:
 
     [[nodiscard]] GraphJitKernelSpecialization const& specialization() const noexcept;
     [[nodiscard]] GraphJitCompileResult compile(GraphJitCompileRequest const& request);
+    [[nodiscard]] GraphJitCompileResult compile_transition(
+        GraphJitTransitionCompileRequest const& request);
 
     [[nodiscard]] GraphJitCompileResult handle_project_graph_transaction(
         GraphJitCompileRequest const& request);

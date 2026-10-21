@@ -564,6 +564,86 @@ namespace iv {
         return layout;
     }
 
+    size_t NodeLayoutTransitionBuilder::align_up(
+        size_t value, size_t alignment)
+    {
+        auto const mask = alignment - 1;
+        if (value > std::numeric_limits<size_t>::max() - mask) {
+            throw std::overflow_error(
+                "node layout transition suffix offset overflow");
+        }
+        return (value + mask) & ~mask;
+    }
+
+    NodeLayoutTransitionBuilder::NodeLayoutTransitionBuilder(
+        NodeLayout steady_layout)
+        : layout_(std::move(steady_layout))
+    {
+        if (layout_.storage_size != layout_.steady_storage_size) {
+            throw std::invalid_argument(
+                "node layout transition specialization requires a steady-only layout");
+        }
+        for (auto const& region : layout_.regions) {
+            if (region.transition_only) {
+                throw std::invalid_argument(
+                    "node layout steady prefix already contains a transition region");
+            }
+            if (region.alignment == 0
+                || (region.alignment & (region.alignment - 1)) != 0
+                || region.storage_offset > layout_.steady_storage_size
+                || region.size > layout_.steady_storage_size
+                        - region.storage_offset) {
+                throw std::invalid_argument(
+                    "node layout steady prefix contains an invalid region");
+            }
+        }
+    }
+
+    NodeLayout::RegionHandle NodeLayoutTransitionBuilder::declare_raw_region(
+        size_t size,
+        size_t alignment,
+        NodeLayout::Region::RawInitializeFn initialize_fn,
+        std::vector<std::byte> initialize_data)
+    {
+        if (alignment == 0 || (alignment & (alignment - 1)) != 0) {
+            throw std::invalid_argument(
+                "node layout transition-region alignment must be a non-zero power of two");
+        }
+        if (!initialize_fn && !initialize_data.empty()) {
+            throw std::invalid_argument(
+                "node layout transition-region initialize data requires a callback");
+        }
+
+        auto const offset = align_up(layout_.storage_size, alignment);
+        if (size > std::numeric_limits<size_t>::max() - offset) {
+            throw std::overflow_error(
+                "node layout transition suffix size overflow");
+        }
+
+        NodeLayout::Region region;
+        region.kind = NodeLayout::Region::Kind::raw;
+        region.owner_node = NodeLayout::no_owner_node;
+        region.transition_only = true;
+        region.storage_offset = offset;
+        region.size = size;
+        region.alignment = alignment;
+        region.raw_initialize_fn = initialize_fn;
+        region.raw_initialize_data = std::move(initialize_data);
+
+        layout_.storage_alignment = std::max(
+            layout_.storage_alignment, alignment);
+        layout_.storage_size = offset + size;
+        layout_.regions.push_back(std::move(region));
+        return NodeLayout::RegionHandle{
+            .index = layout_.regions.size() - 1,
+        };
+    }
+
+    NodeLayout NodeLayoutTransitionBuilder::build() &&
+    {
+        return std::move(layout_);
+    }
+
     namespace details {
         NodeLayoutArrayStorage resolve_exported_array_storage(
             NodeStorage const& storage,
@@ -631,9 +711,11 @@ namespace iv {
         }
     }
 
-    NodeStorage NodeLayout::create_storage(ResourceContext const& resources) const
+    NodeStorage NodeLayout::create_storage(
+        ResourceContext const& resources,
+        NodeStorageExtent extent) const
     {
-        return NodeStorage(*this, resources);
+        return NodeStorage(*this, resources, extent);
     }
 
     void NodeStorage::StorageDeleter::operator()(std::byte* p) const noexcept
@@ -647,23 +729,45 @@ namespace iv {
         : storage(nullptr, StorageDeleter {})
     {}
 
-    NodeStorage::NodeStorage(NodeLayout const& layout_, ResourceContext const& resources_)
-    : layout(&layout_)
-    , resources(&resources_)
+    NodeStorage::NodeStorage(
+        NodeLayout const& layout_,
+        ResourceContext const& resources_,
+        NodeStorageExtent extent_)
+        : layout(&layout_)
+        , resources(&resources_)
+        , extent(extent_)
+        , allocation_size(
+              extent_ == NodeStorageExtent::steady_prefix
+                  ? layout_.steady_storage_size
+                  : layout_.storage_size)
     {
-        size_t const storage_alignment = std::max(layout_.storage_alignment, size_t(alignof(std::max_align_t)));
+        if (extent_ != NodeStorageExtent::full
+            && extent_ != NodeStorageExtent::steady_prefix) {
+            throw std::invalid_argument("invalid node storage extent");
+        }
+        if (layout_.steady_storage_size > layout_.storage_size) {
+            throw std::logic_error(
+                "node layout steady storage exceeds its complete extent");
+        }
+        size_t const storage_alignment = std::max(
+            layout_.storage_alignment,
+            size_t(alignof(std::max_align_t)));
         storage = {
-            layout_.storage_size == 0
+            allocation_size == 0
                 ? nullptr
-                : static_cast<std::byte*>(::operator new(layout_.storage_size, std::align_val_t(storage_alignment))),
+                : static_cast<std::byte*>(::operator new(
+                    allocation_size,
+                    std::align_val_t(storage_alignment))),
             StorageDeleter { storage_alignment }
         };
-        std::fill_n(storage.get(), layout_.storage_size, std::byte {});
+        std::fill_n(storage.get(), allocation_size, std::byte {});
     }
 
     NodeStorage::NodeStorage(NodeStorage&& other) noexcept
     : layout(other.layout)
     , resources(other.resources)
+    , extent(other.extent)
+    , allocation_size(other.allocation_size)
     , storage(std::move(other.storage))
     , constructed_nodes(std::move(other.constructed_nodes))
     , constructed_background_states(std::move(other.constructed_background_states))
@@ -671,6 +775,8 @@ namespace iv {
     {
         other.layout = nullptr;
         other.resources = nullptr;
+        other.extent = NodeStorageExtent::full;
+        other.allocation_size = 0;
         other.constructed_nodes.clear();
         other.constructed_background_states.clear();
         other.initialized_nodes.clear();
@@ -686,6 +792,8 @@ namespace iv {
         destroy_constructed_states();
         layout = other.layout;
         resources = other.resources;
+        extent = other.extent;
+        allocation_size = other.allocation_size;
         storage = std::move(other.storage);
         constructed_nodes = std::move(other.constructed_nodes);
         constructed_background_states =
@@ -694,6 +802,8 @@ namespace iv {
 
         other.layout = nullptr;
         other.resources = nullptr;
+        other.extent = NodeStorageExtent::full;
+        other.allocation_size = 0;
         other.constructed_nodes.clear();
         other.constructed_background_states.clear();
         other.initialized_nodes.clear();
@@ -739,7 +849,7 @@ namespace iv {
 
     std::span<std::byte> NodeStorage::buffer() const
     {
-        return { storage.get(), layout ? layout->storage_size : 0 };
+        return { storage.get(), layout ? allocation_size : 0 };
     }
 
     size_t NodeStorage::max_block_size() const
@@ -753,7 +863,10 @@ namespace iv {
             return nullptr;
         }
         auto const& node = layout->nodes[node_index];
-        if (node.state_offset < 0) {
+        if (node.state_offset < 0
+            || static_cast<size_t>(node.state_offset) > allocation_size
+            || node.state_size
+                > allocation_size - static_cast<size_t>(node.state_offset)) {
             return nullptr;
         }
         return storage.get() + node.state_offset;
@@ -765,7 +878,11 @@ namespace iv {
             return nullptr;
         }
         auto const& node = layout->nodes[node_index];
-        if (node.background_state_size == 0 || node.background_state_offset < 0) {
+        if (node.background_state_size == 0 || node.background_state_offset < 0
+            || static_cast<size_t>(node.background_state_offset)
+                > allocation_size
+            || node.background_state_size > allocation_size
+                    - static_cast<size_t>(node.background_state_offset)) {
             return nullptr;
         }
         return storage.get() + node.background_state_offset;
@@ -778,7 +895,10 @@ namespace iv {
             return {};
         }
         auto const& record = layout->regions[region.index];
-        if (record.size == 0) {
+        if ((record.transition_only
+             && extent == NodeStorageExtent::steady_prefix)
+            || record.size == 0 || record.storage_offset > allocation_size
+            || record.size > allocation_size - record.storage_offset) {
             return {};
         }
         return { storage.get() + record.storage_offset, record.size };
@@ -951,12 +1071,18 @@ namespace iv {
         std::unordered_set<std::string> migrated;
         if (!current.layout || !previous.layout) return migrated;
 
-        auto collect = [](NodeLayout const& layout) {
+        auto collect = [](NodeStorage const& storage) {
             std::unordered_map<std::string, NodeLayout::Region const*> result;
-            for (auto const& region : layout.regions) {
+            for (auto const& region : storage.layout->regions) {
                 if (region.kind != NodeLayout::Region::Kind::raw
                     || region.migration_identity.empty()) {
                     continue;
+                }
+                auto const bytes = storage.buffer();
+                if (region.storage_offset > bytes.size()
+                    || region.size > bytes.size() - region.storage_offset) {
+                    throw std::logic_error(
+                        "persistent raw region lies outside its NodeStorage extent");
                 }
                 auto [_, inserted] = result.emplace(
                     region.migration_identity, &region);
@@ -969,8 +1095,8 @@ namespace iv {
             return result;
         };
 
-        auto const previous_regions = collect(*previous.layout);
-        auto const current_regions = collect(*current.layout);
+        auto const previous_regions = collect(previous);
+        auto const current_regions = collect(current);
         for (auto const& [identity, region] : current_regions) {
             auto const found = previous_regions.find(identity);
             if (found == previous_regions.end()) continue;
@@ -1011,16 +1137,26 @@ namespace iv {
         std::unordered_set<std::string> const& migrated)
     {
         if (!storage.layout) return;
+        auto bytes = storage.buffer();
         for (auto const& region : storage.layout->regions) {
             if (region.kind != NodeLayout::Region::Kind::raw
                 || !region.raw_initialize_fn) {
                 continue;
             }
+            if (region.transition_only
+                && storage.extent == NodeStorageExtent::steady_prefix) {
+                continue;
+            }
+            if (region.storage_offset > bytes.size()
+                || region.size > bytes.size() - region.storage_offset) {
+                if (region.transition_only) continue;
+                throw std::logic_error(
+                    "ordinary raw region lies outside its NodeStorage extent");
+            }
             if (!region.migration_identity.empty()
                 && migrated.contains(region.migration_identity)) {
                 continue;
             }
-            auto bytes = storage.buffer();
             region.raw_initialize_fn(
                 bytes.subspan(region.storage_offset, region.size),
                 region.raw_initialize_data);
@@ -1199,11 +1335,11 @@ namespace iv {
         return migration;
     }
 
-    void NodeStorage::Migration::commit()
+    void NodeStorage::Migration::commit() noexcept
     {
-        if (committed || !current || !previous) {
-            throw std::logic_error("invalid or already committed node storage migration");
-        }
+        IV_ASSERT(
+            !committed && current && previous,
+            "invalid or already committed node storage migration");
 
         for (auto const& transfer : raw_region_transfers) {
             if (transfer.size == 0) continue;
@@ -1382,18 +1518,7 @@ namespace iv {
             }
 
             if (record.lifecycle.initialize_fn) {
-                try {
-                    record.lifecycle.initialize_fn(record.node, node_index, *this);
-                } catch (std::exception const& e) {
-                    throw std::runtime_error(wrap_exception(
-                        "node initialize failed at index " + std::to_string(node_index),
-                        e
-                    ));
-                } catch (...) {
-                    throw std::runtime_error(
-                        "node initialize failed at index " + std::to_string(node_index)
-                    );
-                }
+                record.lifecycle.initialize_fn(record.node, node_index, *this);
             }
             NodeLayoutBuilder::log_node_event("created", record, node_index);
             initialized_nodes.push_back(node_index);

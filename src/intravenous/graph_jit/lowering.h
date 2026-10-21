@@ -1,6 +1,7 @@
 #pragma once
 
 #include <intravenous/graph_jit/realtime_port_state_plan.h>
+#include <intravenous/graph_jit/realtime_port_state_transition.h>
 #include <intravenous/graph_jit/port_realization.h>
 #include <intravenous/node/layout.h>
 #include <intravenous/runtime/graph_jit.h>
@@ -30,6 +31,8 @@ struct NodeImplementation {
     RegisteredNodeTypeIdentity identity{};
     NodeCodeKey code_key{};
     std::shared_ptr<PackageRevision const> revision{};
+    std::uint64_t provider_version = 0;
+    std::shared_ptr<void const> configuration_identity{};
     llvm::Module* package_module = nullptr;
 
     std::size_t state_size = 0;
@@ -79,6 +82,14 @@ struct ConfigRelocation {
     llvm::GlobalVariable* retained_global = nullptr;
 };
 
+// Immutable semantic inventory of the exact active predecessor realization.
+// This is supplied only by the cold staging coordinator; ordinary desired-graph
+// compilation remains predecessor-independent.
+struct LoweringTransitionInput {
+    RealtimePortStateRequirements const& predecessor_requirements;
+    RealtimePortStateRealizations const& predecessor_realizations;
+};
+
 // Everything the difficult compiler core is allowed to see. In particular,
 // there is no PackageJit/ModuleLoader/live NodeDefinitions dependency here.
 // Package modules and the caller-owned output module share one LLVMContext.
@@ -96,6 +107,7 @@ struct LoweringInput {
     // The lowerer must reconstruct pointer fields from this symbolic data rather
     // than embedding the native pointer bytes stored in configured node objects.
     std::span<ConfigRelocation const> config_relocations{};
+    LoweringTransitionInput const* transition = nullptr;
 };
 
 // Name of the generated zero-input/zero-output root operation. The root owns
@@ -103,9 +115,15 @@ struct LoweringInput {
 // details and are never exposed as a root skip_block ABI.
 struct LoweredGraphRootSymbols {
     std::string tick_block{};
+    std::string transition_tick_block{};
     std::string propagate_background_forward{};
     std::string propagate_background_reverse{};
     std::string evaluate_background{};
+};
+
+struct LoweredGraphTransition {
+    RealtimePortStateTransitionPlan state_transition{};
+    RealtimePortStateRealizations realtime_port_state_realizations{};
 };
 
 // The lowerer owns graph analysis and canonical storage planning as well as
@@ -122,6 +140,7 @@ struct LoweringOutput {
     BackgroundEvaluationPlan background_evaluation_plan{};
     RealtimePortStateRequirements realtime_port_state_requirements{};
     RealtimePortStateRealizations realtime_port_state_realizations{};
+    std::optional<LoweredGraphTransition> transition{};
     LoweredGraphRootSymbols root_symbols{};
 };
 

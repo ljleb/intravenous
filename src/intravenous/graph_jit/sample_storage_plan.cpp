@@ -2413,6 +2413,7 @@ std::expected<SampleStoragePlan, std::string> build_sample_storage_plan(
                     .restore_execution_position = sink.execution_position,
                     .commit_execution_position = sink.execution_position,
                     .retained_frames = retained_frames,
+                    .future_frames = sink.latency,
                 });
             } else if (storage.kind
                        != RealtimeBufferStorageKind::transient_stack) {

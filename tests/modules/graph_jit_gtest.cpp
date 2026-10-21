@@ -117,6 +117,8 @@ constexpr char graph_jit_stereo_conversion_module_id[] = "iv.test.graph_jit.stat
 constexpr char graph_jit_stereo_history_conversion_module_id[] = "iv.test.graph_jit.state_context.stereo_history_conversion_module";
 constexpr char graph_jit_history_fanout_module_id[] = "iv.test.graph_jit.state_context.history_fanout_module";
 constexpr char graph_jit_persistent_history_module_id[] = "iv.test.graph_jit.state_context.persistent_history_module";
+constexpr char graph_jit_large_history_rewire_module_id[] =
+    "iv.test.graph_jit.state_context.large_history_rewire_module";
 constexpr char graph_jit_latency_compensation_module_id[] = "iv.test.graph_jit.state_context.latency_compensation_module";
 constexpr char graph_jit_latency_conversion_fanout_module_id[] = "iv.test.graph_jit.state_context.latency_conversion_fanout_module";
 constexpr char graph_jit_composed_latency_module_id[] = "iv.test.graph_jit.state_context.composed_latency_module";
@@ -5219,7 +5221,9 @@ void disconnected_sample_input_module(iv::GraphBuilder& graph)
 
 void disconnected_sample_output_module(iv::GraphBuilder& graph)
 {
-    (void)graph.node<"iv.test.graph_jit.state_context.history_ramp_source">();
+    auto source =
+        graph.node<"iv.test.graph_jit.state_context.history_ramp_source">();
+    (void)source;
     graph.outputs();
 }
 
@@ -5338,6 +5342,21 @@ void persistent_history_module(iv::GraphBuilder& graph)
     auto source = graph.node<"iv.test.graph_jit.state_context.large_history_ramp_source">();
     auto sink = graph.node<"iv.test.graph_jit.state_context.large_history_consumer">();
     sink(source);
+    graph.outputs();
+}
+
+void large_history_rewire_module(iv::GraphBuilder& graph)
+{
+    auto first_source =
+        graph.node<"iv.test.graph_jit.state_context.large_history_ramp_source">();
+    auto second_source =
+        graph.node<"iv.test.graph_jit.state_context.large_history_ramp_source">();
+    auto first_consumer =
+        graph.node<"iv.test.graph_jit.state_context.large_history_consumer">();
+    auto second_consumer =
+        graph.node<"iv.test.graph_jit.state_context.large_history_consumer">();
+    first_consumer(first_source);
+    second_consumer(second_source);
     graph.outputs();
 }
 
@@ -5540,6 +5559,9 @@ IV_MODULE("iv.test.graph_jit.state_context.stereo_conversion_module", stereo_con
 IV_MODULE("iv.test.graph_jit.state_context.stereo_history_conversion_module", stereo_history_conversion_module);
 IV_MODULE("iv.test.graph_jit.state_context.history_fanout_module", history_fanout_module);
 IV_MODULE("iv.test.graph_jit.state_context.persistent_history_module", persistent_history_module);
+IV_MODULE(
+    "iv.test.graph_jit.state_context.large_history_rewire_module",
+    large_history_rewire_module);
 IV_MODULE("iv.test.graph_jit.state_context.latency_compensation_module", latency_compensation_module);
 IV_MODULE("iv.test.graph_jit.state_context.latency_conversion_fanout_module", latency_conversion_fanout_module);
 IV_MODULE("iv.test.graph_jit.state_context.composed_latency_module", composed_latency_module);
@@ -6417,6 +6439,30 @@ configured_sample_feedback_scc_fanout_graph(
 }
 
 std::shared_ptr<iv::ConfiguredGraph const>
+rewired_large_history_graph(
+    std::shared_ptr<iv::ConfiguredGraph const> const& predecessor)
+{
+    auto successor = std::make_shared<iv::ConfiguredGraph>(*predecessor);
+    auto sample_connections = std::vector<iv::ConfiguredSampleConnection>(
+        predecessor->connections.configured_sample_connections().begin(),
+        predecessor->connections.configured_sample_connections().end());
+    if (sample_connections.size() != 2) {
+        throw std::runtime_error(
+            "unexpected large-history transition connection count");
+    }
+    auto const event_connections = std::vector<iv::ConfiguredEventConnection>(
+        predecessor->connections.configured_event_connections().begin(),
+        predecessor->connections.configured_event_connections().end());
+    sample_connections[1].source_type = sample_connections[0].source_type;
+    sample_connections[1].source_channels =
+        sample_connections[0].source_channels;
+    successor->connections =
+        iv::GraphBuilderConnections::from_configured_connections(
+            sample_connections, event_connections);
+    return successor;
+}
+
+std::shared_ptr<iv::ConfiguredGraph const>
 configured_merged_feed_forward_event_graph(
     iv::PackageRevision const& revision)
 {
@@ -7018,6 +7064,7 @@ TEST(GraphJitSharedRuntimeFixture, BuildPackage)
         "iv.test.graph_jit.state_context.large_history_consumer"));
     EXPECT_TRUE(has_module_definition(graph_jit_history_fanout_module_id));
     EXPECT_TRUE(has_module_definition(graph_jit_persistent_history_module_id));
+    EXPECT_TRUE(has_module_definition(graph_jit_large_history_rewire_module_id));
     EXPECT_TRUE(has_leaf_definition(
         "iv.test.graph_jit.state_context.five_sample_delay"));
     EXPECT_TRUE(has_leaf_definition(
@@ -7592,8 +7639,9 @@ TEST_F(GraphJitRuntimeFixture, DisconnectedSampleOutputKeepsDeclaredHistory)
         ASSERT_TRUE(view.authored_storage.callback_arena_offset);
         EXPECT_FALSE(view.authored_storage.node_storage_offset);
         EXPECT_EQ(retained.representation_channel, 0u);
-        EXPECT_EQ(retained.timeline_offset_frames, 2);
+        EXPECT_EQ(retained.timeline_offset_frames, 0);
         EXPECT_EQ(retained.storage_frame_count, 5u);
+        EXPECT_EQ(retained.carry_future_frames, 2u);
         EXPECT_EQ(retained.storage_size_bytes, 5u * sizeof(iv::Sample));
         ASSERT_TRUE(retained.node_storage_offset);
         EXPECT_EQ(*retained.node_storage_offset, raw->storage_offset);
@@ -7617,6 +7665,119 @@ TEST_F(GraphJitRuntimeFixture, DisconnectedSampleOutputKeepsDeclaredHistory)
         storage.buffer().data(), &empty_tick_invocation, index(64), 64);
     EXPECT_EQ(state->calls, 2u);
     EXPECT_FLOAT_EQ(state->previous_output, 63.0f);
+}
+
+TEST_F(GraphJitRuntimeFixture, TransitionRootPreservesSampleOutputWindow)
+{
+    auto graph = configured_module_graph(
+        *revision, graph_jit_disconnected_sample_output_module_id);
+    ASSERT_TRUE(graph);
+    auto predecessor = compile_graph(graph, 242);
+    ASSERT_TRUE(predecessor.succeeded())
+        << (predecessor.diagnostics.empty()
+                ? ""
+                : predecessor.diagnostics.front().message);
+    EXPECT_EQ(
+        std::ranges::count_if(
+            predecessor.compiled_graph->realtime_port_state_requirements.states,
+            [](auto const& requirement) {
+                return requirement.direction
+                        == iv::graph_jit::PortDirection::output
+                    && requirement.stable_identity.has_value();
+            }),
+        2);
+
+    iv::GraphJitCompileRequest successor_request{
+        .project_generation = 243,
+        .graph = graph,
+        .definitions = definitions,
+    };
+    auto steady_successor = jit->compile(successor_request);
+    ASSERT_TRUE(steady_successor.succeeded())
+        << (steady_successor.diagnostics.empty()
+                ? ""
+                : steady_successor.diagnostics.front().message);
+    auto specialized = jit->compile_transition(
+        iv::GraphJitTransitionCompileRequest{
+            .successor = successor_request,
+            .steady_successor = steady_successor.compiled_graph,
+            .active_predecessor = predecessor.compiled_graph,
+            .active_predecessor_phase =
+                iv::CompiledGraphRealtimePhase::steady,
+        });
+    ASSERT_TRUE(specialized.succeeded())
+        << (specialized.diagnostics.empty()
+                ? ""
+                : specialized.diagnostics.front().message);
+    ASSERT_TRUE(specialized.compiled_graph->cutover);
+    ASSERT_NE(
+        specialized.compiled_graph->root_operations.transition_tick_block,
+        nullptr);
+    ASSERT_EQ(
+        specialized.compiled_graph->cutover->state_transition
+            .sample_expiry_cursors.size(),
+        1u);
+    EXPECT_EQ(
+        specialized.compiled_graph->cutover->state_transition
+            .sample_expiry_cursors.front().value_count,
+        3u);
+    ASSERT_EQ(
+        specialized.compiled_graph->cutover->state_transition
+            .sample_transfers.size(),
+        2u);
+    for (auto const& transfer : specialized.compiled_graph->cutover
+             ->state_transition.sample_transfers) {
+        ASSERT_EQ(transfer.source_storage.size(), 1u);
+        EXPECT_EQ(
+            transfer.source_storage.front().timeline_offset_frames,
+            0);
+        EXPECT_EQ(transfer.target_storage.timeline_offset_frames, 0);
+    }
+
+    auto predecessor_storage = predecessor.compiled_graph
+        ->node_layout.create_storage(resources);
+    predecessor_storage.initialize();
+    predecessor.compiled_graph->root_operations.tick_block(
+        predecessor_storage.buffer().data(),
+        &empty_tick_invocation,
+        index(0),
+        64);
+    predecessor.compiled_graph->root_operations.tick_block(
+        predecessor_storage.buffer().data(),
+        &empty_tick_invocation,
+        index(64),
+        64);
+
+    auto successor_storage = specialized.compiled_graph
+        ->node_layout.create_storage(resources);
+    successor_storage.initialize(&predecessor_storage);
+    auto prepared = iv::graph_jit::prepare_realtime_port_state_transfers(
+        specialized.compiled_graph->cutover->state_transition,
+        predecessor_storage.buffer(),
+        successor_storage.buffer());
+    ASSERT_TRUE(prepared.has_value())
+        << (prepared ? std::string{} : prepared.error());
+    iv::graph_jit::execute_realtime_port_state_transfers(
+        *prepared,
+        predecessor_storage.buffer(),
+        successor_storage.buffer(),
+        index(128));
+
+    auto* state = static_cast<HistoryRampSourceStateMirror*>(
+        successor_storage.state_ptr(0));
+    ASSERT_NE(state, nullptr);
+    specialized.compiled_graph->root_operations.transition_tick_block(
+        successor_storage.buffer().data(),
+        &empty_tick_invocation,
+        index(128),
+        64);
+    EXPECT_FLOAT_EQ(state->previous_output, 127.0f);
+    specialized.compiled_graph->root_operations.tick_block(
+        successor_storage.buffer().data(),
+        &empty_tick_invocation,
+        index(192),
+        64);
+    EXPECT_FLOAT_EQ(state->previous_output, 191.0f);
 }
 
 TEST_F(GraphJitRuntimeFixture, GeneratedRootInvokesPersistedTickCaptures)
@@ -8334,7 +8495,7 @@ TEST_F(GraphJitRuntimeFixture, StereoSampleConversion)
     EXPECT_EQ(
         stereo_source_costs.full_node_storage.ring_addressed_bytes,
         128u * sizeof(iv::Sample));
-    EXPECT_EQ(
+    ASSERT_EQ(
         std::ranges::count_if(
             stereo_conversion_plan->connection_channel_bindings,
             [](auto const& binding) { return binding.has_value(); }),
@@ -8456,6 +8617,120 @@ TEST_F(GraphJitRuntimeFixture, RetainedStereoToMonoHistoryRecordsItsSources)
         ASSERT_TRUE(source.node_storage_offset);
         EXPECT_FALSE(source.callback_arena_offset);
     }
+}
+
+TEST_F(GraphJitRuntimeFixture, TransitionRootReconstructsMaterializedSampleHistory)
+{
+    auto graph = configured_module_graph(
+        *revision, graph_jit_stereo_history_conversion_module_id);
+    ASSERT_TRUE(graph);
+    auto predecessor = compile_graph(graph, 244);
+    ASSERT_TRUE(predecessor.succeeded())
+        << (predecessor.diagnostics.empty()
+                ? ""
+                : predecessor.diagnostics.front().message);
+
+    iv::GraphJitCompileRequest successor_request{
+        .project_generation = 245,
+        .graph = graph,
+        .definitions = definitions,
+    };
+    auto steady_successor = jit->compile(successor_request);
+    ASSERT_TRUE(steady_successor.succeeded())
+        << (steady_successor.diagnostics.empty()
+                ? ""
+                : steady_successor.diagnostics.front().message);
+    auto specialized = jit->compile_transition(
+        iv::GraphJitTransitionCompileRequest{
+            .successor = successor_request,
+            .steady_successor = steady_successor.compiled_graph,
+            .active_predecessor = predecessor.compiled_graph,
+            .active_predecessor_phase =
+                iv::CompiledGraphRealtimePhase::steady,
+        });
+    ASSERT_TRUE(specialized.succeeded())
+        << (specialized.diagnostics.empty()
+                ? ""
+                : specialized.diagnostics.front().message);
+    ASSERT_TRUE(specialized.compiled_graph->cutover);
+    ASSERT_NE(
+        specialized.compiled_graph->root_operations.transition_tick_block,
+        nullptr);
+    ASSERT_EQ(
+        specialized.compiled_graph->cutover->state_transition
+            .sample_expiry_cursors.size(),
+        1u);
+    EXPECT_EQ(
+        specialized.compiled_graph->cutover->state_transition
+            .sample_expiry_cursors.front().value_count,
+        5u);
+
+    auto predecessor_storage = predecessor.compiled_graph
+        ->node_layout.create_storage(resources);
+    predecessor_storage.initialize();
+    predecessor.compiled_graph->root_operations.tick_block(
+        predecessor_storage.buffer().data(),
+        &empty_tick_invocation,
+        index(0),
+        64);
+    predecessor.compiled_graph->root_operations.tick_block(
+        predecessor_storage.buffer().data(),
+        &empty_tick_invocation,
+        index(64),
+        64);
+
+    auto transition_storage = specialized.compiled_graph
+        ->node_layout.create_storage(resources);
+    transition_storage.initialize(&predecessor_storage);
+    auto prepared = iv::graph_jit::prepare_realtime_port_state_transfers(
+        specialized.compiled_graph->cutover->state_transition,
+        predecessor_storage.buffer(),
+        transition_storage.buffer());
+    ASSERT_TRUE(prepared.has_value())
+        << (prepared ? std::string{} : prepared.error());
+    iv::graph_jit::execute_realtime_port_state_transfers(
+        *prepared,
+        predecessor_storage.buffer(),
+        transition_storage.buffer(),
+        index(128));
+    specialized.compiled_graph->root_operations.transition_tick_block(
+        transition_storage.buffer().data(),
+        &empty_tick_invocation,
+        index(128),
+        64);
+
+    auto reference_storage = steady_successor.compiled_graph
+        ->node_layout.create_storage(resources);
+    reference_storage.initialize(&predecessor_storage);
+    steady_successor.compiled_graph->root_operations.tick_block(
+        reference_storage.buffer().data(),
+        &empty_tick_invocation,
+        index(128),
+        64);
+
+    HistoryConsumerStateMirror* transition_state = nullptr;
+    for (std::size_t node = 0;
+         node < specialized.compiled_graph->node_layout.nodes.size(); ++node) {
+        if (specialized.compiled_graph->node_layout.nodes[node].state_size
+            == sizeof(HistoryConsumerStateMirror)) {
+            transition_state = static_cast<HistoryConsumerStateMirror*>(
+                transition_storage.state_ptr(node));
+        }
+    }
+    HistoryConsumerStateMirror* reference_state = nullptr;
+    for (std::size_t node = 0;
+         node < steady_successor.compiled_graph->node_layout.nodes.size(); ++node) {
+        if (steady_successor.compiled_graph->node_layout.nodes[node].state_size
+            == sizeof(HistoryConsumerStateMirror)) {
+            reference_state = static_cast<HistoryConsumerStateMirror*>(
+                reference_storage.state_ptr(node));
+        }
+    }
+    ASSERT_NE(transition_state, nullptr);
+    ASSERT_NE(reference_state, nullptr);
+    EXPECT_FLOAT_EQ(transition_state->current, reference_state->current);
+    EXPECT_FLOAT_EQ(transition_state->history_1, reference_state->history_1);
+    EXPECT_FLOAT_EQ(transition_state->history_5, reference_state->history_5);
 }
 
 TEST_F(GraphJitRuntimeFixture, SampleOutputUpdateRevisesUnpublishedFrames)
@@ -13760,6 +14035,144 @@ TEST_F(GraphJitRuntimeFixture, PersistentSampleHistory)
     EXPECT_FLOAT_EQ(large_history_state->history_1, 5055.0f);
     EXPECT_FLOAT_EQ(large_history_state->history_5000, 56.0f);
 
+}
+
+TEST_F(
+    GraphJitRuntimeFixture,
+    TransitionRootPreservesRewiredHistoryAndMirrorsNewProducerSamples)
+{
+    auto predecessor_graph = configured_module_graph(
+        *revision, graph_jit_large_history_rewire_module_id);
+    ASSERT_TRUE(predecessor_graph);
+    auto successor_graph = rewired_large_history_graph(predecessor_graph);
+    auto predecessor = compile_graph(predecessor_graph, 240);
+    ASSERT_TRUE(predecessor.succeeded())
+        << (predecessor.diagnostics.empty()
+                ? ""
+                : predecessor.diagnostics.front().message);
+    EXPECT_EQ(
+        std::ranges::count_if(
+            predecessor.compiled_graph->realtime_port_state_requirements.states,
+            [](auto const& requirement) {
+                return requirement.role
+                        == iv::graph_jit::RealtimePortStateRole::
+                            sequential_input_history
+                    && requirement.stable_identity.has_value();
+            }),
+        2);
+
+    iv::GraphJitCompileRequest successor_request{
+        .project_generation = 241,
+        .graph = successor_graph,
+        .definitions = definitions,
+    };
+    auto steady_successor = jit->compile(successor_request);
+    ASSERT_TRUE(steady_successor.succeeded())
+        << (steady_successor.diagnostics.empty()
+                ? ""
+                : steady_successor.diagnostics.front().message);
+    auto specialized = jit->compile_transition(
+        iv::GraphJitTransitionCompileRequest{
+            .successor = successor_request,
+            .steady_successor = steady_successor.compiled_graph,
+            .active_predecessor = predecessor.compiled_graph,
+            .active_predecessor_phase =
+                iv::CompiledGraphRealtimePhase::steady,
+        });
+    ASSERT_TRUE(specialized.succeeded())
+        << (specialized.diagnostics.empty()
+                ? ""
+                : specialized.diagnostics.front().message);
+    ASSERT_TRUE(specialized.compiled_graph->cutover);
+    ASSERT_NE(
+        specialized.compiled_graph->root_operations.transition_tick_block,
+        nullptr);
+    ASSERT_EQ(
+        specialized.compiled_graph->cutover->state_transition
+            .sample_expiry_cursors.size(),
+        1u);
+    EXPECT_EQ(
+        specialized.compiled_graph->cutover->state_transition
+            .sample_expiry_cursors.front().value_count,
+        5000u);
+    EXPECT_EQ(
+        specialized.compiled_graph->node_layout.steady_storage_size,
+        steady_successor.compiled_graph->node_layout.storage_size);
+    EXPECT_GT(
+        specialized.compiled_graph->node_layout.storage_size,
+        specialized.compiled_graph->node_layout.steady_storage_size);
+
+    auto predecessor_storage = predecessor.compiled_graph
+        ->node_layout.create_storage(resources);
+    predecessor_storage.initialize();
+    for (std::uint64_t sample = 0; sample <= 5056; sample += 64) {
+        predecessor.compiled_graph->root_operations.tick_block(
+            predecessor_storage.buffer().data(),
+            &empty_tick_invocation,
+            iv::GlobalIndex::from_bits(sample),
+            64);
+    }
+
+    auto successor_storage = specialized.compiled_graph
+        ->node_layout.create_storage(resources);
+    successor_storage.initialize(&predecessor_storage);
+    auto prepared = iv::graph_jit::prepare_realtime_port_state_transfers(
+        specialized.compiled_graph->cutover->state_transition,
+        predecessor_storage.buffer(),
+        successor_storage.buffer());
+    ASSERT_TRUE(prepared.has_value())
+        << (prepared ? std::string{} : prepared.error());
+    iv::graph_jit::execute_realtime_port_state_transfers(
+        *prepared,
+        predecessor_storage.buffer(),
+        successor_storage.buffer(),
+        index(5120));
+
+    std::vector<LargeHistoryConsumerStateMirror*> consumers;
+    for (std::size_t node = 0;
+         node < specialized.compiled_graph->node_layout.nodes.size(); ++node) {
+        if (specialized.compiled_graph->node_layout.nodes[node].state_size
+            == sizeof(LargeHistoryConsumerStateMirror)) {
+            consumers.push_back(
+                static_cast<LargeHistoryConsumerStateMirror*>(
+                    successor_storage.state_ptr(node)));
+        }
+    }
+    ASSERT_EQ(consumers.size(), 2u);
+
+    specialized.compiled_graph->root_operations.transition_tick_block(
+        successor_storage.buffer().data(),
+        &empty_tick_invocation,
+        index(5120),
+        64);
+    for (auto const* consumer : consumers) {
+        EXPECT_FLOAT_EQ(consumer->current, 5120.0f);
+        EXPECT_FLOAT_EQ(consumer->history_1, 5119.0f);
+        EXPECT_FLOAT_EQ(consumer->history_5000, 120.0f);
+    }
+
+    for (std::uint64_t sample = 5184; sample < 10112; sample += 64) {
+        specialized.compiled_graph->root_operations.transition_tick_block(
+            successor_storage.buffer().data(),
+            &empty_tick_invocation,
+            index(sample),
+            64);
+    }
+    specialized.compiled_graph->root_operations.transition_tick_block(
+        successor_storage.buffer().data(),
+        &empty_tick_invocation,
+        index(10112),
+        8);
+    specialized.compiled_graph->root_operations.tick_block(
+        successor_storage.buffer().data(),
+        &empty_tick_invocation,
+        index(10120),
+        64);
+    for (auto const* consumer : consumers) {
+        EXPECT_FLOAT_EQ(consumer->current, 10120.0f);
+        EXPECT_FLOAT_EQ(consumer->history_1, 10119.0f);
+        EXPECT_FLOAT_EQ(consumer->history_5000, 5120.0f);
+    }
 }
 
 TEST_F(GraphJitRuntimeFixture, RootGraphBoundaryPortsRejected)

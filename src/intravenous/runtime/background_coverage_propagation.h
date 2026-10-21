@@ -85,6 +85,10 @@ class BackgroundPropagationWorkspace;
 // intentionally separate from both reusable accumulator scratch and one
 // transaction's prepared candidate.
 class BackgroundCoverageState {
+public:
+    struct Migration;
+
+private:
     std::vector<IndexCoverage> output_coverages_{};
 
     friend class BackgroundPropagationWorkspace;
@@ -92,6 +96,44 @@ class BackgroundCoverageState {
 public:
     BackgroundCoverageState() = default;
     explicit BackgroundCoverageState(std::size_t output_count);
+
+    // Prepares an index-independent transfer between compatible stable output
+    // identities. The descriptor may be built before the predecessor finishes
+    // draining; commit() reads its final coverage after that drain.
+    [[nodiscard]] Migration prepare_migration_from(
+        BackgroundCoverageState& previous,
+        graph_jit::BackgroundEvaluationPlan const& current_plan,
+        graph_jit::BackgroundEvaluationPlan const& previous_plan,
+        bool local_semantic_environment_changed = false);
+};
+
+struct BackgroundCoverageState::Migration {
+    struct OutputTransfer {
+        std::size_t current = 0;
+        std::size_t previous = 0;
+    };
+    struct ChangedInput {
+        graph_jit::BackgroundPortIndex current = 0;
+        graph_jit::BackgroundPortIndex previous = 0;
+    };
+
+    BackgroundCoverageState* current = nullptr;
+    BackgroundCoverageState* previous = nullptr;
+    graph_jit::BackgroundEvaluationPlan const* current_plan = nullptr;
+    graph_jit::BackgroundEvaluationPlan const* previous_plan = nullptr;
+    std::vector<OutputTransfer> outputs{};
+    std::vector<ChangedInput> changed_inputs{};
+    CoveragePropagationRequest reconciliation_roots{};
+    bool committed = false;
+
+    Migration() = default;
+    Migration(Migration&&) noexcept = default;
+    Migration& operator=(Migration&&) noexcept = default;
+    Migration(Migration const&) = delete;
+    Migration& operator=(Migration const&) = delete;
+
+    void commit();
+    [[nodiscard]] CoveragePropagationRequest take_reconciliation_roots();
 };
 
 // Owns one successful F/R candidate until a surrounding operation either

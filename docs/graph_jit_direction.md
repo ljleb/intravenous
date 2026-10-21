@@ -1928,6 +1928,16 @@ background lags. Old-generation endpoints are then closed, giving their pending 
 finite tails. Background finishes/drains old-generation work under the old graph,
 applies the prepared stable-identity migration, then consumes new-generation queues.
 
+Node lifecycle failure during a generation handoff is process-fatal. Authored
+`initialize()`, `move()`, and `release()` operations may throw internally, including
+allocator failures, but their erased runtime callbacks catch at the node boundary only
+to record the operation and node identity before entering the installed terminate
+handler. That handler records the active exception and stacktrace, flushes the server
+diagnostic log, and aborts. The handoff does not return an error value: after any
+lifecycle operation has mutated or released state, neither generation is a defined
+rollback target. Successful callbacks and the final migration commit are therefore
+exposed as `noexcept`, with diagnostic work confined to the exceptional path.
+
 A removed producer therefore simply stops producing after the boundary; it does not
 erase retained state at a surviving destination. A removed destination is retired only
 after remaining old-generation work has been interpreted under the old graph. Stable

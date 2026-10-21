@@ -3,10 +3,12 @@
 #include <intravenous/channel_layout.h>
 #include <intravenous/graph/port_ids.h>
 #include <intravenous/graph_jit/stable_graph_identity.h>
+#include <intravenous/node/registered_type_identity.h>
 #include <intravenous/ports.h>
 
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <string>
 #include <vector>
@@ -199,6 +201,10 @@ struct BackgroundPortPlan {
     // Output-only. Input ports have no retention contract.
     std::optional<OutputRetention> retention{};
     std::optional<StableOutputPortId> stable_identity{};
+    // Input-only. This identifies the consumer-owned semantic input across
+    // graph generations; the incoming connection set is deliberately not part
+    // of the identity because rewiring is one of the changes being detected.
+    std::optional<StableInputPortId> stable_input_identity{};
 
     ChannelLayout sample_layout{};
     EventTypeId event_type = EventTypeId::empty;
@@ -217,6 +223,14 @@ struct BackgroundNodePlan {
     SemanticNodeIndex semantic_node = 0;
     SemanticSccIndex semantic_scc = 0;
     std::optional<StableConcreteNodeId> stable_identity{};
+    // Local semantic equivalence is independent of upstream dependencies.
+    // Primitive identity distinguishes concrete implementations within one
+    // configured graph. Provider version changes on accepted code replacement.
+    // Configuration identity is shared only when NodeInstances proved the typed
+    // arguments and their recursive definition closure reusable.
+    RegisteredNodeTypeIdentity implementation_identity{};
+    std::uint64_t provider_version = 0;
+    std::shared_ptr<void const> configuration_identity{};
 
     // Authored Tock nodes execute their imported F/R/T callbacks. Replay nodes
     // instead use compiler-provided pointwise F/R coverage propagation and

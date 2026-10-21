@@ -356,6 +356,55 @@ compiler mutable executor ownership) and let background storage allocate only th
 steady prefix. This moves transition planning ahead of final layout/emission while
 retaining one canonical offset model.
 
+**Partial resolution and further friction (2026-10-18):** `NodeStorage` now owns an
+explicit allocation extent. Realtime generations allocate the complete canonical
+layout, while background generations allocate and expose only `steady_storage_size`;
+transition-only raw initializers and region views are excluded from that shorter
+instance. This resolves the duplicated-background-tail part of the preceding friction.
+
+The predecessor-input part cannot be implemented by copying
+`ProjectGraph::current_generation_` into the ordinary compile request. That is the
+latest logical graph, but `GraphExecutor` deliberately permits a pending generation to
+be superseded before activation. The executor's active predecessor can therefore be an
+older generation, and a transition program compiled against the logical predecessor
+would be semantically wrong. The generations are already distinguishable inside
+`GraphExecutor`: `realtime_active_` is the predecessor and `pending_generation_` is
+only a replaceable candidate. The missing piece is a cold compiler-coordination path
+which receives that active identity. Do not serialize graph edits merely to make these
+identities coincide, and do not preallocate every possible transition suffix in the
+steady compile.
+
+**Coordination resolution (2026-10-18):** steady compilation remains
+predecessor-independent. `GraphExecutor::prepare_stage()` now returns a cold staging
+context containing the exact activated predecessor and intended successor generation.
+The application-side staging coordinator will use that immutable context to request
+transition specialization, then return the result with the same context to
+`GraphExecutor::stage()`. Staging accepts replacement of any pending generation, but
+returns `active_predecessor_changed` if a realtime activation changed the predecessor
+in the meantime; the caller must then specialize again. This gives the compiler the
+active identity without giving it mutable executor ownership or treating a pending
+generation as semantic history.
+
+The context currently tokens the active `CompiledGraph` identity. When the first
+transition root lands, the same logical generation will be able to switch from its
+transition realization to its steady realization. That realization phase is also part
+of the semantic predecessor: `prepare_stage()` must snapshot it, and `stage()` must
+reject a specialization if expiry changed it while compilation was in flight. Do not
+infer the phase from project-generation equality.
+
+The layout half of that specialization boundary is also present.
+`NodeLayoutTransitionBuilder` accepts an already-finalized steady layout, preserves all
+steady offsets, and permits only transition raw regions to be appended. The
+sample-storage layer can now realize the representative project-rate direct-ring case
+whose successor steady target is shared: it appends a private suffix target and extends
+the already prepared cutover transfer so inherited samples are copied there without
+allocation at activation. Event conversion, materialized/composed samples, and
+non-project-rate samples remain explicit unsupported cases. The next connection is for
+GraphJit to consume the staging context's predecessor inventories, bind the affected
+authored port to that suffix target in a transition root, and emit it together with the
+steady root. The specialized result should augment the steady successor analysis; it
+must not replace `ProjectGraph`'s predecessor-independent desired/diagnostic artifact.
+
 The comparison must preserve allocation-free, non-failing realtime activation;
 replacement while a transition is still active; static exclusion of transition work
 from unaffected graphs and ports; and no accidental permanent copy/memory cost merely
@@ -363,6 +412,322 @@ to simplify migration. Until a hostile rewiring/fan-in case has been implemented
 end, do not treat the current one-`CompiledGraph` limitation as proof that the runtime
 must grow a two-realization container. This review does not change Front 6's semantic
 scope or its position as the next execution-correctness front.
+
+**Representative transition-root path implemented (2026-10-18; verification
+pending):** GraphJit can now cold-specialize an already compiled steady successor from
+the exact predecessor and realization phase captured by `GraphExecutorStageContext`.
+For feed-forward project-rate `Sample` input history backed by a canonical persistent
+ring, specialization appends private suffix rings, transfers inherited history at
+cutover, mirrors newly produced samples into those rings while the transition root is
+active, and emits transition and steady entrypoints in the same LLVM module. Both roots
+share the steady layout prefix and authored node `State`; expiry changes only the
+selected entrypoint. `CompiledGraph` retains the prepared semantic cutover and the
+transition-phase realization inventory, while its weak predecessor token avoids pinning
+obsolete generated code for the successor's lifetime.
+
+`GraphExecutor` now tokens the active realization phase as well as the active compiled
+graph. A specialization becomes stale if the predecessor expires from transition to
+steady while compilation is in flight. Activation selects the transition root without
+allocation, and callback completion switches the generation to its steady root once the
+finite history horizon has elapsed. If expiry instead occurs after staging but before
+activation, the executor discards that prepared generation at the quiescent boundary;
+its suffix transfer can no longer be current and cold specialization must be repeated.
+A newer revision can therefore specialize from the suffix inventory while the
+transition remains active. The contiguous suffix allocation is still retained until the
+generation retires, as already recorded above.
+
+This representative implementation deliberately rejects output history/latency,
+producer-after-consumer feedback order, materialized or composed sample state,
+non-project-rate state, and event transition storage. It also reparses and lowers the
+successor package LLVM during cold specialization instead of retaining a reusable
+`LoweringPlan`; measure that duplicate cold compile cost before adding longer-lived
+compiler artifacts. The compiler/executor coordination API is present, but the
+application-side owner which invokes it is still part of the later runtime integration
+front. Focused generated-root and executor phase/expiry tests have been added; their
+build and execution result is intentionally supplied by the human collaborator.
+
+The first full-suite verification compiled successfully and passed 529 of 530 tests.
+The sole failure did not reach the transition root: its test constructed concrete
+package nodes directly, outside a virtual module embedding, so under the current stable-
+identity rules those nodes had no cross-generation identity and specialization had no
+semantic states to match. The fixture now uses a registered module graph and rewrites
+only a copied connection record, preserving virtual-node identity; verification of that
+correction subsequently passed. The full suite therefore passed all 530 tests for the
+representative direct-ring transition-root landing.
+
+**Expansion in progress (2026-10-18; verification supplied after the next build):**
+prepared sample cutover can now reconstruct a predecessor's retained linear channel
+materialization instead of requiring the predecessor semantic channel to be stored
+directly. Transition suffix allocation groups disjoint roles/channels of the same
+authored port into one physical timeline. This permits Tick sample output history and
+latency to share one suffix ring: the transition callback writes that ring, an ordered
+post-callback mirror updates the ordinary steady producer representation before fanout
+and carry commit, and the steady root resumes from the evolved steady representation.
+Feedback timelines also have a late transition-mirror phase after feedback and
+composition writes, removing the producer-before-consumer ordering assumption without
+changing ordinary materialization order. Composed predecessor state, non-project-rate
+state, and event transition suffixes remain incomplete.
+
+**Sequential-cursor correction and pace expansion (2026-10-19; verification
+pending):** the preceding project-rate restriction hid an incorrect addressing
+assumption in the representative cutover. Continuous rings remain Sequential across a
+seek because they use one persistent linear cursor per resolved pace; the cutover had
+instead selected ring slots from the node-visible `GlobalIndex`. Every sample
+realization now records its generation's pace-cursor offset. Prepared transfer
+validation checks that cursor, and realtime reconstruction addresses predecessor and
+successor storage from their respective linear ordinals. A transport jump therefore
+does not reinterpret history. A pace change preserves the overlapping sequence of
+node-owned transported values without implicit resampling, even when the old and new
+pace cursors have different physical origins. The project-rate-only gate has been
+removed from direct and materialized sample transition storage. Focused coverage now
+uses different old/new pace exponents and cursor origins together with an unrelated
+cutover `GlobalIndex`; compilation and execution remain for human verification.
+Transition expiry now uses the same model. The executor cold-allocates one progress
+record per affected successor pace, snapshots each migrated cursor at activation, and
+switches to the steady root only after every required transported-value horizon has
+actually advanced. A seek cannot prematurely expire the transition, and a slow or fast
+port is no longer measured in project-rate samples. The existing before-callback
+materialization order also supplies pre-consumer feedback mirrors, closing the remaining
+sample feedback-order guard.
+
+**Resolved semantic direction and implementation in progress (2026-10-19):** two
+remaining Front 6 boundaries required explicit contracts rather than storage guesses.
+
+- Sequential events retain absolute `TimedEvent` coordinates but must also remain in
+  invocation order across a transport seam. The current cutover filters them by a
+  `GlobalIndex` window around activation, which necessarily drops pre-seek history.
+  The chosen contract separates durable and ephemeral coordinates. Persistence and
+  Random Access retain the authored absolute timestamp. Storage retained only for
+  Sequential execution instead moves with the transport: it records the expected next
+  global position, detects a seek when the next callback begins elsewhere, and rebases
+  its bounded retained events by that seek delta before exposing or pruning them. This
+  preserves one time-sorted node-facing window without a per-event coordinate sidecar.
+  The expected-position marker is analogous to a continuous ring's private cursor, but
+  event values must move because `TimedEvent` carries its coordinate.
+- A surviving dynamically sized value such as `FFTBlock` can change resolved size.
+  The type registry now owns an optional cross-shape migration operation. If the type
+  omits it, the successor intentionally starts fresh initialized state; generic graph
+  code never byte-prefix-copies a value. `FFTBlock` currently chooses that fresh-state
+  default because no bin-resize semantics have been authored. A future type can supply
+  a realtime-safe operation without adding a type switch to transition planning.
+
+Composed predecessor sample history remains ordinary implementation work once these
+semantic boundaries are settled: its retained contribution graph must be carried into
+the cold transition descriptor and evaluated into the suffix. It does not resolve or
+avoid either issue above.
+
+The first human verification of the Sequential-cursor/output-window expansion compiled
+and passed 532 of 533 tests. The sole failure did not enter output-window lowering: the
+fixture discarded its authored producer expression, so package source annotation gave
+that otherwise executable disconnected node no stable virtual identity and transition
+matching found no surviving port state. The fixture now names the producer declaration
+and asserts that both output-window requirements have stable identities before testing
+the transition root; verification of that correction is pending.
+
+**Boundary implementation update (2026-10-19; human verification pending):** the
+contracts above are now represented in the transition program rather than remaining
+design notes. Persistent Sequential event rings and compact carries own an initialized
+expected-next-position marker. Restore/prune rebases only their live bounded events
+when the visible transport position jumps, and prepared cutover rebases the predecessor
+sequence to the activation position before interval selection. Event transition expiry
+advances by completed callback extents and is independent of visible `GlobalIndex`
+differences.
+
+Prepared event transfer now accepts both ring and compact-carry predecessors and
+successors, applies a planned type conversion when one exists, and merges multiple
+semantic transfers into one target without resetting earlier contributions. Indexed
+fan-in targets retain the current producer index beside every copied event, including
+deterministic equal-time ordering. This lets Tick-output history/latency and multiple
+recoverable producers enter the ordinary steady aggregate directly. Generated retained
+fan-in already requests that sidecar whenever a producer owns history or latency, so an
+event output transition suffix is neither needed nor used. A derived Sequential input
+whose authored view cannot receive a direct transfer instead gets one private
+transition ring; the transition root materializes each current invocation into it
+before the consumer, and the steady root takes over after the inherited history
+horizon.
+
+The continuous side now carries flattened retained composition sources and evaluates
+their nonzero channel coefficients during prepared reconstruction. Same-type dynamic
+shape changes call the optional registry-owned migration operation; absent support is
+an explicit fresh-state result. These changes close the previously listed composed
+predecessor, non-project-rate addressing, dynamic-shape, and ephemeral-event transition
+items at source level. Focused coverage was added for compact/indexed event cutover,
+seek rebasing, composed reconstruction, fresh dynamic shapes, and seek-independent
+event expiry. No compilation or test execution was performed by the implementation
+agent, per the collaboration agreement.
+
+**Generation-handoff completion update (2026-10-19; human verification pending):**
+the background half now migrates compatible committed output coverage by stable output
+identity as a prepared operation. Preparation records only the old/new accumulator
+mapping; commit reads the predecessor after its closed queues have fully drained, so it
+cannot snapshot coverage too early. Exact sample-layout compatibility or event-type
+compatibility is required. Persisted sample destinations additionally require the same
+complete channel set. Generation-local outputs and incompatible stable outputs do not
+carry coverage or retained records into the successor.
+
+The same prepared handoff identifies persisted destinations which do not survive in a
+compatible successor realization. Their store-local handles remain unambiguous, but the
+successor reconciliation transaction removes their retained records only after final
+old-generation writes have committed. A disappeared producer with a surviving stable
+destination therefore preserves its final data, while a disappeared destination is
+retired in the documented order. After background storage and coverage migration, one
+successor transaction is required even when its new queues are empty. That transaction
+publishes a generation-compatible persisted-data/materialization pair, making
+post-cutover predecessor-drain results visible to the active realtime generation without
+ever publishing a late old-generation root to it. Focused tests cover late-read coverage
+migration and transactional destination retirement; compilation and execution remain
+with the human collaborator.
+
+Transition-only event storage is always a persistent ring even when the authored
+callback capacity is not a power of two. Its cold realization rounds the requested
+capacity up to the next valid ring capacity and validates every persistent ring
+descriptor before transfer. This keeps arbitrary legal callback capacities out of the
+ring-indexing invariant without changing their authored limit.
+
+Destination retirement is ordered before successor writes inside the reconciliation
+candidate. This matters when an incompatible realization reuses the same stable output
+handle: inherited records are removed first, then new-generation records may establish
+the replacement content in the same atomic publication. A successor with no background
+plan can perform this retirement-only transaction without generated no-op roots; it
+also promotes an empty generation-compatible Tick-materialization snapshot. The active
+transition/steady phase token is now atomic because cold staging can inspect it while
+realtime callback completion advances it.
+
+**Front 6 friction recorded before resolution (2026-10-19):** stable output identity and physical
+storage compatibility are not sufficient to decide whether persisted coverage and data
+remain semantically valid. The compiled background plan currently has no stable
+computation-revision or dependency-closure fingerprint. If a Tock node's code,
+configuration, or upstream computation changes while its output identity and layout
+stay the same, the present handoff would preserve coverage which may now be stale.
+Invalidating every stable output on every graph compilation would also be wrong: it
+would conflate recompilation with semantic invalidation, discard unaffected retained
+work, and can violate recording preservation.
+
+Do not guess this equivalence from generation numbers, lowered indices, function
+pointers, or raw configuration bytes containing relocations. There are two coherent
+ways to supply the missing fact. The application mutation path can carry an explicit
+stable semantic-change set from `NodeInstances`, `GraphConnections`, and definition
+refresh through compilation/staging; GraphJit can then map those causes to the new
+plan's local-node and connection invalidation roots. Alternatively, compilation can
+derive a stable computation identity whose dependency closure classifies unchanged
+outputs and produces those roots. The former follows the external-invalidation-root
+ownership already specified in `coverage_and_background_evaluation.md`; the latter
+makes generation reconciliation self-describing but first needs canonical identities
+for configuration and provider semantics. Neither contract is present in the current
+plans, so choosing its owner is the remaining design boundary requiring collaborator
+direction.
+
+**Resolution implemented (2026-10-19; human verification pending):** reconciliation
+is self-contained without a transitive computation fingerprint. Each compiled
+background node now carries its stable concrete-node identity, registered primitive
+identity, exact provider-definition version, and an ownership token for its typed
+configured storage. `NodeInstances` preserves that token across definition-snapshot
+publication only when the configured instance's complete recursive definition closure
+still has the same versions. A rebuilt definition therefore invalidates every cached
+parent and every placed instance which uses it, while an unrelated definition refresh
+does not discard reusable configurations. The comparison also includes the compiled
+local background execution mode and semantic port shape, so a replay/Tock-role or
+resolved-port change cannot hide behind an otherwise reusable configuration token.
+
+The prepared handoff compares those local facts and normalized stable-input connection
+descriptions against the exact active predecessor. A changed local node becomes a
+`locally_changed_nodes` root. A rewire with unchanged local semantics becomes an exact
+input-change root whose changed coverage is the union of the predecessor input coverage
+and successor input coverage after final predecessor coverage has been migrated. The
+ordinary forward coverage pass then carries either kind of root through all downstream
+dependents; no transitive hash is stored or recomputed. Sample-rate changes root every
+background node because the rate is callback-visible. Initial project loading has no
+predecessor and continues to construct fresh state. Stable outputs remain eligible for
+coverage/data reuse only until these roots invalidate their affected ranges.
+
+Focused tests now cover unchanged-versus-changed local keys, sample-rate-wide
+invalidation, exact stable-input rewiring, preservation of cache entries across an
+unrelated snapshot publication, and recursive invalidation when a nested definition
+changes. The implementation agent did not compile or execute them, per the collaboration
+agreement. This resolves the ownership choice and the last semantic-invalidation
+boundary recorded above; any verification failure should be recorded as new
+implementation friction rather than worked around with generation-wide invalidation.
+
+**Remaining Front 6 lifecycle friction (2026-10-19):** the complete realtime cutover
+still is not non-failing. `NodeStorage::Migration::commit()` invokes authored
+`move()`, `release()`, and deferred `initialize()` callbacks after the quiescent
+activation boundary. Their erased function-pointer types are not `noexcept`, and the
+current API permits `initialize()` to allocate background `TockState`. Catching an
+exception is not a recovery policy: raw regions and earlier nodes may already have
+moved, earlier predecessor nodes may already have been released, and neither storage
+then represents a rollback-safe generation.
+
+Do not paper over this with a catch/terminate block or describe the present callbacks
+as realtime-safe by convention. Completing the front requires an explicit lifecycle
+contract. The leading direction is to separate background/Tock lifecycle preparation
+from the pass-boundary operation and make the remaining realtime `State` transfer a
+statically non-throwing commit; this agrees with the intended background-sidecar
+ownership of `TockState`. An alternative would need a genuinely transactional
+prepare/commit lifecycle API with rollback-safe authored state. Choosing that API is
+the next boundary requiring collaborator direction.
+
+**Lifecycle failure policy selected and implemented (2026-10-21; human verification
+pending):** the collaborator selected fail-fast process termination instead of recovery.
+Authored `initialize()`, `move()`, and `release()` remain free to use allocators and to
+throw arbitrary exceptions internally. Their type-erased callback boundaries are now
+`noexcept`: each boundary catches only on the exceptional path, records the lifecycle
+operation, concrete C++ node type, and node index, and enters `std::terminate()` while
+the authored exception remains active. The server's installed terminate handler then
+records that exception and a stacktrace, flushes the diagnostic stream, and aborts the
+process. The VS Code launcher supplies an `IV_LOG_FILE` path for every server process,
+prints that path in the Intravenous output channel, and preserves an explicit
+user-provided path. Crash-handler installation opens the selected diagnostic stream
+before lifecycle work, so a later allocator failure does not first discover the file.
+
+There is deliberately no `std::expected` result. No caller can safely continue or roll
+back after a partially executed lifecycle handoff, so a returned status would add a
+success-path check without providing a valid decision. On the ordinary path the erased
+callbacks call the authored operation directly; exception reporting, symbolization,
+file I/O, and process termination occur only after an exception. The irreversible
+`NodeStorage::Migration::commit()` and its executor cutover caller are correspondingly
+`noexcept`. This supersedes the preceding unresolved choice with an explicit crash-only
+contract; it does not claim that authored allocation has become realtime-safe.
+
+**Front 6 source status (2026-10-21):** with the lifecycle failure policy above, no
+known source-level correctness boundary remains in this front. The implemented path now
+covers stable semantic matching, continuous and event history reconstruction, pace and
+shape changes, transition suffix/root expiry, replacement during an active transition,
+background drain and coverage migration, persisted-destination reconciliation,
+semantic invalidation, and a fatal non-returning cutover failure contract. This is a
+completion candidate, not a verification claim: the collaborator still owns compiling
+and running the new lifecycle checks and the full suite. A failure should reopen Front 6
+as concrete implementation friction; a clean result closes the front and moves active
+implementation to Front 7.
+
+**First completion-candidate verification (2026-10-21; re-verification pending):**
+the collaborator's 548-test run passed 542 tests and exposed six failures. Two were
+real transition defects. Event history and future roles merged into one target were
+ordered around the cutover position independently, which put the future event before
+the history events; cold preparation now records one earliest ordering origin for the
+shared target, leaving the realtime merge allocation-free and constant-metadata-driven.
+Also, retained Tick sample outputs incorrectly reused the callback-facing positive
+latency offset even though compact carry is already indexed in semantic output
+coordinates. This double shift made the retained future window unrepresentable; the
+authored and retained views now carry their distinct offsets.
+
+The other four failures were verification-fixture drift rather than runtime behavior:
+materialized sample state can now transfer directly into compatible private steady
+storage, semantic coverage comparison requires stable port identities as well as stable
+node identities, and two persisted-region fixtures declared four-sample ranges with
+only two samples of payload. Their expectations and inputs now state those contracts.
+Front 6 remains open until the collaborator reruns the affected and full suites.
+
+**Second completion-candidate verification (2026-10-21; re-verification pending):**
+the next 548-test run passed 546 tests. The shared-event ordering, materialized steady
+transfer, and persisted retirement corrections passed. The two remaining failures
+exposed narrower fixture and source omissions. The coverage fixture supplied stable
+port identities but still described its fan-in connections only with propagation
+indices, so semantic comparison conservatively reported an input change; it now
+supplies the complete stable sample connection descriptions. The disconnected Tick
+output reserved `history + latency` compact-carry frames but classified all of them as
+past frames. It now records the output latency as the carry's future extent, allowing
+the transition to reconstruct both halves of the output window in the shared monotonic
+Sequential coordinate. Front 6 remains open for another collaborator verification run.
 
 ## Front 7: remaining GraphJit and node execution semantics
 

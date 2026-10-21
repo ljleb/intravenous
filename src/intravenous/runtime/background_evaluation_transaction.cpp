@@ -759,7 +759,19 @@ class BackgroundEvaluationTransaction::Impl {
                 "background evaluation transaction already executed");
         }
         executed_ = true;
-        if (!graph_->background_operations.valid()) {
+        auto const plan_is_empty = graph_->background_evaluation_plan.nodes.empty()
+            && graph_->background_evaluation_plan.ports.empty()
+            && graph_->background_evaluation_plan.storage.ports.empty();
+        auto const roots_are_empty = inputs_.roots.locally_changed_nodes.empty()
+            && inputs_.roots.input_changes.empty()
+            && inputs_.roots.output_changes.empty()
+            && inputs_.roots.input_demands.empty()
+            && inputs_.roots.output_demands.empty();
+        auto const retirement_only = !graph_->background_operations.valid()
+            && plan_is_empty && roots_are_empty
+            && produced_routes_.empty() && produced_prefixes_.empty()
+            && !inputs_.retired_outputs.empty();
+        if (!graph_->background_operations.valid() && !retirement_only) {
             return std::unexpected(
                 "active graph has no complete background operations");
         }
@@ -775,17 +787,46 @@ class BackgroundEvaluationTransaction::Impl {
         auto decoded = decode_produced_records();
         if (!decoded) return std::unexpected(std::move(decoded.error()));
         std::optional<PersistedDataStore::Candidate> candidate;
-        if (!decoded->empty()) {
+        if (!decoded->empty() || !inputs_.retired_outputs.empty()) {
             candidate.emplace(data_->begin_candidate(semantic_version_));
             if (candidate->base_version() != base.version()) {
                 return BackgroundEvaluationResult{
                     .status = BackgroundEvaluationStatus::stale_base,
                 };
             }
+            for (auto const output : inputs_.retired_outputs) {
+                candidate->erase_output(output);
+            }
             if (auto applied = apply_produced_records(
-                    *decoded, base, *candidate); !applied) {
+                    *decoded, candidate->working_snapshot(), *candidate);
+                !applied) {
                 return std::unexpected(std::move(applied.error()));
             }
+        }
+        if (retirement_only) {
+            auto const published = candidate->target_version();
+            if (data_->publish(std::move(*candidate))
+                == PersistedDataPublishResult::stale_base) {
+                return BackgroundEvaluationResult{
+                    .status = BackgroundEvaluationStatus::stale_base,
+                };
+            }
+            std::optional<std::uint64_t> promoted_tick_materialization;
+            if (materializations_) {
+                promoted_tick_materialization = materializations_->promote(
+                    std::make_unique<TickMaterializationSnapshot>(
+                        graph_->project_generation,
+                        semantic_version_,
+                        published,
+                        std::vector<TickMaterializedSampleInput>{},
+                        std::vector<TickMaterializedEventInput>{}));
+            }
+            return BackgroundEvaluationResult{
+                .status = BackgroundEvaluationStatus::committed,
+                .published_data = published,
+                .promoted_tick_materialization =
+                    promoted_tick_materialization,
+            };
         }
         working_data_ = candidate
             ? &candidate->working_snapshot()

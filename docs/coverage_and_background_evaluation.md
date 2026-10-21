@@ -2077,6 +2077,30 @@ Important cases:
 Connection comparisons use stable semantic port identity rather than builder
 handles, lowered node indices, or ORC-generation-local indices.
 
+The executable local-continuity key is deliberately not a transitive graph hash. A
+compiled background node carries:
+
+- stable concrete-node identity and registered primitive identity;
+- the exact provider-definition version;
+- a shared typed-configuration ownership token retained only while the complete
+  recursive configured-definition closure remains version-compatible; and
+- its compiled background execution mode and semantic input/output port shape.
+
+The handoff compares these facts with the exact active predecessor. A mismatch emits a
+local-node invalidation root. Stable inputs are compared separately through normalized
+incoming descriptions containing stable source-output identity, delivery mechanism,
+type/conversion/projection facts, and target-channel mapping. A changed incoming set
+emits an input root whose changed range is the union of the final predecessor input
+coverage and successor input coverage. Existing forward propagation, rather than a
+stored dependency fingerprint, carries both root kinds to all downstream outputs.
+
+Definition-snapshot publication may preserve cached configured instances whose entire
+recursive definition closure still matches. Replacing a definition invalidates all
+cached parents which depend on it, including every instance of a broadly reused node
+kind; unrelated definition publication does not invalidate them. A sample-rate change
+is an explicit whole-plan local-semantic change because coverage callbacks observe the
+rate. Initial graph loading has no predecessor and constructs fresh state.
+
 ## 29. Whole-project GraphJit integration
 
 The generated project root remains a zero-input/zero-output Tick root. It does

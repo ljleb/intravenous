@@ -1779,9 +1779,18 @@ std::expected<void, std::string> populate_background_topology(
 
         auto const port_index = plan.ports.size();
         std::optional<StableOutputPortId> stable_output;
+        std::optional<StableInputPortId> stable_input;
         if (direction == PortDirection::output
             && node_plan.stable_identity) {
             stable_output = StableOutputPortId{
+                .node = *node_plan.stable_identity,
+                .kind = port.port_kind,
+                .port_name = name,
+                .port_index = port.port_index,
+            };
+        } else if (direction == PortDirection::input
+            && node_plan.stable_identity) {
+            stable_input = StableInputPortId{
                 .node = *node_plan.stable_identity,
                 .kind = port.port_kind,
                 .port_name = name,
@@ -1806,6 +1815,7 @@ std::expected<void, std::string> populate_background_topology(
             .output_latency = output_latency,
             .retention = retention,
             .stable_identity = std::move(stable_output),
+            .stable_input_identity = std::move(stable_input),
             .sample_layout = sample_layout,
             .event_type = event_type,
             .max_events_per_index = max_events_per_index,

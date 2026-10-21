@@ -65,6 +65,42 @@ void insert_delayed_ring(
 }
 } // namespace
 
+extern "C" void iv_graph_jit_rebase_event_sequence(
+    void* events,
+    std::size_t event_count,
+    GlobalIndex expected_position,
+    GlobalIndex actual_position) noexcept
+{
+    if (events == nullptr || expected_position == actual_position) return;
+    auto* sequence = static_cast<TimedEvent*>(events);
+    auto const displacement = expected_position.forward_distance_to(
+        actual_position);
+    for (std::size_t index = 0; index < event_count; ++index) {
+        sequence[index].time = sequence[index].time.advanced_by(displacement);
+    }
+}
+
+extern "C" void iv_graph_jit_rebase_event_ring(
+    void* events,
+    std::size_t event_capacity,
+    std::size_t read_index,
+    std::size_t write_index,
+    GlobalIndex expected_position,
+    GlobalIndex actual_position) noexcept
+{
+    if (events == nullptr || event_capacity == 0
+        || expected_position == actual_position) {
+        return;
+    }
+    auto* ring = static_cast<TimedEvent*>(events);
+    auto const displacement = expected_position.forward_distance_to(
+        actual_position);
+    for (auto cursor = read_index; cursor < write_index; ++cursor) {
+        auto& event = ring[cursor & (event_capacity - 1)];
+        event.time = event.time.advanced_by(displacement);
+    }
+}
+
 extern "C" std::size_t iv_graph_jit_restore_event_carry(
     void const* carry_events,
     std::size_t carry_count,

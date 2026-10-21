@@ -209,8 +209,9 @@ struct SampleCarryOperationPlan {
     std::size_t commit_execution_position = 0;
     std::size_t retained_frames = 0;
     // Number of retained frames at or after the next invocation boundary.
-    // Ordinary producer carry and copied feedback use zero. Shifted composed
-    // feedback may author aligned samples ahead of the current block end.
+    // Ordinary zero-latency producer carry and copied feedback use zero.
+    // Latent Tick outputs and shifted composed feedback may author aligned
+    // samples ahead of the current block end.
     std::size_t future_frames = 0;
 };
 

@@ -32,6 +32,8 @@
 namespace iv::graph_jit {
 namespace {
 constexpr std::string_view root_tick_block_symbol = "__iv_graph_root_tick_block";
+constexpr std::string_view root_transition_tick_block_symbol =
+    "__iv_graph_root_transition_tick_block";
 constexpr std::string_view root_background_forward_symbol =
     "__iv_graph_root_background_forward";
 constexpr std::string_view root_background_reverse_symbol =
@@ -3018,7 +3020,7 @@ compact_carry_allocation(
                == detail::no_sample_transient_allocation
         || allocation.retained_frames != operation.retained_frames
         || operation.retained_frames == 0
-        || operation.future_frames >= operation.retained_frames) {
+        || operation.future_frames > operation.retained_frames) {
         return std::unexpected(
             "GraphJit sample carry plan is inconsistent with its storage");
     }
@@ -3228,7 +3230,9 @@ std::expected<void, std::string> emit_event_carry_operation(
         event_ports.ports[carry.persistent_representation];
     if (working.persistent || !persistent.persistent
         || working.type != persistent.type
-        || working.has_source_indices != persistent.has_source_indices) {
+        || working.has_source_indices != persistent.has_source_indices
+        || working.has_sequential_timeline
+        || !persistent.has_sequential_timeline) {
         return std::unexpected(
             "GraphJit event carry has inconsistent storage ports");
     }
@@ -3288,6 +3292,46 @@ std::expected<void, std::string> emit_event_carry_operation(
             persistent_count_pointer,
             "event.carry.restore.persist.count.value");
         auto* module = builder.GetInsertBlock()->getModule();
+        auto* initialized_pointer = byte_offset_pointer(
+            builder,
+            persistent_base,
+            persistent.timeline_initialized_relative_offset,
+            "event.carry.timeline.initialized");
+        auto* expected_pointer = byte_offset_pointer(
+            builder,
+            persistent_base,
+            persistent.expected_next_time_relative_offset,
+            "event.carry.timeline.expected");
+        auto* initialized = builder.CreateICmpNE(
+            builder.CreateLoad(
+                llvm::Type::getInt8Ty(context),
+                initialized_pointer,
+                "event.carry.timeline.initialized.value"),
+            llvm::ConstantInt::get(llvm::Type::getInt8Ty(context), 0),
+            "event.carry.timeline.has.expected");
+        auto* stored_expected = builder.CreateLoad(
+            size_type,
+            expected_pointer,
+            "event.carry.timeline.expected.value");
+        auto* expected = builder.CreateSelect(
+            initialized,
+            stored_expected,
+            sample_index,
+            "event.carry.timeline.rebase.origin");
+        auto* rebase_type = llvm::FunctionType::get(
+            llvm::Type::getVoidTy(context),
+            {pointer_type, size_type, size_type, size_type},
+            false);
+        auto rebase = module->getOrInsertFunction(
+            detail::event_sequence_rebase_symbol, rebase_type);
+        builder.CreateCall(
+            rebase,
+            {persistent_events, persistent_count, expected, sample_index});
+        builder.CreateStore(
+            llvm::ConstantInt::get(llvm::Type::getInt8Ty(context), 1),
+            initialized_pointer);
+        builder.CreateStore(
+            builder.CreateAdd(sample_index, block_size), expected_pointer);
         llvm::Value* restored_count = nullptr;
         if (working.has_source_indices) {
             auto* helper_type = llvm::FunctionType::get(
@@ -3441,7 +3485,8 @@ std::expected<void, std::string> emit_event_persistent_ring_prune(
     detail::EventPortBindingPlan const& event_ports,
     detail::EventPersistentRingPlan const& ring,
     EmittedRealtimeStorage const& realtime_storage,
-    llvm::Value* sample_index)
+    llvm::Value* sample_index,
+    llvm::Value* block_size)
 {
     if (ring.storage >= event_ports.ports.size()) {
         return std::unexpected(
@@ -3450,7 +3495,8 @@ std::expected<void, std::string> emit_event_persistent_ring_prune(
     auto const& storage = event_ports.ports[ring.storage];
     if (!storage.region.valid()
         || !storage.persistent
-        || !storage.persistent_ring) {
+        || !storage.persistent_ring
+        || !storage.has_sequential_timeline) {
         return std::unexpected(
             "GraphJit persistent event ring has inconsistent storage");
     }
@@ -3481,11 +3527,55 @@ std::expected<void, std::string> emit_event_persistent_ring_prune(
     auto* write_index = builder.CreateLoad(
         size_type, write_index_pointer, "event.ring.prune.write.value");
 
+    auto* initialized_pointer = byte_offset_pointer(
+        builder,
+        representation_base,
+        storage.timeline_initialized_relative_offset,
+        "event.ring.timeline.initialized");
+    auto* expected_pointer = byte_offset_pointer(
+        builder,
+        representation_base,
+        storage.expected_next_time_relative_offset,
+        "event.ring.timeline.expected");
+    auto* initialized = builder.CreateICmpNE(
+        builder.CreateLoad(
+            llvm::Type::getInt8Ty(context),
+            initialized_pointer,
+            "event.ring.timeline.initialized.value"),
+        llvm::ConstantInt::get(llvm::Type::getInt8Ty(context), 0),
+        "event.ring.timeline.has.expected");
+    auto* stored_expected = builder.CreateLoad(
+        size_type, expected_pointer, "event.ring.timeline.expected.value");
+    auto* expected = builder.CreateSelect(
+        initialized,
+        stored_expected,
+        sample_index,
+        "event.ring.timeline.rebase.origin");
+    auto* rebase_type = llvm::FunctionType::get(
+        llvm::Type::getVoidTy(context),
+        {pointer_type, size_type, size_type, size_type, size_type, size_type},
+        false);
+    auto* module = builder.GetInsertBlock()->getModule();
+    auto rebase = module->getOrInsertFunction(
+        detail::event_ring_rebase_symbol, rebase_type);
+    builder.CreateCall(
+        rebase,
+        {events,
+         llvm::ConstantInt::get(size_type, storage.event_capacity),
+         read_index,
+         write_index,
+         expected,
+         sample_index});
+    builder.CreateStore(
+        llvm::ConstantInt::get(llvm::Type::getInt8Ty(context), 1),
+        initialized_pointer);
+    builder.CreateStore(
+        builder.CreateAdd(sample_index, block_size), expected_pointer);
+
     auto* helper_type = llvm::FunctionType::get(
         size_type,
         {pointer_type, size_type, size_type, size_type, size_type, size_type},
         false);
-    auto* module = builder.GetInsertBlock()->getModule();
     auto helper = module->getOrInsertFunction(
         detail::event_persistent_ring_prune_symbol, helper_type);
     auto* pruned_read_index = builder.CreateCall(
@@ -3541,6 +3631,14 @@ std::expected<void, std::string> emit_event_feedback_append(
     auto* size_type = llvm::IntegerType::get(
         context, static_cast<unsigned>(sizeof(std::size_t) * 8));
     auto* pointer_type = llvm::PointerType::getUnqual(context);
+    auto* ordering_origin = feedback.ordering_history_samples == 0
+        ? sample_index
+        : builder.CreateSub(
+            sample_index,
+            llvm::ConstantInt::get(
+                sample_index->getType(),
+                feedback.ordering_history_samples),
+            "event.feedback.ordering.origin");
     auto* source_begin = builder.CreateLoad(
         size_type,
         feedback_cursor_pointer,
@@ -3632,7 +3730,7 @@ std::expected<void, std::string> emit_event_feedback_append(
                  llvm::ConstantInt::get(size_type, source.event_capacity),
                  source_begin,
                  source_end,
-                 sample_index,
+                 ordering_origin,
                  llvm::ConstantInt::get(size_type, feedback.loop_extra_latency),
                  target_events,
                  llvm::ConstantInt::get(size_type, target.event_capacity),
@@ -3651,7 +3749,7 @@ std::expected<void, std::string> emit_event_feedback_append(
                 {source_events,
                  source_begin,
                  source_end,
-                 sample_index,
+                 ordering_origin,
                  llvm::ConstantInt::get(size_type, feedback.loop_extra_latency),
                  target_events,
                  llvm::ConstantInt::get(size_type, target.event_capacity),
@@ -3679,7 +3777,7 @@ std::expected<void, std::string> emit_event_feedback_append(
                  llvm::ConstantInt::get(size_type, source.event_capacity),
                  source_begin,
                  source_end,
-                 sample_index,
+                 ordering_origin,
                  llvm::ConstantInt::get(size_type, feedback.loop_extra_latency),
                  target_events,
                  llvm::ConstantInt::get(size_type, target.event_capacity),
@@ -3697,7 +3795,7 @@ std::expected<void, std::string> emit_event_feedback_append(
                 {source_events,
                  source_begin,
                  source_end,
-                 sample_index,
+                 ordering_origin,
                  llvm::ConstantInt::get(size_type, feedback.loop_extra_latency),
                  target_events,
                  llvm::ConstantInt::get(size_type, target.event_capacity),
@@ -4221,7 +4319,8 @@ std::expected<void, std::string> emit_event_operations(
                 plan.event_ports,
                 plan.event_ports.persistent_rings[operation.index],
                 realtime_storage,
-                sample_index);
+                sample_index,
+                block_size);
             if (!emitted) return std::unexpected(std::move(emitted.error()));
             break;
         }
@@ -4729,6 +4828,26 @@ std::expected<void, std::string> emit_execution_step(
             block_size);
         if (!composed) {
             return std::unexpected(std::move(composed.error()));
+        }
+    }
+
+    for (auto const materialization_index :
+         step.sample_transition_materializations_after) {
+        if (materialization_index
+            >= plan.sample_ports.storage.materializations.size()) {
+            return std::unexpected(
+                "GraphJit execution plan references a missing late transition materialization");
+        }
+        auto materialized = emit_sample_materialization(
+            builder,
+            plan.sample_ports.storage,
+            plan.sample_ports.storage.materializations[materialization_index],
+            realtime_storage,
+            root_index,
+            sample_index,
+            block_size);
+        if (!materialized) {
+            return std::unexpected(std::move(materialized.error()));
         }
     }
 
@@ -5712,9 +5831,755 @@ std::expected<llvm::Function*, std::string> define_background_root_operation(
     return function;
 }
 
+struct TransitionLoweringPlan {
+    detail::LoweringPlan root_plan{};
+    LoweredGraphTransition output{};
+};
+
+std::expected<std::optional<TransitionLoweringPlan>, std::string>
+specialize_transition_plan(
+    detail::LoweringPlan& steady_plan,
+    LoweringTransitionInput const* input)
+{
+    if (input == nullptr) return std::optional<TransitionLoweringPlan>{};
+
+    auto state_transition = plan_realtime_port_state_transition(
+        input->predecessor_requirements,
+        input->predecessor_realizations,
+        steady_plan.connections.realtime_port_states,
+        steady_plan.realtime_port_state_realizations);
+    if (!state_transition) {
+        return std::unexpected(std::move(state_transition.error()));
+    }
+
+    auto const needs_transition_root = std::ranges::any_of(
+        state_transition->sample_states,
+        [](RealtimePortStateTransition const& transition) {
+            return transition.inherited_state_realization
+                == InheritedRealtimePortStateRealization::
+                    transition_only_storage;
+        }) || std::ranges::any_of(
+        state_transition->event_states,
+        [](RealtimePortStateTransition const& transition) {
+            return transition.inherited_state_realization
+                == InheritedRealtimePortStateRealization::
+                    transition_only_storage;
+        });
+
+    if (!needs_transition_root) {
+        return std::optional<TransitionLoweringPlan>{TransitionLoweringPlan{
+            .output = {
+                .state_transition = std::move(*state_transition),
+                .realtime_port_state_realizations =
+                    steady_plan.realtime_port_state_realizations,
+            },
+        }};
+    }
+
+    auto transition_plan = steady_plan;
+    auto realized = realize_realtime_port_state_transition_storage(
+        transition_plan.declarations.node_layout,
+        std::move(*state_transition),
+        input->predecessor_realizations,
+        steady_plan.connections.realtime_port_states,
+        steady_plan.realtime_port_state_realizations);
+    if (!realized) return std::unexpected(std::move(realized.error()));
+
+    transition_plan.declarations.node_layout = realized->node_layout;
+    steady_plan.declarations.node_layout = realized->node_layout;
+    auto transition_realizations = steady_plan.realtime_port_state_realizations;
+
+    auto primitive_for_bundle = [&](NodeBundleHandle bundle)
+        -> std::optional<std::size_t> {
+        for (std::size_t index = 0;
+             index < transition_plan.imports.primitive_callbacks.size();
+             ++index) {
+            if (transition_plan.imports.primitive_callbacks[index].bundle
+                == bundle) {
+                return index;
+            }
+        }
+        return std::nullopt;
+    };
+    auto region_for_view = [&](SampleRealtimePortStateStorageView const& view)
+        -> std::optional<NodeLayout::RegionHandle> {
+        if (!view.node_storage_offset) return std::nullopt;
+        for (std::size_t index = 0;
+             index < realized->node_layout.regions.size(); ++index) {
+            auto const& region = realized->node_layout.regions[index];
+            if (region.transition_only
+                && region.kind == NodeLayout::Region::Kind::raw
+                && region.storage_offset == *view.node_storage_offset
+                && region.size == view.storage_size_bytes) {
+                return NodeLayout::RegionHandle{.index = index};
+            }
+        }
+        return std::nullopt;
+    };
+    auto event_region_for_view = [&](EventRealtimePortStateStorageView const& view)
+        -> std::optional<NodeLayout::RegionHandle> {
+        if (!view.node_storage_offset) return std::nullopt;
+        for (std::size_t index = 0;
+             index < realized->node_layout.regions.size(); ++index) {
+            auto const& region = realized->node_layout.regions[index];
+            if (region.transition_only
+                && region.kind == NodeLayout::Region::Kind::raw
+                && region.storage_offset == *view.node_storage_offset
+                && region.size == view.size_bytes) {
+                return NodeLayout::RegionHandle{.index = index};
+            }
+        }
+        return std::nullopt;
+    };
+
+    for (std::size_t transition_index = 0;
+         transition_index < realized->plan.sample_states.size();
+         ++transition_index) {
+        auto const& transition = realized->plan.sample_states[transition_index];
+        if (transition.inherited_state_realization
+            != InheritedRealtimePortStateRealization::
+                transition_only_storage) {
+            continue;
+        }
+        if (transition.current_requirement_index
+                >= transition_plan.connections.realtime_port_states.states.size()
+            || transition.current_realization_index
+                >= transition_realizations.sample_states.size()) {
+            return std::unexpected(
+                "GraphJit transition sample state lost its successor metadata");
+        }
+        auto const& requirement = transition_plan.connections
+            .realtime_port_states.states[transition.current_requirement_index];
+        auto const input_history = requirement.direction
+                == PortDirection::input
+            && requirement.role
+                == RealtimePortStateRole::sequential_input_history;
+        auto const output_window = requirement.direction
+                == PortDirection::output
+            && (requirement.role
+                    == RealtimePortStateRole::tick_output_history
+                || requirement.role
+                    == RealtimePortStateRole::tick_output_latency);
+        if ((!input_history && !output_window) || !requirement.channel) {
+            return std::unexpected(
+                "GraphJit transition suffix has an unsupported sample-state role");
+        }
+
+        auto const transfer = std::ranges::find_if(
+            realized->plan.sample_transfers,
+            [&](SampleRealtimePortStateTransfer const& candidate) {
+                return candidate.transition_index == transition_index
+                    && candidate.target_transition_only;
+            });
+        if (transfer == realized->plan.sample_transfers.end()) {
+            return std::unexpected(
+                "GraphJit transition sample state lost its suffix transfer");
+        }
+        auto const& current_realization = steady_plan
+            .realtime_port_state_realizations.sample_states[
+                transition.current_realization_index];
+        if ((current_realization.retained_access
+                    == SampleRealtimePortStateAccess::direct
+                && current_realization.retained_sources.size() != 1)
+            || (current_realization.retained_access
+                    != SampleRealtimePortStateAccess::direct
+                && current_realization.retained_access
+                    != SampleRealtimePortStateAccess::materialized
+                && current_realization.retained_access
+                    != SampleRealtimePortStateAccess::composed)) {
+            return std::unexpected(
+                "GraphJit transition sample state has an unsupported steady realization");
+        }
+        auto const target_primitive = primitive_for_bundle(
+            requirement.configured_port.node_bundle_handle);
+        if (!target_primitive
+            || *target_primitive
+                >= transition_plan.sample_ports.primitives.size()) {
+            return std::unexpected(
+                "GraphJit transition sample state lost its authored primitive");
+        }
+        std::optional<std::size_t> source_representation;
+        if (input_history) {
+            auto const& steady_inputs = steady_plan.sample_ports
+                .primitives[*target_primitive].inputs;
+            if (requirement.configured_port.port_index
+                    >= steady_inputs.size()
+                || *requirement.channel
+                    >= steady_inputs[
+                        requirement.configured_port.port_index]
+                        .channels.size()) {
+                return std::unexpected(
+                    "GraphJit transition input state lost its steady binding");
+            }
+            source_representation = steady_inputs[
+                requirement.configured_port.port_index]
+                .channels[*requirement.channel].storage;
+        } else {
+            auto const& steady_ports = steady_plan.sample_ports
+                .primitives[*target_primitive];
+            if (requirement.configured_port.port_index
+                    >= steady_ports.outputs.size()
+                || !steady_ports.outputs[
+                    requirement.configured_port.port_index].storage) {
+                return std::unexpected(
+                    "GraphJit transition output state lost its steady binding");
+            }
+            source_representation = *steady_ports.outputs[
+                requirement.configured_port.port_index].storage;
+        }
+        auto const suffix_region = region_for_view(transfer->target_storage);
+        if (!source_representation || !suffix_region) {
+            return std::unexpected(
+                "GraphJit transition sample state lost its source or suffix storage");
+        }
+
+        auto const source = transition_plan.sample_ports.storage
+            .representations[*source_representation];
+        if (requirement.configured_port.node_bundle_handle
+            >= transition_plan.connections.schedule
+                .bundle_execution_position.size()) {
+            return std::unexpected(
+                "GraphJit transition suffix lost its target execution position");
+        }
+        auto const target_position = transition_plan.connections.schedule
+            .bundle_execution_position[
+                requirement.configured_port.node_bundle_handle];
+        std::optional<std::size_t> source_position;
+        bool source_after_composition = false;
+        bool source_before_consumer_materialization = false;
+        if (output_window) {
+            source_position = target_position;
+        } else {
+            auto const materialization = std::ranges::find_if(
+                transition_plan.sample_ports.storage.materializations,
+                [&](detail::SampleMaterializationPlan const& candidate) {
+                    return candidate.target_representation
+                        == *source_representation;
+                });
+            auto const composition = std::ranges::find_if(
+                transition_plan.sample_ports.storage.compositions,
+                [&](detail::SampleCompositionPlan const& candidate) {
+                    return candidate.target_representation
+                        == *source_representation;
+                });
+            if (materialization
+                != transition_plan.sample_ports.storage
+                    .materializations.end()) {
+                if (materialization->before_execution_position) {
+                    source_position =
+                        materialization->before_execution_position;
+                    source_before_consumer_materialization = true;
+                } else {
+                    source_position = materialization->after_execution_position;
+                }
+            } else if (composition
+                       != transition_plan.sample_ports.storage
+                           .compositions.end()) {
+                source_position = composition->after_execution_position;
+                source_after_composition = true;
+            } else {
+                if (source.producer_group_index
+                        >= transition_plan.connections.sample_producer_groups.size()) {
+                    return std::unexpected(
+                        "GraphJit transition input suffix lost its producer group");
+                }
+                auto const& producer_group = transition_plan.connections
+                    .sample_producer_groups[source.producer_group_index];
+                if (!producer_group.source_port
+                    || producer_group.source_port->node_bundle_handle
+                        >= transition_plan.connections.schedule
+                            .bundle_execution_position.size()) {
+                    return std::unexpected(
+                        "GraphJit transition suffix lost its source producer");
+                }
+                source_position = transition_plan.connections.schedule
+                    .bundle_execution_position[
+                        producer_group.source_port->node_bundle_handle];
+            }
+        }
+        if (!source_position || !target_position
+            || *source_position
+                >= transition_plan.execution.primitive_steps.size()) {
+            return std::unexpected(
+                "GraphJit transition suffix lost its execution position");
+        }
+        auto& target_ports = transition_plan.sample_ports
+            .primitives[*target_primitive];
+        if (input_history) {
+            if (requirement.configured_port.port_index
+                >= target_ports.inputs.size()) {
+                return std::unexpected(
+                    "GraphJit transition sample state lost its authored input port");
+            }
+            auto const& steady_binding = steady_plan.sample_ports
+                .primitives[*target_primitive]
+                .inputs[requirement.configured_port.port_index];
+            if (*requirement.channel >= steady_binding.channels.size()
+                || steady_binding.channels[*requirement.channel].storage
+                    != *source_representation
+                || steady_binding.channels[*requirement.channel]
+                        .representation_channel
+                    != current_realization.authored_storage
+                        .representation_channel) {
+                return std::unexpected(
+                    "GraphJit transition sample state disagrees with its authored input binding");
+            }
+        } else {
+            auto const& steady_outputs = steady_plan.sample_ports
+                .primitives[*target_primitive].outputs;
+            if (requirement.configured_port.port_index
+                    >= steady_outputs.size()
+                || !steady_outputs[
+                    requirement.configured_port.port_index].storage
+                || *steady_outputs[
+                    requirement.configured_port.port_index].storage
+                    != *source_representation) {
+                return std::unexpected(
+                    "GraphJit transition sample state disagrees with its authored output binding");
+            }
+        }
+
+        auto& sample_storage = transition_plan.sample_ports.storage;
+        std::optional<std::size_t> suffix_representation;
+        for (auto const& allocation : sample_storage.persistent_allocations) {
+            if (allocation.region != *suffix_region) continue;
+            if (suffix_representation
+                || allocation.representation_index
+                    >= sample_storage.representations.size()
+                || allocation.kind
+                    != detail::SamplePersistentStorageKind::ring
+                || allocation.storage_offset
+                    != *transfer->target_storage.node_storage_offset
+                || allocation.size_bytes
+                    != transfer->target_storage.storage_size_bytes) {
+                return std::unexpected(
+                    "GraphJit transition suffix region has inconsistent sample representations");
+            }
+            suffix_representation = allocation.representation_index;
+        }
+        auto const new_suffix = !suffix_representation;
+        if (new_suffix) {
+            suffix_representation = sample_storage.representations.size();
+            auto suffix = source;
+            suffix.canonical_producer_representation = false;
+            suffix.storage = RealtimeBufferStorageKind::full_node_storage;
+            suffix.channel_layout = transfer->target_storage.channel_layout;
+            suffix.geometry = transfer->target_storage.geometry;
+            suffix.absolute_pace_exponent =
+                transfer->target_storage.absolute_pace_exponent;
+            suffix.frame_capacity =
+                transfer->target_storage.working_frame_capacity;
+            suffix.transient_allocation = detail::no_sample_transient_allocation;
+            suffix.persistent_allocation =
+                sample_storage.persistent_allocations.size();
+            suffix.constant_value.reset();
+            sample_storage.representations.push_back(std::move(suffix));
+            sample_storage.persistent_allocations.push_back(
+                detail::SamplePersistentAllocationPlan{
+                    .representation_index = *suffix_representation,
+                    .kind = detail::SamplePersistentStorageKind::ring,
+                    .channel_layout = transfer->target_storage.channel_layout,
+                    .geometry = transfer->target_storage.geometry,
+                    .frame_capacity =
+                        transfer->target_storage.working_frame_capacity,
+                    .size_bytes = transfer->target_storage.storage_size_bytes,
+                    .alignment =
+                        transfer->target_storage.geometry.element_alignment,
+                    .region = *suffix_region,
+                    .storage_offset =
+                        *transfer->target_storage.node_storage_offset,
+                });
+
+            auto const materialization_index =
+                sample_storage.materializations.size();
+            auto mirror = detail::SampleMaterializationPlan{
+                .source_representation = input_history
+                    ? *source_representation
+                    : *suffix_representation,
+                .target_representation = input_history
+                    ? *suffix_representation
+                    : *source_representation,
+                .source_layout = source.channel_layout,
+                .target_layout = source.channel_layout,
+            };
+            if (source_before_consumer_materialization) {
+                mirror.before_execution_position = *source_position;
+            } else {
+                mirror.after_execution_position = *source_position;
+            }
+            if (output_window) {
+                mirror.retained_before = target_ports.outputs[
+                    requirement.configured_port.port_index].latency;
+            }
+            sample_storage.materializations.push_back(std::move(mirror));
+            auto& source_step = transition_plan.execution
+                .primitive_steps[*source_position];
+            auto const source_is_feedback_timeline = input_history
+                && std::ranges::any_of(
+                    sample_storage.feedback_timelines,
+                    [&](detail::SampleFeedbackTimelinePlan const& timeline) {
+                        return timeline.timeline_representation
+                            == *source_representation;
+                    });
+            if (source_is_feedback_timeline || source_after_composition) {
+                source_step.sample_transition_materializations_after
+                    .push_back(materialization_index);
+            } else if (source_before_consumer_materialization) {
+                source_step.sample_materializations_before.push_back(
+                    materialization_index);
+            } else if (output_window) {
+                source_step.sample_materializations_after.insert(
+                    source_step.sample_materializations_after.begin(),
+                    materialization_index);
+            } else {
+                source_step.sample_materializations_after.push_back(
+                    materialization_index);
+            }
+        }
+        if (input_history) {
+            target_ports.inputs[requirement.configured_port.port_index]
+                .channels[*requirement.channel].storage =
+                    *suffix_representation;
+        } else {
+            target_ports.outputs[requirement.configured_port.port_index]
+                .storage = *suffix_representation;
+        }
+
+        auto& transition_realization = transition_realizations.sample_states[
+            transition.current_realization_index];
+        transition_realization.authored_storage = transfer->target_storage;
+        transition_realization.retained_access =
+            SampleRealtimePortStateAccess::direct;
+        transition_realization.retained_sources = {transfer->target_storage};
+        transition_realization.materialization.reset();
+
+    }
+
+    for (std::size_t transition_index = 0;
+         transition_index < realized->plan.event_states.size();
+         ++transition_index) {
+        auto const& transition = realized->plan.event_states[transition_index];
+        if (transition.inherited_state_realization
+            != InheritedRealtimePortStateRealization::transition_only_storage) {
+            continue;
+        }
+        if (transition.current_requirement_index
+                >= transition_plan.connections.realtime_port_states.states.size()
+            || transition.current_realization_index
+                >= transition_realizations.event_states.size()) {
+            return std::unexpected(
+                "GraphJit transition event state lost its successor metadata");
+        }
+        auto const& requirement = transition_plan.connections
+            .realtime_port_states.states[transition.current_requirement_index];
+        auto const transfer = std::ranges::find_if(
+            realized->plan.event_transfers,
+            [&](EventRealtimePortStateTransfer const& candidate) {
+                return candidate.transition_index == transition_index
+                    && candidate.target_transition_only;
+            });
+        if (transfer == realized->plan.event_transfers.end()) {
+            return std::unexpected(
+                "GraphJit transition event state lost its suffix transfer");
+        }
+        auto const primitive = primitive_for_bundle(
+            requirement.configured_port.node_bundle_handle);
+        if (!primitive || *primitive >= transition_plan.event_ports.primitives.size()
+            || requirement.configured_port.node_bundle_handle
+                >= transition_plan.connections.schedule
+                    .bundle_execution_position.size()) {
+            return std::unexpected(
+                "GraphJit transition event state lost its authored primitive");
+        }
+        auto const position = transition_plan.connections.schedule
+            .bundle_execution_position[
+                requirement.configured_port.node_bundle_handle];
+        if (!position
+            || *position >= transition_plan.execution.primitive_steps.size()) {
+            return std::unexpected(
+                "GraphJit transition event state lost its execution step");
+        }
+        auto const& steady_primitive_ports =
+            steady_plan.event_ports.primitives[*primitive];
+        auto& primitive_ports =
+            transition_plan.event_ports.primitives[*primitive];
+        std::optional<std::size_t> steady_representation;
+        auto const input_history = requirement.direction == PortDirection::input
+            && requirement.role
+                == RealtimePortStateRole::sequential_input_history;
+        auto const output_window = requirement.direction == PortDirection::output
+            && (requirement.role
+                    == RealtimePortStateRole::tick_output_history
+                || requirement.role
+                    == RealtimePortStateRole::tick_output_latency);
+        if (output_window) {
+            return std::unexpected(
+                "GraphJit event output state lost its indexed steady retention");
+        }
+        if (input_history) {
+            if (requirement.configured_port.port_index
+                    >= steady_primitive_ports.inputs.size()) {
+                return std::unexpected(
+                    "GraphJit transition event input lost its binding");
+            }
+            steady_representation = steady_primitive_ports.inputs[
+                requirement.configured_port.port_index].storage;
+        } else {
+            return std::unexpected(
+                "GraphJit transition suffix has an unsupported event-state role");
+        }
+        auto const region = event_region_for_view(transfer->target_storage);
+        if (!steady_representation || !region
+            || *steady_representation >= transition_plan.event_ports.ports.size()) {
+            return std::unexpected(
+                "GraphJit transition event state lost its source or suffix storage");
+        }
+        auto const source_representation = *steady_representation;
+        auto const source = transition_plan.event_ports.ports[
+            source_representation];
+        std::optional<std::size_t> suffix_representation;
+        for (std::size_t representation = 0;
+             representation < transition_plan.event_ports.ports.size();
+             ++representation) {
+            auto const& candidate =
+                transition_plan.event_ports.ports[representation];
+            if (!candidate.persistent || candidate.region != *region) continue;
+            if (suffix_representation
+                || !candidate.persistent_ring
+                || candidate.type != transfer->target_storage.type
+                || candidate.event_capacity
+                    != transfer->target_storage.event_capacity
+                || candidate.size_bytes != transfer->target_storage.size_bytes
+                || candidate.alignment != transfer->target_storage.alignment
+                || candidate.storage_offset
+                    != *transfer->target_storage.node_storage_offset) {
+                return std::unexpected(
+                    "GraphJit transition event suffix has inconsistent shared storage");
+            }
+            suffix_representation = representation;
+        }
+
+        auto const new_suffix = !suffix_representation;
+        if (new_suffix) {
+            suffix_representation = transition_plan.event_ports.ports.size();
+            transition_plan.event_ports.ports.push_back(
+                detail::EventRepresentationPlan{
+                    .producer_group_index = source.producer_group_index,
+                    .type = transfer->target_storage.type,
+                    .event_capacity = transfer->target_storage.event_capacity,
+                    .persistent = true,
+                    .persistent_ring = true,
+                    .has_producer_overflow_counter = false,
+                    .count_relative_offset =
+                        transfer->target_storage.count_relative_offset,
+                    .read_index_relative_offset =
+                        transfer->target_storage.read_index_relative_offset,
+                    .write_index_relative_offset =
+                        transfer->target_storage.write_index_relative_offset,
+                    .has_sequential_timeline = true,
+                    .timeline_initialized_relative_offset =
+                        transfer->target_storage
+                            .timeline_initialized_relative_offset,
+                    .expected_next_time_relative_offset =
+                        transfer->target_storage
+                            .expected_next_time_relative_offset,
+                    .events_relative_offset =
+                        transfer->target_storage.events_relative_offset,
+                    .size_bytes = transfer->target_storage.size_bytes,
+                    .alignment = transfer->target_storage.alignment,
+                    .region = *region,
+                    .overflow_region = NodeLayout::RegionHandle{},
+                    .storage_offset =
+                        *transfer->target_storage.node_storage_offset,
+                    .overflow_count_storage_offset = 0,
+                });
+
+            auto const retained_history = requirement.extent_samples;
+            auto const prune_index =
+                transition_plan.event_ports.persistent_rings.size();
+            transition_plan.event_ports.persistent_rings.push_back(
+                detail::EventPersistentRingPlan{
+                    .storage = *suffix_representation,
+                    .retained_history_samples = retained_history,
+                });
+            auto& step =
+                transition_plan.execution.primitive_steps[*position];
+            step.event_operations_before.push_back({
+                .kind = detail::EventOperationKind::persistent_ring_prune,
+                .index = prune_index,
+            });
+
+            {
+                constexpr auto event_alignment = alignof(TimedEvent);
+                constexpr auto event_mask = event_alignment - 1;
+                auto const temp_events_offset =
+                    (sizeof(std::size_t) + event_mask) & ~event_mask;
+                if (transfer->target_storage.event_capacity
+                        > (std::numeric_limits<std::size_t>::max()
+                                - temp_events_offset)
+                            / sizeof(TimedEvent)
+                    || transition_plan.event_ports.transient_arena_size
+                        > std::numeric_limits<std::size_t>::max()
+                            - event_mask) {
+                    return std::unexpected(
+                        "GraphJit transition event scratch size overflows size_t");
+                }
+                auto const temp_size = temp_events_offset
+                    + transfer->target_storage.event_capacity
+                        * sizeof(TimedEvent);
+                auto const temp_offset =
+                    (transition_plan.event_ports.transient_arena_size
+                        + event_mask)
+                    & ~event_mask;
+                if (temp_size > std::numeric_limits<std::size_t>::max()
+                        - temp_offset) {
+                    return std::unexpected(
+                        "GraphJit transition event arena size overflows size_t");
+                }
+                auto const temp_representation =
+                    transition_plan.event_ports.ports.size();
+                transition_plan.event_ports.ports.push_back(
+                    detail::EventRepresentationPlan{
+                        .producer_group_index = source.producer_group_index,
+                        .type = transfer->target_storage.type,
+                        .event_capacity =
+                            transfer->target_storage.event_capacity,
+                        .events_relative_offset = temp_events_offset,
+                        .size_bytes = temp_size,
+                        .alignment = event_alignment,
+                        .transient_allocation = transition_plan.event_ports
+                            .transient_allocations.size(),
+                    });
+                transition_plan.event_ports.transient_allocations.push_back(
+                    detail::EventTransientAllocationPlan{
+                        .representation_index = temp_representation,
+                        .size_bytes = temp_size,
+                        .alignment = event_alignment,
+                        .region_relative_offset = temp_offset,
+                    });
+                transition_plan.event_ports.transient_arena_size =
+                    temp_offset + temp_size;
+                transition_plan.event_ports.transient_arena_alignment =
+                    std::max(
+                        transition_plan.event_ports.transient_arena_alignment,
+                        event_alignment);
+
+                std::optional<EventConversionPlan> conversion;
+                try {
+                    conversion = EventConversionRegistry::plan(
+                        source.type, transfer->target_storage.type);
+                } catch (std::exception const&) {
+                    return std::unexpected(
+                        "GraphJit transition input suffix lost its event conversion");
+                }
+                auto const materialization_index =
+                    transition_plan.event_ports.materializations.size();
+                transition_plan.event_ports.materializations.push_back(
+                    detail::EventMaterializationPlan{
+                        .source_representation = source_representation,
+                        .target_representation = temp_representation,
+                        .conversion = *conversion,
+                        .history_samples = 0,
+                        .select_invocation_window = true,
+                    });
+                auto const merge_index =
+                    transition_plan.event_ports.merges.size();
+                transition_plan.event_ports.merges.push_back(
+                    detail::EventMergePlan{
+                        .source_representations = {temp_representation},
+                        .target_representation = *suffix_representation,
+                        .ordering_history_samples = retained_history,
+                        .preserve_existing_target = true,
+                    });
+                step.event_operations_before.push_back({
+                    .kind = detail::EventOperationKind::materialize,
+                    .index = materialization_index,
+                });
+                step.event_operations_before.push_back({
+                    .kind = detail::EventOperationKind::merge,
+                    .index = merge_index,
+                });
+            }
+        }
+        primitive_ports.inputs[requirement.configured_port.port_index]
+            .storage = *suffix_representation;
+        auto& transition_realization = transition_realizations.event_states[
+            transition.current_realization_index];
+        transition_realization.authored_storage = transfer->target_storage;
+        transition_realization.retained_access =
+            EventRealtimePortStateAccess::direct;
+        transition_realization.retained_storage = transfer->target_storage;
+        transition_realization.retained_source_index.reset();
+        transition_realization.materialization_conversion.reset();
+        transition_realization.materialization_history_samples = 0;
+        transition_realization.materialization_selects_invocation_window = false;
+    }
+
+    {
+        auto align_up = [](std::size_t value, std::size_t alignment)
+            -> std::optional<std::size_t> {
+            if (!std::has_single_bit(alignment)) return std::nullopt;
+            auto const mask = alignment - 1;
+            if (value > std::numeric_limits<std::size_t>::max() - mask) {
+                return std::nullopt;
+            }
+            return (value + mask) & ~mask;
+        };
+        auto const sample_size = transition_plan.sample_ports.storage
+            .transient_arena_size;
+        auto const sample_alignment = std::max(
+            std::size_t{1},
+            transition_plan.sample_ports.storage.transient_arena_alignment);
+        auto const event_size = transition_plan.event_ports.transient_arena_size;
+        auto const event_alignment = std::max(
+            std::size_t{1},
+            transition_plan.event_ports.transient_arena_alignment);
+        auto const event_offset = align_up(sample_size, event_alignment);
+        auto const sample_offset = align_up(event_size, sample_alignment);
+        if (!event_offset || !sample_offset
+            || event_size > std::numeric_limits<std::size_t>::max()
+                    - *event_offset
+            || sample_size > std::numeric_limits<std::size_t>::max()
+                    - *sample_offset) {
+            return std::unexpected(
+                "GraphJit transition root stack size overflows size_t");
+        }
+        auto sample_first = *event_offset + event_size;
+        auto event_first = *sample_offset + sample_size;
+        transition_plan.root_stack = {
+            .size_bytes = sample_first,
+            .alignment = std::max(sample_alignment, event_alignment),
+            .sample_offset = 0,
+            .event_offset = *event_offset,
+        };
+        if (event_first < sample_first) {
+            transition_plan.root_stack.size_bytes = event_first;
+            transition_plan.root_stack.sample_offset = *sample_offset;
+            transition_plan.root_stack.event_offset = 0;
+        }
+    }
+
+    if (realized->plan.sample_expiry_cursors.empty()
+        && realized->plan.event_expiry_samples == 0) {
+        return std::unexpected(
+            "GraphJit transition root has no finite Sequential cursor horizon");
+    }
+    transition_plan.realtime_port_state_realizations =
+        transition_realizations;
+    return std::optional<TransitionLoweringPlan>{TransitionLoweringPlan{
+        .root_plan = std::move(transition_plan),
+        .output = {
+            .state_transition = std::move(realized->plan),
+            .realtime_port_state_realizations =
+                std::move(transition_realizations),
+        },
+    }};
+}
+
 std::expected<LoweringOutput, std::string> emit_lowering_plan(
     LoweringInput& input,
     detail::LoweringPlan&& plan,
+    std::optional<TransitionLoweringPlan>&& transition,
     llvm::Module& output_module)
 {
     auto imported = emit_package_imports(input, plan.imports, output_module);
@@ -5724,6 +6589,20 @@ std::expected<LoweringOutput, std::string> emit_lowering_plan(
         emit_node_configurations(plan.configurations, output_module);
     if (!configurations) {
         return std::unexpected(std::move(configurations.error()));
+    }
+
+    if (transition
+        && (!transition->output.state_transition.sample_expiry_cursors.empty()
+            || transition->output.state_transition.event_expiry_samples != 0)) {
+        auto transition_tick = define_root_operation(
+            output_module,
+            root_transition_tick_block_symbol,
+            transition->root_plan,
+            *configurations,
+            false);
+        if (!transition_tick) {
+            return std::unexpected(std::move(transition_tick.error()));
+        }
     }
 
     auto tick = define_root_operation(
@@ -5759,6 +6638,9 @@ std::expected<LoweringOutput, std::string> emit_lowering_plan(
         if (!evaluate) return std::unexpected(std::move(evaluate.error()));
     }
 
+    auto const has_transition_root = transition
+        && (!transition->output.state_transition.sample_expiry_cursors.empty()
+            || transition->output.state_transition.event_expiry_samples != 0);
     return LoweringOutput{
         .port_realization = std::move(plan.port_realization),
         .node_layout = std::move(plan.declarations.node_layout),
@@ -5767,8 +6649,15 @@ std::expected<LoweringOutput, std::string> emit_lowering_plan(
             std::move(plan.connections.realtime_port_states),
         .realtime_port_state_realizations =
             std::move(plan.realtime_port_state_realizations),
+        .transition = transition
+            ? std::optional<LoweredGraphTransition>{
+                std::move(transition->output)}
+            : std::nullopt,
         .root_symbols = {
             .tick_block = std::string(root_tick_block_symbol),
+            .transition_tick_block = has_transition_root
+                ? std::string(root_transition_tick_block_symbol)
+                : std::string{},
             .propagate_background_forward = has_background_program
                 ? std::string(root_background_forward_symbol)
                 : std::string{},
@@ -5788,6 +6677,7 @@ std::expected<LoweringOutput, std::string> lower_configured_graph_to_llvm(
     llvm::Module& output_module)
 {
     if (output_module.getNamedValue(root_tick_block_symbol)
+        || output_module.getNamedValue(root_transition_tick_block_symbol)
         || output_module.getNamedValue(root_background_forward_symbol)
         || output_module.getNamedValue(root_background_reverse_symbol)
         || output_module.getNamedValue(root_background_evaluate_symbol)) {
@@ -5801,6 +6691,10 @@ std::expected<LoweringOutput, std::string> lower_configured_graph_to_llvm(
     auto plan = detail::build_lowering_plan(input);
     if (!plan) return std::unexpected(std::move(plan.error()));
 
-    return emit_lowering_plan(input, std::move(*plan), output_module);
+    auto transition = specialize_transition_plan(*plan, input.transition);
+    if (!transition) return std::unexpected(std::move(transition.error()));
+
+    return emit_lowering_plan(
+        input, std::move(*plan), std::move(*transition), output_module);
 }
 } // namespace iv::graph_jit

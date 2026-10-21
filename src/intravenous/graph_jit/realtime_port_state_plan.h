@@ -93,12 +93,18 @@ struct SampleRealtimePortStateStorageView {
     ChannelLayout channel_layout{};
     ContinuousValueStorageGeometry geometry{};
     std::int32_t absolute_pace_exponent = 0;
+    // Offset of the generation-owned linear Sequential cursor for this
+    // resolved pace. Physical sample storage is addressed relative to this
+    // cursor, not from the node-visible GlobalIndex. Constants carry the
+    // cursor metadata too, although reading their value does not require it.
+    std::optional<std::size_t> sequential_cursor_node_storage_offset{};
     std::size_t representation_channel = 0;
 
     // Physical absolute-frame coordinate for semantic position P is
     // P + timeline_offset_frames. Sequential inputs therefore use a negative
-    // read-latency/channel-delay offset; Tick outputs use their positive
-    // authored storage latency.
+    // read-latency/channel-delay offset. Callback-facing Tick output views use
+    // their positive authored storage latency; retained Tick output views are
+    // already indexed in semantic output coordinates and therefore use zero.
     std::int64_t timeline_offset_frames = 0;
     // Capacity of the representation's absolute-indexed working ring.
     std::size_t working_frame_capacity = 0;
@@ -125,6 +131,11 @@ struct SampleRealtimePortStateMaterialization {
     std::size_t latest_read_latency = 0;
 };
 
+struct SampleRealtimePortStateCompositionSource {
+    SampleRealtimePortStateStorageView storage{};
+    float coefficient = 0.0f;
+};
+
 struct SampleRealtimePortStateRealization {
     // Index into RealtimePortStateRequirements::states. Only sample
     // requirements have entries here; event realizations are planned
@@ -139,6 +150,10 @@ struct SampleRealtimePortStateRealization {
     // storage only; callback arena bytes are never exposed as retained state.
     std::vector<SampleRealtimePortStateStorageView> retained_sources{};
     std::optional<SampleRealtimePortStateMaterialization> materialization{};
+    // Flattened linear sources for one composed semantic target channel.
+    // Each view already includes its source read latency in timeline_offset.
+    std::vector<SampleRealtimePortStateCompositionSource>
+        composition_sources{};
 };
 
 enum class EventRealtimePortStateStorage : std::uint8_t {
@@ -180,6 +195,9 @@ struct EventRealtimePortStateStorageView {
     std::size_t count_relative_offset = 0;
     std::size_t read_index_relative_offset = 0;
     std::size_t write_index_relative_offset = 0;
+    bool has_sequential_timeline = false;
+    std::size_t timeline_initialized_relative_offset = 0;
+    std::size_t expected_next_time_relative_offset = 0;
     std::size_t events_relative_offset = 0;
     bool has_source_indices = false;
     std::size_t source_indices_relative_offset = 0;

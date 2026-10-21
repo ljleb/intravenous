@@ -55,6 +55,33 @@ NodeDefinitionProvider const& definition_provider(NodeDefinitionEntry const& def
         definition.definition);
 }
 
+bool configured_definition_closure_matches(
+    ConfiguredNodeInstance const& configured,
+    NodeDefinitionsSnapshot const& snapshot)
+{
+    // Snapshot generation is publication order, not semantic identity. A
+    // cached configured graph remains exact only while every definition it
+    // actually captured, including nested module dependencies, retains its
+    // version in the newly published snapshot.
+    std::vector<ConfiguredNodeInstance const*> pending{&configured};
+    std::unordered_set<ConfiguredNodeInstance const*> visited;
+    while (!pending.empty()) {
+        auto const* current = pending.back();
+        pending.pop_back();
+        if (!visited.insert(current).second) continue;
+        auto const definition = snapshot.by_id.find(current->definition_id);
+        if (definition == snapshot.by_id.end()
+            || definition->second.version != current->definition_version) {
+            return false;
+        }
+        for (auto const& dependency : current->dependencies) {
+            if (!dependency) return false;
+            pending.push_back(dependency.get());
+        }
+    }
+    return true;
+}
+
 IvModuleInstance make_instance(
     NodeDefinitionEntry const& definition,
     std::string const& instance_id,
@@ -521,7 +548,8 @@ std::shared_ptr<NodeInstances::CacheEntry> NodeInstances::configure_cached(
         }
         for (auto const& candidate : candidates) {
             auto const& configured = *candidate->configured;
-            if (configured.definitions_generation != context.snapshot->generation
+            if (!configured_definition_closure_matches(
+                    configured, *context.snapshot)
                 || configured.definition_version != definition.version
                 || configured.definition_id != definition.definition_id
                 || candidate->tiled_layout != tiled_layout
@@ -730,15 +758,25 @@ void NodeInstances::handle_node_definitions_snapshot_changed(
     }
 
     IvModuleInstancesChanged diff;
+    std::vector<std::shared_ptr<CacheEntry>> retired_cache_entries;
     bool list_changed = false;
     {
         std::scoped_lock lock(mutex_);
         definitions_snapshot_ = change.snapshot;
-        // Correctness-first invalidation. Preserving entries whose transitive
-        // provider versions are unchanged is the later caching optimization pass.
         minimum_cache_generation_ = std::max(
             minimum_cache_generation_, change.snapshot->generation);
-        configuration_cache_.clear();
+        std::vector<std::shared_ptr<CacheEntry>> retained_cache_entries;
+        retained_cache_entries.reserve(configuration_cache_.size());
+        for (auto& entry : configuration_cache_) {
+            if (entry && entry->configured
+                && configured_definition_closure_matches(
+                    *entry->configured, *change.snapshot)) {
+                retained_cache_entries.push_back(std::move(entry));
+            } else {
+                retired_cache_entries.push_back(std::move(entry));
+            }
+        }
+        configuration_cache_ = std::move(retained_cache_entries);
 
         std::unordered_set<std::string> realized_ids;
         for (auto& [instance_id, desired] : desired_instances_by_id_) {

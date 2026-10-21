@@ -4,7 +4,9 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cstring>
 #include <limits>
+#include <span>
 #include <stdexcept>
 #include <utility>
 
@@ -30,6 +32,64 @@ ProducerCapacityPolicy producer_capacity_policy(
         .high_watermark = maximum_blocks_per_callback
             * config.high_watermark_callbacks,
     };
+}
+
+bool persisted_storage_is_compatible(
+    graph_jit::PortStoragePlan const& current,
+    graph_jit::PortStoragePlan const& previous) noexcept
+{
+    if (current.kind != previous.kind) return false;
+    return current.kind == PortKind::sample
+        ? current.sample_layout == previous.sample_layout
+            && current.sample_channels == previous.sample_channels
+        : current.event_type == previous.event_type;
+}
+
+std::vector<PersistedOutputHandle> retired_persisted_outputs(
+    CompiledGraph const& current,
+    CompiledGraph const& previous,
+    PersistedDataStore& data)
+{
+    std::vector<PersistedOutputHandle> result;
+    auto const& current_plan = current.background_evaluation_plan;
+    auto const& previous_plan = previous.background_evaluation_plan;
+    for (graph_jit::PortStorageIndex previous_storage = 0;
+         previous_storage < previous_plan.storage.ports.size();
+         ++previous_storage) {
+        auto const& prior = previous_plan.storage.ports[previous_storage];
+        if (prior.storage != graph_jit::PortStorageKind::persisted_data) {
+            continue;
+        }
+        auto const identity = persisted_output_id(
+            previous_plan, previous_storage, previous.project_generation);
+        auto const survives = [&] {
+            for (graph_jit::PortStorageIndex current_storage = 0;
+                 current_storage < current_plan.storage.ports.size();
+                 ++current_storage) {
+                auto const& candidate =
+                    current_plan.storage.ports[current_storage];
+                if (candidate.storage
+                        != graph_jit::PortStorageKind::persisted_data
+                    || !persisted_storage_is_compatible(candidate, prior)) {
+                    continue;
+                }
+                if (persisted_output_id(
+                        current_plan,
+                        current_storage,
+                        current.project_generation)
+                    == identity) {
+                    return true;
+                }
+            }
+            return false;
+        }();
+        if (survives) continue;
+        auto const handle = data.resolve_output(identity);
+        if (!std::ranges::contains(result, handle)) {
+            result.push_back(handle);
+        }
+    }
+    return result;
 }
 
 } // namespace
@@ -67,7 +127,8 @@ GraphExecutor::BackgroundGeneration::BackgroundGeneration(
     ResourceContext const& resources,
     RealtimeGeneration& realtime,
     AsyncWorkSignal& work_signal)
-    : storage(graph.node_layout.create_storage(resources))
+    : storage(graph.node_layout.create_storage(
+          resources, NodeStorageExtent::steady_prefix))
     , coverage(graph.background_evaluation_plan.accumulators.output_change_count)
     , propagation(
         graph.background_evaluation_plan,
@@ -149,6 +210,25 @@ GraphExecutor::ExecutionGeneration::ExecutionGeneration(
     , background(*graph, resources, realtime, background_work_signal)
 {
     static_assert(std::atomic<ExecutionGeneration*>::is_always_lock_free);
+    static_assert(
+        std::atomic<CompiledGraphRealtimePhase>::is_always_lock_free);
+    if (graph->cutover) {
+        auto const& expiry =
+            graph->cutover->state_transition.sample_expiry_cursors;
+        transition_cursor_progress.reserve(expiry.size());
+        for (auto const& cursor : expiry) {
+            if (cursor.value_count == 0
+                || cursor.node_storage_offset
+                    > realtime.storage.buffer().size()
+                || sizeof(std::uint64_t)
+                    > realtime.storage.buffer().size()
+                        - cursor.node_storage_offset) {
+                throw std::invalid_argument(
+                    "GraphExecutor cutover has an invalid Sequential expiry cursor");
+            }
+            transition_cursor_progress.push_back({.expiry = cursor});
+        }
+    }
     for (std::size_t producer = 0;
          producer < realtime.producer_reserves.size(); ++producer) {
         realtime.tick_invocation.bind_producer_endpoint(
@@ -176,11 +256,30 @@ void GraphExecutor::ExecutionGeneration::prepare_realtime_migration_from(
         throw std::logic_error(
             "GraphExecutor generation migration is already prepared");
     }
-    auto transition = graph_jit::plan_realtime_port_state_transition(
-        previous.graph->realtime_port_state_requirements,
-        previous.graph->realtime_port_state_realizations,
-        graph->realtime_port_state_requirements,
-        graph->realtime_port_state_realizations);
+    if (graph->cutover
+        && (!graph->cutover->state_transition.sample_expiry_cursors.empty()
+            || graph->cutover->state_transition.event_expiry_samples != 0)
+        && !graph->root_operations.transition_tick_block) {
+        throw std::runtime_error(
+            "GraphExecutor transition cutover has no transition root");
+    }
+    std::expected<graph_jit::RealtimePortStateTransitionPlan, std::string>
+        transition = [&]()
+        -> std::expected<graph_jit::RealtimePortStateTransitionPlan, std::string> {
+        if (graph->cutover) {
+            auto predecessor = graph->cutover->predecessor.lock();
+            if (predecessor.get() != previous.graph.get()) {
+                return std::unexpected(
+                    "compiled cutover names a different active predecessor");
+            }
+            return graph->cutover->state_transition;
+        }
+        return graph_jit::plan_realtime_port_state_transition(
+            previous.graph->realtime_port_state_requirements,
+            previous.graph->realtime_port_state_realizations,
+            graph->realtime_port_state_requirements,
+            graph->realtime_port_state_realizations);
+    }();
     if (!transition) {
         throw std::runtime_error(
             "GraphExecutor could not reconcile realtime port state: "
@@ -203,24 +302,34 @@ void GraphExecutor::ExecutionGeneration::prepare_realtime_migration_from(
 }
 
 void GraphExecutor::ExecutionGeneration::prepare_background_migration_from(
-    ExecutionGeneration& previous)
+    ExecutionGeneration& previous,
+    PersistedDataStore& data)
 {
-    if (background_initialized || background_migration) {
+    if (background_initialized || background_migration
+        || background_coverage_migration) {
         throw std::logic_error(
             "GraphExecutor background generation migration is already prepared");
     }
     background_migration.emplace(
         background.storage.prepare_migration_from(previous.background.storage));
+    background_coverage_migration.emplace(
+        background.coverage.prepare_migration_from(
+            previous.background.coverage,
+            graph->background_evaluation_plan,
+            previous.graph->background_evaluation_plan,
+            graph->specialization.sample_rate
+                != previous.graph->specialization.sample_rate));
+    background.retired_outputs = retired_persisted_outputs(
+        *graph, *previous.graph, data);
 }
 
 void GraphExecutor::ExecutionGeneration::commit_realtime_migration(
-    GlobalIndex sample_index)
+    GlobalIndex sample_index) noexcept
 {
-    if (realtime_initialized || !realtime_migration
-        || !realtime_port_state_transition) {
-        throw std::logic_error(
-            "GraphExecutor realtime generation migration is not prepared");
-    }
+    IV_ASSERT(
+        !realtime_initialized && realtime_migration
+            && realtime_port_state_transition,
+        "GraphExecutor realtime generation migration is not prepared");
     realtime_migration->commit();
     graph_jit::execute_realtime_port_state_transfers(
         *realtime_port_state_transition,
@@ -228,17 +337,75 @@ void GraphExecutor::ExecutionGeneration::commit_realtime_migration(
         realtime.storage.buffer(),
         sample_index);
     realtime_migration.reset();
+    if (!transition_cursor_progress.empty()
+        || (graph->cutover
+            && graph->cutover->state_transition.event_expiry_samples != 0)) {
+        auto const storage = realtime.storage.buffer();
+        for (auto& progress : transition_cursor_progress) {
+            std::memcpy(
+                &progress.activation_ordinal,
+                storage.data() + progress.expiry.node_storage_offset,
+                sizeof(progress.activation_ordinal));
+        }
+        realtime_phase.store(
+            CompiledGraphRealtimePhase::transition,
+            std::memory_order_release);
+    } else {
+        realtime_phase.store(
+            CompiledGraphRealtimePhase::steady,
+            std::memory_order_release);
+    }
     realtime_initialized = true;
+}
+
+void GraphExecutor::ExecutionGeneration::update_realtime_phase(
+    std::size_t event_samples_advanced) noexcept
+{
+    if (realtime_phase.load(std::memory_order_relaxed)
+            != CompiledGraphRealtimePhase::transition
+        || !graph->cutover) {
+        return;
+    }
+    transition_event_progress = event_samples_advanced
+            > std::numeric_limits<std::uint64_t>::max()
+                - transition_event_progress
+        ? std::numeric_limits<std::uint64_t>::max()
+        : transition_event_progress + event_samples_advanced;
+    auto const storage = realtime.storage.buffer();
+    auto const samples_complete = std::ranges::all_of(
+        transition_cursor_progress,
+        [&](auto const& progress) {
+            std::uint64_t current = 0;
+            std::memcpy(
+                &current,
+                storage.data() + progress.expiry.node_storage_offset,
+                sizeof(current));
+            return current - progress.activation_ordinal
+                >= progress.expiry.value_count;
+        });
+    auto const events_complete = transition_event_progress
+        >= graph->cutover->state_transition.event_expiry_samples;
+    if (samples_complete && events_complete) {
+        realtime_phase.store(
+            CompiledGraphRealtimePhase::steady,
+            std::memory_order_release);
+    }
 }
 
 void GraphExecutor::ExecutionGeneration::commit_background_migration()
 {
-    if (background_initialized || !background_migration) {
+    if (background_initialized || !background_migration
+        || !background_coverage_migration) {
         throw std::logic_error(
             "GraphExecutor background generation migration is not prepared");
     }
     background_migration->commit();
     background_migration.reset();
+    background_coverage_migration->commit();
+    background.reconciliation_roots =
+        background_coverage_migration->take_reconciliation_roots();
+    background_coverage_migration.reset();
+    background.reconciliation_required = true;
     background_initialized = true;
 }
 
@@ -455,7 +622,8 @@ void GraphExecutor::BackgroundExecutor::run(std::stop_token stop) noexcept
                             "BackgroundExecutor migration command is incomplete");
                     }
                     command->migration_target->prepare_background_migration_from(
-                        *command->migration_source);
+                        *command->migration_source,
+                        owner_.persisted_data_);
                     return {};
                 } catch (...) {
                     return std::current_exception();
@@ -509,11 +677,55 @@ GraphExecutor::realtime_execution_generation() const
     return *realtime_active_;
 }
 
+GraphJitTransitionCompileRequest
+GraphExecutorStageContext::transition_compile_request(
+    GraphJitCompileRequest successor,
+    std::shared_ptr<CompiledGraph const> steady_successor) const
+{
+    if (successor.project_generation != successor_generation_) {
+        throw std::invalid_argument(
+            "GraphExecutor stage context names a different transition successor");
+    }
+    if (!active_predecessor_) {
+        throw std::logic_error(
+            "GraphExecutor first generation has no transition predecessor");
+    }
+    return GraphJitTransitionCompileRequest{
+        .successor = std::move(successor),
+        .steady_successor = std::move(steady_successor),
+        .active_predecessor = active_predecessor_,
+        .active_predecessor_phase = active_predecessor_phase_,
+    };
+}
+
+GraphExecutorStageContext GraphExecutor::prepare_stage(
+    std::uint64_t successor_generation) const noexcept
+{
+    return GraphExecutorStageContext{
+        *this,
+        successor_generation,
+        realtime_active_ ? realtime_active_->graph : nullptr,
+        realtime_active_
+            ? realtime_active_->realtime_phase.load(std::memory_order_acquire)
+            : CompiledGraphRealtimePhase::steady,
+    };
+}
+
 GraphExecutorStageResult GraphExecutor::stage(
+    GraphExecutorStageContext const& context,
     std::shared_ptr<CompiledGraph const> compiled_graph)
 {
     if (!compiled_graph) {
         throw std::invalid_argument("GraphExecutor cannot stage an empty compiled graph");
+    }
+    if (context.executor_ != this) {
+        throw std::invalid_argument(
+            "GraphExecutor cannot use a stage context from another executor");
+    }
+    if (compiled_graph->project_generation
+        != context.successor_generation_) {
+        throw std::invalid_argument(
+            "GraphExecutor stage context names a different successor generation");
     }
     auto const newest_generation = pending_generation_
         ? pending_generation_->graph->project_generation
@@ -522,6 +734,37 @@ GraphExecutorStageResult GraphExecutor::stage(
     if ((realtime_active_ || pending_generation_)
         && compiled_graph->project_generation <= newest_generation) {
         return GraphExecutorStageResult::ignored_stale;
+    }
+
+    auto const active_predecessor = realtime_active_
+        ? realtime_active_->graph.get()
+        : nullptr;
+    if (active_predecessor != context.active_predecessor_.get()) {
+        return GraphExecutorStageResult::active_predecessor_changed;
+    }
+    auto const active_phase = realtime_active_
+        ? realtime_active_->realtime_phase.load(std::memory_order_acquire)
+        : CompiledGraphRealtimePhase::steady;
+    if (active_phase != context.active_predecessor_phase_) {
+        return GraphExecutorStageResult::active_predecessor_changed;
+    }
+    if (compiled_graph->cutover) {
+        if (!context.active_predecessor_) {
+            throw std::invalid_argument(
+                "GraphExecutor first generation cannot carry a predecessor cutover");
+        }
+        auto predecessor = compiled_graph->cutover->predecessor.lock();
+        if (predecessor.get() != context.active_predecessor_.get()
+            || compiled_graph->cutover->predecessor_phase
+                != context.active_predecessor_phase_) {
+            throw std::invalid_argument(
+                "GraphExecutor compiled cutover does not match its stage context");
+        }
+    } else if (context.active_predecessor_
+               && context.active_predecessor_phase_
+                    == CompiledGraphRealtimePhase::transition) {
+        throw std::invalid_argument(
+            "GraphExecutor successor is not specialized from the active transition realization");
     }
 
     auto prepared = std::make_unique<ExecutionGeneration>(
@@ -564,6 +807,22 @@ bool GraphExecutor::activate_pending(GlobalIndex sample_index)
     }
 
     auto& previous = realtime_execution_generation();
+    previous.update_realtime_phase();
+    auto const previous_phase =
+        previous.realtime_phase.load(std::memory_order_relaxed);
+    auto const& cutover = pending_generation_->graph->cutover;
+    auto const cutover_is_current = cutover
+        ? cutover->predecessor.lock().get() == previous.graph.get()
+            && cutover->predecessor_phase == previous_phase
+        : previous_phase == CompiledGraphRealtimePhase::steady;
+    if (!cutover_is_current) {
+        // Phase expiry can happen after cold staging but before the caller's
+        // quiescent activation boundary. The prepared transfer may name a
+        // transition suffix which has since stopped receiving samples, so it
+        // cannot be repaired or committed on the realtime path.
+        pending_generation_.reset();
+        return false;
+    }
     if (!pending_generation_->initial_persisted_state
         || !pending_generation_->initial_persisted_state->capture_initial()) {
         throw std::logic_error(
@@ -626,7 +885,15 @@ GraphExecutor::evaluate_generation(
         background.propagation,
         persisted_data_,
         tick_materializations_,
-        BackgroundTransactionInputs{},
+        BackgroundTransactionInputs{
+            .roots = background.reconciliation_required
+                ? background.reconciliation_roots
+                : CoveragePropagationRequest{},
+            .retired_outputs = background.reconciliation_required
+                ? std::span<PersistedOutputHandle const>{
+                    background.retired_outputs}
+                : std::span<PersistedOutputHandle const>{},
+        },
         background.input_routes,
         background.input_selections,
     };
@@ -709,13 +976,32 @@ GraphExecutor::BackgroundExecutor::process_available_work()
     for (;;) {
         auto& current = generation();
         current.background.select_inputs();
-        if (current.background.has_selected_inputs()) {
+        if (current.background.reconciliation_required
+            && !current.graph->background_operations.valid()) {
+            auto const& plan = current.graph->background_evaluation_plan;
+            if (!plan.nodes.empty() || !plan.ports.empty()
+                || !plan.storage.ports.empty()) {
+                return std::unexpected(
+                    "GraphExecutor cannot reconcile a successor with incomplete background operations");
+            }
+            if (current.background.retired_outputs.empty()) {
+                // An empty background plan has no materialized bindings to
+                // rebind and no producer routes whose drained data could
+                // become visible.
+                current.background.reconciliation_required = false;
+            }
+        }
+        if (current.background.has_selected_inputs()
+            || current.background.reconciliation_required) {
             auto evaluated = owner_.evaluate_generation(
                 current, current.successor() == nullptr);
             if (!evaluated
                 || evaluated->status != BackgroundEvaluationStatus::committed) {
                 return evaluated;
             }
+            current.background.reconciliation_required = false;
+            current.background.retired_outputs.clear();
+            current.background.reconciliation_roots = {};
             // A publication concurrent with the pinned prefix advanced the
             // work revision and will schedule another selection. Return after
             // one current-generation transaction so actor control commands
@@ -787,6 +1073,7 @@ void GraphExecutor::tick_block(GlobalIndex sample_index, std::size_t block_size)
         throw std::invalid_argument(
             "GraphExecutor tick block size is outside the compiled specialization");
     }
+    generation.update_realtime_phase();
     auto const* persisted = realtime_persisted_state_.adopt(
         generation.graph->project_generation);
     if (!persisted) {
@@ -798,11 +1085,20 @@ void GraphExecutor::tick_block(GlobalIndex sample_index, std::size_t block_size)
         generation.realtime.tick_invocation,
         sample_index,
         block_size};
-    generation.graph->root_operations.tick_block(
+    auto const tick = generation.realtime_phase.load(std::memory_order_relaxed)
+            == CompiledGraphRealtimePhase::transition
+        ? generation.graph->root_operations.transition_tick_block
+        : generation.graph->root_operations.tick_block;
+    if (!tick) {
+        throw std::logic_error(
+            "GraphExecutor active realtime realization has no root operation");
+    }
+    tick(
         generation.realtime.storage.buffer().data(),
         &invocation.call(),
         sample_index,
         block_size);
+    generation.update_realtime_phase(block_size);
 }
 
 } // namespace iv

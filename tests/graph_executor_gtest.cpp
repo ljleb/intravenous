@@ -5,9 +5,11 @@
 
 #include <gtest/gtest.h>
 
+#include <array>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <memory>
 #include <span>
 #include <stdexcept>
@@ -97,6 +99,26 @@ void observe_second(
         .storage = storage,
         .invocation = invocation,
     };
+}
+
+void observe_first_and_advance_transition_cursor(
+    std::byte* storage,
+    iv::graph_jit::TickInvocationCall const* invocation,
+    iv::GlobalIndex sample_index,
+    std::size_t block_size)
+{
+    observe_first(storage, invocation, sample_index, block_size);
+    std::uint64_t cursor = 0;
+    std::memcpy(&cursor, storage, sizeof(cursor));
+    cursor += block_size;
+    std::memcpy(storage, &cursor, sizeof(cursor));
+}
+
+void initialize_zero_raw_region(
+    std::span<std::byte> storage,
+    std::span<std::byte const>)
+{
+    std::ranges::fill(storage, std::byte{});
 }
 
 void write_raw_state(
@@ -704,6 +726,55 @@ std::shared_ptr<iv::CompiledGraph const> compiled_graph(
     return graph;
 }
 
+std::shared_ptr<iv::CompiledGraph const> transition_graph(
+    std::uint64_t generation,
+    std::shared_ptr<iv::CompiledGraph const> const& predecessor,
+    iv::CompiledGraphRealtimePhase predecessor_phase,
+    std::size_t expiry_values,
+    iv::CompiledGraphBlockFunction transition_tick,
+    iv::CompiledGraphBlockFunction steady_tick,
+    std::size_t event_expiry_samples = 0)
+{
+    auto graph = std::make_shared<iv::CompiledGraph>();
+    graph->project_generation = generation;
+    graph->specialization.sample_rate = 48000;
+    graph->specialization.block_size = 64;
+    iv::NodeLayoutBuilder layout_builder(64);
+    auto const cursor_region = layout_builder.declare_raw_region(
+        sizeof(std::uint64_t),
+        alignof(std::uint64_t),
+        {},
+        initialize_zero_raw_region);
+    graph->node_layout = std::move(layout_builder).build();
+    graph->root_operations = {
+        .tick_block = steady_tick,
+        .transition_tick_block = transition_tick,
+    };
+    graph->cutover.emplace(iv::CompiledGraphCutover{
+        .predecessor = predecessor,
+        .predecessor_phase = predecessor_phase,
+        .state_transition = {
+            .event_expiry_samples = event_expiry_samples,
+        },
+    });
+    if (expiry_values != 0) {
+        graph->cutover->state_transition.sample_expiry_cursors.push_back({
+            .node_storage_offset = graph->node_layout
+                .regions[cursor_region.index].storage_offset,
+            .value_count = expiry_values,
+        });
+    }
+    return graph;
+}
+
+iv::GraphExecutorStageResult stage_graph(
+    iv::GraphExecutor& executor,
+    std::shared_ptr<iv::CompiledGraph const> const& graph)
+{
+    return executor.stage(
+        executor.prepare_stage(graph->project_generation), graph);
+}
+
 iv::NodeLayout persistent_raw_layout(std::size_t& offset)
 {
     iv::NodeLayoutBuilder builder(64);
@@ -746,7 +817,7 @@ TEST_F(GraphExecutorFixture, StagesActivatesAndDispatchesOnlyActiveGeneration)
 
     EXPECT_THROW(executor.tick_block(index(0), 64), std::logic_error);
     EXPECT_EQ(
-        executor.stage(first), iv::GraphExecutorStageResult::staged);
+        stage_graph(executor, first), iv::GraphExecutorStageResult::staged);
     EXPECT_FALSE(executor.active_generation());
     EXPECT_EQ(executor.pending_generation(), 1u);
     EXPECT_TRUE(executor.activate_pending(index(0)));
@@ -764,7 +835,7 @@ TEST_F(GraphExecutorFixture, StagesActivatesAndDispatchesOnlyActiveGeneration)
     EXPECT_TRUE(first_tick.invocation->random_access_event_inputs.empty());
 
     EXPECT_EQ(
-        executor.stage(second), iv::GraphExecutorStageResult::staged);
+        stage_graph(executor, second), iv::GraphExecutorStageResult::staged);
     executor.tick_block(index(49), 16);
     EXPECT_EQ(first_tick.calls, 2u);
     EXPECT_EQ(second_tick.calls, 0u);
@@ -786,16 +857,201 @@ TEST_F(GraphExecutorFixture, IgnoresStaleAndSupersedesOlderPendingGeneration)
     auto second = compiled_graph(2, &observe_second);
 
     EXPECT_EQ(
-        executor.stage(first), iv::GraphExecutorStageResult::staged);
+        stage_graph(executor, first), iv::GraphExecutorStageResult::staged);
     EXPECT_EQ(
-        executor.stage(first), iv::GraphExecutorStageResult::ignored_stale);
+        stage_graph(executor, first), iv::GraphExecutorStageResult::ignored_stale);
     EXPECT_EQ(
-        executor.stage(second), iv::GraphExecutorStageResult::staged);
+        stage_graph(executor, second), iv::GraphExecutorStageResult::staged);
     EXPECT_EQ(executor.pending_generation(), 2u);
     EXPECT_TRUE(executor.activate_pending(index(0)));
     EXPECT_EQ(executor.active_generation(), 2u);
     EXPECT_EQ(
-        executor.stage(first), iv::GraphExecutorStageResult::ignored_stale);
+        stage_graph(executor, first), iv::GraphExecutorStageResult::ignored_stale);
+}
+
+TEST_F(GraphExecutorFixture, SupersedesPendingGenerationAgainstOlderActiveGeneration)
+{
+    iv::GraphExecutor executor;
+    auto first = compiled_graph(1, &observe_first);
+    auto second = compiled_graph(2, &observe_second);
+    auto third = compiled_graph(3, &observe_second);
+
+    ASSERT_EQ(stage_graph(executor, first), iv::GraphExecutorStageResult::staged);
+    ASSERT_TRUE(executor.activate_pending(index(0)));
+    ASSERT_EQ(executor.active_generation(), 1u);
+
+    auto const second_stage = executor.prepare_stage(2);
+    auto const third_stage = executor.prepare_stage(3);
+    EXPECT_EQ(second_stage.active_predecessor(), first);
+    EXPECT_EQ(third_stage.active_predecessor(), first);
+    ASSERT_EQ(
+        executor.stage(second_stage, second),
+        iv::GraphExecutorStageResult::staged);
+    ASSERT_EQ(
+        executor.stage(third_stage, third),
+        iv::GraphExecutorStageResult::staged);
+    EXPECT_EQ(executor.active_generation(), 1u);
+    EXPECT_EQ(executor.pending_generation(), 3u);
+
+    ASSERT_TRUE(executor.activate_pending(index(64)));
+    EXPECT_EQ(executor.active_generation(), 3u);
+}
+
+TEST_F(GraphExecutorFixture, RejectsSpecializationAfterItsActivePredecessorChanges)
+{
+    iv::GraphExecutor executor;
+    auto first = compiled_graph(1, &observe_first);
+    auto second = compiled_graph(2, &observe_second);
+    auto third = compiled_graph(3, &observe_second);
+
+    ASSERT_EQ(stage_graph(executor, first), iv::GraphExecutorStageResult::staged);
+    ASSERT_TRUE(executor.activate_pending(index(0)));
+
+    auto const third_stage = executor.prepare_stage(3);
+    ASSERT_EQ(third_stage.active_predecessor(), first);
+    ASSERT_EQ(stage_graph(executor, second), iv::GraphExecutorStageResult::staged);
+    ASSERT_TRUE(executor.activate_pending(index(64)));
+
+    EXPECT_EQ(
+        executor.stage(third_stage, third),
+        iv::GraphExecutorStageResult::active_predecessor_changed);
+    EXPECT_FALSE(executor.pending_generation());
+    EXPECT_EQ(executor.active_generation(), 2u);
+}
+
+TEST_F(
+    GraphExecutorFixture,
+    TransitionRootExpiresBySequentialProgressAcrossGlobalJump)
+{
+    iv::GraphExecutor executor;
+    auto first = compiled_graph(1, &observe_second);
+    ASSERT_EQ(stage_graph(executor, first), iv::GraphExecutorStageResult::staged);
+    ASSERT_TRUE(executor.activate_pending(index(0)));
+
+    auto second = transition_graph(
+        2,
+        first,
+        iv::CompiledGraphRealtimePhase::steady,
+        64,
+        &observe_first_and_advance_transition_cursor,
+        &observe_second);
+    auto const second_stage = executor.prepare_stage(2);
+    ASSERT_EQ(
+        executor.stage(second_stage, second),
+        iv::GraphExecutorStageResult::staged);
+    ASSERT_TRUE(executor.activate_pending(index(100)));
+
+    first_tick = {};
+    second_tick = {};
+    executor.tick_block(index(100), 32);
+    EXPECT_EQ(first_tick.calls, 1u);
+    EXPECT_EQ(second_tick.calls, 0u);
+    auto const transition_phase_stage = executor.prepare_stage(3);
+    EXPECT_EQ(
+        transition_phase_stage.active_predecessor_phase(),
+        iv::CompiledGraphRealtimePhase::transition);
+
+    auto third = transition_graph(
+        3,
+        second,
+        iv::CompiledGraphRealtimePhase::transition,
+        16,
+        &observe_first_and_advance_transition_cursor,
+        &observe_second);
+    executor.tick_block(index(10'000), 32);
+    EXPECT_EQ(first_tick.calls, 2u);
+    EXPECT_EQ(
+        executor.prepare_stage(3).active_predecessor_phase(),
+        iv::CompiledGraphRealtimePhase::steady);
+    EXPECT_EQ(
+        executor.stage(transition_phase_stage, third),
+        iv::GraphExecutorStageResult::active_predecessor_changed);
+
+    executor.tick_block(index(-4'000), 32);
+    EXPECT_EQ(first_tick.calls, 2u);
+    EXPECT_EQ(second_tick.calls, 1u);
+}
+
+TEST_F(
+    GraphExecutorFixture,
+    EventTransitionExpiresByProcessedExtentAcrossGlobalJump)
+{
+    iv::GraphExecutor executor;
+    auto first = compiled_graph(1, &observe_second);
+    ASSERT_EQ(stage_graph(executor, first), iv::GraphExecutorStageResult::staged);
+    ASSERT_TRUE(executor.activate_pending(index(0)));
+
+    auto second = transition_graph(
+        2,
+        first,
+        iv::CompiledGraphRealtimePhase::steady,
+        0,
+        &observe_first,
+        &observe_second,
+        64);
+    ASSERT_EQ(stage_graph(executor, second), iv::GraphExecutorStageResult::staged);
+    ASSERT_TRUE(executor.activate_pending(index(100)));
+
+    first_tick = {};
+    second_tick = {};
+    executor.tick_block(index(100), 32);
+    EXPECT_EQ(first_tick.calls, 1u);
+    EXPECT_EQ(second_tick.calls, 0u);
+    EXPECT_EQ(
+        executor.prepare_stage(3).active_predecessor_phase(),
+        iv::CompiledGraphRealtimePhase::transition);
+
+    executor.tick_block(index(10'000), 32);
+    EXPECT_EQ(first_tick.calls, 2u);
+    EXPECT_EQ(
+        executor.prepare_stage(3).active_predecessor_phase(),
+        iv::CompiledGraphRealtimePhase::steady);
+
+    executor.tick_block(index(-4'000), 32);
+    EXPECT_EQ(first_tick.calls, 2u);
+    EXPECT_EQ(second_tick.calls, 1u);
+}
+
+TEST_F(
+    GraphExecutorFixture,
+    DiscardsStagedCutoverIfItsPredecessorPhaseExpiresBeforeActivation)
+{
+    iv::GraphExecutor executor;
+    auto first = compiled_graph(1, &observe_second);
+    ASSERT_EQ(stage_graph(executor, first), iv::GraphExecutorStageResult::staged);
+    ASSERT_TRUE(executor.activate_pending(index(0)));
+
+    auto second = transition_graph(
+        2,
+        first,
+        iv::CompiledGraphRealtimePhase::steady,
+        64,
+        &observe_first_and_advance_transition_cursor,
+        &observe_second);
+    ASSERT_EQ(stage_graph(executor, second), iv::GraphExecutorStageResult::staged);
+    ASSERT_TRUE(executor.activate_pending(index(100)));
+    executor.tick_block(index(100), 32);
+
+    auto third = transition_graph(
+        3,
+        second,
+        iv::CompiledGraphRealtimePhase::transition,
+        16,
+        &observe_first_and_advance_transition_cursor,
+        &observe_second);
+    auto const third_stage = executor.prepare_stage(3);
+    ASSERT_EQ(
+        executor.stage(third_stage, third),
+        iv::GraphExecutorStageResult::staged);
+    EXPECT_EQ(executor.pending_generation(), 3u);
+
+    executor.tick_block(index(132), 32);
+    EXPECT_EQ(
+        executor.prepare_stage(3).active_predecessor_phase(),
+        iv::CompiledGraphRealtimePhase::steady);
+    EXPECT_FALSE(executor.activate_pending(index(164)));
+    EXPECT_FALSE(executor.pending_generation());
+    EXPECT_EQ(executor.active_generation(), 2u);
 }
 
 TEST_F(
@@ -808,12 +1064,10 @@ TEST_F(
     auto second = compiled_graph(
         2, &observe_raw_state, persistent_raw_layout(second_raw_offset));
 
-    ASSERT_EQ(
-        executor.stage(first), iv::GraphExecutorStageResult::staged);
+    ASSERT_EQ(stage_graph(executor, first), iv::GraphExecutorStageResult::staged);
     ASSERT_TRUE(executor.activate_pending(index(0)));
 
-    ASSERT_EQ(
-        executor.stage(second), iv::GraphExecutorStageResult::staged);
+    ASSERT_EQ(stage_graph(executor, second), iv::GraphExecutorStageResult::staged);
     EXPECT_EQ(executor.active_generation(), 1u);
     // Migration preparation must not snapshot mutable realtime bytes. The
     // value written after staging is the value copied at activation.
@@ -826,12 +1080,14 @@ TEST_F(
 TEST_F(GraphExecutorFixture, GenerationCutoverWakesTheBackgroundActor)
 {
     iv::GraphExecutor executor;
+    auto first = compiled_graph(1, &observe_first);
     ASSERT_EQ(
-        executor.stage(compiled_graph(1, &observe_first)),
+        stage_graph(executor, first),
         iv::GraphExecutorStageResult::staged);
     ASSERT_TRUE(executor.activate_pending(index(0)));
+    auto second = compiled_graph(2, &observe_second);
     ASSERT_EQ(
-        executor.stage(compiled_graph(2, &observe_second)),
+        stage_graph(executor, second),
         iv::GraphExecutorStageResult::staged);
     ASSERT_TRUE(executor.activate_pending(index(0)));
 
@@ -848,10 +1104,12 @@ TEST_F(GraphExecutorFixture, GenerationCutoverWakesTheBackgroundActor)
 TEST_F(GraphExecutorFixture, RejectsInvalidGraphsAndBlockSizes)
 {
     iv::GraphExecutor executor;
-    EXPECT_THROW(executor.stage(nullptr), std::invalid_argument);
+    auto const empty_stage = executor.prepare_stage(1);
+    EXPECT_THROW(executor.stage(empty_stage, nullptr), std::invalid_argument);
 
+    auto first = compiled_graph(1, &observe_first);
     ASSERT_EQ(
-        executor.stage(compiled_graph(1, &observe_first)),
+        stage_graph(executor, first),
         iv::GraphExecutorStageResult::staged);
     ASSERT_TRUE(executor.activate_pending(index(0)));
     EXPECT_FALSE(executor.realtime_production_failures().any());
@@ -1515,6 +1773,310 @@ TEST_F(
     ASSERT_EQ(propagation_result.output_requirements.size(), 2u);
     EXPECT_EQ(propagation_result.output_requirements[0].port, 0u);
     EXPECT_EQ(propagation_result.output_requirements[1].port, 1u);
+}
+
+TEST_F(
+    BackgroundCoveragePropagationFixture,
+    StableOutputCoverageMigrationReadsThePredecessorAfterItsFinalDrain)
+{
+    auto previous_plan = background_fanin_plan();
+    auto stable_output = [](std::string virtual_node) {
+        return iv::graph_jit::StableOutputPortId{
+            .node = {
+                .graph = "coverage-migration",
+                .virtual_node = std::move(virtual_node),
+            },
+            .kind = iv::PortKind::sample,
+            .port_name = "output",
+            .port_index = 0,
+        };
+    };
+    previous_plan.ports[0].stable_identity = stable_output("source-a");
+    previous_plan.ports[1].stable_identity = stable_output("source-b");
+    previous_plan.ports[3].stable_identity = stable_output("sink");
+    auto current_plan = previous_plan;
+
+    iv::BackgroundCoverageState previous(
+        previous_plan.accumulators.output_change_count);
+    iv::BackgroundCoverageState current(
+        current_plan.accumulators.output_change_count);
+    // Preparation happens while the predecessor is still live. The descriptor
+    // must not snapshot its mutable coverage at this point.
+    auto migration = current.prepare_migration_from(
+        previous, current_plan, previous_plan);
+
+    auto const operations = iv::CompiledGraphBackgroundOperations{
+        .propagate_forward = &propagate_background_forward,
+        .propagate_reverse = &propagate_background_reverse,
+        .evaluate = &no_op_background_evaluate,
+    };
+    iv::BackgroundPropagationWorkspace previous_workspace(
+        previous_plan, 48000);
+    auto drained = previous_workspace.prepare(
+        operations,
+        nullptr,
+        previous,
+        iv::CoveragePropagationRequest{
+            .locally_changed_nodes = {0, 1},
+        });
+    auto const final_drain = previous_workspace.commit(
+        previous, std::move(drained));
+    (void)final_drain;
+    migration.commit();
+
+    background_observation = {};
+    iv::BackgroundPropagationWorkspace current_workspace(current_plan, 48000);
+    auto reconciled = current_workspace.prepare(
+        operations,
+        nullptr,
+        current,
+        iv::CoveragePropagationRequest{
+            .locally_changed_nodes = {2},
+        });
+    EXPECT_EQ(
+        background_observation.sink_input_coverage,
+        index_coverage({{10, 13}, {20, 22}}));
+    current_workspace.discard(std::move(reconciled));
+}
+
+TEST_F(
+    BackgroundCoveragePropagationFixture,
+    CoverageMigrationSeedsOnlyNodesWhoseLocalSemanticsChanged)
+{
+    auto previous_plan = background_fanin_plan();
+    auto current_plan = previous_plan;
+    auto stable_node = [](std::string id) {
+        return iv::graph_jit::StableConcreteNodeId{
+            .graph = "semantic-reconciliation",
+            .virtual_node = std::move(id),
+        };
+    };
+    auto unchanged_source = std::make_shared<int>(1);
+    auto changed_source_before = std::make_shared<int>(2);
+    auto changed_source_after = std::make_shared<int>(3);
+    auto unchanged_sink = std::make_shared<int>(4);
+    for (std::size_t node = 0; node < previous_plan.nodes.size(); ++node) {
+        previous_plan.nodes[node].stable_identity = stable_node(
+            "node-" + std::to_string(node));
+        current_plan.nodes[node].stable_identity =
+            previous_plan.nodes[node].stable_identity;
+        previous_plan.nodes[node].provider_version = 7;
+        current_plan.nodes[node].provider_version = 7;
+    }
+    previous_plan.nodes[0].configuration_identity = unchanged_source;
+    current_plan.nodes[0].configuration_identity = unchanged_source;
+    previous_plan.nodes[1].configuration_identity = changed_source_before;
+    current_plan.nodes[1].configuration_identity = changed_source_after;
+    previous_plan.nodes[2].configuration_identity = unchanged_sink;
+    current_plan.nodes[2].configuration_identity = unchanged_sink;
+    auto stable_output = [&](std::size_t node) {
+        return iv::graph_jit::StableOutputPortId{
+            .node = stable_node("node-" + std::to_string(node)),
+            .kind = iv::PortKind::sample,
+            .port_name = "output",
+            .port_index = 0,
+        };
+    };
+    for (std::size_t output : {0u, 1u}) {
+        previous_plan.ports[output].stable_identity = stable_output(output);
+        current_plan.ports[output].stable_identity = stable_output(output);
+    }
+    previous_plan.ports[3].stable_identity = stable_output(2);
+    current_plan.ports[3].stable_identity = stable_output(2);
+    auto const stable_input = iv::graph_jit::StableInputPortId{
+        .node = stable_node("node-2"),
+        .kind = iv::PortKind::sample,
+        .port_name = "input",
+        .port_index = 0,
+    };
+    previous_plan.ports[2].stable_input_identity = stable_input;
+    current_plan.ports[2].stable_input_identity = stable_input;
+    auto complete_fanin_connections = [](auto& plan) {
+        for (std::size_t source = 0; source < 2; ++source) {
+            auto& connection = plan.connections[source];
+            connection.sample_source_type = iv::ChannelTypeId::mono;
+            connection.sample_target_type = iv::ChannelTypeId::mono;
+            connection.sample_source_channels = {{source, 0, 0}};
+            connection.sample_source_port_by_channel = {source};
+            connection.sample_deliveries = {
+                iv::graph_jit::PlannedDeliveryMechanism::tock_to_random_access,
+            };
+            connection.sample_target_channels = {{2, 0, 0}};
+            connection.sample_target_port = 2;
+        }
+    };
+    complete_fanin_connections(previous_plan);
+    complete_fanin_connections(current_plan);
+
+    iv::BackgroundCoverageState previous(
+        previous_plan.accumulators.output_change_count);
+    iv::BackgroundCoverageState current(
+        current_plan.accumulators.output_change_count);
+    auto migration = current.prepare_migration_from(
+        previous, current_plan, previous_plan);
+    migration.commit();
+    auto roots = migration.take_reconciliation_roots();
+
+    ASSERT_EQ(roots.locally_changed_nodes.size(), 1u);
+    EXPECT_EQ(roots.locally_changed_nodes.front(), 1u);
+    EXPECT_TRUE(roots.input_changes.empty());
+}
+
+TEST_F(
+    BackgroundCoveragePropagationFixture,
+    CoverageMigrationTreatsSampleRateChangeAsAWholePlanSemanticChange)
+{
+    auto previous_plan = background_fanin_plan();
+    auto current_plan = previous_plan;
+    std::array semantic_owners{
+        std::make_shared<int>(1),
+        std::make_shared<int>(2),
+        std::make_shared<int>(3),
+    };
+    for (std::size_t node = 0; node < previous_plan.nodes.size(); ++node) {
+        auto const stable = iv::graph_jit::StableConcreteNodeId{
+            .graph = "sample-rate-reconciliation",
+            .virtual_node = "node-" + std::to_string(node),
+        };
+        previous_plan.nodes[node].stable_identity = stable;
+        current_plan.nodes[node].stable_identity = stable;
+        previous_plan.nodes[node].provider_version = 11;
+        current_plan.nodes[node].provider_version = 11;
+        previous_plan.nodes[node].configuration_identity = semantic_owners[node];
+        current_plan.nodes[node].configuration_identity = semantic_owners[node];
+    }
+
+    iv::BackgroundCoverageState previous(
+        previous_plan.accumulators.output_change_count);
+    iv::BackgroundCoverageState current(
+        current_plan.accumulators.output_change_count);
+    auto migration = current.prepare_migration_from(
+        previous, current_plan, previous_plan, true);
+    migration.commit();
+    auto roots = migration.take_reconciliation_roots();
+
+    EXPECT_EQ(
+        roots.locally_changed_nodes,
+        (std::vector<iv::graph_jit::BackgroundNodeIndex>{0, 1, 2}));
+}
+
+TEST_F(
+    BackgroundCoveragePropagationFixture,
+    CoverageMigrationTurnsStableInputRewiringIntoAnExactInputChangeRoot)
+{
+    auto previous_plan = background_fanin_plan();
+    auto current_plan = previous_plan;
+    auto stable_node = [](std::string id) {
+        return iv::graph_jit::StableConcreteNodeId{
+            .graph = "connection-reconciliation",
+            .virtual_node = std::move(id),
+        };
+    };
+    auto stable_output = [&](std::size_t node) {
+        return iv::graph_jit::StableOutputPortId{
+            .node = stable_node("node-" + std::to_string(node)),
+            .kind = iv::PortKind::sample,
+            .port_name = "output",
+            .port_index = 0,
+        };
+    };
+    std::array semantic_owners{
+        std::make_shared<int>(1),
+        std::make_shared<int>(2),
+        std::make_shared<int>(3),
+    };
+    for (std::size_t node = 0; node < previous_plan.nodes.size(); ++node) {
+        previous_plan.nodes[node].stable_identity = stable_node(
+            "node-" + std::to_string(node));
+        current_plan.nodes[node].stable_identity =
+            previous_plan.nodes[node].stable_identity;
+        previous_plan.nodes[node].provider_version = 9;
+        current_plan.nodes[node].provider_version = 9;
+        previous_plan.nodes[node].configuration_identity = semantic_owners[node];
+        current_plan.nodes[node].configuration_identity = semantic_owners[node];
+    }
+    for (std::size_t output : {0u, 1u}) {
+        previous_plan.ports[output].stable_identity = stable_output(output);
+        current_plan.ports[output].stable_identity = stable_output(output);
+    }
+    previous_plan.ports[3].stable_identity = stable_output(2);
+    current_plan.ports[3].stable_identity = stable_output(2);
+    auto const stable_input = iv::graph_jit::StableInputPortId{
+        .node = stable_node("node-2"),
+        .kind = iv::PortKind::sample,
+        .port_name = "input",
+        .port_index = 0,
+    };
+    previous_plan.ports[2].stable_input_identity = stable_input;
+    current_plan.ports[2].stable_input_identity = stable_input;
+
+    auto connect_source = [](iv::graph_jit::BackgroundEvaluationPlan& plan,
+                             std::size_t source) {
+        plan.connections.resize(1);
+        plan.connections[0] = iv::graph_jit::BackgroundConnectionPlan{
+            .kind = iv::PortKind::sample,
+            .source_coverage_ports = {source},
+            .target_coverage_ports = {2},
+            .sample_source_type = iv::ChannelTypeId::mono,
+            .sample_target_type = iv::ChannelTypeId::mono,
+            .sample_source_channels = {{source, 0, 0}},
+            .sample_source_port_by_channel = {source},
+            .sample_deliveries = {
+                iv::graph_jit::PlannedDeliveryMechanism::tock_to_random_access},
+            .sample_target_channels = {{2, 0, 0}},
+            .sample_target_port = 2,
+        };
+        plan.ports[0].outgoing_connections.clear();
+        plan.ports[1].outgoing_connections.clear();
+        plan.ports[source].outgoing_connections = {0};
+        plan.ports[2].incoming_connections = {0};
+    };
+    connect_source(previous_plan, 0);
+    connect_source(current_plan, 1);
+
+    iv::BackgroundCoverageState previous(
+        previous_plan.accumulators.output_change_count);
+    iv::BackgroundCoverageState current(
+        current_plan.accumulators.output_change_count);
+    auto migration = current.prepare_migration_from(
+        previous, current_plan, previous_plan);
+    auto const operations = iv::CompiledGraphBackgroundOperations{
+        .propagate_forward = &propagate_background_forward,
+        .propagate_reverse = &propagate_background_reverse,
+        .evaluate = &no_op_background_evaluate,
+    };
+    iv::BackgroundPropagationWorkspace previous_workspace(
+        previous_plan, 48000);
+    auto populated = previous_workspace.prepare(
+        operations,
+        nullptr,
+        previous,
+        iv::CoveragePropagationRequest{.locally_changed_nodes = {0, 1}});
+    (void)previous_workspace.commit(previous, std::move(populated));
+
+    migration.commit();
+    auto roots = migration.take_reconciliation_roots();
+    EXPECT_TRUE(roots.locally_changed_nodes.empty());
+    ASSERT_EQ(roots.input_changes.size(), 1u);
+    EXPECT_EQ(roots.input_changes.front().port, 2u);
+    EXPECT_EQ(
+        roots.input_changes.front().coverage,
+        index_coverage({{20, 22}}));
+    EXPECT_EQ(
+        roots.input_changes.front().changed,
+        index_coverage({{10, 13}, {20, 22}}));
+
+    background_observation = {};
+    iv::BackgroundPropagationWorkspace current_workspace(current_plan, 48000);
+    auto reconciled = current_workspace.prepare(
+        operations, nullptr, current, roots);
+    EXPECT_EQ(
+        background_observation.sink_input_coverage,
+        index_coverage({{20, 22}}));
+    EXPECT_EQ(
+        background_observation.sink_input_changed,
+        index_coverage({{10, 13}, {20, 22}}));
+    current_workspace.discard(std::move(reconciled));
 }
 
 TEST_F(

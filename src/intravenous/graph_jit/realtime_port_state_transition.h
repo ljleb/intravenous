@@ -1,6 +1,7 @@
 #pragma once
 
 #include <intravenous/graph_jit/realtime_port_state_plan.h>
+#include <intravenous/node/layout.h>
 
 #include <cstddef>
 #include <cstdint>
@@ -18,6 +19,9 @@ namespace iv::graph_jit {
 enum class InheritedRealtimePortStateRealization : std::uint8_t {
     // The successor's immutable/fresh state already has the inherited value.
     already_represented,
+    // The value type defines no valid migration for the old/new resolved
+    // shapes. The successor's initialized state is the complete result.
+    fresh_state,
     // The successor owns one private steady storage view that can receive the
     // inherited interval during transition preparation.
     transfer_to_steady_storage,
@@ -53,6 +57,9 @@ struct RealtimePortStateTransition {
 // views belong to the predecessor NodeStorage; target belongs to the successor.
 struct SampleRealtimePortStateTransfer {
     std::size_t transition_index = 0;
+    // True only when target_storage is a private region appended after the
+    // successor's steady NodeStorage boundary.
+    bool target_transition_only = false;
     SampleRealtimePortStateAccess source_access =
         SampleRealtimePortStateAccess::callback_only;
     std::vector<SampleRealtimePortStateStorageView> source_storage{};
@@ -61,6 +68,7 @@ struct SampleRealtimePortStateTransfer {
     // Channel of source_materialization.target_layout represented by this
     // semantic state. Ignored when source_access is not materialized.
     std::size_t source_materialization_channel = 0;
+    std::vector<float> source_composition_coefficients{};
     SampleRealtimePortStateStorageView target_storage{};
     // Complete successor interval. It is initialized to silence before the
     // inherited sub-interval is transferred from predecessor storage.
@@ -71,11 +79,13 @@ struct SampleRealtimePortStateTransfer {
 };
 
 // Concrete cold descriptor for selecting/converting one predecessor event
-// interval into one non-aliased successor steady-storage view. Event payloads
-// retain absolute timestamps, so the inherited interval is also the filter
-// applied at the cutover position.
+// interval into successor steady or transition storage. Several descriptors
+// may merge disjoint roles or distinct indexed producers into one aggregate.
+// Ephemeral Sequential payloads are rebased across a transport seam before
+// this cutover-relative filter is applied.
 struct EventRealtimePortStateTransfer {
     std::size_t transition_index = 0;
+    bool target_transition_only = false;
     EventRealtimePortStateAccess source_access =
         EventRealtimePortStateAccess::callback_only;
     EventRealtimePortStateStorageView source_storage{};
@@ -84,12 +94,30 @@ struct EventRealtimePortStateTransfer {
     std::size_t source_history_samples = 0;
     bool source_selects_invocation_window = false;
     EventRealtimePortStateStorageView target_storage{};
+    // Populated when several semantic output states share one indexed target
+    // aggregate. Every inserted event receives this stable producer index.
+    std::optional<std::size_t> target_index{};
     // Complete successor interval; events outside the inherited sub-interval
     // are authoritatively absent after reconstruction.
     std::int64_t target_begin = 0;
     std::int64_t target_end = 0;
     std::int64_t inherited_begin = 0;
     std::int64_t inherited_end = 0;
+    // Cold preparation replaces this with the earliest semantic position of
+    // every transfer that appends into the same physical target. The realtime
+    // merge uses that shared origin so history and future roles have one
+    // chronological ordering across the cutover boundary.
+    std::int64_t target_order_begin = 0;
+};
+
+// One finite transition-root lifetime measured in the same hidden Sequential
+// domain that addresses the affected sample state. The executor snapshots the
+// cursor at activation and expires the transition only after value_count
+// transported values have actually advanced, independent of GlobalIndex
+// discontinuities and project-rate assumptions.
+struct SampleRealtimePortStateExpiryCursor {
+    std::size_t node_storage_offset = 0;
+    std::uint64_t value_count = 0;
 };
 
 // Cold semantic reconciliation for one prospective generation cutover. This
@@ -101,6 +129,18 @@ struct RealtimePortStateTransitionPlan {
     std::vector<RealtimePortStateTransition> event_states{};
     std::vector<SampleRealtimePortStateTransfer> sample_transfers{};
     std::vector<EventRealtimePortStateTransfer> event_transfers{};
+    std::vector<SampleRealtimePortStateExpiryCursor> sample_expiry_cursors{};
+    // Event time is project-rate. This horizon is advanced by processed block
+    // extents, never by differences between visible GlobalIndex values.
+    std::uint64_t event_expiry_samples = 0;
+};
+
+// One successor layout after cold transition storage specialization. The
+// steady prefix is unchanged; plan transfers which still carry the
+// transition_only_storage classification target private regions in its suffix.
+struct RealtimePortStateTransitionStorage {
+    NodeLayout node_layout{};
+    RealtimePortStateTransitionPlan plan{};
 };
 
 // Fully checked cutover program. Construction validates every cold descriptor,
@@ -151,9 +191,28 @@ plan_realtime_port_state_transition(
     RealtimePortStateRequirements const& current_requirements,
     RealtimePortStateRealizations const& current_realizations);
 
+// Realizes sample transition state whose successor steady binding cannot
+// directly receive inherited values. Each source and target retains its own
+// generation-owned Sequential pace cursor, so cutover remains independent of
+// node-visible transport jumps and supports a change of resolved dyadic pace.
+// Disjoint roles/channels of one
+// authored port may share a private suffix ring while all steady offsets stay
+// fixed. A predecessor input produced by one retained linear channel
+// materialization can be reconstructed during the prepared cutover. Direct,
+// materialized, and composed successor callback views can then be mirrored into
+// the suffix by transition lowering. Composed predecessor state and event
+// transition state remain explicit errors.
+[[nodiscard]] std::expected<RealtimePortStateTransitionStorage, std::string>
+realize_realtime_port_state_transition_storage(
+    NodeLayout steady_layout,
+    RealtimePortStateTransitionPlan plan,
+    RealtimePortStateRealizations const& previous_realizations,
+    RealtimePortStateRequirements const& current_requirements,
+    RealtimePortStateRealizations const& current_realizations);
+
 // Validates and owns the complete bounded cutover program before activation.
-// Transition-only and unavailable inherited state are rejected until their
-// suffix realizations have been added to the plan.
+// A transition-only state is accepted only after suffix realization has added
+// its one concrete transfer; unavailable inherited state remains an error.
 [[nodiscard]] std::expected<PreparedRealtimePortStateTransition, std::string>
 prepare_realtime_port_state_transfers(
     RealtimePortStateTransitionPlan plan,

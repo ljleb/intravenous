@@ -489,6 +489,13 @@ std::expected<DeclarationPlan, std::string> plan_declarations(
         if (storage.count_relative_offset > storage.size_bytes
             || storage.read_index_relative_offset > storage.size_bytes
             || storage.write_index_relative_offset > storage.size_bytes
+            || (storage.has_sequential_timeline
+                && (storage.timeline_initialized_relative_offset
+                        >= storage.size_bytes
+                    || storage.expected_next_time_relative_offset
+                        > storage.size_bytes
+                    || sizeof(GlobalIndex) > storage.size_bytes
+                        - storage.expected_next_time_relative_offset))
             || storage.events_relative_offset > storage.size_bytes
             || (storage.has_source_indices
                 && storage.source_indices_relative_offset
@@ -625,11 +632,24 @@ plan_sample_realtime_port_state_realizations(
             return std::unexpected(
                 "GraphJit sample port-state channel lies outside its representation");
         }
+        auto const cursor = std::ranges::find(
+            sample_ports.storage.sequential_pace_cursors,
+            representation.absolute_pace_exponent,
+            &SequentialPaceCursorPlan::absolute_pace_exponent);
+        if (cursor == sample_ports.storage.sequential_pace_cursors.end()
+            || cursor->storage_offset > declarations.node_layout.storage_size
+            || sizeof(std::uint64_t)
+                > declarations.node_layout.storage_size
+                    - cursor->storage_offset) {
+            return std::unexpected(
+                "GraphJit sample port-state representation lost its Sequential pace cursor");
+        }
 
         SampleRealtimePortStateStorageView view{
             .channel_layout = representation.channel_layout,
             .geometry = representation.geometry,
             .absolute_pace_exponent = representation.absolute_pace_exponent,
+            .sequential_cursor_node_storage_offset = cursor->storage_offset,
             .representation_channel = representation_channel,
             .timeline_offset_frames = timeline_offset,
             .working_frame_capacity = representation.frame_capacity,
@@ -766,12 +786,18 @@ plan_sample_realtime_port_state_realizations(
         return selected;
     };
 
-    auto is_composition_target = [&](std::size_t representation) {
-        return std::ranges::any_of(
-            sample_ports.storage.compositions,
-            [&](SampleCompositionPlan const& composition) {
-                return composition.target_representation == representation;
-            });
+    auto composition_for_target = [&](std::size_t representation)
+        -> std::expected<SampleCompositionPlan const*, std::string> {
+        SampleCompositionPlan const* selected = nullptr;
+        for (auto const& composition : sample_ports.storage.compositions) {
+            if (composition.target_representation != representation) continue;
+            if (selected) {
+                return std::unexpected(
+                    "GraphJit sample port state has more than one composition producer");
+            }
+            selected = &composition;
+        }
+        return selected;
     };
 
     for (std::size_t requirement_index = 0;
@@ -886,10 +912,18 @@ plan_sample_realtime_port_state_realizations(
             continue;
         }
 
+        // Retained Tick output storage is already indexed in the semantic
+        // output timeline. The positive authored latency belongs only to the
+        // callback-facing view; applying it again during migration would move
+        // both history and future state twice.
+        auto const retained_timeline_offset =
+            requirement.direction == PortDirection::output
+            ? std::int64_t{0}
+            : timeline_offset;
         auto retained = storage_view(
             representation_index,
             representation_channel,
-            timeline_offset,
+            retained_timeline_offset,
             true);
         if (!retained) return std::unexpected(std::move(retained.error()));
         if (*retained) {
@@ -952,9 +986,78 @@ plan_sample_realtime_port_state_realizations(
                                 operation.latest_read_latency,
                         };
                 }
-            } else if (is_composition_target(representation_index)) {
-                realization.retained_access =
-                    SampleRealtimePortStateAccess::composed;
+            } else {
+                auto composition = composition_for_target(
+                    representation_index);
+                if (!composition) {
+                    return std::unexpected(std::move(composition.error()));
+                }
+                if (*composition) {
+                    bool selected_target = false;
+                    for (auto const& contribution : (**composition).contributions) {
+                        for (std::size_t converted_channel = 0;
+                             converted_channel
+                                < contribution.target_channels.size();
+                             ++converted_channel) {
+                            if (contribution.target_channels[converted_channel]
+                                != representation_channel) {
+                                continue;
+                            }
+                            if (selected_target
+                                || contribution.sources.size()
+                                    != channel_count(
+                                        contribution.source_layout)) {
+                                return std::unexpected(
+                                    "GraphJit composed port state has an ambiguous target channel");
+                            }
+                            selected_target = true;
+                            for (std::size_t source_channel = 0;
+                                 source_channel
+                                    < contribution.sources.size();
+                                 ++source_channel) {
+                                auto const coefficient =
+                                    channel_conversion_coefficient(
+                                        contribution.source_layout.channel_type,
+                                        contribution.converted_layout.channel_type,
+                                        source_channel,
+                                        converted_channel);
+                                if (coefficient == 0.0f) continue;
+                                auto const& source =
+                                    contribution.sources[source_channel];
+                                if (source.read_latency
+                                    > static_cast<std::size_t>(
+                                        std::numeric_limits<std::int64_t>::max())) {
+                                    return std::unexpected(
+                                        "GraphJit composed port-state latency is not representable");
+                                }
+                                auto source_view = storage_view(
+                                    source.source_representation,
+                                    source.source_channel,
+                                    -static_cast<std::int64_t>(
+                                        source.read_latency),
+                                    true);
+                                if (!source_view) {
+                                    return std::unexpected(
+                                        std::move(source_view.error()));
+                                }
+                                if (!*source_view) {
+                                    realization.composition_sources.clear();
+                                    selected_target = false;
+                                    break;
+                                }
+                                realization.composition_sources.push_back({
+                                    .storage = std::move(**source_view),
+                                    .coefficient = coefficient,
+                                });
+                            }
+                        }
+                    }
+                    if (selected_target
+                        && !realization.composition_sources.empty()) {
+                        realization.retained_access =
+                            SampleRealtimePortStateAccess::composed;
+                    }
+                }
             }
         }
         result.sample_states.push_back(std::move(realization));
@@ -1002,6 +1105,12 @@ plan_event_realtime_port_state_realizations(
                 representation.read_index_relative_offset,
             .write_index_relative_offset =
                 representation.write_index_relative_offset,
+            .has_sequential_timeline =
+                representation.has_sequential_timeline,
+            .timeline_initialized_relative_offset =
+                representation.timeline_initialized_relative_offset,
+            .expected_next_time_relative_offset =
+                representation.expected_next_time_relative_offset,
             .events_relative_offset = representation.events_relative_offset,
             .has_source_indices = representation.has_source_indices,
             .source_indices_relative_offset =
@@ -2571,6 +2680,23 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
             : sizeof(std::size_t);
         std::size_t alignment = std::max(
             alignof(std::size_t), alignof(TimedEvent));
+        std::size_t timeline_initialized_relative = 0;
+        std::size_t expected_next_time_relative = 0;
+        if (persistent) {
+            timeline_initialized_relative = header_end;
+            auto const expected_relative = align_up(
+                header_end + sizeof(std::uint8_t), alignof(GlobalIndex));
+            if (!expected_relative
+                || *expected_relative
+                    > std::numeric_limits<std::size_t>::max()
+                        - sizeof(GlobalIndex)) {
+                return std::unexpected(
+                    "GraphJit event timeline header size overflows size_t");
+            }
+            expected_next_time_relative = *expected_relative;
+            header_end = expected_next_time_relative + sizeof(GlobalIndex);
+            alignment = std::max(alignment, alignof(GlobalIndex));
+        }
         auto const events_relative = align_up(header_end, alignof(TimedEvent));
         if (!events_relative
             || capacity > (std::numeric_limits<std::size_t>::max()
@@ -2607,6 +2733,11 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
             .count_relative_offset = 0,
             .read_index_relative_offset = read_index_relative,
             .write_index_relative_offset = write_index_relative,
+            .has_sequential_timeline = persistent,
+            .timeline_initialized_relative_offset =
+                timeline_initialized_relative,
+            .expected_next_time_relative_offset =
+                expected_next_time_relative,
             .events_relative_offset = *events_relative,
             .has_source_indices = source_indices,
             .source_indices_relative_offset = source_indices_relative,
@@ -4725,6 +4856,7 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
                 .authored_event_count = *authored_event_count,
                 .retained_event_count = *retained_event_count,
                 .retained_window_samples = retained_window_samples,
+                .ordering_history_samples = retained_history,
                 .loop_extra_latency = latency,
             });
         }
@@ -6045,6 +6177,24 @@ std::expected<LoweringPlan, std::string> build_lowering_plan(
     auto configure_background_replay = [&](ConnectionAnalysisPlan& connections)
         -> std::expected<void, std::string> {
         auto& background = connections.background;
+        for (auto& node : background.nodes) {
+            auto const primitive = std::ranges::find_if(
+                analysis->primitives,
+                [&](PrimitiveAnalysis const& candidate) {
+                    return candidate.bundle.node_bundle == node.bundle;
+                });
+            if (primitive == analysis->primitives.end()
+                || primitive->implementation == nullptr) {
+                return std::unexpected(
+                    "GraphJit background node has no primitive implementation");
+            }
+            node.implementation_identity =
+                primitive->implementation->identity;
+            node.provider_version =
+                primitive->implementation->provider_version;
+            node.configuration_identity =
+                primitive->implementation->configuration_identity;
+        }
         for (auto& replay : background.runtime.replay_invocations) {
             if (replay.node >= background.nodes.size()) {
                 return std::unexpected(

@@ -496,7 +496,7 @@ TEST(NodeInstancesConfiguration, DuplicateInstanceIdIsRejectedBeforeSecondConfig
     EXPECT_EQ(counted_calls.load(), 1);
 }
 
-TEST(NodeInstancesConfiguration, SnapshotPublicationInvalidatesConservativeCache)
+TEST(NodeInstancesConfiguration, SnapshotPublicationInvalidatesChangedDefinition)
 {
     counted_calls = 0;
     auto first_snapshot = make_snapshot(1, {counted_spec()});
@@ -522,6 +522,87 @@ TEST(NodeInstancesConfiguration, SnapshotPublicationInvalidatesConservativeCache
     ASSERT_TRUE(second.diagnostics.empty());
     EXPECT_EQ(counted_calls.load(), 2);
     EXPECT_EQ(second.placements.at("second").configured->definitions_generation, 2u);
+}
+
+TEST(NodeInstancesConfiguration, SnapshotPublicationRetainsUnchangedDefinitionClosure)
+{
+    counted_calls = 0;
+    auto first_snapshot = make_snapshot(1, {counted_spec()});
+    iv::NodeInstances instances;
+    instances.handle_node_definitions_snapshot_changed(
+        iv::NodeDefinitionsSnapshotChanged{.snapshot = first_snapshot});
+    int value = 9;
+    std::array arguments{int_argument(value)};
+    std::array requests{request("first", counted_id, arguments)};
+    iv::GraphBuilder first_root;
+    auto first = instances.configure_and_embed(first_snapshot, first_root, requests);
+    ASSERT_TRUE(first.diagnostics.empty());
+    ASSERT_EQ(instances.configuration_cache_size(), 1u);
+
+    auto second_snapshot = std::make_shared<iv::NodeDefinitionsSnapshot>(
+        *first_snapshot);
+    second_snapshot->generation = 2;
+    instances.handle_node_definitions_snapshot_changed(
+        iv::NodeDefinitionsSnapshotChanged{.snapshot = second_snapshot});
+    EXPECT_EQ(instances.configuration_cache_size(), 1u);
+
+    iv::GraphBuilder second_root;
+    requests[0].instance_id = "second";
+    auto second = instances.configure_and_embed(
+        second_snapshot, second_root, requests);
+    ASSERT_TRUE(second.diagnostics.empty());
+    EXPECT_EQ(counted_calls.load(), 1);
+    EXPECT_EQ(
+        second.placements.at("second").configured,
+        first.placements.at("first").configured);
+}
+
+TEST(NodeInstancesConfiguration, SnapshotPublicationInvalidatesChangedNestedClosure)
+{
+    nested_parent_calls = 0;
+    nested_child_calls = 0;
+    auto first_snapshot = make_snapshot(1, {
+        DefinitionSpec{
+            .id = nested_parent_id,
+            .module_build = &nested_parent_module,
+            .signature = &int_signature_callback,
+        },
+        DefinitionSpec{
+            .id = nested_child_id,
+            .module_build = &nested_child_module,
+            .signature = &int_signature_callback,
+        },
+    });
+    iv::NodeInstances instances;
+    instances.handle_node_definitions_snapshot_changed(
+        iv::NodeDefinitionsSnapshotChanged{.snapshot = first_snapshot});
+    int value = 4;
+    std::array arguments{int_argument(value)};
+    std::array requests{request("first", nested_parent_id, arguments)};
+    iv::GraphBuilder first_root;
+    auto first = instances.configure_and_embed(
+        first_snapshot, first_root, requests);
+    ASSERT_TRUE(first.diagnostics.empty());
+    ASSERT_EQ(instances.configuration_cache_size(), 2u);
+
+    auto second_snapshot = std::make_shared<iv::NodeDefinitionsSnapshot>(
+        *first_snapshot);
+    second_snapshot->generation = 2;
+    second_snapshot->by_id.at(nested_child_id).version = 2;
+    instances.handle_node_definitions_snapshot_changed(
+        iv::NodeDefinitionsSnapshotChanged{.snapshot = second_snapshot});
+    EXPECT_EQ(instances.configuration_cache_size(), 0u);
+
+    iv::GraphBuilder second_root;
+    requests[0].instance_id = "second";
+    auto second = instances.configure_and_embed(
+        second_snapshot, second_root, requests);
+    ASSERT_TRUE(second.diagnostics.empty());
+    EXPECT_EQ(nested_parent_calls.load(), 2);
+    EXPECT_EQ(nested_child_calls.load(), 2);
+    EXPECT_NE(
+        second.placements.at("second").configured,
+        first.placements.at("first").configured);
 }
 
 

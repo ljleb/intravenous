@@ -14,6 +14,10 @@ inline constexpr char ordered_event_carry_restore_symbol[] =
     "iv_graph_jit_restore_ordered_event_carry";
 inline constexpr char ordered_event_carry_commit_symbol[] =
     "iv_graph_jit_commit_ordered_event_carry";
+inline constexpr char event_sequence_rebase_symbol[] =
+    "iv_graph_jit_rebase_event_sequence";
+inline constexpr char event_ring_rebase_symbol[] =
+    "iv_graph_jit_rebase_event_ring";
 inline constexpr char event_persistent_ring_prune_symbol[] =
     "iv_graph_jit_prune_event_persistent_ring";
 inline constexpr char event_feedback_append_symbol[] =
@@ -77,6 +81,24 @@ iv_graph_jit_commit_ordered_event_carry(
     void* carry_events,
     std::size_t* carry_source_indices,
     std::size_t carry_capacity) noexcept;
+
+// Move retained Sequential event timestamps across a transport seam. Durable
+// event storage never uses these helpers; it retains authored coordinates.
+extern "C" IV_GRAPH_JIT_RETENTION_RUNTIME_EXPORT void
+iv_graph_jit_rebase_event_sequence(
+    void* events,
+    std::size_t event_count,
+    GlobalIndex expected_position,
+    GlobalIndex actual_position) noexcept;
+
+extern "C" IV_GRAPH_JIT_RETENTION_RUNTIME_EXPORT void
+iv_graph_jit_rebase_event_ring(
+    void* events,
+    std::size_t event_capacity,
+    std::size_t read_index,
+    std::size_t write_index,
+    GlobalIndex expected_position,
+    GlobalIndex actual_position) noexcept;
 
 // Advance only the persistent ring's oldest retained index. Producer and
 // consumers continue to share the same TimedEvent storage directly; no retained

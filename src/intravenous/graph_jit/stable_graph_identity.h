@@ -2,6 +2,7 @@
 
 #include <intravenous/ports.h>
 
+#include <compare>
 #include <cstddef>
 #include <cstdint>
 #include <string>
@@ -22,6 +23,7 @@ struct StableConcreteNodeId {
     std::size_t direct_member = 0;
 
     bool operator==(StableConcreteNodeId const&) const = default;
+    auto operator<=>(StableConcreteNodeId const&) const = default;
 };
 
 struct StableOutputPortId {
@@ -31,6 +33,17 @@ struct StableOutputPortId {
     std::size_t port_index = 0;
 
     bool operator==(StableOutputPortId const&) const = default;
+    auto operator<=>(StableOutputPortId const&) const = default;
+};
+
+struct StableInputPortId {
+    StableConcreteNodeId node{};
+    PortKind kind = PortKind::sample;
+    std::string port_name{};
+    std::size_t port_index = 0;
+
+    bool operator==(StableInputPortId const&) const = default;
+    auto operator<=>(StableInputPortId const&) const = default;
 };
 
 } // namespace iv::graph_jit

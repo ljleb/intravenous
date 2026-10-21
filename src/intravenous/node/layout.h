@@ -14,6 +14,13 @@
 #include <vector>
 
 namespace iv {
+    // Selects which immutable NodeLayout extent one mutable storage instance
+    // owns. Background execution cannot address transition-only realtime bytes.
+    enum class NodeStorageExtent : std::uint8_t {
+        full,
+        steady_prefix,
+    };
+
     struct NodeLayout {
         static constexpr size_t no_owner_node = std::numeric_limits<size_t>::max();
 
@@ -114,7 +121,9 @@ namespace iv {
         std::vector<ArrayBinding> exported_arrays;
         std::vector<size_t> initialize_order;
 
-        NodeStorage create_storage(ResourceContext const& resources) const;
+        NodeStorage create_storage(
+            ResourceContext const& resources,
+            NodeStorageExtent extent = NodeStorageExtent::full) const;
     };
 
     struct NodeLayoutBuilder {
@@ -219,6 +228,26 @@ namespace iv {
             NodeLayoutBuilder const&);
     };
 
+    // Extends an already-finalized steady layout without reopening ordinary
+    // node/storage declaration. Existing offsets remain byte-for-byte stable;
+    // only compiler-owned transition regions may be appended.
+    class NodeLayoutTransitionBuilder {
+        NodeLayout layout_{};
+
+        static size_t align_up(size_t value, size_t alignment);
+
+    public:
+        explicit NodeLayoutTransitionBuilder(NodeLayout steady_layout);
+
+        NodeLayout::RegionHandle declare_raw_region(
+            size_t size,
+            size_t alignment = 1,
+            NodeLayout::Region::RawInitializeFn initialize_fn = nullptr,
+            std::vector<std::byte> initialize_data = {});
+
+        NodeLayout build() &&;
+    };
+
     struct NodeStorage {
         struct Migration;
 
@@ -235,13 +264,20 @@ namespace iv {
 
         NodeLayout const* layout = nullptr;
         ResourceContext const* resources = nullptr;
+        NodeStorageExtent extent = NodeStorageExtent::full;
+        // Physical bytes owned by this instance; either storage_size or the
+        // smaller steady_storage_size from the same canonical layout.
+        size_t allocation_size = 0;
         std::unique_ptr<std::byte[], StorageDeleter> storage;
         std::vector<size_t> constructed_nodes;
         std::vector<size_t> constructed_background_states;
         std::vector<size_t> initialized_nodes;
 
         NodeStorage();
-        NodeStorage(NodeLayout const& layout, ResourceContext const& resources);
+        NodeStorage(
+            NodeLayout const& layout,
+            ResourceContext const& resources,
+            NodeStorageExtent extent_ = NodeStorageExtent::full);
         NodeStorage(NodeStorage&& other) noexcept;
         NodeStorage& operator=(NodeStorage&& other) noexcept;
         NodeStorage(NodeStorage const&) = delete;
@@ -296,6 +332,9 @@ namespace iv {
         Migration(Migration const&) = delete;
         Migration& operator=(Migration const&) = delete;
 
-        void commit();
+        // This is the irreversible generation handoff. Authored lifecycle
+        // exceptions terminate the process at their erased callback boundary;
+        // no partial migration result is returned to a caller.
+        void commit() noexcept;
     };
 }

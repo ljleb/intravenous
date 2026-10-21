@@ -183,6 +183,12 @@ struct EventRepresentationPlan {
     std::size_t count_relative_offset = 0;
     std::size_t read_index_relative_offset = 0;
     std::size_t write_index_relative_offset = 0;
+    // Persistent Sequential event storage owns one transport mapping. The
+    // initialized byte distinguishes a genuine expected position of zero from
+    // storage which has not completed an invocation yet.
+    bool has_sequential_timeline = false;
+    std::size_t timeline_initialized_relative_offset = 0;
+    std::size_t expected_next_time_relative_offset = 0;
     std::size_t events_relative_offset = 0;
     // Ordered fan-in carries one compiler-only semantic source index beside
     // each TimedEvent. Staged fan-in needs it to preserve equal-time ordering
@@ -337,6 +343,9 @@ struct EventFeedbackPlan {
     std::size_t authored_event_count = 0;
     std::size_t retained_event_count = 0;
     std::size_t retained_window_samples = 0;
+    // Source and target sequences are ordered from the retained-history
+    // boundary, not necessarily from the current invocation index.
+    std::size_t ordering_history_samples = 0;
     std::size_t loop_extra_latency = 1;
 };
 
@@ -399,6 +408,10 @@ struct PrimitiveExecutionStep {
     std::vector<std::size_t> sample_feedback_writes_after{};
     std::vector<std::size_t> sample_materializations_after{};
     std::vector<std::size_t> sample_compositions_after{};
+    // Transition-root mirrors that must observe feedback/composition writes
+    // completed by this step. Ordinary materializations stay earlier so
+    // authored consumers retain their established ordering.
+    std::vector<std::size_t> sample_transition_materializations_after{};
     std::vector<std::size_t> sample_carry_commits_after{};
 
     std::vector<EventOperationRef> event_operations_before{};
