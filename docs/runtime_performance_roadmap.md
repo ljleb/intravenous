@@ -407,6 +407,26 @@ The governing performance invariant is:
    packed-stack diagnostic. Collaborator compilation and full-suite verification are
    pending.
 
+   **Front 7 full-suite verification and adversarial completion audit (2026-10-22):**
+   the next collaborator run compiled and passed all 572 tests. New focused tests now
+   cover four previously unexercised Front 7 contracts: rejection of two serial
+   detach records revealed by subgraph-boundary expansion, per-source rejection of an
+   unnecessary detach in a connection that also contains a necessary detach, and
+   exact-generation migration of compiler-owned activity/TTL state. Event activity now
+   also requires empty input windows to remain skippable and a later non-empty input
+   window to wake the primitive. The tests do not change source semantics. Their
+   collaborator build and execution remain pending.
+   Front 7 is source-complete at its current dependency boundary; normalized block
+   replayability remains ordered after Front 2's normalized batch operations.
+
+   The first run with these adversarial tests passed 575 of 576 tests. The only
+   failure was an incorrect assertion in
+   `CompilerOwnedActivityStateMigratesAcrossCompatibleGenerations`: authored
+   `ActivityProbe::State` starts fresh in the successor, while the compiler-owned
+   activity region migrates independently. The successor's immediate `skip_block()`
+   call demonstrated the intended migration. The corrected assertion awaits a
+   collaborator rerun.
+
    This leaves Front 6 source-complete pending the collaborator's compilation and full
    suite run. Verification failure reopens the front at the failing boundary; a clean
    run closes it without another implementation pass.

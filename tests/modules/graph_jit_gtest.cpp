@@ -119,6 +119,8 @@ constexpr char graph_jit_activity_disabled_module_id[] =
     "iv.test.graph_jit.state_context.activity_disabled_module";
 constexpr char graph_jit_activity_type_default_module_id[] =
     "iv.test.graph_jit.state_context.activity_type_default_module";
+constexpr char graph_jit_event_activity_module_id[] =
+    "iv.test.graph_jit.state_context.event_activity_module";
 constexpr char graph_jit_ported_module_id[] = "iv.test.graph_jit.state_context.ported_module";
 constexpr char graph_jit_direct_sample_module_id[] = "iv.test.graph_jit.state_context.direct_sample_module";
 constexpr char graph_jit_disconnected_sample_input_module_id[] = "iv.test.graph_jit.state_context.disconnected_sample_input_module";
@@ -5900,6 +5902,63 @@ struct ActivityTypeDefaultProbe {
     }
 };
 
+struct EventActivityStepSource {
+    static constexpr auto inputs() { return std::tuple{}; }
+
+    static constexpr auto outputs()
+    {
+        return std::array{iv::event_output(
+            "out",
+            iv::EventTypeId::trigger,
+            iv::OutputProduction::tick,
+            {.max_events_per_index = 1.0 / 64.0})};
+    }
+
+    void tick_block(
+        iv::TickBlockContext<EventActivityStepSource> const& ctx) const
+    {
+        if (ctx.index.whole().bits() >= 128 && ctx.block_size != 0)
+            ctx.output<"out">().push(iv::TriggerEvent{}, 0);
+    }
+};
+
+struct EventActivityProbe {
+    struct State {
+        std::uint64_t tick_calls = 0;
+        std::uint64_t skip_calls = 0;
+    };
+
+    static constexpr auto inputs()
+    {
+        return std::array{iv::event_input(
+            "in", iv::EventTypeId::trigger, iv::InputAccess::sequential)};
+    }
+
+    static constexpr auto outputs()
+    {
+        return std::array{iv::event_output(
+            "out",
+            iv::EventTypeId::trigger,
+            iv::OutputProduction::tick,
+            {.max_events_per_index = 1.0 / 64.0})};
+    }
+
+    std::optional<std::size_t> ttl_samples() const { return 64; }
+    bool can_skip_block() const { return true; }
+
+    void tick_block(
+        iv::TickBlockContext<EventActivityProbe> const& ctx) const
+    {
+        ++ctx.state().tick_calls;
+    }
+
+    void skip_block(
+        iv::SkipBlockContext<EventActivityProbe> const& ctx) const
+    {
+        ++ctx.state().skip_calls;
+    }
+};
+
 void activity_module(iv::GraphBuilder& graph)
 {
     auto source = graph.node<
@@ -5932,6 +5991,16 @@ void activity_type_default_module(iv::GraphBuilder& graph)
     auto probe = graph.node<
         "iv.test.graph_jit.state_context.activity_type_default_probe">();
     probe(source);
+    graph.outputs();
+}
+
+void event_activity_module(iv::GraphBuilder& graph)
+{
+    auto source = graph.node<
+        "iv.test.graph_jit.state_context.event_activity_step_source">();
+    auto probe = graph.node<
+        "iv.test.graph_jit.state_context.event_activity_probe">();
+    probe.connect_event_input(0, source.event_port());
     graph.outputs();
 }
 
@@ -6323,6 +6392,8 @@ void persisted_non_project_rate_sample_module(iv::GraphBuilder& graph)
 IV_NODE("iv.test.graph_jit.state_context.activity_step_source", ActivityStepSource);
 IV_NODE("iv.test.graph_jit.state_context.activity_probe", ActivityProbe);
 IV_NODE("iv.test.graph_jit.state_context.activity_type_default_probe", ActivityTypeDefaultProbe);
+IV_NODE("iv.test.graph_jit.state_context.event_activity_step_source", EventActivityStepSource);
+IV_NODE("iv.test.graph_jit.state_context.event_activity_probe", EventActivityProbe);
 IV_NODE("iv.test.graph_jit.state_context.declaration_layout_parent", DeclarationLayoutParent);
 IV_NODE("iv.test.graph_jit.state_context.declaration_layout_producer", DeclarationLayoutProducer);
 IV_NODE("iv.test.graph_jit.state_context.declaration_layout_consumer", DeclarationLayoutConsumer);
@@ -6335,6 +6406,7 @@ IV_NODE("iv.test.graph_jit.state_context.persisted_non_project_rate_sample_produ
 IV_MODULE("iv.test.graph_jit.state_context.activity_module", activity_module);
 IV_MODULE("iv.test.graph_jit.state_context.activity_disabled_module", activity_disabled_module);
 IV_MODULE("iv.test.graph_jit.state_context.activity_type_default_module", activity_type_default_module);
+IV_MODULE("iv.test.graph_jit.state_context.event_activity_module", event_activity_module);
 IV_MODULE("iv.test.graph_jit.state_context.declaration_layout_module", declaration_layout_module);
 IV_MODULE("iv.test.graph_jit.state_context.fft_value_module", fft_value_module);
 IV_MODULE("iv.test.graph_jit.state_context.fractional_index_value_module", fractional_index_value_module);
@@ -7696,6 +7768,7 @@ TEST(GraphJitSharedRuntimeFixture, BuildPackage)
     EXPECT_TRUE(has_module_definition(graph_jit_activity_module_id));
     EXPECT_TRUE(has_module_definition(graph_jit_activity_disabled_module_id));
     EXPECT_TRUE(has_module_definition(graph_jit_activity_type_default_module_id));
+    EXPECT_TRUE(has_module_definition(graph_jit_event_activity_module_id));
     EXPECT_TRUE(has_leaf_definition(
         "iv.test.graph_jit.state_context.stereo_ramp_source"));
     EXPECT_TRUE(has_leaf_definition(
@@ -8340,6 +8413,78 @@ TEST_F(GraphJitRuntimeFixture, ActivityTtlIsOptInAndWakesOnInputChange)
         64);
     EXPECT_EQ(type_default_state->tick_calls, 1u);
     EXPECT_EQ(type_default_state->skip_calls, 1u);
+}
+
+TEST_F(GraphJitRuntimeFixture,
+       CompilerOwnedActivityStateMigratesAcrossCompatibleGenerations)
+{
+    auto predecessor = compile(
+        graph_jit_activity_type_default_module_id, 256);
+    ASSERT_TRUE(predecessor.succeeded())
+        << (predecessor.diagnostics.empty()
+                ? ""
+                : predecessor.diagnostics.front().message);
+    auto predecessor_storage = predecessor.compiled_graph
+        ->node_layout.create_storage(resources);
+    predecessor_storage.initialize();
+    auto* predecessor_state = static_cast<ActivityProbeStateMirror*>(
+        predecessor_storage.state_ptr(1));
+    ASSERT_NE(predecessor_state, nullptr);
+
+    predecessor.compiled_graph->root_operations.tick_block(
+        predecessor_storage.buffer().data(),
+        &empty_tick_invocation,
+        index(0),
+        64);
+    EXPECT_EQ(predecessor_state->tick_calls, 1u);
+    EXPECT_EQ(predecessor_state->skip_calls, 0u);
+
+    auto successor = compile(
+        graph_jit_activity_type_default_module_id, 257);
+    ASSERT_TRUE(successor.succeeded())
+        << (successor.diagnostics.empty()
+                ? ""
+                : successor.diagnostics.front().message);
+    auto successor_storage = successor.compiled_graph
+        ->node_layout.create_storage(resources);
+    successor_storage.initialize(&predecessor_storage);
+    auto* successor_state = static_cast<ActivityProbeStateMirror*>(
+        successor_storage.state_ptr(1));
+    ASSERT_NE(successor_state, nullptr);
+
+    successor.compiled_graph->root_operations.tick_block(
+        successor_storage.buffer().data(),
+        &empty_tick_invocation,
+        index(64),
+        64);
+    // Authored State starts fresh in this fixture. The compiler-owned activity
+    // region migrates independently, so the successor immediately skips.
+    EXPECT_EQ(successor_state->tick_calls, 0u);
+    EXPECT_EQ(successor_state->skip_calls, 1u);
+}
+
+TEST_F(GraphJitRuntimeFixture, EventActivityWakesOnANonemptyInputWindow)
+{
+    auto compiled = compile(graph_jit_event_activity_module_id, 258);
+    ASSERT_TRUE(compiled.succeeded())
+        << (compiled.diagnostics.empty()
+                ? ""
+                : compiled.diagnostics.front().message);
+    auto storage = compiled.compiled_graph->node_layout.create_storage(resources);
+    storage.initialize();
+    auto* state = static_cast<ActivityProbeStateMirror*>(
+        storage.state_ptr(1));
+    ASSERT_NE(state, nullptr);
+
+    for (auto const begin : {0u, 64u, 128u}) {
+        compiled.compiled_graph->root_operations.tick_block(
+            storage.buffer().data(),
+            &empty_tick_invocation,
+            index(begin),
+            64);
+    }
+    EXPECT_EQ(state->tick_calls, 2u);
+    EXPECT_EQ(state->skip_calls, 1u);
 }
 
 TEST_F(GraphJitRuntimeFixture, DisconnectedSampleInputUsesDeclaredDefault)

@@ -1421,6 +1421,108 @@ TEST(GraphBuilder, RejectsRepeatedDetachOnTheSameExpression)
     EXPECT_THROW((void)detached_event.detach(7), std::logic_error);
 }
 
+TEST(GraphJitConnectionPlan, RejectsSerialDetachesAcrossSubgraphBoundaries)
+{
+    using namespace iv;
+
+    GraphBuilder sample_graph;
+    auto sample_source =
+        details::configure_concrete_node<MonoSource>(sample_graph);
+    auto sample_subgraph = sample_graph.subgraph(
+        [&](SubgraphBuilder& boundary) {
+            auto input = boundary.input<"in">();
+            boundary.outputs(
+                static_cast<SamplePortRef>(input).detach(3));
+        },
+        "serial-sample-detach");
+    sample_subgraph(
+        static_cast<SamplePortRef>(sample_source).detach(5));
+    auto sample_sink =
+        details::configure_concrete_node<RealtimeSink>(sample_graph);
+    sample_sink(sample_subgraph);
+    sample_graph.outputs();
+
+    auto sample_configured = std::move(sample_graph).finish();
+    auto sample_plan = build_connection_analysis_plan(
+        sample_configured, 64);
+    ASSERT_FALSE(sample_plan.has_value());
+    EXPECT_NE(
+        sample_plan.error().find(
+            "structural sample route contains two serial detach operations"),
+        std::string::npos);
+
+    GraphBuilder event_graph;
+    auto event_source =
+        details::configure_concrete_node<PlainEventPass>(event_graph);
+    auto event_subgraph = event_graph.subgraph(
+        [&](SubgraphBuilder& boundary) {
+            auto input = boundary.event_input<"in">(EventTypeId::trigger);
+            boundary.event_outputs(
+                static_cast<EventPortRef>(input).detach(3));
+        },
+        "serial-event-detach");
+    event_subgraph.connect_event_input(
+        0, event_source.event_port().detach(5));
+    auto event_sink =
+        details::configure_concrete_node<PlainEventPass>(event_graph);
+    event_sink.connect_event_input(0, event_subgraph.event_port());
+    event_graph.outputs();
+
+    auto event_configured = std::move(event_graph).finish();
+    auto event_plan = build_connection_analysis_plan(event_configured, 64);
+    ASSERT_FALSE(event_plan.has_value());
+    EXPECT_NE(
+        event_plan.error().find(
+            "structural event route contains two serial detach operations"),
+        std::string::npos);
+}
+
+TEST(GraphJitConnectionPlan,
+     RejectsOneUnnecessaryDetachInAPerSourceConnection)
+{
+    using namespace iv;
+
+    GraphBuilder sample_graph;
+    auto sample_state =
+        details::configure_concrete_node<TimedStereoStateNode>(sample_graph);
+    auto sample_acyclic =
+        details::configure_concrete_node<MonoSource>(sample_graph);
+    sample_state(sample_graph.tile<stereo>(
+        static_cast<SamplePortRef>(sample_state[stereo::left]).detach(3),
+        static_cast<SamplePortRef>(sample_acyclic).detach(7)));
+    sample_graph.outputs();
+
+    auto sample_configured = std::move(sample_graph).finish();
+    auto sample_plan = build_connection_analysis_plan(
+        sample_configured, 64);
+    ASSERT_FALSE(sample_plan.has_value());
+    EXPECT_NE(
+        sample_plan.error().find("breaks an acyclic dependency"),
+        std::string::npos);
+
+    GraphBuilder event_graph;
+    auto feedback_source =
+        details::configure_concrete_node<PlainEventPass>(event_graph);
+    auto acyclic_source =
+        details::configure_concrete_node<PlainEventPass>(event_graph);
+    auto target =
+        details::configure_concrete_node<PlainEventPass>(event_graph);
+    feedback_source.connect_event_input(0, target.event_port());
+    std::array event_sources{
+        feedback_source.event_port().detach(3),
+        acyclic_source.event_port().detach(7),
+    };
+    target.connect_event_input(0, EventPortRef(event_graph, event_sources));
+    event_graph.outputs();
+
+    auto event_configured = std::move(event_graph).finish();
+    auto event_plan = build_connection_analysis_plan(event_configured, 64);
+    ASSERT_FALSE(event_plan.has_value());
+    EXPECT_NE(
+        event_plan.error().find("breaks an acyclic dependency"),
+        std::string::npos);
+}
+
 TEST(GraphBuilder, StoresEventDetachOnTheTiledOutputPort)
 {
     using namespace iv;

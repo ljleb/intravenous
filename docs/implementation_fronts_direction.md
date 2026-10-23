@@ -1232,6 +1232,36 @@ This lets the final packed-stack check report the requested unavoidable-budget
 diagnostic instead of failing earlier on a missing telemetry field. These source and
 test corrections await collaborator compilation and the next full-suite run.
 
+**Front 7 full-suite verification and adversarial completion audit (2026-10-22):**
+the collaborator's next run compiled and passed all 572 tests. This verifies the
+source corrections in both follow-ups above and closes their recorded blockers.
+
+The completion audit found four documented invariants that the passing suite did not
+exercise directly. New focused tests now require structural sample and event routing
+to reject two serial detach records that become adjacent only after subgraph-boundary
+expansion. They also require `validate_detached_connections()` to reject one
+unnecessary detached source even when another source in the same sample or event
+connection closes a real cycle. A generated-runtime test now carries an enabled
+primitive's compiler-owned activity region across an exact compatible generation and
+requires the successor to skip at the inherited TTL boundary rather than starting a
+fresh quiet interval. Another generated-runtime test requires an empty event input
+window to use `skip_block()` after TTL expiry and a later non-empty window to wake the
+primitive.
+
+These tests add no implementation or semantic change. Collaborator verification of
+the new tests remains pending. Front 7 remains source-complete at its current
+dependency boundary. Normalized block replayability still waits for Front 2's
+normalized batch operations and is not an unimplemented part of this dependency-ready
+slice.
+
+The first adversarial full-suite run passed 575 of 576 tests. The sole failure was in
+the new `CompilerOwnedActivityStateMigratesAcrossCompatibleGenerations` test: its
+expected authored `ActivityProbe::State::tick_calls` value incorrectly assumed that
+the authored state migrated. This fixture initializes authored node state afresh. The
+compiler-owned activity region migrates separately, as shown by the successor's
+immediate `skip_block()` call. The assertion now expects zero successor tick calls and
+one successor skip call. A collaborator rerun remains pending.
+
 ## Front 8: application execution and system-audio integration
 
 **Primary ownership:** make the new execution architecture the application's normal
