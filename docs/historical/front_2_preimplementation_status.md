@@ -38,3 +38,33 @@ carried this dependency note:
 
 Front 2 superseded this note after Front 1. `same_callback_batch_class()` now compares
 the callback-facing entries in `ResolvedPortRealization` before it assigns one class.
+
+## Intermediate status before dormant-lane skip batching
+
+Partway through the same implementation, on 2026-10-23, the status header of
+[`batched_node_callbacks_direction.md`](../batched_node_callbacks_direction.md)
+recorded this remaining gap:
+
+> The traits layer and reflected compiler ABI provide normalized scalar and batch Tick
+> and skip operations. GraphJit can invoke compatible active primitives through one
+> `tick_block_batch()` call. Its activity lowering still selects `tick_block()` or
+> `skip_block()` separately for each primitive. It does not yet partition one ready
+> group into active and dormant lanes and invoke `skip_block_batch()` for the dormant
+> subset. This is remaining Front 2 work; a root-level `skip_block` operation is not the
+> solution because the generated Tick root owns each primitive's activity decision.
+
+`try_emit_execution_batch()` in `graph_jit/lowering.cpp` later closed that gap
+inside the generated Tick root. The current status is in the direction document's
+header.
+
+In the same intermediate state,
+[`implementation_fronts_direction.md`](../implementation_fronts_direction.md) and
+[`runtime_performance_roadmap.md`](../runtime_performance_roadmap.md) listed TTL
+activity among the reasons a ready group stays scalar:
+
+> It keeps a ready group scalar when TTL activity, primitive slicing, persisted
+> capture, or producer-side storage operations would require extra control flow or
+> longer transient live ranges.
+
+> Realtime lowering uses native batches for uncomplicated groups and scalarizes
+> groups with TTL activity, slicing, capture, or producer-side storage operations.

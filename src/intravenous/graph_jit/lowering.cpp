@@ -1755,77 +1755,41 @@ EmittedPrimitiveTickContext emit_primitive_tick_context(
     };
 }
 
-void emit_primitive_call(
+// Values computed before a primitive's Tick/skip choice. A ticking primitive
+// passes them to emit_primitive_activity_update() after its callback has
+// written the current outputs; a skipped primitive leaves its activity state
+// unchanged.
+struct EmittedPrimitiveActivity {
+    llvm::Value* dormant_pointer = nullptr;
+    llvm::Value* silent_samples_pointer = nullptr;
+    llvm::Value* inputs_constant = nullptr;
+    llvm::Value* inputs_unchanged = nullptr;
+    llvm::Value* should_skip = nullptr;
+};
+
+EmittedPrimitiveActivity emit_primitive_activity_decision(
     llvm::IRBuilder<>& builder,
-    llvm::Function* tick_callback,
-    llvm::Function* skip_callback,
     detail::DeclarationPlan const& declarations,
     ActivityEmissionCache& activity_cache,
-    detail::PrimitiveActivityPlan const* activity,
-    bool force_skip,
-    EmittedNodeConfiguration const& configuration,
-    detail::PrimitiveStoragePlan const& storage,
-    EmittedPrimitiveSamplePorts const& sample_ports,
+    detail::PrimitiveActivityPlan const& activity,
     EmittedPrimitiveEventPorts const& event_ports,
     detail::PrimitiveSamplePortPlan const& sample_plan,
-    detail::SampleStoragePlan const& sample_storage,
     detail::PrimitiveEventPortPlan const& event_plan,
     BackgroundEvaluationPlan const* tick_background,
     TickNodeInvocationPlan const* tick_invocation,
-    llvm::Value* invocation,
     EmittedRealtimeStorage const& realtime_storage,
-    llvm::Value* root_index,
+    llvm::Value* continuous_input_bindings,
+    llvm::Value* event_input_bindings,
     llvm::Value* sample_index,
     llvm::Value* block_size)
 {
-    auto const emitted_context = emit_primitive_tick_context(
-        builder,
-        configuration,
-        storage,
-        sample_ports,
-        event_ports,
-        sample_plan,
-        sample_storage,
-        tick_background,
-        tick_invocation,
-        invocation,
-        realtime_storage,
-        root_index,
-        sample_index);
-    auto* context_storage = emitted_context.storage;
-    auto* continuous_input_bindings =
-        emitted_context.continuous_input_bindings;
-    auto* event_input_bindings = emitted_context.event_input_bindings;
-
-    auto invoke = [&](llvm::Function* callback) {
-        auto* call = builder.CreateCall(
-            callback,
-            {configuration.node_config,
-             context_storage,
-             sample_index,
-             block_size});
-        call->setCallingConv(callback->getCallingConv());
-    };
-    if (force_skip) {
-        invoke(skip_callback);
-        return;
-    }
-    if (activity == nullptr) {
-        invoke(tick_callback);
-        return;
-    }
-
     auto& llvm_context = builder.getContext();
-    auto* storage_base = realtime_storage.persistent_base;
     auto* size_type = llvm::IntegerType::get(
-        builder.getContext(), static_cast<unsigned>(sizeof(std::size_t) * 8));
-    auto* function = builder.GetInsertBlock()->getParent();
+        llvm_context, static_cast<unsigned>(sizeof(std::size_t) * 8));
     auto* byte_type = llvm::Type::getInt8Ty(llvm_context);
     auto* bool_type = llvm::Type::getInt1Ty(llvm_context);
-    auto* int32_type = llvm::Type::getInt32Ty(llvm_context);
     auto* pointer_type = llvm::PointerType::get(llvm_context, 0);
     auto* true_value = llvm::ConstantInt::getTrue(llvm_context);
-    auto* false_value = llvm::ConstantInt::getFalse(llvm_context);
     auto size_constant = [&](std::size_t value) {
         return llvm::ConstantInt::get(size_type, value);
     };
@@ -1836,10 +1800,12 @@ void emit_primitive_call(
         return builder.CreateInBoundsGEP(
             byte_type, base, size_constant(index * stride), name);
     };
+    auto* int32_type = llvm::Type::getInt32Ty(llvm_context);
+    auto* storage_base = realtime_storage.persistent_base;
     auto* activity_state = byte_offset_pointer(
         builder,
         storage_base,
-        activity->storage_offset,
+        activity.storage_offset,
         "activity.state");
     auto* dormant_pointer = byte_offset_pointer(
         builder,
@@ -1863,12 +1829,12 @@ void emit_primitive_call(
             detail::continuous_input_activity_symbol,
             input_activity_type);
     IV_ASSERT(
-        activity->continuous_inputs.size() == sample_plan.inputs.size(),
+        activity.continuous_inputs.size() == sample_plan.inputs.size(),
         "GraphJit activity input plan must match the primitive binding plan");
     for (std::size_t input_index = 0;
-         input_index < activity->continuous_inputs.size(); ++input_index) {
+         input_index < activity.continuous_inputs.size(); ++input_index) {
         auto const& input_activity_plan =
-            activity->continuous_inputs[input_index];
+            activity.continuous_inputs[input_index];
         if (input_activity_plan.static_constant) continue;
         auto const& binding_plan = sample_plan.inputs[input_index];
         IV_ASSERT(
@@ -2042,21 +2008,47 @@ void emit_primitive_call(
         "activity.is.dormant");
     auto* should_skip = builder.CreateAnd(
         dormant, inputs_unchanged, "activity.should.skip");
-    auto* tick_block = llvm::BasicBlock::Create(
-        llvm_context, "activity.tick", function);
-    auto* skip_block = llvm::BasicBlock::Create(
-        llvm_context, "activity.skip", function);
-    auto* merge_block = llvm::BasicBlock::Create(
-        llvm_context, "activity.end", function);
-    builder.CreateCondBr(should_skip, skip_block, tick_block);
+    return {
+        .dormant_pointer = dormant_pointer,
+        .silent_samples_pointer = silent_samples_pointer,
+        .inputs_constant = inputs_constant,
+        .inputs_unchanged = inputs_unchanged,
+        .should_skip = should_skip,
+    };
+}
 
-    builder.SetInsertPoint(skip_block);
-    invoke(skip_callback);
-    builder.CreateBr(merge_block);
-
-    builder.SetInsertPoint(tick_block);
-    builder.CreateStore(llvm::ConstantInt::get(byte_type, 0), dormant_pointer);
-    invoke(tick_callback);
+void emit_primitive_activity_update(
+    llvm::IRBuilder<>& builder,
+    detail::PrimitiveActivityPlan const& activity,
+    EmittedPrimitiveActivity const& decision,
+    EmittedPrimitiveSamplePorts const& sample_ports,
+    EmittedPrimitiveEventPorts const& event_ports,
+    detail::PrimitiveSamplePortPlan const& sample_plan,
+    llvm::Value* sample_index,
+    llvm::Value* block_size)
+{
+    auto& llvm_context = builder.getContext();
+    auto* size_type = llvm::IntegerType::get(
+        llvm_context, static_cast<unsigned>(sizeof(std::size_t) * 8));
+    auto* byte_type = llvm::Type::getInt8Ty(llvm_context);
+    auto* bool_type = llvm::Type::getInt1Ty(llvm_context);
+    auto* pointer_type = llvm::PointerType::get(llvm_context, 0);
+    auto* true_value = llvm::ConstantInt::getTrue(llvm_context);
+    auto size_constant = [&](std::size_t value) {
+        return llvm::ConstantInt::get(size_type, value);
+    };
+    auto binding_pointer = [&](llvm::Value* base,
+                               std::size_t index,
+                               std::size_t stride,
+                               llvm::Twine const& name) {
+        return builder.CreateInBoundsGEP(
+            byte_type, base, size_constant(index * stride), name);
+    };
+    auto* false_value = llvm::ConstantInt::getFalse(llvm_context);
+    auto* dormant_pointer = decision.dormant_pointer;
+    auto* silent_samples_pointer = decision.silent_samples_pointer;
+    auto* inputs_constant = decision.inputs_constant;
+    auto* inputs_unchanged = decision.inputs_unchanged;
 
     auto const has_output = sample_ports.output_count != 0
         || event_ports.output_count != 0;
@@ -2074,7 +2066,7 @@ void emit_primitive_call(
         if (!output_plan.realtime) continue;
         IV_ASSERT(
             compact_output
-                < activity->continuous_output_channel_counts.size(),
+                < activity.continuous_output_channel_counts.size(),
             "GraphJit activity output plan must match the primitive binding");
         auto const projection = emit_lattice_projection(
             builder,
@@ -2088,7 +2080,7 @@ void emit_primitive_call(
             sizeof(ReflectedContinuousOutputPortBinding),
             "activity.output.binding");
         auto const channels =
-            activity->continuous_output_channel_counts[compact_output++];
+            activity.continuous_output_channel_counts[compact_output++];
         for (std::size_t channel = 0; channel < channels; ++channel) {
             auto* clear = builder.CreateCall(
                 output_is_clear,
@@ -2152,12 +2144,117 @@ void emit_primitive_call(
     builder.CreateStore(next_silent, silent_samples_pointer);
     auto* ttl_elapsed = builder.CreateICmpUGE(
         next_silent,
-        size_constant(activity->ttl_samples),
+        size_constant(activity.ttl_samples),
         "activity.ttl.elapsed");
     auto* next_dormant = builder.CreateAnd(
         quiescent, ttl_elapsed, "activity.dormant.next");
     builder.CreateStore(
         builder.CreateZExt(next_dormant, byte_type), dormant_pointer);
+}
+
+void emit_primitive_call(
+    llvm::IRBuilder<>& builder,
+    llvm::Function* tick_callback,
+    llvm::Function* skip_callback,
+    detail::DeclarationPlan const& declarations,
+    ActivityEmissionCache& activity_cache,
+    detail::PrimitiveActivityPlan const* activity,
+    bool force_skip,
+    EmittedNodeConfiguration const& configuration,
+    detail::PrimitiveStoragePlan const& storage,
+    EmittedPrimitiveSamplePorts const& sample_ports,
+    EmittedPrimitiveEventPorts const& event_ports,
+    detail::PrimitiveSamplePortPlan const& sample_plan,
+    detail::SampleStoragePlan const& sample_storage,
+    detail::PrimitiveEventPortPlan const& event_plan,
+    BackgroundEvaluationPlan const* tick_background,
+    TickNodeInvocationPlan const* tick_invocation,
+    llvm::Value* invocation,
+    EmittedRealtimeStorage const& realtime_storage,
+    llvm::Value* root_index,
+    llvm::Value* sample_index,
+    llvm::Value* block_size)
+{
+    auto const emitted_context = emit_primitive_tick_context(
+        builder,
+        configuration,
+        storage,
+        sample_ports,
+        event_ports,
+        sample_plan,
+        sample_storage,
+        tick_background,
+        tick_invocation,
+        invocation,
+        realtime_storage,
+        root_index,
+        sample_index);
+    auto* context_storage = emitted_context.storage;
+    auto* continuous_input_bindings =
+        emitted_context.continuous_input_bindings;
+    auto* event_input_bindings = emitted_context.event_input_bindings;
+
+    auto invoke = [&](llvm::Function* callback) {
+        auto* call = builder.CreateCall(
+            callback,
+            {configuration.node_config,
+             context_storage,
+             sample_index,
+             block_size});
+        call->setCallingConv(callback->getCallingConv());
+    };
+    if (force_skip) {
+        invoke(skip_callback);
+        return;
+    }
+    if (activity == nullptr) {
+        invoke(tick_callback);
+        return;
+    }
+
+    auto& llvm_context = builder.getContext();
+    auto* function = builder.GetInsertBlock()->getParent();
+    auto const decision = emit_primitive_activity_decision(
+        builder,
+        declarations,
+        activity_cache,
+        *activity,
+        event_ports,
+        sample_plan,
+        event_plan,
+        tick_background,
+        tick_invocation,
+        realtime_storage,
+        continuous_input_bindings,
+        event_input_bindings,
+        sample_index,
+        block_size);
+    auto* tick_block = llvm::BasicBlock::Create(
+        llvm_context, "activity.tick", function);
+    auto* skip_block = llvm::BasicBlock::Create(
+        llvm_context, "activity.skip", function);
+    auto* merge_block = llvm::BasicBlock::Create(
+        llvm_context, "activity.end", function);
+    builder.CreateCondBr(decision.should_skip, skip_block, tick_block);
+
+    builder.SetInsertPoint(skip_block);
+    invoke(skip_callback);
+    builder.CreateBr(merge_block);
+
+    builder.SetInsertPoint(tick_block);
+    builder.CreateStore(
+        llvm::ConstantInt::get(llvm::Type::getInt8Ty(llvm_context), 0),
+        decision.dormant_pointer);
+    invoke(tick_callback);
+    emit_primitive_activity_update(
+        builder,
+        *activity,
+        decision,
+        sample_ports,
+        event_ports,
+        sample_plan,
+        sample_index,
+        block_size);
     builder.CreateBr(merge_block);
 
     builder.SetInsertPoint(merge_block);
@@ -5640,7 +5737,9 @@ std::expected<void, std::string> emit_execution_step(
     return {};
 }
 
-std::expected<bool, std::string> try_emit_execution_batch(
+// Planning admits a multi-step ready group only when it can be emitted as one
+// native batch; see realtime_ready_group_batches().
+std::expected<void, std::string> emit_execution_batch(
     llvm::Module& module,
     llvm::IRBuilder<>& builder,
     detail::LoweringPlan const& plan,
@@ -5656,13 +5755,19 @@ std::expected<bool, std::string> try_emit_execution_batch(
     llvm::Value* block_size,
     bool skip)
 {
-    if (group.cyclic_region || group.primitive_steps.size() < 2) return false;
+    if (group.cyclic_region || group.primitive_steps.size() < 2) {
+        return std::unexpected(
+            "GraphJit realtime batch requires an acyclic multi-step ready group");
+    }
 
-    std::string_view batch_symbol;
+    std::string_view tick_symbol;
+    std::string_view skip_symbol;
+    bool has_activity = false;
     struct LanePlan {
         detail::PrimitiveExecutionStep const* step = nullptr;
         BackgroundEvaluationPlan const* background = nullptr;
         TickNodeInvocationPlan const* tick_invocation = nullptr;
+        detail::PrimitiveActivityPlan const* activity = nullptr;
     };
     std::vector<LanePlan> lanes;
     lanes.reserve(group.primitive_steps.size());
@@ -5685,36 +5790,18 @@ std::expected<bool, std::string> try_emit_execution_batch(
             return std::unexpected(
                 "GraphJit realtime batch references an incomplete primitive plan");
         }
-        auto const& selected_symbol = skip
-            ? step.skip_batch_callback_symbol
-            : step.tick_batch_callback_symbol;
-        if (selected_symbol.empty()) return false;
-        if (batch_symbol.empty()) batch_symbol = selected_symbol;
-        if (selected_symbol != batch_symbol
-            || step.maximum_block_size
-                < plan.declarations.node_layout.max_block_size
-            || (!skip
-                && plan.declarations
-                    .primitive_activity[step.configuration_index])) {
-            return false;
+        // TTL activity is decided per lane at runtime. The lanes that tick
+        // and the dormant lanes that skip are then invoked as two batches.
+        detail::PrimitiveActivityPlan const* activity = nullptr;
+        if (!skip) {
+            auto const& selected = plan.declarations
+                .primitive_activity[step.configuration_index];
+            if (selected) activity = &*selected;
         }
-
-        // These operations delimit a producer's authored callback. Moving all
-        // pre-operations before one batch and all post-operations after it is
-        // legal for an antichain, but it can extend transient live ranges and
-        // increase stack pressure. The initial cost model keeps such groups
-        // scalar; Front 16 can cost that transformation with layout jointly.
-        if (!step.sample_carry_restores_before.empty()
-            || !step.sample_materializations_before.empty()
-            || !step.sample_compositions_before.empty()
-            || !step.sample_feedback_writes_after.empty()
-            || !step.sample_materializations_after.empty()
-            || !step.sample_compositions_after.empty()
-            || !step.sample_transition_materializations_after.empty()
-            || !step.sample_carry_commits_after.empty()
-            || !step.event_operations_before.empty()
-            || !step.event_operations_after.empty()) {
-            return false;
+        has_activity = has_activity || activity != nullptr;
+        if (tick_symbol.empty()) {
+            tick_symbol = step.tick_batch_callback_symbol;
+            skip_symbol = step.skip_batch_callback_symbol;
         }
 
         BackgroundEvaluationPlan const* background = nullptr;
@@ -5732,217 +5819,32 @@ std::expected<bool, std::string> try_emit_execution_batch(
             }
             background = &background_plan;
             tick_invocation = &background_plan.tick_runtime.nodes[node];
-            if (tick_invocation->sample_capture_count != 0
-                || tick_invocation->event_capture_count != 0) {
-                return false;
-            }
         }
         lanes.push_back(LanePlan{
             .step = std::addressof(step),
             .background = background,
             .tick_invocation = tick_invocation,
+            .activity = activity,
         });
     }
 
-    // Transient placement is planned against the flattened scalar execution
-    // positions. Two representations whose scalar lifetimes do not overlap may
-    // therefore share bytes even when their primitives are later selected for
-    // one native batch. A batch callback can retain and access every lane
-    // facade until it returns, so a writable lane range must not overlap any
-    // other lane's callback-facing range. Shared read-only inputs remain legal.
-    // Front 16 can widen/co-plan these lifetimes when the additional storage is
-    // cheaper than scalar fallback.
-    enum class CallbackStorageBase : std::uint8_t {
-        root_transient,
-        node_storage,
-    };
-    struct CallbackStorageAccess {
-        CallbackStorageBase base = CallbackStorageBase::root_transient;
-        std::size_t begin = 0;
-        std::size_t end = 0;
-        std::size_t lane = 0;
-        bool writable = false;
-    };
-    std::vector<CallbackStorageAccess> callback_storage;
-    auto append_range = [&](CallbackStorageBase base,
-                            std::size_t begin,
-                            std::size_t size,
-                            std::size_t lane,
-                            bool writable)
-        -> std::expected<void, std::string> {
-        if (size == 0
-            || begin > std::numeric_limits<std::size_t>::max() - size) {
-            return std::unexpected(
-                "GraphJit realtime batch callback storage range is invalid");
-        }
-        callback_storage.push_back(CallbackStorageAccess{
-            .base = base,
-            .begin = begin,
-            .end = begin + size,
-            .lane = lane,
-            .writable = writable,
-        });
-        return {};
-    };
-    auto append_sample_representation = [&](std::size_t representation,
-                                            std::size_t lane,
-                                            bool writable)
-        -> std::expected<void, std::string> {
-        if (representation >= plan.sample_ports.storage.representations.size()) {
-            return std::unexpected(
-                "GraphJit realtime batch references missing sample storage");
-        }
-        auto const& storage =
-            plan.sample_ports.storage.representations[representation];
-        if (storage.constant_value) {
-            if (writable) {
-                return std::unexpected(
-                    "GraphJit realtime batch output references immutable sample storage");
-            }
-            return {};
-        }
-        if (storage.transient_allocation
-            != detail::no_sample_transient_allocation) {
-            if (storage.transient_allocation
-                >= plan.sample_ports.storage.transient_allocations.size()) {
-                return std::unexpected(
-                    "GraphJit realtime batch references missing transient sample storage");
-            }
-            auto const& allocation = plan.sample_ports.storage
-                .transient_allocations[storage.transient_allocation];
-            if (plan.root_stack.sample_offset
-                > std::numeric_limits<std::size_t>::max()
-                    - allocation.region_relative_offset) {
-                return std::unexpected(
-                    "GraphJit realtime batch sample storage offset overflows size_t");
-            }
-            return append_range(
-                CallbackStorageBase::root_transient,
-                plan.root_stack.sample_offset
-                    + allocation.region_relative_offset,
-                allocation.size_bytes,
-                lane,
-                writable);
-        }
-        if (storage.persistent_allocation
-            != detail::no_sample_persistent_allocation) {
-            if (storage.persistent_allocation
-                >= plan.sample_ports.storage.persistent_allocations.size()) {
-                return std::unexpected(
-                    "GraphJit realtime batch references missing persistent sample storage");
-            }
-            auto const& allocation = plan.sample_ports.storage
-                .persistent_allocations[storage.persistent_allocation];
-            return append_range(
-                CallbackStorageBase::node_storage,
-                allocation.storage_offset,
-                allocation.size_bytes,
-                lane,
-                writable);
-        }
-        return std::unexpected(
-            "GraphJit realtime batch sample storage has no physical allocation");
-    };
-    auto append_event_representation = [&](std::size_t representation,
-                                           std::size_t lane,
-                                           bool writable)
-        -> std::expected<void, std::string> {
-        if (representation >= plan.event_ports.ports.size()) {
-            return std::unexpected(
-                "GraphJit realtime batch references missing event storage");
-        }
-        auto const& storage = plan.event_ports.ports[representation];
-        if (storage.persistent) {
-            return append_range(
-                CallbackStorageBase::node_storage,
-                storage.storage_offset,
-                storage.size_bytes,
-                lane,
-                writable);
-        }
-        if (storage.transient_allocation
-            == detail::no_event_transient_allocation
-            || storage.transient_allocation
-                >= plan.event_ports.transient_allocations.size()) {
-            return std::unexpected(
-                "GraphJit realtime batch references missing transient event storage");
-        }
-        auto const& allocation = plan.event_ports.transient_allocations[
-            storage.transient_allocation];
-        if (plan.root_stack.event_offset
-            > std::numeric_limits<std::size_t>::max()
-                - allocation.region_relative_offset) {
-            return std::unexpected(
-                "GraphJit realtime batch event storage offset overflows size_t");
-        }
-        return append_range(
-            CallbackStorageBase::root_transient,
-            plan.root_stack.event_offset + allocation.region_relative_offset,
-            allocation.size_bytes,
-            lane,
-            writable);
-    };
 
-    for (std::size_t lane_index = 0; lane_index < lanes.size(); ++lane_index) {
-        auto const primitive = lanes[lane_index].step->configuration_index;
-        auto const& sample_ports = plan.sample_ports.primitives[primitive];
-        for (auto const& input : sample_ports.inputs) {
-            if (input.has_contiguous_scratch) return false;
-            for (auto const& channel : input.channels) {
-                auto appended = append_sample_representation(
-                    channel.storage, lane_index, false);
-                if (!appended) {
-                    return std::unexpected(std::move(appended.error()));
-                }
-            }
-        }
-        for (auto const& output : sample_ports.outputs) {
-            if (!output.realtime || !output.storage) continue;
-            auto appended = append_sample_representation(
-                *output.storage, lane_index, true);
-            if (!appended) {
-                return std::unexpected(std::move(appended.error()));
-            }
-        }
-
-        auto const& event_ports = plan.event_ports.primitives[primitive];
-        for (auto const& input : event_ports.inputs) {
-            if (!input.storage) continue;
-            auto appended = append_event_representation(
-                *input.storage, lane_index, false);
-            if (!appended) {
-                return std::unexpected(std::move(appended.error()));
-            }
-        }
-        for (auto const& output : event_ports.outputs) {
-            if (!output.realtime || !output.storage) continue;
-            auto appended = append_event_representation(
-                *output.storage, lane_index, true);
-            if (!appended) {
-                return std::unexpected(std::move(appended.error()));
-            }
-        }
-    }
-    for (std::size_t left = 0; left < callback_storage.size(); ++left) {
-        for (std::size_t right = left + 1;
-             right < callback_storage.size(); ++right) {
-            auto const& a = callback_storage[left];
-            auto const& b = callback_storage[right];
-            if (a.lane == b.lane || a.base != b.base
-                || (!a.writable && !b.writable)) {
-                continue;
-            }
-            if (a.begin < b.end && b.begin < a.end) return false;
-        }
-    }
-
-    auto* callback = module.getFunction(
-        llvm::StringRef(batch_symbol.data(), batch_symbol.size()));
-    if (!callback || callback->isDeclaration()) {
+    auto materialized_callback = [&](std::string_view symbol) -> llvm::Function* {
+        auto* callback = module.getFunction(
+            llvm::StringRef(symbol.data(), symbol.size()));
+        return callback && !callback->isDeclaration() ? callback : nullptr;
+    };
+    auto* tick_callback = skip ? nullptr : materialized_callback(tick_symbol);
+    auto* skip_callback = skip || has_activity
+        ? materialized_callback(skip_symbol)
+        : nullptr;
+    if ((!skip && !tick_callback)
+        || ((skip || has_activity) && !skip_callback)) {
         return std::unexpected(
             "GraphJit realtime batch references an unmaterialized callback");
     }
     auto& context = builder.getContext();
+    auto* function = builder.GetInsertBlock()->getParent();
     auto* byte_type = llvm::Type::getInt8Ty(context);
     auto* size_type = llvm::IntegerType::get(
         context, static_cast<unsigned>(sizeof(std::size_t) * 8));
@@ -5959,22 +5861,18 @@ std::expected<bool, std::string> try_emit_execution_batch(
         "tick.batch.lanes");
     lane_storage->setAlignment(llvm::Align(alignof(ReflectedNodeTickBatchLane)));
 
+    // Every lane decides Tick or skip before either batch runs. The lanes are
+    // an antichain, so no lane observes another lane's outputs and the
+    // decision matches scalar emission. Ticking lanes fill the lane array from
+    // the front and skipped lanes fill it from the back. Each lane occupies
+    // exactly one slot, so both batches share one N-lane array. Without
+    // activity every slot and count is a compile-time constant.
+    std::vector<std::optional<EmittedPrimitiveActivity>> decisions(lanes.size());
+    llvm::Value* tick_count = constant(0);
+    llvm::Value* skip_count = constant(0);
     for (std::size_t lane_index = 0; lane_index < lanes.size(); ++lane_index) {
         auto const& lane = lanes[lane_index];
         auto const& step = *lane.step;
-        auto* lane_pointer = byte_offset_pointer(
-            builder,
-            lane_storage,
-            lane_index * sizeof(ReflectedNodeTickBatchLane),
-            "tick.batch.lane");
-        auto* node_pointer = byte_offset_pointer(
-            builder,
-            lane_pointer,
-            offsetof(ReflectedNodeTickBatchLane, node_data),
-            "tick.batch.node.pointer");
-        builder.CreateStore(
-            configurations[step.configuration_index].node_config,
-            node_pointer);
         auto const tick_context = emit_primitive_tick_context(
             builder,
             configurations[step.configuration_index],
@@ -5989,6 +5887,58 @@ std::expected<bool, std::string> try_emit_execution_batch(
             realtime_storage,
             root_index,
             sample_index);
+        llvm::Value* should_skip = skip
+            ? llvm::ConstantInt::getTrue(context)
+            : llvm::ConstantInt::getFalse(context);
+        if (lane.activity != nullptr) {
+            decisions[lane_index] = emit_primitive_activity_decision(
+                builder,
+                plan.declarations,
+                activity_cache,
+                *lane.activity,
+                event_bindings.primitives[step.configuration_index],
+                plan.sample_ports.primitives[step.configuration_index],
+                plan.event_ports.primitives[step.configuration_index],
+                lane.background,
+                lane.tick_invocation,
+                realtime_storage,
+                tick_context.continuous_input_bindings,
+                tick_context.event_input_bindings,
+                sample_index,
+                block_size);
+            should_skip = decisions[lane_index]->should_skip;
+        }
+        auto* slot = builder.CreateSelect(
+            should_skip,
+            builder.CreateSub(
+                constant(lanes.size() - 1), skip_count, "tick.batch.skip.slot"),
+            tick_count,
+            "tick.batch.slot");
+        auto* lane_pointer = builder.CreateInBoundsGEP(
+            byte_type,
+            lane_storage,
+            builder.CreateMul(
+                slot,
+                constant(sizeof(ReflectedNodeTickBatchLane)),
+                "tick.batch.lane.offset"),
+            "tick.batch.lane");
+        auto* skipped = builder.CreateZExt(
+            should_skip, size_type, "tick.batch.skipped");
+        skip_count = builder.CreateAdd(
+            skip_count, skipped, "tick.batch.skip.count");
+        tick_count = builder.CreateAdd(
+            tick_count,
+            builder.CreateSub(constant(1), skipped, "tick.batch.ticked"),
+            "tick.batch.tick.count");
+
+        auto* node_pointer = byte_offset_pointer(
+            builder,
+            lane_pointer,
+            offsetof(ReflectedNodeTickBatchLane, node_data),
+            "tick.batch.node.pointer");
+        builder.CreateStore(
+            configurations[step.configuration_index].node_config,
+            node_pointer);
         auto* context_pointer = byte_offset_pointer(
             builder,
             lane_pointer,
@@ -6014,27 +5964,106 @@ std::expected<bool, std::string> try_emit_execution_batch(
         builder.CreateStore(block_size, size_pointer);
     }
 
-    auto* batch_context = builder.CreateAlloca(
-        byte_type,
-        constant(sizeof(ReflectedNodeTickBatchContext)),
-        "tick.batch.context");
-    batch_context->setAlignment(
-        llvm::Align(alignof(ReflectedNodeTickBatchContext)));
-    store_context_span_pointer(
-        builder,
-        batch_context,
-        offsetof(ReflectedNodeTickBatchContext, lanes)
-            + offsetof(ReflectedSpan<ReflectedNodeTickBatchLane const>, pointer),
-        offsetof(ReflectedNodeTickBatchContext, lanes)
-            + offsetof(ReflectedSpan<ReflectedNodeTickBatchLane const>, extent),
-        lane_storage,
-        lanes.size());
-    auto* call = builder.CreateCall(callback, {batch_context});
-    call->setCallingConv(callback->getCallingConv());
+    auto emit_batch_call = [&](llvm::Function* callback,
+                               llvm::Value* first_slot,
+                               llvm::Value* count,
+                               llvm::Twine const& name) {
+        auto* constant_count = llvm::dyn_cast<llvm::ConstantInt>(count);
+        if (constant_count && constant_count->isZero()) return;
+        auto* batch_context = builder.CreateAlloca(
+            byte_type,
+            constant(sizeof(ReflectedNodeTickBatchContext)),
+            name + ".context");
+        batch_context->setAlignment(
+            llvm::Align(alignof(ReflectedNodeTickBatchContext)));
+        llvm::BasicBlock* complete = nullptr;
+        if (!constant_count) {
+            auto* invoke = llvm::BasicBlock::Create(
+                context, name + ".invoke", function);
+            complete = llvm::BasicBlock::Create(
+                context, name + ".complete", function);
+            builder.CreateCondBr(
+                builder.CreateICmpNE(count, constant(0), name + ".nonempty"),
+                invoke,
+                complete);
+            builder.SetInsertPoint(invoke);
+        }
+        store_context_span_pointer(
+            builder,
+            batch_context,
+            offsetof(ReflectedNodeTickBatchContext, lanes)
+                + offsetof(ReflectedSpan<ReflectedNodeTickBatchLane const>, pointer),
+            offsetof(ReflectedNodeTickBatchContext, lanes)
+                + offsetof(ReflectedSpan<ReflectedNodeTickBatchLane const>, extent),
+            builder.CreateInBoundsGEP(
+                byte_type,
+                lane_storage,
+                builder.CreateMul(
+                    first_slot,
+                    constant(sizeof(ReflectedNodeTickBatchLane)),
+                    name + ".lanes.offset"),
+                name + ".lanes"),
+            0);
+        builder.CreateStore(
+            count,
+            byte_offset_pointer(
+                builder,
+                batch_context,
+                offsetof(ReflectedNodeTickBatchContext, lanes)
+                    + offsetof(
+                        ReflectedSpan<ReflectedNodeTickBatchLane const>,
+                        extent),
+                name + ".extent.pointer"));
+        auto* call = builder.CreateCall(callback, {batch_context});
+        call->setCallingConv(callback->getCallingConv());
+        if (complete) {
+            builder.CreateBr(complete);
+            builder.SetInsertPoint(complete);
+        }
+    };
+    if (tick_callback) {
+        emit_batch_call(tick_callback, constant(0), tick_count, "tick.batch");
+    }
+    if (skip_callback) {
+        emit_batch_call(
+            skip_callback,
+            builder.CreateSub(
+                constant(lanes.size()), skip_count, "skip.batch.first"),
+            skip_count,
+            "skip.batch");
+    }
+
+    // A ticked lane finalizes its activity state from the outputs written by
+    // the Tick batch. A skipped lane keeps its dormant state, as in scalar
+    // emission.
+    for (std::size_t lane_index = 0; lane_index < lanes.size(); ++lane_index) {
+        auto const& decision = decisions[lane_index];
+        if (!decision) continue;
+        auto const& lane = lanes[lane_index];
+        auto const configuration_index = lane.step->configuration_index;
+        auto* update = llvm::BasicBlock::Create(
+            context, "tick.batch.activity.update", function);
+        auto* next = llvm::BasicBlock::Create(
+            context, "tick.batch.activity.next", function);
+        builder.CreateCondBr(decision->should_skip, next, update);
+        builder.SetInsertPoint(update);
+        emit_primitive_activity_update(
+            builder,
+            *lane.activity,
+            *decision,
+            sample_bindings.primitives[configuration_index],
+            event_bindings.primitives[configuration_index],
+            plan.sample_ports.primitives[configuration_index],
+            sample_index,
+            block_size);
+        builder.CreateBr(next);
+        builder.SetInsertPoint(next);
+    }
 
     // Keep compile-time activity-cache epochs identical to scalar emission.
     // The selected conservative groups have no generated post-operations or
-    // capture hooks, so the callback is the only runtime producer action.
+    // capture hooks, so the Tick and skip batches are the only runtime
+    // producer actions.
     for (auto const& lane : lanes) {
         auto const configuration_index = lane.step->configuration_index;
         for (auto const& output :
@@ -6068,7 +6097,7 @@ std::expected<bool, std::string> try_emit_execution_batch(
             ++epoch;
         }
     }
-    return true;
+    return {};
 }
 
 std::expected<llvm::Function*, std::string> define_root_operation(
@@ -6368,8 +6397,8 @@ std::expected<llvm::Function*, std::string> define_root_operation(
     for (std::size_t group_index = 0;
          group_index < plan.execution.ready_groups.size(); ++group_index) {
         auto const& group = plan.execution.ready_groups[group_index];
-        if (!group.cyclic_region) {
-            auto batched = try_emit_execution_batch(
+        if (!group.cyclic_region && group.primitive_steps.size() > 1) {
+            auto batched = emit_execution_batch(
                 module,
                 builder,
                 plan,
@@ -6387,7 +6416,9 @@ std::expected<llvm::Function*, std::string> define_root_operation(
             if (!batched) {
                 return std::unexpected(std::move(batched.error()));
             }
-            if (*batched) continue;
+            continue;
+        }
+        if (!group.cyclic_region) {
             for (auto const step_index : group.primitive_steps) {
                 if (step_index >= plan.execution.primitive_steps.size()) {
                     return std::unexpected(
@@ -8072,6 +8103,12 @@ specialize_transition_plan(
     }
     transition_plan.realtime_port_state_realizations =
         transition_realizations;
+    // The suffix operations above can attach storage operations to a step
+    // that the steady plan batched.
+    if (auto split = detail::split_unbatched_ready_groups(transition_plan);
+        !split) {
+        return std::unexpected(std::move(split.error()));
+    }
     return std::optional<TransitionLoweringPlan>{TransitionLoweringPlan{
         .root_plan = std::move(transition_plan),
         .output = {

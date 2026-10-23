@@ -500,8 +500,10 @@ struct ExecutionRegionPlan {
 
 struct ExecutionReadyGroupPlan {
     // A multi-step entry is one compatible antichain discovered from one
-    // scheduler ready-frontier snapshot. A singleton remains a legal scalar
-    // choice. Cyclic SCC execution is represented by cyclic_region instead.
+    // scheduler ready-frontier snapshot. Planning keeps a multi-step entry
+    // only when lowering can emit it as one native batch; otherwise its
+    // members return to the scalar schedule. Cyclic SCC execution is
+    // represented by cyclic_region instead.
     std::vector<std::size_t> primitive_steps{};
     std::optional<std::size_t> cyclic_region{};
 };
@@ -541,4 +543,11 @@ struct LoweringPlan {
 
 std::expected<LoweringPlan, std::string> build_lowering_plan(
     LoweringInput const& input);
+
+// Splits each multi-step ready group that can no longer be emitted as one
+// native batch into singleton groups in the same order. A caller that adds
+// storage operations to a built plan's steps uses this to restore the
+// ExecutionReadyGroupPlan invariant without changing execution positions.
+std::expected<void, std::string> split_unbatched_ready_groups(LoweringPlan& plan);
+
 } // namespace iv::graph_jit::detail

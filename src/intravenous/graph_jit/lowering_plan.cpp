@@ -7245,6 +7245,291 @@ std::expected<RootStackBufferPlan, std::string> plan_root_stack_buffers(
     }
     return result;
 }
+// Decides whether lowering emits one multi-step ready group as a native
+// batch. The decision belongs to planning rather than LLVM emission so that
+// the planner can restore the scalar schedule for a group that would only be
+// reordered without being batched.
+std::expected<bool, std::string> realtime_ready_group_batches(
+    ConnectionAnalysisPlan const& connections,
+    DeclarationPlan const& declarations,
+    PackageImportPlan const& imports,
+    SamplePortBindingPlan const& sample_ports,
+    EventPortBindingPlan const& event_ports,
+    RootStackBufferPlan const& root_stack,
+    ExecutionPlan const& execution,
+    ExecutionReadyGroupPlan const& group)
+{
+    if (group.cyclic_region || group.primitive_steps.size() < 2) return false;
+
+    std::string_view tick_symbol;
+    std::string_view skip_symbol;
+    std::vector<PrimitiveExecutionStep const*> lanes;
+    lanes.reserve(group.primitive_steps.size());
+    for (auto const step_index : group.primitive_steps) {
+        if (step_index >= execution.primitive_steps.size()) {
+            return std::unexpected(
+                "GraphJit realtime batch references a missing primitive step");
+        }
+        auto const& step = execution.primitive_steps[step_index];
+        if (step.configuration_index >= imports.primitive_callbacks.size()
+            || step.configuration_index >= sample_ports.primitives.size()
+            || step.configuration_index >= event_ports.primitives.size()
+            || step.configuration_index
+                >= declarations.primitive_activity.size()) {
+            return std::unexpected(
+                "GraphJit realtime batch references an incomplete primitive plan");
+        }
+        // TTL activity is decided per lane at runtime, so a lane with an
+        // activity plan can also be invoked through the skip batch.
+        auto const has_activity = declarations
+            .primitive_activity[step.configuration_index].has_value();
+        if (step.tick_batch_callback_symbol.empty()
+            || (has_activity && step.skip_batch_callback_symbol.empty())) {
+            return false;
+        }
+        if (tick_symbol.empty()) {
+            tick_symbol = step.tick_batch_callback_symbol;
+            skip_symbol = step.skip_batch_callback_symbol;
+        }
+        if (step.tick_batch_callback_symbol != tick_symbol
+            || step.skip_batch_callback_symbol != skip_symbol
+            || step.maximum_block_size < declarations.node_layout.max_block_size) {
+            return false;
+        }
+
+        // These operations delimit a producer's authored callback. Moving all
+        // pre-operations before one batch and all post-operations after it is
+        // legal for an antichain, but it can extend transient live ranges and
+        // increase stack pressure. The initial cost model keeps such groups
+        // scalar; Front 16 can cost that transformation with layout jointly.
+        if (!step.sample_carry_restores_before.empty()
+            || !step.sample_materializations_before.empty()
+            || !step.sample_compositions_before.empty()
+            || !step.sample_feedback_writes_after.empty()
+            || !step.sample_materializations_after.empty()
+            || !step.sample_compositions_after.empty()
+            || !step.sample_transition_materializations_after.empty()
+            || !step.sample_carry_commits_after.empty()
+            || !step.event_operations_before.empty()
+            || !step.event_operations_after.empty()) {
+            return false;
+        }
+
+        auto const bundle = imports
+            .primitive_callbacks[step.configuration_index].bundle;
+        auto const& background_plan = connections.background;
+        if (bundle < background_plan.bundle_to_background_node.size()
+            && background_plan.bundle_to_background_node[bundle]) {
+            auto const node =
+                *background_plan.bundle_to_background_node[bundle];
+            if (node >= background_plan.tick_runtime.nodes.size()) {
+                return std::unexpected(
+                    "GraphJit realtime batch references a missing Tick invocation");
+            }
+            auto const& tick_invocation =
+                background_plan.tick_runtime.nodes[node];
+            if (tick_invocation.sample_capture_count != 0
+                || tick_invocation.event_capture_count != 0) {
+                return false;
+            }
+        }
+        lanes.push_back(std::addressof(step));
+    }
+
+    // Transient placement is planned against the flattened scalar execution
+    // positions. Two representations whose scalar lifetimes do not overlap may
+    // therefore share bytes even when their primitives are later selected for
+    // one native batch. A batch callback can retain and access every lane
+    // facade until it returns, so a writable lane range must not overlap any
+    // other lane's callback-facing range. Shared read-only inputs remain legal.
+    // Front 16 can widen/co-plan these lifetimes when the additional storage is
+    // cheaper than scalar fallback.
+    enum class CallbackStorageBase : std::uint8_t {
+        root_transient,
+        node_storage,
+    };
+    struct CallbackStorageAccess {
+        CallbackStorageBase base = CallbackStorageBase::root_transient;
+        std::size_t begin = 0;
+        std::size_t end = 0;
+        std::size_t lane = 0;
+        bool writable = false;
+    };
+    std::vector<CallbackStorageAccess> callback_storage;
+    auto append_range = [&](CallbackStorageBase base,
+                            std::size_t begin,
+                            std::size_t size,
+                            std::size_t lane,
+                            bool writable)
+        -> std::expected<void, std::string> {
+        if (size == 0
+            || begin > std::numeric_limits<std::size_t>::max() - size) {
+            return std::unexpected(
+                "GraphJit realtime batch callback storage range is invalid");
+        }
+        callback_storage.push_back(CallbackStorageAccess{
+            .base = base,
+            .begin = begin,
+            .end = begin + size,
+            .lane = lane,
+            .writable = writable,
+        });
+        return {};
+    };
+    auto append_sample_representation = [&](std::size_t representation,
+                                            std::size_t lane,
+                                            bool writable)
+        -> std::expected<void, std::string> {
+        if (representation >= sample_ports.storage.representations.size()) {
+            return std::unexpected(
+                "GraphJit realtime batch references missing sample storage");
+        }
+        auto const& storage =
+            sample_ports.storage.representations[representation];
+        if (storage.constant_value) {
+            if (writable) {
+                return std::unexpected(
+                    "GraphJit realtime batch output references immutable sample storage");
+            }
+            return {};
+        }
+        if (storage.transient_allocation
+            != detail::no_sample_transient_allocation) {
+            if (storage.transient_allocation
+                >= sample_ports.storage.transient_allocations.size()) {
+                return std::unexpected(
+                    "GraphJit realtime batch references missing transient sample storage");
+            }
+            auto const& allocation = sample_ports.storage
+                .transient_allocations[storage.transient_allocation];
+            if (root_stack.sample_offset
+                > std::numeric_limits<std::size_t>::max()
+                    - allocation.region_relative_offset) {
+                return std::unexpected(
+                    "GraphJit realtime batch sample storage offset overflows size_t");
+            }
+            return append_range(
+                CallbackStorageBase::root_transient,
+                root_stack.sample_offset
+                    + allocation.region_relative_offset,
+                allocation.size_bytes,
+                lane,
+                writable);
+        }
+        if (storage.persistent_allocation
+            != detail::no_sample_persistent_allocation) {
+            if (storage.persistent_allocation
+                >= sample_ports.storage.persistent_allocations.size()) {
+                return std::unexpected(
+                    "GraphJit realtime batch references missing persistent sample storage");
+            }
+            auto const& allocation = sample_ports.storage
+                .persistent_allocations[storage.persistent_allocation];
+            return append_range(
+                CallbackStorageBase::node_storage,
+                allocation.storage_offset,
+                allocation.size_bytes,
+                lane,
+                writable);
+        }
+        return std::unexpected(
+            "GraphJit realtime batch sample storage has no physical allocation");
+    };
+    auto append_event_representation = [&](std::size_t representation,
+                                           std::size_t lane,
+                                           bool writable)
+        -> std::expected<void, std::string> {
+        if (representation >= event_ports.ports.size()) {
+            return std::unexpected(
+                "GraphJit realtime batch references missing event storage");
+        }
+        auto const& storage = event_ports.ports[representation];
+        if (storage.persistent) {
+            return append_range(
+                CallbackStorageBase::node_storage,
+                storage.storage_offset,
+                storage.size_bytes,
+                lane,
+                writable);
+        }
+        if (storage.transient_allocation
+            == detail::no_event_transient_allocation
+            || storage.transient_allocation
+                >= event_ports.transient_allocations.size()) {
+            return std::unexpected(
+                "GraphJit realtime batch references missing transient event storage");
+        }
+        auto const& allocation = event_ports.transient_allocations[
+            storage.transient_allocation];
+        if (root_stack.event_offset
+            > std::numeric_limits<std::size_t>::max()
+                - allocation.region_relative_offset) {
+            return std::unexpected(
+                "GraphJit realtime batch event storage offset overflows size_t");
+        }
+        return append_range(
+            CallbackStorageBase::root_transient,
+            root_stack.event_offset + allocation.region_relative_offset,
+            allocation.size_bytes,
+            lane,
+            writable);
+    };
+
+    for (std::size_t lane_index = 0; lane_index < lanes.size(); ++lane_index) {
+        auto const primitive = lanes[lane_index]->configuration_index;
+        auto const& lane_sample_ports = sample_ports.primitives[primitive];
+        for (auto const& input : lane_sample_ports.inputs) {
+            if (input.has_contiguous_scratch) return false;
+            for (auto const& channel : input.channels) {
+                auto appended = append_sample_representation(
+                    channel.storage, lane_index, false);
+                if (!appended) {
+                    return std::unexpected(std::move(appended.error()));
+                }
+            }
+        }
+        for (auto const& output : lane_sample_ports.outputs) {
+            if (!output.realtime || !output.storage) continue;
+            auto appended = append_sample_representation(
+                *output.storage, lane_index, true);
+            if (!appended) {
+                return std::unexpected(std::move(appended.error()));
+            }
+        }
+
+        auto const& lane_event_ports = event_ports.primitives[primitive];
+        for (auto const& input : lane_event_ports.inputs) {
+            if (!input.storage) continue;
+            auto appended = append_event_representation(
+                *input.storage, lane_index, false);
+            if (!appended) {
+                return std::unexpected(std::move(appended.error()));
+            }
+        }
+        for (auto const& output : lane_event_ports.outputs) {
+            if (!output.realtime || !output.storage) continue;
+            auto appended = append_event_representation(
+                *output.storage, lane_index, true);
+            if (!appended) {
+                return std::unexpected(std::move(appended.error()));
+            }
+        }
+    }
+    for (std::size_t left = 0; left < callback_storage.size(); ++left) {
+        for (std::size_t right = left + 1;
+             right < callback_storage.size(); ++right) {
+            auto const& a = callback_storage[left];
+            auto const& b = callback_storage[right];
+            if (a.lane == b.lane || a.base != b.base
+                || (!a.writable && !b.writable)) {
+                continue;
+            }
+            if (a.begin < b.end && b.begin < a.end) return false;
+        }
+    }
+    return true;
+}
+
 } // namespace
 
 std::expected<LoweringPlan, std::string> build_lowering_plan(
@@ -7514,6 +7799,12 @@ std::expected<LoweringPlan, std::string> build_lowering_plan(
         return {};
     };
 
+    // The first analysis derives background topology from every callback
+    // batch class. Later analyses reuse that retained background plan, so
+    // narrowing these realtime classes changes only the realtime schedule.
+    std::vector<std::size_t> realtime_batch_classes = callback_batch_classes;
+    auto const no_batch_class = std::numeric_limits<std::size_t>::max();
+
     auto plan_realtime_ports = [&](RealtimeStorageCostModel const& cost_model)
         -> std::expected<RealtimePortPlans, std::string> {
         auto connections = build_connection_analysis_plan(
@@ -7522,7 +7813,7 @@ std::expected<LoweringPlan, std::string> build_lowering_plan(
             input.specialization.block_size,
             cost_model,
             retained_background_plan ? &*retained_background_plan : nullptr,
-            callback_batch_classes);
+            realtime_batch_classes);
         if (!connections) {
             return std::unexpected(std::move(connections.error()));
         }
@@ -7555,186 +7846,271 @@ std::expected<LoweringPlan, std::string> build_lowering_plan(
     };
 
     auto const& configured_cost_model = input.realtime_storage_cost_model;
-    auto realtime_ports = plan_realtime_ports(configured_cost_model);
-    if (!realtime_ports) {
-        return std::unexpected(std::move(realtime_ports.error()));
-    }
-
     auto const stack_budget = configured_cost_model.stack_budget_bytes;
-    if (realtime_ports->root_stack.size_bytes > stack_budget) {
-        // Local storage choices are costed before stack buffers are packed. If
-        // their packed high-water mark exceeds the project limit, increase the
-        // cost of stack bytes and re-plan. This moves ordinary producer,
-        // history/latency, feedback, and disconnected-output buffers to
-        // NodeStorage through their existing full_node_storage alternative;
-        // conversion/merge buffers that have no persistent implementation stay
-        // on the stack.
-        auto pressure_model = configured_cost_model;
-        auto pressure = pressure_model.stack_footprint_byte_weight;
-        auto last_insufficient_pressure = pressure;
-        std::optional<std::size_t> first_fitting_pressure;
-        std::optional<RealtimePortPlans> first_fitting_plan;
-        for (unsigned attempt = 0; attempt < 16; ++attempt) {
-            if (pressure == 0) {
-                pressure = 1;
-            } else if (pressure
-                       <= std::numeric_limits<std::size_t>::max() / 4) {
-                pressure *= 4;
-            } else {
-                break;
-            }
-            pressure_model.stack_footprint_byte_weight = pressure;
-            auto candidate = plan_realtime_ports(pressure_model);
-            if (!candidate) {
-                return std::unexpected(std::move(candidate.error()));
-            }
-            if (candidate->root_stack.size_bytes <= stack_budget) {
-                first_fitting_pressure = pressure;
-                first_fitting_plan = std::move(*candidate);
-                break;
-            }
-            last_insufficient_pressure = pressure;
-            realtime_ports = std::move(candidate);
+    for (;;) {
+        auto realtime_ports = plan_realtime_ports(configured_cost_model);
+        if (!realtime_ports) {
+            return std::unexpected(std::move(realtime_ports.error()));
         }
 
-        // Find the smallest integer stack-byte weight that satisfies the hard
-        // limit. This avoids keeping buffers in NodeStorage merely because the
-        // exponential search overshot a storage-choice crossover.
-        if (first_fitting_pressure && first_fitting_plan) {
-            auto low = last_insufficient_pressure + 1;
-            auto high = *first_fitting_pressure;
-            auto best = std::move(*first_fitting_plan);
-            while (low < high) {
-                auto const midpoint = low + (high - low) / 2;
-                pressure_model.stack_footprint_byte_weight = midpoint;
+        auto const has_realtime_batch_class = std::ranges::any_of(
+            realtime_batch_classes,
+            [&](std::size_t value) { return value != no_batch_class; });
+        if (realtime_ports->root_stack.size_bytes > stack_budget
+            && has_realtime_batch_class) {
+            // Ready-group ordering can extend producer lifetimes. Batching must
+            // not be the reason buffers move to NodeStorage, so an over-budget
+            // schedule first falls back to the scalar order before stack pressure
+            // is applied. Costing batching against such moves is Front 16 work.
+            std::ranges::fill(realtime_batch_classes, no_batch_class);
+            realtime_ports = plan_realtime_ports(configured_cost_model);
+            if (!realtime_ports) {
+                return std::unexpected(std::move(realtime_ports.error()));
+            }
+        }
+
+        if (realtime_ports->root_stack.size_bytes > stack_budget) {
+            // Local storage choices are costed before stack buffers are packed. If
+            // their packed high-water mark exceeds the project limit, increase the
+            // cost of stack bytes and re-plan. This moves ordinary producer,
+            // history/latency, feedback, and disconnected-output buffers to
+            // NodeStorage through their existing full_node_storage alternative;
+            // conversion/merge buffers that have no persistent implementation stay
+            // on the stack.
+            auto pressure_model = configured_cost_model;
+            auto pressure = pressure_model.stack_footprint_byte_weight;
+            auto last_insufficient_pressure = pressure;
+            std::optional<std::size_t> first_fitting_pressure;
+            std::optional<RealtimePortPlans> first_fitting_plan;
+            for (unsigned attempt = 0; attempt < 16; ++attempt) {
+                if (pressure == 0) {
+                    pressure = 1;
+                } else if (pressure
+                           <= std::numeric_limits<std::size_t>::max() / 4) {
+                    pressure *= 4;
+                } else {
+                    break;
+                }
+                pressure_model.stack_footprint_byte_weight = pressure;
                 auto candidate = plan_realtime_ports(pressure_model);
                 if (!candidate) {
                     return std::unexpected(std::move(candidate.error()));
                 }
                 if (candidate->root_stack.size_bytes <= stack_budget) {
-                    high = midpoint;
-                    best = std::move(*candidate);
-                } else {
-                    low = midpoint + 1;
+                    first_fitting_pressure = pressure;
+                    first_fitting_plan = std::move(*candidate);
+                    break;
                 }
+                last_insufficient_pressure = pressure;
+                realtime_ports = std::move(candidate);
             }
-            realtime_ports = std::move(best);
-        }
 
-        if (realtime_ports->root_stack.size_bytes > stack_budget) {
-            // The hard limit outranks the configured heuristic weights. This
-            // final pass asks every chooser for its minimum-stack legal
-            // realization. Any bytes left after this pass are mandatory
-            // invocation-local conversion/merge/output buffers.
-            auto minimum_stack_model = configured_cost_model;
-            minimum_stack_model.copied_byte_weight = 0;
-            minimum_stack_model.ring_addressed_byte_weight = 0;
-            minimum_stack_model.stack_footprint_byte_weight = 1;
-            minimum_stack_model.persistent_footprint_byte_weight = 0;
-            auto minimum_stack = plan_realtime_ports(minimum_stack_model);
-            if (!minimum_stack) {
-                return std::unexpected(std::move(minimum_stack.error()));
+            // Find the smallest integer stack-byte weight that satisfies the hard
+            // limit. This avoids keeping buffers in NodeStorage merely because the
+            // exponential search overshot a storage-choice crossover.
+            if (first_fitting_pressure && first_fitting_plan) {
+                auto low = last_insufficient_pressure + 1;
+                auto high = *first_fitting_pressure;
+                auto best = std::move(*first_fitting_plan);
+                while (low < high) {
+                    auto const midpoint = low + (high - low) / 2;
+                    pressure_model.stack_footprint_byte_weight = midpoint;
+                    auto candidate = plan_realtime_ports(pressure_model);
+                    if (!candidate) {
+                        return std::unexpected(std::move(candidate.error()));
+                    }
+                    if (candidate->root_stack.size_bytes <= stack_budget) {
+                        high = midpoint;
+                        best = std::move(*candidate);
+                    } else {
+                        low = midpoint + 1;
+                    }
+                }
+                realtime_ports = std::move(best);
             }
-            realtime_ports = std::move(minimum_stack);
+
+            if (realtime_ports->root_stack.size_bytes > stack_budget) {
+                // The hard limit outranks the configured heuristic weights. This
+                // final pass asks every chooser for its minimum-stack legal
+                // realization. Any bytes left after this pass are mandatory
+                // invocation-local conversion/merge/output buffers.
+                auto minimum_stack_model = configured_cost_model;
+                minimum_stack_model.copied_byte_weight = 0;
+                minimum_stack_model.ring_addressed_byte_weight = 0;
+                minimum_stack_model.stack_footprint_byte_weight = 1;
+                minimum_stack_model.persistent_footprint_byte_weight = 0;
+                auto minimum_stack = plan_realtime_ports(minimum_stack_model);
+                if (!minimum_stack) {
+                    return std::unexpected(std::move(minimum_stack.error()));
+                }
+                realtime_ports = std::move(minimum_stack);
+            }
+
+            if (realtime_ports->root_stack.size_bytes > stack_budget) {
+                return std::unexpected(
+                    "GraphJit packed realtime stack requires "
+                    + std::to_string(realtime_ports->root_stack.size_bytes)
+                    + " bytes, exceeding the configured "
+                    + std::to_string(stack_budget)
+                    + "-byte stack budget after all eligible buffers were moved to NodeStorage");
+            }
         }
 
-        if (realtime_ports->root_stack.size_bytes > stack_budget) {
+        auto declarations = plan_declarations(
+            input,
+            *analysis,
+            realtime_ports->connections,
+            *port_realization,
+            realtime_ports->sample_ports,
+            realtime_ports->event_ports);
+        if (!declarations) return std::unexpected(std::move(declarations.error()));
+
+        for (auto& node : realtime_ports->connections.background.nodes) {
+            auto const primitive = std::ranges::find_if(
+                analysis->primitives,
+                [&](PrimitiveAnalysis const& candidate) {
+                    return candidate.bundle.node_bundle == node.bundle;
+                });
+            if (primitive == analysis->primitives.end()) {
+                return std::unexpected(
+                    "background node has no matching TockState layout record");
+            }
+            if (!node.authored_tock_execution) {
+                node.tock_state_node.reset();
+                continue;
+            }
+            auto const primitive_index = static_cast<std::size_t>(
+                std::distance(analysis->primitives.begin(), primitive));
+            if (primitive_index >= declarations->primitive_layout_nodes.size()) {
+                return std::unexpected(
+                    "background Tock node lost its top-level layout mapping");
+            }
+            node.tock_state_node =
+                declarations->primitive_layout_nodes[primitive_index];
+        }
+
+        auto realtime_port_state_realizations =
+            plan_sample_realtime_port_state_realizations(
+                *analysis,
+                realtime_ports->connections,
+                *declarations,
+                realtime_ports->sample_ports);
+        if (!realtime_port_state_realizations) {
             return std::unexpected(
-                "GraphJit packed realtime stack requires "
-                + std::to_string(realtime_ports->root_stack.size_bytes)
-                + " bytes, exceeding the configured "
-                + std::to_string(stack_budget)
-                + "-byte stack budget after all eligible buffers were moved to NodeStorage");
+                std::move(realtime_port_state_realizations.error()));
         }
-    }
-
-    auto declarations = plan_declarations(
-        input,
-        *analysis,
-        realtime_ports->connections,
-        *port_realization,
-        realtime_ports->sample_ports,
-        realtime_ports->event_ports);
-    if (!declarations) return std::unexpected(std::move(declarations.error()));
-
-    for (auto& node : realtime_ports->connections.background.nodes) {
-        auto const primitive = std::ranges::find_if(
-            analysis->primitives,
-            [&](PrimitiveAnalysis const& candidate) {
-                return candidate.bundle.node_bundle == node.bundle;
-            });
-        if (primitive == analysis->primitives.end()) {
+        auto event_realtime_port_state_realizations =
+            plan_event_realtime_port_state_realizations(
+                *analysis,
+                realtime_ports->connections,
+                *declarations,
+                realtime_ports->event_ports);
+        if (!event_realtime_port_state_realizations) {
             return std::unexpected(
-                "background node has no matching TockState layout record");
+                std::move(event_realtime_port_state_realizations.error()));
         }
-        if (!node.authored_tock_execution) {
-            node.tock_state_node.reset();
+        realtime_port_state_realizations->event_states =
+            std::move(*event_realtime_port_state_realizations);
+
+        auto imports = plan_package_imports(
+            input, *analysis, realtime_ports->connections.background);
+        if (!imports) return std::unexpected(std::move(imports.error()));
+
+        auto configurations = plan_node_configurations(
+            input, *analysis, realtime_ports->connections, *imports);
+        if (!configurations) {
+            return std::unexpected(std::move(configurations.error()));
+        }
+
+        auto execution = plan_execution(
+            *analysis,
+            realtime_ports->connections,
+            *declarations,
+            *imports,
+            realtime_ports->sample_ports,
+            realtime_ports->event_ports);
+        if (!execution) return std::unexpected(std::move(execution.error()));
+
+        // A ready group that lowering cannot batch would only reorder the scalar
+        // schedule and lengthen transient lifetimes. Remove its members from the
+        // realtime batch classes and plan again; each pass removes at least two
+        // bundles, so this terminates.
+        std::vector<std::size_t> rejected_bundles;
+        for (auto const& group : execution->ready_groups) {
+            if (group.cyclic_region || group.primitive_steps.size() < 2) continue;
+            auto batches = realtime_ready_group_batches(
+                realtime_ports->connections,
+                *declarations,
+                *imports,
+                realtime_ports->sample_ports,
+                realtime_ports->event_ports,
+                realtime_ports->root_stack,
+                *execution,
+                group);
+            if (!batches) return std::unexpected(std::move(batches.error()));
+            if (*batches) continue;
+            for (auto const step_index : group.primitive_steps) {
+                auto const configuration =
+                    execution->primitive_steps[step_index].configuration_index;
+                rejected_bundles.push_back(
+                    imports->primitive_callbacks[configuration].bundle);
+            }
+        }
+        if (!rejected_bundles.empty()) {
+            for (auto const bundle : rejected_bundles) {
+                if (bundle >= realtime_batch_classes.size()
+                    || realtime_batch_classes[bundle] == no_batch_class) {
+                    return std::unexpected(
+                        "GraphJit rejected a realtime batch outside the batch classes");
+                }
+                realtime_batch_classes[bundle] = no_batch_class;
+            }
             continue;
         }
-        auto const primitive_index = static_cast<std::size_t>(
-            std::distance(analysis->primitives.begin(), primitive));
-        if (primitive_index >= declarations->primitive_layout_nodes.size()) {
-            return std::unexpected(
-                "background Tock node lost its top-level layout mapping");
+
+        return LoweringPlan{
+            .port_realization = std::move(*port_realization),
+            .connections = std::move(realtime_ports->connections),
+            .declarations = std::move(*declarations),
+            .imports = std::move(*imports),
+            .configurations = std::move(*configurations),
+            .sample_ports = std::move(realtime_ports->sample_ports),
+            .event_ports = std::move(realtime_ports->event_ports),
+            .realtime_port_state_realizations =
+                std::move(*realtime_port_state_realizations),
+            .root_stack = realtime_ports->root_stack,
+            .execution = std::move(*execution),
+        };
+    }
+}
+std::expected<void, std::string> split_unbatched_ready_groups(LoweringPlan& plan)
+{
+    std::vector<ExecutionReadyGroupPlan> groups;
+    groups.reserve(plan.execution.ready_groups.size());
+    for (auto& group : plan.execution.ready_groups) {
+        if (group.cyclic_region || group.primitive_steps.size() < 2) {
+            groups.push_back(std::move(group));
+            continue;
         }
-        node.tock_state_node =
-            declarations->primitive_layout_nodes[primitive_index];
+        auto batches = realtime_ready_group_batches(
+            plan.connections,
+            plan.declarations,
+            plan.imports,
+            plan.sample_ports,
+            plan.event_ports,
+            plan.root_stack,
+            plan.execution,
+            group);
+        if (!batches) return std::unexpected(std::move(batches.error()));
+        if (*batches) {
+            groups.push_back(std::move(group));
+            continue;
+        }
+        for (auto const step : group.primitive_steps) {
+            groups.push_back(ExecutionReadyGroupPlan{.primitive_steps = {step}});
+        }
     }
-
-    auto realtime_port_state_realizations =
-        plan_sample_realtime_port_state_realizations(
-            *analysis,
-            realtime_ports->connections,
-            *declarations,
-            realtime_ports->sample_ports);
-    if (!realtime_port_state_realizations) {
-        return std::unexpected(
-            std::move(realtime_port_state_realizations.error()));
-    }
-    auto event_realtime_port_state_realizations =
-        plan_event_realtime_port_state_realizations(
-            *analysis,
-            realtime_ports->connections,
-            *declarations,
-            realtime_ports->event_ports);
-    if (!event_realtime_port_state_realizations) {
-        return std::unexpected(
-            std::move(event_realtime_port_state_realizations.error()));
-    }
-    realtime_port_state_realizations->event_states =
-        std::move(*event_realtime_port_state_realizations);
-
-    auto imports = plan_package_imports(
-        input, *analysis, realtime_ports->connections.background);
-    if (!imports) return std::unexpected(std::move(imports.error()));
-
-    auto configurations = plan_node_configurations(
-        input, *analysis, realtime_ports->connections, *imports);
-    if (!configurations) {
-        return std::unexpected(std::move(configurations.error()));
-    }
-
-    auto execution = plan_execution(
-        *analysis,
-        realtime_ports->connections,
-        *declarations,
-        *imports,
-        realtime_ports->sample_ports,
-        realtime_ports->event_ports);
-    if (!execution) return std::unexpected(std::move(execution.error()));
-
-    return LoweringPlan{
-        .port_realization = std::move(*port_realization),
-        .connections = std::move(realtime_ports->connections),
-        .declarations = std::move(*declarations),
-        .imports = std::move(*imports),
-        .configurations = std::move(*configurations),
-        .sample_ports = std::move(realtime_ports->sample_ports),
-        .event_ports = std::move(realtime_ports->event_ports),
-        .realtime_port_state_realizations =
-            std::move(*realtime_port_state_realizations),
-        .root_stack = realtime_ports->root_stack,
-        .execution = std::move(*execution),
-    };
+    plan.execution.ready_groups = std::move(groups);
+    return {};
 }
 } // namespace iv::graph_jit::detail

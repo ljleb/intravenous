@@ -437,8 +437,10 @@ The governing performance invariant is:
    applicable operation. GraphJit imports them, classifies nodes by `NodeCodeKey`,
    package revision, and callback-facing `ResolvedPortRealization`, and records exact
    ready-frontier antichains in `SchedulePlan::ready_groups`. Realtime lowering uses
-   native batches for uncomplicated groups and scalarizes groups with TTL activity,
-   slicing, capture, or producer-side storage operations. Generated background roots
+   native batches for uncomplicated groups and scalarizes groups with slicing,
+   capture, or producer-side storage operations. A group with TTL activity decides
+   each lane first. It then issues guarded `tick_block_batch()` and
+   `skip_block_batch()` calls over the compacted ticking and dormant lanes. Generated background roots
    compact currently active authored nodes into forward, reverse, and Tock batch
    records. The initial eight-lane cap bounds adapter stack growth; Front 16 owns
    measured sizing and joint layout costing. Intrinsic replay eligibility now follows
@@ -447,6 +449,11 @@ The governing performance invariant is:
    storage overlaps another lane. It also keeps the group scalar when a lane uses the
    shared contiguous-input scratch area. Front 16 can plan these storage lifetimes and
    batch choices together after measurement.
+   After the second verification run, `realtime_ready_group_batches()` in
+   `lowering_plan.cpp` makes these decisions during planning. The planner returns
+   rejected groups to the scalar schedule. It also returns the whole graph to the
+   scalar schedule when ready-group ordering would exceed the stack budget, so
+   batching never moves buffers to `NodeStorage`.
    Focused fixtures distinguish a real generated batch from scalar singleton fallback
    by recording the received lane count. They cover different configured values,
    separate lane port bindings, dependency-frontier grouping, aliased-storage scalar

@@ -150,16 +150,23 @@ features do not keep the Front 1 execution contract open.
 **Primary ownership:** first-class scalar/batched node callback normalization and the
 scheduler's ability to exploit same-implementation batches.
 
-**Implementation status (2026-10-23):** implemented in source; repository-owner
-compilation and test validation are pending. The implementation now includes the
+**Implementation status (2026-10-23):** implemented and verified. The fourth
+collaborator run passed 584 of 586 tests; the two failures are the Front 4-blocked
+fixtures named below. The contiguous-scratch decision (friction item 2) remains open. The implementation now includes the
 public lane ranges, exclusive authored scalar/batch forms, every normalized helper
 and compiler anchor, exact implementation-plus-resolved-realization classification,
 dependency-safe `SchedulePlan::ready_groups`, conservative realtime batch lowering,
 and dynamic active-lane background batches for authored forward, reverse, and Tock
 callbacks. The initial scheduler caps one emitted batch at eight lanes. It keeps a
-ready group scalar when TTL activity, primitive slicing, persisted capture, or
-producer-side storage operations would require extra control flow or longer transient
-live ranges. It also compares callback-facing physical ranges from
+ready group scalar when primitive slicing, persisted capture, or producer-side storage
+operations would require extra control flow or longer transient live ranges. TTL
+activity no longer forces scalar fallback. `emit_execution_batch()` evaluates
+every lane's activity decision first. It then compacts the ticking lanes and the
+dormant lanes into opposite ends of one `ReflectedNodeTickBatchLane` array. It calls
+`tick_block_batch()` and `skip_block_batch()` on the two spans, and each call is
+guarded by a nonzero lane count. Afterward it finalizes activity state for the lanes
+that ticked. A group with no activity-enabled lane emits neither the decision nor the
+skip call. It also compares callback-facing physical ranges from
 `SampleTransientAllocationPlan`, `SamplePersistentAllocationPlan`, and
 `EventTransientAllocationPlan`. A group stays scalar if a writable range overlaps
 another lane or if a lane uses the shared contiguous-input scratch area.
@@ -174,6 +181,100 @@ two instances with different configuration bytes. Both instances must observe a
 two-lane batch. This enforces the rule that configuration values do not belong to the
 compatibility key. A generated replay fixture also executes a batch-only Tick source
 through the normalized one-lane scalar adapter.
+`ActivityPartitionsReadyFrontierIntoTickAndSkipBatches` covers one ready group with
+two different TTLs. The group splits into one-lane Tick and skip batches, and later
+both lanes skip in one two-lane batch.
+
+**Verification follow-up (2026-10-23):** the collaborator's first full run failed 141
+of 584 tests. Every heavy package build stopped in `iv_package_finalize` with
+"malformed iv_node_types operations ABI". Front 2 had added five batch anchors to
+`NodeCompilerOperations`, which now has 13 function pointers. `scan_node_records()`
+in `tools/iv_package_finalize.cpp` still required 8 operands. The check now
+requires 13. A collaborator rerun remains pending.
+
+**Second verification run (2026-10-23):** 581 of 585 tests passed. The remaining
+failures expose three unresolved friction signals. These are observations, not
+accepted design:
+
+1. *Ready-frontier ordering versus transient storage.* The ready-group loop in
+   `connection_plan.cpp` selects the largest same-class ready set first. In
+   `reused_sample_arena_module`, the flattened order changed from
+   `source_a, sink_a, source_b, sink_b` to `source_a, source_b, sink_a, sink_b`.
+   Both producer buffers are then live at once and exceed the stack budget, so they
+   move to `NodeStorage`. `StackBudgetUsesPackedSampleLifetimes` now sees three raw
+   regions instead of one. The reordering happens before lowering decides whether
+   the group actually batches. This front owns "scalar fallback when batching makes
+   the surrounding schedule worse", so the reordering is a Front 2 regression.
+2. *Shared contiguous-input scratch excludes most block callbacks.*
+   `requires_contiguous_workspace` assigns the shared scratch area to every authored
+   `tick_block()` or `tick_block_batch()` input. `try_emit_execution_batch()` keeps
+   every such lane scalar. Native realtime batching therefore applies only to
+   primitives without continuous inputs or to zero-history pointwise `tick()`
+   primitives.
+3. *Connected background fixtures depend on missing Front 4 delivery.*
+   `NativeBackgroundCallbacksReceiveReadyFrontierBatch` and
+   `BatchOnlyTickCallbackExecutesThroughReplayScalarAdapter` connect sample ports
+   that only background evaluation reads. Sample-port planning in
+   `lowering_plan.cpp` rejects every `SampleProducerGroupPlan` without realtime
+   connections ("does not yet support background-only sample connections"). That is
+   Front 4's "background-only sample delivery". The re-audit below says Front 4 needs
+   only a closure audit, and this rejection contradicts it.
+
+**Friction decisions (2026-10-23; collaborator rerun pending):**
+
+1. Accepted: planning owns the batch decision. `realtime_ready_group_batches()` in
+   `lowering_plan.cpp` now holds the checks that `try_emit_execution_batch()` used
+   to make during LLVM emission: batch symbols, slicing, producer-side storage
+   operations, captures, callback-storage overlap, and contiguous scratch.
+   `build_lowering_plan()` removes every member of an ineligible multi-lane group
+   from its realtime batch classes. It then plans again until every remaining
+   multi-step `ExecutionReadyGroupPlan` batches. `emit_execution_batch()` emits
+   those groups without re-deciding. If the grouped schedule exceeds the stack
+   budget, the planner first returns to the scalar Kahn order and only then applies
+   stack pressure. Batching therefore never causes a move to `NodeStorage`. Over
+   budget, this rule gives up all realtime batching. Weighing batching against
+   `NodeStorage` moves belongs to the Front 16 cost model. The background plan keeps
+   the full batch classes, because later analyses reuse the retained background
+   plan.
+2. Analysis, decision pending: batching does not add copies.
+   `prepare_contiguous_inputs()` in `node/build_request.h` copies into
+   `contiguous_scratch` only when the requested window wraps the source ring.
+   Scalar and batched execution behave alike there. A batch only needs each lane to
+   own a disjoint wrap-fallback region, because every lane facade is live until the
+   batch callback returns. That costs reserved stack bytes, not work. Part of the
+   cost comes from the representation: scratch is reserved for every block-access
+   input, even one whose window provably cannot wrap. The remainder is the real
+   trade-off of stack bytes against batching, which the Front 16 cost model must
+   account for.
+3. Accepted: `NativeBackgroundCallbacksReceiveReadyFrontierBatch` now uses two
+   input-less `NativeBatchTockProbe` instances and covers forward propagation and
+   Tock evaluation. Reverse propagation needs a Random Access input. A disconnected
+   one has no background storage, so `validate_background_runtime_plan()` rejects
+   its empty runtime binding; that is Front 4's disconnected/default binding work.
+   `NativeReversePropagationReceivesReadyFrontierBatch` therefore keeps Codex's
+   original connected module for the reverse batch.
+   `BatchOnlyTickCallbackExecutesThroughReplayScalarAdapter` cannot avoid a
+   background-only Tick-to-coverage connection and is kept unchanged. Both are
+   expected to fail until Front 4.
+
+**Third verification run (2026-10-23):** apart from the expected Front 4 failures,
+`TransitionRootPreservesRewiredHistoryAndMirrorsNewProducerSamples` failed. The
+transition builder in `lowering.cpp` copies the steady successor's `LoweringPlan`
+and then attaches transition storage operations to individual primitive steps,
+after planning has already decided which ready groups batch.
+`emit_execution_batch()` skipped those per-step operations. Before the planner
+owned the decision, the emitter's own re-check had kept such groups scalar. The
+transition builder now calls `split_unbatched_ready_groups()`. That function
+re-applies `realtime_ready_group_batches()` and splits each group that no longer
+batches into singleton groups in the same order, so execution positions stay
+unchanged.
+
+**Fourth verification run (2026-10-23):** 584 of 586 tests passed. Only
+`NativeReversePropagationReceivesReadyFrontierBatch` and
+`BatchOnlyTickCallbackExecutesThroughReplayScalarAdapter` failed. Both stop at
+"GraphJit realtime lowering does not yet support background-only sample
+connections", which is the expected Front 4 boundary. They should pass once Front 4
+delivers background-only samples.
 
 This front owns:
 
@@ -1322,7 +1423,11 @@ The revised execution-path order is:
 
 Front 2 reached source implementation on 2026-10-23. After collaborator compilation
 and full-suite verification, the first item above closes and Front 3 becomes the next
-large dependency-ready implementation front. Any Front 2 verification failure reopens
+large dependency-ready implementation front. Verification on 2026-10-23 closed the first item.
+The re-audit's claim that Front 4 needs only a closure audit no longer holds: realtime
+lowering still rejects background-only sample connections, and a disconnected Random
+Access input still has no background runtime binding. Front 4 therefore needs an
+implementation pass. Two Front 2 fixtures depend on it. Any Front 2 verification failure reopens
 the exact callback, ABI, scheduling, or lowering boundary that fails.
 
 The control-plane order remains Front 9 before complete Front 10 and Front 13, then
@@ -1623,6 +1728,52 @@ source diagnostic when the toolchain can establish the conflict; otherwise Graph
 must return a precise compilation diagnostic. The inferred capability summary and the
 explicit allowed set must remain separate facts so optimization cannot weaken the
 author's enforcement contract.
+
+**Proposed design change (2026-10-23; postponed until after Front 2):**
+activity-specialized root variants. GraphJit would compile Tick-root variants for a
+selected dormant set. A dormant primitive calls its skip operation unconditionally,
+and an active primitive calls its Tick operation without the dormancy branch. When a
+skipping part of a variant detects that it must stop skipping, the runtime replaces
+that variant with one that ticks.
+
+Human co-author direction (2026-10-23), not yet reconciled with the normative
+documents:
+
+- Refinement is initiated synchronously between two graph calls. Variant compilation
+  runs asynchronously on the compilation worker. A compiled variant is published
+  only synchronously between two graph calls.
+- The setup code that submits a refinement inspects the residual activity state in
+  the allocated `NodeStorage` at that moment. It decides synchronously which subgraphs
+  skip and which execute. It then submits the resulting graph refinement profile to
+  GraphJit and returns.
+- Replacement at the graph-call boundary should reuse the existing
+  successor-staging path (`GraphExecutorStageContext` and `GraphExecutor::stage()`) as
+  far as possible.
+- Dormancy forms a tree. Each subgraph that can be put to sleep on its own contains
+  exclusive whole subgraphs that can in turn be put to sleep on their own. The variant
+  cache can be structured along that tree. A naive policy such as LRU is a starting
+  point; profiling should decide the final policy.
+
+Observed constraints (implementation analysis, 2026-10-23):
+
+- A dormant primitive must still tick in the same block in which its inputs change.
+  Those inputs are produced inside the root by upstream primitives, so a variant
+  still evaluates the wake condition at that point. Its wake path must handle the
+  current block before the boundary replacement takes effect.
+- Active primitives still track quiescence through the output-clear scan in
+  `emit_primitive_activity_update()`. Variants remove the dormancy branch and the
+  dynamic lane compaction in `emit_execution_batch()`. They do not by themselves
+  remove the input or output scans.
+- The larger saving is a wholly dormant subtree. If skip output is provably constant,
+  only inputs at the subtree's boundary with active primitives need a wake check.
+- Variants share one `NodeLayout`, so switching between them needs no Front 6 state
+  migration.
+- Normative reach: the generated Tick root currently owns each primitive's activity
+  decision. This proposal shares the dormancy choice with refinement setup code.
+
+The current batch emitter is compatible with this proposal: a variant would supply
+compile-time per-lane decisions, and the emitter already folds those into static
+spans.
 
 Runtime PGO remains an optional discovery direction rather than a prerequisite for the
 architecture.

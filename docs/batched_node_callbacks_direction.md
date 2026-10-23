@@ -1,16 +1,18 @@
 # Batched Node Callback Direction
 
-_Status: implementation in progress on 2026-10-23; repository-owner compilation and
-test validation are pending. The superseded pre-implementation status is retained
-in [Front 2 pre-implementation status](./historical/front_2_preimplementation_status.md)._
+_Status: implemented and verified on 2026-10-23. Two fixtures that need Front 4
+background-only sample delivery remain expected failures. The superseded pre-implementation and intermediate statuses
+are retained in
+[Front 2 pre-implementation status](./historical/front_2_preimplementation_status.md)._
 
 The traits layer and reflected compiler ABI provide normalized scalar and batch Tick
-and skip operations. GraphJit can invoke compatible active primitives through one
-`tick_block_batch()` call. Its activity lowering still selects `tick_block()` or
-`skip_block()` separately for each primitive. It does not yet partition one ready
-group into active and dormant lanes and invoke `skip_block_batch()` for the dormant
-subset. This is remaining Front 2 work; a root-level `skip_block` operation is not the
-solution because the generated Tick root owns each primitive's activity decision.
+and skip operations. GraphJit invokes a compatible ready group through
+`tick_block_batch()`. When any lane has TTL activity, the generated Tick root first
+evaluates each lane's activity decision. This is the same per-primitive decision that
+scalar emission makes. The root then invokes `tick_block_batch()` for the lanes that
+tick and `skip_block_batch()` for the dormant lanes. Each call runs only when its lane
+count is nonzero. A group with no activity-enabled lane emits no decision and no skip
+call, and its lane slots and counts are compile-time constants.
 
 [DSP Execution And Storage Glossary](./dsp_execution_storage_glossary.md) defines the execution terminology used here. This document complements [Graph JIT Direction](./graph_jit_direction.md), [Sequential Port Storage And Connection Planning](./sequential_port_storage_planning.md), and [Coverage, Random Access, And Background Evaluation](./coverage_and_background_evaluation.md).
 

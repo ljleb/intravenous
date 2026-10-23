@@ -135,6 +135,10 @@ constexpr char graph_jit_native_batch_replay_module_id[] =
     "iv.test.graph_jit.state_context.native_batch_replay_module";
 constexpr char graph_jit_native_batch_background_module_id[] =
     "iv.test.graph_jit.state_context.native_batch_background_module";
+constexpr char graph_jit_native_batch_activity_module_id[] =
+    "iv.test.graph_jit.state_context.native_batch_activity_module";
+constexpr char graph_jit_native_batch_reverse_module_id[] =
+    "iv.test.graph_jit.state_context.native_batch_reverse_module";
 constexpr char graph_jit_stateless_module_id[] = "iv.test.graph_jit.state_context.stateless_module";
 constexpr char graph_jit_configured_module_id[] = "iv.test.graph_jit.state_context.configured_module";
 constexpr char graph_jit_pointer_configured_module_id[] = "iv.test.graph_jit.state_context.pointer_configured_module";
@@ -271,6 +275,13 @@ struct NativeBatchAliasingProbeStateMirror {
     std::uint64_t tick_batch_calls = 0;
     std::uint64_t last_lane_count = 0;
     std::uint64_t configured_id = 0;
+};
+
+struct NativeBatchActivityProbeStateMirror {
+    std::uint64_t tick_batch_calls = 0;
+    std::uint64_t skip_batch_calls = 0;
+    std::uint64_t tick_lane_total = 0;
+    std::uint64_t skip_lane_total = 0;
 };
 
 struct NativeBatchBackgroundProbeStateMirror {
@@ -6027,6 +6038,114 @@ struct NativeBatchBackgroundProbe {
     }
 };
 
+struct NativeBatchTockProbe {
+    std::uint64_t id = 0;
+
+    struct TockState {
+        std::uint64_t tock_batch_calls = 0;
+        std::uint64_t last_lane_count = 0;
+        std::uint64_t configured_id = 0;
+        std::uint64_t sample_rate = 0;
+    };
+
+    constexpr explicit NativeBatchTockProbe(std::uint64_t id_) : id(id_) {}
+
+    static constexpr auto inputs() { return std::tuple{}; }
+    static constexpr auto outputs()
+    {
+        return std::array{iv::output<iv::Sample>(
+            "out", iv::OutputProduction::coverage)};
+    }
+
+    static void propagate_forward_coverage_batch(
+        iv::PropagateForwardCoverageBatchContext<NativeBatchTockProbe>& context)
+    {
+        for (auto lane : context) {
+            iv::IndexCoverage const selected{iv::GlobalIndexRange{
+                .begin = iv::GlobalIndex::from_bits(lane.node().id),
+                .extent = context.size(),
+            }};
+            lane.template output<"out">().publish_coverage(selected);
+            lane.template output<"out">().change(selected);
+        }
+    }
+
+    static void tock_coverage_batch(
+        iv::TockCoverageBatchContext<NativeBatchTockProbe>& context)
+    {
+        for (auto lane : context) {
+            auto& state = lane.tock_state();
+            ++state.tock_batch_calls;
+            state.last_lane_count = context.size();
+            state.configured_id = lane.node().id;
+            state.sample_rate = lane.context().sample_rate;
+        }
+    }
+};
+
+struct NativeBatchActivityProbe {
+    struct State {
+        std::uint64_t tick_batch_calls = 0;
+        std::uint64_t skip_batch_calls = 0;
+        std::uint64_t tick_lane_total = 0;
+        std::uint64_t skip_lane_total = 0;
+    };
+
+    // No continuous input: a block callback with one uses the shared
+    // contiguous-input scratch area, which keeps its ready group scalar.
+    static constexpr auto inputs() { return std::tuple{}; }
+
+    static constexpr auto outputs()
+    {
+        return std::array{iv::output<iv::Sample>(
+            "out", iv::OutputProduction::tick)};
+    }
+
+    bool can_skip_block() const { return true; }
+
+    static void tick_block_batch(
+        iv::TickBlockBatchContext<NativeBatchActivityProbe> const& context)
+    {
+        for (auto lane : context) {
+            auto& state = lane.state();
+            ++state.tick_batch_calls;
+            state.tick_lane_total += context.size();
+            for (auto& sample : lane.template output<"out">().block()) {
+                sample = {};
+            }
+        }
+    }
+
+    static void skip_block_batch(
+        iv::SkipBlockBatchContext<NativeBatchActivityProbe> const& context)
+    {
+        for (auto lane : context) {
+            auto& state = lane.state();
+            ++state.skip_batch_calls;
+            state.skip_lane_total += context.size();
+            for (auto& sample : lane.template output<"out">().block()) {
+                sample = {};
+            }
+        }
+    }
+};
+
+struct NativeBatchActivitySink {
+    static constexpr auto inputs()
+    {
+        return std::array{
+            iv::input<iv::Sample>("first", iv::InputAccess::sequential),
+            iv::input<iv::Sample>("second", iv::InputAccess::sequential),
+        };
+    }
+
+    static constexpr auto outputs() { return std::tuple{}; }
+
+    void tick_block(
+        iv::TickBlockContext<NativeBatchActivitySink> const&) const
+    {}
+};
+
 struct ActivityStepSource {
     static constexpr auto inputs() { return std::tuple{}; }
 
@@ -6633,7 +6752,36 @@ void native_batch_replay_module(iv::GraphBuilder& graph)
     graph.outputs();
 }
 
+void native_batch_activity_module(iv::GraphBuilder& graph)
+{
+    auto first = graph.node<
+        "iv.test.graph_jit.state_context.native_batch_activity">();
+    first.ttl(64);
+    auto second = graph.node<
+        "iv.test.graph_jit.state_context.native_batch_activity">();
+    second.ttl(128);
+    // Keeping both outputs live until one consumer prevents transient
+    // storage sharing from forcing scalar fallback.
+    auto sink = graph.node<
+        "iv.test.graph_jit.state_context.native_batch_activity_sink">();
+    sink(first, second);
+    graph.outputs();
+}
+
 void native_batch_background_module(iv::GraphBuilder& graph)
+{
+    // These probes have no inputs: a connected or disconnected Random Access
+    // input needs Front 4 background-only delivery or default binding.
+    (void)graph.node<
+        "iv.test.graph_jit.state_context.native_batch_tock">(
+        std::uint64_t{11});
+    (void)graph.node<
+        "iv.test.graph_jit.state_context.native_batch_tock">(
+        std::uint64_t{22});
+    graph.outputs();
+}
+
+void native_batch_reverse_module(iv::GraphBuilder& graph)
 {
     auto first_source = graph.node<
         "iv.test.graph_jit.state_context.background_evaluation_call">();
@@ -6662,6 +6810,15 @@ IV_NODE(
 IV_NODE(
     "iv.test.graph_jit.state_context.native_batch_background",
     NativeBatchBackgroundProbe);
+IV_NODE(
+    "iv.test.graph_jit.state_context.native_batch_tock",
+    NativeBatchTockProbe);
+IV_NODE(
+    "iv.test.graph_jit.state_context.native_batch_activity",
+    NativeBatchActivityProbe);
+IV_NODE(
+    "iv.test.graph_jit.state_context.native_batch_activity_sink",
+    NativeBatchActivitySink);
 IV_NODE("iv.test.graph_jit.state_context.activity_step_source", ActivityStepSource);
 IV_NODE("iv.test.graph_jit.state_context.activity_probe", ActivityProbe);
 IV_NODE("iv.test.graph_jit.state_context.activity_type_default_probe", ActivityTypeDefaultProbe);
@@ -6697,6 +6854,12 @@ IV_MODULE(
 IV_MODULE(
     "iv.test.graph_jit.state_context.native_batch_background_module",
     native_batch_background_module);
+IV_MODULE(
+    "iv.test.graph_jit.state_context.native_batch_activity_module",
+    native_batch_activity_module);
+IV_MODULE(
+    "iv.test.graph_jit.state_context.native_batch_reverse_module",
+    native_batch_reverse_module);
 )cpp";
     static_assert(part_1.size() < 60 * 1024);
     static_assert(part_2.size() < 60 * 1024);
@@ -8056,6 +8219,10 @@ TEST(GraphJitSharedRuntimeFixture, BuildPackage)
         graph_jit_native_batch_replay_module_id));
     EXPECT_TRUE(has_module_definition(
         graph_jit_native_batch_background_module_id));
+    EXPECT_TRUE(has_module_definition(
+        graph_jit_native_batch_activity_module_id));
+    EXPECT_TRUE(has_module_definition(
+        graph_jit_native_batch_reverse_module_id));
     EXPECT_TRUE(has_module_definition(graph_jit_declaration_layout_module_id));
     EXPECT_TRUE(has_module_definition(graph_jit_activity_module_id));
     EXPECT_TRUE(has_module_definition(graph_jit_activity_disabled_module_id));
@@ -8445,40 +8612,32 @@ TEST_F(GraphJitRuntimeFixture, NativeBackgroundCallbacksReceiveReadyFrontierBatc
                 ? ""
                 : compiled.diagnostics.front().message);
     ASSERT_TRUE(compiled.compiled_graph->background_operations.valid());
-    ASSERT_EQ(compiled.compiled_graph->background_evaluation_plan.nodes.size(), 4u);
-    ASSERT_EQ(compiled.compiled_graph->tock_state_layout.nodes.size(), 4u);
+    ASSERT_EQ(compiled.compiled_graph->background_evaluation_plan.nodes.size(), 2u);
+    ASSERT_EQ(compiled.compiled_graph->tock_state_layout.nodes.size(), 2u);
     ASSERT_EQ(
         compiled.compiled_graph->background_evaluation_plan
             .forward_ready_groups.size(),
-        2u);
+        1u);
     EXPECT_EQ(
         compiled.compiled_graph->background_evaluation_plan
-            .forward_ready_groups.back().size(),
-        2u);
-    ASSERT_EQ(
-        compiled.compiled_graph->background_evaluation_plan
-            .reverse_ready_groups.size(),
-        2u);
-    EXPECT_EQ(
-        compiled.compiled_graph->background_evaluation_plan
-            .reverse_ready_groups.front().size(),
+            .forward_ready_groups.front().size(),
         2u);
     ASSERT_EQ(
         compiled.compiled_graph->background_evaluation_plan
             .evaluation_ready_groups.size(),
-        2u);
+        1u);
     EXPECT_EQ(
         compiled.compiled_graph->background_evaluation_plan
-            .evaluation_ready_groups.back().size(),
+            .evaluation_ready_groups.front().size(),
         2u);
 
     auto tock_states =
         compiled.compiled_graph->tock_state_layout.create_storage(resources);
     tock_states.initialize();
     auto* first_state = static_cast<NativeBatchBackgroundProbeStateMirror*>(
-        tock_states.state_ptr(2));
+        tock_states.state_ptr(0));
     auto* second_state = static_cast<NativeBatchBackgroundProbeStateMirror*>(
-        tock_states.state_ptr(3));
+        tock_states.state_ptr(1));
     ASSERT_NE(first_state, nullptr);
     ASSERT_NE(second_state, nullptr);
 
@@ -8498,8 +8657,6 @@ TEST_F(GraphJitRuntimeFixture, NativeBackgroundCallbacksReceiveReadyFrontierBatc
         .publish_changed_value = &capture_background_change,
     }};
     std::array node_frames{
-        iv::graph_jit::BackgroundNodeCall{},
-        iv::graph_jit::BackgroundNodeCall{},
         iv::graph_jit::BackgroundNodeCall{
             .activity = iv::graph_jit::BackgroundNodeActivity::forward,
             .forward = iv::ReflectedNodeForwardCoverageContext{
@@ -8524,6 +8681,62 @@ TEST_F(GraphJitRuntimeFixture, NativeBackgroundCallbacksReceiveReadyFrontierBatc
     EXPECT_EQ(second_capture.changed, second_capture.coverage);
 
     auto const no_op = +[](void*) {};
+    node_frames[0].activity = iv::graph_jit::BackgroundNodeActivity::evaluate;
+    node_frames[0].operation_frame = nullptr;
+    node_frames[0].prepare_operations = no_op;
+    node_frames[0].finalize_operations = no_op;
+    node_frames[0].tock = iv::ReflectedNodeTockCoverageContext{
+        .background_state_storage = {
+            static_cast<std::byte*>(tock_states.state_ptr(0)),
+            sizeof(NativeBatchBackgroundProbeStateMirror),
+        },
+        .sample_rate = 88200,
+    };
+    node_frames[1].activity = iv::graph_jit::BackgroundNodeActivity::evaluate;
+    node_frames[1].operation_frame = nullptr;
+    node_frames[1].prepare_operations = no_op;
+    node_frames[1].finalize_operations = no_op;
+    node_frames[1].tock = iv::ReflectedNodeTockCoverageContext{
+        .background_state_storage = {
+            static_cast<std::byte*>(tock_states.state_ptr(1)),
+            sizeof(NativeBatchBackgroundProbeStateMirror),
+        },
+        .sample_rate = 88200,
+    };
+
+    compiled.compiled_graph->background_operations.evaluate(&batch);
+    EXPECT_EQ(first_state->tock_batch_calls, 1u);
+    EXPECT_EQ(first_state->last_lane_count, 2u);
+    EXPECT_EQ(first_state->configured_id, 11u);
+    EXPECT_EQ(first_state->sample_rate, 88200u);
+    EXPECT_EQ(second_state->tock_batch_calls, 1u);
+    EXPECT_EQ(second_state->last_lane_count, 2u);
+    EXPECT_EQ(second_state->configured_id, 22u);
+    EXPECT_EQ(second_state->sample_rate, 88200u);
+}
+
+// Reverse propagation needs a Random Access input. Connecting one requires
+// Front 4 background-only sample delivery, so this test is expected to fail
+// until that front lands.
+TEST_F(GraphJitRuntimeFixture, NativeReversePropagationReceivesReadyFrontierBatch)
+{
+    auto compiled = compile(graph_jit_native_batch_reverse_module_id, 106);
+    ASSERT_TRUE(compiled.succeeded())
+        << (compiled.diagnostics.empty()
+                ? ""
+                : compiled.diagnostics.front().message);
+    ASSERT_TRUE(compiled.compiled_graph->background_operations.valid());
+    ASSERT_EQ(compiled.compiled_graph->background_evaluation_plan.nodes.size(), 4u);
+    ASSERT_EQ(
+        compiled.compiled_graph->background_evaluation_plan
+            .reverse_ready_groups.size(),
+        2u);
+    EXPECT_EQ(
+        compiled.compiled_graph->background_evaluation_plan
+            .reverse_ready_groups.front().size(),
+        2u);
+
+    iv::IndexCoverage const empty;
     iv::IndexCoverage first_requirement;
     iv::IndexCoverage second_requirement;
     auto const capture_requirement = +[](
@@ -8541,52 +8754,29 @@ TEST_F(GraphJitRuntimeFixture, NativeBackgroundCallbacksReceiveReadyFrontierBatc
         .coverage_value = &empty,
         .publish_required_value = capture_requirement,
     }};
-    node_frames[2].activity = iv::graph_jit::BackgroundNodeActivity::reverse;
-    node_frames[2].reverse = iv::ReflectedNodeReverseCoverageContext{
-        .inputs = first_inputs,
-        .sample_rate = 88200,
+    std::array node_frames{
+        iv::graph_jit::BackgroundNodeCall{},
+        iv::graph_jit::BackgroundNodeCall{},
+        iv::graph_jit::BackgroundNodeCall{
+            .activity = iv::graph_jit::BackgroundNodeActivity::reverse,
+            .reverse = iv::ReflectedNodeReverseCoverageContext{
+                .inputs = first_inputs,
+                .sample_rate = 88200,
+            },
+        },
+        iv::graph_jit::BackgroundNodeCall{
+            .activity = iv::graph_jit::BackgroundNodeActivity::reverse,
+            .reverse = iv::ReflectedNodeReverseCoverageContext{
+                .inputs = second_inputs,
+                .sample_rate = 88200,
+            },
+        },
     };
-    node_frames[3].activity = iv::graph_jit::BackgroundNodeActivity::reverse;
-    node_frames[3].reverse = iv::ReflectedNodeReverseCoverageContext{
-        .inputs = second_inputs,
-        .sample_rate = 88200,
-    };
+    iv::graph_jit::BackgroundEvaluationCall batch{.nodes = node_frames};
+
     compiled.compiled_graph->background_operations.propagate_reverse(&batch);
     EXPECT_EQ(first_requirement, index_coverage({{11, 13}}));
     EXPECT_EQ(second_requirement, index_coverage({{22, 24}}));
-
-    node_frames[2].activity = iv::graph_jit::BackgroundNodeActivity::evaluate;
-    node_frames[2].operation_frame = nullptr;
-    node_frames[2].prepare_operations = no_op;
-    node_frames[2].finalize_operations = no_op;
-    node_frames[2].tock = iv::ReflectedNodeTockCoverageContext{
-        .background_state_storage = {
-            static_cast<std::byte*>(tock_states.state_ptr(2)),
-            sizeof(NativeBatchBackgroundProbeStateMirror),
-        },
-        .sample_rate = 88200,
-    };
-    node_frames[3].activity = iv::graph_jit::BackgroundNodeActivity::evaluate;
-    node_frames[3].operation_frame = nullptr;
-    node_frames[3].prepare_operations = no_op;
-    node_frames[3].finalize_operations = no_op;
-    node_frames[3].tock = iv::ReflectedNodeTockCoverageContext{
-        .background_state_storage = {
-            static_cast<std::byte*>(tock_states.state_ptr(3)),
-            sizeof(NativeBatchBackgroundProbeStateMirror),
-        },
-        .sample_rate = 88200,
-    };
-
-    compiled.compiled_graph->background_operations.evaluate(&batch);
-    EXPECT_EQ(first_state->tock_batch_calls, 1u);
-    EXPECT_EQ(first_state->last_lane_count, 2u);
-    EXPECT_EQ(first_state->configured_id, 11u);
-    EXPECT_EQ(first_state->sample_rate, 88200u);
-    EXPECT_EQ(second_state->tock_batch_calls, 1u);
-    EXPECT_EQ(second_state->last_lane_count, 2u);
-    EXPECT_EQ(second_state->configured_id, 22u);
-    EXPECT_EQ(second_state->sample_rate, 88200u);
 }
 
 TEST_F(GraphJitRuntimeFixture, ConfiguredValuesAndPointerRelocations)
@@ -8817,6 +9007,46 @@ TEST_F(GraphJitRuntimeFixture, NativeTickBatchScalarizesAliasedCallbackStorage)
     EXPECT_EQ(second->tick_batch_calls, 1u);
     EXPECT_EQ(second->last_lane_count, 1u);
     EXPECT_EQ(second->configured_id, 22u);
+}
+
+TEST_F(GraphJitRuntimeFixture, ActivityPartitionsReadyFrontierIntoTickAndSkipBatches)
+{
+    auto compiled = compile(graph_jit_native_batch_activity_module_id, 113);
+    ASSERT_TRUE(compiled.succeeded())
+        << (compiled.diagnostics.empty()
+                ? ""
+                : compiled.diagnostics.front().message);
+    ASSERT_TRUE(compiled.compiled_graph->root_operations.valid());
+    ASSERT_EQ(compiled.compiled_graph->node_layout.nodes.size(), 3u);
+
+    auto storage = compiled.compiled_graph->node_layout.create_storage(resources);
+    storage.initialize();
+    auto* short_ttl = static_cast<NativeBatchActivityProbeStateMirror*>(
+        storage.state_ptr(0));
+    auto* long_ttl = static_cast<NativeBatchActivityProbeStateMirror*>(
+        storage.state_ptr(1));
+    ASSERT_NE(short_ttl, nullptr);
+    ASSERT_NE(long_ttl, nullptr);
+
+    // Without inputs, each lane becomes dormant once its cleared outputs have
+    // been quiet for its TTL. Block 64 splits one ready group into a one-lane
+    // Tick batch and a one-lane skip batch. Blocks 128 and 192 skip both lanes
+    // in one batch.
+    for (auto const begin : {0u, 64u, 128u, 192u}) {
+        compiled.compiled_graph->root_operations.tick_block(
+            storage.buffer().data(),
+            &empty_tick_invocation,
+            index(begin),
+            64);
+    }
+    EXPECT_EQ(short_ttl->tick_batch_calls, 1u);
+    EXPECT_EQ(short_ttl->skip_batch_calls, 3u);
+    EXPECT_EQ(short_ttl->tick_lane_total, 2u);
+    EXPECT_EQ(short_ttl->skip_lane_total, 5u);
+    EXPECT_EQ(long_ttl->tick_batch_calls, 2u);
+    EXPECT_EQ(long_ttl->skip_batch_calls, 2u);
+    EXPECT_EQ(long_ttl->tick_lane_total, 3u);
+    EXPECT_EQ(long_ttl->skip_lane_total, 4u);
 }
 
 TEST_F(GraphJitRuntimeFixture, BatchOnlyTickCallbackExecutesThroughReplayScalarAdapter)
