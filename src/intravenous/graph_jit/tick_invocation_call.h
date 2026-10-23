@@ -41,7 +41,12 @@ static_assert(std::is_trivially_copyable_v<TickEventCaptureOperation>);
 // Narrow generated-root ABI for storage selected at one Tick callback boundary.
 // The owning runtime frame keeps every backing snapshot alive; generated code
 // receives only already-resolved views and cannot recover an executor, persisted-data
-// store, or materialization owner from this record.
+// store, or materialization owner from this record. When a compiled graph has a
+// non-empty kind-specific Tick runtime slot array, its invocation must provide a
+// non-null span with exactly that array's extent. TickInvocationWorkspace validates
+// the retained slot plan when it is constructed and always returns those complete
+// spans. The generated realtime root relies on this precondition and does not repeat
+// pointer or extent checks per node.
 struct TickInvocationCall {
     ReflectedSpan<ReflectedContinuousInputPortBinding const>
         sequential_sample_inputs{};

@@ -92,6 +92,53 @@ std::vector<PersistedOutputHandle> retired_persisted_outputs(
     return result;
 }
 
+[[nodiscard]] IndexCoverage include_sequential_history(
+    IndexCoverage const& playback, std::size_t history)
+{
+    if (history == 0) return playback;
+    IndexCoverage result;
+    for (auto const range : playback) {
+        if (history
+            > std::numeric_limits<GlobalIndex::extent_type>::max()
+                - range.extent) {
+            throw std::length_error(
+                "Tick materialization playback history is too large");
+        }
+        result.include({
+            .begin = range.begin.retreated_by(history),
+            .extent = range.extent + history,
+        });
+    }
+    return result;
+}
+
+void append_tick_materialization_demands(
+    graph_jit::BackgroundEvaluationPlan const& plan,
+    IndexCoverage const& playback,
+    CoveragePropagationRequest& roots)
+{
+    if (playback.empty()) return;
+    for (auto const port_index : plan.tick_sequential_inputs) {
+        if (port_index >= plan.ports.size()) {
+            throw std::invalid_argument(
+                "Tick materialization demand references a missing input port");
+        }
+        auto const& port = plan.ports[port_index];
+        auto required = include_sequential_history(
+            playback, port.sequential_history);
+        auto existing = std::ranges::find(
+            roots.input_demands, port_index, &InputCoverageRequest::port);
+        if (existing == roots.input_demands.end()) {
+            roots.input_demands.push_back({
+                .port = port_index,
+                .required = std::move(required),
+            });
+        } else {
+            existing->required.include(required);
+        }
+    }
+}
+
 } // namespace
 
 GraphExecutor::RealtimeGeneration::RealtimeGeneration(
@@ -530,6 +577,22 @@ void GraphExecutor::BackgroundExecutor::prepare_background_migration(
     if (command.exception) std::rethrow_exception(command.exception);
 }
 
+void GraphExecutor::BackgroundExecutor::set_tick_materialization_demand(
+    ExecutionGeneration& target,
+    IndexCoverage demand)
+{
+    Command command{
+        .kind = CommandKind::set_tick_materialization_demand,
+        .demand_target = &target,
+        .materialization_demand = std::move(demand),
+    };
+    enqueue(command);
+
+    std::unique_lock lock{command.mutex};
+    command.completed.wait(lock, [&] { return command.done; });
+    if (command.exception) std::rethrow_exception(command.exception);
+}
+
 std::optional<std::uint64_t>
 GraphExecutor::BackgroundExecutor::current_generation() const noexcept
 {
@@ -642,6 +705,39 @@ void GraphExecutor::BackgroundExecutor::run(std::stop_token stop) noexcept
                     command->migration_target->prepare_background_migration_from(
                         *command->migration_source,
                         owner_.persisted_data_);
+                    return {};
+                } catch (...) {
+                    return std::current_exception();
+                }
+            }();
+            std::lock_guard lock{command->mutex};
+            command->exception = std::move(failure);
+            command->done = true;
+        } else if (command->kind
+                   == CommandKind::set_tick_materialization_demand) {
+            auto failure = [&]() -> std::exception_ptr {
+                try {
+                    auto* selected = generation_chain_.get();
+                    while (selected && selected != command->demand_target) {
+                        selected = selected->successor_owner.get();
+                    }
+                    if (!selected) {
+                        throw std::logic_error(
+                            "Tick materialization demand targets a retired generation");
+                    }
+                    auto& background = selected->background;
+                    background.tick_materialization_demand =
+                        std::move(command->materialization_demand);
+                    auto const missing =
+                        background.tick_materialization_demand
+                        - background.materialized_tick_coverage;
+                    background.tick_materialization_required =
+                        !missing.empty()
+                        && !selected->graph->background_evaluation_plan
+                                .tick_sequential_inputs.empty();
+                    if (background.tick_materialization_required) {
+                        work_signal_.notify_work();
+                    }
                     return {};
                 } catch (...) {
                     return std::current_exception();
@@ -793,6 +889,12 @@ GraphExecutorStageResult GraphExecutor::stage(
         production_reservation_failed_,
         producer_capacity_,
         background_executor_.work_signal());
+    prepared->background.tick_materialization_demand =
+        tick_materialization_demand_;
+    prepared->background.tick_materialization_required =
+        !tick_materialization_demand_.empty()
+        && !prepared->graph->background_evaluation_plan
+                .tick_sequential_inputs.empty();
     prepared->prepare_initial_persisted_state(persisted_data_);
     if (!realtime_active_) {
         prepared->initialize_first_generation();
@@ -880,6 +982,25 @@ std::shared_ptr<CompiledGraph const> GraphExecutor::active_graph() const noexcep
     return realtime_active_ ? realtime_active_->graph : nullptr;
 }
 
+void GraphExecutor::set_tick_materialization_demand(IndexCoverage demand)
+{
+    tick_materialization_demand_ = std::move(demand);
+    if (pending_generation_) {
+        auto& background = pending_generation_->background;
+        background.tick_materialization_demand =
+            tick_materialization_demand_;
+        auto const missing = background.tick_materialization_demand
+            - background.materialized_tick_coverage;
+        background.tick_materialization_required = !missing.empty()
+            && !pending_generation_->graph->background_evaluation_plan
+                    .tick_sequential_inputs.empty();
+    }
+    if (realtime_active_) {
+        background_executor_.set_tick_materialization_demand(
+            *realtime_active_, tick_materialization_demand_);
+    }
+}
+
 std::expected<BackgroundEvaluationResult, std::string>
 GraphExecutor::evaluate_generation(
     ExecutionGeneration& generation,
@@ -896,6 +1017,13 @@ GraphExecutor::evaluate_generation(
             tick_materializations_);
     }
     background.select_inputs();
+    auto roots = background.reconciliation_required
+        ? background.reconciliation_roots
+        : CoveragePropagationRequest{};
+    append_tick_materialization_demands(
+        generation.graph->background_evaluation_plan,
+        background.tick_materialization_demand,
+        roots);
     BackgroundEvaluationTransaction transaction{
         *generation.graph,
         background.tock_states,
@@ -904,9 +1032,7 @@ GraphExecutor::evaluate_generation(
         persisted_data_,
         tick_materializations_,
         BackgroundTransactionInputs{
-            .roots = background.reconciliation_required
-                ? background.reconciliation_roots
-                : CoveragePropagationRequest{},
+            .roots = std::move(roots),
             .retired_outputs = background.reconciliation_required
                 ? std::span<PersistedOutputHandle const>{
                     background.retired_outputs}
@@ -997,7 +1123,8 @@ GraphExecutor::BackgroundExecutor::process_available_work()
             current.initialize_first_background_generation();
         }
         current.background.select_inputs();
-        if (current.background.reconciliation_required
+        if ((current.background.reconciliation_required
+             || current.background.tick_materialization_required)
             && !current.graph->background_operations.valid()) {
             auto const& plan = current.graph->background_evaluation_plan;
             if (!plan.nodes.empty() || !plan.ports.empty()
@@ -1005,7 +1132,9 @@ GraphExecutor::BackgroundExecutor::process_available_work()
                 return std::unexpected(
                     "GraphExecutor cannot reconcile a successor with incomplete background operations");
             }
-            if (current.background.retired_outputs.empty()) {
+            if (current.background.retired_outputs.empty()
+                && current.graph->background_evaluation_plan
+                       .tick_sequential_inputs.empty()) {
                 // An empty background plan has no materialized bindings to
                 // rebind and no producer routes whose drained data could
                 // become visible.
@@ -1013,7 +1142,8 @@ GraphExecutor::BackgroundExecutor::process_available_work()
             }
         }
         if (current.background.has_selected_inputs()
-            || current.background.reconciliation_required) {
+            || current.background.reconciliation_required
+            || current.background.tick_materialization_required) {
             auto evaluated = owner_.evaluate_generation(
                 current, current.successor() == nullptr);
             if (!evaluated
@@ -1021,6 +1151,9 @@ GraphExecutor::BackgroundExecutor::process_available_work()
                 return evaluated;
             }
             current.background.reconciliation_required = false;
+            current.background.tick_materialization_required = false;
+            current.background.materialized_tick_coverage =
+                current.background.tick_materialization_demand;
             current.background.retired_outputs.clear();
             current.background.reconciliation_roots = {};
             // A publication concurrent with the pinned prefix advanced the

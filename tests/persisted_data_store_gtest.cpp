@@ -281,6 +281,7 @@ iv::graph_jit::BackgroundEvaluationPlan direct_tick_plan(iv::PortKind kind)
             TickNodeInvocationPlan{
                 .random_access_sample_begin = 0,
                 .random_access_sample_count = 1,
+                .sample_capture_begin = 1,
             },
         };
     } else {
@@ -310,6 +311,7 @@ iv::graph_jit::BackgroundEvaluationPlan direct_tick_plan(iv::PortKind kind)
             TickNodeInvocationPlan{
                 .random_access_event_begin = 0,
                 .random_access_event_count = 1,
+                .event_capture_begin = 1,
             },
         };
     }
@@ -331,10 +333,12 @@ iv::graph_jit::BackgroundEvaluationPlan sequential_tick_sample_plan()
     plan.storage.direct_samples[0].delivery =
         iv::graph_jit::PlannedDeliveryMechanism::tock_to_sequential;
     plan.tick_runtime.random_access_sample_inputs.clear();
+    plan.tick_runtime.sample_captures.clear();
     plan.tick_runtime.sequential_sample_inputs = {{
         .port = 1,
         .storage = {0},
     }};
+    plan.tick_runtime.nodes[0] = {};
     plan.tick_runtime.nodes[1] = {
         .sequential_sample_begin = 0,
         .sequential_sample_count = 1,
@@ -730,6 +734,20 @@ TEST(TickInvocationWorkspace, FramePinsOnePersistedDataRootForItsLifetime)
     }
 
     EXPECT_EQ(data.reclaim_retired(), 1u);
+}
+
+TEST(TickInvocationWorkspace, RejectsAnInvalidRetainedSlotPlanBeforeRealtimeUse)
+{
+    iv::PersistedDataStore data;
+    iv::graph_jit::BackgroundEvaluationPlan plan;
+    plan.tick_runtime.nodes.push_back(
+        iv::graph_jit::TickNodeInvocationPlan{
+            .sequential_sample_begin = 1,
+        });
+
+    EXPECT_THROW(
+        (iv::TickInvocationWorkspace{plan, 1, data}),
+        std::invalid_argument);
 }
 
 TEST(TickInvocationWorkspace,

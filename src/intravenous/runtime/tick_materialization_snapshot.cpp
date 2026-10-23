@@ -106,6 +106,27 @@ void TickMaterializedEventInput::for_each(
     });
 }
 
+void TickMaterializedEventInput::for_each_indexed(
+    GlobalIndexRange range,
+    void* visitor_data,
+    VisitIndexedEvent visitor) const
+{
+    if (range.empty() || visitor == nullptr) return;
+    range.for_each_signed_order_segment([&](GlobalIndexRange segment) {
+        auto event = std::ranges::lower_bound(events, segment.begin,
+            SignedGlobalIndexOrder{},
+            [](TimedEvent const& value) { return value.time; });
+        for (; event != events.end() && segment.contains(event->time); ++event) {
+            auto const offset = static_cast<std::size_t>(
+                std::distance(events.cbegin(), event));
+            visitor(
+                visitor_data,
+                *event,
+                semantic_source_indices[offset]);
+        }
+    });
+}
+
 TickMaterializationSnapshot::TickMaterializationSnapshot(
     std::uint64_t generation,
     std::uint64_t semantic_version,
@@ -142,8 +163,14 @@ TickMaterializationSnapshot::TickMaterializationSnapshot(
         }
         ports.push_back(sample.port);
     }
-    for (auto const& event : events_) {
-        bool valid = !event.coverage.empty() && event.type < EventTypeId::count;
+    for (auto& event : events_) {
+        if (event.semantic_source_indices.empty()) {
+            event.semantic_source_indices.resize(
+                event.events.size(), std::numeric_limits<std::size_t>::max());
+        }
+        bool valid = !event.coverage.empty()
+            && event.type < EventTypeId::count
+            && event.semantic_source_indices.size() == event.events.size();
         GlobalIndex previous{};
         bool first = true;
         for (auto const& value : event.events) {

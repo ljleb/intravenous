@@ -85,6 +85,9 @@ enum class SampleRealtimePortStateAccess : std::uint8_t {
     composed,
     // No recoverable cross-callback source is currently known.
     callback_only,
+    // Background evaluation supplies the complete window, including history,
+    // on every invocation. No realtime cross-callback state exists.
+    invocation_supplied,
 };
 
 struct SampleRealtimePortStateStorageView {
@@ -160,6 +163,9 @@ enum class EventRealtimePortStateStorage : std::uint8_t {
     callback_transient,
     compact_carry,
     ring,
+    // Compiler-emitted read-only zero-count sequence. No location is
+    // populated.
+    immutable_empty,
 };
 
 // Describes how one semantic event-state requirement can be recovered after
@@ -182,6 +188,9 @@ enum class EventRealtimePortStateAccess : std::uint8_t {
     // Only callback-local bytes currently represent the state. Transition
     // planning must trace/add retention rather than reading expired arena data.
     callback_only,
+    // Background evaluation supplies the complete window, including history,
+    // on every invocation. No realtime cross-callback state exists.
+    invocation_supplied,
 };
 
 struct EventRealtimePortStateStorageView {
@@ -202,7 +211,8 @@ struct EventRealtimePortStateStorageView {
     bool has_source_indices = false;
     std::size_t source_indices_relative_offset = 0;
 
-    // Exactly one location is populated according to storage.
+    // Persistent storage populates node_storage_offset, callback_transient
+    // populates callback_arena_offset, and immutable_empty populates neither.
     std::optional<std::size_t> node_storage_offset{};
     std::optional<std::size_t> callback_arena_offset{};
 };
@@ -225,7 +235,7 @@ struct EventRealtimePortStateRealization {
     EventRealtimePortStateAccess retained_access =
         EventRealtimePortStateAccess::callback_only;
     // Cross-callback representation, when retained_access is not
-    // immutable_empty or callback_only.
+    // immutable_empty, callback_only, or invocation_supplied.
     std::optional<EventRealtimePortStateStorageView> retained_storage{};
 
     // Populated for indexed_merged_source and shared_merged_source. In the

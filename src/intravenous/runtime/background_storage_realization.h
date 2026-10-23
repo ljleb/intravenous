@@ -9,6 +9,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <expected>
+#include <limits>
 #include <memory>
 #include <span>
 #include <string>
@@ -65,6 +66,8 @@ struct BackgroundSampleWriteView {
 
 struct BackgroundEventReadView {
     using VisitEvent = void (*)(void*, TimedEvent const&);
+    using VisitIndexedEvent = void (*)(
+        void*, TimedEvent const&, std::size_t);
     using ForEachEvent = void (*)(
         void const*, GlobalIndexRange, void*, VisitEvent);
 
@@ -72,6 +75,8 @@ struct BackgroundEventReadView {
     IndexCoverage const* coverage_value = nullptr;
     EventTypeId type = EventTypeId::empty;
     ForEachEvent for_each_event = nullptr;
+    void (*for_each_indexed_event)(
+        void const*, GlobalIndexRange, void*, VisitIndexedEvent) = nullptr;
 
     [[nodiscard]] explicit operator bool() const noexcept
     {
@@ -97,6 +102,31 @@ struct BackgroundEventReadView {
                 (*static_cast<Visitor*>(opaque))(event);
             });
     }
+
+    template<typename Fn>
+    void for_each_indexed(GlobalIndexRange region, Fn&& fn) const
+    {
+        IV_ASSERT(*this, "background event storage has no readable view");
+        IV_ASSERT(coverage().contains(region),
+            "background event storage read lies outside selected coverage");
+        if (region.empty()) return;
+        using Visitor = std::remove_reference_t<Fn>;
+        if (for_each_indexed_event) {
+            for_each_indexed_event(
+                data,
+                region,
+                std::addressof(fn),
+                +[](void* opaque,
+                    TimedEvent const& event,
+                    std::size_t source_index) {
+                    (*static_cast<Visitor*>(opaque))(event, source_index);
+                });
+            return;
+        }
+        for_each(region, [&](TimedEvent const& event) {
+            fn(event, std::numeric_limits<std::size_t>::max());
+        });
+    }
 };
 
 struct BackgroundEventWriteView {
@@ -104,6 +134,8 @@ struct BackgroundEventWriteView {
     IndexCoverage const* coverage_value = nullptr;
     EventTypeId type = EventTypeId::empty;
     bool (*write_event)(void*, TimedEvent const&) noexcept = nullptr;
+    bool (*write_indexed_event)(
+        void*, TimedEvent const&, std::size_t) noexcept = nullptr;
 
     [[nodiscard]] explicit operator bool() const noexcept
     {
@@ -113,6 +145,8 @@ struct BackgroundEventWriteView {
 
     [[nodiscard]] IndexCoverage const& coverage() const noexcept;
     [[nodiscard]] bool write(TimedEvent const& event) const noexcept;
+    [[nodiscard]] bool write(
+        TimedEvent const& event, std::size_t source_index) const noexcept;
 };
 
 // Exact storage domains selected by the transaction coordinator. The vector is

@@ -150,9 +150,11 @@ features do not keep the Front 1 execution contract open.
 **Primary ownership:** first-class scalar/batched node callback normalization and the
 scheduler's ability to exploit same-implementation batches.
 
-**Implementation status (2026-10-23):** implemented and verified. The fourth
-collaborator run passed 584 of 586 tests; the two failures are the Front 4-blocked
-fixtures named below. The contiguous-scratch decision (friction item 2) remains open. The implementation now includes the
+**Implementation status (2026-10-23):** source implementation complete. The latest
+retained collaborator run passed 584 of 586 tests before the pending Front 4
+background-only delivery changes. Those changes remove the reported guards, so a
+full collaborator rerun is required. Per-lane contiguous scratch (friction item 2)
+is deferred to Front 16 as an optimization. The implementation now includes the
 public lane ranges, exclusive authored scalar/batch forms, every normalized helper
 and compiler anchor, exact implementation-plus-resolved-realization classification,
 dependency-safe `SchedulePlan::ready_groups`, conservative realtime batch lowering,
@@ -236,7 +238,7 @@ accepted design:
    `NodeStorage` moves belongs to the Front 16 cost model. The background plan keeps
    the full batch classes, because later analyses reuse the retained background
    plan.
-2. Analysis, decision pending: batching does not add copies.
+2. Resolved as Front 16 optimization work: batching does not add copies.
    `prepare_contiguous_inputs()` in `node/build_request.h` copies into
    `contiguous_scratch` only when the requested window wraps the source ring.
    Scalar and batched execution behave alike there. A batch only needs each lane to
@@ -245,7 +247,10 @@ accepted design:
    cost comes from the representation: scratch is reserved for every block-access
    input, even one whose window provably cannot wrap. The remainder is the real
    trade-off of stack bytes against batching, which the Front 16 cost model must
-   account for.
+   account for. The current behaviour preserves every lane's data for the lifetime
+   it needs, and no code depends on how the scratch is partitioned. Choosing
+   per-lane scratch is therefore an optimization only, and is deferred to Front 16
+   until measurements justify it.
 3. Accepted: `NativeBackgroundCallbacksReceiveReadyFrontierBatch` now uses two
    input-less `NativeBatchTockProbe` instances and covers forward propagation and
    Tock evaluation. Reverse propagation needs a Random Access input. A disconnected
@@ -254,8 +259,9 @@ accepted design:
    `NativeReversePropagationReceivesReadyFrontierBatch` therefore keeps Codex's
    original connected module for the reverse batch.
    `BatchOnlyTickCallbackExecutesThroughReplayScalarAdapter` cannot avoid a
-   background-only Tick-to-coverage connection and is kept unchanged. Both are
-   expected to fail until Front 4.
+   background-only Tick-to-coverage connection and is kept unchanged. At that
+   verification point, both were expected to fail until Front 4 supplied the
+   missing bindings.
 
 **Third verification run (2026-10-23):** apart from the expected Front 4 failures,
 `TransitionRootPreservesRewiredHistoryAndMirrorsNewProducerSamples` failed. The
@@ -275,6 +281,10 @@ unchanged.
 "GraphJit realtime lowering does not yet support background-only sample
 connections", which is the expected Front 4 boundary. They should pass once Front 4
 delivers background-only samples.
+
+**Pending verification:** the working-tree Front 4 changes remove that
+background-only sample guard. No later collaborator result has been recorded, so the
+two fixtures and the complete suite must be rerun before Front 2 is marked verified.
 
 This front owns:
 
@@ -353,8 +363,32 @@ This front owns:
 - disconnected/default behavior for those dynamic bindings;
 - removal of the current capability guards that reject those cases.
 
-This front does not own capture, project persistence, or graph-revision state
-migration.
+This front does not own capture, project persistence, or general graph-revision state
+migration. It must expose the background playback window that Front 6 needs when a
+Sequential input changes delivery kind.
+
+**Implementation status (2026-10-23):** background planning, storage,
+transactions, materialized playback, neutral fill, and generated-root
+`TickInvocationCall` binding exist. Realtime planning now accepts background-only
+Sequential sample and event inputs. `PrimitiveSampleInputBindingPlan` and
+`PrimitiveEventInputBindingPlan` mark those inputs as `invocation_supplied`, so
+they do not acquire false realtime storage. Disconnected Sequential event inputs
+share compiler-emitted immutable empty sequences.
+
+Mixed Tick/background composition, disconnected Random Access inputs, and
+cross-kind graph-revision history transfer remain incomplete. An
+`EventConnectionPlan` retains its original `targets`, `target_plans`, and
+per-delivery `EventDeliveryPlan::mechanism`; realtime lowering must consume the
+realtime subset without cloning the connection record.
+
+Cross-kind transition work needs an explicit interface between
+`TickInvocationWorkspace` and transition preparation. The predecessor playback
+window is not stored in predecessor `NodeStorage`, which is the only source that
+`RealtimePortStateTransitionPlan` can currently address. Until that interface is
+implemented, changing a Sequential input between background and realtime delivery
+is an explicit compilation error. The required semantics and the superseded
+handoff steps are retained in
+[Front 4 Opus handoff](./historical/front_4_opus_handoff_2026-10-23.md).
 
 **Can start now:** yes. Prefer consuming the target Region/Coverage representation from
 front 3 when practical, but do not merge the ownership of the two fronts.
@@ -1421,14 +1455,14 @@ The revised execution-path order is:
 7. the remaining Front 16 optimizations after the correctness architecture and
    builder path are measurable together.
 
-Front 2 reached source implementation on 2026-10-23. After collaborator compilation
-and full-suite verification, the first item above closes and Front 3 becomes the next
-large dependency-ready implementation front. Verification on 2026-10-23 closed the first item.
-The re-audit's claim that Front 4 needs only a closure audit no longer holds: realtime
-lowering still rejects background-only sample connections, and a disconnected Random
-Access input still has no background runtime binding. Front 4 therefore needs an
-implementation pass. Two Front 2 fixtures depend on it. Any Front 2 verification failure reopens
-the exact callback, ABI, scheduling, or lowering boundary that fails.
+Front 2 reached source implementation on 2026-10-23. Full-suite verification remains
+pending after its Front 4 background-delivery dependency. Any Front 2 verification
+failure reopens the exact callback, ABI, scheduling, or lowering boundary that fails.
+
+The re-audit's claim that Front 4 needs only a closure audit no longer holds.
+Background-only Sequential sample and event inputs have a partial implementation, but
+mixed Tick/background delivery and disconnected Random Access inputs remain rejected.
+Front 4 therefore still needs an implementation pass.
 
 The control-plane order remains Front 9 before complete Front 10 and Front 13, then
 Front 14 and Front 15 after their stated inputs exist. Front 10 may continue to use
@@ -1683,7 +1717,9 @@ Candidate work includes:
 - batch-size/cost modeling beyond front 2's correctness-capable scheduler;
 - SIMD profitability heuristics;
 - callback/kernel fusion;
-- storage-layout co-optimization for batched nodes;
+- storage-layout co-optimization for batched nodes, including per-lane
+  contiguous-input scratch so that block callbacks with continuous inputs can batch
+  (Front 2 friction item 2);
 - alias/materialization cost models;
 - in-place event fan-in over a transient source whose last read is the merge;
 - transient storage reuse/liveness improvements;
@@ -1691,6 +1727,11 @@ Candidate work includes:
 - finer NodeInstances cache invalidation/reuse;
 - measured builder/package reload optimization;
 - runtime PGO experiments if profiling demonstrates a worthwhile target.
+- running every contextually replayable Tick node only in background replay,
+  removing it from the realtime root and giving its live Sequential consumers
+  playback delivery (moved from Front 4 step B2, 2026-10-23). This depends on
+  advance materialization demand, so that background produces the replayed values
+  before the playhead reaches them.
 
 The event fan-in item is not implemented in Front 7. `EventOutputPortId` and
 `EventProducerGroupPlan` must remain separate logical representations. Front 16 can

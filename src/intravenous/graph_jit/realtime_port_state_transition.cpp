@@ -129,6 +129,22 @@ select_sample_inherited_state_realization(
     SampleRealtimePortStateRealization const& previous,
     SampleRealtimePortStateRealization const& current)
 {
+    // Background playback re-reads an invocation-supplied window from the
+    // published data on every invocation, so an input supplied that way on
+    // both sides of the splice inherits nothing. A delivery-kind change must
+    // still preserve the history the consumer observed; that composition of
+    // inherited and playback data is not lowered yet.
+    if ((current.retained_access
+            == SampleRealtimePortStateAccess::invocation_supplied)
+        != (previous.retained_access
+            == SampleRealtimePortStateAccess::invocation_supplied)) {
+        return std::unexpected(
+            "GraphJit transition of a Sequential sample input between realtime and background delivery is not implemented");
+    }
+    if (current.retained_access
+        == SampleRealtimePortStateAccess::invocation_supplied) {
+        return InheritedRealtimePortStateRealization::already_represented;
+    }
     bool predecessor_recoverable = false;
     switch (previous.retained_access) {
     case SampleRealtimePortStateAccess::immutable_constant:
@@ -158,6 +174,7 @@ select_sample_inherited_state_realization(
                 });
         break;
     case SampleRealtimePortStateAccess::callback_only:
+    case SampleRealtimePortStateAccess::invocation_supplied:
         break;
     }
     if (!predecessor_recoverable) {
@@ -250,6 +267,18 @@ select_event_inherited_state_realization(
     EventRealtimePortStateRealization const& previous,
     EventRealtimePortStateRealization const& current)
 {
+    // See select_sample_inherited_state_realization().
+    if ((current.retained_access
+            == EventRealtimePortStateAccess::invocation_supplied)
+        != (previous.retained_access
+            == EventRealtimePortStateAccess::invocation_supplied)) {
+        return std::unexpected(
+            "GraphJit transition of a Sequential event input between realtime and background delivery is not implemented");
+    }
+    if (current.retained_access
+        == EventRealtimePortStateAccess::invocation_supplied) {
+        return InheritedRealtimePortStateRealization::already_represented;
+    }
     bool predecessor_recoverable = false;
     switch (previous.retained_access) {
     case EventRealtimePortStateAccess::immutable_empty:
@@ -275,6 +304,7 @@ select_event_inherited_state_realization(
         break;
     case EventRealtimePortStateAccess::shared_merged_source:
     case EventRealtimePortStateAccess::callback_only:
+    case EventRealtimePortStateAccess::invocation_supplied:
         break;
     }
     if (!predecessor_recoverable) {

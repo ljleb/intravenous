@@ -61,6 +61,9 @@ struct GraphJitDiagnostic {
 // callback-scoped invocation record. Realtime lifecycle remains in NodeStorage;
 // background TockState lifecycle belongs to its separate sidecar. Callers must
 // provide block_size > 0; an empty audio block is outside the root-operation ABI.
+// If the compiled graph has Tick runtime slots, invocation must be non-null and
+// contain the complete kind-specific spans described by its
+// BackgroundEvaluationPlan::tick_runtime.
 using CompiledGraphBlockFunction = void (*)(
     std::byte* storage_base,
     graph_jit::TickInvocationCall const* invocation,

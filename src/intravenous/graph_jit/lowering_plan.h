@@ -82,6 +82,7 @@ enum class CallbackImportAbi : std::uint8_t {
     block,
     background,
     batch,
+    sequential_combine,
 };
 
 struct CallbackImportPlan {
@@ -115,6 +116,7 @@ struct PrimitiveCallbackPlan {
     std::string propagate_forward_coverage_batch{};
     std::string propagate_reverse_coverage{};
     std::string propagate_reverse_coverage_batch{};
+    std::string combine_sequential_input_values{};
 };
 
 struct PackageImportPlan {
@@ -175,7 +177,17 @@ struct PrimitiveSampleInputBindingPlan {
     // single direct value and needs no fallback materialization.
     std::size_t contiguous_scratch_offset = 0;
     std::size_t contiguous_value_capacity = 0;
+    std::size_t contiguous_storage_capacity = 0;
     bool has_contiguous_scratch = false;
+    // Background evaluation supplies this Sequential input through its
+    // TickSequentialBindingPlan slot on every invocation. It has no channels
+    // and no realtime storage; the generated root binds it from the
+    // TickInvocationCall, keeping only this plan's scratch.
+    bool invocation_supplied = false;
+    // The ordinary binding contains the Tick contribution and the invocation
+    // slot contains the independently materialized background contribution.
+    // Generated lowering combines both into this input's scratch window.
+    bool combines_invocation_supplied = false;
 };
 
 struct PrimitiveSampleOutputBindingPlan {
@@ -227,6 +239,10 @@ struct EventRepresentationPlan {
     std::size_t producer_group_index = 0;
     EventTypeId type = EventTypeId::empty;
     std::size_t event_capacity = 0;
+    // A zero-capacity sequence whose count is zero in compiler-emitted
+    // read-only data. Every disconnected Sequential input of this type binds
+    // to it; it needs neither stack bytes nor per-invocation resets.
+    bool immutable_empty = false;
     bool persistent = false;
     bool persistent_ring = false;
     std::string migration_identity{};
@@ -272,6 +288,17 @@ struct EventTransientAllocationPlan {
 
 struct PrimitiveEventInputBindingPlan {
     std::optional<std::size_t> storage{};
+    // Background evaluation supplies this Sequential input through its
+    // TickSequentialBindingPlan slot on every invocation; storage is empty.
+    bool invocation_supplied = false;
+    // Mixed delivery keeps the realtime contribution in storage and receives
+    // the background contribution through TickInvocationCall. Generated code
+    // merges both into combined_storage before constructing EventInputPort.
+    bool combines_invocation_supplied = false;
+    std::optional<std::size_t> combined_storage{};
+    // A single realtime source needs no compiler sidecar. This retains its
+    // EventConnectionPlan::sources position for the final ordered merge.
+    std::optional<std::size_t> realtime_semantic_source_index{};
 };
 
 struct PrimitiveEventOutputBindingPlan {
@@ -320,6 +347,10 @@ struct EventMaterializationPlan {
     // ordered fan-in representation. The selected stream no longer needs a
     // source-index sidecar.
     std::optional<std::size_t> source_index_filter{};
+    // Keep the source representation's semantic-source sidecar parallel to
+    // the converted target. Mixed Tick/Tock fan-in needs this information for
+    // the final merge with the invocation-supplied contribution.
+    bool preserve_source_indices = false;
     // Aggregate or retained canonical sources may contain events outside the
     // consumer invocation currently being materialized. Windowed selection uses
     // the index/block_size supplied at the emission site: a cyclic step-local

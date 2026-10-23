@@ -15,6 +15,8 @@ inline constexpr char event_sequence_merge_symbol[] =
     "iv_graph_jit_merge_event_sequence";
 inline constexpr char ordered_event_sequence_merge_symbol[] =
     "iv_graph_jit_merge_ordered_event_sequence";
+inline constexpr char mixed_event_sequence_merge_symbol[] =
+    "iv_graph_jit_merge_mixed_event_sequences";
 
 #if defined(_WIN32)
 #define IV_GRAPH_JIT_RUNTIME_EXPORT __declspec(dllexport)
@@ -36,7 +38,9 @@ iv_graph_jit_convert_event_sequence(
     void const* source_events,
     std::size_t source_count,
     void* target_events,
-    std::size_t target_capacity) noexcept;
+    std::size_t target_capacity,
+    std::size_t const* source_indices = nullptr,
+    std::size_t* target_indices = nullptr) noexcept;
 
 // Stable in-place merge of one bounded source sequence into an aggregate
 // sequence/ring. Both sequences are ordered forward from origin. Existing
@@ -70,6 +74,29 @@ iv_graph_jit_merge_ordered_event_sequence(
     std::size_t source_capacity,
     std::size_t source_count,
     std::size_t source_index,
+    GlobalIndex origin) noexcept;
+
+// Merge the realtime and invocation-supplied parts of one mixed Sequential
+// input. Each source is a bounded sequence or ring. A non-null source-index
+// pointer supplies per-event EventConnectionPlan::sources positions;
+// otherwise the corresponding fixed index is used. SIZE_MAX reports invalid
+// storage or insufficient target capacity.
+extern "C" IV_GRAPH_JIT_RUNTIME_EXPORT std::size_t
+iv_graph_jit_merge_mixed_event_sequences(
+    void* target_events,
+    std::size_t target_capacity,
+    void const* realtime_events,
+    std::size_t const* realtime_source_indices,
+    std::size_t realtime_fixed_source_index,
+    std::size_t realtime_capacity,
+    std::size_t realtime_read_index,
+    std::size_t realtime_write_index,
+    void const* supplied_events,
+    std::size_t const* supplied_source_indices,
+    std::size_t supplied_fixed_source_index,
+    std::size_t supplied_capacity,
+    std::size_t supplied_read_index,
+    std::size_t supplied_write_index,
     GlobalIndex origin) noexcept;
 // Stable k-way merge into a target that already contains semantic source 0.
 // source_events/source_remaining describe semantic sources 1..N in order. All
@@ -115,7 +142,8 @@ iv_graph_jit_materialize_event_sequence(
     std::size_t block_size,
     std::size_t history_samples,
     void* target_events,
-    std::size_t target_capacity) noexcept;
+    std::size_t target_capacity,
+    std::size_t* target_indices = nullptr) noexcept;
 
 #undef IV_GRAPH_JIT_RUNTIME_EXPORT
 

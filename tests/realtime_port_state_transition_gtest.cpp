@@ -387,6 +387,123 @@ TEST(RealtimePortStateTransition, SelectsImmutableAndPrivateSampleRealizations)
     EXPECT_EQ(transfer.inherited_end, 0);
 }
 
+TEST(RealtimePortStateTransition,
+     InvocationSuppliedStateIsExplicitAndCrossKindTransferIsRejected)
+{
+    auto sample_requirement = requirement(
+        1,
+        8,
+        iv::PortKind::sample,
+        iv::graph_jit::PortDirection::input,
+        iv::graph_jit::RealtimePortStateRole::sequential_input_history,
+        "sample-node",
+        "in",
+        0);
+    auto event_requirement = requirement(
+        1,
+        8,
+        iv::PortKind::event,
+        iv::graph_jit::PortDirection::input,
+        iv::graph_jit::RealtimePortStateRole::sequential_input_history,
+        "event-node",
+        "events",
+        std::nullopt);
+    iv::graph_jit::RealtimePortStateRequirements previous{
+        .states = {sample_requirement, event_requirement},
+    };
+    auto current = previous;
+    current.states[0].configured_port.node_bundle_handle = 2;
+    current.states[1].configured_port.node_bundle_handle = 2;
+    auto invocation_realizations = [] {
+        return iv::graph_jit::RealtimePortStateRealizations{
+            .sample_states = {
+                iv::graph_jit::SampleRealtimePortStateRealization{
+                    .requirement_index = 0,
+                    .retained_access = iv::graph_jit::
+                        SampleRealtimePortStateAccess::invocation_supplied,
+                },
+            },
+            .event_states = {
+                iv::graph_jit::EventRealtimePortStateRealization{
+                    .requirement_index = 1,
+                    .retained_access = iv::graph_jit::
+                        EventRealtimePortStateAccess::invocation_supplied,
+                },
+            },
+        };
+    };
+
+    auto same_kind = iv::graph_jit::plan_realtime_port_state_transition(
+        previous,
+        invocation_realizations(),
+        current,
+        invocation_realizations());
+    ASSERT_TRUE(same_kind.has_value())
+        << (same_kind ? std::string{} : same_kind.error());
+    ASSERT_EQ(same_kind->sample_states.size(), 1u);
+    ASSERT_EQ(same_kind->event_states.size(), 1u);
+    EXPECT_EQ(
+        same_kind->sample_states.front().inherited_state_realization,
+        iv::graph_jit::InheritedRealtimePortStateRealization::
+            already_represented);
+    EXPECT_EQ(
+        same_kind->event_states.front().inherited_state_realization,
+        iv::graph_jit::InheritedRealtimePortStateRealization::
+            already_represented);
+
+    auto realtime_sample = invocation_realizations();
+    realtime_sample.sample_states[0] = direct_sample(0, 512);
+    auto background_to_realtime_sample =
+        iv::graph_jit::plan_realtime_port_state_transition(
+            previous,
+            invocation_realizations(),
+            current,
+            realtime_sample);
+    ASSERT_FALSE(background_to_realtime_sample.has_value());
+    EXPECT_NE(
+        background_to_realtime_sample.error().find(
+            "Sequential sample input between realtime and background delivery"),
+        std::string::npos);
+
+    auto realtime_event = invocation_realizations();
+    realtime_event.event_states[0] = direct_event(1, 1024);
+    auto background_to_realtime_event =
+        iv::graph_jit::plan_realtime_port_state_transition(
+            previous,
+            invocation_realizations(),
+            current,
+            realtime_event);
+    ASSERT_FALSE(background_to_realtime_event.has_value());
+    EXPECT_NE(
+        background_to_realtime_event.error().find(
+            "Sequential event input between realtime and background delivery"),
+        std::string::npos);
+
+    auto realtime_to_background_sample =
+        iv::graph_jit::plan_realtime_port_state_transition(
+            previous,
+            realtime_sample,
+            current,
+            invocation_realizations());
+    ASSERT_FALSE(realtime_to_background_sample.has_value());
+    EXPECT_NE(
+        realtime_to_background_sample.error().find(
+            "Sequential sample input between realtime and background delivery"),
+        std::string::npos);
+
+    auto realtime_to_background_event =
+        iv::graph_jit::plan_realtime_port_state_transition(
+            previous,
+            realtime_event,
+            current,
+            invocation_realizations());
+    ASSERT_FALSE(realtime_to_background_event.has_value());
+    EXPECT_NE(
+        realtime_to_background_event.error().find(
+            "Sequential event input between realtime and background delivery"),
+        std::string::npos);
+}
+
 TEST(RealtimePortStateTransition, NewStateSharingSampleTargetRequiresTransitionStorage)
 {
     iv::graph_jit::RealtimePortStateRequirements previous{

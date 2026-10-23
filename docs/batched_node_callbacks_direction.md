@@ -1,8 +1,8 @@
 # Batched Node Callback Direction
 
-_Status: implemented and verified on 2026-10-23. Two fixtures that need Front 4
-background-only sample delivery remain expected failures. The superseded pre-implementation and intermediate statuses
-are retained in
+_Status: source implementation complete on 2026-10-23; full-suite verification of
+the current Front 4 working tree is pending. The superseded pre-implementation and
+intermediate statuses are retained in
 [Front 2 pre-implementation status](./historical/front_2_preimplementation_status.md)._
 
 The traits layer and reflected compiler ABI provide normalized scalar and batch Tick

@@ -10,6 +10,34 @@
 namespace iv {
 namespace {
 
+[[nodiscard]] IndexCoverage shifted_forward(
+    IndexCoverage const& coverage, std::size_t latency)
+{
+    if (latency == 0) return coverage;
+    IndexCoverage result;
+    for (auto const range : coverage) {
+        result.include({
+            .begin = range.begin.advanced_by(latency),
+            .extent = range.extent,
+        });
+    }
+    return result;
+}
+
+[[nodiscard]] IndexCoverage shifted_back(
+    IndexCoverage const& coverage, std::size_t latency)
+{
+    if (latency == 0) return coverage;
+    IndexCoverage result;
+    for (auto const range : coverage) {
+        result.include({
+            .begin = range.begin.retreated_by(latency),
+            .extent = range.extent,
+        });
+    }
+    return result;
+}
+
 IndexCoverage coverage_difference(IndexCoverage const& left, IndexCoverage const& right)
 {
     return (left - right) | (right - left);
@@ -316,9 +344,52 @@ BackgroundPropagationWorkspace::port(graph_jit::BackgroundPortIndex index) const
     auto const& planned_input = port(input);
     for (auto const connection_index : planned_input.incoming_connections) {
         auto const& connection = plan_->connections[connection_index];
-        for (auto const source : connection.source_coverage_ports) {
-            auto const index = output_index(source);
-            result.include(candidate_output_coverages_[index]);
+        bool used_exact_routes = false;
+        if (connection.kind == PortKind::sample
+            && connection.sample_target_port == input
+            && connection.sample_source_port_by_channel.size()
+                == connection.sample_read_latencies.size()) {
+            IndexCoverage complete;
+            bool first_source = true;
+            for (std::size_t channel = 0;
+                 channel < connection.sample_source_port_by_channel.size();
+                 ++channel) {
+                auto const source =
+                    connection.sample_source_port_by_channel[channel];
+                if (!source) continue;
+                auto available = shifted_forward(
+                    candidate_output_coverages_[output_index(*source)],
+                    connection.sample_read_latencies[channel]);
+                complete = first_source
+                    ? std::move(available)
+                    : complete & available;
+                first_source = false;
+                used_exact_routes = true;
+            }
+            if (!first_source) result.include(complete);
+        } else if (connection.kind == PortKind::event) {
+            IndexCoverage complete;
+            bool first_source = true;
+            for (auto const& delivery : connection.event_deliveries) {
+                if (delivery.target_port != input || !delivery.source_port)
+                    continue;
+                auto const& available = candidate_output_coverages_[
+                    output_index(*delivery.source_port)];
+                complete = first_source
+                    ? available
+                    : complete & available;
+                first_source = false;
+                used_exact_routes = true;
+            }
+            if (!first_source) result.include(complete);
+        }
+        // Component tests can construct port-granular plans without the
+        // data-specific route records retained by connection analysis.
+        if (!used_exact_routes) {
+            for (auto const source : connection.source_coverage_ports) {
+                result.include(candidate_output_coverages_[
+                    output_index(source)]);
+            }
         }
     }
     return result;
@@ -361,8 +432,38 @@ void BackgroundPropagationWorkspace::route_output_change(
     auto const& planned_output = port(output);
     for (auto const connection_index : planned_output.outgoing_connections) {
         auto const& connection = plan_->connections[connection_index];
-        for (auto const target : connection.target_coverage_ports) {
-            add_input_change(target, changed, coverage_changed);
+        bool used_exact_routes = false;
+        if (connection.kind == PortKind::sample
+            && connection.sample_target_port
+            && connection.sample_source_port_by_channel.size()
+                == connection.sample_read_latencies.size()) {
+            for (std::size_t channel = 0;
+                 channel < connection.sample_source_port_by_channel.size();
+                 ++channel) {
+                if (connection.sample_source_port_by_channel[channel]
+                    != output) {
+                    continue;
+                }
+                add_input_change(
+                    *connection.sample_target_port,
+                    shifted_forward(
+                        changed, connection.sample_read_latencies[channel]),
+                    coverage_changed);
+                used_exact_routes = true;
+            }
+        } else if (connection.kind == PortKind::event) {
+            for (auto const& delivery : connection.event_deliveries) {
+                if (delivery.source_port != output || !delivery.target_port)
+                    continue;
+                add_input_change(
+                    *delivery.target_port, changed, coverage_changed);
+                used_exact_routes = true;
+            }
+        }
+        if (!used_exact_routes) {
+            for (auto const target : connection.target_coverage_ports) {
+                add_input_change(target, changed, coverage_changed);
+            }
         }
     }
 }
@@ -460,12 +561,43 @@ void BackgroundPropagationWorkspace::require_input(
 
     for (auto const connection_index : planned_input.incoming_connections) {
         auto const& connection = plan_->connections[connection_index];
-        for (auto const source : connection.source_coverage_ports) {
+        auto require_source = [&](graph_jit::BackgroundPortIndex source,
+                                  IndexCoverage source_required) {
             auto const& planned_source = port(source);
-            auto const stored_boundary =
-                planned_source.retention &&
-                *planned_source.retention == OutputRetention::persisted;
-            require_output(source, required, !stored_boundary);
+            auto const stored_boundary = planned_source.retention
+                && *planned_source.retention == OutputRetention::persisted;
+            require_output(
+                source, source_required, !stored_boundary);
+        };
+        bool used_exact_routes = false;
+        if (connection.kind == PortKind::sample
+            && connection.sample_target_port == input
+            && connection.sample_source_port_by_channel.size()
+                == connection.sample_read_latencies.size()) {
+            for (std::size_t channel = 0;
+                 channel < connection.sample_source_port_by_channel.size();
+                 ++channel) {
+                auto const source =
+                    connection.sample_source_port_by_channel[channel];
+                if (!source) continue;
+                require_source(
+                    *source,
+                    shifted_back(
+                        required, connection.sample_read_latencies[channel]));
+                used_exact_routes = true;
+            }
+        } else if (connection.kind == PortKind::event) {
+            for (auto const& delivery : connection.event_deliveries) {
+                if (delivery.target_port != input || !delivery.source_port)
+                    continue;
+                require_source(*delivery.source_port, required);
+                used_exact_routes = true;
+            }
+        }
+        if (!used_exact_routes) {
+            for (auto const source : connection.source_coverage_ports) {
+                require_source(source, required);
+            }
         }
     }
 }

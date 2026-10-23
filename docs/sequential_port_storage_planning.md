@@ -986,6 +986,15 @@ The compiler now retains contiguous per-node dynamic Sequential and Random Acces
 sample/event slot ranges. Generated Sequential lowering copies the complete ordinary
 input-binding array into the primitive's stack frame and overlays only the retained
 dynamic input ordinals, preserving unaffected and mixed live inputs.
+
+Newly settled (2026-10-23): a generated root whose graph has dynamic slots
+requires a `TickInvocationCall` carrying every slot, as one built from that graph's
+`TickInvocationWorkspace` does. A dynamically bound Sequential input has no
+ordinary realtime binding, and its absence is not interpreted as disconnection.
+`validate_tick_runtime_plan()` checks the retained slot ranges, and
+`TickInvocationWorkspace` repeats that check when it is constructed; generated
+realtime code does not repeat pointer or extent checks per node.
+Missing data within a supplied window keeps its neutral value, as described below.
 A realization-owned workspace resolves persisted identities and preallocates every
 view off the audio thread; published snapshots retain exact per-output coverage, and
 the callback binds direct identity Random Access region/chunk views to its pinned root.

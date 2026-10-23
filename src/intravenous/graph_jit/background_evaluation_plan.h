@@ -272,6 +272,7 @@ struct EventDeliveryPlan {
     EventConversionPlan conversion{};
     std::optional<BackgroundPortIndex> source_port{};
     std::optional<BackgroundPortIndex> target_port{};
+    std::size_t semantic_source_index = 0;
     PlannedDeliveryMechanism mechanism =
         PlannedDeliveryMechanism::tick_to_sequential;
 };
@@ -295,6 +296,10 @@ struct BackgroundConnectionPlan {
     // entries have no background port; all background/stored entries do.
     std::vector<std::optional<BackgroundPortIndex>>
         sample_source_port_by_channel{};
+    // Aligned one-for-one with sample_source_port_by_channel. Coverage at the
+    // target input is the source coverage shifted forward by this effective
+    // per-channel read latency; reverse demand applies the inverse shift.
+    std::vector<std::size_t> sample_read_latencies{};
     std::vector<PlannedDeliveryMechanism> sample_deliveries{};
     std::vector<SampleInputChannelId> sample_target_channels{};
     std::optional<BackgroundPortIndex> sample_target_port{};
@@ -375,6 +380,10 @@ struct EventMaterializationPlan {
     PortStorageKind storage = PortStorageKind::background;
     std::vector<PortSubsetIndex> source_subsets{};
     std::vector<PortStorageIndex> inputs{};
+    // Aligned with inputs. Values are positions in the normalized
+    // EventConnectionPlan::sources sequence and survive the background/Tick
+    // boundary so mixed delivery preserves equal-time source order.
+    std::vector<std::size_t> semantic_source_indices{};
     // Aligned with inputs. Each conversion maps the raw source storage to
     // source_type before the streams are merged.
     std::vector<EventConversionPlan> source_conversions{};

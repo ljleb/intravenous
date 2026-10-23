@@ -120,6 +120,10 @@ struct ReflectedEventPortStorageBinding {
 
 struct ReflectedEventInputPortBinding {
     ReflectedEventPortStorageBinding storage {};
+    // Optional compiler/runtime sidecar parallel to the event ring. Node-facing
+    // EventInputPort ignores it; generated mixed-delivery fan-in uses it to
+    // retain deterministic equal-time source order.
+    std::size_t const* semantic_source_indices = nullptr;
 };
 
 struct ReflectedEventOutputPortBinding {

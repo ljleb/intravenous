@@ -1,6 +1,8 @@
 #include <intravenous/runtime/tick_invocation_frame.h>
 #include <intravenous/runtime/realtime_produced_record.h>
 
+#include <intravenous/graph_jit/background_storage_plan.h>
+
 #include <algorithm>
 #include <bit>
 #include <cassert>
@@ -8,6 +10,7 @@
 #include <limits>
 #include <optional>
 #include <stdexcept>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -746,9 +749,11 @@ public:
         std::optional<PersistedOutputHandle> output{};
         bool accepts_materialization = false;
         EventTypeId type = EventTypeId::empty;
+        std::size_t history = 0;
         std::size_t events_offset = 0;
         std::size_t capacity = 0;
         std::vector<std::max_align_t> words{};
+        std::vector<std::size_t> semantic_source_indices{};
         ReflectedEventInputPortBinding binding{};
 
         void initialize_storage()
@@ -777,6 +782,8 @@ public:
             }
             words.resize((bytes + sizeof(std::max_align_t) - 1)
                          / sizeof(std::max_align_t));
+            semantic_source_indices.resize(
+                capacity, std::numeric_limits<std::size_t>::max());
             count() = 0;
             binding = {
                 .storage = {
@@ -786,6 +793,7 @@ public:
                     .event_capacity = capacity,
                     .type = type,
                 },
+                .semantic_source_indices = semantic_source_indices.data(),
             };
         }
 
@@ -804,11 +812,16 @@ public:
             return reinterpret_cast<TimedEvent*>(data() + events_offset);
         }
 
-        void append(TimedEvent const& event) noexcept
+        void append(
+            TimedEvent const& event,
+            std::size_t semantic_source_index =
+                std::numeric_limits<std::size_t>::max()) noexcept
         {
             auto& size = count();
             if (size == capacity) return;
-            events()[size++] = event;
+            events()[size] = event;
+            semantic_source_indices[size] = semantic_source_index;
+            ++size;
         }
 
         void populate(
@@ -818,18 +831,22 @@ public:
             std::size_t block_size) noexcept
         {
             count() = 0;
-            if (block_size == 0) return;
+            if (history > std::numeric_limits<std::size_t>::max() - block_size)
+                return;
             auto const range = GlobalIndexRange{
-                .begin = sample_index,
-                .extent = block_size,
+                .begin = sample_index.retreated_by(history),
+                .extent = history + block_size,
             };
 
             if (materialized) {
-                materialized->for_each(
+                materialized->for_each_indexed(
                     range,
                     this,
-                    +[](void* opaque, TimedEvent const& event) {
-                        static_cast<SequentialEventSlot*>(opaque)->append(event);
+                    +[](void* opaque,
+                        TimedEvent const& event,
+                        std::size_t source_index) {
+                        static_cast<SequentialEventSlot*>(opaque)->append(
+                            event, source_index);
                     });
                 return;
             }
@@ -946,6 +963,13 @@ public:
             throw std::invalid_argument(
                 "Tick invocation maximum block size must be non-zero");
         }
+        auto valid_runtime =
+            graph_jit::detail::validate_tick_runtime_plan(plan);
+        if (!valid_runtime) {
+            throw std::invalid_argument(
+                std::string{"invalid Tick invocation runtime plan: "}
+                + valid_runtime.error());
+        }
         auto const& runtime = plan.tick_runtime;
         sequential_sample_slots.resize(runtime.sequential_sample_inputs.size());
         sequential_sample_views.resize(sequential_sample_slots.size());
@@ -1044,9 +1068,16 @@ public:
                 maximum_rate = std::max(
                     maximum_rate, candidate.max_events_per_index);
             }
+            if (port.sequential_history
+                > std::numeric_limits<std::size_t>::max()
+                    - maximum_block_size) {
+                throw std::length_error(
+                    "Tick Sequential event playback window is too large");
+            }
             auto const selected_capacity =
                 event_sequence_capacity_for_sample_span(
-                    maximum_rate, maximum_block_size);
+                    maximum_rate,
+                    maximum_block_size + port.sequential_history);
             if (!selected_capacity) {
                 throw std::length_error(
                     "Tick Sequential event playback capacity is too large");
@@ -1055,6 +1086,7 @@ public:
             auto& selected = sequential_event_slots[slot];
             selected.port = planned.port;
             selected.type = port.event_type;
+            selected.history = port.sequential_history;
             selected.capacity = std::max<std::size_t>(*selected_capacity, 1);
             selected.accepts_materialization = std::ranges::any_of(
                 planned.storage, [&](auto const storage) {

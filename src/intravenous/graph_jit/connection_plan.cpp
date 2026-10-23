@@ -3163,11 +3163,14 @@ std::expected<void, std::string> populate_background_topology(
         };
         background.sample_source_port_by_channel.reserve(
             connection.source_channel_timings.size());
+        background.sample_read_latencies.reserve(
+            connection.source_channel_timings.size());
         background.sample_deliveries.reserve(
             connection.source_channel_timings.size());
 
         for (auto const& source : connection.source_channel_timings) {
             background.sample_deliveries.push_back(source.delivery);
+            background.sample_read_latencies.push_back(source.read_latency);
             auto const background_source = !uses_realtime_storage(source.delivery)
                 || target_replay;
             if (!background_source) {
@@ -3315,6 +3318,7 @@ std::expected<void, std::string> populate_background_topology(
                 .conversion = source.conversion,
                 .source_port = source_port,
                 .target_port = target_port,
+                .semantic_source_index = delivery.source_index,
                 .mechanism = delivery.mechanism,
             });
 

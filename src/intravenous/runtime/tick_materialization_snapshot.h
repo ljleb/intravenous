@@ -30,16 +30,25 @@ struct TickMaterializedSampleInput {
 };
 
 struct TickMaterializedEventInput {
+    using VisitIndexedEvent = void (*)(
+        void*, TimedEvent const&, std::size_t);
     graph_jit::BackgroundPortIndex port = 0;
     IndexCoverage coverage{};
     EventTypeId type = EventTypeId::empty;
     // Absolute event times in nondecreasing semantic order.
     std::vector<TimedEvent> events{};
+    // Parallel semantic source positions for deterministic equal-time merging.
+    // max(size_t) means that the source has no multi-source identity.
+    std::vector<std::size_t> semantic_source_indices{};
 
     void for_each(
         GlobalIndexRange range,
         void* visitor_data,
         RandomAccessEventInputPort::VisitEvent visitor) const;
+    void for_each_indexed(
+        GlobalIndexRange range,
+        void* visitor_data,
+        VisitIndexedEvent visitor) const;
 };
 
 // One immutable set of transaction-produced Tick-visible storage. It is not a

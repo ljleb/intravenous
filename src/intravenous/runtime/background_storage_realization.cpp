@@ -246,6 +246,7 @@ class TransactionEventStorage {
     EventTypeId type_ = EventTypeId::empty;
     std::size_t capacity_ = 0;
     std::vector<TimedEvent> events_{};
+    std::vector<std::size_t> source_indices_{};
 
 public:
     TransactionEventStorage(
@@ -267,9 +268,16 @@ public:
         }
         capacity_ = *capacity;
         events_.reserve(capacity_);
+        source_indices_.reserve(capacity_);
     }
 
     [[nodiscard]] bool write(TimedEvent const& event) noexcept
+    {
+        return write(event, std::numeric_limits<std::size_t>::max());
+    }
+
+    [[nodiscard]] bool write(
+        TimedEvent const& event, std::size_t source_index) noexcept
     {
         if (!coverage_->contains(event.time)
             || !event_matches_type(type_, event.value)
@@ -280,7 +288,26 @@ public:
             return false;
         }
         events_.push_back(event);
+        source_indices_.push_back(source_index);
         return true;
+    }
+
+    void for_each_indexed(
+        GlobalIndexRange region,
+        void* visitor_data,
+        BackgroundEventReadView::VisitIndexedEvent visitor) const
+    {
+        region.for_each_signed_order_segment([&](GlobalIndexRange segment) {
+            auto event = std::ranges::lower_bound(
+                events_, segment.begin, SignedGlobalIndexOrder{},
+                [](TimedEvent const& value) { return value.time; });
+            for (; event != events_.end() && segment.contains(event->time);
+                 ++event) {
+                auto const offset = static_cast<std::size_t>(
+                    std::distance(events_.cbegin(), event));
+                visitor(visitor_data, *event, source_indices_[offset]);
+            }
+        });
     }
 
     void for_each(
@@ -314,6 +341,14 @@ public:
                 static_cast<TransactionEventStorage const*>(opaque)->for_each(
                     region, visitor_data, visitor);
             },
+            .for_each_indexed_event = +[](
+                void const* opaque,
+                GlobalIndexRange region,
+                void* visitor_data,
+                BackgroundEventReadView::VisitIndexedEvent visitor) {
+                static_cast<TransactionEventStorage const*>(opaque)
+                    ->for_each_indexed(region, visitor_data, visitor);
+            },
         };
     }
 
@@ -325,6 +360,13 @@ public:
             .type = type_,
             .write_event = +[](void* opaque, TimedEvent const& event) noexcept {
                 return static_cast<TransactionEventStorage*>(opaque)->write(event);
+            },
+            .write_indexed_event = +[](
+                void* opaque,
+                TimedEvent const& event,
+                std::size_t source_index) noexcept {
+                return static_cast<TransactionEventStorage*>(opaque)->write(
+                    event, source_index);
             },
         };
     }
@@ -529,6 +571,14 @@ bool BackgroundEventWriteView::write(TimedEvent const& event) const noexcept
 {
     return *this && coverage().contains(event.time)
         && write_event(data, event);
+}
+
+bool BackgroundEventWriteView::write(
+    TimedEvent const& event, std::size_t source_index) const noexcept
+{
+    return *this && coverage().contains(event.time)
+        && write_indexed_event
+        && write_indexed_event(data, event, source_index);
 }
 
 struct BackgroundStorageRealization::Slot {
@@ -1023,12 +1073,15 @@ BackgroundStorageRealization::execute_operation(
         }
         if (!result) break;
 
-        std::array<Sample, 2> source_values{};
-        std::array<Sample, 2> target_values{};
+        std::array<Sample, maximum_supported_channel_count> source_values{};
+        std::array<Sample, maximum_supported_channel_count> target_values{};
+        std::array<Sample, maximum_supported_channel_count>
+            accumulated_target_values{};
         for (auto const region : target_coverage) {
             for (GlobalIndex::extent_type frame = 0;
                  frame < region.extent; ++frame) {
                 auto const sample_index = region.begin.advanced_by(frame);
+                std::ranges::fill(accumulated_target_values, Sample{});
                 for (auto const& projection : projections) {
                     for (std::size_t channel = 0;
                          channel < projection.source_indices.size(); ++channel) {
@@ -1074,16 +1127,21 @@ BackgroundStorageRealization::execute_operation(
                     }
                     for (std::size_t channel = 0;
                          channel < projection.target_channels.size(); ++channel) {
-                        if (!target->write(
-                                sample_index,
-                                projection.target_channels[channel],
-                                target_values[channel])) {
-                            result = std::unexpected(
-                                "background sample materialization write failed");
-                            break;
-                        }
+                        accumulated_target_values[
+                            projection.target_channels[channel]] +=
+                                target_values[channel];
                     }
-                    if (!result) break;
+                }
+                if (!result) break;
+                for (auto const channel : materialization.target_channels) {
+                    if (!target->write(
+                            sample_index,
+                            channel,
+                            accumulated_target_values[channel])) {
+                        result = std::unexpected(
+                            "background sample materialization write failed");
+                        break;
+                    }
                 }
                 if (!result) break;
             }
@@ -1114,6 +1172,8 @@ BackgroundStorageRealization::execute_operation(
             break;
         }
         if (materialization.source_conversions.size()
+                != materialization.inputs.size()
+            || materialization.semantic_source_indices.size()
                 != materialization.inputs.size()
             || materialization.conversion.source_type
                 != materialization.source_type
@@ -1201,49 +1261,39 @@ BackgroundStorageRealization::execute_operation(
             break;
         }
         std::vector<TimedEvent> merged(*capacity);
-        std::ranges::copy(converted.front(), merged.begin());
-        std::vector<void const*> source_events;
-        std::vector<std::size_t> source_remaining;
-        source_events.reserve(converted.size() - 1);
-        source_remaining.reserve(converted.size() - 1);
-        for (std::size_t source = 1; source < converted.size(); ++source) {
-            source_events.push_back(converted[source].data());
-            source_remaining.push_back(converted[source].size());
-        }
+        std::vector<std::size_t> merged_source_indices(*capacity);
         auto const merge_origin = target_coverage.empty()
             ? GlobalIndex{}
             : target_coverage.begin()->begin;
-        auto const merged_count = graph_jit::detail::
-            iv_graph_jit_merge_event_sequences_into_home(
+        std::size_t merged_count = 0;
+        for (std::size_t source = 0; source < converted.size(); ++source) {
+            merged_count = graph_jit::detail::
+                iv_graph_jit_merge_ordered_event_sequence(
                 merged.data(),
-                merged.size(),
-                converted.front().size(),
-                source_events.data(),
-                source_remaining.data(),
-                source_events.size(),
+                merged_source_indices.data(),
+                merged.size(), 0, merged_count,
+                converted[source].data(),
+                converted[source].size(),
+                converted[source].size(),
+                materialization.semantic_source_indices[source],
                 merge_origin);
+        }
         if (merged_count != total_count) {
             result = std::unexpected(
                 "background event materialization merge failed");
             break;
         }
-        std::vector<TimedEvent> final_events(merged_count);
         auto const& conversion = materialization.conversion;
-        auto const final_count = merged_count == 0
-            ? std::size_t{0}
-            : graph_jit::detail::iv_graph_jit_convert_event_sequence(
-                static_cast<std::uint32_t>(conversion.source_type),
-                static_cast<std::uint32_t>(conversion.target_type),
-                static_cast<std::uint32_t>(conversion.steps[0]),
-                static_cast<std::uint32_t>(conversion.steps[1]),
-                static_cast<std::uint32_t>(conversion.steps[2]),
-                conversion.step_count,
-                merged.data(),
-                merged_count,
-                final_events.data(),
-                final_events.size());
-        for (std::size_t event = 0; event < final_count; ++event) {
-            if (!target->write(final_events[event])) {
+        for (std::size_t event = 0; event < merged_count; ++event) {
+            bool written = true;
+            EventConversionRegistry::instance().convert(
+                conversion,
+                merged[event],
+                [&](TimedEvent const& converted_event) {
+                    written = written && target->write(
+                        converted_event, merged_source_indices[event]);
+                });
+            if (!written) {
                 result = std::unexpected(
                     "background event materialization write failed");
                 break;
@@ -1458,14 +1508,27 @@ BackgroundStorageRealization::make_tick_materialization_snapshot(
                 "Tick event materialization references a missing input port");
         }
         auto const& port = plan_->ports[binding.port];
-        std::vector<BackgroundEventReadView const*> routes;
-        auto append_route = [&](BackgroundEventReadView const* view) {
-            if (view && view->type == port.event_type
-                && std::ranges::none_of(routes, [&](auto const* existing) {
-                    return existing->data == view->data;
-                })) {
-                routes.push_back(view);
+        struct EventRoute {
+            BackgroundEventReadView const* view = nullptr;
+            std::optional<std::size_t> fixed_source_index{};
+        };
+        std::vector<EventRoute> routes;
+        auto append_route = [&] (
+            BackgroundEventReadView const* view,
+            std::optional<std::size_t> fixed_source_index = {}) {
+            if (!view || view->type != port.event_type) return;
+            auto existing = std::ranges::find_if(
+                routes,
+                [&](EventRoute const& candidate) {
+                    return candidate.view->data == view->data;
+                });
+            if (existing != routes.end()) {
+                if (!existing->fixed_source_index && fixed_source_index) {
+                    existing->fixed_source_index = fixed_source_index;
+                }
+                return;
             }
+            routes.push_back({view, fixed_source_index});
         };
         for (auto const& direct : plan_->storage.direct_events) {
             if (!materialized_tick_storage(direct.storage)
@@ -1477,7 +1540,27 @@ BackgroundStorageRealization::make_tick_materialization_snapshot(
                 plan_->event_target_subsets[direct.target_subset].port;
             if (target.bundle == port.configured_port.node_bundle_handle
                 && target.port == port.configured_port.port_index) {
-                append_route(event_read(direct.storage));
+                std::optional<std::size_t> semantic_source_index;
+                if (direct.connection < plan_->connections.size()
+                    && direct.source_subset
+                        < plan_->event_source_subsets.size()) {
+                    auto const source = plan_->event_source_subsets[
+                        direct.source_subset].port;
+                    auto const& connection =
+                        plan_->connections[direct.connection];
+                    auto const delivery = std::ranges::find_if(
+                        connection.event_deliveries,
+                        [&](graph_jit::EventDeliveryPlan const& candidate) {
+                            return candidate.source == source
+                                && candidate.target == target;
+                        });
+                    if (delivery != connection.event_deliveries.end()) {
+                        semantic_source_index =
+                            delivery->semantic_source_index;
+                    }
+                }
+                append_route(
+                    event_read(direct.storage), semantic_source_index);
             }
         }
         for (auto const storage_index : binding.storage) {
@@ -1493,7 +1576,9 @@ BackgroundStorageRealization::make_tick_materialization_snapshot(
             }
         }
         IndexCoverage available;
-        for (auto const* route : routes) available.include(route->coverage());
+        for (auto const& route : routes) {
+            available.include(route.view->coverage());
+        }
         if (available.empty()) continue;
         TickMaterializedEventInput frozen{
             .port = binding.port,
@@ -1504,13 +1589,13 @@ BackgroundStorageRealization::make_tick_materialization_snapshot(
             GlobalIndex::extent_type consumed = 0;
             while (consumed < region.extent) {
                 auto const cursor = region.begin.advanced_by(consumed);
-                BackgroundEventReadView const* selected = nullptr;
+                EventRoute const* selected = nullptr;
                 GlobalIndex::extent_type selected_extent = 0;
-                for (auto const* route : routes) {
-                    for (auto const covered : route->coverage()) {
+                for (auto const& route : routes) {
+                    for (auto const covered : route.view->coverage()) {
                         auto const offset = covered.offset_of(cursor);
                         if (!offset) continue;
-                        selected = route;
+                        selected = std::addressof(route);
                         selected_extent = std::min(
                             region.extent - consumed,
                             covered.extent - *offset);
@@ -1522,9 +1607,13 @@ BackgroundStorageRealization::make_tick_materialization_snapshot(
                     return std::unexpected(
                         "Tick event materialization has incomplete routed coverage");
                 }
-                selected->for_each({cursor, selected_extent},
-                    [&](TimedEvent const& event) {
+                selected->view->for_each_indexed(
+                    {cursor, selected_extent},
+                    [&](TimedEvent const& event, std::size_t source_index) {
                         frozen.events.push_back(event);
+                        frozen.semantic_source_indices.push_back(
+                            selected->fixed_source_index.value_or(
+                                source_index));
                     });
                 consumed += selected_extent;
             }

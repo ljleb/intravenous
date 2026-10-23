@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <limits>
 
 namespace iv::graph_jit::detail {
 
@@ -15,7 +16,9 @@ extern "C" std::size_t iv_graph_jit_convert_event_sequence(
     void const* source_events,
     std::size_t source_count,
     void* target_events,
-    std::size_t target_capacity) noexcept
+    std::size_t target_capacity,
+    std::size_t const* source_indices,
+    std::size_t* target_indices) noexcept
 {
     if (step_count > EventConversionPlan::max_steps
         || source_type >= static_cast<std::uint32_t>(EventTypeId::count)
@@ -44,9 +47,108 @@ extern "C" std::size_t iv_graph_jit_convert_event_sequence(
             source[i],
             [&](TimedEvent const& converted) {
                 if (written < target_capacity) {
-                    target[written++] = converted;
+                    target[written] = converted;
+                    if (target_indices != nullptr) {
+                        target_indices[written] = source_indices == nullptr
+                            ? std::numeric_limits<std::size_t>::max()
+                            : source_indices[i];
+                    }
+                    ++written;
                 }
             });
+    }
+    return written;
+}
+
+extern "C" std::size_t iv_graph_jit_merge_mixed_event_sequences(
+    void* target_events,
+    std::size_t target_capacity,
+    void const* realtime_events,
+    std::size_t const* realtime_source_indices,
+    std::size_t realtime_fixed_source_index,
+    std::size_t realtime_capacity,
+    std::size_t realtime_read_index,
+    std::size_t realtime_write_index,
+    void const* supplied_events,
+    std::size_t const* supplied_source_indices,
+    std::size_t supplied_fixed_source_index,
+    std::size_t supplied_capacity,
+    std::size_t supplied_read_index,
+    std::size_t supplied_write_index,
+    GlobalIndex origin) noexcept
+{
+    auto constexpr failure = std::numeric_limits<std::size_t>::max();
+    if (target_events == nullptr
+        || (realtime_capacity != 0 && realtime_events == nullptr)
+        || (supplied_capacity != 0 && supplied_events == nullptr)
+        || (realtime_capacity != 0 && !is_power_of_2(realtime_capacity))
+        || (supplied_capacity != 0 && !is_power_of_2(supplied_capacity))
+        || realtime_write_index < realtime_read_index
+        || supplied_write_index < supplied_read_index) {
+        return failure;
+    }
+
+    auto const realtime_count = std::min(
+        realtime_write_index - realtime_read_index, realtime_capacity);
+    auto const supplied_count = std::min(
+        supplied_write_index - supplied_read_index, supplied_capacity);
+    if (realtime_count > target_capacity
+        || supplied_count > target_capacity - realtime_count) {
+        return failure;
+    }
+
+    auto const* realtime = static_cast<TimedEvent const*>(realtime_events);
+    auto const* supplied = static_cast<TimedEvent const*>(supplied_events);
+    auto* target = static_cast<TimedEvent*>(target_events);
+    auto const realtime_mask = realtime_capacity == 0
+        ? 0 : realtime_capacity - 1;
+    auto const supplied_mask = supplied_capacity == 0
+        ? 0 : supplied_capacity - 1;
+    std::size_t realtime_offset = 0;
+    std::size_t supplied_offset = 0;
+    std::size_t written = 0;
+
+    auto source_index = [](std::size_t const* indices,
+                           std::size_t fixed,
+                           std::size_t ring_index) {
+        return indices == nullptr ? fixed : indices[ring_index];
+    };
+    while (realtime_offset != realtime_count
+        && supplied_offset != supplied_count) {
+        auto const realtime_index =
+            (realtime_read_index + realtime_offset) & realtime_mask;
+        auto const supplied_index =
+            (supplied_read_index + supplied_offset) & supplied_mask;
+        auto const realtime_distance =
+            origin.forward_distance_to(realtime[realtime_index].time);
+        auto const supplied_distance =
+            origin.forward_distance_to(supplied[supplied_index].time);
+        auto const realtime_semantic_index = source_index(
+            realtime_source_indices,
+            realtime_fixed_source_index,
+            realtime_index);
+        auto const supplied_semantic_index = source_index(
+            supplied_source_indices,
+            supplied_fixed_source_index,
+            supplied_index);
+        auto const take_realtime = realtime_distance < supplied_distance
+            || (realtime_distance == supplied_distance
+                && realtime_semantic_index <= supplied_semantic_index);
+        target[written++] = take_realtime
+            ? realtime[realtime_index]
+            : supplied[supplied_index];
+        realtime_offset += take_realtime;
+        supplied_offset += !take_realtime;
+    }
+    while (realtime_offset != realtime_count) {
+        auto const index =
+            (realtime_read_index + realtime_offset++) & realtime_mask;
+        target[written++] = realtime[index];
+    }
+    while (supplied_offset != supplied_count) {
+        auto const index =
+            (supplied_read_index + supplied_offset++) & supplied_mask;
+        target[written++] = supplied[index];
     }
     return written;
 }
@@ -293,7 +395,8 @@ extern "C" std::size_t iv_graph_jit_materialize_event_sequence(
     std::size_t block_size,
     std::size_t history_samples,
     void* target_events,
-    std::size_t target_capacity) noexcept
+    std::size_t target_capacity,
+    std::size_t* target_indices) noexcept
 {
     if (step_count > EventConversionPlan::max_steps
         || source_type >= static_cast<std::uint32_t>(EventTypeId::count)
@@ -348,7 +451,13 @@ extern "C" std::size_t iv_graph_jit_materialize_event_sequence(
                 // Non-expanding conversion plus target_capacity >=
                 // source_capacity makes this an internal sizing invariant.
                 if (written < target_capacity) {
-                    target[written++] = converted;
+                    target[written] = converted;
+                    if (target_indices != nullptr) {
+                        target_indices[written] = source_indices == nullptr
+                            ? std::numeric_limits<std::size_t>::max()
+                            : source_indices[source_offset];
+                    }
+                    ++written;
                 }
             });
     }

@@ -6770,8 +6770,8 @@ void native_batch_activity_module(iv::GraphBuilder& graph)
 
 void native_batch_background_module(iv::GraphBuilder& graph)
 {
-    // These probes have no inputs: a connected or disconnected Random Access
-    // input needs Front 4 background-only delivery or default binding.
+    // These probes have no inputs, so this module isolates forward propagation
+    // and Tock batching from Random Access input coverage.
     (void)graph.node<
         "iv.test.graph_jit.state_context.native_batch_tock">(
         std::uint64_t{11});
@@ -8715,9 +8715,8 @@ TEST_F(GraphJitRuntimeFixture, NativeBackgroundCallbacksReceiveReadyFrontierBatc
     EXPECT_EQ(second_state->sample_rate, 88200u);
 }
 
-// Reverse propagation needs a Random Access input. Connecting one requires
-// Front 4 background-only sample delivery, so this test is expected to fail
-// until that front lands.
+// Reverse propagation needs a Random Access input. This connected module also
+// exercises the background-only sample delivery used by that input.
 TEST_F(GraphJitRuntimeFixture, NativeReversePropagationReceivesReadyFrontierBatch)
 {
     auto compiled = compile(graph_jit_native_batch_reverse_module_id, 106);

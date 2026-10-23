@@ -161,6 +161,16 @@ class GraphExecutor {
         // Prepared from the exact active predecessor. These roots are retried
         // unchanged until the one required successor reconciliation commits.
         CoveragePropagationRequest reconciliation_roots{};
+        // Exact future Tick positions currently requested by the control path.
+        // Each transaction expands this common playback demand by the authored
+        // history of every BackgroundEvaluationPlan::tick_sequential_inputs
+        // port before reverse coverage propagation.
+        IndexCoverage tick_materialization_demand{};
+        // Playback positions represented by the currently published
+        // generation-compatible materialization snapshot. This can remain a
+        // superset after the requested window shrinks; the next transaction
+        // publishes the exact current demand again.
+        IndexCoverage materialized_tick_coverage{};
         // A failed or stale transaction keeps this exact cross-queue set for
         // retry. Later producer publications remain outside every fixed prefix.
         bool input_selection_active = false;
@@ -168,6 +178,7 @@ class GraphExecutor {
         // rebound migrated coverage/materialization state to this generation
         // and published a coherent realtime-visible pair.
         bool reconciliation_required = false;
+        bool tick_materialization_required = false;
 
         BackgroundGeneration(
             CompiledGraph const& graph,
@@ -247,12 +258,15 @@ class GraphExecutor {
         enum class CommandKind : std::uint8_t {
             reclaim_snapshots,
             prepare_background_migration,
+            set_tick_materialization_demand,
         };
 
         struct Command {
             CommandKind kind = CommandKind::reclaim_snapshots;
             ExecutionGeneration* migration_target = nullptr;
             ExecutionGeneration* migration_source = nullptr;
+            ExecutionGeneration* demand_target = nullptr;
+            IndexCoverage materialization_demand{};
             Command* next = nullptr;
             std::mutex mutex{};
             std::condition_variable completed{};
@@ -294,6 +308,9 @@ class GraphExecutor {
         void prepare_background_migration(
             ExecutionGeneration& target,
             ExecutionGeneration& source);
+        void set_tick_materialization_demand(
+            ExecutionGeneration& target,
+            IndexCoverage demand);
         void notify_generation_cutover() noexcept;
         [[nodiscard]] AsyncWorkSignal& work_signal() noexcept;
         [[nodiscard]] std::optional<std::uint64_t>
@@ -323,6 +340,9 @@ class GraphExecutor {
     ExecutionGeneration* realtime_active_ = nullptr;
     // This generation has not crossed a realtime boundary and may be replaced.
     std::unique_ptr<ExecutionGeneration> pending_generation_{};
+    // Control-path playback demand copied into every staged generation before
+    // it becomes visible to either executor actor.
+    IndexCoverage tick_materialization_demand_{};
     // Declared last so its worker stops and its generation chain is destroyed
     // before the stores and capacity manager used by those generations.
     BackgroundExecutor background_executor_;
@@ -375,6 +395,13 @@ public:
     // prepared predecessor realization stale; a stale pending generation is
     // discarded and must be specialized again.
     bool activate_pending(GlobalIndex sample_index);
+
+    // Replaces the anticipated future Tick playback positions for every
+    // background-supplied Sequential input of the active generation. The
+    // request is serialized with coverage reconciliation and producer-queue
+    // work on the background actor. No transaction is scheduled when the
+    // currently published materialization already covers the request.
+    void set_tick_materialization_demand(IndexCoverage demand);
 
     [[nodiscard]] std::optional<std::uint64_t> active_generation() const noexcept;
     [[nodiscard]] std::optional<std::uint64_t> pending_generation() const noexcept;
