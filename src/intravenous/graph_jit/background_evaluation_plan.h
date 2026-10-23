@@ -220,6 +220,9 @@ struct BackgroundPortPlan {
 
 struct BackgroundNodePlan {
     NodeBundleHandle bundle = 0;
+    // Index into the separately-owned TockStateLayout/TockStateStorage. Every
+    // authored Tock node has one; replay-only background nodes do not need it.
+    std::optional<std::size_t> tock_state_node{};
     SemanticNodeIndex semantic_node = 0;
     SemanticSccIndex semantic_scc = 0;
     std::optional<StableConcreteNodeId> stable_identity{};
@@ -255,6 +258,9 @@ struct SampleProjectionPlan {
     std::vector<std::size_t> source_channel_indices{};
     ChannelTypeId target_type = ChannelTypeId::mono;
     std::vector<std::size_t> target_channels{};
+    std::size_t transform_source_channel_count = 0;
+    std::size_t transform_target_channel_count = 0;
+    std::vector<float> transform_coefficients{};
 
     bool operator==(SampleProjectionPlan const&) const = default;
 };
@@ -262,6 +268,8 @@ struct SampleProjectionPlan {
 struct EventDeliveryPlan {
     EventOutputPortId source{};
     EventInputPortId target{};
+    EventTypeId source_type = EventTypeId::empty;
+    EventConversionPlan conversion{};
     std::optional<BackgroundPortIndex> source_port{};
     std::optional<BackgroundPortIndex> target_port{};
     PlannedDeliveryMechanism mechanism =
@@ -367,6 +375,9 @@ struct EventMaterializationPlan {
     PortStorageKind storage = PortStorageKind::background;
     std::vector<PortSubsetIndex> source_subsets{};
     std::vector<PortStorageIndex> inputs{};
+    // Aligned with inputs. Each conversion maps the raw source storage to
+    // source_type before the streams are merged.
+    std::vector<EventConversionPlan> source_conversions{};
     EventTypeId source_type = EventTypeId::empty;
     EventTypeId target_type = EventTypeId::empty;
     EventConversionPlan conversion{};

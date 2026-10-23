@@ -83,12 +83,12 @@ class GraphBuilderState {
   struct SamplePortExpression {
     ChannelTypeId channel_type = ChannelTypeId::mono;
     std::vector<SampleOutputChannelId> channels{};
-    std::optional<ConfiguredSampleConnectionDetach> detach{};
+    std::vector<std::optional<ConfiguredSampleConnectionDetach>> detaches{};
   };
   struct EventPortExpression {
     EventTypeId type = EventTypeId::empty;
     std::vector<EventOutputPortId> sources{};
-    std::optional<ConfiguredEventConnectionDetach> detach{};
+    std::vector<std::optional<ConfiguredEventConnectionDetach>> detaches{};
   };
   // SamplePortRef intentionally stores only an index into this session-owned
   // table. Variable-length expressions never live in module-generated code.
@@ -247,6 +247,7 @@ private:
       SamplePortRef const&) const;
   EventPortRef make_event_port(
       EventTypeId, std::span<EventOutputPortId const>);
+  EventPortRef make_event_port(std::span<EventPortRef const>);
   std::span<EventOutputPortId const> event_port_sources(
       EventPortRef const&) const;
   constexpr void record_configured_sample_connection(
@@ -468,12 +469,19 @@ constexpr void GraphBuilderState::record_configured_sample_connection(
   auto const& expression = _sample_port_expressions[source.handle];
   if (expression.channel_type != source.channel_type)
     details::error("sample port has an invalid semantic channel type");
+  std::vector<ConfiguredSampleConnectionSource> configured_sources;
+  configured_sources.reserve(expression.channels.size());
+  for (std::size_t i = 0; i < expression.channels.size(); ++i) {
+    configured_sources.push_back({
+        .channel = expression.channels[i],
+        .detach = expression.detaches[i],
+    });
+  }
   _connections.record_configured_sample_connection({
       .source_type = source.channel_type,
-      .source_channels = {expression.channels.begin(), expression.channels.end()},
+      .source_channels = std::move(configured_sources),
       .target_type = descriptor.config.channel_layout.channel_type,
       .target_channels = _node_bundles.sample_input_channels(target),
-      .detach = expression.detach,
   });
 }
 
@@ -491,12 +499,19 @@ constexpr void GraphBuilderState::record_configured_sample_connection(
   auto const& expression = _sample_port_expressions[source.handle];
   if (expression.channel_type != source.channel_type)
     details::error("sample port has an invalid semantic channel type");
+  std::vector<ConfiguredSampleConnectionSource> configured_sources;
+  configured_sources.reserve(expression.channels.size());
+  for (std::size_t i = 0; i < expression.channels.size(); ++i) {
+    configured_sources.push_back({
+        .channel = expression.channels[i],
+        .detach = expression.detaches[i],
+    });
+  }
   _connections.record_configured_sample_connection({
       .source_type = source.channel_type,
-      .source_channels = {expression.channels.begin(), expression.channels.end()},
+      .source_channels = std::move(configured_sources),
       .target_type = ChannelTypeId::mono,
       .target_channels = {target},
-      .detach = expression.detach,
   });
 }
 
@@ -527,16 +542,17 @@ constexpr SamplePortRef GraphBuilderState::detach_sample_port(
       .loop_extra_latency = latency,
       .initial_value_override = initial_value,
   };
-  if (expression.detach) {
-    if (*expression.detach != requested)
-      details::error("detach parameters conflict with an already detached sample expression");
-    return source;
-  }
+  if (std::ranges::any_of(expression.detaches, [](auto const& detach) {
+        return detach.has_value();
+      }))
+    details::error("cannot detach an already detached sample channel");
+  auto detaches = expression.detaches;
+  std::ranges::fill(detaches, requested);
   auto const handle = _sample_port_expressions.size();
   _sample_port_expressions.push_back({
       .channel_type = expression.channel_type,
       .channels = expression.channels,
-      .detach = requested,
+      .detaches = std::move(detaches),
   });
   auto result = source;
   result.handle = handle;
@@ -554,16 +570,17 @@ inline EventPortRef GraphBuilderState::detach_event_port(
   ConfiguredEventConnectionDetach const requested{
       .loop_extra_latency = latency,
   };
-  if (expression.detach) {
-    if (*expression.detach != requested)
-      details::error("detach parameters conflict with an already detached event expression");
-    return source;
-  }
+  if (std::ranges::any_of(expression.detaches, [](auto const& detach) {
+        return detach.has_value();
+      }))
+    details::error("cannot detach an already detached event source");
+  auto detaches = expression.detaches;
+  std::ranges::fill(detaches, requested);
   auto const handle = _event_port_expressions.size();
   _event_port_expressions.push_back({
       .type = expression.type,
       .sources = expression.sources,
-      .detach = requested,
+      .detaches = std::move(detaches),
   });
   auto result = source;
   result.handle = handle;

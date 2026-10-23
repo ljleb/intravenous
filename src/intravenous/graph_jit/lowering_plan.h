@@ -20,17 +20,62 @@ struct PrimitiveStoragePlan {
     bool has_state = false;
     std::size_t state_offset = 0;
     std::size_t state_size = 0;
-    bool has_background_state = false;
-    std::size_t background_state_offset = 0;
-    std::size_t background_state_size = 0;
+};
+
+struct ContinuousActivityChannelStatePlan {
+    std::size_t frontier = 0;
+};
+
+struct ContinuousInputActivityPlan {
+    // A compiler-owned immutable representation is unchanged by definition and
+    // therefore owns no remembered-value state or runtime scan.
+    bool static_constant = false;
+    std::vector<ContinuousActivityChannelStatePlan> channels{};
+};
+
+struct PrimitiveActivityPlan {
+    std::size_t ttl_samples = 0;
+    std::vector<ContinuousInputActivityPlan> continuous_inputs{};
+    // Compact realtime-output order, matching the reflected callback ABI.
+    std::vector<std::size_t> continuous_output_channel_counts{};
+    NodeLayout::RegionHandle region{};
+    std::size_t storage_offset = 0;
+    std::size_t storage_size = 0;
+    std::size_t storage_alignment = 1;
+};
+
+// Equal ordinary realtime fanout channels share one persistent comparison
+// value. Generated lowering also shares the compact fact while the source
+// representation and invocation window remain unchanged.
+struct ContinuousActivityFrontierPlan {
+    std::size_t representation = no_sample_representation;
+    std::size_t representation_channel = 0;
+    std::size_t frame_delay = 0;
+    std::int32_t absolute_pace_exponent = 0;
+    std::size_t read_latency = 0;
+    ContinuousValueStorageGeometry geometry{};
+    std::size_t owner_primitive = 0;
+    std::size_t remembered_valid_relative_offset = 0;
+    std::size_t remembered_value_relative_offset = 0;
+    std::size_t remembered_valid_storage_offset = 0;
+    std::size_t remembered_value_storage_offset = 0;
 };
 
 struct DeclarationPlan {
     NodeLayout node_layout{};
-    // Background independently from NodeLayout::nodes so later lowering can add
-    // synthetic/layout-only nodes without coupling execution-step identity to
-    // canonical layout record order.
+    TockStateLayout tock_state_layout{};
+    // Top-level graph primitive index -> canonical layout node index. Nested
+    // declarations occupy their own layout records and deliberately do not
+    // enter graph execution/configuration namespaces.
+    std::vector<std::size_t> primitive_layout_nodes{};
+    // Realtime primitive storage remains indexed independently from the
+    // sidecar so later lowering can add synthetic/layout-only nodes without
+    // coupling execution-step identity to canonical layout record order.
     std::vector<PrimitiveStoragePlan> primitive_storage{};
+    // Entry positions match the primitive namespace. A missing entry means
+    // TTL is disabled and generated execution pays no activity cost.
+    std::vector<std::optional<PrimitiveActivityPlan>> primitive_activity{};
+    std::vector<ContinuousActivityFrontierPlan> activity_frontiers{};
 };
 
 enum class CallbackImportAbi : std::uint8_t {
@@ -227,7 +272,10 @@ struct PrimitiveEventOutputBindingPlan {
     // Entry positions correspond to declared storage event-port indices. Only
     // realtime entries are emitted into ReflectedNodeTickContext.
     bool realtime = true;
+    // Callback-facing storage. A retained or sliced output can use a separate
+    // canonical_storage so the callback writes only its current invocation.
     std::optional<std::size_t> storage{};
+    std::optional<std::size_t> canonical_storage{};
     EventTypeId source_type = EventTypeId::empty;
     std::size_t history = 0;
     std::size_t latency = 0;
@@ -262,6 +310,10 @@ struct EventMaterializationPlan {
     std::size_t source_representation = 0;
     std::size_t target_representation = 0;
     EventConversionPlan conversion{};
+    // A value selects only events authored by one semantic source from an
+    // ordered fan-in representation. The selected stream no longer needs a
+    // source-index sidecar.
+    std::optional<std::size_t> source_index_filter{};
     // Aggregate or retained canonical sources may contain events outside the
     // consumer invocation currently being materialized. Windowed selection uses
     // the index/block_size supplied at the emission site: a cyclic step-local
@@ -279,15 +331,15 @@ struct EventMaterializationPlan {
     // materialization and is charged only when the source candidate is a ring.
     std::size_t maximum_source_event_reads = 0;
     bool select_invocation_window = false;
+    bool before_merge = false;
     EventOperationScope scope{};
 };
 
 struct EventCarryPlan {
     std::size_t working_representation = 0;
     std::size_t persistent_representation = 0;
-    // Restore may need to precede an early producer-home writer while commit
-    // remains after the group's final merge. Ordinary single-producer carry
-    // uses the same position for both.
+    // Staged SCC fan-in can restore before its first stage and commit after its
+    // last stage. Other carry operations normally use one producer scope.
     EventOperationScope restore_scope{};
     EventOperationScope commit_scope{};
     std::size_t retained_history_samples = 0;
@@ -306,13 +358,10 @@ struct EventSequenceResetPlan {
 };
 
 struct EventMergePlan {
-    // Sorted producer streams are merged in semantic source order only after
-    // every producer has completed its root invocation. For transient fan-in,
-    // semantic source 0 writes directly into target_representation and the
-    // remaining source_representations are merged into it in one k-way pass.
-    // Retained producer-home fan-in instead treats the restored/pruned target
-    // plus semantic source 0 as the existing target sequence, then merges only
-    // the remaining producer-local streams.
+    // Sorted callback-output streams are merged in semantic source order after
+    // the producers for this scope have completed. target_representation is a
+    // separate fan-in sequence. It never aliases a concrete EventOutputPortId
+    // raw representation.
     std::vector<std::size_t> source_representations{};
     // Empty for an unindexed stable merge. Ordered fan-in supplies one semantic
     // source index per source storage; the target owns a parallel sidecar used
@@ -324,15 +373,23 @@ struct EventMergePlan {
     // root invocation's history-inclusive aggregate origin. That origin stays
     // fixed while an SCC contributes several slices to the same sequence.
     std::size_t ordering_history_samples = 0;
-    bool target_is_semantic_source = false;
     // Retained targets already contain restored/pruned events from previous
-    // invocations; transient producer-home targets contain source 0 instead.
+    // invocations. Staged SCC fan-in also retains events from earlier slices
+    // of the current root invocation.
     bool preserve_existing_target = false;
+    // Canonical EventOutputPortId storage must receive the callback-local
+    // sequence before any source conversion or connection fan-in reads it.
+    bool before_materialization = false;
 };
 
 struct EventFeedbackPlan {
     std::size_t source_representation = 0;
     std::size_t target_representation = 0;
+    std::optional<std::size_t> source_index_filter{};
+    // A callback-local source sequence is cleared and populated again for
+    // each primitive invocation. Feedback therefore consumes the complete
+    // sequence at every append scope instead of retaining a root-call cursor.
+    bool source_sequence_restarts_each_append = false;
     EventOperationScope append_scope{};
     EventOperationScope reset_scope{};
     EventConnectionStorageRequirements storage_requirements{};
@@ -341,6 +398,7 @@ struct EventFeedbackPlan {
     // retained tail. Compact carry restore/commit work is derived from the
     // latter by the shared storage cost model.
     std::size_t authored_event_count = 0;
+    std::size_t source_event_reads = 0;
     std::size_t retained_event_count = 0;
     std::size_t retained_window_samples = 0;
     // Source and target sequences are ordered from the retained-history
@@ -361,8 +419,12 @@ struct EventPortBindingPlan {
     // connection analysis carries only the temporal requirements.
     std::vector<std::optional<EventConnectionStoragePlan>>
         producer_group_storage_plans{};
-    std::vector<std::optional<std::size_t>> producer_home_source_indices{};
     std::vector<std::optional<std::size_t>> producer_group_representations{};
+    // Per-source representations consumed by each producer-group merge.
+    // A detached source reads this representation before the group merge,
+    // rather than selecting the source from the already-sorted group result.
+    std::vector<std::vector<std::optional<std::size_t>>>
+        producer_group_source_representations{};
     std::vector<EventRepresentationPlan> ports{};
     std::vector<EventMaterializationPlan> materializations{};
     std::vector<EventCarryPlan> carry_operations{};
@@ -405,6 +467,7 @@ struct PrimitiveExecutionStep {
     // storage-plan indices, not OutputPort behavior or runtime objects.
     std::vector<std::size_t> sample_carry_restores_before{};
     std::vector<std::size_t> sample_materializations_before{};
+    std::vector<std::size_t> sample_compositions_before{};
     std::vector<std::size_t> sample_feedback_writes_after{};
     std::vector<std::size_t> sample_materializations_after{};
     std::vector<std::size_t> sample_compositions_after{};

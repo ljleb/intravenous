@@ -385,6 +385,7 @@ public:
   SamplePortRef select_sample_port_channel(SamplePortRef const&, size_t);
   std::span<SampleOutputChannelId const> sample_port_channels(SamplePortRef const&) const;
   EventPortRef make_event_port(EventTypeId, std::span<EventOutputPortId const>);
+  EventPortRef make_event_port(std::span<EventPortRef const>);
   std::span<EventOutputPortId const> event_port_sources(EventPortRef const&) const;
   SamplePortRef detach_sample_port(
       SamplePortRef const&, size_t, std::optional<Sample>);

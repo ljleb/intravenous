@@ -63,6 +63,13 @@ The central rules are:
 > select demand-driven production by the appropriate Tock callback. Any output may be
 > `ephemeral` or `persisted`.
 
+> One concrete executable primitive nevertheless belongs to exactly one execution
+> domain. It authors one Tick form or one Tock form, never both, and all of its outputs
+> use that family's production forms. A module node groups separate primitives when an
+> authored abstraction needs both domains. Eligible Tick replay is generated
+> off-thread Tick execution; it is not an implicit Tock callback. Authored Tock never
+> synthesizes an implicit Tick callback.
+
 > All concrete GraphJit node types have static constexpr port schemas. Graph
 > topology, node instance count, and connections remain dynamic graph data.
 > Replayability is a separately declared and validated **node trait**, not a new
@@ -136,6 +143,12 @@ Port data/value type, input access, output production, and output retention
 are independent. The callback that *uses* an input does not determine that input's
 access: a `tick_block()` implementation can consume random-access inputs, including
 when that Tick implementation is replayed in the background.
+
+The independent output-production axis applies across schemas and module composition,
+but one concrete executable primitive is homogeneous: exactly one Tick callback form
+owns only Tick outputs, or exactly one Tock callback form owns only Region/Coverage
+outputs. This keeps realtime scheduling and background evaluation as disjoint
+primitive domains. Grouping both domains is the job of a module node.
 
 | Axis | Authored alternatives | Meaning |
 | --- | --- | --- |
@@ -658,11 +671,12 @@ partial output as valid.
 Within one output invocation, events are emitted in nondecreasing global timestamp
 order. Equal-timestamp producer-local order is preserved.
 
-A single callback remains preferable to mandatory per-output callbacks because a
-node may share useful work among several outputs. **Tock and its propagation
+A single callback remains preferable to mandatory per-output callbacks because one
+Tock primitive may share useful work among several Tock outputs. **Tock and its propagation
 callbacks are background-only.** Ephemeral retention never grants an audio-thread
 live-pull exception. Eligible pure `tick()` nodes are different: their already-
 generated `tick_block()` implementation may execute during background replay.
+That replay invocation remains Tick semantics and does not create a Tock callback.
 
 The scalar name deliberately does not contain `batch`: `tock_coverage()` evaluates
 one node. Executor-level transaction batching across demand roots is a separate
@@ -2205,9 +2219,10 @@ Node/package validation rejects non-static or non-constexpr concrete port schema
 at **every** construction path (including internal builder paths), malformed
 `TockState`, conflicting callback/production declarations, invalid event
 capacity declarations, and invalid replayability trait declarations. The planned batch
-API additionally rejects ambiguous authored shapes: Tick authors exactly one of
-`tick()`/`tick_block()`/`tick_block_batch()`; a node with Tock outputs authors
-exactly one of `tock_coverage()`/`tock_coverage_batch()`; and skip plus each authored
+API additionally rejects ambiguous authored shapes: a primitive authors exactly one
+primary form across `tick()`/`tick_block()`/`tick_block_batch()` or
+`tock_coverage()`/`tock_coverage_batch()`; every output matches that selected domain;
+and skip plus each authored
 propagation direction choose at most one scalar-or-batch form as specified in
 [Batched Node Callback Direction](./batched_node_callbacks_direction.md).
 
@@ -2587,6 +2602,9 @@ recording merely because that planning metadata exists.
    output production (`TickOutputConfig`/`RegionOutputConfig`/
    `CoverageOutputConfig`) and output retention
    (`ephemeral`/`persisted`) are independent declarations.
+   One concrete executable primitive still selects exactly one primary callback
+   domain and declares only outputs produced by that domain; module nodes compose
+   Tick and Tock primitives.
 3. `tick()` already lowers to an imported, optimizable generated `tick_block()`.
    The planned batch layer retains `tick()` as a first-class authoring form and
    normalizes every accepted Tick shape to both `do_tick_block()` and

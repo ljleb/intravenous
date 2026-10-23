@@ -307,7 +307,7 @@ std::expected<void, std::string> inventory_nodes(
     // identity and intentionally has no materialized boundary bundle.
     if (graph.node_bundles.size() == 0) return {};
 
-    std::size_t boundary_count = 0;
+    bool root_boundary_seen = false;
     std::size_t bundle = 0;
     std::string error;
     graph.node_bundles.for_each_configured_bundle(
@@ -316,19 +316,40 @@ std::expected<void, std::string> inventory_nodes(
             if (!error.empty()) return;
 
             if (view.kind == ConfiguredNodeBundleKind::boundary) {
-                ++boundary_count;
-                if (current != plan.boundary_bundle) {
-                    error = "connection analysis found a boundary that is not the project boundary";
-                }
+                root_boundary_seen = root_boundary_seen
+                    || current == plan.boundary_bundle;
                 return;
             }
-            if (view.kind != ConfiguredNodeBundleKind::concrete) {
-                error =
-                    "connection analysis does not yet support tiled/subgraph bundles";
+            if (view.kind == ConfiguredNodeBundleKind::tiled
+                || view.kind == ConfiguredNodeBundleKind::subgraph) {
                 return;
             }
             if (!view.ports) {
                 error = "concrete bundle has no port metadata during connection analysis";
+                return;
+            }
+            if (!view.operations || !view.operations->valid()) {
+                error = "concrete bundle has no valid node operations during connection analysis";
+                return;
+            }
+            auto const has_tock_output = std::ranges::any_of(
+                    view.ports->sample_outputs(),
+                    [](auto const& output) { return is_tock(output); })
+                || std::ranges::any_of(
+                    view.ports->event_outputs(),
+                    [](auto const& output) { return is_tock(output); });
+            auto const has_tick_output = std::ranges::any_of(
+                    view.ports->sample_outputs(),
+                    [](auto const& output) { return is_tick(output); })
+                || std::ranges::any_of(
+                    view.ports->event_outputs(),
+                    [](auto const& output) { return is_tick(output); });
+            auto const has_tick_callback =
+                view.operations->runtime.tick_block != nullptr;
+            if ((has_tick_callback && has_tock_output)
+                || (!has_tick_callback
+                    && (!has_tock_output || has_tick_output))) {
+                error = "concrete primitive callback family disagrees with its output production domain";
                 return;
             }
             auto stable_identity = stable_concrete_node_identity(graph, current);
@@ -341,6 +362,7 @@ std::expected<void, std::string> inventory_nodes(
                 .sample_output_count = view.ports->sample_output_count(),
                 .event_input_count = view.ports->event_input_count(),
                 .event_output_count = view.ports->event_output_count(),
+                .tick_execution = has_tick_callback,
                 .intrinsically_replayable = view.intrinsically_replayable,
             });
             inventory_realtime_port_states(
@@ -352,7 +374,8 @@ std::expected<void, std::string> inventory_nodes(
         });
 
     if (!error.empty()) return std::unexpected(std::move(error));
-    if (boundary_count != 1 || plan.boundary_bundle >= graph.node_bundles.size()) {
+    if (!root_boundary_seen
+        || plan.boundary_bundle >= graph.node_bundles.size()) {
         return std::unexpected(
             "connection analysis requires exactly one project boundary");
     }
@@ -401,18 +424,578 @@ void append_dependency(
     }
 }
 
+struct RoutedSampleConnection {
+    ConfiguredSampleConnection connection{};
+    SampleChannelTransformPlan transform{};
+    struct Contribution {
+        std::vector<float> source_coefficients{};
+        std::vector<float> target_coefficients{};
+        std::optional<ConfiguredSampleConnectionDetach> detach{};
+    };
+    std::vector<Contribution> contributions{};
+    std::size_t authored_connection_index = 0;
+};
+
+struct ResolvedSampleContribution {
+    std::vector<std::pair<SampleOutputChannelId, float>> source_terms{};
+    std::optional<ConfiguredSampleConnectionDetach> detach{};
+    float output_coefficient = 1.0f;
+};
+
+struct ResolvedSampleChannel {
+    std::vector<ResolvedSampleContribution> contributions{};
+    bool crossed_structure = false;
+};
+
+void add_sample_source_term(
+    std::vector<std::pair<SampleOutputChannelId, float>>& terms,
+    SampleOutputChannelId source,
+    float coefficient)
+{
+    if (coefficient == 0.0f) return;
+    auto const found = std::ranges::find_if(
+        terms, [&](auto const& term) { return term.first == source; });
+    if (found == terms.end()) {
+        terms.emplace_back(source, coefficient);
+    } else {
+        found->second += coefficient;
+        if (found->second == 0.0f) terms.erase(found);
+    }
+}
+
+std::expected<ResolvedSampleChannel, std::string> detach_sample_channel(
+    ResolvedSampleChannel channel,
+    ConfiguredSampleConnectionDetach detach)
+{
+    if (std::ranges::any_of(
+            channel.contributions,
+            [](ResolvedSampleContribution const& contribution) {
+                return contribution.detach.has_value();
+            })) {
+        return std::unexpected(
+            "GraphJit structural sample route contains two serial detach operations");
+    }
+    ResolvedSampleContribution detached{.detach = std::move(detach)};
+    for (auto const& contribution : channel.contributions) {
+        for (auto const& [source, coefficient] : contribution.source_terms) {
+            add_sample_source_term(
+                detached.source_terms,
+                source,
+                coefficient * contribution.output_coefficient);
+        }
+    }
+    channel.contributions.clear();
+    channel.contributions.push_back(std::move(detached));
+    return channel;
+}
+
+void add_sample_channel(
+    ResolvedSampleChannel& target,
+    ResolvedSampleChannel const& source,
+    float coefficient)
+{
+    if (coefficient == 0.0f) return;
+    for (auto const& contribution : source.contributions) {
+        if (!contribution.detach) {
+            auto found = std::ranges::find_if(
+                target.contributions,
+                [](ResolvedSampleContribution const& candidate) {
+                    return !candidate.detach;
+                });
+            if (found == target.contributions.end()) {
+                target.contributions.push_back({});
+                found = std::prev(target.contributions.end());
+            }
+            for (auto const& [base, base_coefficient] :
+                 contribution.source_terms) {
+                add_sample_source_term(
+                    found->source_terms,
+                    base,
+                    coefficient * contribution.output_coefficient
+                        * base_coefficient);
+            }
+            continue;
+        }
+        auto detached = contribution;
+        detached.output_coefficient *= coefficient;
+        if (detached.output_coefficient != 0.0f)
+            target.contributions.push_back(std::move(detached));
+    }
+}
+
+std::expected<ChannelTypeId, std::string> channel_type_with_count(
+    std::size_t count)
+{
+    for (std::size_t index = 0;
+         index < static_cast<std::size_t>(ChannelTypeId::count);
+         ++index) {
+        auto const type = static_cast<ChannelTypeId>(index);
+        if (channel_count(type) == count) return type;
+    }
+    return std::unexpected(
+        "GraphJit structural sample route has no registered channel type for "
+        + std::to_string(count) + " channels");
+}
+
+std::expected<std::vector<RoutedSampleConnection>, std::string>
+build_structural_sample_routes(ConfiguredGraph const& graph)
+{
+    auto const authored = graph.connections.configured_sample_connections();
+    auto const root_boundary = graph.public_ports.boundary_handle();
+
+    std::vector<std::optional<NodeBundleHandle>> boundary_owner(
+        graph.node_bundles.size());
+    for (NodeBundleHandle bundle = 0;
+         bundle < graph.node_bundles.size();
+         ++bundle) {
+        auto const& candidate = graph.node_bundles.bundle(bundle);
+        if (!candidate.is_subgraph()) continue;
+        auto const boundary = candidate.subgraph_boundary_handle();
+        if (!boundary || *boundary >= boundary_owner.size()) {
+            return std::unexpected(
+                "GraphJit structural routing found an invalid subgraph boundary");
+        }
+        if (boundary_owner[*boundary]) {
+            return std::unexpected(
+                "GraphJit structural routing found a boundary with two owners");
+        }
+        boundary_owner[*boundary] = bundle;
+    }
+
+    auto expand_target = [&](auto&& self, SampleInputChannelId target)
+        -> std::expected<std::vector<SampleInputChannelId>, std::string> {
+        if (target.bundle >= graph.node_bundles.size()) {
+            return std::unexpected(
+                "GraphJit structural sample route references a missing target bundle");
+        }
+        auto const& bundle = graph.node_bundles.bundle(target.bundle);
+        if (!bundle.is_tiled()) return std::vector{target};
+        auto const members = bundle.tiled_members();
+        if (target.channel >= members.size()) {
+            return std::unexpected(
+                "GraphJit tiled sample target channel is outside its member set");
+        }
+        return self(self, SampleInputChannelId{
+            .bundle = members[target.channel],
+            .port = target.port,
+            .channel = 0,
+        });
+    };
+
+    auto is_terminal_target = [&](SampleInputChannelId target) {
+        auto const& bundle = graph.node_bundles.bundle(target.bundle);
+        return bundle.is_concrete() || target.bundle == root_boundary;
+    };
+
+    std::vector<SampleOutputChannelId> resolving;
+    auto resolve_output = [&](auto&& self, SampleOutputChannelId output)
+        -> std::expected<ResolvedSampleChannel, std::string> {
+        if (output.bundle >= graph.node_bundles.size()) {
+            return std::unexpected(
+                "GraphJit structural sample route references a missing source bundle");
+        }
+        if (std::ranges::contains(resolving, output)) {
+            return std::unexpected(
+                "GraphJit structural sample routing reached a cycle before a detach");
+        }
+        resolving.push_back(output);
+        auto pop = [&] { resolving.pop_back(); };
+
+        auto const& bundle = graph.node_bundles.bundle(output.bundle);
+        if (bundle.is_concrete() || output.bundle == root_boundary) {
+            pop();
+            return ResolvedSampleChannel{
+                .contributions = {ResolvedSampleContribution{
+                    .source_terms = {{output, 1.0f}},
+                }},
+                .crossed_structure = false,
+            };
+        }
+        if (bundle.is_tiled()) {
+            auto const members = bundle.tiled_members();
+            if (output.channel >= members.size()) {
+                pop();
+                return std::unexpected(
+                    "GraphJit tiled sample source channel is outside its member set");
+            }
+            auto resolved = self(self, SampleOutputChannelId{
+                .bundle = members[output.channel],
+                .port = output.port,
+                .channel = 0,
+            });
+            pop();
+            if (resolved) resolved->crossed_structure = true;
+            return resolved;
+        }
+
+        SampleInputChannelId upstream_target{};
+        if (bundle.is_subgraph()) {
+            auto const boundary = bundle.subgraph_boundary_handle();
+            if (!boundary) {
+                pop();
+                return std::unexpected(
+                    "GraphJit subgraph sample source lost its boundary");
+            }
+            upstream_target = SampleInputChannelId{
+                .bundle = *boundary,
+                .port = output.port,
+                .channel = output.channel,
+            };
+        } else if (bundle.is_boundary()
+                   && output.bundle != root_boundary) {
+            if (output.bundle >= boundary_owner.size()
+                || !boundary_owner[output.bundle]) {
+                pop();
+                return std::unexpected(
+                    "GraphJit internal sample boundary has no owning subgraph");
+            }
+            upstream_target = SampleInputChannelId{
+                .bundle = *boundary_owner[output.bundle],
+                .port = output.port,
+                .channel = output.channel,
+            };
+        } else {
+            pop();
+            return std::unexpected(
+                "GraphJit structural sample source has no executable producer");
+        }
+
+        ConfiguredSampleConnection const* incoming = nullptr;
+        std::size_t incoming_target_channel = 0;
+        for (auto const& connection : authored) {
+            for (std::size_t target_channel = 0;
+                 target_channel < connection.target_channels.size();
+                 ++target_channel) {
+                auto expanded = expand_target(
+                    expand_target, connection.target_channels[target_channel]);
+                if (!expanded) {
+                    pop();
+                    return std::unexpected(std::move(expanded.error()));
+                }
+                if (!std::ranges::contains(*expanded, upstream_target)) continue;
+                if (incoming) {
+                    pop();
+                    return std::unexpected(
+                        "GraphJit structural sample input has more than one source");
+                }
+                incoming = &connection;
+                incoming_target_channel = target_channel;
+            }
+        }
+        if (!incoming) {
+            pop();
+            return std::unexpected(
+                "GraphJit structural sample boundary route has no source");
+        }
+        ResolvedSampleChannel result;
+        result.crossed_structure = true;
+        for (std::size_t source_channel = 0;
+             source_channel < incoming->source_channels.size();
+             ++source_channel) {
+            auto resolved = self(
+                self, incoming->source_channels[source_channel].channel);
+            if (!resolved) {
+                pop();
+                return std::unexpected(std::move(resolved.error()));
+            }
+            result.crossed_structure = result.crossed_structure
+                || resolved->crossed_structure;
+            if (incoming->source_channels[source_channel].detach) {
+                resolved = detach_sample_channel(
+                    std::move(*resolved),
+                    *incoming->source_channels[source_channel].detach);
+                if (!resolved) {
+                    pop();
+                    return std::unexpected(std::move(resolved.error()));
+                }
+            }
+            auto const coefficient = channel_conversion_coefficient(
+                incoming->source_type,
+                incoming->target_type,
+                source_channel,
+                incoming_target_channel);
+            if (coefficient == 0.0f) continue;
+            add_sample_channel(result, *resolved, coefficient);
+        }
+        pop();
+        return result;
+    };
+
+    std::vector<RoutedSampleConnection> routes;
+    for (std::size_t connection_index = 0;
+         connection_index < authored.size();
+         ++connection_index) {
+        auto const& connection = authored[connection_index];
+        std::vector<std::vector<SampleInputChannelId>> expanded_targets;
+        expanded_targets.reserve(connection.target_channels.size());
+        bool has_terminal_target = false;
+        bool target_crossed_structure = false;
+        for (auto const target : connection.target_channels) {
+            auto expanded = expand_target(expand_target, target);
+            if (!expanded) return std::unexpected(std::move(expanded.error()));
+            target_crossed_structure = target_crossed_structure
+                || expanded->size() != 1 || expanded->front() != target;
+            has_terminal_target = has_terminal_target
+                || std::ranges::any_of(*expanded, is_terminal_target);
+            expanded_targets.push_back(std::move(*expanded));
+        }
+        if (!has_terminal_target) continue;
+
+        std::vector<ResolvedSampleChannel> resolved_sources;
+        resolved_sources.reserve(connection.source_channels.size());
+        bool source_crossed_structure = false;
+        for (auto const& source : connection.source_channels) {
+            auto resolved = resolve_output(resolve_output, source.channel);
+            if (!resolved) return std::unexpected(std::move(resolved.error()));
+            if (source.detach) {
+                resolved = detach_sample_channel(
+                    std::move(*resolved), *source.detach);
+                if (!resolved)
+                    return std::unexpected(std::move(resolved.error()));
+            }
+            source_crossed_structure = source_crossed_structure
+                || resolved->crossed_structure;
+            resolved_sources.push_back(std::move(*resolved));
+        }
+
+        auto const first_detach = connection.source_channels.front().detach;
+        auto const uniform_direct_detach = std::ranges::all_of(
+            connection.source_channels,
+            [&](ConfiguredSampleConnectionSource const& source) {
+                return source.detach == first_detach;
+            });
+        if (!source_crossed_structure && !target_crossed_structure
+            && uniform_direct_detach) {
+            routes.push_back(RoutedSampleConnection{
+                .connection = connection,
+                .authored_connection_index = connection_index,
+            });
+            continue;
+        }
+
+        auto const has_routed_detach = std::ranges::any_of(
+            resolved_sources,
+            [](ResolvedSampleChannel const& channel) {
+                return std::ranges::any_of(
+                    channel.contributions,
+                    [](ResolvedSampleContribution const& contribution) {
+                        return contribution.detach.has_value();
+                    });
+            });
+
+        std::vector<SampleOutputChannelId> base_sources;
+        for (auto const& resolved : resolved_sources) {
+            for (auto const& contribution : resolved.contributions) {
+                for (auto const& [source, coefficient] :
+                     contribution.source_terms) {
+                    if (coefficient != 0.0f
+                        && !std::ranges::contains(base_sources, source)) {
+                        base_sources.push_back(source);
+                    }
+                }
+            }
+        }
+        if (base_sources.empty()) {
+            return std::unexpected(
+                "GraphJit structural sample route resolved to no producer channels");
+        }
+        auto source_type = channel_type_with_count(base_sources.size());
+        if (!source_type) return std::unexpected(std::move(source_type.error()));
+
+        std::vector<float> complete_transform;
+        if (!has_routed_detach) {
+            complete_transform.assign(
+                connection.target_channels.size() * base_sources.size(), 0.0f);
+            for (std::size_t target = 0;
+                 target < connection.target_channels.size();
+                 ++target) {
+                for (std::size_t semantic_source = 0;
+                     semantic_source < resolved_sources.size();
+                     ++semantic_source) {
+                    auto const edge = channel_conversion_coefficient(
+                        connection.source_type,
+                        connection.target_type,
+                        semantic_source,
+                        target);
+                    for (auto const& contribution :
+                         resolved_sources[semantic_source].contributions) {
+                        for (auto const& [source, coefficient] :
+                             contribution.source_terms) {
+                            auto const found = std::ranges::find(
+                                base_sources, source);
+                            if (found == base_sources.end()) continue;
+                            auto const base = static_cast<std::size_t>(
+                                std::distance(base_sources.begin(), found));
+                            complete_transform[target * base_sources.size() + base]
+                                += edge * contribution.output_coefficient
+                                    * coefficient;
+                        }
+                    }
+                }
+            }
+        }
+
+        struct TargetGroup {
+            NodeBundlePortId port{};
+            std::vector<SampleInputChannelId> channels{};
+            std::vector<std::size_t> semantic_rows{};
+        };
+        std::vector<TargetGroup> groups;
+        for (std::size_t semantic_target = 0;
+             semantic_target < expanded_targets.size();
+             ++semantic_target) {
+            for (auto const target : expanded_targets[semantic_target]) {
+                if (!is_terminal_target(target)) continue;
+                NodeBundlePortId const port{
+                    target.bundle, PortKind::sample, target.port};
+                auto found = std::ranges::find(
+                    groups, port, &TargetGroup::port);
+                if (found == groups.end()) {
+                    groups.push_back(TargetGroup{.port = port});
+                    found = std::prev(groups.end());
+                }
+                found->channels.push_back(target);
+                found->semantic_rows.push_back(semantic_target);
+            }
+        }
+
+        for (auto const& group : groups) {
+            auto target_type = channel_type_with_count(group.channels.size());
+            if (!target_type) return std::unexpected(std::move(target_type.error()));
+            auto make_base_connection = [&] {
+                std::vector<ConfiguredSampleConnectionSource> sources;
+                sources.reserve(base_sources.size());
+                for (auto const source : base_sources)
+                    sources.push_back({.channel = source});
+                return ConfiguredSampleConnection{
+                    .source_type = *source_type,
+                    .source_channels = std::move(sources),
+                    .target_type = *target_type,
+                    .target_channels = group.channels,
+                };
+            };
+            if (has_routed_detach) {
+                std::vector<RoutedSampleConnection::Contribution> contributions;
+                for (std::size_t semantic_source = 0;
+                     semantic_source < resolved_sources.size();
+                     ++semantic_source) {
+                    for (auto const& resolved :
+                         resolved_sources[semantic_source].contributions) {
+                        RoutedSampleConnection::Contribution routed{
+                            .source_coefficients =
+                                std::vector<float>(base_sources.size(), 0.0f),
+                            .target_coefficients =
+                                std::vector<float>(group.channels.size(), 0.0f),
+                            .detach = resolved.detach,
+                        };
+                        for (auto const& [source, coefficient] :
+                             resolved.source_terms) {
+                            auto const found = std::ranges::find(
+                                base_sources, source);
+                            if (found == base_sources.end()) continue;
+                            routed.source_coefficients[
+                                static_cast<std::size_t>(std::distance(
+                                    base_sources.begin(), found))] += coefficient;
+                        }
+                        for (std::size_t target = 0;
+                             target < group.semantic_rows.size();
+                             ++target) {
+                            routed.target_coefficients[target] =
+                                resolved.output_coefficient
+                                * channel_conversion_coefficient(
+                                    connection.source_type,
+                                    connection.target_type,
+                                    semantic_source,
+                                    group.semantic_rows[target]);
+                        }
+                        if (std::ranges::all_of(
+                                routed.target_coefficients,
+                                [](float value) { return value == 0.0f; })) {
+                            continue;
+                        }
+                        auto const existing = std::ranges::find_if(
+                            contributions,
+                            [&](RoutedSampleConnection::Contribution const& candidate) {
+                                return candidate.detach == routed.detach
+                                    && candidate.source_coefficients
+                                        == routed.source_coefficients;
+                            });
+                        if (existing == contributions.end()) {
+                            contributions.push_back(std::move(routed));
+                        } else {
+                            for (std::size_t target = 0;
+                                 target < existing->target_coefficients.size();
+                                 ++target) {
+                                existing->target_coefficients[target]
+                                    += routed.target_coefficients[target];
+                            }
+                        }
+                    }
+                }
+                routes.push_back(RoutedSampleConnection{
+                    .connection = make_base_connection(),
+                    .contributions = std::move(contributions),
+                    .authored_connection_index = connection_index,
+                });
+                continue;
+            }
+            SampleChannelTransformPlan transform{
+                .source_channel_count = base_sources.size(),
+                .target_channel_count = group.channels.size(),
+            };
+            transform.coefficients.reserve(
+                base_sources.size() * group.channels.size());
+            for (auto const row : group.semantic_rows) {
+                auto const begin = complete_transform.begin()
+                    + static_cast<std::ptrdiff_t>(row * base_sources.size());
+                transform.coefficients.insert(
+                    transform.coefficients.end(),
+                    begin,
+                    begin + static_cast<std::ptrdiff_t>(base_sources.size()));
+            }
+            routes.push_back(RoutedSampleConnection{
+                .connection = make_base_connection(),
+                .transform = std::move(transform),
+                .authored_connection_index = connection_index,
+            });
+        }
+    }
+    return routes;
+}
+
 std::expected<void, std::string> inventory_sample_connections(
     ConfiguredGraph const& graph,
     ResolvedPortRealization const& realization,
-    ConnectionAnalysisPlan& plan)
+    ConnectionAnalysisPlan& plan,
+    std::span<RoutedSampleConnection const> routed_connections)
 {
-    auto const connections = graph.connections.configured_sample_connections();
-    plan.sample_connections.reserve(connections.size());
-    for (std::size_t i = 0; i < connections.size(); ++i) {
-        auto const& connection = connections[i];
+    plan.sample_connections.reserve(routed_connections.size());
+    for (std::size_t i = 0; i < routed_connections.size(); ++i) {
+        auto const& routed = routed_connections[i];
+        auto const& connection = routed.connection;
         if (connection.source_channels.empty() || connection.target_channels.empty()) {
             return std::unexpected(
                 "configured sample connection has an empty port set");
+        }
+        if (!routed.transform.empty()
+            && (routed.transform.source_channel_count
+                    != connection.source_channels.size()
+                || routed.transform.target_channel_count
+                    != connection.target_channels.size()
+                || routed.transform.coefficients.size()
+                    != routed.transform.source_channel_count
+                        * routed.transform.target_channel_count)) {
+            return std::unexpected(
+                "structural sample route has an invalid fused transform");
+        }
+        for (auto const& contribution : routed.contributions) {
+            if (contribution.source_coefficients.size()
+                    != connection.source_channels.size()
+                || contribution.target_coefficients.size()
+                    != connection.target_channels.size()) {
+                return std::unexpected(
+                    "structural sample route has an invalid detached contribution");
+            }
         }
         auto const first_target = connection.target_channels.front();
         if (!std::ranges::all_of(
@@ -434,10 +1017,17 @@ std::expected<void, std::string> inventory_sample_connections(
                 "configured continuous connection has invalid target value geometry");
         }
         SampleConnectionPlan connection_plan{
-            .configured_connection_index = i,
+            .configured_connection_index = routed.authored_connection_index,
             .source_type = connection.source_type,
-            .source_channels = connection.source_channels,
+            .source_channels = [&] {
+                std::vector<SampleOutputChannelId> result;
+                result.reserve(connection.source_channels.size());
+                for (auto const& source : connection.source_channels)
+                    result.push_back(source.channel);
+                return result;
+            }(),
             .target_type = connection.target_type,
+            .transform = routed.transform,
             .target_channels = connection.target_channels,
             .target_port = NodeBundlePortId{
                 first_target.bundle, PortKind::sample, first_target.port},
@@ -449,40 +1039,20 @@ std::expected<void, std::string> inventory_sample_connections(
         try {
             connection_plan.canonical_source_port =
                 graph.node_bundles.sample_output_port_for_channels(
-                    connection.source_type, connection.source_channels);
+                    connection.source_type, connection_plan.source_channels);
             auto const target = graph.node_bundles.resolve_sample_input(
                 connection_plan.target_port).config;
             connection_plan.target_layout = target.channel_layout;
             connection_plan.target_history =
                 realization.input(first_target.bundle, first_target.port).history;
-            if (connection.detach) {
-                if (connection.detach->loop_extra_latency == 0)
-                    return std::unexpected(
-                        "GraphJit sample detach latency must be at least one sample");
-                connection_plan.detach = connection.detach;
-                if (is_sequential(target)) {
-                    if (connection.detach->initial_value_override) {
-                        if (resolved_target.value_type
-                            != continuous_value_type_id_v<Sample>) {
-                            return std::unexpected(
-                                "Sample detach initial-value override cannot initialize a non-Sample continuous connection");
-                        }
-                        connection_plan.detach_initial_value.emplace(
-                            sizeof(Sample));
-                        std::memcpy(
-                            connection_plan.detach_initial_value->data(),
-                            &*connection.detach->initial_value_override,
-                            sizeof(Sample));
-                    }
-                }
-            }
             auto const target_access = destination_access(input_access(target));
             connection_plan.destination_access = target_access;
 
             std::optional<ChannelLayout> canonical_source_layout;
             connection_plan.source_channel_timings.reserve(
                 connection.source_channels.size());
-            for (auto const source_channel : connection.source_channels) {
+            for (auto const& configured_source : connection.source_channels) {
+                auto const source_channel = configured_source.channel;
                 NodeBundlePortId const source_port{
                     source_channel.bundle, PortKind::sample, source_channel.port};
                 auto const source =
@@ -514,6 +1084,7 @@ std::expected<void, std::string> inventory_sample_connections(
                     SampleSourceChannelTimingPlan{
                         .source = source_channel,
                         .source_layout = source.channel_layout,
+                        .detach = configured_source.detach,
                         .production = production,
                         .retention = source.retention,
                         .destination_access = target_access,
@@ -522,6 +1093,24 @@ std::expected<void, std::string> inventory_sample_connections(
                         .source_latency = source_latency,
                         .read_latency = source_latency,
                     });
+                auto& timing = connection_plan.source_channel_timings.back();
+                if (timing.detach) {
+                    if (timing.detach->loop_extra_latency == 0)
+                        return std::unexpected(
+                            "GraphJit sample detach latency must be at least one sample");
+                    if (timing.detach->initial_value_override) {
+                        if (resolved_target.value_type
+                            != continuous_value_type_id_v<Sample>) {
+                            return std::unexpected(
+                                "Sample detach initial-value override cannot initialize a non-Sample continuous connection");
+                        }
+                        timing.detach_initial_value.emplace(sizeof(Sample));
+                        std::memcpy(
+                            timing.detach_initial_value->data(),
+                            &*timing.detach->initial_value_override,
+                            sizeof(Sample));
+                    }
+                }
                 connection_plan.source_history = std::max(
                     connection_plan.source_history, source_history);
                 connection_plan.source_latency = std::max(
@@ -533,8 +1122,47 @@ std::expected<void, std::string> inventory_sample_connections(
             }
             connection_plan.canonical_source_layout = canonical_source_layout;
             connection_plan.read_latency = connection_plan.source_latency;
-            if (!connection.detach) {
-                for (auto const& source : connection_plan.source_channel_timings) {
+            connection_plan.routed_contributions.reserve(
+                routed.contributions.size());
+            for (auto const& routed_contribution : routed.contributions) {
+                SampleRoutedContributionPlan contribution{
+                    .source_coefficients =
+                        routed_contribution.source_coefficients,
+                    .target_coefficients =
+                        routed_contribution.target_coefficients,
+                    .detach = routed_contribution.detach,
+                };
+                if (contribution.detach
+                    && contribution.detach->initial_value_override) {
+                    if (resolved_target.value_type
+                        != continuous_value_type_id_v<Sample>) {
+                        return std::unexpected(
+                            "Sample detach initial-value override cannot initialize a non-Sample continuous connection");
+                    }
+                    contribution.detach_initial_value.emplace(sizeof(Sample));
+                    std::memcpy(
+                        contribution.detach_initial_value->data(),
+                        &*contribution.detach->initial_value_override,
+                        sizeof(Sample));
+                }
+                connection_plan.routed_contributions.push_back(
+                    std::move(contribution));
+            }
+            for (std::size_t source_index = 0;
+                 source_index < connection_plan.source_channel_timings.size();
+                 ++source_index) {
+                auto const& source =
+                    connection_plan.source_channel_timings[source_index];
+                auto const has_ordinary_contribution =
+                    connection_plan.routed_contributions.empty()
+                    || std::ranges::any_of(
+                        connection_plan.routed_contributions,
+                        [&](SampleRoutedContributionPlan const& contribution) {
+                            return !contribution.detach
+                                && contribution.source_coefficients[source_index]
+                                    != 0.0f;
+                        });
+                if (!source.detach && has_ordinary_contribution) {
                     append_dependency(
                         plan,
                         source.source.bundle,
@@ -547,12 +1175,25 @@ std::expected<void, std::string> inventory_sample_connections(
                         i);
                 }
             }
+            auto const first_detach = connection.source_channels.front().detach;
+            auto const uniform_detach = first_detach
+                && std::ranges::all_of(
+                    connection.source_channels,
+                    [&](ConfiguredSampleConnectionSource const& source) {
+                        return source.detach == first_detach;
+                    });
+            if (uniform_detach) {
+                connection_plan.detach = first_detach;
+                connection_plan.detach_initial_value =
+                    connection_plan.source_channel_timings.front()
+                        .detach_initial_value;
+            }
             connection_plan.external_boundary =
                 first_target.bundle == plan.boundary_bundle
                 || std::ranges::any_of(
                     connection.source_channels,
-                    [&](SampleOutputChannelId source) {
-                        return source.bundle == plan.boundary_bundle;
+                    [&](ConfiguredSampleConnectionSource const& source) {
+                        return source.channel.bundle == plan.boundary_bundle;
                     });
             auto const canonical_target_channels =
                 graph.node_bundles.sample_input_channels(connection_plan.target_port);
@@ -567,11 +1208,15 @@ std::expected<void, std::string> inventory_sample_connections(
                     .sample_layout = SampleStreamLayout::planar,
                 };
             connection_plan.requires_conversion =
-                !connection_plan.canonical_source_port
+                !routed.contributions.empty()
+                || !routed.transform.empty()
+                || !connection_plan.canonical_source_port
                 || connection.source_type != connection.target_type
                 || !canonical_source_layout
                 || *canonical_source_layout != semantic_target_layout;
-            if (connection_plan.requires_conversion) {
+            if (connection_plan.requires_conversion
+                && routed.transform.empty()
+                && routed.contributions.empty()) {
                 // Validate the semantic connection conversion. Partial target
                 // contributions convert into their declared target type first;
                 // target-port assembly is normalized separately below.
@@ -582,6 +1227,10 @@ std::expected<void, std::string> inventory_sample_connections(
                     });
                 (void)ChannelConversionRegistry::plan(
                     source_layout, semantic_target_layout);
+            }
+            if (!routed.contributions.empty()) {
+                connection_plan.canonical_source_port.reset();
+                connection_plan.canonical_source_layout.reset();
             }
         } catch (std::exception const& e) {
             return std::unexpected(
@@ -628,7 +1277,10 @@ std::expected<void, std::string> normalize_sample_target_projections(
 
         if (group_indices.size() == 1
             && covers_whole_target(plan.sample_connections[first_index])
-            && plan.sample_connections[first_index].canonical_source_port) {
+            && ((plan.sample_connections[first_index].canonical_source_port
+                    && plan.sample_connections[first_index].transform.empty())
+                || !plan.sample_connections[first_index]
+                        .routed_contributions.empty())) {
             consumed[first_index] = true;
             normalized.push_back(std::move(plan.sample_connections[first_index]));
             continue;
@@ -639,8 +1291,20 @@ std::expected<void, std::string> normalize_sample_target_projections(
 
         auto const& first = plan.sample_connections[first_index];
         auto target_history = first.target_history;
-        auto detach = first.detach;
-        auto detach_initial_value = first.detach_initial_value;
+        auto const uses_routed_contributions = std::ranges::any_of(
+            group_indices,
+            [&](std::size_t connection_index) {
+                auto const& connection =
+                    plan.sample_connections[connection_index];
+                return connection.detach
+                    || !connection.routed_contributions.empty();
+            });
+        auto detach = uses_routed_contributions
+            ? std::optional<ConfiguredSampleConnectionDetach>{}
+            : first.detach;
+        auto detach_initial_value = uses_routed_contributions
+            ? std::optional<std::vector<std::byte>>{}
+            : first.detach_initial_value;
         bool external_boundary = false;
         bool requires_block_materialization = false;
 
@@ -674,7 +1338,8 @@ std::expected<void, std::string> normalize_sample_target_projections(
                     != first.absolute_pace_exponent
                 || connection.target_history != target_history
                 || connection.destination_access != first.destination_access
-                || connection.detach != detach) {
+                || (!uses_routed_contributions
+                    && connection.detach != detach)) {
                 return std::unexpected(
                     "GraphJit sample target-channel projections disagree on target semantics");
             }
@@ -691,7 +1356,10 @@ std::expected<void, std::string> normalize_sample_target_projections(
             SampleProjectionContributionPlan contribution{
                 .source_type = connection.source_type,
                 .target_type = connection.target_type,
+                .transform = connection.transform,
             };
+            auto const merged_source_begin =
+                merged.source_channel_timings.size();
             contribution.source_channel_indices.reserve(
                 connection.source_channel_timings.size());
             contribution.target_channels.reserve(
@@ -734,23 +1402,125 @@ std::expected<void, std::string> normalize_sample_target_projections(
                 contribution.target_channels.push_back(target_index);
             }
 
+            if (uses_routed_contributions) {
+                auto const merged_source_count =
+                    merged.source_channel_timings.size();
+                for (auto& existing : merged.routed_contributions)
+                    existing.source_coefficients.resize(
+                        merged_source_count, 0.0f);
+                auto append_routed_contribution = [&] (
+                    std::span<float const> source_coefficients,
+                    std::span<float const> target_coefficients,
+                    std::optional<ConfiguredSampleConnectionDetach> contribution_detach,
+                    std::optional<std::vector<std::byte>> contribution_initial_value,
+                    std::optional<std::size_t> contribution_detach_region)
+                    -> std::expected<void, std::string> {
+                    if (source_coefficients.size()
+                            != connection.source_channel_timings.size()
+                        || target_coefficients.size()
+                            != connection.target_channels.size()) {
+                        return std::unexpected(
+                            "GraphJit routed sample contribution has inconsistent channel counts");
+                    }
+                    SampleRoutedContributionPlan routed_contribution{
+                        .source_coefficients =
+                            std::vector<float>(merged_source_count, 0.0f),
+                        .target_coefficients =
+                            std::vector<float>(target_channel_total, 0.0f),
+                        .detach = contribution_detach,
+                        .detach_initial_value =
+                            std::move(contribution_initial_value),
+                        .detach_region = contribution_detach_region,
+                    };
+                    std::ranges::copy(
+                        source_coefficients,
+                        routed_contribution.source_coefficients.begin()
+                            + static_cast<std::ptrdiff_t>(merged_source_begin));
+                    for (std::size_t target = 0;
+                         target < contribution.target_channels.size();
+                         ++target) {
+                        routed_contribution.target_coefficients[
+                            contribution.target_channels[target]] =
+                            target_coefficients[target];
+                    }
+                    merged.routed_contributions.push_back(
+                        std::move(routed_contribution));
+                    return {};
+                };
+                if (!connection.routed_contributions.empty()) {
+                    for (auto const& source_contribution :
+                         connection.routed_contributions) {
+                        auto appended = append_routed_contribution(
+                            source_contribution.source_coefficients,
+                            source_contribution.target_coefficients,
+                            source_contribution.detach,
+                            source_contribution.detach_initial_value,
+                            source_contribution.detach_region);
+                        if (!appended) return appended;
+                    }
+                } else {
+                    auto const local_source_count =
+                        connection.source_channel_timings.size();
+                    auto const local_target_count =
+                        connection.target_channels.size();
+                    for (std::size_t target = 0;
+                         target < local_target_count;
+                         ++target) {
+                        std::vector<float> source_coefficients(
+                            local_source_count, 0.0f);
+                        for (std::size_t source = 0;
+                             source < local_source_count;
+                             ++source) {
+                            source_coefficients[source] =
+                                connection.transform.empty()
+                                ? channel_conversion_coefficient(
+                                    connection.source_type,
+                                    connection.target_type,
+                                    source,
+                                    target)
+                                : connection.transform.coefficients[
+                                    target * local_source_count + source];
+                        }
+                        std::vector<float> target_coefficients(
+                            local_target_count, 0.0f);
+                        target_coefficients[target] = 1.0f;
+                        auto appended = append_routed_contribution(
+                            source_coefficients,
+                            target_coefficients,
+                            connection.detach,
+                            connection.detach_initial_value,
+                            connection.detach_region);
+                        if (!appended) return appended;
+                    }
+                }
+                consumed[connection_index] = true;
+                external_boundary = external_boundary
+                    || connection.external_boundary;
+                requires_block_materialization =
+                    requires_block_materialization
+                    || connection.requires_block_materialization;
+                continue;
+            }
+
             // inventory_sample_connections() already validates the configured
             // conversion. Re-check the normalized semantic boundary here so a
             // future producer-layout change cannot silently alter composition.
-            try {
-                (void)ChannelConversionRegistry::plan(
-                    ChannelLayout{
-                        .channel_type = contribution.source_type,
-                        .sample_layout = SampleStreamLayout::planar,
-                    },
-                    ChannelLayout{
-                        .channel_type = contribution.target_type,
-                        .sample_layout = SampleStreamLayout::planar,
-                    });
-            } catch (std::exception const& e) {
-                return std::unexpected(
-                    "sample target-channel projection analysis failed: "
-                    + std::string(e.what()));
+            if (contribution.transform.empty()) {
+                try {
+                    (void)ChannelConversionRegistry::plan(
+                        ChannelLayout{
+                            .channel_type = contribution.source_type,
+                            .sample_layout = SampleStreamLayout::planar,
+                        },
+                        ChannelLayout{
+                            .channel_type = contribution.target_type,
+                            .sample_layout = SampleStreamLayout::planar,
+                        });
+                } catch (std::exception const& e) {
+                    return std::unexpected(
+                        "sample target-channel projection analysis failed: "
+                        + std::string(e.what()));
+                }
             }
 
             merged.projection_contributions.push_back(std::move(contribution));
@@ -780,34 +1550,372 @@ std::expected<void, std::string> normalize_sample_target_projections(
     return {};
 }
 
+struct RoutedEventSource {
+    ConfiguredEventConnectionSource source{};
+    EventTypeId source_type = EventTypeId::empty;
+    EventConversionPlan conversion{};
+};
+
+struct RoutedEventConnection {
+    ConfiguredEventConnection connection{};
+    std::vector<RoutedEventSource> sources{};
+    EventConversionPlan conversion{};
+    std::size_t authored_connection_index = 0;
+};
+
+struct ResolvedEventBranch {
+    EventTypeId source_type = EventTypeId::empty;
+    std::vector<ConfiguredEventConnectionSource> sources{};
+    EventConversionPlan conversion{};
+};
+
+std::expected<EventConversionPlan, std::string> append_event_conversion(
+    EventConversionPlan prefix,
+    EventConversionPlan const& suffix)
+{
+    if (prefix.target_type != suffix.source_type
+        || prefix.step_count + suffix.step_count
+            > EventConversionPlan::max_steps) {
+        return std::unexpected(
+            "GraphJit structural event route has an invalid conversion chain");
+    }
+    for (std::size_t step = 0; step < suffix.step_count; ++step) {
+        prefix.steps[prefix.step_count++] = suffix.steps[step];
+    }
+    prefix.target_type = suffix.target_type;
+    return prefix;
+}
+
+std::expected<void, std::string> append_event_route_edge(
+    ResolvedEventBranch& branch,
+    EventConversionPlan const& edge,
+    std::optional<ConfiguredEventConnectionDetach> detach)
+{
+    if (detach) {
+        for (auto& source : branch.sources) {
+            if (source.detach) {
+                return std::unexpected(
+                    "GraphJit structural event route contains two serial detach operations");
+            }
+            source.detach = detach;
+        }
+    }
+    if (branch.conversion.target_type != edge.source_type) {
+        EventConversionPlan bridge;
+        try {
+            bridge = EventConversionRegistry::plan(
+                branch.conversion.target_type, edge.source_type);
+        } catch (std::exception const& error) {
+            return std::unexpected(
+                "GraphJit structural event source conversion failed: "
+                + std::string(error.what()));
+        }
+        auto bridged = append_event_conversion(
+            std::move(branch.conversion), bridge);
+        if (!bridged) return std::unexpected(std::move(bridged.error()));
+        branch.conversion = std::move(*bridged);
+    }
+    auto appended = append_event_conversion(branch.conversion, edge);
+    if (!appended) return std::unexpected(std::move(appended.error()));
+    branch.conversion = std::move(*appended);
+    return {};
+}
+
+std::expected<std::vector<RoutedEventConnection>, std::string>
+build_structural_event_routes(ConfiguredGraph const& graph)
+{
+    auto const authored = graph.connections.configured_event_connections();
+    auto const root_boundary = graph.public_ports.boundary_handle();
+
+    std::vector<std::optional<NodeBundleHandle>> boundary_owner(
+        graph.node_bundles.size());
+    for (NodeBundleHandle bundle = 0;
+         bundle < graph.node_bundles.size();
+         ++bundle) {
+        auto const& candidate = graph.node_bundles.bundle(bundle);
+        if (!candidate.is_subgraph()) continue;
+        auto const boundary = candidate.subgraph_boundary_handle();
+        if (!boundary || *boundary >= boundary_owner.size()
+            || boundary_owner[*boundary]) {
+            return std::unexpected(
+                "GraphJit structural event routing found an invalid subgraph boundary");
+        }
+        boundary_owner[*boundary] = bundle;
+    }
+
+    auto expand_target = [&](auto&& self, EventInputPortId target)
+        -> std::expected<std::vector<EventInputPortId>, std::string> {
+        if (target.bundle >= graph.node_bundles.size()) {
+            return std::unexpected(
+                "GraphJit structural event route references a missing target bundle");
+        }
+        auto const& bundle = graph.node_bundles.bundle(target.bundle);
+        if (!bundle.is_tiled()) return std::vector{target};
+        std::vector<EventInputPortId> result;
+        for (auto const member : bundle.tiled_members()) {
+            auto expanded = self(self, EventInputPortId{
+                .bundle = member,
+                .port = target.port,
+            });
+            if (!expanded) return std::unexpected(std::move(expanded.error()));
+            result.insert(result.end(), expanded->begin(), expanded->end());
+        }
+        return result;
+    };
+
+    auto is_terminal_target = [&](EventInputPortId target) {
+        auto const& bundle = graph.node_bundles.bundle(target.bundle);
+        return bundle.is_concrete() || target.bundle == root_boundary;
+    };
+
+    std::vector<EventOutputPortId> resolving;
+    auto resolve_output = [&](auto&& self, EventOutputPortId output)
+        -> std::expected<std::vector<ResolvedEventBranch>, std::string> {
+        if (output.bundle >= graph.node_bundles.size()) {
+            return std::unexpected(
+                "GraphJit structural event route references a missing source bundle");
+        }
+        if (std::ranges::contains(resolving, output)) {
+            return std::unexpected(
+                "GraphJit structural event routing reached a cycle before a detach");
+        }
+        resolving.push_back(output);
+        auto pop = [&] { resolving.pop_back(); };
+        auto const& bundle = graph.node_bundles.bundle(output.bundle);
+
+        if (bundle.is_concrete() || output.bundle == root_boundary) {
+            auto const type = graph.node_bundles.resolve_event_output(
+                NodeBundlePortId{
+                    output.bundle, PortKind::event, output.port}).config.type;
+            pop();
+            return std::vector{ResolvedEventBranch{
+                .source_type = type,
+                .sources = {{.port = output}},
+                .conversion = EventConversionRegistry::plan(type, type),
+            }};
+        }
+        if (bundle.is_tiled()) {
+            std::vector<ResolvedEventBranch> result;
+            for (auto const member : bundle.tiled_members()) {
+                auto branches = self(self, EventOutputPortId{
+                    .bundle = member,
+                    .port = output.port,
+                });
+                if (!branches) {
+                    pop();
+                    return std::unexpected(std::move(branches.error()));
+                }
+                for (auto& branch : *branches)
+                    result.push_back(std::move(branch));
+            }
+            pop();
+            return result;
+        }
+
+        EventInputPortId upstream_target{};
+        if (bundle.is_subgraph()) {
+            auto const boundary = bundle.subgraph_boundary_handle();
+            if (!boundary) {
+                pop();
+                return std::unexpected(
+                    "GraphJit subgraph event source lost its boundary");
+            }
+            upstream_target = EventInputPortId{
+                .bundle = *boundary,
+                .port = output.port,
+            };
+        } else if (bundle.is_boundary()
+                   && output.bundle != root_boundary) {
+            if (!boundary_owner[output.bundle]) {
+                pop();
+                return std::unexpected(
+                    "GraphJit internal event boundary has no owning subgraph");
+            }
+            upstream_target = EventInputPortId{
+                .bundle = *boundary_owner[output.bundle],
+                .port = output.port,
+            };
+        } else {
+            pop();
+            return std::unexpected(
+                "GraphJit structural event source has no executable producer");
+        }
+
+        std::vector<ResolvedEventBranch> result;
+        for (auto const& connection : authored) {
+            bool reaches_target = false;
+            for (auto const target : connection.targets) {
+                auto expanded = expand_target(expand_target, target);
+                if (!expanded) {
+                    pop();
+                    return std::unexpected(std::move(expanded.error()));
+                }
+                reaches_target = reaches_target
+                    || std::ranges::contains(*expanded, upstream_target);
+            }
+            if (!reaches_target) continue;
+            auto edge = EventConversionRegistry::plan(
+                connection.source_type, connection.target_type);
+            for (auto const& source : connection.sources) {
+                auto branches = self(self, source.port);
+                if (!branches) {
+                    pop();
+                    return std::unexpected(std::move(branches.error()));
+                }
+                for (auto& branch : *branches) {
+                    auto appended = append_event_route_edge(
+                        branch, edge, source.detach);
+                    if (!appended) {
+                        pop();
+                        return std::unexpected(std::move(appended.error()));
+                    }
+                    result.push_back(std::move(branch));
+                }
+            }
+        }
+        pop();
+        if (result.empty()) {
+            return std::unexpected(
+                "GraphJit structural event boundary route has no source");
+        }
+        return result;
+    };
+
+    std::vector<RoutedEventConnection> routes;
+    for (std::size_t connection_index = 0;
+         connection_index < authored.size();
+         ++connection_index) {
+        auto const& connection = authored[connection_index];
+        std::vector<EventInputPortId> terminal_targets;
+        for (auto const target : connection.targets) {
+            auto expanded = expand_target(expand_target, target);
+            if (!expanded) return std::unexpected(std::move(expanded.error()));
+            for (auto const candidate : *expanded) {
+                if (is_terminal_target(candidate)) {
+                    terminal_targets.push_back(candidate);
+                }
+            }
+        }
+        if (terminal_targets.empty()) continue;
+
+        std::vector<ResolvedEventBranch> branches;
+        for (auto const& source : connection.sources) {
+            auto resolved = resolve_output(resolve_output, source.port);
+            if (!resolved) return std::unexpected(std::move(resolved.error()));
+            for (auto& branch : *resolved) {
+                if (source.detach) {
+                    for (auto& resolved_source : branch.sources) {
+                        if (resolved_source.detach) {
+                            return std::unexpected(
+                                "GraphJit structural event route contains two serial detach operations");
+                        }
+                        resolved_source.detach = source.detach;
+                    }
+                }
+                branches.push_back(std::move(branch));
+            }
+        }
+        auto const edge = EventConversionRegistry::plan(
+            connection.source_type, connection.target_type);
+        RoutedEventConnection route{
+            .connection = ConfiguredEventConnection{
+                .source_type = connection.source_type,
+                .target_type = connection.target_type,
+                .targets = std::move(terminal_targets),
+            },
+            .conversion = edge,
+            .authored_connection_index = connection_index,
+        };
+        for (auto& branch : branches) {
+            if (branch.conversion.target_type != connection.source_type) {
+                EventConversionPlan bridge;
+                try {
+                    bridge = EventConversionRegistry::plan(
+                        branch.conversion.target_type,
+                        connection.source_type);
+                } catch (std::exception const& error) {
+                    return std::unexpected(
+                        "GraphJit structural event fan-in conversion failed: "
+                        + std::string(error.what()));
+                }
+                auto bridged = append_event_conversion(
+                    std::move(branch.conversion), bridge);
+                if (!bridged)
+                    return std::unexpected(std::move(bridged.error()));
+                branch.conversion = std::move(*bridged);
+            }
+            if (branch.conversion.source_type != branch.source_type) {
+                return std::unexpected(
+                    "GraphJit structural event source has an inconsistent conversion");
+            }
+            for (auto& source : branch.sources) {
+                route.connection.sources.push_back(source);
+                route.sources.push_back(RoutedEventSource{
+                    .source = std::move(source),
+                    .source_type = branch.source_type,
+                    .conversion = branch.conversion,
+                });
+            }
+        }
+        routes.push_back(std::move(route));
+    }
+    return routes;
+}
+
 std::expected<void, std::string> inventory_event_connections(
     ConfiguredGraph const& graph,
     ResolvedPortRealization const& realization,
-    ConnectionAnalysisPlan& plan)
+    ConnectionAnalysisPlan& plan,
+    std::span<RoutedEventConnection const> routed_connections)
 {
-    auto const connections = graph.connections.configured_event_connections();
-    plan.event_connections.reserve(connections.size());
-    for (std::size_t i = 0; i < connections.size(); ++i) {
-        auto const& connection = connections[i];
+    plan.event_connections.reserve(routed_connections.size());
+    for (std::size_t i = 0; i < routed_connections.size(); ++i) {
+        auto const& routed = routed_connections[i];
+        auto const& connection = routed.connection;
         if (connection.sources.empty() || connection.targets.empty()) {
             return std::unexpected(
                 "configured event connection has an empty port set");
         }
+        if (routed.sources.size() != connection.sources.size()) {
+            return std::unexpected(
+                "structural event route lost its per-source conversion records");
+        }
         EventConnectionPlan connection_plan{
-            .configured_connection_index = i,
+            .configured_connection_index = routed.authored_connection_index,
             .source_type = connection.source_type,
-            .sources = connection.sources,
             .target_type = connection.target_type,
             .targets = connection.targets,
         };
 
         try {
             connection_plan.source_plans.reserve(connection.sources.size());
-            for (auto const source_id : connection.sources) {
+            connection_plan.sources.reserve(connection.sources.size());
+            for (std::size_t source_index = 0;
+                 source_index < connection.sources.size(); ++source_index) {
+                auto const& configured_source = connection.sources[source_index];
+                auto const& routed_source = routed.sources[source_index];
+                auto const source_id = configured_source.port;
+                if (routed_source.source != configured_source) {
+                    return std::unexpected(
+                        "structural event route source records disagree");
+                }
+                connection_plan.sources.push_back(source_id);
                 NodeBundlePortId const source_port{
                     source_id.bundle, PortKind::event, source_id.port};
                 auto const source =
                     graph.node_bundles.resolve_event_output(source_port).config;
+                if (source.type != routed_source.source_type
+                    || routed_source.conversion.source_type != source.type
+                    || routed_source.conversion.target_type
+                        != connection.source_type) {
+                    return std::unexpected(
+                        "structural event source conversion disagrees with its concrete output");
+                }
+                if (!EventConversionRegistry::is_nonexpanding(
+                        routed_source.conversion)) {
+                    return std::unexpected(
+                        "implicit event source conversion must be non-expanding");
+                }
                 auto const& resolved_source =
                     realization.event_output(source_id.bundle, source_id.port);
                 auto const history = resolved_source.history;
@@ -827,11 +1935,14 @@ std::expected<void, std::string> inventory_event_connections(
                 }
                 connection_plan.source_plans.push_back(EventSourcePlan{
                     .source = source_id,
+                    .source_type = source.type,
+                    .conversion = routed_source.conversion,
                     .production = source_production(output_production(source)),
                     .retention = source.retention,
                     .history = history,
                     .latency = latency,
                     .max_events_per_index = source.max_events_per_index,
+                    .detach = configured_source.detach,
                 });
             }
 
@@ -882,16 +1993,18 @@ std::expected<void, std::string> inventory_event_connections(
                 }
             }
 
-            if (connection.detach) {
-                if (connection.detach->loop_extra_latency == 0) {
+            for (std::size_t source_index = 0;
+                 source_index < connection_plan.source_plans.size();
+                 ++source_index) {
+                auto const& source = connection_plan.source_plans[source_index];
+                if (source.detach
+                    && source.detach->loop_extra_latency == 0) {
                     return std::unexpected(
                         "GraphJit event detach latency must be at least one sample");
                 }
-                connection_plan.detach = connection.detach;
-            } else {
                 for (auto const& delivery : connection_plan.deliveries) {
-                    auto const& source =
-                        connection_plan.source_plans[delivery.source_index];
+                    if (delivery.source_index != source_index
+                        || source.detach) continue;
                     auto const& target =
                         connection_plan.target_plans[delivery.target_index];
                     append_dependency(
@@ -906,19 +2019,39 @@ std::expected<void, std::string> inventory_event_connections(
                         i);
                 }
             }
+            if (!connection_plan.source_plans.empty()) {
+                auto const& first_detach =
+                    connection_plan.source_plans.front().detach;
+                auto const uniform_detach = first_detach
+                    && std::ranges::all_of(
+                        connection_plan.source_plans,
+                        [&](EventSourcePlan const& source) {
+                            return source.detach == first_detach;
+                        });
+                if (uniform_detach)
+                    connection_plan.detach = first_detach;
+                connection_plan.requires_source_composition =
+                    has_detached_source(connection_plan) && !uniform_detach;
+            }
             connection_plan.external_boundary =
                 std::ranges::any_of(
                     connection.sources,
-                    [&](EventOutputPortId source) {
-                        return source.bundle == plan.boundary_bundle;
+                    [&](ConfiguredEventConnectionSource const& source) {
+                        return source.port.bundle == plan.boundary_bundle;
                     })
                 || std::ranges::any_of(
                     connection.targets,
                     [&](EventInputPortId target) {
                         return target.bundle == plan.boundary_bundle;
                     });
-            connection_plan.conversion = EventConversionRegistry::instance().plan(
-                connection.source_type, connection.target_type);
+            connection_plan.conversion = routed.conversion;
+            if (connection_plan.conversion.source_type
+                    != connection_plan.source_type
+                || connection_plan.conversion.target_type
+                    != connection_plan.target_type) {
+                return std::unexpected(
+                    "structural event route has inconsistent conversion types");
+            }
             if (!EventConversionRegistry::is_nonexpanding(
                     connection_plan.conversion)) {
                 return std::unexpected(
@@ -926,7 +2059,13 @@ std::expected<void, std::string> inventory_event_connections(
             }
             connection_plan.requires_conversion =
                 connection_plan.conversion.size() != 0
-                || connection.sources.size() != 1;
+                || std::ranges::any_of(
+                    connection_plan.source_plans,
+                    [](EventSourcePlan const& source) {
+                        return source.conversion.size() != 0;
+                    })
+                || (!connection_plan.detach
+                    && connection_plan.sources.size() != 1);
         } catch (std::exception const& e) {
             return std::unexpected(
                 "event connection analysis failed: " + std::string(e.what()));
@@ -1251,13 +2390,15 @@ std::expected<void, std::string> validate_detach_delivery_mechanisms(
     ConnectionAnalysisPlan const& plan)
 {
     for (auto const& connection : plan.sample_connections) {
-        if (connection.detach && !is_entirely_realtime_delivery(connection)) {
+        if (has_detached_source(connection)
+            && !is_entirely_realtime_delivery(connection)) {
             return std::unexpected(
                 "GraphJit sample detach requires Tick -> Sequential transport");
         }
     }
     for (auto const& connection : plan.event_connections) {
-        if (connection.detach && !is_entirely_realtime_delivery(connection)) {
+        if (has_detached_source(connection)
+            && !is_entirely_realtime_delivery(connection)) {
             return std::unexpected(
                 "GraphJit event detach requires Tick -> Sequential transport");
         }
@@ -1276,12 +2417,26 @@ std::vector<NodeBundleHandle> unique_source_bundles(
     return bundles;
 }
 
-std::vector<NodeBundleHandle> unique_source_bundles(
-    std::span<EventOutputPortId const> sources)
+std::vector<NodeBundleHandle> detached_sample_source_bundles(
+    SampleConnectionPlan const& connection)
 {
     std::vector<NodeBundleHandle> bundles;
-    bundles.reserve(sources.size());
-    for (auto const source : sources) bundles.push_back(source.bundle);
+    for (std::size_t source_index = 0;
+         source_index < connection.source_channel_timings.size();
+         ++source_index) {
+        auto const directly_detached =
+            connection.source_channel_timings[source_index].detach.has_value();
+        auto const routed_detached = std::ranges::any_of(
+            connection.routed_contributions,
+            [&](SampleRoutedContributionPlan const& contribution) {
+                return contribution.detach
+                    && source_index < contribution.source_coefficients.size()
+                    && contribution.source_coefficients[source_index] != 0.0f;
+            });
+        if (directly_detached || routed_detached)
+            bundles.push_back(
+                connection.source_channel_timings[source_index].source.bundle);
+    }
     std::ranges::sort(bundles);
     bundles.erase(std::unique(bundles.begin(), bundles.end()), bundles.end());
     return bundles;
@@ -1317,17 +2472,16 @@ std::expected<BackgroundEvaluationPlan, std::string> build_semantic_background_p
             *result.bundle_to_semantic_node[target_bundle]);
     };
     for (auto const& connection : plan.sample_connections) {
-        if (!connection.detach) continue;
-        for (auto const source : unique_source_bundles(
-                 connection.source_channels)) {
+        if (!has_detached_source(connection)) continue;
+        for (auto const source : detached_sample_source_bundles(connection)) {
             append_edge(source, connection.target_port.node_bundle_handle);
         }
     }
     for (auto const& connection : plan.event_connections) {
-        if (!connection.detach) continue;
-        for (auto const source : unique_source_bundles(connection.sources)) {
+        for (auto const& source : connection.source_plans) {
+            if (!source.detach) continue;
             for (auto const target : connection.targets) {
-                append_edge(source, target.bundle);
+                append_edge(source.source.bundle, target.bundle);
             }
         }
     }
@@ -2043,6 +3197,11 @@ std::expected<void, std::string> populate_background_topology(
                 .source_channel_indices = projection.source_channel_indices,
                 .target_type = projection.target_type,
                 .target_channels = projection.target_channels,
+                .transform_source_channel_count =
+                    projection.transform.source_channel_count,
+                .transform_target_channel_count =
+                    projection.transform.target_channel_count,
+                .transform_coefficients = projection.transform.coefficients,
             });
         }
         append_connection(std::move(background));
@@ -2146,6 +3305,8 @@ std::expected<void, std::string> populate_background_topology(
             background.event_deliveries.push_back(graph_jit::EventDeliveryPlan{
                 .source = source.source,
                 .target = target.target,
+                .source_type = source.source_type,
+                .conversion = source.conversion,
                 .source_port = source_port,
                 .target_port = target_port,
                 .mechanism = delivery.mechanism,
@@ -2393,28 +3554,51 @@ std::expected<void, std::string> validate_detached_connections(
     };
 
     for (auto const& connection : plan.sample_connections) {
-        if (!connection.detach) continue;
-        auto sources = unique_source_bundles(connection.source_channels);
         std::array<NodeBundleHandle, 1> targets{
             connection.target_port.node_bundle_handle};
-        if (auto result = validate(
-                sources, targets, "sample",
-                connection.configured_connection_index);
-            !result) return result;
+        if (connection.detach) {
+            auto sources = unique_source_bundles(connection.source_channels);
+            if (auto result = validate(
+                    sources, targets, "sample",
+                    connection.configured_connection_index);
+                !result) return result;
+        }
+        for (auto const& contribution : connection.routed_contributions) {
+            if (!contribution.detach) continue;
+            std::vector<NodeBundleHandle> sources;
+            for (std::size_t source_index = 0;
+                 source_index < contribution.source_coefficients.size();
+                 ++source_index) {
+                if (contribution.source_coefficients[source_index] == 0.0f)
+                    continue;
+                sources.push_back(
+                    connection.source_channel_timings[source_index]
+                        .source.bundle);
+            }
+            std::ranges::sort(sources);
+            sources.erase(
+                std::unique(sources.begin(), sources.end()), sources.end());
+            if (auto result = validate(
+                    sources, targets, "sample",
+                    connection.configured_connection_index);
+                !result) return result;
+        }
     }
     for (auto const& connection : plan.event_connections) {
-        if (!connection.detach) continue;
-        auto sources = unique_source_bundles(connection.sources);
         std::vector<NodeBundleHandle> targets;
         targets.reserve(connection.targets.size());
         for (auto const target : connection.targets)
             targets.push_back(target.bundle);
         std::ranges::sort(targets);
         targets.erase(std::unique(targets.begin(), targets.end()), targets.end());
-        if (auto result = validate(
-                sources, targets, "event",
-                connection.configured_connection_index);
-            !result) return result;
+        for (auto const& source : connection.source_plans) {
+            if (!source.detach) continue;
+            std::array<NodeBundleHandle, 1> sources{source.source.bundle};
+            if (auto result = validate(
+                    sources, targets, "event",
+                    connection.configured_connection_index);
+                !result) return result;
+        }
     }
     return {};
 }
@@ -2446,13 +3630,20 @@ std::expected<SchedulePlan, std::string> build_schedule(
             "GraphJit schedule is missing retained semantic SCC facts");
     }
     schedule.regions.reserve(plan.background.semantic_sccs.size());
-    std::vector<std::size_t> node_to_region(plan.nodes.size(), 0);
+    std::vector<std::optional<std::size_t>> node_to_region(plan.nodes.size());
     for (auto const& semantic_scc : plan.background.semantic_sccs) {
         auto const& component = semantic_scc.nodes;
+        std::vector<std::size_t> tick_component;
+        tick_component.reserve(component.size());
+        for (auto const node : component) {
+            if (plan.nodes[node].tick_execution) tick_component.push_back(node);
+        }
+        if (tick_component.empty()) continue;
+
         auto const region_index = schedule.regions.size();
         SccRegionPlan region;
         region.maximum_block_size = std::numeric_limits<std::size_t>::max();
-        for (auto const node : component) {
+        for (auto const node : tick_component) {
             node_to_region[node] = region_index;
             region.nodes.push_back(plan.nodes[node].bundle);
             region.maximum_block_size = std::min(
@@ -2465,15 +3656,16 @@ std::expected<SchedulePlan, std::string> build_schedule(
         // same-slice tick dependency. Topologically order each region using
         // only ordinary sequential dependencies.
         std::vector<std::size_t> local_indegree(plan.nodes.size(), 0);
-        for (auto const node : component) {
+        for (auto const node : tick_component) {
             for (auto const target : explicit_outgoing[node]) {
-                if (std::ranges::find(component, target) != component.end()) {
+                if (std::ranges::find(tick_component, target)
+                    != tick_component.end()) {
                     ++local_indegree[target];
                 }
             }
         }
         std::vector<std::size_t> ready;
-        for (auto const node : component) {
+        for (auto const node : tick_component) {
             if (local_indegree[node] == 0) ready.push_back(node);
         }
         auto by_bundle = [&](std::size_t a, std::size_t b) {
@@ -2485,7 +3677,8 @@ std::expected<SchedulePlan, std::string> build_schedule(
             ready.erase(ready.begin());
             region.execution_order.push_back(plan.nodes[node].bundle);
             for (auto const target : explicit_outgoing[node]) {
-                if (std::ranges::find(component, target) == component.end()) continue;
+                if (std::ranges::find(tick_component, target)
+                    == tick_component.end()) continue;
                 if (--local_indegree[target] == 0) {
                     auto const insertion = std::lower_bound(
                         ready.begin(), ready.end(), target, by_bundle);
@@ -2493,7 +3686,7 @@ std::expected<SchedulePlan, std::string> build_schedule(
                 }
             }
         }
-        if (region.execution_order.size() != component.size()) {
+        if (region.execution_order.size() != tick_component.size()) {
             return std::unexpected(
                 "GraphJit SCC remains cyclic after detach dependencies are removed");
         }
@@ -2501,7 +3694,10 @@ std::expected<SchedulePlan, std::string> build_schedule(
     }
 
     for (std::size_t node = 0; node < plan.nodes.size(); ++node) {
-        schedule.bundle_to_region[plan.nodes[node].bundle] = node_to_region[node];
+        if (node_to_region[node]) {
+            schedule.bundle_to_region[plan.nodes[node].bundle] =
+                *node_to_region[node];
+        }
     }
 
     // Schedule condensation is a semantically distinct adjacency: background
@@ -2513,8 +3709,12 @@ std::expected<SchedulePlan, std::string> build_schedule(
     std::vector<std::size_t> region_indegree(schedule.regions.size(), 0);
     for (std::size_t source = 0; source < explicit_outgoing.size(); ++source) {
         for (auto const target : explicit_outgoing[source]) {
-            auto const source_region = node_to_region[source];
-            auto const target_region = node_to_region[target];
+            if (!node_to_region[source] || !node_to_region[target]) {
+                return std::unexpected(
+                    "GraphJit ordinary Tick dependency references a Tock-only primitive");
+            }
+            auto const source_region = *node_to_region[source];
+            auto const target_region = *node_to_region[target];
             if (source_region == target_region) continue;
             region_outgoing[source_region].push_back(target_region);
         }
@@ -2589,13 +3789,66 @@ std::expected<void, std::string> bind_detach_regions(
         if (auto bound = bind(
                 connection, connection.target_port.node_bundle_handle);
             !bound) return std::unexpected(std::move(bound.error()));
+        for (auto& contribution : connection.routed_contributions) {
+            if (!contribution.detach) continue;
+            if (connection.target_port.node_bundle_handle
+                    >= plan.schedule.bundle_to_region.size()
+                || !plan.schedule.bundle_to_region[
+                    connection.target_port.node_bundle_handle]) {
+                return std::unexpected(
+                    "GraphJit sample detach does not map to a concrete execution region");
+            }
+            auto const region_index = *plan.schedule.bundle_to_region[
+                connection.target_port.node_bundle_handle];
+            if (region_index >= plan.schedule.regions.size()
+                || !plan.schedule.regions[region_index].cyclic) {
+                return std::unexpected(
+                    "GraphJit validated sample detach did not form an execution SCC");
+            }
+            contribution.detach_region = region_index;
+            auto& region = plan.schedule.regions[region_index];
+            region.maximum_block_size = std::min(
+                region.maximum_block_size,
+                floor_power_of_two(
+                    contribution.detach->loop_extra_latency));
+        }
     }
     for (auto& connection : plan.event_connections) {
-        if (!connection.detach) continue;
+        if (!has_detached_source(connection)) continue;
         if (connection.targets.empty())
             return std::unexpected("GraphJit detached event connection has no target");
-        if (auto bound = bind(connection, connection.targets.front().bundle);
-            !bound) return std::unexpected(std::move(bound.error()));
+        auto const target_bundle = connection.targets.front().bundle;
+        std::optional<std::size_t> common_region;
+        for (auto& source : connection.source_plans) {
+            if (!source.detach) continue;
+            if (target_bundle >= plan.schedule.bundle_to_region.size()
+                || !plan.schedule.bundle_to_region[target_bundle]) {
+                return std::unexpected(
+                    "GraphJit event detach does not map to a concrete execution region");
+            }
+            auto const region_index =
+                *plan.schedule.bundle_to_region[target_bundle];
+            if (region_index >= plan.schedule.regions.size()
+                || !plan.schedule.regions[region_index].cyclic) {
+                return std::unexpected(
+                    "GraphJit validated event detach did not form an execution SCC");
+            }
+            for (auto const target : connection.targets) {
+                if (target.bundle >= plan.schedule.bundle_to_region.size()
+                    || plan.schedule.bundle_to_region[target.bundle]
+                        != region_index) {
+                    return std::unexpected(
+                        "GraphJit event detach targets span execution regions");
+                }
+            }
+            source.detach_region = region_index;
+            common_region = region_index;
+            auto& region = plan.schedule.regions[region_index];
+            region.maximum_block_size = std::min(
+                region.maximum_block_size,
+                floor_power_of_two(source.detach->loop_extra_latency));
+        }
+        if (connection.detach) connection.detach_region = common_region;
     }
     for (auto& region : plan.schedule.regions) {
         region.scc_feedback_latency = region.cyclic
@@ -2688,7 +3941,7 @@ std::expected<void, std::string> plan_sample_latency_compensation(
                  ++connection_index) {
                 auto const& connection = plan.sample_connections[connection_index];
                 if (!is_entirely_realtime_delivery(connection)
-                    || connection.detach
+                    || has_detached_source(connection)
                     || connection.target_port.node_bundle_handle != bundle) {
                     continue;
                 }
@@ -2831,7 +4084,7 @@ ConnectionLiveIntervalPlan live_interval_for_sample_group(
                 *plan.schedule.bundle_execution_position[target]);
         }
         live.crosses_kernel_invocations =
-            live.crosses_kernel_invocations || connection.detach;
+            live.crosses_kernel_invocations || has_detached_source(connection);
     }
     if (!saw_port) live.begin = 0;
     if (live.begin == execution_count && execution_count != 0) live.begin = 0;
@@ -2878,7 +4131,8 @@ ConnectionLiveIntervalPlan live_interval_for_event_group(
             }
         }
         live.crosses_kernel_invocations =
-            live.crosses_kernel_invocations || connection.detach;
+            live.crosses_kernel_invocations
+            || has_detached_source(connection);
     }
     if (!saw_port) live.begin = 0;
     if (live.begin == execution_count && execution_count != 0) live.begin = 0;
@@ -3173,7 +4427,7 @@ void plan_port_atoms(
                     .source_latency = timing.source_latency,
                     .read_latency = timing.read_latency,
                     .target_history = connection.target_history,
-                    .detached = connection.detach.has_value(),
+                    .detached = has_detached_source(connection),
                 });
             }
             join_capabilities(
@@ -3213,7 +4467,7 @@ void plan_port_atoms(
                         projection.source_channel_indices,
                     .destination_access = connection.destination_access,
                     .target_history = connection.target_history,
-                    .detached = connection.detach.has_value(),
+                    .detached = has_detached_source(connection),
                 });
                 for (auto const source_index :
                      projection.source_channel_indices) {
@@ -3241,7 +4495,7 @@ void plan_port_atoms(
                     .source_channel_indices = std::move(source_indices),
                     .destination_access = connection.destination_access,
                     .target_history = connection.target_history,
-                    .detached = connection.detach.has_value(),
+                    .detached = has_detached_source(connection),
                 });
                 for (auto const& timing : connection.source_channel_timings) {
                     join_capabilities(
@@ -3437,7 +4691,7 @@ void plan_port_atoms(
                 background.event_source_subsets.push_back(
                     EventSourcePortSubsetPlan{
                         .port = source.source,
-                        .type = connection.source_type,
+                        .type = source.source_type,
                         .production = source.production,
                         .retention = source.retention,
                         .max_events_per_index = source.max_events_per_index,
@@ -3608,7 +4862,11 @@ std::expected<void, std::string> plan_sample_groups(
                 plan,
                 connection.target_port.node_bundle_handle,
                 kernel_block_size);
-            for (auto const& channel : connection.source_channel_timings) {
+            for (std::size_t channel_index = 0;
+                 channel_index < connection.source_channel_timings.size();
+                 ++channel_index) {
+                auto const& channel =
+                    connection.source_channel_timings[channel_index];
                 if (!uses_realtime_storage(channel.delivery)) continue;
                 if (effective_block_size(
                         plan, channel.source.bundle, kernel_block_size)
@@ -3702,7 +4960,11 @@ std::expected<void, std::string> plan_sample_groups(
             std::size_t connection_retained = 0;
             bool saw_group_realtime_channel = false;
             bool saw_group_background_channel = false;
-            for (auto const& channel : connection.source_channel_timings) {
+            for (std::size_t channel_index = 0;
+                 channel_index < connection.source_channel_timings.size();
+                 ++channel_index) {
+                auto const& channel =
+                    connection.source_channel_timings[channel_index];
                 if (!group.source_port
                     || source_port_for(channel.source) != *group.source_port) {
                     continue;
@@ -3716,15 +4978,37 @@ std::expected<void, std::string> plan_sample_groups(
                 // the branch-local retained feedback timeline. The canonical producer still
                 // retains its own declared output history, which its callback
                 // may address independently of any consumer.
-                connection_retained = std::max(
-                    connection_retained,
-                    connection.detach
-                        ? saturating_add(
-                            channel.source_history, channel.source_latency)
-                        : retained_extent(
+                auto const has_detached_use = channel.detach
+                    || std::ranges::any_of(
+                        connection.routed_contributions,
+                        [&](SampleRoutedContributionPlan const& contribution) {
+                            return contribution.detach
+                                && contribution.source_coefficients[channel_index]
+                                    != 0.0f;
+                        });
+                auto const has_ordinary_use = !channel.detach
+                    && (connection.routed_contributions.empty()
+                        || std::ranges::any_of(
+                            connection.routed_contributions,
+                            [&](SampleRoutedContributionPlan const& contribution) {
+                                return !contribution.detach
+                                    && contribution.source_coefficients[channel_index]
+                                        != 0.0f;
+                            }));
+                if (has_detached_use) {
+                    connection_retained = std::max(
+                        connection_retained,
+                        saturating_add(
+                            channel.source_history, channel.source_latency));
+                }
+                if (has_ordinary_use) {
+                    connection_retained = std::max(
+                        connection_retained,
+                        retained_extent(
                             channel.source_history,
                             channel.read_latency,
                             connection.target_history));
+                }
             }
             group.has_background_connections = group.has_background_connections
                 || saw_group_background_channel;
@@ -3861,16 +5145,22 @@ std::expected<void, std::string> plan_event_groups(
             }
         }
 
+        std::vector<EventConversionPlan> source_conversions;
+        source_conversions.reserve(connection.source_plans.size());
+        for (auto const& source : connection.source_plans)
+            source_conversions.push_back(source.conversion);
         auto group = std::ranges::find_if(
             plan.event_producer_groups,
             [&](EventProducerGroupPlan const& candidate) {
                 return candidate.source_type == connection.source_type
-                    && candidate.sources == connection.sources;
+                    && candidate.sources == connection.sources
+                    && candidate.source_conversions == source_conversions;
             });
         if (group == plan.event_producer_groups.end()) {
             plan.event_producer_groups.push_back(EventProducerGroupPlan{
                 .source_type = connection.source_type,
                 .sources = connection.sources,
+                .source_conversions = std::move(source_conversions),
             });
             group = std::prev(plan.event_producer_groups.end());
         }
@@ -3968,7 +5258,7 @@ std::expected<void, std::string> plan_event_groups(
             requires_invocation_aggregate = requires_invocation_aggregate
                 || connection.requires_conversion
                 || connection.requires_block_materialization
-                || connection.detach.has_value();
+                || has_detached_source(connection);
             for (auto const& delivery : connection.deliveries) {
                 if (!uses_realtime_storage(delivery.mechanism)) continue;
                 auto const& source =
@@ -4001,10 +5291,9 @@ std::expected<void, std::string> plan_event_groups(
         if (!group.has_realtime_connections) continue;
         if (!external) {
             // Connection analysis owns only the event-rate and retained-window
-            // requirements. Fan-in implementation alternatives depend on the
-            // concrete per-slice producer buffers and merge operation selected
-            // during lowering, so producer-home selection is deliberately
-            // deferred to plan_event_ports().
+            // requirements. Concrete per-source conversion buffers and merge
+            // operations are known only during lowering, where
+            // plan_event_ports() adds their costs before its final choice.
             group.storage_plan = choose_event_connection_storage_plan(
                 group.storage_requirements, cost_model);
         }
@@ -4076,15 +5365,41 @@ std::expected<ConnectionAnalysisPlan, std::string> build_connection_analysis_pla
     if (auto inventory = inventory_nodes(graph, port_realization, plan); !inventory) {
         return std::unexpected(std::move(inventory.error()));
     }
+    auto routed_samples = [&]()
+        -> std::expected<std::vector<RoutedSampleConnection>, std::string> {
+        try {
+            return build_structural_sample_routes(graph);
+        } catch (std::exception const& error) {
+            return std::unexpected(
+                "GraphJit structural sample routing failed: "
+                + std::string(error.what()));
+        }
+    }();
+    if (!routed_samples) {
+        return std::unexpected(std::move(routed_samples.error()));
+    }
     if (auto samples = inventory_sample_connections(
-            graph, port_realization, plan); !samples) {
+            graph, port_realization, plan, *routed_samples); !samples) {
         return std::unexpected(std::move(samples.error()));
     }
     if (auto projections = normalize_sample_target_projections(graph, plan); !projections) {
         return std::unexpected(std::move(projections.error()));
     }
+    auto routed_events = [&]()
+        -> std::expected<std::vector<RoutedEventConnection>, std::string> {
+        try {
+            return build_structural_event_routes(graph);
+        } catch (std::exception const& error) {
+            return std::unexpected(
+                "GraphJit structural event routing failed: "
+                + std::string(error.what()));
+        }
+    }();
+    if (!routed_events) {
+        return std::unexpected(std::move(routed_events.error()));
+    }
     if (auto events = inventory_event_connections(
-            graph, port_realization, plan); !events) {
+            graph, port_realization, plan, *routed_events); !events) {
         return std::unexpected(std::move(events.error()));
     }
     if (auto replay = derive_contextual_replayability(graph, plan); !replay) {

@@ -29,6 +29,35 @@ std::optional<std::size_t> aliased_source_channel(
         source_type, target_type, target_channel);
 }
 
+std::optional<std::size_t> aliased_source_channel(
+    SampleProjectionPlan const& projection,
+    std::size_t target_channel)
+{
+    if (projection.transform_coefficients.empty()) {
+        return aliased_source_channel(
+            projection.source_type,
+            projection.target_type,
+            target_channel);
+    }
+    if (target_channel >= projection.transform_target_channel_count
+        || projection.transform_coefficients.size()
+            != projection.transform_source_channel_count
+                * projection.transform_target_channel_count) {
+        return std::nullopt;
+    }
+    std::optional<std::size_t> result;
+    for (std::size_t source = 0;
+         source < projection.transform_source_channel_count;
+         ++source) {
+        auto const coefficient = projection.transform_coefficients[
+            target_channel * projection.transform_source_channel_count + source];
+        if (coefficient == 0.0f) continue;
+        if (coefficient != 1.0f || result) return std::nullopt;
+        result = source;
+    }
+    return result;
+}
+
 std::optional<BackgroundPortIndex> output_port_for(
     BackgroundEvaluationPlan const& background,
     NodeBundlePortId requested_port)
@@ -97,12 +126,37 @@ SampleConnectionPlan const* sample_connection_for(
     auto const found = std::ranges::find_if(
         connections.sample_connections,
         [&](SampleConnectionPlan const& connection) {
-            return connection.configured_connection_index
+            if (connection.configured_connection_index
                     == background.configured_connection_index
                 && connection.source_type == background.sample_source_type
                 && connection.target_type == background.sample_target_type
                 && connection.source_channels == background.sample_source_channels
-                && connection.target_channels == background.sample_target_channels;
+                && connection.target_channels == background.sample_target_channels
+                && connection.projection_contributions.size()
+                    == background.sample_projections.size()) {
+                for (std::size_t index = 0;
+                     index < connection.projection_contributions.size();
+                     ++index) {
+                    auto const& planned =
+                        connection.projection_contributions[index];
+                    auto const& retained = background.sample_projections[index];
+                    if (planned.source_type != retained.source_type
+                        || planned.source_channel_indices
+                            != retained.source_channel_indices
+                        || planned.target_type != retained.target_type
+                        || planned.target_channels != retained.target_channels
+                        || planned.transform.source_channel_count
+                            != retained.transform_source_channel_count
+                        || planned.transform.target_channel_count
+                            != retained.transform_target_channel_count
+                        || planned.transform.coefficients
+                            != retained.transform_coefficients) {
+                        return false;
+                    }
+                }
+                return true;
+            }
+            return false;
         });
     return found == connections.sample_connections.end() ? nullptr : &*found;
 }
@@ -118,6 +172,7 @@ EventConnectionPlan const* event_connection_for(
                     != background.configured_connection_index
                 || connection.source_type != background.event_source_type
                 || connection.target_type != background.event_target_type
+                || connection.conversion != background.event_conversion
                 || connection.deliveries.size()
                     != background.event_deliveries.size()) {
                 return false;
@@ -132,6 +187,10 @@ EventConnectionPlan const* event_connection_for(
                 auto const& retained = background.event_deliveries[delivery];
                 if (connection.source_plans[planned.source_index].source
                         != retained.source
+                    || connection.source_plans[planned.source_index].source_type
+                        != retained.source_type
+                    || connection.source_plans[planned.source_index].conversion
+                        != retained.conversion
                     || connection.target_plans[planned.target_index].target
                         != retained.target
                     || planned.mechanism != retained.mechanism) {
@@ -165,10 +224,17 @@ std::optional<std::size_t> direct_sample_source_index(
         if (result) return std::nullopt;
         auto const target_position = static_cast<std::size_t>(
             std::distance(projection.target_channels.begin(), target));
+        SampleProjectionPlan retained_projection{
+            .source_type = projection.source_type,
+            .target_type = projection.target_type,
+            .transform_source_channel_count =
+                projection.transform.source_channel_count,
+            .transform_target_channel_count =
+                projection.transform.target_channel_count,
+            .transform_coefficients = projection.transform.coefficients,
+        };
         auto const source_position = aliased_source_channel(
-            projection.source_type,
-            projection.target_type,
-            target_position);
+            retained_projection, target_position);
         if (!source_position
             || *source_position >= projection.source_channel_indices.size()) {
             return std::nullopt;
@@ -299,6 +365,7 @@ bool equal_event_materialization_operation(
 {
     return left.source_subsets == right.source_subsets
         && left.inputs == right.inputs
+        && left.source_conversions == right.source_conversions
         && left.source_type == right.source_type
         && left.target_type == right.target_type
         && left.conversion == right.conversion
@@ -884,6 +951,12 @@ std::expected<BackgroundStoragePlan, std::string> build_background_storage_plan(
                             .source_type = projection->source_type,
                             .target_type = projection->target_type,
                             .target_channels = projection->target_channels,
+                            .transform_source_channel_count =
+                                projection->transform.source_channel_count,
+                            .transform_target_channel_count =
+                                projection->transform.target_channel_count,
+                            .transform_coefficients =
+                                projection->transform.coefficients,
                         };
                         retained.source_channel_indices.reserve(
                             projection->source_channel_indices.size());
@@ -936,6 +1009,8 @@ std::expected<BackgroundStoragePlan, std::string> build_background_storage_plan(
             }
             auto const direct = deliveries.size() == 1
                 && !background_connection.requires_conversion
+                && background_connection.event_deliveries[deliveries.front()]
+                       .conversion.size() == 0
                 && background_connection.event_source_type
                     == background_connection.event_target_type;
             if (direct) {
@@ -1090,6 +1165,8 @@ std::expected<BackgroundStoragePlan, std::string> build_background_storage_plan(
                     materialization.source_subsets.push_back(*source_subset);
                     materialization.inputs.push_back(
                         *storage);
+                    materialization.source_conversions.push_back(
+                        delivery.conversion);
                     if (!is_valid_event_buffer_rate(subset.max_events_per_index)
                         || !is_valid_event_buffer_rate(
                             max_events_per_index
@@ -1231,7 +1308,9 @@ std::expected<void, std::string> validate_background_runtime_plan(
         }
     }
     for (auto const& materialization : plan.storage.event_materializations) {
-        if (materialization.output >= plan.storage.ports.size()
+        if (materialization.source_conversions.size()
+                != materialization.inputs.size()
+            || materialization.output >= plan.storage.ports.size()
             || std::ranges::any_of(
                 materialization.inputs,
                 [&](PortStorageIndex input) {

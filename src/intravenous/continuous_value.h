@@ -4,6 +4,7 @@
 #include <intravenous/global_index.h>
 #include <intravenous/sample.h>
 
+#include <algorithm>
 #include <array>
 #include <bit>
 #include <cmath>
@@ -177,6 +178,18 @@ struct SampleContinuousValueExtension {
     static constexpr void clear_value(mutable_reference value) noexcept
     {
         value = {};
+    }
+
+    [[nodiscard]] static constexpr bool values_equal(
+        const_reference left, const_reference right) noexcept
+    {
+        return left == right;
+    }
+
+    [[nodiscard]] static constexpr bool value_is_clear(
+        const_reference value) noexcept
+    {
+        return value == Sample{};
     }
 
     [[nodiscard]] static constexpr Sample add(
@@ -445,6 +458,18 @@ struct FractionalGlobalIndexContinuousValueExtension {
         value = {};
     }
 
+    [[nodiscard]] static constexpr bool values_equal(
+        const_reference left, const_reference right) noexcept
+    {
+        return left == right;
+    }
+
+    [[nodiscard]] static constexpr bool value_is_clear(
+        const_reference value) noexcept
+    {
+        return value == FractionalGlobalIndex{};
+    }
+
     [[nodiscard]] static constexpr FractionalGlobalIndex add(
         FractionalGlobalIndex left,
         FractionalGlobalIndex right) noexcept
@@ -669,6 +694,19 @@ struct FFTBlockContinuousValueExtension {
     static constexpr void clear_value(mutable_reference value) noexcept
     {
         for (auto& bin : value.bins()) bin = {};
+    }
+
+    [[nodiscard]] static constexpr bool values_equal(
+        const_reference left, const_reference right) noexcept
+    {
+        return std::ranges::equal(left.bins(), right.bins());
+    }
+
+    [[nodiscard]] static constexpr bool value_is_clear(
+        const_reference value) noexcept
+    {
+        return std::ranges::all_of(
+            value.bins(), [](FFTBin const& bin) { return bin == FFTBin{}; });
     }
 
     static constexpr void initialize_zero(
@@ -919,6 +957,16 @@ struct ContinuousValueTypeInfo {
     bool (*valid_size)(std::optional<std::size_t>) noexcept = nullptr;
     std::optional<std::size_t> (*sample_support)(
         std::optional<std::size_t>) noexcept = nullptr;
+    // Semantic activity operations. They deliberately receive complete values
+    // rather than bytes, so floating-point signed zero and any future padded
+    // storage retain the value type's authored equality rules.
+    bool (*values_equal)(
+        void const* left,
+        void const* right,
+        std::size_t elements_per_value) noexcept = nullptr;
+    bool (*value_is_clear)(
+        void const* value,
+        std::size_t elements_per_value) noexcept = nullptr;
     // Optional semantic conversion of one transported value across resolved
     // shapes of this same registered type. A null operation explicitly means
     // that a shape change starts fresh Sequential state.
@@ -930,6 +978,37 @@ struct ContinuousValueTypeInfo {
 };
 
 namespace continuous_value_details {
+
+template<class Extension>
+bool erased_values_equal(
+    void const* left,
+    void const* right,
+    std::size_t elements_per_value) noexcept
+{
+    using Element = typename Extension::storage_element;
+    if (left == nullptr || right == nullptr || elements_per_value == 0) {
+        return false;
+    }
+    auto const left_elements = std::span{
+        static_cast<Element const*>(left), elements_per_value};
+    auto const right_elements = std::span{
+        static_cast<Element const*>(right), elements_per_value};
+    return Extension::values_equal(
+        Extension::read_value(left_elements),
+        Extension::read_value(right_elements));
+}
+
+template<class Extension>
+bool erased_value_is_clear(
+    void const* value,
+    std::size_t elements_per_value) noexcept
+{
+    using Element = typename Extension::storage_element;
+    if (value == nullptr || elements_per_value == 0) return false;
+    auto const elements = std::span{
+        static_cast<Element const*>(value), elements_per_value};
+    return Extension::value_is_clear(Extension::read_value(elements));
+}
 
 template<class Extension>
 consteval auto shape_migration_operation() noexcept
@@ -963,6 +1042,10 @@ inline constexpr auto continuous_value_type_registry = std::array {
             extension::channel_scalar_lanes_per_element,          \
         .valid_size = &extension::valid_size,                            \
         .sample_support = &extension::sample_support,                    \
+        .values_equal =                                                  \
+            &continuous_value_details::erased_values_equal<extension>,   \
+        .value_is_clear =                                                \
+            &continuous_value_details::erased_value_is_clear<extension>, \
         .migrate_value_shape =                                           \
             continuous_value_details::shape_migration_operation<         \
                 extension>(),                                            \
@@ -1001,6 +1084,14 @@ concept HasBoundaryInputOptions = requires(
     {
         Extension::boundary_input_sequential_options(options)
     } -> std::same_as<typename Extension::SequentialInputOptions>;
+};
+
+template<class Extension>
+concept HasActivityOperations = requires(
+    typename Extension::const_reference left,
+    typename Extension::const_reference right) {
+    { Extension::values_equal(left, right) } -> std::same_as<bool>;
+    { Extension::value_is_clear(left) } -> std::same_as<bool>;
 };
 
 template<class Extension>
@@ -1044,6 +1135,9 @@ consteval bool valid_channel_algebra_shape()
     static_assert(continuous_value_details::HasBoundaryInputOptions<      \
         extension>,                                                      \
         "every continuous value must define boundary input options");   \
+    static_assert(continuous_value_details::HasActivityOperations<        \
+        extension>,                                                      \
+        "every continuous value must define semantic activity tests");  \
     static_assert(continuous_value_details::valid_channel_algebra_shape< \
         extension>(),                                                    \
         "audio continuous values require tightly packed float channel lanes");

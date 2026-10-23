@@ -55,6 +55,10 @@ expect_invalid(
     "tick_block() cannot write a Tock event output")
 
 expect_invalid(
+    invalid_dual_execution_callbacks.cpp
+    "IV_NODE requires exactly one primary callback")
+
+expect_invalid(
     invalid_tock_callback_shape.cpp
     "defines tock_coverage but declares no Tock output port"
     "defines propagate_forward_coverage but declares no Tock output port"

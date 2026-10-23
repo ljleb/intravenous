@@ -1,4 +1,5 @@
 #include <intravenous/graph_jit/lowering_plan.h>
+#include <intravenous/graph_jit/activity_runtime.h>
 #include <intravenous/graph_jit/sample_storage_plan.h>
 #include <intravenous/graph_jit/transient_arena_plan.h>
 #include <intravenous/runtime/package_pipeline_types.h>
@@ -11,17 +12,20 @@
 #include <cstdint>
 #include <cmath>
 #include <cstring>
+#include <iterator>
 #include <limits>
 #include <memory>
+#include <numeric>
 #include <optional>
 #include <span>
+#include <sstream>
 #include <string>
 #include <string_view>
 #include <utility>
 
 namespace iv::graph_jit::detail {
 namespace {
-void initialize_event_raw_region(
+void initialize_zero_raw_region(
     std::span<std::byte> storage,
     std::span<std::byte const> data)
 {
@@ -35,6 +39,7 @@ struct PrimitiveBundle {
     std::size_t node_alignment = 1;
     std::size_t maximum_block_size = 0;
     bool block_skippable = false;
+    std::optional<std::size_t> ttl_samples{};
 };
 
 struct PrimitiveAnalysis {
@@ -105,7 +110,7 @@ std::expected<std::vector<PrimitiveBundle>, std::string> supported_primitives(
 {
     std::vector<PrimitiveBundle> primitives;
     std::string structural_error;
-    std::size_t boundary_count = 0;
+    bool root_boundary_seen = false;
     std::size_t node_bundle = 0;
 
     input.graph.node_bundles.for_each_configured_bundle(
@@ -114,17 +119,13 @@ std::expected<std::vector<PrimitiveBundle>, std::string> supported_primitives(
             if (!structural_error.empty()) return;
 
             if (view.kind == ConfiguredNodeBundleKind::boundary) {
-                ++boundary_count;
-                if (boundary_count != 1
-                    || current_bundle != input.graph.public_ports.boundary_handle()) {
-                    structural_error =
-                        "GraphJit sample-edge slice requires exactly one project boundary";
-                }
+                root_boundary_seen = root_boundary_seen
+                    || current_bundle
+                        == input.graph.public_ports.boundary_handle();
                 return;
             }
-            if (view.kind != ConfiguredNodeBundleKind::concrete) {
-                structural_error =
-                    "GraphJit sample-edge slice supports only flat concrete primitives";
+            if (view.kind == ConfiguredNodeBundleKind::tiled
+                || view.kind == ConfiguredNodeBundleKind::subgraph) {
                 return;
             }
             if (!view.ports) {
@@ -137,15 +138,20 @@ std::expected<std::vector<PrimitiveBundle>, std::string> supported_primitives(
                     "configured primitive has invalid node configuration alignment";
                 return;
             }
-            if (view.lifetime && view.lifetime->ttl_samples) {
-                structural_error =
-                    "GraphJit sample-edge slice does not yet support activity semantics";
-                return;
-            }
             if (!is_power_of_two(view.maximum_block_size)) {
                 structural_error =
                     "configured primitive has invalid maximum block size";
                 return;
+            }
+            std::optional<std::size_t> ttl_samples;
+            if (view.lifetime && view.lifetime->ttl_samples) {
+                ttl_samples = view.lifetime->ttl_samples;
+            } else if (view.default_ttl_samples) {
+                ttl_samples = *view.default_ttl_samples;
+            }
+            if (ttl_samples == std::numeric_limits<std::size_t>::max()
+                || !view.block_skippable) {
+                ttl_samples.reset();
             }
             primitives.push_back(PrimitiveBundle{
                 .node_bundle = current_bundle,
@@ -153,11 +159,12 @@ std::expected<std::vector<PrimitiveBundle>, std::string> supported_primitives(
                 .node_alignment = view.node_alignment,
                 .maximum_block_size = view.maximum_block_size,
                 .block_skippable = view.block_skippable,
+                .ttl_samples = ttl_samples,
             });
         });
 
     if (!structural_error.empty()) return std::unexpected(std::move(structural_error));
-    if (boundary_count != 1) {
+    if (!root_boundary_seen) {
         return std::unexpected(
             "GraphJit sample-edge slice requires exactly one project boundary");
     }
@@ -196,18 +203,36 @@ std::expected<GraphAnalysis, std::string> analyze_graph(
             return std::unexpected(
                 "GraphJit lowering has no resolved implementation for a concrete primitive");
         }
-        if (!implementation->package_module || !implementation->tick_block
+        auto const has_tick = implementation->tick_block != nullptr;
+        auto const has_tock = implementation->tock_coverage != nullptr;
+        if (!implementation->package_module || has_tick == has_tock
             || !implementation->declare_node || !implementation->node_data) {
             return std::unexpected(
                 "resolved primitive implementation is incomplete at the GraphJit lowering boundary");
         }
-        if (primitive.block_skippable && !implementation->skip_block) {
+        if (has_tick && !implementation->skip_block) {
             return std::unexpected(
-                "block-skippable primitive has no resolved skip_block implementation");
+                "Tick primitive has no resolved skip_block implementation");
         }
-        if (implementation->tick_block->getParent() != implementation->package_module
+        if (has_tock && !implementation->propagate_forward_coverage) {
+            return std::unexpected(
+                "Tock primitive has no resolved forward-propagation implementation");
+        }
+        if ((!has_tick && implementation->skip_block)
+            || (has_tick
+                && implementation->tick_block->getParent()
+                    != implementation->package_module)
             || (implementation->skip_block
                 && implementation->skip_block->getParent()
+                    != implementation->package_module)
+            || (implementation->tock_coverage
+                && implementation->tock_coverage->getParent()
+                    != implementation->package_module)
+            || (implementation->propagate_forward_coverage
+                && implementation->propagate_forward_coverage->getParent()
+                    != implementation->package_module)
+            || (implementation->propagate_reverse_coverage
+                && implementation->propagate_reverse_coverage->getParent()
                     != implementation->package_module)) {
             return std::unexpected(
                 "resolved primitive callbacks do not belong to the selected package LLVM module");
@@ -216,8 +241,10 @@ std::expected<GraphAnalysis, std::string> analyze_graph(
             return std::unexpected("configured primitive has empty node configuration storage");
         }
 
+        auto selected_bundle = primitive;
+        if (!has_tick) selected_bundle.ttl_samples.reset();
         analysis.primitives.push_back(PrimitiveAnalysis{
-            .bundle = primitive,
+            .bundle = std::move(selected_bundle),
             .implementation = implementation,
         });
     }
@@ -229,9 +256,154 @@ std::expected<GraphAnalysis, std::string> analyze_graph(
     return analysis;
 }
 
+std::optional<std::size_t> align_activity_offset(
+    std::size_t offset,
+    std::size_t alignment) noexcept
+{
+    if (alignment == 0 || !std::has_single_bit(alignment)) return std::nullopt;
+    auto const mask = alignment - 1;
+    if (offset > std::numeric_limits<std::size_t>::max() - mask) {
+        return std::nullopt;
+    }
+    return (offset + mask) & ~mask;
+}
+
+bool has_external_tick_sample_input(
+    ConnectionAnalysisPlan const& connections,
+    NodeBundleHandle bundle,
+    std::size_t input_index)
+{
+    auto const& background = connections.background;
+    if (bundle >= background.bundle_to_background_node.size()
+        || !background.bundle_to_background_node[bundle]) {
+        return false;
+    }
+    auto const node = *background.bundle_to_background_node[bundle];
+    if (node >= background.tick_runtime.nodes.size()) return true;
+    auto const& invocation = background.tick_runtime.nodes[node];
+    if (invocation.sequential_sample_begin
+            > background.tick_runtime.sequential_sample_inputs.size()
+        || invocation.sequential_sample_count
+            > background.tick_runtime.sequential_sample_inputs.size()
+                - invocation.sequential_sample_begin) {
+        return true;
+    }
+    auto const selected = std::span{
+        background.tick_runtime.sequential_sample_inputs}.subspan(
+            invocation.sequential_sample_begin,
+            invocation.sequential_sample_count);
+    return std::ranges::any_of(selected, [&](auto const& binding) {
+        if (binding.port >= background.ports.size()) return true;
+        auto const& port = background.ports[binding.port];
+        return port.node == node && port.kind == PortKind::sample
+            && port.configured_port.port_index == input_index;
+    });
+}
+
+std::string activity_migration_identity(
+    PrimitiveAnalysis const& primitive,
+    PlannedGraphNode const& planned,
+    PrimitiveActivityPlan const& activity,
+    PrimitiveSamplePortPlan const& sample_ports,
+    SampleStoragePlan const& sample_storage,
+    EventPortBindingPlan const& event_ports,
+    PrimitiveEventPortPlan const& primitive_event_ports)
+{
+    if (!planned.stable_identity) return {};
+    auto const& stable = *planned.stable_identity;
+    auto const& implementation = *primitive.implementation;
+    std::ostringstream out;
+    out << "graphjit.activity:graph=" << stable.graph.size() << ':'
+        << stable.graph
+        << ":node=" << stable.virtual_node.size() << ':'
+        << stable.virtual_node
+        << ":member=" << stable.direct_member
+        << ":type=" << implementation.identity.node_type_id.size() << ':'
+        << implementation.identity.node_type_id
+        << ":provider=" << implementation.provider_version
+        << ":code=" << implementation.code_key.low << '.'
+        << implementation.code_key.high
+        << ":config="
+        << reinterpret_cast<std::uintptr_t>(
+            implementation.configuration_identity.get())
+        << ":ttl=" << activity.ttl_samples
+        << ":storage=" << activity.storage_size
+        << '.' << activity.storage_alignment;
+    for (std::size_t input = 0;
+         input < activity.continuous_inputs.size(); ++input) {
+        auto const& activity_input = activity.continuous_inputs[input];
+        auto const& binding = sample_ports.inputs[input];
+        out << ":input=" << input
+            << '.' << static_cast<unsigned>(binding.geometry.value_type)
+            << '.' << binding.geometry.elements_per_value
+            << '.' << binding.absolute_pace_exponent
+            << '.' << binding.read_latency
+            << '.' << static_cast<unsigned>(binding.channel_layout.channel_type)
+            << '.' << static_cast<unsigned>(binding.channel_layout.sample_layout)
+            << '.' << activity_input.static_constant
+            << '.' << activity_input.channels.size();
+        for (auto const& channel : binding.channels) {
+            out << '.' << channel.representation_channel
+                << '.' << channel.frame_delay;
+        }
+        if (activity_input.static_constant) {
+            for (auto const& channel : binding.channels) {
+                if (channel.storage >= sample_storage.representations.size()
+                    || !sample_storage.representations[channel.storage]
+                            .constant_value) {
+                    out << ":constant=invalid";
+                    continue;
+                }
+                auto const& value = *sample_storage
+                    .representations[channel.storage].constant_value;
+                out << ":constant=" << value.size();
+                for (auto const byte : value) {
+                    out << '.' << std::to_integer<unsigned>(byte);
+                }
+            }
+        }
+    }
+    for (std::size_t output = 0;
+         output < sample_ports.outputs.size(); ++output) {
+        auto const& binding = sample_ports.outputs[output];
+        out << ":output=" << output
+            << '.' << static_cast<unsigned>(binding.geometry.value_type)
+            << '.' << binding.geometry.elements_per_value
+            << '.' << binding.absolute_pace_exponent
+            << '.' << binding.history
+            << '.' << binding.latency
+            << '.' << binding.realtime;
+    }
+    auto append_event_type = [&](std::optional<std::size_t> storage) {
+        if (!storage || *storage >= event_ports.ports.size()) {
+            out << ".invalid";
+        } else {
+            out << '.' << static_cast<unsigned>(
+                event_ports.ports[*storage].type);
+        }
+    };
+    for (std::size_t input = 0;
+         input < primitive_event_ports.inputs.size(); ++input) {
+        out << ":event_input=" << input;
+        append_event_type(primitive_event_ports.inputs[input].storage);
+    }
+    for (std::size_t output = 0;
+         output < primitive_event_ports.outputs.size(); ++output) {
+        auto const& binding = primitive_event_ports.outputs[output];
+        out << ":event_output=" << output
+            << '.' << static_cast<unsigned>(binding.source_type)
+            << '.' << binding.history
+            << '.' << binding.latency
+            << '.' << binding.realtime;
+        append_event_type(binding.storage);
+    }
+    return std::move(out).str();
+}
+
 std::expected<DeclarationPlan, std::string> plan_declarations(
     LoweringInput const& input,
     GraphAnalysis const& analysis,
+    ConnectionAnalysisPlan const& connections,
     ResolvedPortRealization const& port_realization,
     SamplePortBindingPlan& sample_ports,
     EventPortBindingPlan& event_ports)
@@ -240,6 +412,7 @@ std::expected<DeclarationPlan, std::string> plan_declarations(
     if (analysis.empty) {
         return DeclarationPlan{
             .node_layout = std::move(layout_builder).build(),
+            .tock_state_layout = {},
         };
     }
 
@@ -369,7 +542,7 @@ std::expected<DeclarationPlan, std::string> plan_declarations(
                 storage.size_bytes,
                 storage.alignment,
                 storage.migration_identity,
-                initialize_event_raw_region);
+                initialize_zero_raw_region);
         } else if (storage.transient_allocation
                        >= event_ports.transient_allocations.size()
             || !storage.migration_identity.empty()) {
@@ -381,24 +554,211 @@ std::expected<DeclarationPlan, std::string> plan_declarations(
                 sizeof(std::uint64_t),
                 alignof(std::uint64_t),
                 {},
-                initialize_event_raw_region);
+                initialize_zero_raw_region);
         }
     }
 
-    auto node_layout = std::move(layout_builder).build();
-    if (node_layout.nodes.size() != analysis.primitives.size()) {
+    std::vector<std::optional<PrimitiveActivityPlan>> primitive_activity(
+        analysis.primitives.size());
+    std::vector<std::size_t> activity_storage_sizes(
+        analysis.primitives.size(), sizeof(PrimitiveActivityState));
+    std::vector<std::size_t> activity_storage_alignments(
+        analysis.primitives.size(), alignof(PrimitiveActivityState));
+    std::vector<ContinuousActivityFrontierPlan> activity_frontiers;
+    if (sample_ports.primitives.size() != analysis.primitives.size()
+        || event_ports.primitives.size() != analysis.primitives.size()) {
         return std::unexpected(
-            "GraphJit sample-edge slice does not yet support nested node declarations");
+            "GraphJit activity planning lost a primitive port plan");
     }
-    for (std::size_t i = 0; i < declared_node_indices.size(); ++i) {
-        if (declared_node_indices[i] != i) {
-            return std::unexpected(
-                "GraphJit sample-edge slice does not yet support nested node declarations");
+    for (std::size_t primitive_index = 0;
+         primitive_index < analysis.primitives.size(); ++primitive_index) {
+        auto const& primitive = analysis.primitives[primitive_index];
+        if (!primitive.bundle.ttl_samples) continue;
+
+        auto const& sample_plan = sample_ports.primitives[primitive_index];
+        auto const schedule_region =
+            primitive.bundle.node_bundle
+                    < connections.schedule.bundle_to_region.size()
+                ? connections.schedule.bundle_to_region[
+                      primitive.bundle.node_bundle]
+                : std::nullopt;
+        auto const shares_root_invocation_window = schedule_region
+            && *schedule_region < connections.schedule.regions.size()
+            && !connections.schedule.regions[*schedule_region].cyclic
+            && primitive.bundle.maximum_block_size
+                >= input.specialization.block_size;
+        PrimitiveActivityPlan activity{
+            .ttl_samples = *primitive.bundle.ttl_samples,
+        };
+        activity.continuous_inputs.reserve(sample_plan.inputs.size());
+        for (std::size_t input_index = 0;
+             input_index < sample_plan.inputs.size(); ++input_index) {
+            auto const& input_plan = sample_plan.inputs[input_index];
+            auto const externally_bound = has_external_tick_sample_input(
+                connections,
+                primitive.bundle.node_bundle,
+                input_index);
+            auto static_constant = !externally_bound;
+            for (auto const& channel : input_plan.channels) {
+                if (channel.storage >= sample_ports.storage.representations.size()
+                    || !sample_ports.storage.representations[channel.storage]
+                            .constant_value) {
+                    static_constant = false;
+                    break;
+                }
+            }
+
+            ContinuousInputActivityPlan input_activity{
+                .static_constant = static_constant,
+            };
+            if (!static_constant) {
+                input_activity.channels.reserve(input_plan.channels.size());
+                for (std::size_t channel = 0;
+                     channel < input_plan.channels.size(); ++channel) {
+                    auto const& binding = input_plan.channels[channel];
+                    auto same_frontier = [&](
+                        ContinuousActivityFrontierPlan const& candidate) {
+                        return candidate.representation == binding.storage
+                            && candidate.representation_channel
+                                == binding.representation_channel
+                            && candidate.frame_delay == binding.frame_delay
+                            && candidate.absolute_pace_exponent
+                                == input_plan.absolute_pace_exponent
+                            && candidate.read_latency == input_plan.read_latency
+                            && candidate.geometry == input_plan.geometry;
+                    };
+                    auto frontier = activity_frontiers.end();
+                    // An external Sequential binding is patched from the Tick
+                    // invocation frame. Its planned realtime representation is
+                    // not enough to prove that another port observes the same
+                    // runtime source.
+                    if (!externally_bound
+                        && shares_root_invocation_window) {
+                        frontier = std::ranges::find_if(
+                            activity_frontiers, same_frontier);
+                    }
+                    if (frontier == activity_frontiers.end()) {
+                        auto& owner_size = activity_storage_sizes[primitive_index];
+                        auto& owner_alignment =
+                            activity_storage_alignments[primitive_index];
+                        auto const valid_offset = owner_size;
+                        if (owner_size
+                            == std::numeric_limits<std::size_t>::max()) {
+                            return std::unexpected(
+                                "GraphJit activity validity storage overflows size_t");
+                        }
+                        ++owner_size;
+                        auto remembered_offset = align_activity_offset(
+                            owner_size,
+                            input_plan.geometry.element_alignment);
+                        if (!remembered_offset
+                            || input_plan.geometry.value_size_bytes
+                                > std::numeric_limits<std::size_t>::max()
+                                    - *remembered_offset) {
+                            return std::unexpected(
+                                "GraphJit activity remembered-value storage overflows size_t");
+                        }
+                        owner_size = *remembered_offset
+                            + input_plan.geometry.value_size_bytes;
+                        owner_alignment = std::max(
+                            owner_alignment,
+                            input_plan.geometry.element_alignment);
+                        activity_frontiers.push_back(
+                            ContinuousActivityFrontierPlan{
+                                .representation = binding.storage,
+                                .representation_channel =
+                                    binding.representation_channel,
+                                .frame_delay = binding.frame_delay,
+                                .absolute_pace_exponent =
+                                    input_plan.absolute_pace_exponent,
+                                .read_latency = input_plan.read_latency,
+                                .geometry = input_plan.geometry,
+                                .owner_primitive = primitive_index,
+                                .remembered_valid_relative_offset =
+                                    valid_offset,
+                                .remembered_value_relative_offset =
+                                    *remembered_offset,
+                            });
+                        frontier = std::prev(activity_frontiers.end());
+                    }
+                    input_activity.channels.push_back(
+                        ContinuousActivityChannelStatePlan{
+                            .frontier = static_cast<std::size_t>(
+                                std::distance(
+                                    activity_frontiers.begin(), frontier)),
+                        });
+                }
+            }
+            activity.continuous_inputs.push_back(std::move(input_activity));
         }
+        for (auto const& output : sample_plan.outputs) {
+            if (!output.realtime) continue;
+            if (!output.storage
+                || *output.storage
+                    >= sample_ports.storage.representations.size()) {
+                return std::unexpected(
+                    "GraphJit activity output lost its storage representation");
+            }
+            activity.continuous_output_channel_counts.push_back(
+                channel_count(sample_ports.storage
+                    .representations[*output.storage].channel_layout));
+        }
+        primitive_activity[primitive_index] = std::move(activity);
     }
-    if (!node_layout.imported_arrays.empty() || !node_layout.exported_arrays.empty()) {
+
+    for (std::size_t primitive_index = 0;
+         primitive_index < analysis.primitives.size(); ++primitive_index) {
+        auto& selected = primitive_activity[primitive_index];
+        if (!selected) continue;
+        auto& activity = *selected;
+        auto aligned_size = align_activity_offset(
+            activity_storage_sizes[primitive_index],
+            activity_storage_alignments[primitive_index]);
+        if (!aligned_size) {
+            return std::unexpected(
+                "GraphJit activity state alignment overflows size_t");
+        }
+        activity.storage_size = *aligned_size;
+        activity.storage_alignment =
+            activity_storage_alignments[primitive_index];
+        auto const& primitive = analysis.primitives[primitive_index];
+        auto const planned_node = std::ranges::find(
+            connections.nodes,
+            primitive.bundle.node_bundle,
+            &PlannedGraphNode::bundle);
+        if (planned_node == connections.nodes.end()) {
+            return std::unexpected(
+                "GraphJit activity planning lost its scheduled primitive node");
+        }
+        auto identity = activity_migration_identity(
+            primitive,
+            *planned_node,
+            activity,
+            sample_ports.primitives[primitive_index],
+            sample_ports.storage,
+            event_ports,
+            event_ports.primitives[primitive_index]);
+        activity.region = layout_builder.declare_raw_region(
+            activity.storage_size,
+            activity.storage_alignment,
+            std::move(identity),
+            initialize_zero_raw_region);
+    }
+
+    auto tock_state_layout = layout_builder.build_tock_state_layout();
+    auto node_layout = std::move(layout_builder).build();
+    if (declared_node_indices.size() != analysis.primitives.size()
+        || tock_state_layout.nodes.size() != node_layout.nodes.size()) {
         return std::unexpected(
-            "GraphJit sample-edge slice does not yet support declared shared-array bindings");
+            "GraphJit declaration layout lost its top-level primitive mapping");
+    }
+    std::vector<bool> mapped_layout_nodes(node_layout.nodes.size(), false);
+    for (auto const node : declared_node_indices) {
+        if (node >= node_layout.nodes.size() || mapped_layout_nodes[node]) {
+            return std::unexpected(
+                "GraphJit declaration returned an invalid top-level layout node");
+        }
+        mapped_layout_nodes[node] = true;
     }
     auto sample_storage_owns_region =
         [&](std::size_t region_index) {
@@ -420,7 +780,8 @@ std::expected<DeclarationPlan, std::string> plan_declarations(
          ++region_index) {
         auto const& region = node_layout.regions[region_index];
         if (region.kind == NodeLayout::Region::Kind::state
-            || region.kind == NodeLayout::Region::Kind::tock_state) {
+            || region.kind == NodeLayout::Region::Kind::local_array
+            || region.kind == NodeLayout::Region::Kind::nested_node_states) {
             continue;
         }
         auto const event_storage_owns_region = std::ranges::any_of(
@@ -431,9 +792,16 @@ std::expected<DeclarationPlan, std::string> plan_declarations(
                     || (storage.overflow_region.valid()
                         && storage.overflow_region.index == region_index);
             });
+        auto const activity_owns_region = std::ranges::any_of(
+            primitive_activity,
+            [&](std::optional<PrimitiveActivityPlan> const& activity) {
+                return activity && activity->region.valid()
+                    && activity->region.index == region_index;
+            });
         if (region.kind == NodeLayout::Region::Kind::raw
             && (sample_storage_owns_region(region_index)
-                || event_storage_owns_region)) {
+                || event_storage_owns_region
+                || activity_owns_region)) {
             continue;
         }
         return std::unexpected(
@@ -460,7 +828,7 @@ std::expected<DeclarationPlan, std::string> plan_declarations(
                 || region.size != storage.size_bytes
                 || region.alignment != storage.alignment
                 || region.migration_identity != storage.migration_identity
-                || region.raw_initialize_fn != initialize_event_raw_region
+                || region.raw_initialize_fn != initialize_zero_raw_region
                 || !region.raw_initialize_data.empty()) {
                 return std::unexpected(
                     "GraphJit persistent event storage disagrees with finalized NodeLayout");
@@ -521,7 +889,7 @@ std::expected<DeclarationPlan, std::string> plan_declarations(
                 || overflow.size != sizeof(std::uint64_t)
                 || overflow.alignment != alignof(std::uint64_t)
                 || !overflow.migration_identity.empty()
-                || overflow.raw_initialize_fn != initialize_event_raw_region
+                || overflow.raw_initialize_fn != initialize_zero_raw_region
                 || !overflow.raw_initialize_data.empty()) {
                 return std::unexpected(
                     "GraphJit event producer telemetry disagrees with finalized NodeLayout");
@@ -536,15 +904,71 @@ std::expected<DeclarationPlan, std::string> plan_declarations(
 
     DeclarationPlan plan{
         .node_layout = std::move(node_layout),
+        .tock_state_layout = std::move(tock_state_layout),
+        .primitive_layout_nodes = std::move(declared_node_indices),
+        .primitive_activity = std::move(primitive_activity),
+        .activity_frontiers = std::move(activity_frontiers),
     };
+    for (auto& activity : plan.primitive_activity) {
+        if (!activity) continue;
+        if (!activity->region.valid()
+            || activity->region.index >= plan.node_layout.regions.size()) {
+            return std::unexpected(
+                "GraphJit activity state lost its persistent raw region");
+        }
+        auto const& region = plan.node_layout.regions[activity->region.index];
+        if (region.kind != NodeLayout::Region::Kind::raw
+            || region.size != activity->storage_size
+            || region.alignment != activity->storage_alignment
+            || region.raw_initialize_fn != initialize_zero_raw_region
+            || !region.raw_initialize_data.empty()) {
+            return std::unexpected(
+                "GraphJit activity state disagrees with finalized NodeLayout");
+        }
+        activity->storage_offset = region.storage_offset;
+    }
+    for (auto& frontier : plan.activity_frontiers) {
+        if (frontier.representation
+                >= sample_ports.storage.representations.size()
+            || frontier.owner_primitive
+                >= plan.primitive_activity.size()
+            || !plan.primitive_activity[frontier.owner_primitive]) {
+            return std::unexpected(
+                "GraphJit activity frontier lost its storage owner");
+        }
+        auto const& owner = *plan.primitive_activity[
+            frontier.owner_primitive];
+        if (frontier.remembered_valid_relative_offset
+                >= owner.storage_size
+            || frontier.remembered_value_relative_offset
+                > owner.storage_size
+            || frontier.geometry.value_size_bytes
+                > owner.storage_size
+                    - frontier.remembered_value_relative_offset
+            || owner.storage_offset
+                > std::numeric_limits<std::size_t>::max()
+                    - frontier.remembered_valid_relative_offset
+            || owner.storage_offset
+                > std::numeric_limits<std::size_t>::max()
+                    - frontier.remembered_value_relative_offset) {
+            return std::unexpected(
+                "GraphJit activity frontier lies outside its persistent region");
+        }
+        frontier.remembered_valid_storage_offset = owner.storage_offset
+            + frontier.remembered_valid_relative_offset;
+        frontier.remembered_value_storage_offset = owner.storage_offset
+            + frontier.remembered_value_relative_offset;
+    }
     plan.primitive_storage.reserve(analysis.primitives.size());
     for (std::size_t i = 0; i < analysis.primitives.size(); ++i) {
         auto const& implementation = *analysis.primitives[i].implementation;
-        auto const& node_record = plan.node_layout.nodes[i];
+        auto const layout_node = plan.primitive_layout_nodes[i];
+        auto const& node_record = plan.node_layout.nodes[layout_node];
+        auto const& tock_record = plan.tock_state_layout.nodes[layout_node];
         if (node_record.state_size != implementation.state_size
             || node_record.state_alignment != implementation.state_alignment
-            || node_record.background_state_size != implementation.background_state_size
-            || node_record.background_state_alignment
+            || tock_record.state_size != implementation.background_state_size
+            || tock_record.state_alignment
                 != implementation.background_state_alignment) {
             return std::unexpected(
                 "declared primitive State/TockState layout disagrees with finalized compiler metadata");
@@ -553,12 +977,6 @@ std::expected<DeclarationPlan, std::string> plan_declarations(
             return std::unexpected(
                 "declared primitive State has no canonical NodeLayout storage offset");
         }
-        if (node_record.background_state_size != 0
-            && node_record.background_state_offset < 0) {
-            return std::unexpected(
-                "declared primitive TockState has no canonical NodeLayout storage offset");
-        }
-
         PrimitiveStoragePlan storage;
         if (node_record.state_size != 0) {
             storage.has_state = true;
@@ -570,18 +988,6 @@ std::expected<DeclarationPlan, std::string> plan_declarations(
                     "declared primitive State lies outside canonical NodeStorage");
             }
             storage.state_size = node_record.state_size;
-        }
-        if (node_record.background_state_size != 0) {
-            storage.has_background_state = true;
-            storage.background_state_offset =
-                static_cast<std::size_t>(node_record.background_state_offset);
-            if (storage.background_state_offset > plan.node_layout.storage_size
-                || node_record.background_state_size
-                    > plan.node_layout.storage_size - storage.background_state_offset) {
-                return std::unexpected(
-                    "declared primitive TockState lies outside canonical NodeStorage");
-            }
-            storage.background_state_size = node_record.background_state_size;
         }
         plan.primitive_storage.push_back(storage);
     }
@@ -1253,7 +1659,8 @@ plan_event_realtime_port_state_realizations(
                 return std::unexpected(
                     "GraphJit event output state disagrees with its semantic extent");
             }
-            authored_representation = *binding.storage;
+            authored_representation = binding.canonical_storage.value_or(
+                *binding.storage);
         }
 
         auto authored = storage_view(authored_representation);
@@ -1288,6 +1695,63 @@ plan_event_realtime_port_state_realizations(
                 realization.retained_access = *materialization
                     ? EventRealtimePortStateAccess::materialized
                     : EventRealtimePortStateAccess::direct;
+
+                auto const group_index = event_ports.ports[
+                    source_representation].producer_group_index;
+                if (group_index
+                        < connections.event_producer_groups.size()
+                    && group_index
+                        < event_ports.producer_group_representations.size()
+                    && event_ports.producer_group_representations[group_index]
+                        == source_representation) {
+                    auto const& group =
+                        connections.event_producer_groups[group_index];
+                    if (group.sources.size()
+                        != group.source_conversions.size()) {
+                        return std::unexpected(
+                            "GraphJit event input state lost producer-group source conversions");
+                    }
+                    realization.retained_future_sources.reserve(
+                        group.sources.size());
+                    for (std::size_t source_index = 0;
+                         source_index < group.sources.size();
+                         ++source_index) {
+                        auto const source = group.sources[source_index];
+                        auto const latency_requirement = std::ranges::find_if(
+                            connections.realtime_port_states.states,
+                            [&](RealtimePortStateRequirement const& candidate) {
+                                return candidate.configured_port
+                                        == NodeBundlePortId{
+                                            source.bundle,
+                                            PortKind::event,
+                                            source.port}
+                                    && candidate.direction
+                                        == PortDirection::output
+                                    && candidate.role
+                                        == RealtimePortStateRole::
+                                            tick_output_latency;
+                            });
+                        if (latency_requirement
+                            == connections.realtime_port_states.states.end()) {
+                            continue;
+                        }
+                        realization.retained_future_sources.push_back(
+                            EventRealtimePortStateFutureSource{
+                                .requirement_index =
+                                    static_cast<std::size_t>(std::distance(
+                                        connections.realtime_port_states.states
+                                            .begin(),
+                                        latency_requirement)),
+                                .conversion =
+                                    group.source_conversions[source_index],
+                                .target_source_index =
+                                    realization.retained_storage
+                                            ->has_source_indices
+                                    ? std::optional<std::size_t>{source_index}
+                                    : std::optional<std::size_t>{},
+                            });
+                    }
+                }
             } else if (realization.authored_storage.event_capacity == 0) {
                 realization.retained_access =
                     EventRealtimePortStateAccess::immutable_empty;
@@ -1296,71 +1760,13 @@ plan_event_realtime_port_state_realizations(
             continue;
         }
 
-        EventOutputPortId const output_id{
-            requirement.configured_port.node_bundle_handle,
-            requirement.configured_port.port_index,
-        };
-        std::optional<std::size_t> producer_group;
-        std::optional<std::size_t> source_index;
-        for (std::size_t group_index = 0;
-             group_index < connections.event_producer_groups.size();
-             ++group_index) {
-            auto const& sources =
-                connections.event_producer_groups[group_index].sources;
-            auto const found = std::ranges::find(sources, output_id);
-            if (found == sources.end()) continue;
-            if (producer_group) {
-                return std::unexpected(
-                    "GraphJit event output state belongs to more than one producer group");
-            }
-            producer_group = group_index;
-            source_index = static_cast<std::size_t>(
-                std::distance(sources.begin(), found));
-        }
-        if (!producer_group) {
-            auto retained = retained_representation(authored_representation);
-            if (!retained) {
-                return std::unexpected(std::move(retained.error()));
-            }
-            if (*retained) {
-                auto view = storage_view(**retained);
-                if (!view) {
-                    return std::unexpected(std::move(view.error()));
-                }
-                realization.retained_storage = std::move(*view);
-                realization.retained_access =
-                    EventRealtimePortStateAccess::direct;
-            }
-            result.push_back(std::move(realization));
-            continue;
-        }
-        if (*producer_group
-                >= event_ports.producer_group_representations.size()
-            || !event_ports.producer_group_representations[*producer_group]) {
-            return std::unexpected(
-                "GraphJit event output state lost its producer-group representation");
-        }
-        auto const canonical =
-            *event_ports.producer_group_representations[*producer_group];
-        auto retained = retained_representation(canonical);
+        auto retained = retained_representation(authored_representation);
         if (!retained) return std::unexpected(std::move(retained.error()));
-        if (!*retained) {
-            result.push_back(std::move(realization));
-            continue;
-        }
-        auto view = storage_view(**retained);
-        if (!view) return std::unexpected(std::move(view.error()));
-        realization.retained_storage = std::move(*view);
-
-        auto const& group = connections.event_producer_groups[*producer_group];
-        if (group.sources.size() <= 1) {
+        if (*retained) {
+            auto view = storage_view(**retained);
+            if (!view) return std::unexpected(std::move(view.error()));
+            realization.retained_storage = std::move(*view);
             realization.retained_access = EventRealtimePortStateAccess::direct;
-        } else {
-            realization.retained_source_index = source_index;
-            realization.retained_access =
-                realization.retained_storage->has_source_indices
-                ? EventRealtimePortStateAccess::indexed_merged_source
-                : EventRealtimePortStateAccess::shared_merged_source;
         }
         result.push_back(std::move(realization));
     }
@@ -1465,19 +1871,21 @@ std::expected<PackageImportPlan, std::string> plan_package_imports(
         PrimitiveCallbackPlan callbacks{
             .bundle = primitive.bundle.node_bundle,
         };
-        callbacks.tick_block = add_callback(
-            package,
-            implementation.tick_block->getName().str(),
-            primitive_callback_import_symbol(i, "tick_block"),
-            "tick_block",
-            CallbackImportAbi::block);
-        if (primitive.bundle.block_skippable) {
-            callbacks.skip_block = add_callback(
+        if (implementation.tick_block) {
+            callbacks.tick_block = add_callback(
                 package,
-                implementation.skip_block->getName().str(),
-                primitive_callback_import_symbol(i, "skip_block"),
-                "skip_block",
+                implementation.tick_block->getName().str(),
+                primitive_callback_import_symbol(i, "tick_block"),
+                "tick_block",
                 CallbackImportAbi::block);
+            if (primitive.bundle.block_skippable) {
+                callbacks.skip_block = add_callback(
+                    package,
+                    implementation.skip_block->getName().str(),
+                    primitive_callback_import_symbol(i, "skip_block"),
+                    "skip_block",
+                    CallbackImportAbi::block);
+            }
         }
 
         auto const bundle = primitive.bundle.node_bundle;
@@ -1757,6 +2165,11 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
             return std::unexpected(
                 "GraphJit sample-edge planning lost concrete-node port metadata");
         }
+        if (analysis.primitives[i].implementation->tick_block == nullptr) {
+            // Tock ports are bound by BackgroundNodeCall for each batch. They
+            // are not part of the generated realtime root's port-binding ABI.
+            continue;
+        }
         plan.primitives[i].inputs.resize(node->sample_input_count);
         plan.primitives[i].outputs.resize(node->sample_output_count);
         auto const bundle = analysis.primitives[i].bundle.node_bundle;
@@ -1999,63 +2412,108 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
             // inventory; contribution metadata is authoritative for channel
             // conversion and final target placement.
             if (connection.canonical_source_layout
-                || connection.projection_contributions.empty()) {
+                || (connection.projection_contributions.empty()
+                    && connection.routed_contributions.empty())) {
                 return std::unexpected(
                     "GraphJit sample composition lost normalized projection metadata");
             }
-            std::vector<bool> populated_targets(target_channel_total, false);
-            for (auto const& contribution : connection.projection_contributions) {
-                if (contribution.source_channel_indices.size()
-                        != channel_count(contribution.source_type)
-                    || contribution.target_channels.size()
-                        != channel_count(contribution.target_type)) {
+            if (!connection.routed_contributions.empty()) {
+                if (!connection.projection_contributions.empty()
+                    || connection.detach) {
                     return std::unexpected(
-                        "GraphJit sample composition contribution has inconsistent semantic channel counts");
+                        "GraphJit routed sample composition has conflicting normalized metadata");
                 }
-                try {
-                    (void)ChannelConversionRegistry::plan(
-                        ChannelLayout{
-                            .channel_type = contribution.source_type,
-                            .sample_layout = SampleStreamLayout::planar,
-                        },
-                        ChannelLayout{
-                            .channel_type = contribution.target_type,
-                            .sample_layout = SampleStreamLayout::planar,
-                        });
-                } catch (std::exception const& e) {
-                    return std::unexpected(
-                        "GraphJit sample composition conversion is unsupported: "
-                        + std::string(e.what()));
-                }
-                for (auto const source_index : contribution.source_channel_indices) {
-                    if (source_index >= connection.source_channel_timings.size()) {
+                bool has_detach = false;
+                for (auto const& contribution :
+                     connection.routed_contributions) {
+                    if (contribution.source_coefficients.size()
+                            != connection.source_channel_timings.size()
+                        || contribution.target_coefficients.size()
+                            != target_channel_total) {
                         return std::unexpected(
-                            "GraphJit sample composition contribution lost a source timing");
+                            "GraphJit routed sample contribution has inconsistent channel counts");
+                    }
+                    has_detach = has_detach || contribution.detach.has_value();
+                }
+                if (!has_detach) {
+                    return std::unexpected(
+                        "GraphJit routed sample composition contains no detach cut");
+                }
+                // The storage plan combines ordinary sources and retained mono
+                // detach timelines into one timestamp-aligned target value
+                // immediately before the target callback.
+                target_read_latency = 0;
+            } else {
+                std::vector<bool> populated_targets(
+                    target_channel_total, false);
+                for (auto const& contribution :
+                     connection.projection_contributions) {
+                    auto const source_count = contribution.transform.empty()
+                        ? channel_count(contribution.source_type)
+                        : contribution.transform.source_channel_count;
+                    auto const target_count = contribution.transform.empty()
+                        ? channel_count(contribution.target_type)
+                        : contribution.transform.target_channel_count;
+                    if (contribution.source_channel_indices.size()
+                            != source_count
+                        || contribution.target_channels.size()
+                            != target_count
+                        || (!contribution.transform.empty()
+                            && contribution.transform.coefficients.size()
+                                != source_count * target_count)) {
+                        return std::unexpected(
+                            "GraphJit sample composition contribution has inconsistent semantic channel counts");
+                    }
+                    if (contribution.transform.empty()) {
+                        try {
+                            (void)ChannelConversionRegistry::plan(
+                                ChannelLayout{
+                                    .channel_type = contribution.source_type,
+                                    .sample_layout = SampleStreamLayout::planar,
+                                },
+                                ChannelLayout{
+                                    .channel_type = contribution.target_type,
+                                    .sample_layout = SampleStreamLayout::planar,
+                                });
+                        } catch (std::exception const& e) {
+                            return std::unexpected(
+                                "GraphJit sample composition conversion is unsupported: "
+                                + std::string(e.what()));
+                        }
+                    }
+                    for (auto const source_index :
+                         contribution.source_channel_indices) {
+                        if (source_index
+                            >= connection.source_channel_timings.size()) {
+                            return std::unexpected(
+                                "GraphJit sample composition contribution lost a source timing");
+                        }
+                    }
+                    for (auto const target_channel :
+                         contribution.target_channels) {
+                        if (target_channel >= populated_targets.size()
+                            || populated_targets[target_channel]) {
+                            return std::unexpected(
+                                "GraphJit sample composition contribution has an invalid target projection");
+                        }
+                        populated_targets[target_channel] = true;
                     }
                 }
-                for (auto const target_channel : contribution.target_channels) {
-                    if (target_channel >= populated_targets.size()
-                        || populated_targets[target_channel]) {
+                if (!std::ranges::all_of(
+                        populated_targets, [](bool value) { return value; })) {
                         return std::unexpected(
-                            "GraphJit sample composition contribution has an invalid target projection");
-                    }
-                    populated_targets[target_channel] = true;
+                            "GraphJit sample composition does not populate every target channel");
                 }
+                // Feed-forward composition exposes timestamp-aligned target
+                // channels and therefore reads at port latency zero; channels may
+                // be direct delayed aliases or computed transient results. Detached
+                // composition writes each source frame forward by its channel's
+                // read latency into a persistent aligned timeline, leaving only
+                // the authored loop delay for the InputPort binding.
+                target_read_latency = connection.detach
+                    ? connection.detach->loop_extra_latency
+                    : 0;
             }
-            if (!std::ranges::all_of(
-                    populated_targets, [](bool value) { return value; })) {
-                return std::unexpected(
-                    "GraphJit sample composition does not populate every target channel");
-            }
-            // Feed-forward composition exposes timestamp-aligned target
-            // channels and therefore reads at port latency zero; channels may
-            // be direct delayed aliases or computed transient results. Detached
-            // composition writes each source frame forward by its channel's
-            // read latency into a persistent aligned timeline, leaving only
-            // the authored loop delay for the InputPort binding.
-            target_read_latency = connection.detach
-                ? connection.detach->loop_extra_latency
-                : 0;
         }
 
         validated_targets.push_back(ValidatedSampleTargetBinding{
@@ -2095,6 +2553,13 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
 
     for (std::size_t primitive_index = 0;
          primitive_index < analysis.primitives.size(); ++primitive_index) {
+        // Background callbacks receive their sample ports from the supplied
+        // BackgroundNodeCall bindings. They have no realtime execution
+        // position and must not acquire disconnected Tick constants or sinks.
+        if (analysis.primitives[primitive_index].implementation->tick_block
+            == nullptr) {
+            continue;
+        }
         auto const bundle = analysis.primitives[primitive_index].bundle.node_bundle;
         auto execution_position = execution_position_for_bundle(bundle);
         if (!execution_position) {
@@ -2199,15 +2664,26 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
 
     auto storage_connections = connections;
     for (auto& connection : storage_connections.sample_connections) {
-        if (!connection.detach) continue;
-        if (connection.detach_initial_value) {
-            if (connection.detach_initial_value->size()
-                != connection.geometry.value_size_bytes) {
+        std::vector<std::optional<std::vector<std::byte>>*> initial_values;
+        if (connection.detach)
+            initial_values.push_back(&connection.detach_initial_value);
+        for (auto& contribution : connection.routed_contributions) {
+            if (contribution.detach)
+                initial_values.push_back(&contribution.detach_initial_value);
+        }
+        if (initial_values.empty()) continue;
+        for (auto const initial_value : initial_values) {
+            if (*initial_value
+                && (*initial_value)->size()
+                    != connection.geometry.value_size_bytes) {
                 return std::unexpected(
                     "GraphJit detach initial value does not match resolved continuous geometry");
             }
-            continue;
         }
+        if (std::ranges::all_of(
+                initial_values,
+                [](auto const initial_value) { return initial_value->has_value(); }))
+            continue;
         auto const target_primitive = primitive_index_for_bundle(
             connection.target_port.node_bundle_handle);
         if (!target_primitive) {
@@ -2241,11 +2717,14 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
             return std::unexpected(
                 "GraphJit detached continuous neutral initializer rejected its resolved geometry");
         }
-        connection.detach_initial_value.emplace(geometry.value_size_bytes);
-        std::memcpy(
-            connection.detach_initial_value->data(),
-            aligned,
-            geometry.value_size_bytes);
+        for (auto const initial_value : initial_values) {
+            if (*initial_value) continue;
+            initial_value->emplace(geometry.value_size_bytes);
+            std::memcpy(
+                (*initial_value)->data(),
+                aligned,
+                geometry.value_size_bytes);
+        }
     }
 
     auto storage = build_sample_storage_plan(
@@ -2566,14 +3045,8 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
     return plan;
 }
 
-struct EventGroupCostAlternatives {
-    EventConnectionStorageRequirements separate{};
-    std::optional<EventConnectionStorageRequirements> producer_home{};
-};
-
 struct EventGroupPlanningDecision {
     EventConnectionStoragePlan storage{};
-    std::optional<std::size_t> producer_home_source_index{};
 };
 
 struct EventFeedbackPlanningDecision {
@@ -2620,6 +3093,10 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
             return std::unexpected(
                 "GraphJit event planning lost concrete-node port metadata");
         }
+        if (analysis.primitives[i].implementation->tick_block == nullptr) {
+            // Tock ports use the caller-supplied background batch bindings.
+            continue;
+        }
         plan.primitives[i].inputs.resize(node->event_input_count);
         plan.primitives[i].outputs.resize(node->event_output_count);
         auto const bundle = analysis.primitives[i].bundle.node_bundle;
@@ -2633,11 +3110,11 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
 
     plan.producer_group_storage_plans.resize(
         connections.event_producer_groups.size());
-    plan.producer_home_source_indices.resize(
-        connections.event_producer_groups.size());
     plan.producer_group_representations.resize(
         connections.event_producer_groups.size());
-    std::vector<EventGroupCostAlternatives> group_cost_alternatives(
+    plan.producer_group_source_representations.resize(
+        connections.event_producer_groups.size());
+    std::vector<EventConnectionStorageRequirements> group_cost_requirements(
         connections.event_producer_groups.size());
     if (decisions
         && decisions->producer_groups.size()
@@ -2762,9 +3239,23 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
         std::string identity =
             "graphjit.event:"
             + std::to_string(static_cast<unsigned>(group.source_type));
-        for (auto const source : group.sources) {
+        for (std::size_t source_index = 0;
+             source_index < group.sources.size(); ++source_index) {
+            auto const source = group.sources[source_index];
             identity += ':' + std::to_string(source.bundle) + '.'
                 + std::to_string(source.port);
+            if (source_index < group.source_conversions.size()) {
+                auto const& conversion = group.source_conversions[source_index];
+                identity += "[" + std::to_string(
+                    static_cast<unsigned>(conversion.source_type));
+                for (std::size_t step = 0;
+                     step < conversion.step_count; ++step) {
+                    identity += "," + std::to_string(
+                        static_cast<unsigned>(conversion.steps[step]));
+                }
+                identity += ">" + std::to_string(
+                    static_cast<unsigned>(conversion.target_type)) + "]";
+            }
         }
         return identity;
     };
@@ -2913,6 +3404,282 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
         };
     };
 
+    // A concrete Tick event output has one callback-facing raw sequence even
+    // when several connection fan-ins consume it. Fan-in groups own only
+    // derived converted/merged sequences.
+    auto ensure_raw_event_output = [&] (EventOutputPortId output)
+        -> std::expected<std::size_t, std::string> {
+        auto const primitive = primitive_index_for_bundle(output.bundle);
+        if (!primitive
+            || output.port >= plan.primitives[*primitive].outputs.size()) {
+            return std::unexpected(
+                "GraphJit event source requires an internal concrete output");
+        }
+        auto& binding = plan.primitives[*primitive].outputs[output.port];
+        if (!binding.realtime) {
+            return std::unexpected(
+                "GraphJit realtime event source is not a Tick output");
+        }
+        if (binding.storage) {
+            return *binding.storage;
+        }
+        if (output.bundle
+                >= connections.schedule.bundle_execution_position.size()
+            || !connections.schedule.bundle_execution_position[output.bundle]) {
+            return std::unexpected(
+                "GraphJit event source has no schedule position");
+        }
+
+        NodeBundlePortId const port_id{
+            output.bundle, PortKind::event, output.port};
+        auto const config = input.graph.node_bundles
+            .resolve_event_output(port_id).config;
+        if (!is_tick(config)) {
+            return std::unexpected(
+                "GraphJit realtime event source disagrees with its declaration");
+        }
+        auto const& resolved_output = realization.event_output(
+            output.bundle, output.port);
+        auto const history = resolved_output.history;
+        auto const latency = resolved_output.latency;
+        if (history > std::numeric_limits<std::size_t>::max() - latency) {
+            return std::unexpected(
+                "GraphJit raw event output window overflows size_t");
+        }
+        auto const retained_window = history + latency;
+        auto const region = region_index_for_bundle(output.bundle);
+        auto const cyclic = region
+            && *region < connections.schedule.regions.size()
+            && connections.schedule.regions[*region].cyclic;
+        auto callback_window = input.specialization.block_size;
+        std::size_t aggregate_window = input.specialization.block_size;
+        if (cyclic) {
+            auto const quantum = connections.schedule.regions[*region]
+                .maximum_block_size;
+            if (quantum == 0) {
+                return std::unexpected(
+                    "GraphJit raw event output SCC has no execution quantum");
+            }
+            callback_window = std::min(
+                input.specialization.block_size, quantum);
+            auto const slice_count = input.specialization.block_size / quantum
+                + (input.specialization.block_size % quantum != 0);
+            if (retained_window != 0
+                && slice_count
+                    > (std::numeric_limits<std::size_t>::max()
+                        - aggregate_window) / retained_window) {
+                return std::unexpected(
+                    "GraphJit raw event output aggregate window overflows size_t");
+            }
+            aggregate_window += slice_count * retained_window;
+        } else {
+            if (retained_window
+                > std::numeric_limits<std::size_t>::max()
+                    - aggregate_window) {
+                return std::unexpected(
+                    "GraphJit raw event output aggregate window overflows size_t");
+            }
+            aggregate_window += retained_window;
+        }
+        if (retained_window
+            > std::numeric_limits<std::size_t>::max() - callback_window) {
+            return std::unexpected(
+                "GraphJit raw event callback window overflows size_t");
+        }
+        callback_window += retained_window;
+        auto const current_events = event_count_for_sample_span(
+            config.max_events_per_index, aggregate_window);
+        auto const retained_events = event_count_for_sample_span(
+            config.max_events_per_index, retained_window);
+        auto const callback_current_events = event_count_for_sample_span(
+            config.max_events_per_index, callback_window);
+        auto const callback_events = event_sequence_capacity_for_sample_span(
+            config.max_events_per_index, callback_window);
+        if (!current_events || !retained_events || !callback_current_events
+            || !callback_events
+            || *current_events > std::numeric_limits<std::size_t>::max()
+                    - *retained_events) {
+            return std::unexpected(
+                "GraphJit raw event output capacity is not representable");
+        }
+        // Retained storage must not be exposed to EventOutputPort because the
+        // callback is allowed to author timestamps that overlap an earlier
+        // invocation. Without history or latency, the callback sequence itself
+        // is the raw EventOutputPortId representation. Cyclic fan-in operations
+        // consume it after each primitive invocation and before the next slice
+        // clears it.
+        auto const retained_output = retained_window != 0;
+        auto const canonical_current_events = retained_output
+            ? *current_events
+            : *callback_current_events;
+        auto const requirements = EventConnectionStorageRequirements{
+            .current_window_samples = retained_output
+                ? input.specialization.block_size
+                : callback_window,
+            .retained_window_samples = retained_window,
+            .current_event_capacity = canonical_current_events,
+            .retained_event_capacity = *retained_events,
+            .value_size_bytes = sizeof(TimedEvent),
+            .operations = RealtimeStorageOperationCounts{
+                .invariant_copied_values = retained_output
+                    ? *current_events
+                    : 0,
+                .full_extra_copied_values = retained_output
+                    ? 0
+                    : *current_events,
+                .full_ring_addressed_values = *current_events,
+                .transient_extra_stack_values = retained_output
+                    ? *callback_events
+                    : 0,
+                .carry_extra_stack_values = *callback_events,
+                .full_extra_stack_values = *callback_events,
+            },
+        };
+        auto const storage_plan = choose_event_connection_storage_plan(
+            requirements, cost_model);
+        auto const needs_callback_local = retained_output
+            || storage_plan.kind != RealtimeBufferStorageKind::transient_stack;
+        if (canonical_current_events
+            > std::numeric_limits<std::size_t>::max() - *retained_events) {
+            return std::unexpected(
+                "GraphJit raw event output working capacity overflows size_t");
+        }
+        auto working_capacity = rounded_event_capacity(
+            canonical_current_events + *retained_events);
+        if (!working_capacity) {
+            return std::unexpected(std::move(working_capacity.error()));
+        }
+
+        auto const owner = connections.event_producer_groups.size();
+        auto const position = *connections.schedule.bundle_execution_position[
+            output.bundle];
+        auto const before_scope = cyclic
+            ? region_scope(*region, EventOperationPhase::before)
+            : primitive_scope(position, EventOperationPhase::before);
+        auto const after_scope = cyclic
+            ? region_scope(*region, EventOperationPhase::after)
+            : primitive_scope(position, EventOperationPhase::after);
+        auto const merge_scope = primitive_scope(
+            position, EventOperationPhase::after);
+        auto const identity_base =
+            "graphjit.event.raw_output:"
+            + std::to_string(output.bundle) + "."
+            + std::to_string(output.port)
+            + ":history=" + std::to_string(history)
+            + ":latency=" + std::to_string(latency);
+        std::expected<std::size_t, std::string> canonical =
+            std::unexpected(std::string{"unselected canonical event storage"});
+        switch (storage_plan.kind) {
+        case RealtimeBufferStorageKind::transient_stack:
+            canonical = append_representation(
+                owner,
+                config.type,
+                *working_capacity,
+                !needs_callback_local);
+            if (canonical && needs_callback_local) {
+                plan.sequence_resets.push_back(EventSequenceResetPlan{
+                    .storage = *canonical,
+                    .scope = before_scope,
+                });
+            }
+            break;
+        case RealtimeBufferStorageKind::stack_with_persistent_carry: {
+            canonical = append_representation(
+                owner, config.type, *working_capacity);
+            if (!canonical) break;
+            auto carry_capacity = event_sequence_capacity_for_sample_span(
+                config.max_events_per_index, retained_window);
+            if (!carry_capacity) {
+                return std::unexpected(
+                    "GraphJit raw event output carry capacity is not representable");
+            }
+            auto persistent = append_representation(
+                owner,
+                config.type,
+                *carry_capacity,
+                false,
+                true,
+                identity_base + ":kind=compact_carry:capacity="
+                    + std::to_string(*carry_capacity));
+            if (!persistent) {
+                return std::unexpected(std::move(persistent.error()));
+            }
+            plan.carry_operations.push_back(EventCarryPlan{
+                .working_representation = *canonical,
+                .persistent_representation = *persistent,
+                .restore_scope = before_scope,
+                .commit_scope = after_scope,
+                .retained_history_samples = history,
+                .retained_latency_samples = latency,
+            });
+            break;
+        }
+        case RealtimeBufferStorageKind::full_node_storage:
+            canonical = append_representation(
+                owner,
+                config.type,
+                *working_capacity,
+                false,
+                true,
+                identity_base + ":kind=persistent_ring:capacity="
+                    + std::to_string(*working_capacity),
+                true);
+            if (canonical) {
+                plan.persistent_rings.push_back(EventPersistentRingPlan{
+                    .storage = *canonical,
+                    .prune_scope = before_scope,
+                    .retained_history_samples = history,
+                });
+            }
+            break;
+        }
+        if (!canonical) {
+            return std::unexpected(std::move(canonical.error()));
+        }
+        auto callback_storage = *canonical;
+        if (needs_callback_local) {
+            auto local = append_representation(
+                owner, config.type, *callback_events, true);
+            if (!local) {
+                return std::unexpected(std::move(local.error()));
+            }
+            callback_storage = *local;
+            plan.merges.push_back(EventMergePlan{
+                .source_representations = {callback_storage},
+                .target_representation = *canonical,
+                .scope = merge_scope,
+                .ordering_history_samples = history,
+                .preserve_existing_target = true,
+                .before_materialization = true,
+            });
+        }
+        binding = PrimitiveEventOutputBindingPlan{
+            .realtime = true,
+            .storage = callback_storage,
+            .canonical_storage = *canonical,
+            .source_type = config.type,
+            .history = history,
+            .latency = latency,
+            .append_existing = !needs_callback_local
+                    && !cyclic
+                    && analysis.primitives[*primitive]
+                           .bundle.maximum_block_size
+                        < input.specialization.block_size,
+        };
+        return callback_storage;
+    };
+    auto source_conversions_match = [] (
+        EventProducerGroupPlan const& group,
+        EventConnectionPlan const& connection) {
+        if (group.source_conversions.size()
+            != connection.source_plans.size()) return false;
+        for (std::size_t i = 0; i < group.source_conversions.size(); ++i) {
+            if (group.source_conversions[i]
+                != connection.source_plans[i].conversion) return false;
+        }
+        return true;
+    };
+
     for (std::size_t group_index = 0;
          group_index < connections.event_producer_groups.size();
          ++group_index) {
@@ -2933,13 +3700,7 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
             ? decisions->producer_groups[group_index].storage
             : *group.storage_plan;
         auto storage_kind = selected_group_plan.kind;
-        auto producer_home_source_index = decisions
-            ? decisions->producer_groups[group_index]
-                .producer_home_source_index
-            : std::optional<std::size_t>{};
         plan.producer_group_storage_plans[group_index] = selected_group_plan;
-        plan.producer_home_source_indices[group_index] =
-            producer_home_source_index;
         auto compact_carry =
             storage_kind
             == RealtimeBufferStorageKind::stack_with_persistent_carry;
@@ -2948,6 +3709,14 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
         auto retained_storage = compact_carry || persistent_ring;
         auto aggregate_sequence =
             group.requires_invocation_aggregate || retained_storage;
+
+        plan.producer_group_source_representations[group_index].resize(
+            group.sources.size());
+
+        if (group.source_conversions.size() != group.sources.size()) {
+            return std::unexpected(
+                "GraphJit event producer group lost its source conversions");
+        }
 
         if (group.sources.size() > 1) {
             std::optional<std::size_t> cyclic_source_region;
@@ -2971,18 +3740,17 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
                 || (cyclic_source_region && has_acyclic_source);
 
             // Producer streams are contractually time-sorted, but independent
-            // producers still cannot append concurrently into one sequence
-            // without disturbing global order. Lowering costs both concrete
-            // choices below: either every producer writes a local sequence, or
-            // semantic source 0 writes directly into the aggregate and the
-            // remaining source sequences are merged afterward.
-            // Retained producer-home restores/prunes the canonical prefix before
-            // source 0 executes and merges the remaining streams afterward.
+            // producers cannot append into one sequence without disturbing
+            // global order. Each EventOutputPortId therefore keeps its raw
+            // callback sequence. Lowering converts those sequences as needed
+            // and merges them into a separate fan-in sequence.
             struct ValidatedSource {
                 EventOutputPortId id{};
                 std::size_t primitive = 0;
                 std::size_t execution_position = 0;
                 EventOutputConfig config{};
+                EventConversionPlan conversion{};
+                std::size_t raw_representation = 0;
                 std::size_t capacity = 0;
                 std::size_t aggregate_event_bound = 0;
                 std::optional<std::size_t> cyclic_region{};
@@ -2994,7 +3762,12 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
             std::size_t producer_execution_position = 0;
             double observed_rate = 0.0;
 
-            for (auto const source_id : group.sources) {
+            for (std::size_t group_source_index = 0;
+                 group_source_index < group.sources.size();
+                 ++group_source_index) {
+                auto const source_id = group.sources[group_source_index];
+                auto const& source_conversion =
+                    group.source_conversions[group_source_index];
                 auto const source_primitive = primitive_index_for_bundle(
                     source_id.bundle);
                 if (!source_primitive
@@ -3015,9 +3788,15 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
                 auto const source = input.graph.node_bundles
                     .resolve_event_output(source_port).config;
                 if (!is_tick(source.production)
-                    || source.type != group.source_type) {
+                    || source.type != source_conversion.source_type
+                    || source_conversion.target_type != group.source_type) {
                     return std::unexpected(
                         "GraphJit event fan-in producer disagrees with its declaration");
+                }
+                auto raw_representation = ensure_raw_event_output(source_id);
+                if (!raw_representation) {
+                    return std::unexpected(
+                        std::move(raw_representation.error()));
                 }
                 auto const& resolved_source =
                     realization.event_output(source_id.bundle, source_id.port);
@@ -3081,13 +3860,15 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
                         "GraphJit event fan-in producer capacity is not representable");
                 }
                 total_local_capacity += *aggregate_event_bound;
-                if (*capacity
-                    > std::numeric_limits<std::size_t>::max()
-                        - total_invocation_local_capacity) {
-                    return std::unexpected(
-                        "GraphJit event fan-in local capacity overflows size_t");
+                if (source_conversion.size() != 0) {
+                    if (*capacity
+                        > std::numeric_limits<std::size_t>::max()
+                            - total_invocation_local_capacity) {
+                        return std::unexpected(
+                            "GraphJit event fan-in conversion capacity overflows size_t");
+                    }
+                    total_invocation_local_capacity += *capacity;
                 }
-                total_invocation_local_capacity += *capacity;
                 observed_rate += source.max_events_per_index;
                 if (!std::isfinite(observed_rate)) {
                     return std::unexpected(
@@ -3102,6 +3883,8 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
                     .primitive = *source_primitive,
                     .execution_position = execution_position,
                     .config = source,
+                    .conversion = source_conversion,
+                    .raw_representation = *raw_representation,
                     .capacity = *capacity,
                     .aggregate_event_bound = *aggregate_event_bound,
                     .cyclic_region = source_cyclic_region,
@@ -3112,19 +3895,63 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
                     "GraphJit event fan-in aggregate max_events_per_index disagrees with connection analysis");
             }
 
-            // A retained aggregate can stand in for one producer's authored
-            // history/latency only when it continues to identify which
-            // producer authored each event. Target-owned history needs only
-            // the merged stream and therefore keeps the cheaper unindexed
-            // representation.
-            auto const requires_retained_source_identity =
+            auto source_representation_for_group = [&] (
+                ValidatedSource const& source,
+                EventOperationScope scope)
+                -> std::expected<std::size_t, std::string> {
+                if (source.conversion.size() == 0) {
+                    if (plan.ports[source.raw_representation].type
+                        != group.source_type) {
+                        return std::unexpected(
+                            "GraphJit identity event source conversion changed type");
+                    }
+                    return source.raw_representation;
+                }
+                auto existing = std::ranges::find_if(
+                    plan.materializations,
+                    [&](EventMaterializationPlan const& candidate) {
+                        return candidate.source_representation
+                                == source.raw_representation
+                            && candidate.conversion == source.conversion
+                            && candidate.scope == scope
+                            && candidate.before_merge;
+                    });
+                if (existing != plan.materializations.end()) {
+                    return existing->target_representation;
+                }
+                auto converted = append_representation(
+                    group_index,
+                    group.source_type,
+                    plan.ports[source.raw_representation].event_capacity);
+                if (!converted) {
+                    return std::unexpected(std::move(converted.error()));
+                }
+                plan.materializations.push_back(EventMaterializationPlan{
+                    .source_representation = source.raw_representation,
+                    .target_representation = *converted,
+                    .conversion = source.conversion,
+                    .maximum_output_event_count =
+                        source.aggregate_event_bound,
+                    .maximum_source_event_reads =
+                        source.aggregate_event_bound,
+                    .before_merge = true,
+                    .scope = scope,
+                });
+                return *converted;
+            };
+
+            // Source indices let a composed connection select its ordinary
+            // branches from retained fan-in storage. Detached branches read
+            // the per-source representations recorded below. Output history
+            // and latency remain in the raw EventOutputPortId representations.
+            auto const requires_source_identity =
                 std::ranges::any_of(
-                    validated_sources,
-                    [&](ValidatedSource const& source) {
-                        auto const& resolved_source = realization.event_output(
-                            source.id.bundle, source.id.port);
-                        return resolved_source.history != 0
-                            || resolved_source.latency != 0;
+                    group.connection_indices,
+                    [&](std::size_t connection_index) {
+                        return connection_index
+                                < connections.event_connections.size()
+                            && connections.event_connections[connection_index]
+                                .requires_source_composition;
                     });
 
             std::size_t retained_history = 0;
@@ -3185,6 +4012,7 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
 
                 std::size_t staged_local_stack = 0;
                 for (auto const& source : validated_sources) {
+                    if (source.conversion.size() == 0) continue;
                     auto const capacity = source.cyclic_region
                         ? source.capacity
                         : source.aggregate_event_bound;
@@ -3257,23 +4085,14 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
                     .carry_extra_stack_values = staged_local_stack,
                     .full_extra_stack_values = staged_local_stack,
                 };
-                group_cost_alternatives[group_index] = EventGroupCostAlternatives{
-                    .separate = staged_requirements,
-                };
+                group_cost_requirements[group_index] = staged_requirements;
 
                 auto selected_plan = decisions
                     ? decisions->producer_groups[group_index].storage
                     : choose_event_connection_storage_plan(
                         staged_requirements, cost_model);
-                if (decisions
-                    && decisions->producer_groups[group_index]
-                        .producer_home_source_index) {
-                    return std::unexpected(
-                        "GraphJit staged event fan-in cannot use producer-home storage");
-                }
                 storage_kind = selected_plan.kind;
                 plan.producer_group_storage_plans[group_index] = selected_plan;
-                plan.producer_home_source_indices[group_index].reset();
                 compact_carry = storage_kind
                     == RealtimeBufferStorageKind::stack_with_persistent_carry;
                 persistent_ring = storage_kind
@@ -3396,7 +4215,6 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
                             stage.execution_position,
                             EventOperationPhase::after),
                         .ordering_history_samples = retained_history,
-                        .target_is_semantic_source = false,
                         .preserve_existing_target = true,
                     };
                     merge.source_representations.reserve(
@@ -3404,39 +4222,16 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
                     merge.source_indices.reserve(stage.source_indices.size());
                     for (auto const source_index : stage.source_indices) {
                         auto const& source = validated_sources[source_index];
-                        auto const local_capacity = source.cyclic_region
-                            ? source.capacity
-                            : source.aggregate_event_bound;
-                        auto local = append_representation(
-                            group_index,
-                            group.source_type,
-                            local_capacity,
-                            true);
+                        auto local = source_representation_for_group(
+                            source, merge.scope);
                         if (!local) {
-                            return std::unexpected(std::move(local.error()));
+                            return std::unexpected(
+                                std::move(local.error()));
                         }
+                        plan.producer_group_source_representations[
+                            group_index][source_index] = *local;
                         merge.source_representations.push_back(*local);
                         merge.source_indices.push_back(source_index);
-
-                        auto& source_binding = plan.primitives[
-                            source.primitive].outputs[source.id.port];
-                        if (source_binding.storage) {
-                            return std::unexpected(
-                                "GraphJit event output belongs to more than one producer group");
-                        }
-                        auto const& resolved_source = realization.event_output(
-                            source.id.bundle, source.id.port);
-                        source_binding = PrimitiveEventOutputBindingPlan{
-                            .realtime = true,
-                            .storage = *local,
-                            .source_type = group.source_type,
-                            .history = resolved_source.history,
-                            .latency = resolved_source.latency,
-                            .append_existing = !source.cyclic_region
-                                && analysis.primitives[source.primitive]
-                                       .bundle.maximum_block_size
-                                    < input.specialization.block_size,
-                        };
                     }
                     plan.merges.push_back(std::move(merge));
                 }
@@ -3444,7 +4239,7 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
                 for (auto const connection_index : group.connection_indices) {
                     auto const& connection =
                         connections.event_connections[connection_index];
-                    if (connection.detach) continue;
+                    if (has_detached_source(connection)) continue;
                     auto const retained_connection =
                         connection.source_history != 0
                         || connection.source_latency != 0
@@ -3452,6 +4247,7 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
                     if (!is_entirely_realtime_delivery(connection)
                         || connection.external_boundary
                         || connection.sources != group.sources
+                        || !source_conversions_match(group, connection)
                         || connection.source_type != group.source_type
                         || connection.conversion.source_type
                             != connection.source_type
@@ -3483,7 +4279,7 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
                         }
 
                         auto target_representation = *canonical;
-                        if (connection.requires_conversion) {
+                        if (connection.conversion.size() != 0) {
                             auto const target_region = region_index_for_bundle(
                                 target_id.bundle);
                             EventOperationScope scope = last_scope;
@@ -3532,6 +4328,7 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
                                 [&](EventMaterializationPlan const& candidate) {
                                     return candidate.source_representation
                                             == *canonical
+                                        && !candidate.source_index_filter
                                         && candidate.conversion
                                             == connection.conversion
                                         && candidate.scope == scope
@@ -3595,8 +4392,8 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
                 continue;
             }
 
-            // Build and cost the fan-in alternatives here, next to the exact
-            // producer-local buffers and merge operation that lowering emits.
+            // Build and cost fan-in storage here, next to the exact raw
+            // callback buffers and merge operation that lowering emits.
             // Connection analysis intentionally does not reconstruct these
             // implementation details.
             auto const saturating_add_values = [](std::size_t lhs,
@@ -3614,12 +4411,11 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
                     + (input.specialization.block_size % quantum != 0);
             }
 
-            auto sequential_merge_writes = [&](std::size_t initial_values,
-                                                std::size_t first_source) {
+            auto sequential_merge_writes = [&](std::size_t initial_values) {
                 auto target_values = initial_values;
                 std::size_t writes = 0;
                 if (!cyclic_source_region) {
-                    for (std::size_t source_index = first_source;
+                    for (std::size_t source_index = 0;
                          source_index < validated_sources.size(); ++source_index) {
                         target_values = saturating_add_values(
                             target_values,
@@ -3635,7 +4431,7 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
                     remaining.push_back(source.aggregate_event_bound);
                 }
                 for (std::size_t slice = 0; slice < slice_count; ++slice) {
-                    for (std::size_t source_index = first_source;
+                    for (std::size_t source_index = 0;
                          source_index < validated_sources.size(); ++source_index) {
                         auto const produced = std::min(
                             validated_sources[source_index].capacity,
@@ -3649,8 +4445,7 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
                 return writes;
             };
 
-            auto sequential_ring_accesses = [&](std::size_t initial_values,
-                                                 std::size_t first_source) {
+            auto sequential_ring_accesses = [&](std::size_t initial_values) {
                 auto target_values = initial_values;
                 std::size_t accesses = 0;
                 auto account_source = [&](std::size_t produced) {
@@ -3659,14 +4454,14 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
                         target_values, produced);
                     // event_sequence_merge() reads the existing target sequence
                     // and writes the complete merged target sequence. Source
-                    // reads remain in producer-local stack buffers.
+                    // reads remain in raw callback stack buffers.
                     accesses = saturating_add_values(
                         accesses,
                         saturating_add_values(previous_target, target_values));
                 };
 
                 if (!cyclic_source_region) {
-                    for (std::size_t source_index = first_source;
+                    for (std::size_t source_index = 0;
                          source_index < validated_sources.size(); ++source_index) {
                         account_source(
                             validated_sources[source_index].aggregate_event_bound);
@@ -3680,7 +4475,7 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
                     remaining.push_back(source.aggregate_event_bound);
                 }
                 for (std::size_t slice = 0; slice < slice_count; ++slice) {
-                    for (std::size_t source_index = first_source;
+                    for (std::size_t source_index = 0;
                          source_index < validated_sources.size(); ++source_index) {
                         auto const produced = std::min(
                             validated_sources[source_index].capacity,
@@ -3692,81 +4487,26 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
                 return accesses;
             };
 
-            auto const separate_transient_writes =
-                sequential_merge_writes(0, 0);
-            auto const separate_retained_writes =
-                sequential_merge_writes(retained_values, 0);
-            auto const separate_ring_accesses =
-                sequential_ring_accesses(retained_values, 0);
-            auto separate_requirements = group.storage_requirements;
-            separate_requirements.operations = RealtimeStorageOperationCounts{
-                .transient_extra_copied_values = separate_transient_writes,
-                .carry_extra_copied_values = separate_retained_writes,
-                .full_extra_copied_values = separate_retained_writes,
-                .full_ring_addressed_values = separate_ring_accesses,
+            auto const transient_merge_writes =
+                sequential_merge_writes(0);
+            auto const retained_merge_writes =
+                sequential_merge_writes(retained_values);
+            auto const retained_ring_accesses =
+                sequential_ring_accesses(retained_values);
+            auto group_requirements = group.storage_requirements;
+            group_requirements.operations = RealtimeStorageOperationCounts{
+                .transient_extra_copied_values = transient_merge_writes,
+                .carry_extra_copied_values = retained_merge_writes,
+                .full_extra_copied_values = retained_merge_writes,
+                .full_ring_addressed_values = retained_ring_accesses,
                 .transient_extra_stack_values =
                     total_invocation_local_capacity,
                 .carry_extra_stack_values = total_invocation_local_capacity,
                 .full_extra_stack_values = total_invocation_local_capacity,
             };
-            auto const separate_plan = choose_event_connection_storage_plan(
-                separate_requirements, cost_model);
-
-            bool retained_home_is_order_safe = true;
-            if (retained_values != 0) {
-                for (std::size_t source_index = 0;
-                     source_index < validated_sources.size(); ++source_index) {
-                    auto const& source = validated_sources[source_index];
-                    auto const& resolved_source = realization.event_output(
-                        source.id.bundle, source.id.port);
-                    if (resolved_source.latency != 0
-                        || (source_index == 0
-                            && resolved_source.history != 0)) {
-                        retained_home_is_order_safe = false;
-                        break;
-                    }
-                }
-            }
-            auto const home_legal = !cyclic_source_region
-                && !requires_retained_source_identity
-                && retained_home_is_order_safe;
-
-            std::optional<EventConnectionStoragePlan> home_plan;
-            EventConnectionStorageRequirements home_requirements{};
-            if (home_legal) {
-                auto const source_zero_values =
-                    validated_sources.front().aggregate_event_bound;
-                auto const home_transient_writes = total_local_capacity;
-                auto const home_prefix = saturating_add_values(
-                    retained_values, source_zero_values);
-                auto const home_retained_writes =
-                    sequential_merge_writes(home_prefix, 1);
-                auto const home_ring_accesses = saturating_add_values(
-                    source_zero_values,
-                    sequential_ring_accesses(home_prefix, 1));
-                auto const home_local_stack = total_invocation_local_capacity
-                    - validated_sources.front().capacity;
-
-                home_requirements = group.storage_requirements;
-                home_requirements.operations = RealtimeStorageOperationCounts{
-                    .transient_extra_copied_values = home_transient_writes,
-                    .carry_extra_copied_values = home_retained_writes,
-                    .full_extra_copied_values = home_retained_writes,
-                    .full_ring_addressed_values = home_ring_accesses,
-                    .transient_extra_stack_values = home_local_stack,
-                    .carry_extra_stack_values = home_local_stack,
-                    .full_extra_stack_values = home_local_stack,
-                };
-                home_plan = choose_event_connection_storage_plan(
-                    home_requirements, cost_model);
-            }
-            group_cost_alternatives[group_index] = EventGroupCostAlternatives{
-                .separate = separate_requirements,
-                .producer_home = home_legal
-                    ? std::optional<EventConnectionStorageRequirements>{
-                        home_requirements}
-                    : std::nullopt,
-            };
+            auto const group_plan = choose_event_connection_storage_plan(
+                group_requirements, cost_model);
+            group_cost_requirements[group_index] = group_requirements;
 
             auto selected_cost = [](EventConnectionStoragePlan const& candidate)
                 -> std::optional<std::size_t> {
@@ -3775,40 +4515,17 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
                 if (!cost.legal) return std::nullopt;
                 return cost.weighted_cost;
             };
-            auto const separate_cost = selected_cost(separate_plan);
-            auto const home_cost = home_plan
-                ? selected_cost(*home_plan)
-                : std::optional<std::size_t>{};
-
-            EventConnectionStoragePlan selected_plan{};
-            if (decisions) {
-                selected_plan = decisions->producer_groups[group_index].storage;
-                producer_home_source_index = decisions->producer_groups[
-                    group_index].producer_home_source_index;
-                if (producer_home_source_index
-                    && (!home_legal || *producer_home_source_index != 0)) {
-                    return std::unexpected(
-                        "GraphJit event costing selected an invalid producer-home fan-in");
-                }
-            } else if (home_cost
-                       && (!separate_cost || *home_cost < *separate_cost)) {
-                producer_home_source_index = 0;
-                selected_plan = *home_plan;
-            } else if (separate_cost) {
-                producer_home_source_index.reset();
-                selected_plan = separate_plan;
-            } else if (home_cost) {
-                producer_home_source_index = 0;
-                selected_plan = *home_plan;
-            } else {
+            auto const group_cost = selected_cost(group_plan);
+            auto selected_plan = decisions
+                ? decisions->producer_groups[group_index].storage
+                : group_plan;
+            if (!group_cost || !selected_cost(selected_plan)) {
                 return std::unexpected(
                     "GraphJit event fan-in has no storage realization within the compile-time stack budget");
             }
 
             storage_kind = selected_plan.kind;
             plan.producer_group_storage_plans[group_index] = selected_plan;
-            plan.producer_home_source_indices[group_index] =
-                producer_home_source_index;
             compact_carry = storage_kind
                 == RealtimeBufferStorageKind::stack_with_persistent_carry;
             persistent_ring = storage_kind
@@ -3863,26 +4580,13 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
                 canonical_capacity = *rounded;
             }
 
-            if (producer_home_source_index
-                && *producer_home_source_index != 0) {
-                return std::unexpected(
-                    "GraphJit event fan-in producer-home source must be semantic source 0");
-            }
-            auto const producer_home =
-                producer_home_source_index.has_value()
-                && !cyclic_source_region;
-            auto const transient_producer_home =
-                producer_home && !retained_storage;
-            auto const retained_producer_home =
-                producer_home && retained_storage;
-            auto const preserve_source_identity = retained_storage
-                && requires_retained_source_identity;
+            auto const preserve_source_identity = requires_source_identity;
             auto const identity_base = event_group_identity(group);
             auto canonical = append_representation(
                 group_index,
                 group.source_type,
                 canonical_capacity,
-                producer_home,
+                false,
                 persistent_ring,
                 persistent_ring
                     ? identity_base + ":kind=persistent_ring:history="
@@ -3913,15 +4617,11 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
                 if (!persistent) {
                     return std::unexpected(std::move(persistent.error()));
                 }
-                auto const restore_execution_position =
-                    retained_producer_home
-                    ? validated_sources.front().execution_position
-                    : producer_execution_position;
                 auto const restore_scope = cyclic_source_region
                     ? region_scope(
                         *cyclic_source_region, EventOperationPhase::before)
                     : primitive_scope(
-                        restore_execution_position,
+                        producer_execution_position,
                         EventOperationPhase::before);
                 auto const commit_scope = cyclic_source_region
                     ? region_scope(
@@ -3945,9 +4645,7 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
                             *cyclic_source_region,
                             EventOperationPhase::before)
                         : primitive_scope(
-                            retained_producer_home
-                                ? validated_sources.front().execution_position
-                                : producer_execution_position,
+                            producer_execution_position,
                             EventOperationPhase::before),
                     .retained_history_samples = retained_history,
                 });
@@ -3958,55 +4656,27 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
                 .scope = primitive_scope(
                     producer_execution_position, EventOperationPhase::after),
                 .ordering_history_samples = retained_history,
-                .target_is_semantic_source = transient_producer_home,
                 .preserve_existing_target =
                     retained_storage || cyclic_source_region.has_value(),
             };
-            merge.source_representations.reserve(
-                validated_sources.size() - (producer_home ? 1u : 0u));
+            merge.source_representations.reserve(validated_sources.size());
             if (preserve_source_identity) {
                 merge.source_indices.reserve(validated_sources.size());
             }
             for (std::size_t source_index = 0;
                  source_index < validated_sources.size(); ++source_index) {
                 auto const& source = validated_sources[source_index];
-                std::size_t storage = *canonical;
-                if (!producer_home || source_index != 0) {
-                    auto local = append_representation(
-                        group_index,
-                        group.source_type,
-                        source.capacity,
-                        true);
-                    if (!local) {
-                        return std::unexpected(std::move(local.error()));
-                    }
-                    storage = *local;
-                    merge.source_representations.push_back(storage);
-                    if (preserve_source_identity) {
-                        merge.source_indices.push_back(source_index);
-                    }
+                auto storage = source_representation_for_group(
+                    source, merge.scope);
+                if (!storage) {
+                    return std::unexpected(std::move(storage.error()));
                 }
-
-                auto& source_binding =
-                    plan.primitives[source.primitive].outputs[source.id.port];
-                if (source_binding.storage) {
-                    return std::unexpected(
-                        "GraphJit event output belongs to more than one producer group");
+                plan.producer_group_source_representations[
+                    group_index][source_index] = *storage;
+                merge.source_representations.push_back(*storage);
+                if (preserve_source_identity) {
+                    merge.source_indices.push_back(source_index);
                 }
-                auto const& resolved_source = realization.event_output(
-                    source.id.bundle, source.id.port);
-                source_binding = PrimitiveEventOutputBindingPlan{
-                    .realtime = true,
-                    .storage = storage,
-                    .source_type = group.source_type,
-                    .history = resolved_source.history,
-                    .latency = resolved_source.latency,
-                    .append_existing = !cyclic_source_region
-                        && ((retained_producer_home && source_index == 0)
-                        || analysis.primitives[source.primitive]
-                                .bundle.maximum_block_size
-                            < input.specialization.block_size),
-                };
             }
             if (cyclic_source_region && !retained_storage) {
                 plan.sequence_resets.push_back(EventSequenceResetPlan{
@@ -4020,7 +4690,7 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
             for (auto const connection_index : group.connection_indices) {
                 auto const& connection =
                     connections.event_connections[connection_index];
-                if (connection.detach) continue;
+                if (has_detached_source(connection)) continue;
                 auto const retained_connection =
                     connection.source_history != 0
                     || connection.source_latency != 0
@@ -4028,6 +4698,7 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
                 if (!is_entirely_realtime_delivery(connection)
                     || connection.external_boundary
                     || connection.sources != group.sources
+                    || !source_conversions_match(group, connection)
                     || connection.source_type != group.source_type
                     || connection.conversion.source_type
                         != connection.source_type
@@ -4057,7 +4728,7 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
                             "GraphJit event fan-in consumer disagrees with its declaration");
                     }
                     auto target_representation = *canonical;
-                    if (connection.requires_conversion) {
+                    if (connection.conversion.size() != 0) {
                         auto scope = materialization_scope_for_target(
                             connection.sources,
                             producer_execution_position,
@@ -4086,6 +4757,7 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
                             plan.materializations,
                             [&](EventMaterializationPlan const& candidate) {
                                 return candidate.source_representation == *canonical
+                                    && !candidate.source_index_filter
                                     && candidate.conversion == connection.conversion
                                     && candidate.scope == *scope
                                     && candidate.target_representation
@@ -4164,8 +4836,10 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
             source_id.bundle, PortKind::event, source_id.port};
         auto const source = input.graph.node_bundles
             .resolve_event_output(source_port).config;
+        auto const& source_conversion = group.source_conversions.front();
         if (!is_tick(source.production)
-            || source.type != group.source_type) {
+            || source.type != source_conversion.source_type
+            || source_conversion.target_type != group.source_type) {
             return std::unexpected(
                 "GraphJit event producer disagrees with its declaration");
         }
@@ -4173,6 +4847,14 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
             return std::unexpected(
                 "GraphJit event producer index is outside primitive metadata");
         }
+        auto raw_source_representation = ensure_raw_event_output(source_id);
+        if (!raw_source_representation) {
+            return std::unexpected(
+                std::move(raw_source_representation.error()));
+        }
+        auto const raw_canonical_representation = plan.primitives[
+            *source_primitive].outputs[source_id.port]
+                .canonical_storage.value_or(*raw_source_representation);
 
         if (source.max_events_per_index != group.max_events_per_index) {
             return std::unexpected(
@@ -4194,8 +4876,6 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
             realization.event_output(source_id.bundle, source_id.port);
         auto const source_history = resolved_source.history;
         auto const source_latency = resolved_source.latency;
-        auto const requires_cyclic_local_merge = source_region_is_cyclic
-            && (source_history != 0 || source_latency != 0);
         auto producer_window_samples = input.specialization.block_size;
         auto aggregate_window_samples = input.specialization.block_size;
         if (source_region_is_cyclic) {
@@ -4255,7 +4935,7 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
                 std::max(connection.source_history, connection.target_history));
             retained_latency = std::max(retained_latency, connection.source_latency);
         }
-        group_cost_alternatives[group_index].separate =
+        group_cost_requirements[group_index] =
             group.storage_requirements;
 
         auto aggregate_capacity = rounded_event_capacity(*base_max_events);
@@ -4328,14 +5008,30 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
             ring_capacity = *ring_capacity_bound;
         }
 
+        auto const raw_has_retained_storage =
+            plan.ports[raw_canonical_representation].persistent
+            || std::ranges::any_of(
+                plan.carry_operations,
+                [&](EventCarryPlan const& carry) {
+                    return carry.working_representation
+                        == raw_canonical_representation;
+                });
+        auto const uses_raw_source_directly =
+            !source_region_is_cyclic
+            && source_conversion.size() == 0
+            && source_history >= retained_history
+            && source_latency >= retained_latency
+            && (!retained_storage || raw_has_retained_storage);
         auto source_representation = [&]()
             -> std::expected<std::size_t, std::string> {
+            if (uses_raw_source_directly)
+                return raw_canonical_representation;
             if (!persistent_ring) {
                 return append_representation(
                     group_index,
                     group.source_type,
                     working_capacity,
-                    !requires_cyclic_local_merge);
+                    false);
             }
             std::string migration_identity =
                 "graphjit.event:" + std::to_string(static_cast<unsigned>(group.source_type))
@@ -4348,7 +5044,7 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
                 group_index,
                 group.source_type,
                 ring_capacity,
-                !requires_cyclic_local_merge,
+                false,
                 true,
                 std::move(migration_identity),
                 true);
@@ -4358,7 +5054,7 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
         }
         plan.producer_group_representations[group_index] = *source_representation;
 
-        if (compact_carry) {
+        if (compact_carry && !uses_raw_source_directly) {
             std::string migration_identity =
                 "graphjit.event:" + std::to_string(static_cast<unsigned>(group.source_type))
                 + ':' + std::to_string(source_id.bundle) + '.'
@@ -4385,7 +5081,7 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
                 .retained_history_samples = retained_history,
                 .retained_latency_samples = retained_latency,
             });
-        } else if (persistent_ring) {
+        } else if (persistent_ring && !uses_raw_source_directly) {
             plan.persistent_rings.push_back(EventPersistentRingPlan{
                 .storage = *source_representation,
                 .prune_scope = source_before_scope,
@@ -4393,28 +5089,36 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
             });
         }
 
-        auto& source_binding =
-            plan.primitives[*source_primitive].outputs[source_id.port];
-        if (source_binding.storage) {
-            return std::unexpected(
-                "GraphJit event output belongs to more than one producer group");
-        }
-        auto producer_representation = *source_representation;
-        if (requires_cyclic_local_merge) {
-            auto local = append_representation(
-                group_index, group.source_type, *base_capacity, true);
-            if (!local) {
-                return std::unexpected(std::move(local.error()));
+        if (!uses_raw_source_directly) {
+            auto producer_representation = *raw_source_representation;
+            auto const merge_scope = primitive_scope(
+                group.live_interval.begin, EventOperationPhase::after);
+            if (source_conversion.size() != 0) {
+                auto converted = append_representation(
+                    group_index,
+                    group.source_type,
+                    plan.ports[*raw_source_representation].event_capacity);
+                if (!converted) {
+                    return std::unexpected(std::move(converted.error()));
+                }
+                producer_representation = *converted;
+                plan.materializations.push_back(EventMaterializationPlan{
+                    .source_representation = *raw_source_representation,
+                    .target_representation = *converted,
+                    .conversion = source_conversion,
+                    .maximum_output_event_count = *base_max_events,
+                    .maximum_source_event_reads = *base_max_events,
+                    .before_merge = true,
+                    .scope = merge_scope,
+                });
             }
-            producer_representation = *local;
             plan.merges.push_back(EventMergePlan{
                 .source_representations = {producer_representation},
                 .target_representation = *source_representation,
-                .scope = primitive_scope(
-                    group.live_interval.begin, EventOperationPhase::after),
+                .scope = merge_scope,
                 .ordering_history_samples = retained_history,
-                .target_is_semantic_source = false,
-                .preserve_existing_target = true,
+                .preserve_existing_target = retained_storage
+                    || source_region_is_cyclic,
             });
             if (!retained_storage) {
                 plan.sequence_resets.push_back(EventSequenceResetPlan{
@@ -4423,19 +5127,10 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
                 });
             }
         }
-        source_binding = PrimitiveEventOutputBindingPlan{
-            .realtime = true,
-            .storage = producer_representation,
-            .source_type = group.source_type,
-            .history = resolved_source.history,
-            .latency = resolved_source.latency,
-            .append_existing = aggregate_sequence
-                && !requires_cyclic_local_merge,
-        };
 
         for (auto const connection_index : group.connection_indices) {
             auto const& connection = connections.event_connections[connection_index];
-            if (connection.detach) continue;
+            if (has_detached_source(connection)) continue;
             auto const retained_connection =
                 connection.source_history != 0
                 || connection.source_latency != 0
@@ -4445,6 +5140,7 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
                 || connection.sources.size() != 1
                 || connection.sources.front().bundle != source_id.bundle
                 || connection.sources.front().port != source_id.port
+                || !source_conversions_match(group, connection)
                 || connection.source_type != group.source_type
                 || connection.conversion.source_type != connection.source_type
                 || connection.conversion.target_type != connection.target_type
@@ -4471,7 +5167,7 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
                         "GraphJit event consumer disagrees with its declaration");
                 }
                 auto target_representation = *source_representation;
-                if (connection.requires_conversion) {
+                if (connection.conversion.size() != 0) {
                     auto scope = materialization_scope_for_target(
                         connection.sources,
                         group.live_interval.begin,
@@ -4501,6 +5197,7 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
                         [&](EventMaterializationPlan const& candidate) {
                             return candidate.source_representation
                                     == *source_representation
+                                && !candidate.source_index_filter
                                 && candidate.conversion == connection.conversion
                                 && candidate.scope == *scope
                                 && candidate.target_representation
@@ -4556,6 +5253,221 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
         }
     }
 
+    auto plan_source_event_feedback = [&] (
+        EventConnectionPlan const& connection,
+        EventSourcePlan const& source,
+        std::size_t source_index,
+        std::size_t source_group_index,
+        std::size_t source_representation,
+        std::size_t producer_position)
+        -> std::expected<std::size_t, std::string> {
+        if (!source.detach || !source.detach_region
+            || *source.detach_region >= connections.schedule.regions.size()
+            || source.detach->loop_extra_latency == 0) {
+            return std::unexpected(
+                "GraphJit per-source event detach lost its validated SCC metadata");
+        }
+        auto const& region =
+            connections.schedule.regions[*source.detach_region];
+        if (!region.cyclic || region.maximum_block_size == 0
+            || source_group_index
+                >= connections.event_producer_groups.size()
+            || source_representation >= plan.ports.size()) {
+            return std::unexpected(
+                "GraphJit per-source event detach has invalid producer storage");
+        }
+        auto const& group =
+            connections.event_producer_groups[source_group_index];
+        auto const& source_storage = plan.ports[source_representation];
+        if (source_storage.type != connection.source_type) {
+            return std::unexpected(
+                "GraphJit per-source event detach source representation changed type");
+        }
+
+        auto const latency = source.detach->loop_extra_latency;
+        auto const retained_history = std::max(
+            source.history, connection.target_history);
+        if (source.latency > std::numeric_limits<std::size_t>::max() - latency
+            || retained_history
+                > std::numeric_limits<std::size_t>::max()
+                    - latency - source.latency) {
+            return std::unexpected(
+                "GraphJit per-source event feedback retained span overflows size_t");
+        }
+        auto const retained_window_samples =
+            retained_history + source.latency + latency;
+        auto const slice_count = input.specialization.block_size
+            / region.maximum_block_size
+            + (input.specialization.block_size % region.maximum_block_size != 0);
+        if (source.history
+                > std::numeric_limits<std::size_t>::max() - source.latency
+            || ((source.history + source.latency) != 0
+                && slice_count
+                    > (std::numeric_limits<std::size_t>::max()
+                        - input.specialization.block_size)
+                        / (source.history + source.latency))) {
+            return std::unexpected(
+                "GraphJit per-source event feedback authored span overflows size_t");
+        }
+        auto const authored_window_samples = input.specialization.block_size
+            + slice_count * (source.history + source.latency);
+        auto const current_event_count = event_count_for_sample_span(
+            source.max_events_per_index, input.specialization.block_size);
+        auto const retained_event_count = event_count_for_sample_span(
+            source.max_events_per_index, retained_window_samples);
+        auto const authored_event_count = event_count_for_sample_span(
+            source.max_events_per_index, authored_window_samples);
+        auto const source_event_reads = event_count_for_sample_span(
+            source.max_events_per_index, authored_window_samples);
+        if (!current_event_count || !retained_event_count
+            || !authored_event_count || !source_event_reads) {
+            return std::unexpected(
+                "GraphJit per-source event feedback rate/span is not representable");
+        }
+        auto feedback_requirements = EventConnectionStorageRequirements{
+            .current_window_samples = input.specialization.block_size,
+            .retained_window_samples = retained_window_samples,
+            .current_event_capacity = *current_event_count,
+            .retained_event_capacity = *retained_event_count,
+            .value_size_bytes = sizeof(TimedEvent),
+            .operations = RealtimeStorageOperationCounts{
+                .invariant_copied_values = *authored_event_count,
+                .full_ring_addressed_values = *authored_event_count,
+            },
+        };
+        auto feedback_storage = choose_event_connection_storage_plan(
+            feedback_requirements, cost_model);
+        auto const append_scope = primitive_scope(
+            producer_position, EventOperationPhase::after);
+        auto const reset_scope = region_scope(
+            *source.detach_region, EventOperationPhase::before);
+        auto existing = std::ranges::find_if(
+            plan.feedback_operations,
+            [&](EventFeedbackPlan const& feedback) {
+                return feedback.source_representation == source_representation
+                    && !feedback.source_index_filter
+                    && feedback.source_sequence_restarts_each_append
+                    && feedback.append_scope == append_scope
+                    && feedback.reset_scope == reset_scope
+                    && feedback.loop_extra_latency == latency
+                    && feedback.retained_window_samples
+                        == retained_window_samples;
+            });
+        if (existing != plan.feedback_operations.end())
+            return existing->target_representation;
+
+        auto const feedback_index = plan.feedback_operations.size();
+        if (decisions) {
+            if (feedback_index >= decisions->feedback.size()) {
+                return std::unexpected(
+                    "GraphJit event costing lost a per-source feedback decision");
+            }
+            feedback_requirements =
+                decisions->feedback[feedback_index].requirements;
+            feedback_storage = decisions->feedback[feedback_index].storage;
+        }
+        auto const identity_base =
+            "graphjit.event.feedback:group=" + event_group_identity(group)
+            + ":source=" + std::to_string(source_index)
+            + ":type="
+            + std::to_string(static_cast<unsigned>(connection.source_type))
+            + ":latency=" + std::to_string(latency)
+            + ":retained=" + std::to_string(retained_window_samples);
+
+        std::size_t target_representation = 0;
+        switch (feedback_storage.kind) {
+        case RealtimeBufferStorageKind::transient_stack: {
+            auto capacity = rounded_event_capacity(*authored_event_count);
+            if (!capacity) return std::unexpected(std::move(capacity.error()));
+            auto target = append_representation(
+                source_group_index, connection.source_type, *capacity);
+            if (!target) return std::unexpected(std::move(target.error()));
+            target_representation = *target;
+            break;
+        }
+        case RealtimeBufferStorageKind::stack_with_persistent_carry: {
+            if (*authored_event_count
+                > std::numeric_limits<std::size_t>::max()
+                    - *retained_event_count) {
+                return std::unexpected(
+                    "GraphJit per-source event feedback compact capacity overflows size_t");
+            }
+            auto working_capacity = rounded_event_capacity(
+                *authored_event_count + *retained_event_count);
+            auto carry_capacity = event_sequence_capacity_for_sample_span(
+                source.max_events_per_index, retained_window_samples);
+            if (!working_capacity || !carry_capacity) {
+                return std::unexpected(
+                    "GraphJit per-source event feedback compact capacity is not representable");
+            }
+            auto working = append_representation(
+                source_group_index, connection.source_type, *working_capacity);
+            if (!working) return std::unexpected(std::move(working.error()));
+            target_representation = *working;
+            auto persistent = append_representation(
+                source_group_index,
+                connection.source_type,
+                *carry_capacity,
+                false,
+                true,
+                identity_base + ":kind=compact_carry:capacity="
+                    + std::to_string(*carry_capacity));
+            if (!persistent)
+                return std::unexpected(std::move(persistent.error()));
+            plan.carry_operations.push_back(EventCarryPlan{
+                .working_representation = target_representation,
+                .persistent_representation = *persistent,
+                .restore_scope = reset_scope,
+                .commit_scope = region_scope(
+                    *source.detach_region, EventOperationPhase::after),
+                .retained_history_samples = retained_history,
+                .retained_latency_samples = source.latency + latency,
+            });
+            break;
+        }
+        case RealtimeBufferStorageKind::full_node_storage: {
+            if (*authored_event_count
+                > std::numeric_limits<std::size_t>::max()
+                    - *retained_event_count) {
+                return std::unexpected(
+                    "GraphJit per-source event feedback persistent capacity overflows size_t");
+            }
+            auto ring_capacity = rounded_event_capacity(
+                *authored_event_count + *retained_event_count);
+            if (!ring_capacity)
+                return std::unexpected(std::move(ring_capacity.error()));
+            auto target = append_representation(
+                source_group_index,
+                connection.source_type,
+                *ring_capacity,
+                false,
+                true,
+                identity_base + ":kind=full_node_storage:capacity="
+                    + std::to_string(*ring_capacity),
+                true);
+            if (!target) return std::unexpected(std::move(target.error()));
+            target_representation = *target;
+            break;
+        }
+        }
+        plan.feedback_operations.push_back(EventFeedbackPlan{
+            .source_representation = source_representation,
+            .target_representation = target_representation,
+            .source_sequence_restarts_each_append = true,
+            .append_scope = append_scope,
+            .reset_scope = reset_scope,
+            .storage_requirements = feedback_requirements,
+            .storage_plan = feedback_storage,
+            .authored_event_count = *authored_event_count,
+            .source_event_reads = *source_event_reads,
+            .retained_event_count = *retained_event_count,
+            .retained_window_samples = retained_window_samples,
+            .ordering_history_samples = retained_history,
+            .loop_extra_latency = latency,
+        });
+        return target_representation;
+    };
+
     for (auto const& connection : connections.event_connections) {
         if (!connection.detach) continue;
         if (!connection.detach_region
@@ -4579,7 +5491,8 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
             connections.event_producer_groups,
             [&](EventProducerGroupPlan const& group) {
                 return group.source_type == connection.source_type
-                    && group.sources == connection.sources;
+                    && group.sources == connection.sources
+                    && source_conversions_match(group, connection);
             });
         if (source_group_it == connections.event_producer_groups.end()) {
             return std::unexpected(
@@ -4854,6 +5767,7 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
                 .storage_requirements = feedback_requirements,
                 .storage_plan = feedback_storage,
                 .authored_event_count = *authored_event_count,
+                .source_event_reads = *authored_event_count,
                 .retained_event_count = *retained_event_count,
                 .retained_window_samples = retained_window_samples,
                 .ordering_history_samples = retained_history,
@@ -4878,7 +5792,7 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
                     "GraphJit event feedback consumer disagrees with its declaration");
             }
             auto consumer_representation = target_representation;
-            if (connection.requires_conversion) {
+            if (connection.conversion.size() != 0) {
                 if (target_id.bundle
                         >= connections.schedule.bundle_execution_position.size()
                     || !connections.schedule.bundle_execution_position[
@@ -4906,6 +5820,7 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
                     [&](EventMaterializationPlan const& candidate) {
                         return candidate.source_representation
                                 == target_representation
+                            && !candidate.source_index_filter
                             && candidate.conversion == connection.conversion
                             && candidate.scope == scope
                             && candidate.target_representation
@@ -4958,6 +5873,258 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
         }
     }
 
+    for (auto const& connection : connections.event_connections) {
+        if (!connection.requires_source_composition) continue;
+        if (!is_entirely_realtime_delivery(connection)
+            || connection.external_boundary) {
+            return std::unexpected(
+                "GraphJit composed event detach requires internal realtime transport");
+        }
+        auto const group_it = std::ranges::find_if(
+            connections.event_producer_groups,
+            [&](EventProducerGroupPlan const& group) {
+                return group.source_type == connection.source_type
+                    && group.sources == connection.sources
+                    && source_conversions_match(group, connection);
+            });
+        if (group_it == connections.event_producer_groups.end()) {
+            return std::unexpected(
+                "GraphJit composed event detach lost its producer group");
+        }
+        auto const group_index = static_cast<std::size_t>(std::distance(
+            connections.event_producer_groups.begin(), group_it));
+        if (group_index >= plan.producer_group_representations.size()
+            || !plan.producer_group_representations[group_index]) {
+            return std::unexpected(
+                "GraphJit composed event detach has no producer representation");
+        }
+        auto const canonical =
+            *plan.producer_group_representations[group_index];
+        if (canonical >= plan.ports.size()
+            || !plan.ports[canonical].has_source_indices) {
+            return std::unexpected(
+                "GraphJit composed event detach requires ordered fan-in storage");
+        }
+        if (group_index
+                >= plan.producer_group_source_representations.size()
+            || plan.producer_group_source_representations[group_index].size()
+                != connection.sources.size()) {
+            return std::unexpected(
+                "GraphJit composed event detach has no per-source producer representations");
+        }
+        for (auto const source_id : connection.sources) {
+            if (source_id.bundle
+                    >= connections.schedule.bundle_execution_position.size()
+                || !connections.schedule.bundle_execution_position[
+                    source_id.bundle]) {
+                return std::unexpected(
+                    "GraphJit composed event source has no schedule position");
+            }
+        }
+
+        std::vector<std::optional<std::size_t>> delayed_sources(
+            connection.source_plans.size());
+        for (std::size_t source_index = 0;
+             source_index < connection.source_plans.size();
+             ++source_index) {
+            auto const& source = connection.source_plans[source_index];
+            if (!source.detach) continue;
+            auto const source_representation =
+                plan.producer_group_source_representations[
+                    group_index][source_index];
+            if (!source_representation) {
+                return std::unexpected(
+                    "GraphJit composed event detach lost its source representation");
+            }
+            auto const source_id = connection.sources[source_index];
+            auto delayed = plan_source_event_feedback(
+                connection,
+                source,
+                source_index,
+                group_index,
+                *source_representation,
+                *connections.schedule.bundle_execution_position[
+                    source_id.bundle]);
+            if (!delayed)
+                return std::unexpected(std::move(delayed.error()));
+            delayed_sources[source_index] = *delayed;
+        }
+
+        auto const identity = EventConversionRegistry::plan(
+            connection.source_type, connection.source_type);
+        for (auto const target_id : connection.targets) {
+            auto const target_primitive = primitive_index_for_bundle(
+                target_id.bundle);
+            if (!target_primitive
+                || target_id.port
+                    >= plan.primitives[*target_primitive].inputs.size()
+                || target_id.bundle
+                    >= connections.schedule.bundle_execution_position.size()
+                || !connections.schedule.bundle_execution_position[
+                    target_id.bundle]) {
+                return std::unexpected(
+                    "GraphJit composed event detach requires a scheduled concrete consumer");
+            }
+            NodeBundlePortId const target_port{
+                target_id.bundle, PortKind::event, target_id.port};
+            auto const target = input.graph.node_bundles
+                .resolve_event_input(target_port).config;
+            if (!is_sequential(target.access)
+                || target.type != connection.target_type) {
+                return std::unexpected(
+                    "GraphJit composed event consumer disagrees with its declaration");
+            }
+            auto const scope = primitive_scope(
+                *connections.schedule.bundle_execution_position[
+                    target_id.bundle],
+                EventOperationPhase::before);
+
+            std::vector<std::size_t> branch_representations;
+            branch_representations.reserve(connection.source_plans.size());
+            std::size_t merged_capacity = 0;
+            for (std::size_t source_index = 0;
+                 source_index < connection.source_plans.size();
+                 ++source_index) {
+                auto const& source = connection.source_plans[source_index];
+                auto const source_representation = delayed_sources[source_index]
+                    .value_or(canonical);
+                auto const source_filter = delayed_sources[source_index]
+                    ? std::optional<std::size_t>{}
+                    : std::optional<std::size_t>{source_index};
+                if (source_representation >= plan.ports.size()) {
+                    return std::unexpected(
+                        "GraphJit composed event branch references invalid storage");
+                }
+                auto const branch_capacity =
+                    plan.ports[source_representation].event_capacity;
+                if (merged_capacity
+                    > std::numeric_limits<std::size_t>::max()
+                        - branch_capacity) {
+                    return std::unexpected(
+                        "GraphJit composed event capacity overflows size_t");
+                }
+                merged_capacity += branch_capacity;
+
+                auto existing = std::ranges::find_if(
+                    plan.materializations,
+                    [&](EventMaterializationPlan const& candidate) {
+                        return candidate.source_representation
+                                == source_representation
+                            && candidate.source_index_filter == source_filter
+                            && candidate.conversion == identity
+                            && candidate.scope == scope
+                            && candidate.before_merge
+                            && candidate.target_representation
+                                < plan.ports.size()
+                            && plan.ports[candidate.target_representation].type
+                                == connection.source_type;
+                    });
+                if (existing != plan.materializations.end()) {
+                    branch_representations.push_back(
+                        existing->target_representation);
+                    continue;
+                }
+                auto materialized_events = materialization_event_bound(
+                    source.max_events_per_index,
+                    connection.target_history,
+                    scope,
+                    true,
+                    branch_capacity);
+                if (!materialized_events) {
+                    return std::unexpected(
+                        std::move(materialized_events.error()));
+                }
+                auto branch = append_representation(
+                    group_index,
+                    connection.source_type,
+                    branch_capacity);
+                if (!branch)
+                    return std::unexpected(std::move(branch.error()));
+                branch_representations.push_back(*branch);
+                plan.materializations.push_back(EventMaterializationPlan{
+                    .source_representation = source_representation,
+                    .target_representation = *branch,
+                    .conversion = identity,
+                    .source_index_filter = source_filter,
+                    .history_samples = connection.target_history,
+                    .maximum_output_event_count =
+                        materialized_events->output_writes,
+                    .maximum_source_event_reads =
+                        materialized_events->source_reads,
+                    .select_invocation_window = true,
+                    .before_merge = true,
+                    .scope = scope,
+                });
+            }
+
+            auto rounded_capacity = rounded_event_capacity(merged_capacity);
+            if (!rounded_capacity)
+                return std::unexpected(std::move(rounded_capacity.error()));
+            auto merged = append_representation(
+                group_index,
+                connection.source_type,
+                *rounded_capacity,
+                false,
+                false,
+                {},
+                false,
+                true);
+            if (!merged)
+                return std::unexpected(std::move(merged.error()));
+            EventMergePlan merge{
+                .source_representations =
+                    std::move(branch_representations),
+                .target_representation = *merged,
+                .scope = scope,
+                .ordering_history_samples = connection.target_history,
+            };
+            merge.source_indices.resize(connection.source_plans.size());
+            std::iota(
+                merge.source_indices.begin(), merge.source_indices.end(), 0);
+            plan.merges.push_back(std::move(merge));
+
+            auto consumer_representation = *merged;
+            if (connection.conversion.size() != 0) {
+                auto converted = append_representation(
+                    group_index,
+                    connection.target_type,
+                    *rounded_capacity);
+                if (!converted)
+                    return std::unexpected(std::move(converted.error()));
+                auto materialized_events = materialization_event_bound(
+                    connection.max_events_per_index,
+                    connection.target_history,
+                    scope,
+                    true,
+                    *rounded_capacity);
+                if (!materialized_events) {
+                    return std::unexpected(
+                        std::move(materialized_events.error()));
+                }
+                consumer_representation = *converted;
+                plan.materializations.push_back(EventMaterializationPlan{
+                    .source_representation = *merged,
+                    .target_representation = *converted,
+                    .conversion = connection.conversion,
+                    .history_samples = connection.target_history,
+                    .maximum_output_event_count =
+                        materialized_events->output_writes,
+                    .maximum_source_event_reads =
+                        materialized_events->source_reads,
+                    .select_invocation_window = true,
+                    .scope = scope,
+                });
+            }
+            auto& target_binding =
+                plan.primitives[*target_primitive].inputs[target_id.port];
+            if (target_binding.storage) {
+                return std::unexpected(
+                    "GraphJit composed event consumer input is connected more than once");
+            }
+            target_binding.storage = consumer_representation;
+        }
+    }
+
     if (!decisions) {
         // The concrete operation graph is now complete. Cost every shared
         // conversion once, charge ring reads only to the full-NodeStorage
@@ -4973,8 +6140,13 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
                 return std::unexpected(
                     "GraphJit event costing found an invalid feedback source");
             }
-            auto const source_group = plan.ports[
+            auto source_group = plan.ports[
                 feedback.source_representation].producer_group_index;
+            if (source_group >= group_operations.size()
+                && feedback.target_representation < plan.ports.size()) {
+                source_group = plan.ports[
+                    feedback.target_representation].producer_group_index;
+            }
             if (source_group >= group_operations.size()) {
                 return std::unexpected(
                     "GraphJit event costing lost a feedback producer group");
@@ -4982,7 +6154,7 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
             group_operations[source_group].full_ring_addressed_values =
                 iv::detail::saturating_add(
                     group_operations[source_group].full_ring_addressed_values,
-                    feedback.authored_event_count);
+                    feedback.source_event_reads);
         }
 
         for (auto const& materialization : plan.materializations) {
@@ -5013,8 +6185,15 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
                 return std::unexpected(
                     "GraphJit event costing found an invalid materialization source");
             }
-            auto const source_group = plan.ports[
+            auto source_group = plan.ports[
                 materialization.source_representation].producer_group_index;
+            if (source_group >= group_operations.size()
+                && materialization.target_representation
+                    < plan.ports.size()) {
+                source_group = plan.ports[
+                    materialization.target_representation]
+                    .producer_group_index;
+            }
             if (source_group >= group_operations.size()) {
                 return std::unexpected(
                     "GraphJit event costing lost a materialization producer group");
@@ -5069,45 +6248,22 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
         };
 
         EventPlanningDecisions selected;
-        selected.producer_groups.reserve(group_cost_alternatives.size());
+        selected.producer_groups.reserve(group_cost_requirements.size());
         for (std::size_t group_index = 0;
-             group_index < group_cost_alternatives.size(); ++group_index) {
-            auto const& alternatives = group_cost_alternatives[group_index];
-            auto separate_requirements = add_operations(
-                alternatives.separate, group_operations[group_index]);
-            auto const separate = choose_event_connection_storage_plan(
-                separate_requirements, cost_model);
-            auto const separate_cost = selected_cost(separate);
-
-            std::optional<EventConnectionStoragePlan> home;
-            std::optional<std::size_t> home_cost;
-            if (alternatives.producer_home) {
-                auto home_requirements = add_operations(
-                    *alternatives.producer_home,
-                    group_operations[group_index]);
-                home = choose_event_connection_storage_plan(
-                    home_requirements, cost_model);
-                home_cost = selected_cost(*home);
-            }
-
-            if (home_cost && (!separate_cost || *home_cost < *separate_cost)) {
-                selected.producer_groups.push_back(EventGroupPlanningDecision{
-                    .storage = *home,
-                    .producer_home_source_index = 0,
-                });
-            } else if (separate_cost) {
-                selected.producer_groups.push_back(EventGroupPlanningDecision{
-                    .storage = separate,
-                });
-            } else if (home_cost) {
-                selected.producer_groups.push_back(EventGroupPlanningDecision{
-                    .storage = *home,
-                    .producer_home_source_index = 0,
-                });
-            } else {
+             group_index < group_cost_requirements.size(); ++group_index) {
+            auto group_requirements = add_operations(
+                group_cost_requirements[group_index],
+                group_operations[group_index]);
+            auto const group_storage = choose_event_connection_storage_plan(
+                group_requirements, cost_model);
+            auto const group_cost = selected_cost(group_storage);
+            if (!group_cost) {
                 return std::unexpected(
                     "GraphJit event operations have no storage realization within the compile-time stack budget");
             }
+            selected.producer_groups.push_back(EventGroupPlanningDecision{
+                .storage = group_storage,
+            });
         }
 
         selected.feedback.reserve(feedback_requirements.size());
@@ -5137,6 +6293,10 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
     // output's own history/latency state.
     for (std::size_t primitive_index = 0;
         primitive_index < plan.primitives.size(); ++primitive_index) {
+        if (analysis.primitives[primitive_index].implementation->tick_block
+            == nullptr) {
+            continue;
+        }
         auto const bundle = analysis.primitives[primitive_index].bundle.node_bundle;
         if (bundle >= connections.schedule.bundle_execution_position.size()
             || !connections.schedule.bundle_execution_position[bundle]) {
@@ -5173,135 +6333,13 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
             auto& binding = plan.primitives[primitive_index].outputs[port];
             if (!binding.realtime) continue;
             if (binding.storage) continue;
-            NodeBundlePortId const port_id{bundle, PortKind::event, port};
-            auto const config = input.graph.node_bundles
-                .resolve_event_output(port_id).config;
-            IV_ASSERT(is_tick(config),
-                "Tick event storage disagrees with its port declaration");
-            auto const& resolved_output = realization.event_output(bundle, port);
-            auto const history = resolved_output.history;
-            auto const latency = resolved_output.latency;
-            if (history > std::numeric_limits<std::size_t>::max() - latency) {
-                return std::unexpected(
-                    "GraphJit disconnected event output window overflows size_t");
-            }
-            auto const retained_window = history + latency;
-            auto const current_events = event_count_for_sample_span(
-                config.max_events_per_index,
-                input.specialization.block_size);
-            auto const retained_events = event_count_for_sample_span(
-                config.max_events_per_index,
-                retained_window);
-            if (!current_events || !retained_events) {
-                return std::unexpected(
-                    "GraphJit disconnected event output capacity is not representable");
-            }
-            auto const storage_plan = choose_event_connection_storage_plan(
-                EventConnectionStorageRequirements{
-                    .current_window_samples =
-                        input.specialization.block_size,
-                    .retained_window_samples = retained_window,
-                    .current_event_capacity = *current_events,
-                    .retained_event_capacity = *retained_events,
-                    .value_size_bytes = sizeof(TimedEvent),
-                },
-                cost_model);
-            if (*current_events > std::numeric_limits<std::size_t>::max()
-                    - *retained_events) {
-                return std::unexpected(
-                    "GraphJit disconnected event output working capacity overflows size_t");
-            }
-            auto working_capacity = rounded_event_capacity(
-                *current_events + *retained_events);
-            if (!working_capacity) {
-                return std::unexpected(std::move(working_capacity.error()));
-            }
-
-            auto const group_index = connections.event_producer_groups.size();
-            auto const identity_base =
-                "graphjit.event.disconnected_output:"
-                + std::to_string(bundle) + "." + std::to_string(port)
-                + ":history=" + std::to_string(history)
-                + ":latency=" + std::to_string(latency);
-            std::expected<std::size_t, std::string> authored =
-                std::unexpected(std::string{
-                    "unselected disconnected event storage"});
-            switch (storage_plan.kind) {
-            case RealtimeBufferStorageKind::transient_stack:
-                authored = append_representation(
-                    group_index,
-                    config.type,
-                    *working_capacity,
-                    true);
-                break;
-            case RealtimeBufferStorageKind::stack_with_persistent_carry: {
-                authored = append_representation(
-                    group_index,
-                    config.type,
-                    *working_capacity,
-                    true);
-                if (!authored) break;
-                auto carry_capacity = event_sequence_capacity_for_sample_span(
-                    config.max_events_per_index, retained_window);
-                if (!carry_capacity) {
-                    return std::unexpected(
-                        "GraphJit disconnected event output carry capacity is not representable");
-                }
-                auto persistent = append_representation(
-                    group_index,
-                    config.type,
-                    *carry_capacity,
-                    false,
-                    true,
-                    identity_base + ":kind=compact_carry:capacity="
-                        + std::to_string(*carry_capacity));
-                if (!persistent) {
-                    return std::unexpected(std::move(persistent.error()));
-                }
-                plan.carry_operations.push_back(EventCarryPlan{
-                    .working_representation = *authored,
-                    .persistent_representation = *persistent,
-                    .restore_scope = primitive_scope(
-                        position, EventOperationPhase::before),
-                    .commit_scope = primitive_scope(
-                        position, EventOperationPhase::after),
-                    .retained_history_samples = history,
-                    .retained_latency_samples = latency,
-                });
-                break;
-            }
-            case RealtimeBufferStorageKind::full_node_storage:
-                authored = append_representation(
-                    group_index,
-                    config.type,
-                    *working_capacity,
-                    true,
-                    true,
-                    identity_base + ":kind=persistent_ring:capacity="
-                        + std::to_string(*working_capacity),
-                    true);
-                if (authored) {
-                    plan.persistent_rings.push_back(EventPersistentRingPlan{
-                        .storage = *authored,
-                        .prune_scope = primitive_scope(
-                            position, EventOperationPhase::before),
-                        .retained_history_samples = history,
-                    });
-                }
-                break;
-            }
+            auto authored = ensure_raw_event_output(EventOutputPortId{
+                .bundle = bundle,
+                .port = port,
+            });
             if (!authored) {
                 return std::unexpected(std::move(authored.error()));
             }
-            binding = PrimitiveEventOutputBindingPlan{
-                .realtime = true,
-                .storage = *authored,
-                .source_type = config.type,
-                .history = history,
-                .latency = latency,
-                .append_existing = storage_plan.kind
-                    != RealtimeBufferStorageKind::transient_stack,
-            };
         }
     }
 
@@ -5316,6 +6354,10 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
         analysis.primitives.size());
     for (std::size_t primitive_index = 0;
          primitive_index < analysis.primitives.size(); ++primitive_index) {
+        if (analysis.primitives[primitive_index].implementation->tick_block
+            == nullptr) {
+            continue;
+        }
         auto const bundle = analysis.primitives[primitive_index].bundle.node_bundle;
         if (bundle >= connections.schedule.bundle_execution_position.size()
             || !connections.schedule.bundle_execution_position[bundle]) {
@@ -5485,8 +6527,26 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
                 return std::unexpected(std::move(touched.error()));
             }
         }
-        if (auto touched = touch_at(
-                merge.target_representation, *operation_position);
+        auto target_begin = *operation_position;
+        auto target_end = *operation_position;
+        if (merge.preserve_existing_target
+            && merge.scope.kind == EventOperationScopeKind::primitive
+            && *operation_position < execution_position_region.size()
+            && execution_position_region[*operation_position]) {
+            auto const& bounds = region_bounds[
+                *execution_position_region[*operation_position]];
+            if (bounds.cyclic) {
+                // The merge extends this sequence once per SCC slice. A
+                // linear interval beginning at the merge position does not
+                // cover the earlier primitive positions on the next loop
+                // iteration, so another transient allocation could overwrite
+                // the accumulated prefix before the following merge.
+                target_begin = bounds.begin;
+                target_end = bounds.end;
+            }
+        }
+        if (auto touched = touch_buffer(
+                merge.target_representation, target_begin, target_end);
             !touched) {
             return std::unexpected(std::move(touched.error()));
         }
@@ -5643,11 +6703,11 @@ std::expected<ExecutionPlan, std::string> plan_execution(
         connections.schedule.regions.size());
 
     // Keep one flattened primitive-step namespace because all storage plans
-    // refer to producer execution positions in that namespace. Execution regions
-    // add the information LLVM realization needs to switch cyclic SCCs from the
-    // ordinary primitive-major traversal to slice-major traversal. Detach is
-    // connection metadata, so there are no synthetic detach primitives or
-    // schedule vertices to filter from this namespace.
+    // refer to producer execution positions in that namespace. Tock-only
+    // primitives have no position in it. Execution regions add the information
+    // LLVM realization needs to switch cyclic SCCs from the ordinary
+    // primitive-major traversal to slice-major traversal. Detach is connection
+    // metadata, so there are no synthetic detach primitives.
     std::vector<bool> scheduled(analysis.primitives.size(), false);
     for (auto const region_index : connections.schedule.region_order) {
         if (region_index >= connections.schedule.regions.size()) {
@@ -5677,6 +6737,10 @@ std::expected<ExecutionPlan, std::string> plan_execution(
                 return std::unexpected(
                     "GraphJit connection schedule contains a primitive more than once");
             }
+            if (imports.primitive_callbacks[i].tick_block.empty()) {
+                return std::unexpected(
+                    "GraphJit connection schedule contains a Tock-only primitive");
+            }
             scheduled[i] = true;
             auto const& callbacks = imports.primitive_callbacks[i];
             auto const step_index = plan.primitive_steps.size();
@@ -5698,9 +6762,13 @@ std::expected<ExecutionPlan, std::string> plan_execution(
             plan.regions.push_back(std::move(region));
         }
     }
-    if (!std::ranges::all_of(scheduled, [](bool value) { return value; })) {
-        return std::unexpected(
-            "GraphJit connection schedule omitted a concrete primitive");
+    for (std::size_t i = 0; i < scheduled.size(); ++i) {
+        auto const tick = !imports.primitive_callbacks[i].tick_block.empty();
+        if (scheduled[i] != tick) {
+            return std::unexpected(tick
+                ? "GraphJit connection schedule omitted a Tick primitive"
+                : "GraphJit connection schedule included a Tock-only primitive");
+        }
     }
 
     // Map flattened execution positions back to their region before assigning
@@ -5789,6 +6857,16 @@ std::expected<ExecutionPlan, std::string> plan_execution(
          ++composition_index) {
         auto const& composition =
             sample_ports.storage.compositions[composition_index];
+        if (composition.before_execution_position) {
+            if (*composition.before_execution_position
+                >= plan.primitive_steps.size()) {
+                return std::unexpected(
+                    "GraphJit sample composition references an invalid before-execution position");
+            }
+            plan.primitive_steps[*composition.before_execution_position]
+                .sample_compositions_before.push_back(composition_index);
+            continue;
+        }
         if (composition.after_execution_position >= plan.primitive_steps.size()) {
             return std::unexpected(
                 "GraphJit sample composition references an invalid execution position");
@@ -5887,6 +6965,10 @@ std::expected<ExecutionPlan, std::string> plan_execution(
     // initialized by their own explicit operations.
     for (std::size_t primitive_index = 0;
          primitive_index < event_ports.primitives.size(); ++primitive_index) {
+        if (analysis.primitives[primitive_index].implementation->tick_block
+            == nullptr) {
+            continue;
+        }
         if (primitive_index >= configuration_steps.size()
             || !configuration_steps[primitive_index]) {
             return std::unexpected(
@@ -5945,17 +7027,27 @@ std::expected<ExecutionPlan, std::string> plan_execution(
         }
     }
 
-    auto operation_rank = [](EventOperationRef operation) {
+    auto operation_rank = [&](EventOperationRef operation) {
         switch (operation.kind) {
         case EventOperationKind::sequence_reset: return 0;
         case EventOperationKind::persistent_ring_prune: return 1;
         case EventOperationKind::carry_restore: return 2;
-        case EventOperationKind::merge: return 3;
-        case EventOperationKind::feedback_append: return 4;
-        case EventOperationKind::materialize: return 5;
-        case EventOperationKind::carry_commit: return 6;
+        case EventOperationKind::materialize:
+            return operation.index < event_ports.materializations.size()
+                    && event_ports.materializations[operation.index]
+                        .before_merge
+                ? 4
+                : 7;
+        case EventOperationKind::merge:
+            return operation.index < event_ports.merges.size()
+                    && event_ports.merges[operation.index]
+                        .before_materialization
+                ? 3
+                : 5;
+        case EventOperationKind::feedback_append: return 6;
+        case EventOperationKind::carry_commit: return 8;
         }
-        return 7;
+        return 9;
     };
     auto order_operations = [&](std::vector<EventOperationRef>& operations) {
         std::ranges::stable_sort(
@@ -6357,10 +7449,35 @@ std::expected<LoweringPlan, std::string> build_lowering_plan(
     auto declarations = plan_declarations(
         input,
         *analysis,
+        realtime_ports->connections,
         *port_realization,
         realtime_ports->sample_ports,
         realtime_ports->event_ports);
     if (!declarations) return std::unexpected(std::move(declarations.error()));
+
+    for (auto& node : realtime_ports->connections.background.nodes) {
+        auto const primitive = std::ranges::find_if(
+            analysis->primitives,
+            [&](PrimitiveAnalysis const& candidate) {
+                return candidate.bundle.node_bundle == node.bundle;
+            });
+        if (primitive == analysis->primitives.end()) {
+            return std::unexpected(
+                "background node has no matching TockState layout record");
+        }
+        if (!node.authored_tock_execution) {
+            node.tock_state_node.reset();
+            continue;
+        }
+        auto const primitive_index = static_cast<std::size_t>(
+            std::distance(analysis->primitives.begin(), primitive));
+        if (primitive_index >= declarations->primitive_layout_nodes.size()) {
+            return std::unexpected(
+                "background Tock node lost its top-level layout mapping");
+        }
+        node.tock_state_node =
+            declarations->primitive_layout_nodes[primitive_index];
+    }
 
     auto realtime_port_state_realizations =
         plan_sample_realtime_port_state_realizations(

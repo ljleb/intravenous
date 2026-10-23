@@ -502,8 +502,9 @@ void BackgroundEvaluationCallFrame::finalize_replay(void* opaque)
 BackgroundEvaluationCallFrame::BackgroundEvaluationCallFrame(
     graph_jit::BackgroundEvaluationPlan const& plan,
     BackgroundStorageRealization& realization,
+    TockStateStorage& tock_states,
     BackgroundEvaluationCallFrameSelection selection)
-    : plan_(&plan), realization_(&realization),
+    : plan_(&plan), realization_(&realization), tock_states_(&tock_states),
       selection_(std::move(selection)), nodes_(plan.nodes.size())
 {
     replay_storage_.reserve(plan.runtime.replay_invocations.size());
@@ -863,6 +864,26 @@ std::expected<void, std::string> BackgroundEvaluationCallFrame::seal()
         auto storage = std::make_unique<NodeFrameStorage>();
         auto& frame = built_nodes[node];
         auto const& node_plan = plan.nodes[node];
+        if (node_plan.authored_tock_execution) {
+            if (!node_plan.tock_state_node || !tock_states_->layout
+                || *node_plan.tock_state_node
+                    >= tock_states_->layout->nodes.size()) {
+                return std::unexpected(
+                    "background Tock node has no valid TockState sidecar slot");
+            }
+            auto const state_node = *node_plan.tock_state_node;
+            if (!std::ranges::contains(
+                    tock_states_->initialized_nodes, state_node)) {
+                return std::unexpected(
+                    "background Tock node sidecar slot is not initialized");
+            }
+            auto const state_size =
+                tock_states_->layout->nodes[state_node].state_size;
+            frame.tock.background_state_storage = {
+                static_cast<std::byte*>(tock_states_->state_ptr(state_node)),
+                state_size,
+            };
+        }
         for (auto const port_index : node_plan.inputs) {
             if (port_index >= plan.ports.size()) {
                 return std::unexpected(

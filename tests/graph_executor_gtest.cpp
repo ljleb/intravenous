@@ -140,7 +140,6 @@ void observe_raw_state(
 }
 
 void propagate_background_forward(
-    std::byte*,
     iv::graph_jit::BackgroundEvaluationCall* batch)
 {
     auto nodes = static_cast<
@@ -178,7 +177,6 @@ void propagate_background_forward(
 }
 
 void propagate_background_reverse(
-    std::byte*,
     iv::graph_jit::BackgroundEvaluationCall* batch)
 {
     auto nodes = static_cast<
@@ -202,12 +200,10 @@ void propagate_background_reverse(
 }
 
 void no_op_background_evaluate(
-    std::byte*,
     iv::graph_jit::BackgroundEvaluationCall*)
 {}
 
 void propagate_persisted_probe_forward(
-    std::byte*,
     iv::graph_jit::BackgroundEvaluationCall* batch)
 {
     auto nodes = static_cast<
@@ -226,7 +222,6 @@ void propagate_persisted_probe_forward(
 }
 
 void evaluate_persisted_probe(
-    std::byte*,
     iv::graph_jit::BackgroundEvaluationCall* batch)
 {
     auto nodes = static_cast<
@@ -282,6 +277,7 @@ iv::graph_jit::BackgroundEvaluationPlan probe_tock_plan(
     BackgroundEvaluationPlan plan;
     plan.nodes = {{
         .bundle = 0,
+        .tock_state_node = 0,
         .authored_tock_execution = true,
         .outputs = {0},
         .accumulators = NodeAccumulatorRanges{
@@ -341,6 +337,7 @@ iv::CompiledGraph persisted_tock_graph()
     graph.project_generation = 1;
     graph.specialization.sample_rate = 48000;
     graph.specialization.block_size = 4;
+    graph.tock_state_layout.nodes.emplace_back();
     graph.background_evaluation_plan = probe_tock_plan(
         iv::OutputRetention::persisted,
         iv::graph_jit::PortStorageKind::persisted_data);
@@ -362,7 +359,7 @@ iv::CompiledGraph ephemeral_tock_graph()
 }
 
 void propagate_replay_probe_forward(
-    std::byte*, iv::graph_jit::BackgroundEvaluationCall* batch)
+    iv::graph_jit::BackgroundEvaluationCall* batch)
 {
     for (auto& node :
          static_cast<std::span<iv::graph_jit::BackgroundNodeCall>>(batch->nodes)) {
@@ -375,7 +372,7 @@ void propagate_replay_probe_forward(
 }
 
 void propagate_replay_probe_reverse(
-    std::byte*, iv::graph_jit::BackgroundEvaluationCall* batch)
+    iv::graph_jit::BackgroundEvaluationCall* batch)
 {
     for (auto& node :
          static_cast<std::span<iv::graph_jit::BackgroundNodeCall>>(batch->nodes)) {
@@ -388,7 +385,7 @@ void propagate_replay_probe_reverse(
 }
 
 void evaluate_replay_probe(
-    std::byte*, iv::graph_jit::BackgroundEvaluationCall* batch)
+    iv::graph_jit::BackgroundEvaluationCall* batch)
 {
     for (auto& node :
          static_cast<std::span<iv::graph_jit::BackgroundNodeCall>>(batch->nodes)) {
@@ -787,6 +784,16 @@ iv::NodeLayout persistent_raw_layout(std::size_t& offset)
 
 class GraphExecutorFixture : public testing::Test {
 protected:
+    iv::ResourceContext resources_{};
+
+    iv::TockStateStorage initialize_tock_states(
+        iv::CompiledGraph const& graph)
+    {
+        auto storage = graph.tock_state_layout.create_storage(resources_);
+        storage.initialize();
+        return storage;
+    }
+
     void SetUp() override
     {
         first_tick = {};
@@ -1123,6 +1130,7 @@ TEST_F(
     BackgroundTransactionPublishesPersistedDataOnlyWhenItChanges)
 {
     auto graph = persisted_tock_graph();
+    auto tock_states = initialize_tock_states(graph);
     iv::BackgroundCoverageState coverage(
         graph.background_evaluation_plan.accumulators.output_change_count);
     iv::BackgroundPropagationWorkspace propagation{
@@ -1132,7 +1140,7 @@ TEST_F(
 
     iv::BackgroundEvaluationTransaction first{
         graph,
-        nullptr,
+        tock_states,
         coverage,
         propagation,
         data,
@@ -1177,7 +1185,7 @@ TEST_F(
 
     iv::BackgroundEvaluationTransaction unchanged{
         graph,
-        nullptr,
+        tock_states,
         coverage,
         propagation,
         data,
@@ -1204,7 +1212,7 @@ TEST_F(
     persisted_probe_coverage = index_coverage({{0, 4}});
     iv::BackgroundEvaluationTransaction shrink{
         graph,
-        nullptr,
+        tock_states,
         coverage,
         propagation,
         data,
@@ -1231,6 +1239,7 @@ TEST_F(
     FailedPersistedBackgroundEvaluationPromotesNeitherDataNorCoverage)
 {
     auto graph = persisted_tock_graph();
+    auto tock_states = initialize_tock_states(graph);
     iv::BackgroundCoverageState coverage(
         graph.background_evaluation_plan.accumulators.output_change_count);
     iv::BackgroundPropagationWorkspace propagation{
@@ -1250,7 +1259,7 @@ TEST_F(
 
     throw_persisted_probe_evaluate = true;
     iv::BackgroundEvaluationTransaction failed{
-        graph, nullptr, coverage, propagation, data, request};
+        graph, tock_states, coverage, propagation, data, request};
     auto failed_result = failed.execute();
     EXPECT_FALSE(failed_result.has_value());
     EXPECT_EQ(persisted_probe_evaluate_calls, 1u);
@@ -1263,7 +1272,7 @@ TEST_F(
     throw_persisted_probe_evaluate = false;
     iv::BackgroundEvaluationTransaction demand_only{
         graph,
-        nullptr,
+        tock_states,
         coverage,
         propagation,
         data,
@@ -1282,7 +1291,7 @@ TEST_F(
     EXPECT_EQ(persisted_probe_evaluate_calls, 1u);
 
     iv::BackgroundEvaluationTransaction retry{
-        graph, nullptr, coverage, propagation, data, request};
+        graph, tock_states, coverage, propagation, data, request};
     auto retry_result = retry.execute();
     ASSERT_TRUE(retry_result.has_value()) << retry_result.error();
     ASSERT_TRUE(retry_result->published_data.has_value());
@@ -1295,6 +1304,7 @@ TEST_F(
     IncompletePersistedBackgroundEvaluationPromotesNeitherDataNorCoverage)
 {
     auto graph = persisted_tock_graph();
+    auto tock_states = initialize_tock_states(graph);
     iv::BackgroundCoverageState coverage(
         graph.background_evaluation_plan.accumulators.output_change_count);
     iv::BackgroundPropagationWorkspace propagation{
@@ -1314,7 +1324,7 @@ TEST_F(
 
     omit_last_persisted_probe_sample = true;
     iv::BackgroundEvaluationTransaction incomplete{
-        graph, nullptr, coverage, propagation, data, request};
+        graph, tock_states, coverage, propagation, data, request};
     auto incomplete_result = incomplete.execute();
     ASSERT_FALSE(incomplete_result.has_value());
     EXPECT_NE(
@@ -1328,7 +1338,7 @@ TEST_F(
 
     omit_last_persisted_probe_sample = false;
     iv::BackgroundEvaluationTransaction retry{
-        graph, nullptr, coverage, propagation, data, request};
+        graph, tock_states, coverage, propagation, data, request};
     auto retry_result = retry.execute();
     ASSERT_TRUE(retry_result.has_value()) << retry_result.error();
     ASSERT_TRUE(retry_result->published_data.has_value());
@@ -1340,6 +1350,7 @@ TEST_F(
     BackgroundTransactionRunsReplayOverUnionButCompletesOnlyDemandedOutputs)
 {
     auto graph = replay_probe_graph();
+    auto tock_states = initialize_tock_states(graph);
     iv::BackgroundCoverageState coverage(
         graph.background_evaluation_plan.accumulators.output_change_count);
     iv::BackgroundPropagationWorkspace propagation{
@@ -1348,7 +1359,7 @@ TEST_F(
 
     iv::BackgroundEvaluationTransaction transaction{
         graph,
-        nullptr,
+        tock_states,
         coverage,
         propagation,
         data,
@@ -1389,6 +1400,7 @@ TEST_F(
     StalePersistedBackgroundEvaluationPromotesNeitherDataNorCoverage)
 {
     auto graph = persisted_tock_graph();
+    auto tock_states = initialize_tock_states(graph);
     iv::BackgroundCoverageState coverage(
         graph.background_evaluation_plan.accumulators.output_change_count);
     iv::BackgroundPropagationWorkspace propagation{
@@ -1409,7 +1421,7 @@ TEST_F(
     competing_persisted_store = &data;
     publish_competing_persisted_snapshot = true;
     iv::BackgroundEvaluationTransaction stale{
-        graph, nullptr, coverage, propagation, data, request};
+        graph, tock_states, coverage, propagation, data, request};
     auto stale_result = stale.execute();
     ASSERT_TRUE(stale_result.has_value()) << stale_result.error();
     EXPECT_EQ(stale_result->status, iv::BackgroundEvaluationStatus::stale_base);
@@ -1430,7 +1442,7 @@ TEST_F(
 
     iv::BackgroundEvaluationTransaction demand_only{
         graph,
-        nullptr,
+        tock_states,
         coverage,
         propagation,
         data,
@@ -1454,6 +1466,7 @@ TEST_F(
     StaleDataFreeBackgroundEvaluationPromotesNoCoverage)
 {
     auto graph = ephemeral_tock_graph();
+    auto tock_states = initialize_tock_states(graph);
     iv::BackgroundCoverageState coverage(
         graph.background_evaluation_plan.accumulators.output_change_count);
     iv::BackgroundPropagationWorkspace propagation{
@@ -1465,7 +1478,7 @@ TEST_F(
     publish_competing_persisted_snapshot = true;
     iv::BackgroundEvaluationTransaction stale{
         graph,
-        nullptr,
+        tock_states,
         coverage,
         propagation,
         data,
@@ -1497,7 +1510,7 @@ TEST_F(
 
     iv::BackgroundEvaluationTransaction demand_only{
         graph,
-        nullptr,
+        tock_states,
         coverage,
         propagation,
         data,
@@ -1524,6 +1537,7 @@ TEST_F(
     RetainedDataFreeBackgroundEvaluationRejectsBackwardsSemanticVersion)
 {
     auto persisted_graph = persisted_tock_graph();
+    auto persisted_tock_states = initialize_tock_states(persisted_graph);
     iv::BackgroundCoverageState persisted_coverage(
         persisted_graph.background_evaluation_plan.accumulators.output_change_count);
     iv::BackgroundPropagationWorkspace persisted_propagation{
@@ -1533,7 +1547,7 @@ TEST_F(
 
     iv::BackgroundEvaluationTransaction seed{
         persisted_graph,
-        nullptr,
+        persisted_tock_states,
         persisted_coverage,
         persisted_propagation,
         data,
@@ -1553,6 +1567,7 @@ TEST_F(
     EXPECT_EQ(persisted_probe_evaluate_calls, 1u);
 
     auto ephemeral_graph = ephemeral_tock_graph();
+    auto ephemeral_tock_states = initialize_tock_states(ephemeral_graph);
     iv::BackgroundCoverageState ephemeral_coverage(
         ephemeral_graph.background_evaluation_plan.accumulators.output_change_count);
     iv::BackgroundPropagationWorkspace ephemeral_propagation{
@@ -1568,7 +1583,7 @@ TEST_F(
 
     iv::BackgroundEvaluationTransaction backwards_semantic{
         ephemeral_graph,
-        nullptr,
+        ephemeral_tock_states,
         ephemeral_coverage,
         ephemeral_propagation,
         data,
@@ -1585,7 +1600,7 @@ TEST_F(
     ephemeral_graph.specialization.block_size = 8;
     iv::BackgroundEvaluationTransaction different_block_size{
         ephemeral_graph,
-        nullptr,
+        ephemeral_tock_states,
         ephemeral_coverage,
         ephemeral_propagation,
         data,
@@ -1621,7 +1636,6 @@ TEST_F(
 
     auto prepared = workspace.prepare(
         operations,
-        nullptr,
         coverage,
         iv::CoveragePropagationRequest{
             .locally_changed_nodes = {0, 1},
@@ -1651,7 +1665,6 @@ TEST_F(
     background_observation = {};
     auto retry = workspace.prepare(
         operations,
-        nullptr,
         coverage,
         iv::CoveragePropagationRequest{
             .output_demands = {
@@ -1683,7 +1696,6 @@ TEST_F(
 
     auto prepared = workspace.prepare(
         operations,
-        nullptr,
         coverage,
         iv::CoveragePropagationRequest{
             .locally_changed_nodes = {0, 1},
@@ -1736,7 +1748,6 @@ TEST_F(
     background_observation = {};
     prepared = workspace.prepare(
         operations,
-        nullptr,
         coverage,
         iv::CoveragePropagationRequest{
             .output_demands = {
@@ -1755,7 +1766,6 @@ TEST_F(
     background_observation = {};
     prepared = workspace.prepare(
         operations,
-        nullptr,
         coverage,
         iv::CoveragePropagationRequest{
             .input_demands = {
@@ -1814,7 +1824,6 @@ TEST_F(
         previous_plan, 48000);
     auto drained = previous_workspace.prepare(
         operations,
-        nullptr,
         previous,
         iv::CoveragePropagationRequest{
             .locally_changed_nodes = {0, 1},
@@ -1828,7 +1837,6 @@ TEST_F(
     iv::BackgroundPropagationWorkspace current_workspace(current_plan, 48000);
     auto reconciled = current_workspace.prepare(
         operations,
-        nullptr,
         current,
         iv::CoveragePropagationRequest{
             .locally_changed_nodes = {2},
@@ -2049,7 +2057,6 @@ TEST_F(
         previous_plan, 48000);
     auto populated = previous_workspace.prepare(
         operations,
-        nullptr,
         previous,
         iv::CoveragePropagationRequest{.locally_changed_nodes = {0, 1}});
     (void)previous_workspace.commit(previous, std::move(populated));
@@ -2069,7 +2076,7 @@ TEST_F(
     background_observation = {};
     iv::BackgroundPropagationWorkspace current_workspace(current_plan, 48000);
     auto reconciled = current_workspace.prepare(
-        operations, nullptr, current, roots);
+        operations, current, roots);
     EXPECT_EQ(
         background_observation.sink_input_coverage,
         index_coverage({{20, 22}}));
@@ -2096,7 +2103,6 @@ TEST_F(
     EXPECT_THROW(
         static_cast<void>(workspace.prepare(
             operations,
-            nullptr,
             coverage,
             iv::CoveragePropagationRequest{
                 .locally_changed_nodes = {0, 1},
@@ -2106,7 +2112,6 @@ TEST_F(
     background_observation = {};
     auto prepared = workspace.prepare(
         operations,
-        nullptr,
         coverage,
         iv::CoveragePropagationRequest{
             .output_demands = {
@@ -2139,7 +2144,6 @@ TEST_F(
     EXPECT_THROW(
         static_cast<void>(workspace.prepare(
             operations,
-            nullptr,
             coverage,
             iv::CoveragePropagationRequest{
                 .locally_changed_nodes = {0, 1},
@@ -2155,7 +2159,6 @@ TEST_F(
     background_observation = {};
     auto prepared = workspace.prepare(
         operations,
-        nullptr,
         coverage,
         iv::CoveragePropagationRequest{
             .output_demands = {
@@ -2188,7 +2191,6 @@ TEST_F(
     auto const selected_coverage = index_coverage({{30, 34}});
     auto prepared = workspace.prepare(
         operations,
-        nullptr,
         committed,
         iv::CoveragePropagationRequest{
             .input_changes = {
@@ -2227,7 +2229,6 @@ TEST_F(
 
     auto prepared = workspace.prepare(
         operations,
-        nullptr,
         coverage,
         iv::CoveragePropagationRequest{
             .locally_changed_nodes = {0},

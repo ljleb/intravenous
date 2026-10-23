@@ -107,6 +107,7 @@ struct SampleMaterializationPlan {
     std::optional<std::size_t> before_execution_position{};
     ChannelLayout source_layout{};
     ChannelLayout target_layout{};
+    SampleChannelTransformPlan transform{};
 
     // Shared converted fanout materializes the union of every consumer window.
     // retained_before is the distance from the current sample index to the
@@ -132,6 +133,7 @@ struct SampleCompositionInputPlan {
 struct SampleCompositionContributionPlan {
     ChannelLayout source_layout{};
     ChannelLayout converted_layout{};
+    SampleChannelTransformPlan transform{};
     std::vector<SampleCompositionInputPlan> sources{};
     std::vector<std::size_t> target_channels{};
 
@@ -157,6 +159,10 @@ struct SampleCompositionPlan {
     std::vector<SampleCompositionContributionPlan> contributions{};
     std::size_t target_representation = no_sample_representation;
     std::size_t after_execution_position = 0;
+    // Set when the composition consumes a retained detach timeline whose
+    // producer can execute after the target primitive. Ordinary feed-forward
+    // compositions remain scheduled after their last source producer.
+    std::optional<std::size_t> before_execution_position{};
     ChannelLayout target_layout{};
     std::size_t target_history = 0;
 };

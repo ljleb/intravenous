@@ -282,7 +282,7 @@ public:
 
     [[nodiscard]] PreparedCoveragePropagation
     prepare(CompiledGraphBackgroundOperations const& operations,
-            std::byte* storage, BackgroundCoverageState const& coverage,
+            BackgroundCoverageState const& coverage,
             CoveragePropagationRequest const& request,
             BackgroundCoverageDemandExpansion expansion = {});
     [[nodiscard]] CoveragePropagationResult

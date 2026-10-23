@@ -801,7 +801,6 @@ struct BackgroundSource {
         return std::array {iv::output<iv::Sample>("signal", iv::OutputProduction::coverage)};
     }
 
-    void tick_block(iv::TickBlockContext<BackgroundSource> const&) const {}
     void tock_coverage(iv::TockCoverageContext<BackgroundSource>& ctx) const
     {
         ++ctx.tock_state().calls;
@@ -838,7 +837,6 @@ struct BackgroundTransform {
         };
     }
 
-    void tick_block(iv::TickBlockContext<BackgroundTransform> const&) const {}
     void tock_coverage(iv::TockCoverageContext<BackgroundTransform>& context) const
     {
         tock_sample_rate = context.sample_rate;
@@ -1143,6 +1141,11 @@ static_assert(ExposesBackgroundState<iv::TockCoverageContext<BackgroundSource>>)
 static_assert(iv::details::node_compiler_operations<BackgroundSource>()
     .tock_coverage != nullptr);
 static_assert(iv::details::node_compiler_operations<BackgroundSource>()
+    .tick_block == nullptr);
+static_assert(iv::details::node_compiler_operations<BackgroundSource>()
+    .skip_block == nullptr);
+static_assert(iv::details::node_compiler_operations<BackgroundSource>().valid());
+static_assert(iv::details::node_compiler_operations<BackgroundSource>()
     .propagate_forward_coverage != nullptr);
 static_assert(iv::details::node_compiler_operations<BackgroundSource>()
     .propagate_reverse_coverage == nullptr);
@@ -1154,6 +1157,7 @@ static_assert(iv::details::node_compiler_operations<PersistedRealtimeNode>()
     .tock_coverage == nullptr);
 static_assert(iv::details::node_compiler_operations<PersistedRealtimeNode>()
     .propagate_forward_coverage == nullptr);
+static_assert(iv::details::node_compiler_operations<PersistedRealtimeNode>().valid());
 
 struct SampleData {
     std::array<iv::Sample, 8> values {
@@ -1713,7 +1717,7 @@ TEST(BackgroundDspPorts, DefaultReversePropagationRequiresWholeInputCoverage)
     EXPECT_EQ(captured.required, input_coverage);
 }
 
-TEST(BackgroundDspPorts, BackgroundStateAndSampleRateAreTockOnly)
+TEST(BackgroundDspPorts, TockOnlyNodeHasNoRealtimeCallback)
 {
     alignas(BackgroundSource::TockState)
         std::array<std::byte, sizeof(BackgroundSource::TockState)> storage {};
@@ -1722,8 +1726,8 @@ TEST(BackgroundDspPorts, BackgroundStateAndSampleRateAreTockOnly)
     BackgroundSource node;
     auto const operations = iv::details::node_compiler_operations<BackgroundSource>();
 
-    operations.tick_block(
-        &node, iv::ReflectedNodeTickContext {}, index(0), 16);
+    ASSERT_EQ(operations.tick_block, nullptr);
+    ASSERT_EQ(operations.skip_block, nullptr);
     iv::ReflectedNodeTockCoverageContext tock {
         .background_state_storage = storage,
         .sample_rate = 96000,

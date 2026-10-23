@@ -86,6 +86,16 @@ contract: `NodeStorage` should contain the packed audio-thread realization, whil
 operations should address `State` and other realtime persistent regions by final
 layout offset; generated background roots receive the separately managed
 `TockState` for the implicated node.
+
+Implementation update (2026-10-21): the paragraph above records the former
+Front 7 starting point and is superseded in current source. Lowering now emits a
+separate `TockStateLayout`; `BackgroundExecutor` owns one compact
+`TockStateStorage` allocation per generation, initializes and tears it down on
+the background worker, and supplies each authored background callback with its
+node's sidecar view through the generated background call frame. Canonical
+`NodeStorage` now contains only realtime state and compiler-owned realtime
+regions. Each generation starts with fresh `TockState`; no Tock migration
+callback or migration path exists.
 Root execution now uses the connection-aware deterministic SCC/region schedule;
 acyclic regions execute in dependency order and cyclic regions use slice-major
 execution bounded by their derived feedback quantum. Callback imports are grouped
@@ -94,10 +104,26 @@ callback share one imported root while still receiving distinct node
 configuration/storage contexts. The reflected compiler callback ABI uses
 explicit pointer/count span records rather than assuming an
 implementation-specific `std::span` object representation. The checked-in package
-compiler currently retains one-node primitive Tick/skip/Tock/propagation anchors. The
+compiler retains exactly one primary callback family per primitive. A Tick primitive
+has Tick/skip anchors; a Tock primitive has Tock/propagation anchors and no realtime
+schedule position. The
 planned batch API adds a normalized batch anchor beside every applicable scalar anchor;
 GraphJit then chooses scalar or batch calls from dependency/cost facts without testing
 whether the node author wrote `tick()`, `tick_block()`, or `tick_block_batch()`.
+
+This ownership is asymmetric under replay. GraphJit may reuse an eligible imported
+Tick wrapper in an off-thread generated replay program, but it does not describe that
+program as an implicit Tock callback. An authored Tock callback never backs an
+implicit Tick callback. A module node groups separate Tick and Tock primitives when
+the developer wants one higher-level authored unit.
+
+Implementation update (2026-10-21): the earlier flat-layout restriction is also
+superseded. Lowering records an explicit mapping from each top-level graph primitive
+to the layout node returned by its declaration. Nested declarations retain their own
+`NodeLayout` and `TockStateLayout` records. They do not become executable graph
+primitives. Authored arrays and nested-state spans use the existing `NodeStorage`
+machinery. This machinery owns initialization order, pointer patching, lifecycle, and
+migration. The explicit map supplies generated Tick offsets and Tock sidecar slots.
 
 The generated Tick root exports only `tick_block`: it is the scheduler and may use
 primitive `skip_block()`/`skip_block_batch()` callbacks internally when activity/skip
@@ -213,7 +239,7 @@ Only compact carry and explicitly selected full persistent buffers belong in
 `NodeStorage`. Event stack buffers are packed separately. Their intervals are
 derived from the callbacks and merge/materialization/feedback operations that
 actually access them rather than from the complete producer-group interval, so
-producer-local and converted buffers can reuse stack bytes as soon as their last
+raw callback and converted buffers can reuse stack bytes as soon as their last
 reader has run. Producer overflow counters remain independent persistent
 telemetry.
 
@@ -691,7 +717,7 @@ The current internal Tick/Sequential connection surface is intentionally asymmet
 | Cyclic producer to acyclic consumer | Implemented | Materialize once at SCC exit from the complete root-call aggregate. Exact type, non-expanding conversion, outbound target history, and authored source latency compose with compact carry or a canonical persistent ring. |
 | Acyclic producer entering a cyclic region | Implemented | Exact-type consumers read the completed root-call aggregate directly. Converted ingress is materialized once at target-region entry. |
 | Edge spanning distinct cyclic regions | Implemented | The source aggregate remains live across regions. Conversion runs at source-region exit and the downstream region reads its absolute-time slices. |
-| Multi-producer fan-in touching a cyclic region | Implemented | Acyclic producers merge once after their completed invocation; each cyclic-region stage merges bounded producer-local streams after that region's final producer on every slice. A compiler-private source-index sidecar on the canonical aggregate preserves semantic equal-time ordering even when execution-region order differs from source order. Compact carry and persistent rings retain the indices with their events. |
+| Multi-producer fan-in touching a cyclic region | Implemented | Acyclic producers merge once after their completed invocation; each cyclic-region stage merges bounded raw `EventOutputPortId` callback streams after that region's final producer on every slice. A compiler-private source-index sidecar on the canonical aggregate preserves semantic equal-time ordering even when execution-region order differs from source order. Compact carry and persistent rings retain the indices with their events. |
 | One derived materialization consumed both inside the source SCC and downstream | Implemented | Representation sharing is keyed by conversion and execution scope. The in-SCC and SCC-exit branches receive distinct scope-correct derived representations. |
 | Mixed Tick/background or background-only event delivery | Planned; Tick lowering capability-gated | Per-source/per-target delivery is retained in the background plan. Playback/materialization belongs to background execution rather than another sequential-storage kind. |
 | Unconnected primitive event port | Implemented in Tick lowering | Inputs receive a reset zero-capacity sequence. Outputs receive a bounded sink sized from `max_events_per_index`, history, latency, and root block size, with normal overflow telemetry. |
@@ -723,17 +749,18 @@ Efficiency and observability work that does not change event semantics:
 - **Landed:** plan feedback as an ordinary delayed derived stream using the same
   transient/carry/full alternatives, with event feedback sized from
   rate-times-live-span rather than `source_capacity * (latency + 1)`;
-- **Landed for acyclic exact-type fan-in:** retained fan-in now compares the
-  separate canonical aggregate with producer-home using whole-group copy and
-  stack costs. When authored timing preserves append order and producer-home is
-  cheaper, semantic source 0 writes directly into the restored/pruned canonical
-  sequence and only the remaining producer-local streams are merged;
+- **Landed:** each concrete `EventOutputPortId` owns its raw callback storage.
+  Each `EventProducerGroupPlan` owns a separate fan-in representation. Source
+  conversions run before the merge and the common connection conversion runs
+  after the merge. This replaces the earlier event producer-home design, which
+  is preserved in
+  [`front_7_event_fan_in_producer_home.md`](historical/front_7_event_fan_in_producer_home.md);
 - surface the existing per-logical-output saturating overflow counters; and
 - **Landed:** the shared chooser now enumerates and scores all three
   candidates from copied bytes, addressed bytes, stack footprint, persistent
   footprint, and a configured stack bound while preserving the old crossover
-  under default weights. Acyclic event fan-in supplies topology-local sequence
-  footprints and stable-merge copy counts, including producer-home alternatives.
+  under default weights. Acyclic event fan-in supplies topology-local raw-output
+  and aggregate footprints plus stable-merge copy counts.
   `GraphJitConfig` now supplies one cost model to sample, event, and feedback
   planning, and lowering enforces its stack limit against the final packed
   sample+event stack allocation, re-planning eligible buffers into `NodeStorage`
@@ -810,6 +837,14 @@ output semantics; when one is absent the generic helper generates silence for
 every channel of every sample output and advances inputs by the skipped block.
 GraphJit's generated root does not yet schedule primitive skips, so this remains a
 generic callback contract until activity/TTL lowering lands.
+
+Implementation update (2026-10-21): the paragraph above records the former
+checkpoint. The generated root now schedules primitive skips for nodes with an
+enabled TTL. An instance TTL takes precedence over the node-type TTL. If neither
+value exists, the root adds no activity state, scans, or branches. A future
+project or user setting will add a configurable default. The exact owner of that
+default remains open. Generated lowering already shares compact continuous and
+event activity facts across equal unchanged representation windows.
 
 The planned batch callback layer preserves these exact scalar semantics while exposing
 normalized `do_tick_block_batch()` and `do_skip_block_batch()` operations. `tick()`
@@ -934,16 +969,14 @@ This is a hint, not a hard constraint. Use your own good judgement if ever in do
     explicit transient sequence operations; identical converted fanout branches
     share one derived representation/materialization. Tick event outputs are
     contractually emitted in nondecreasing forward order from the callback
-    invocation's legal window begin. Transient
-    multi-producer event inputs place semantic source 0 directly in the canonical
-    aggregate allocation, keep the remaining producers in bounded local
-    sequences, and perform one stable backwards k-way merge after the last
-    producer completes. Retained acyclic fan-in may instead select semantic
-    source 0 as the canonical producer-home when whole-group costing and authored
-    timing make that realization legal. Retained aggregate storage, conversion,
-    and fanout all operate downstream of the merge. Fan-in spanning several
-    execution regions instead stages producer-local streams into one canonical
-    aggregate as each region makes them available. Its compiler-private
+    invocation's legal window begin. Each concrete `EventOutputPortId` writes a
+    bounded raw callback sequence. Multi-producer event inputs convert each raw
+    sequence to the `EventProducerGroupPlan::source_type`, then merge the
+    converted sequences in semantic source order into a separate canonical
+    aggregate. Retained aggregate storage, common connection conversion, and
+    fanout all operate downstream of the merge. Fan-in spanning several
+    execution regions stages raw or source-converted callback streams into one
+    canonical aggregate as each region makes them available. Its compiler-private
     source-index sidecar lets later stages insert equal-time events at their
     semantic source position while authored ports continue to see an ordinary
     contiguous `TimedEvent` sequence.

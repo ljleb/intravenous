@@ -22,10 +22,6 @@ struct ValidBackgroundNode {
         return iv::port_config_count_v<decltype(outputs())>;
     }
 
-    void tick_block(iv::TickBlockContext<ValidBackgroundNode> const& ctx) const
-    {
-        (void)ctx.template input<"input">();
-    }
     void tock_coverage(iv::TockCoverageContext<ValidBackgroundNode>&) const {}
     void propagate_forward_coverage(
         iv::PropagateForwardCoverageContext<ValidBackgroundNode>& context) const
@@ -52,7 +48,6 @@ struct ValidBackgroundEventNode {
         };
     }
 
-    void tick_block(iv::TickBlockContext<ValidBackgroundEventNode> const&) const {}
     void tock_coverage(iv::TockCoverageContext<ValidBackgroundEventNode>&) const {}
     void propagate_forward_coverage(
         iv::PropagateForwardCoverageContext<ValidBackgroundEventNode>& context) const

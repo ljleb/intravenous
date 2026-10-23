@@ -58,9 +58,9 @@ struct GraphJitDiagnostic {
 // Generated zero-input/zero-output root-node execution ABI. Mutable bytes are
 // owned by GraphExecutor through NodeStorage created from CompiledGraph::node_layout.
 // Dynamic background-derived inputs arrive only as resolved views in one
-// callback-scoped invocation record. Lifecycle remains entirely in the ordinary
-// NodeStorage/runtime-frame machinery. Callers must provide block_size > 0; an
-// empty audio block is outside the root-operation ABI.
+// callback-scoped invocation record. Realtime lifecycle remains in NodeStorage;
+// background TockState lifecycle belongs to its separate sidecar. Callers must
+// provide block_size > 0; an empty audio block is outside the root-operation ABI.
 using CompiledGraphBlockFunction = void (*)(
     std::byte* storage_base,
     graph_jit::TickInvocationCall const* invocation,
@@ -95,12 +95,11 @@ struct CompiledGraphCutover {
     graph_jit::RealtimePortStateRealizations transition_realizations{};
 };
 
-// Background roots consume one executor-owned logical batch. storage_base is
-// the active execution generation's background-owned NodeStorage allocation;
-// it is never the mutable storage used by realtime execution. Calling these
-// roots is never audio-thread work.
+// Background roots consume one executor-owned logical batch. Each authored
+// Tock context already contains its background-owned TockState sidecar view;
+// generated code has no NodeStorage base and cannot address realtime State.
 using CompiledGraphBackgroundFunction =
-    void (*)(std::byte* storage_base, graph_jit::BackgroundEvaluationCall* batch);
+    void (*)(graph_jit::BackgroundEvaluationCall* batch);
 
 struct CompiledGraphBackgroundOperations {
     CompiledGraphBackgroundFunction propagate_forward = nullptr;
@@ -116,10 +115,9 @@ struct CompiledGraphBackgroundOperations {
 };
 
 // One immutable native project generation. GraphJit owns code/layout/planning
-// metadata only; GraphExecutor creates the realtime/background NodeStorage
-// instances from node_layout and owns all mutable state plus
-// initialize/move/release lifecycle. Generated code remains pinned by
-// code_lifetime.
+// metadata only; GraphExecutor creates realtime NodeStorage plus the
+// background-owned TockState sidecar and owns their separate lifecycles.
+// Generated code remains pinned by code_lifetime.
 struct CompiledGraph {
     std::uint64_t project_generation = 0;
     std::uint64_t definitions_generation = 0;
@@ -128,6 +126,7 @@ struct CompiledGraph {
     std::vector<std::shared_ptr<PackageRevision const>> package_revisions{};
     graph_jit::ResolvedPortRealization port_realization{};
     NodeLayout node_layout{};
+    TockStateLayout tock_state_layout{};
     graph_jit::BackgroundEvaluationPlan background_evaluation_plan{};
     // Cold graph-revision metadata. Generated realtime code never consults
     // this inventory; execution-generation preparation uses it to reconcile

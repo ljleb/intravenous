@@ -100,7 +100,7 @@ class BackgroundEvaluationTransaction::Impl {
     };
 
     CompiledGraph const* graph_ = nullptr;
-    std::byte* node_storage_ = nullptr;
+    TockStateStorage* tock_states_ = nullptr;
     BackgroundCoverageState* coverage_ = nullptr;
     BackgroundPropagationWorkspace* propagation_ = nullptr;
     PersistedDataStore* data_ = nullptr;
@@ -832,7 +832,7 @@ class BackgroundEvaluationTransaction::Impl {
             ? &candidate->working_snapshot()
             : &base;
         prepared_.emplace(
-            propagation_->prepare(graph_->background_operations, node_storage_,
+            propagation_->prepare(graph_->background_operations,
                                   *coverage_, inputs_.roots,
                                   BackgroundCoverageDemandExpansion{
                                       .data = this,
@@ -848,7 +848,7 @@ class BackgroundEvaluationTransaction::Impl {
         }
 
         BackgroundEvaluationCallFrame frame{graph_->background_evaluation_plan,
-                                            *realization, binding};
+                                            *realization, *tock_states_, binding};
         for (std::size_t node = 0; node < prepared_->node_activity().size();
              ++node) {
             frame.nodes()[node].activity = prepared_->node_activity()[node];
@@ -913,7 +913,7 @@ class BackgroundEvaluationTransaction::Impl {
             working_data_ = &candidate->working_snapshot();
         }
 
-        graph_->background_operations.evaluate(node_storage_, &frame.call());
+        graph_->background_operations.evaluate(&frame.call());
         if (auto complete = frame.validate_evaluation(); !complete) {
             return std::unexpected(std::move(complete.error()));
         }
@@ -969,7 +969,7 @@ class BackgroundEvaluationTransaction::Impl {
     }
 
 public:
-    Impl(CompiledGraph const& graph, std::byte* node_storage,
+    Impl(CompiledGraph const& graph, TockStateStorage& tock_states,
          BackgroundCoverageState& coverage,
          BackgroundPropagationWorkspace& propagation, PersistedDataStore& data,
          TickMaterializationStore* materializations,
@@ -977,7 +977,7 @@ public:
          std::span<BackgroundProducedInputRoute const> produced_routes = {},
          std::span<PinnedBlockPrefix const> produced_prefixes = {})
         : graph_(&graph)
-        , node_storage_(node_storage)
+        , tock_states_(&tock_states)
         , coverage_(&coverage)
         , propagation_(&propagation)
         , data_(&data)
@@ -1015,23 +1015,23 @@ public:
 };
 
 BackgroundEvaluationTransaction::BackgroundEvaluationTransaction(
-    CompiledGraph const& graph, std::byte* node_storage,
+    CompiledGraph const& graph, TockStateStorage& tock_states,
     BackgroundCoverageState& coverage,
     BackgroundPropagationWorkspace& propagation, PersistedDataStore& data,
     BackgroundTransactionInputs inputs)
-    : impl_(std::make_unique<Impl>(graph, node_storage, coverage, propagation,
+    : impl_(std::make_unique<Impl>(graph, tock_states, coverage, propagation,
                                    data, nullptr, std::move(inputs)))
 {}
 
 BackgroundEvaluationTransaction::BackgroundEvaluationTransaction(
-    CompiledGraph const& graph, std::byte* node_storage,
+    CompiledGraph const& graph, TockStateStorage& tock_states,
     BackgroundCoverageState& coverage,
     BackgroundPropagationWorkspace& propagation, PersistedDataStore& data,
     TickMaterializationStore& materializations,
     BackgroundTransactionInputs inputs)
     : impl_(std::make_unique<Impl>(
         graph,
-        node_storage,
+        tock_states,
         coverage,
         propagation,
         data,
@@ -1040,7 +1040,7 @@ BackgroundEvaluationTransaction::BackgroundEvaluationTransaction(
 {}
 
 BackgroundEvaluationTransaction::BackgroundEvaluationTransaction(
-    CompiledGraph const& graph, std::byte* node_storage,
+    CompiledGraph const& graph, TockStateStorage& tock_states,
     BackgroundCoverageState& coverage,
     BackgroundPropagationWorkspace& propagation, PersistedDataStore& data,
     TickMaterializationStore& materializations,
@@ -1049,7 +1049,7 @@ BackgroundEvaluationTransaction::BackgroundEvaluationTransaction(
     std::span<PinnedBlockPrefix const> produced_prefixes)
     : impl_(std::make_unique<Impl>(
         graph,
-        node_storage,
+        tock_states,
         coverage,
         propagation,
         data,

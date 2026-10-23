@@ -11,6 +11,7 @@
 #include <exception>
 #include <iterator>
 #include <limits>
+#include <numeric>
 #include <sstream>
 #include <stdexcept>
 #include <type_traits>
@@ -239,25 +240,90 @@ std::string composition_feedback_identity(
     return std::move(out).str();
 }
 
+std::string routed_feedback_identity(
+    SampleConnectionPlan const& connection,
+    SampleRoutedContributionPlan const& contribution,
+    std::size_t contribution_index,
+    SamplePersistentStorageKind kind,
+    std::span<std::byte const> initial_value,
+    std::size_t frame_capacity)
+{
+    std::ostringstream out;
+    out << "graphjit.sample.routed_feedback:target="
+        << connection.target_port.node_bundle_handle << '.'
+        << connection.target_port.port_index
+        << ":contribution=" << contribution_index
+        << ":sources=";
+    for (std::size_t source = 0;
+         source < connection.source_channel_timings.size(); ++source) {
+        auto const& channel = connection.source_channel_timings[source];
+        auto const coefficient = source < contribution.source_coefficients.size()
+            ? contribution.source_coefficients[source]
+            : 0.0f;
+        out << channel.source.bundle << '.' << channel.source.port << '.'
+            << channel.source.channel << '@' << channel.read_latency << '*'
+            << std::bit_cast<std::uint32_t>(coefficient) << ',';
+    }
+    out << ":targets=";
+    for (auto const coefficient : contribution.target_coefficients)
+        out << std::bit_cast<std::uint32_t>(coefficient) << ',';
+    out << ":latency=" << contribution.detach->loop_extra_latency
+        << ":history=" << connection.target_history
+        << ":value_type=" << static_cast<unsigned>(connection.geometry.value_type)
+        << ":value_elements=" << connection.geometry.elements_per_value
+        << ":pace=" << connection.absolute_pace_exponent
+        << ":kind=" << static_cast<unsigned>(kind)
+        << ":initial=";
+    for (auto value : initial_value)
+        out << std::hex << static_cast<unsigned>(value) << '.';
+    out << std::dec << ":capacity=" << frame_capacity;
+    return std::move(out).str();
+}
+
 std::optional<std::size_t> aliased_conversion_source_channel(
     ChannelTypeId source_type,
     ChannelTypeId target_type,
-    std::size_t target_channel)
+    std::size_t target_channel,
+    SampleChannelTransformPlan const* transform = nullptr)
 {
+    if (transform && !transform->empty()) {
+        if (target_channel >= transform->target_channel_count
+            || transform->coefficients.size()
+                != transform->source_channel_count
+                    * transform->target_channel_count) {
+            return std::nullopt;
+        }
+        std::optional<std::size_t> source;
+        for (std::size_t candidate = 0;
+             candidate < transform->source_channel_count;
+             ++candidate) {
+            auto const coefficient = transform->coefficients[
+                target_channel * transform->source_channel_count + candidate];
+            if (coefficient == 0.0f) continue;
+            if (coefficient != 1.0f || source) return std::nullopt;
+            source = candidate;
+        }
+        return source;
+    }
     return channel_conversion_aliased_source(
         source_type, target_type, target_channel);
 }
 
 bool can_alias_sample_conversion(
     ChannelLayout source_layout,
-    ChannelLayout target_layout)
+    ChannelLayout target_layout,
+    SampleChannelTransformPlan const* transform = nullptr)
 {
+    auto const target_count = transform && !transform->empty()
+        ? transform->target_channel_count
+        : channel_count(target_layout);
     for (std::size_t target_channel = 0;
-         target_channel < channel_count(target_layout); ++target_channel) {
+         target_channel < target_count; ++target_channel) {
         if (!aliased_conversion_source_channel(
                 source_layout.channel_type,
                 target_layout.channel_type,
-                target_channel)) {
+                target_channel,
+                transform)) {
             return false;
         }
     }
@@ -270,6 +336,18 @@ bool can_compute_sample_conversion_channelwise(
 {
     return is_registered_channel_type(source_type)
         && is_registered_channel_type(target_type);
+}
+
+std::optional<ChannelTypeId> registered_channel_type_with_count(
+    std::size_t count)
+{
+    for (std::size_t index = 0;
+         index < static_cast<std::size_t>(ChannelTypeId::count);
+         ++index) {
+        auto const type = static_cast<ChannelTypeId>(index);
+        if (channel_count(type) == count) return type;
+    }
+    return std::nullopt;
 }
 
 bool can_plan_sample_composition_channels(
@@ -292,6 +370,7 @@ bool can_plan_sample_composition_channels(
                     .sample_layout = SampleStreamLayout::planar,
                 };
                 return can_alias_sample_conversion(source_layout, target_layout)
+                    || !contribution.transform.empty()
                     || can_compute_sample_conversion_channelwise(
                         contribution.source_type, contribution.target_type);
             });
@@ -307,7 +386,10 @@ bool composition_group_has_direct_alias(
             auto const source_channel = aliased_conversion_source_channel(
                 contribution.source_type,
                 contribution.target_type,
-                target_channel);
+                target_channel,
+                contribution.transform.empty()
+                    ? nullptr
+                    : &contribution.transform);
             if (!source_channel
                 || *source_channel >= contribution.source_channel_indices.size()) {
                 continue;
@@ -391,7 +473,10 @@ RealtimeStorageOperationCounts copied_feedback_buffer_operation_counts(
         result.full_ring_addressed_values, copied_values);
 
     if (connection.requires_conversion
-        && !can_alias_sample_conversion(source_layout, connection.target_layout)) {
+        && !can_alias_sample_conversion(
+            source_layout,
+            connection.target_layout,
+            connection.transform.empty() ? nullptr : &connection.transform)) {
         // emit_sample_materialization() covers exactly the current block plus
         // the target history prefix. Its source is the feedback buffer and its
         // target is a separate stack buffer.
@@ -435,6 +520,7 @@ RealtimeStorageOperationCounts sample_producer_operation_counts(
 
     struct MaterializationWindow {
         ChannelLayout target_layout{};
+        SampleChannelTransformPlan transform{};
         std::size_t retained_before = 0;
         std::size_t latest_read_latency = std::numeric_limits<std::size_t>::max();
     };
@@ -444,6 +530,30 @@ RealtimeStorageOperationCounts sample_producer_operation_counts(
         if (connection_index >= connections.sample_connections.size()) continue;
         auto const& connection = connections.sample_connections[connection_index];
         if (!is_entirely_realtime_delivery(connection)) {
+            continue;
+        }
+
+        if (!connection.routed_contributions.empty()) {
+            for (auto const& contribution : connection.routed_contributions) {
+                for (std::size_t source = 0;
+                     source < connection.source_channel_timings.size();
+                     ++source) {
+                    if (source >= contribution.source_coefficients.size()
+                        || contribution.source_coefficients[source] == 0.0f
+                        || !source_channel_belongs_to_group(
+                            connection.source_channel_timings[source], group)) {
+                        continue;
+                    }
+                    auto const retained = contribution.detach
+                        ? connection.source_channel_timings[source].source_latency
+                        : connection.target_history;
+                    result.full_ring_addressed_values =
+                        iv::detail::saturating_add(
+                            result.full_ring_addressed_values,
+                            iv::detail::saturating_add(
+                                kernel_block_size, retained));
+                }
+            }
             continue;
         }
 
@@ -466,7 +576,10 @@ RealtimeStorageOperationCounts sample_producer_operation_counts(
                 } else if (connection.requires_conversion
                            && !can_alias_sample_conversion(
                                *group.canonical_source_layout,
-                               connection.target_layout)) {
+                               connection.target_layout,
+                               connection.transform.empty()
+                                   ? nullptr
+                                   : &connection.transform)) {
                     // Producer-home feedback makes the producer buffer itself
                     // the feedback buffer, so consumer-side conversion reads
                     // this candidate directly.
@@ -484,7 +597,9 @@ RealtimeStorageOperationCounts sample_producer_operation_counts(
 
             if (!connection.requires_conversion
                 || can_alias_sample_conversion(
-                    *group.canonical_source_layout, connection.target_layout)) {
+                    *group.canonical_source_layout,
+                    connection.target_layout,
+                    connection.transform.empty() ? nullptr : &connection.transform)) {
                 continue;
             }
 
@@ -493,11 +608,13 @@ RealtimeStorageOperationCounts sample_producer_operation_counts(
             auto found = std::ranges::find_if(
                 shared_materializations,
                 [&](MaterializationWindow const& candidate) {
-                    return candidate.target_layout == connection.target_layout;
+                    return candidate.target_layout == connection.target_layout
+                        && candidate.transform == connection.transform;
                 });
             if (found == shared_materializations.end()) {
                 shared_materializations.push_back(MaterializationWindow{
                     .target_layout = connection.target_layout,
+                    .transform = connection.transform,
                     .retained_before = retained_before,
                     .latest_read_latency = connection.read_latency,
                 });
@@ -536,7 +653,12 @@ RealtimeStorageOperationCounts sample_producer_operation_counts(
                 .sample_layout = SampleStreamLayout::planar,
             };
             if (channel_selective
-                && can_alias_sample_conversion(source_layout, target_layout)) {
+                && can_alias_sample_conversion(
+                    source_layout,
+                    target_layout,
+                    contribution.transform.empty()
+                        ? nullptr
+                        : &contribution.transform)) {
                 continue;
             }
             for (auto const timing_index : contribution.source_channel_indices) {
@@ -812,7 +934,8 @@ std::expected<SampleStoragePlan, std::string> build_sample_storage_plan(
             group.connection_indices,
             [&](std::size_t connection_index) {
                 return connection_index < connections.sample_connections.size()
-                    && connections.sample_connections[connection_index].detach.has_value();
+                    && has_detached_source(
+                        connections.sample_connections[connection_index]);
             });
 
         auto producer_position = group.source_port
@@ -862,13 +985,25 @@ std::expected<SampleStoragePlan, std::string> build_sample_storage_plan(
                     || (connection.canonical_source_layout
                         && can_alias_sample_conversion(
                             *connection.canonical_source_layout,
-                            connection.target_layout));
+                            connection.target_layout,
+                            connection.transform.empty()
+                                ? nullptr
+                                : &connection.transform));
                 if (aliases_source) {
                     canonical_live.end = std::max(
                         canonical_live.end,
                         target_position(connection, group.live_interval));
                 }
             } else {
+                if (!connection.routed_contributions.empty()) {
+                    canonical_live.end = std::max(
+                        canonical_live.end,
+                        std::max(
+                            target_position(connection, group.live_interval),
+                            composition_position(
+                                connection, group.live_interval)));
+                    continue;
+                }
                 // Computed composition channels consume their source at the
                 // composition point. Channels that remain direct aliases keep
                 // only their contributing producer representation live through
@@ -1132,6 +1267,7 @@ std::expected<SampleStoragePlan, std::string> build_sample_storage_plan(
 
         struct DerivedKey {
             ChannelLayout target_layout{};
+            SampleChannelTransformPlan transform{};
             bool operator==(DerivedKey const&) const = default;
         };
         struct DerivedBranch {
@@ -1171,13 +1307,15 @@ std::expected<SampleStoragePlan, std::string> build_sample_storage_plan(
                 continue;
             }
 
-            try {
-                (void)ChannelConversionRegistry::plan(
-                    *group.canonical_source_layout, connection.target_layout);
-            } catch (std::exception const& e) {
-                return std::unexpected(
-                    "GraphJit sample storage plan could not resolve a channel conversion: "
-                    + std::string(e.what()));
+            if (connection.transform.empty()) {
+                try {
+                    (void)ChannelConversionRegistry::plan(
+                        *group.canonical_source_layout, connection.target_layout);
+                } catch (std::exception const& e) {
+                    return std::unexpected(
+                        "GraphJit sample storage plan could not resolve a channel conversion: "
+                        + std::string(e.what()));
+                }
             }
 
             // A conversion whose every target row aliases exactly one source
@@ -1185,7 +1323,9 @@ std::expected<SampleStoragePlan, std::string> build_sample_storage_plan(
             // channel directly from the canonical producer timeline, so no
             // target-layout scratch representation is needed.
             if (can_alias_sample_conversion(
-                    *group.canonical_source_layout, connection.target_layout)) {
+                    *group.canonical_source_layout,
+                    connection.target_layout,
+                    connection.transform.empty() ? nullptr : &connection.transform)) {
                 std::vector<SampleChannelBindingPlan> channel_bindings;
                 channel_bindings.reserve(channel_count(connection.target_layout));
                 for (std::size_t target_channel = 0;
@@ -1194,7 +1334,8 @@ std::expected<SampleStoragePlan, std::string> build_sample_storage_plan(
                     auto const source_channel = aliased_conversion_source_channel(
                         group.canonical_source_layout->channel_type,
                         connection.target_layout.channel_type,
-                        target_channel);
+                        target_channel,
+                        connection.transform.empty() ? nullptr : &connection.transform);
                     if (!source_channel
                         || *source_channel
                             >= channel_count(*group.canonical_source_layout)) {
@@ -1212,7 +1353,10 @@ std::expected<SampleStoragePlan, std::string> build_sample_storage_plan(
                 continue;
             }
 
-            DerivedKey const key{.target_layout = connection.target_layout};
+            DerivedKey const key{
+                .target_layout = connection.target_layout,
+                .transform = connection.transform,
+            };
             auto branch = std::ranges::find_if(
                 derived,
                 [&](DerivedBranch const& candidate) { return candidate.key == key; });
@@ -1257,6 +1401,7 @@ std::expected<SampleStoragePlan, std::string> build_sample_storage_plan(
                     .after_execution_position = canonical_live.begin,
                     .source_layout = *group.canonical_source_layout,
                     .target_layout = connection.target_layout,
+                    .transform = connection.transform,
                     .retained_before = retained_before,
                     .latest_read_latency = connection.read_latency,
                 });
@@ -1477,7 +1622,9 @@ std::expected<SampleStoragePlan, std::string> build_sample_storage_plan(
 
             if (connection.requires_conversion
                 && can_alias_sample_conversion(
-                    *group.canonical_source_layout, connection.target_layout)) {
+                    *group.canonical_source_layout,
+                    connection.target_layout,
+                    connection.transform.empty() ? nullptr : &connection.transform)) {
                 std::vector<SampleChannelBindingPlan> channel_bindings;
                 channel_bindings.reserve(channel_count(connection.target_layout));
                 for (std::size_t target_channel = 0;
@@ -1486,7 +1633,8 @@ std::expected<SampleStoragePlan, std::string> build_sample_storage_plan(
                     auto const source_channel = aliased_conversion_source_channel(
                         group.canonical_source_layout->channel_type,
                         connection.target_layout.channel_type,
-                        target_channel);
+                        target_channel,
+                        connection.transform.empty() ? nullptr : &connection.transform);
                     if (!source_channel) {
                         return std::unexpected(
                             "GraphJit aliasable sample feedback conversion lost its source channel");
@@ -1528,6 +1676,7 @@ std::expected<SampleStoragePlan, std::string> build_sample_storage_plan(
                     .before_execution_position = consumer_position,
                     .source_layout = *group.canonical_source_layout,
                     .target_layout = connection.target_layout,
+                    .transform = connection.transform,
                     .retained_before = retained_frames,
                     .latest_read_latency = latency + connection.read_latency,
                 });
@@ -1558,6 +1707,493 @@ std::expected<SampleStoragePlan, std::string> build_sample_storage_plan(
                 },
             });
         }
+    }
+
+    // A routed sample connection keeps each detach cut on the scalar
+    // contribution where GraphBuilder placed it. Each detached scalar owns a
+    // mono retained timeline. One target-layout composition then combines
+    // those timelines with the connection's ordinary source channels directly
+    // before the target primitive executes.
+    for (std::size_t connection_index = 0;
+         connection_index < connections.sample_connections.size();
+         ++connection_index) {
+        auto const& connection = connections.sample_connections[connection_index];
+        if (connection.routed_contributions.empty()) continue;
+        if (!is_entirely_realtime_delivery(connection)) {
+            return std::unexpected(
+                "GraphJit routed sample detach requires entirely realtime delivery");
+        }
+        if (connection.canonical_source_port
+            || connection.canonical_source_layout
+            || !connection.projection_contributions.empty()
+            || connection.detach) {
+            return std::unexpected(
+                "GraphJit routed sample detach has conflicting normalized connection metadata");
+        }
+        if (connection.external_boundary) {
+            return std::unexpected(
+                "GraphJit routed sample detach does not yet realize external storage");
+        }
+        if (connection.source_channel_timings.size()
+                != connection.source_channels.size()
+            || connection.target_channels.size()
+                != channel_count(connection.target_layout)) {
+            return std::unexpected(
+                "GraphJit routed sample detach has inconsistent channel counts");
+        }
+        if (plan.connection_representations[connection_index]
+            || plan.connection_channel_bindings[connection_index]) {
+            return std::unexpected(
+                "GraphJit routed sample detach already owns target storage");
+        }
+
+        auto current_value_count = maximum_projected_value_count(
+            kernel_block_size, connection.absolute_pace_exponent);
+        if (!current_value_count) {
+            return std::unexpected(std::move(current_value_count.error()));
+        }
+        auto const consumer_position = target_position(
+            connection, ConnectionLiveIntervalPlan{});
+        auto target_capacity = working_ring_capacity(
+            *current_value_count, connection.target_history);
+        if (!target_capacity) {
+            return std::unexpected(std::move(target_capacity.error()));
+        }
+        auto target_representation = append_transient_representation(
+            SampleRepresentationPlan{
+                .producer_group_index = no_sample_producer_group,
+                .canonical_producer_representation = false,
+                .storage = RealtimeBufferStorageKind::transient_stack,
+                .channel_layout = connection.target_layout,
+                .geometry = connection.geometry,
+                .absolute_pace_exponent = connection.absolute_pace_exponent,
+                .frame_capacity = *target_capacity,
+                .live_interval = ConnectionLiveIntervalPlan{
+                    .begin = consumer_position,
+                    .end = consumer_position,
+                    .crosses_kernel_invocations = false,
+                },
+            });
+        if (!target_representation) {
+            return std::unexpected(std::move(target_representation.error()));
+        }
+
+        auto resolve_source = [&] (std::size_t timing_index)
+            -> std::expected<SampleCompositionInputPlan, std::string> {
+            if (timing_index >= connection.source_channel_timings.size()) {
+                return std::unexpected(
+                    "GraphJit routed sample detach lost a source timing");
+            }
+            auto const& timing = connection.source_channel_timings[timing_index];
+            NodeBundlePortId const source_port{
+                timing.source.bundle,
+                PortKind::sample,
+                timing.source.port,
+            };
+            auto const group = std::ranges::find_if(
+                connections.sample_producer_groups,
+                [&](SampleProducerGroupPlan const& candidate) {
+                    return candidate.source_port
+                        && *candidate.source_port == source_port;
+                });
+            if (group == connections.sample_producer_groups.end()) {
+                return std::unexpected(
+                    "GraphJit routed sample detach lost a source producer group");
+            }
+            auto const group_index = static_cast<std::size_t>(
+                std::distance(connections.sample_producer_groups.begin(), group));
+            if (group_index >= plan.producer_groups.size()
+                || !plan.producer_groups[group_index]) {
+                return std::unexpected(
+                    "GraphJit routed sample detach lost a source storage representation");
+            }
+            auto const representation =
+                plan.producer_groups[group_index]->canonical_representation;
+            if (representation >= plan.representations.size()) {
+                return std::unexpected(
+                    "GraphJit routed sample detach references a missing source representation");
+            }
+            auto const& source = plan.representations[representation];
+            if (timing.source.channel >= channel_count(source.channel_layout)
+                || timing.read_latency >= source.frame_capacity) {
+                return std::unexpected(
+                    "GraphJit routed sample detach exceeds its source representation");
+            }
+            return SampleCompositionInputPlan{
+                .source_representation = representation,
+                .source_channel = timing.source.channel,
+                .read_latency = timing.read_latency,
+            };
+        };
+
+        struct FinalInput {
+            SampleCompositionInputPlan source{};
+            std::vector<float> target_coefficients{};
+        };
+        std::vector<FinalInput> final_inputs;
+        auto const source_count = connection.source_channel_timings.size();
+        auto const target_count = channel_count(connection.target_layout);
+        std::vector<std::vector<float>> ordinary_coefficients(
+            source_count, std::vector<float>(target_count, 0.0f));
+
+        for (std::size_t contribution_index = 0;
+             contribution_index < connection.routed_contributions.size();
+             ++contribution_index) {
+            auto const& routed =
+                connection.routed_contributions[contribution_index];
+            if (routed.source_coefficients.size() != source_count
+                || routed.target_coefficients.size() != target_count) {
+                return std::unexpected(
+                    "GraphJit routed sample contribution has inconsistent channel counts");
+            }
+            if (!routed.detach) {
+                for (std::size_t source = 0; source < source_count; ++source) {
+                    for (std::size_t target = 0; target < target_count; ++target) {
+                        ordinary_coefficients[source][target] +=
+                            routed.source_coefficients[source]
+                            * routed.target_coefficients[target];
+                    }
+                }
+                continue;
+            }
+            if (!routed.detach_initial_value) {
+                return std::unexpected(
+                    "GraphJit routed sample detach lost its resolved initial value");
+            }
+            if (routed.detach->loop_extra_latency == 0) {
+                return std::unexpected(
+                    "GraphJit routed sample detach latency must be at least one sample");
+            }
+
+            std::size_t writer_position = 0;
+            std::size_t maximum_read_latency = 0;
+            std::size_t minimum_read_latency =
+                std::numeric_limits<std::size_t>::max();
+            std::size_t maximum_source_latency = 0;
+            std::vector<std::size_t> writer_source_indices;
+            for (std::size_t source = 0; source < source_count; ++source) {
+                if (routed.source_coefficients[source] != 0.0f)
+                    writer_source_indices.push_back(source);
+            }
+            if (writer_source_indices.empty()) {
+                return std::unexpected(
+                    "GraphJit routed sample detach contains no source contribution");
+            }
+            auto writer_source_type = registered_channel_type_with_count(
+                writer_source_indices.size());
+            if (!writer_source_type) {
+                // ChannelLayout carries a registered semantic channel count.
+                // If the non-zero subset has no registered type, retain the
+                // already-registered complete source vector. Zero coefficients
+                // remain semantically inert.
+                writer_source_indices.resize(source_count);
+                std::iota(
+                    writer_source_indices.begin(),
+                    writer_source_indices.end(),
+                    std::size_t{0});
+                writer_source_type = connection.source_type;
+            }
+            std::vector<SampleCompositionInputPlan> writer_sources;
+            std::vector<float> writer_coefficients;
+            writer_sources.reserve(writer_source_indices.size());
+            writer_coefficients.reserve(writer_source_indices.size());
+            for (auto const source : writer_source_indices) {
+                auto resolved = resolve_source(source);
+                if (!resolved) {
+                    return std::unexpected(std::move(resolved.error()));
+                }
+                writer_sources.push_back(*resolved);
+                writer_coefficients.push_back(
+                    routed.source_coefficients[source]);
+                auto const& timing = connection.source_channel_timings[source];
+                writer_position = std::max(
+                    writer_position,
+                    source_position(
+                        NodeBundlePortId{
+                            timing.source.bundle,
+                            PortKind::sample,
+                            timing.source.port,
+                        },
+                        ConnectionLiveIntervalPlan{}));
+                minimum_read_latency = std::min(
+                    minimum_read_latency, timing.read_latency);
+                maximum_read_latency = std::max(
+                    maximum_read_latency, timing.read_latency);
+                maximum_source_latency = std::max(
+                    maximum_source_latency, timing.source_latency);
+            }
+            auto const detach_latency = routed.detach->loop_extra_latency;
+            if (connection.target_history
+                    > std::numeric_limits<std::size_t>::max() - detach_latency
+                || maximum_read_latency
+                    > std::numeric_limits<std::size_t>::max()
+                        - detach_latency - connection.target_history) {
+                return std::unexpected(
+                    "GraphJit routed sample feedback retained extent overflows size_t");
+            }
+            auto const retained_frames = detach_latency
+                + connection.target_history + maximum_read_latency;
+            auto timeline_capacity = working_ring_capacity(
+                *current_value_count, retained_frames);
+            if (!timeline_capacity) {
+                return std::unexpected(std::move(timeline_capacity.error()));
+            }
+            auto const written_frames = iv::detail::saturating_add(
+                *current_value_count, maximum_source_latency);
+            auto const feedback_storage = choose_sample_connection_storage_plan(
+                SampleConnectionStorageRequirements{
+                    .current_block_frames = *current_value_count,
+                    .retained_frames = retained_frames,
+                    .channel_count = 1,
+                    .value_size_bytes = connection.geometry.value_size_bytes,
+                    .operations = RealtimeStorageOperationCounts{
+                        .invariant_copied_values = written_frames,
+                        .full_ring_addressed_values = written_frames,
+                    },
+                },
+                cost_model);
+
+            ChannelLayout const mono_layout{
+                .channel_type = ChannelTypeId::mono,
+                .sample_layout = SampleStreamLayout::planar,
+            };
+            std::size_t timeline_representation = no_sample_representation;
+            auto const identity = [&](SamplePersistentStorageKind kind) {
+                return routed_feedback_identity(
+                    connection,
+                    routed,
+                    contribution_index,
+                    kind,
+                    *routed.detach_initial_value,
+                    *timeline_capacity);
+            };
+            if (feedback_storage.kind
+                == RealtimeBufferStorageKind::full_node_storage) {
+                timeline_representation = append_representation(
+                    SampleRepresentationPlan{
+                        .producer_group_index = no_sample_producer_group,
+                        .canonical_producer_representation = false,
+                        .storage = feedback_storage.kind,
+                        .channel_layout = mono_layout,
+                        .geometry = connection.geometry,
+                        .absolute_pace_exponent =
+                            connection.absolute_pace_exponent,
+                        .frame_capacity = *timeline_capacity,
+                        .live_interval = ConnectionLiveIntervalPlan{
+                            .begin = std::min(writer_position, consumer_position),
+                            .end = std::max(writer_position, consumer_position),
+                            .crosses_kernel_invocations = true,
+                        },
+                    });
+                auto persistent = append_synthetic_persistent_allocation(
+                    timeline_representation,
+                    SamplePersistentStorageKind::ring,
+                    mono_layout,
+                    retained_frames,
+                    *timeline_capacity,
+                    identity(SamplePersistentStorageKind::ring),
+                    connection.geometry,
+                    *routed.detach_initial_value);
+                if (!persistent) {
+                    return std::unexpected(std::move(persistent.error()));
+                }
+                plan.representations[timeline_representation]
+                    .persistent_allocation = *persistent;
+            } else if (feedback_storage.kind
+                       == RealtimeBufferStorageKind::stack_with_persistent_carry) {
+                auto transient = append_transient_representation(
+                    SampleRepresentationPlan{
+                        .producer_group_index = no_sample_producer_group,
+                        .canonical_producer_representation = false,
+                        .storage = feedback_storage.kind,
+                        .channel_layout = mono_layout,
+                        .geometry = connection.geometry,
+                        .absolute_pace_exponent =
+                            connection.absolute_pace_exponent,
+                        .frame_capacity = *timeline_capacity,
+                        .live_interval = ConnectionLiveIntervalPlan{
+                            .begin = std::min(writer_position, consumer_position),
+                            .end = std::max(writer_position, consumer_position),
+                            .crosses_kernel_invocations = false,
+                        },
+                    });
+                if (!transient) {
+                    return std::unexpected(std::move(transient.error()));
+                }
+                timeline_representation = *transient;
+                auto persistent = append_synthetic_persistent_allocation(
+                    timeline_representation,
+                    SamplePersistentStorageKind::compact_carry,
+                    mono_layout,
+                    retained_frames,
+                    *timeline_capacity,
+                    identity(SamplePersistentStorageKind::compact_carry),
+                    connection.geometry,
+                    *routed.detach_initial_value);
+                if (!persistent) {
+                    return std::unexpected(std::move(persistent.error()));
+                }
+                plan.representations[timeline_representation]
+                    .persistent_allocation = *persistent;
+                plan.carry_operations.push_back(SampleCarryOperationPlan{
+                    .representation_index = timeline_representation,
+                    .persistent_allocation = *persistent,
+                    .restore_execution_position = std::min(
+                        writer_position, consumer_position),
+                    .commit_execution_position = writer_position,
+                    .retained_frames = retained_frames,
+                    .future_frames = maximum_read_latency,
+                });
+            } else {
+                return std::unexpected(
+                    "GraphJit routed sample feedback with retained frames selected transient storage");
+            }
+
+            SampleCompositionContributionPlan writer{
+                .source_layout = ChannelLayout{
+                    .channel_type = *writer_source_type,
+                    .sample_layout = SampleStreamLayout::planar,
+                },
+                .converted_layout = mono_layout,
+                .transform = SampleChannelTransformPlan{
+                    .source_channel_count = writer_sources.size(),
+                    .target_channel_count = 1,
+                    .coefficients = std::move(writer_coefficients),
+                },
+                .sources = std::move(writer_sources),
+                .target_channels = {0},
+            };
+            auto const writer_mixes_sources = std::ranges::count_if(
+                writer.transform.coefficients,
+                [](float coefficient) { return coefficient != 0.0f; }) > 1;
+            if (writer_mixes_sources
+                && minimum_read_latency != maximum_read_latency) {
+                auto const alignment_history =
+                    maximum_read_latency - minimum_read_latency;
+                auto alignment_capacity = working_ring_capacity(
+                    *current_value_count, alignment_history);
+                if (!alignment_capacity) {
+                    return std::unexpected(std::move(alignment_capacity.error()));
+                }
+                auto const alignment_representation = append_representation(
+                    SampleRepresentationPlan{
+                        .producer_group_index = no_sample_producer_group,
+                        .canonical_producer_representation = false,
+                        .storage = RealtimeBufferStorageKind::full_node_storage,
+                        .channel_layout = writer.source_layout,
+                        .geometry = connection.geometry,
+                        .absolute_pace_exponent =
+                            connection.absolute_pace_exponent,
+                        .frame_capacity = *alignment_capacity,
+                        .live_interval = ConnectionLiveIntervalPlan{
+                            .begin = std::min(writer_position, consumer_position),
+                            .end = std::max(writer_position, consumer_position),
+                            .crosses_kernel_invocations = true,
+                        },
+                    });
+                auto persistent = append_synthetic_persistent_allocation(
+                    alignment_representation,
+                    SamplePersistentStorageKind::ring,
+                    writer.source_layout,
+                    alignment_history,
+                    *alignment_capacity,
+                    identity(SamplePersistentStorageKind::ring)
+                        + ":alignment="
+                        + std::to_string(minimum_read_latency) + "."
+                        + std::to_string(maximum_read_latency),
+                    connection.geometry,
+                    *routed.detach_initial_value);
+                if (!persistent) {
+                    return std::unexpected(std::move(persistent.error()));
+                }
+                plan.representations[alignment_representation]
+                    .persistent_allocation = *persistent;
+                writer.feedback_alignment_representation =
+                    alignment_representation;
+                writer.feedback_alignment_write_latency = minimum_read_latency;
+            }
+
+            plan.feedback_timelines.push_back(SampleFeedbackTimelinePlan{
+                .connection_index = connection_index,
+                .storage_plan = feedback_storage,
+                .timeline_representation = timeline_representation,
+                .channel_layout = mono_layout,
+                .retained_frames = retained_frames,
+                .loop_extra_latency = detach_latency,
+                .initial_value = *routed.detach_initial_value,
+                .writer = SampleFeedbackTimelineWriterPlan{
+                    .kind = SampleFeedbackTimelineWriterKind::composition,
+                    .after_execution_position = writer_position,
+                    .revision_frames = maximum_source_latency,
+                    .composition_contributions = {std::move(writer)},
+                },
+            });
+            final_inputs.push_back(FinalInput{
+                .source = SampleCompositionInputPlan{
+                    .source_representation = timeline_representation,
+                    .source_channel = 0,
+                    .read_latency = detach_latency,
+                },
+                .target_coefficients = routed.target_coefficients,
+            });
+        }
+
+        for (std::size_t source = 0; source < source_count; ++source) {
+            if (std::ranges::all_of(
+                    ordinary_coefficients[source],
+                    [](float coefficient) { return coefficient == 0.0f; })) {
+                continue;
+            }
+            auto resolved = resolve_source(source);
+            if (!resolved) {
+                return std::unexpected(std::move(resolved.error()));
+            }
+            final_inputs.push_back(FinalInput{
+                .source = *resolved,
+                .target_coefficients = std::move(ordinary_coefficients[source]),
+            });
+        }
+        if (final_inputs.empty()) {
+            return std::unexpected(
+                "GraphJit routed sample detach produces no target contribution");
+        }
+
+        SampleCompositionContributionPlan final{
+            .source_layout = ChannelLayout{
+                .channel_type = ChannelTypeId::mono,
+                .sample_layout = SampleStreamLayout::planar,
+            },
+            .converted_layout = connection.target_layout,
+            .transform = SampleChannelTransformPlan{
+                .source_channel_count = final_inputs.size(),
+                .target_channel_count = target_count,
+                .coefficients = std::vector<float>(
+                    final_inputs.size() * target_count, 0.0f),
+            },
+        };
+        final.sources.reserve(final_inputs.size());
+        final.target_channels.resize(target_count);
+        for (std::size_t target = 0; target < target_count; ++target) {
+            final.target_channels[target] = target;
+            for (std::size_t source = 0; source < final_inputs.size(); ++source) {
+                final.transform.coefficients[
+                    target * final_inputs.size() + source] =
+                    final_inputs[source].target_coefficients[target];
+            }
+        }
+        for (auto& input : final_inputs)
+            final.sources.push_back(input.source);
+
+        plan.compositions.push_back(SampleCompositionPlan{
+            .connection_index = connection_index,
+            .contributions = {std::move(final)},
+            .target_representation = *target_representation,
+            .before_execution_position = consumer_position,
+            .target_layout = connection.target_layout,
+            .target_history = connection.target_history,
+        });
+        plan.connection_representations[connection_index] =
+            *target_representation;
     }
 
     // Connections that do not resolve to one canonical whole output port are
@@ -1685,23 +2321,37 @@ std::expected<SampleStoragePlan, std::string> build_sample_storage_plan(
                     .channel_type = semantic.target_type,
                     .sample_layout = SampleStreamLayout::planar,
                 };
+                auto const semantic_source_count = semantic.transform.empty()
+                    ? channel_count(source_layout)
+                    : semantic.transform.source_channel_count;
+                auto const semantic_target_count = semantic.transform.empty()
+                    ? channel_count(converted_layout)
+                    : semantic.transform.target_channel_count;
                 if (semantic.source_channel_indices.size()
-                        != channel_count(source_layout)
+                        != semantic_source_count
                     || semantic.target_channels.size()
-                        != channel_count(converted_layout)) {
+                        != semantic_target_count
+                    || (!semantic.transform.empty()
+                        && semantic.transform.coefficients.size()
+                            != semantic_source_count * semantic_target_count)) {
                     return std::unexpected(
                         "GraphJit channel-granular sample conversion has inconsistent semantic channel counts");
                 }
-                try {
-                    (void)ChannelConversionRegistry::plan(
-                        source_layout, converted_layout);
-                } catch (std::exception const& e) {
-                    return std::unexpected(
-                        "GraphJit channel-granular sample conversion is unsupported: "
-                        + std::string(e.what()));
+                if (semantic.transform.empty()) {
+                    try {
+                        (void)ChannelConversionRegistry::plan(
+                            source_layout, converted_layout);
+                    } catch (std::exception const& e) {
+                        return std::unexpected(
+                            "GraphJit channel-granular sample conversion is unsupported: "
+                            + std::string(e.what()));
+                    }
                 }
 
-                if (can_alias_sample_conversion(source_layout, converted_layout)) {
+                if (can_alias_sample_conversion(
+                        source_layout,
+                        converted_layout,
+                        semantic.transform.empty() ? nullptr : &semantic.transform)) {
                     for (std::size_t converted_channel = 0;
                          converted_channel < semantic.target_channels.size();
                          ++converted_channel) {
@@ -1709,7 +2359,10 @@ std::expected<SampleStoragePlan, std::string> build_sample_storage_plan(
                             aliased_conversion_source_channel(
                                 semantic.source_type,
                                 semantic.target_type,
-                                converted_channel);
+                                converted_channel,
+                                semantic.transform.empty()
+                                    ? nullptr
+                                    : &semantic.transform);
                         if (!source_semantic_channel
                             || *source_semantic_channel
                                 >= semantic.source_channel_indices.size()) {
@@ -1747,6 +2400,7 @@ std::expected<SampleStoragePlan, std::string> build_sample_storage_plan(
                 SampleCompositionContributionPlan contribution{
                     .source_layout = source_layout,
                     .converted_layout = converted_layout,
+                    .transform = semantic.transform,
                 };
                 contribution.sources.reserve(semantic.source_channel_indices.size());
                 for (auto const timing_index : semantic.source_channel_indices) {
@@ -1756,7 +2410,7 @@ std::expected<SampleStoragePlan, std::string> build_sample_storage_plan(
                     }
                     contribution.sources.push_back(*source);
                 }
-                contribution.target_channels.resize(channel_count(converted_layout));
+                contribution.target_channels.resize(semantic_target_count);
                 for (std::size_t channel = 0;
                      channel < contribution.target_channels.size(); ++channel) {
                     contribution.target_channels[channel] = channel;
@@ -2017,25 +2671,37 @@ std::expected<SampleStoragePlan, std::string> build_sample_storage_plan(
                 .channel_type = semantic.target_type,
                 .sample_layout = SampleStreamLayout::planar,
             };
+            auto const semantic_source_count = semantic.transform.empty()
+                ? channel_count(source_layout)
+                : semantic.transform.source_channel_count;
+            auto const semantic_target_count = semantic.transform.empty()
+                ? channel_count(converted_layout)
+                : semantic.transform.target_channel_count;
             if (semantic.source_channel_indices.size()
-                    != channel_count(source_layout)
+                    != semantic_source_count
                 || semantic.target_channels.size()
-                    != channel_count(converted_layout)) {
+                    != semantic_target_count
+                || (!semantic.transform.empty()
+                    && semantic.transform.coefficients.size()
+                        != semantic_source_count * semantic_target_count)) {
                 return std::unexpected(
                     "GraphJit sample composition contribution has inconsistent semantic channel counts");
             }
-            try {
-                (void)ChannelConversionRegistry::plan(
-                    source_layout, converted_layout);
-            } catch (std::exception const& e) {
-                return std::unexpected(
-                    "GraphJit sample composition conversion is unsupported: "
-                    + std::string(e.what()));
+            if (semantic.transform.empty()) {
+                try {
+                    (void)ChannelConversionRegistry::plan(
+                        source_layout, converted_layout);
+                } catch (std::exception const& e) {
+                    return std::unexpected(
+                        "GraphJit sample composition conversion is unsupported: "
+                        + std::string(e.what()));
+                }
             }
 
             SampleCompositionContributionPlan contribution{
                 .source_layout = source_layout,
                 .converted_layout = converted_layout,
+                .transform = semantic.transform,
             };
             contribution.sources.reserve(semantic.source_channel_indices.size());
             contribution.target_channels.reserve(semantic.target_channels.size());

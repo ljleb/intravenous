@@ -1,4 +1,5 @@
 #include <intravenous/graph_jit/lowering.h>
+#include <intravenous/graph_jit/activity_runtime.h>
 #include <intravenous/graph_jit/event_conversion_runtime.h>
 #include <intravenous/graph_jit/event_retention_runtime.h>
 #include <intravenous/graph_jit/lowering_plan.h>
@@ -89,8 +90,6 @@ struct BackgroundCallByteOffsets {
     std::size_t replay_tick_context = 0;
     std::size_t replay_regions_data = 0;
     std::size_t replay_regions_size = 0;
-    std::size_t tock_background_state_data = 0;
-    std::size_t tock_background_state_size = 0;
 };
 
 struct EmittedNodeConfiguration {
@@ -129,6 +128,32 @@ struct EmittedRealtimeStorage {
     std::vector<llvm::Value*> sequential_pace_cursors{};
     std::vector<llvm::Value*> event_representations{};
     std::vector<llvm::Value*> event_overflow_counts{};
+};
+
+struct EmittedContinuousActivitySummary {
+    std::size_t frontier = 0;
+    std::size_t representation_epoch = 0;
+    llvm::Value* sample_index = nullptr;
+    llvm::Value* block_size = nullptr;
+    llvm::Value* flags = nullptr;
+};
+
+struct EmittedEventActivitySummary {
+    std::size_t representation = 0;
+    std::size_t representation_epoch = 0;
+    llvm::Value* sample_index = nullptr;
+    llvm::Value* block_size = nullptr;
+    llvm::Value* empty = nullptr;
+};
+
+struct ActivityEmissionCache {
+    // These are compiler-emission epochs, not runtime counters. A write to one
+    // sample representation advances its epoch so a later consumer cannot
+    // reuse a fact that was emitted before that write.
+    std::vector<std::size_t> representation_epochs{};
+    std::vector<EmittedContinuousActivitySummary> continuous{};
+    std::vector<std::size_t> event_representation_epochs{};
+    std::vector<EmittedEventActivitySummary> events{};
 };
 
 constexpr ReflectedContextByteOffsets reflected_context_byte_offsets() noexcept
@@ -250,12 +275,6 @@ constexpr BackgroundCallByteOffsets background_batch_byte_offsets() noexcept
             + offsetof(ReflectedSpan<GlobalIndexRange const>, pointer),
         .replay_regions_size = offsetof(BackgroundNodeCall, replay_regions)
             + offsetof(ReflectedSpan<GlobalIndexRange const>, extent),
-        .tock_background_state_data = offsetof(BackgroundNodeCall, tock)
-            + offsetof(ReflectedNodeTockCoverageContext, background_state_storage)
-            + offsetof(ReflectedSpan<std::byte>, pointer),
-        .tock_background_state_size = offsetof(BackgroundNodeCall, tock)
-            + offsetof(ReflectedNodeTockCoverageContext, background_state_storage)
-            + offsetof(ReflectedSpan<std::byte>, extent),
     };
 }
 
@@ -286,6 +305,13 @@ llvm::FunctionType* background_operation_type(llvm::LLVMContext& context)
     auto* pointer = llvm::PointerType::getUnqual(context);
     return llvm::FunctionType::get(
         llvm::Type::getVoidTy(context), {pointer, pointer}, false);
+}
+
+llvm::FunctionType* background_root_operation_type(llvm::LLVMContext& context)
+{
+    auto* pointer = llvm::PointerType::getUnqual(context);
+    return llvm::FunctionType::get(
+        llvm::Type::getVoidTy(context), {pointer}, false);
 }
 
 llvm::FunctionType* background_operation_hook_type(
@@ -1453,6 +1479,18 @@ llvm::Value* emit_sequential_begin_ordinal(
     std::int32_t pace_exponent,
     llvm::Twine const& name);
 
+struct EmittedLatticeProjection {
+    llvm::Value* begin_ordinal = nullptr;
+    llvm::Value* value_count = nullptr;
+};
+
+EmittedLatticeProjection emit_lattice_projection(
+    llvm::IRBuilder<>& builder,
+    llvm::Value* project_index,
+    llvm::Value* project_count,
+    std::int32_t pace_exponent,
+    llvm::Twine const& name);
+
 void store_sequential_begin_ordinal(
     llvm::IRBuilder<>& builder,
     llvm::Value* bindings,
@@ -1472,13 +1510,19 @@ void store_sequential_begin_ordinal(
 
 void emit_primitive_call(
     llvm::IRBuilder<>& builder,
-    llvm::Function* primitive_callback,
+    llvm::Function* tick_callback,
+    llvm::Function* skip_callback,
+    detail::DeclarationPlan const& declarations,
+    ActivityEmissionCache& activity_cache,
+    detail::PrimitiveActivityPlan const* activity,
+    bool force_skip,
     EmittedNodeConfiguration const& configuration,
     detail::PrimitiveStoragePlan const& storage,
     EmittedPrimitiveSamplePorts const& sample_ports,
     EmittedPrimitiveEventPorts const& event_ports,
     detail::PrimitiveSamplePortPlan const& sample_plan,
     detail::SampleStoragePlan const& sample_storage,
+    detail::PrimitiveEventPortPlan const& event_plan,
     BackgroundEvaluationPlan const* tick_background,
     TickNodeInvocationPlan const* tick_invocation,
     llvm::Value* invocation,
@@ -1503,8 +1547,10 @@ void emit_primitive_call(
         sizeof(ReflectedNodeTickContext));
 
     auto const offsets = reflected_context_byte_offsets();
+    llvm::Value* continuous_input_bindings = sample_ports.input_bindings;
+    llvm::Value* event_input_bindings = event_ports.input_bindings;
     if (sample_ports.input_count != 0) {
-        auto* bindings = sample_ports.input_bindings;
+        auto* bindings = continuous_input_bindings;
         if (tick_background != nullptr && tick_invocation != nullptr
             && tick_invocation->sequential_sample_count != 0) {
             auto const call_offsets = tick_invocation_byte_offsets();
@@ -1568,6 +1614,7 @@ void emit_primitive_call(
             offsets.continuous_input_bindings_size,
             bindings,
             sample_ports.input_count);
+        continuous_input_bindings = bindings;
     }
     if (sample_ports.output_count != 0) {
         for (std::size_t output = 0;
@@ -1605,7 +1652,7 @@ void emit_primitive_call(
             sample_ports.output_count);
     }
     if (event_ports.input_count != 0) {
-        auto* bindings = event_ports.input_bindings;
+        auto* bindings = event_input_bindings;
         if (tick_background != nullptr && tick_invocation != nullptr
             && tick_invocation->sequential_event_count != 0) {
             auto const call_offsets = tick_invocation_byte_offsets();
@@ -1631,6 +1678,7 @@ void emit_primitive_call(
             offsets.event_input_bindings_size,
             bindings,
             event_ports.input_count);
+        event_input_bindings = bindings;
     }
     if (event_ports.output_count != 0) {
         store_context_span_pointer(
@@ -1683,21 +1731,384 @@ void emit_primitive_call(
             storage.state_size);
     }
 
-    auto* call = builder.CreateCall(
-        primitive_callback,
-        {configuration.node_config, context_storage, sample_index, block_size});
-    call->setCallingConv(primitive_callback->getCallingConv());
+    auto invoke = [&](llvm::Function* callback) {
+        auto* call = builder.CreateCall(
+            callback,
+            {configuration.node_config,
+             context_storage,
+             sample_index,
+             block_size});
+        call->setCallingConv(callback->getCallingConv());
+    };
+    if (force_skip) {
+        invoke(skip_callback);
+        return;
+    }
+    if (activity == nullptr) {
+        invoke(tick_callback);
+        return;
+    }
+
+    auto& llvm_context = builder.getContext();
+    auto* function = builder.GetInsertBlock()->getParent();
+    auto* byte_type = llvm::Type::getInt8Ty(llvm_context);
+    auto* bool_type = llvm::Type::getInt1Ty(llvm_context);
+    auto* int32_type = llvm::Type::getInt32Ty(llvm_context);
+    auto* pointer_type = llvm::PointerType::get(llvm_context, 0);
+    auto* true_value = llvm::ConstantInt::getTrue(llvm_context);
+    auto* false_value = llvm::ConstantInt::getFalse(llvm_context);
+    auto size_constant = [&](std::size_t value) {
+        return llvm::ConstantInt::get(size_type, value);
+    };
+    auto binding_pointer = [&](llvm::Value* base,
+                               std::size_t index,
+                               std::size_t stride,
+                               llvm::Twine const& name) {
+        return builder.CreateInBoundsGEP(
+            byte_type, base, size_constant(index * stride), name);
+    };
+    auto* activity_state = byte_offset_pointer(
+        builder,
+        storage_base,
+        activity->storage_offset,
+        "activity.state");
+    auto* dormant_pointer = byte_offset_pointer(
+        builder,
+        activity_state,
+        offsetof(detail::PrimitiveActivityState, dormant),
+        "activity.dormant.pointer");
+    auto* silent_samples_pointer = byte_offset_pointer(
+        builder,
+        activity_state,
+        offsetof(detail::PrimitiveActivityState, silent_samples),
+        "activity.silent.pointer");
+
+    llvm::Value* inputs_constant = true_value;
+    llvm::Value* inputs_unchanged = true_value;
+    auto input_activity_type = llvm::FunctionType::get(
+        int32_type,
+        {pointer_type, size_type, size_type, pointer_type, pointer_type},
+        false);
+    auto input_activity = builder.GetInsertBlock()->getModule()
+        ->getOrInsertFunction(
+            detail::continuous_input_activity_symbol,
+            input_activity_type);
+    IV_ASSERT(
+        activity->continuous_inputs.size() == sample_plan.inputs.size(),
+        "GraphJit activity input plan must match the primitive binding plan");
+    for (std::size_t input_index = 0;
+         input_index < activity->continuous_inputs.size(); ++input_index) {
+        auto const& input_activity_plan =
+            activity->continuous_inputs[input_index];
+        if (input_activity_plan.static_constant) continue;
+        auto const& binding_plan = sample_plan.inputs[input_index];
+        IV_ASSERT(
+            input_activity_plan.channels.size()
+                == binding_plan.channels.size(),
+            "GraphJit activity channel plan must match the primitive binding");
+        auto const projection = emit_lattice_projection(
+            builder,
+            sample_index,
+            block_size,
+            binding_plan.absolute_pace_exponent,
+            "activity.input.projection");
+        auto* binding = binding_pointer(
+            continuous_input_bindings,
+            input_index,
+            sizeof(ReflectedContinuousInputPortBinding),
+            "activity.input.binding");
+        for (std::size_t channel = 0;
+             channel < input_activity_plan.channels.size(); ++channel) {
+            auto const& channel_plan = input_activity_plan.channels[channel];
+            IV_ASSERT(
+                channel_plan.frontier
+                    < declarations.activity_frontiers.size(),
+                "GraphJit activity channel must reference a frontier");
+            auto const& frontier = declarations.activity_frontiers[
+                channel_plan.frontier];
+            IV_ASSERT(
+                frontier.representation
+                    < activity_cache.representation_epochs.size(),
+                "GraphJit activity frontier must reference sample storage");
+            auto const epoch = activity_cache.representation_epochs[
+                frontier.representation];
+            auto summary = std::ranges::find_if(
+                activity_cache.continuous,
+                [&](EmittedContinuousActivitySummary const& candidate) {
+                    return candidate.frontier == channel_plan.frontier
+                        && candidate.representation_epoch == epoch
+                        && candidate.sample_index == sample_index
+                        && candidate.block_size == block_size;
+                });
+            llvm::Value* flags = nullptr;
+            if (summary != activity_cache.continuous.end()) {
+                flags = summary->flags;
+            } else {
+                auto* valid = byte_offset_pointer(
+                    builder,
+                    storage_base,
+                    frontier.remembered_valid_storage_offset,
+                    "activity.input.valid");
+                auto* remembered = byte_offset_pointer(
+                    builder,
+                    storage_base,
+                    frontier.remembered_value_storage_offset,
+                    "activity.input.remembered");
+                flags = builder.CreateCall(
+                    input_activity,
+                    {binding,
+                     size_constant(channel),
+                     projection.value_count,
+                     valid,
+                     remembered},
+                    "activity.input.flags");
+                activity_cache.continuous.push_back(
+                    EmittedContinuousActivitySummary{
+                        .frontier = channel_plan.frontier,
+                        .representation_epoch = epoch,
+                        .sample_index = sample_index,
+                        .block_size = block_size,
+                        .flags = flags,
+                    });
+            }
+            auto* constant = builder.CreateICmpNE(
+                builder.CreateAnd(
+                    flags,
+                    llvm::ConstantInt::get(
+                        int32_type,
+                        detail::continuous_input_constant)),
+                llvm::ConstantInt::get(int32_type, 0),
+                "activity.input.constant");
+            auto* unchanged = builder.CreateICmpNE(
+                builder.CreateAnd(
+                    flags,
+                    llvm::ConstantInt::get(
+                        int32_type,
+                        detail::continuous_input_unchanged)),
+                llvm::ConstantInt::get(int32_type, 0),
+                "activity.input.unchanged");
+            inputs_constant = builder.CreateAnd(
+                inputs_constant, constant, "activity.inputs.constant");
+            inputs_unchanged = builder.CreateAnd(
+                inputs_unchanged, unchanged, "activity.inputs.unchanged");
+        }
+    }
+
+    auto event_input_type = llvm::FunctionType::get(
+        bool_type,
+        {pointer_type, size_type, size_type},
+        false);
+    auto event_input_empty = builder.GetInsertBlock()->getModule()
+        ->getOrInsertFunction(
+            detail::event_input_activity_symbol,
+            event_input_type);
+    IV_ASSERT(
+        event_plan.inputs.size() == event_ports.input_count,
+        "GraphJit activity event plan must match the primitive binding plan");
+    for (std::size_t input = 0; input < event_ports.input_count; ++input) {
+        auto* binding = binding_pointer(
+            event_input_bindings,
+            input,
+            sizeof(ReflectedEventInputPortBinding),
+            "activity.event.input.binding");
+        auto const externally_bound = tick_background != nullptr
+            && tick_invocation != nullptr
+            && std::ranges::any_of(
+                std::span{tick_background->tick_runtime
+                              .sequential_event_inputs}
+                    .subspan(
+                        tick_invocation->sequential_event_begin,
+                        tick_invocation->sequential_event_count),
+                [&, input](auto const& selected) {
+                    auto const& port = tick_background->ports[selected.port];
+                    return port.kind == PortKind::event
+                        && port.configured_port.port_index == input;
+                });
+        auto const storage = event_plan.inputs[input].storage;
+        llvm::Value* empty = nullptr;
+        if (!externally_bound && storage
+            && *storage
+                < activity_cache.event_representation_epochs.size()) {
+            auto const epoch = activity_cache.event_representation_epochs[
+                *storage];
+            auto summary = std::ranges::find_if(
+                activity_cache.events,
+                [&](EmittedEventActivitySummary const& candidate) {
+                    return candidate.representation == *storage
+                        && candidate.representation_epoch == epoch
+                        && candidate.sample_index == sample_index
+                        && candidate.block_size == block_size;
+                });
+            if (summary != activity_cache.events.end()) {
+                empty = summary->empty;
+            } else {
+                empty = builder.CreateCall(
+                    event_input_empty,
+                    {binding, sample_index, block_size},
+                    "activity.event.input.empty");
+                activity_cache.events.push_back(
+                    EmittedEventActivitySummary{
+                        .representation = *storage,
+                        .representation_epoch = epoch,
+                        .sample_index = sample_index,
+                        .block_size = block_size,
+                        .empty = empty,
+                    });
+            }
+        } else {
+            empty = builder.CreateCall(
+                event_input_empty,
+                {binding, sample_index, block_size},
+                "activity.event.input.empty");
+        }
+        inputs_constant = builder.CreateAnd(
+            inputs_constant, empty, "activity.inputs.quiescent");
+        inputs_unchanged = builder.CreateAnd(
+            inputs_unchanged, empty, "activity.inputs.unchanged");
+    }
+
+    auto* dormant = builder.CreateICmpNE(
+        builder.CreateLoad(byte_type, dormant_pointer, "activity.dormant"),
+        llvm::ConstantInt::get(byte_type, 0),
+        "activity.is.dormant");
+    auto* should_skip = builder.CreateAnd(
+        dormant, inputs_unchanged, "activity.should.skip");
+    auto* tick_block = llvm::BasicBlock::Create(
+        llvm_context, "activity.tick", function);
+    auto* skip_block = llvm::BasicBlock::Create(
+        llvm_context, "activity.skip", function);
+    auto* merge_block = llvm::BasicBlock::Create(
+        llvm_context, "activity.end", function);
+    builder.CreateCondBr(should_skip, skip_block, tick_block);
+
+    builder.SetInsertPoint(skip_block);
+    invoke(skip_callback);
+    builder.CreateBr(merge_block);
+
+    builder.SetInsertPoint(tick_block);
+    builder.CreateStore(llvm::ConstantInt::get(byte_type, 0), dormant_pointer);
+    invoke(tick_callback);
+
+    auto const has_output = sample_ports.output_count != 0
+        || event_ports.output_count != 0;
+    llvm::Value* outputs_clear = has_output ? true_value : false_value;
+    auto output_clear_type = llvm::FunctionType::get(
+        bool_type,
+        {pointer_type, size_type, size_type},
+        false);
+    auto output_is_clear = builder.GetInsertBlock()->getModule()
+        ->getOrInsertFunction(
+            detail::continuous_output_clear_symbol,
+            output_clear_type);
+    std::size_t compact_output = 0;
+    for (auto const& output_plan : sample_plan.outputs) {
+        if (!output_plan.realtime) continue;
+        IV_ASSERT(
+            compact_output
+                < activity->continuous_output_channel_counts.size(),
+            "GraphJit activity output plan must match the primitive binding");
+        auto const projection = emit_lattice_projection(
+            builder,
+            sample_index,
+            block_size,
+            output_plan.absolute_pace_exponent,
+            "activity.output.projection");
+        auto* binding = binding_pointer(
+            sample_ports.output_bindings,
+            compact_output,
+            sizeof(ReflectedContinuousOutputPortBinding),
+            "activity.output.binding");
+        auto const channels =
+            activity->continuous_output_channel_counts[compact_output++];
+        for (std::size_t channel = 0; channel < channels; ++channel) {
+            auto* clear = builder.CreateCall(
+                output_is_clear,
+                {binding, size_constant(channel), projection.value_count},
+                "activity.output.clear");
+            outputs_clear = builder.CreateAnd(
+                outputs_clear, clear, "activity.outputs.clear");
+        }
+    }
+
+    auto event_output_type = llvm::FunctionType::get(
+        bool_type,
+        {pointer_type, size_type, size_type},
+        false);
+    auto event_output_empty = builder.GetInsertBlock()->getModule()
+        ->getOrInsertFunction(
+            detail::event_output_activity_symbol,
+            event_output_type);
+    for (std::size_t output = 0; output < event_ports.output_count; ++output) {
+        auto* binding = binding_pointer(
+            event_ports.output_bindings,
+            output,
+            sizeof(ReflectedEventOutputPortBinding),
+            "activity.event.output.binding");
+        auto* empty = builder.CreateCall(
+            event_output_empty,
+            {binding, sample_index, block_size},
+            "activity.event.output.empty");
+        outputs_clear = builder.CreateAnd(
+            outputs_clear, empty, "activity.outputs.clear");
+    }
+
+    auto* quiescent = builder.CreateAnd(
+        inputs_constant, outputs_clear, "activity.quiescent");
+    auto* accumulated = builder.CreateLoad(
+        size_type, silent_samples_pointer, "activity.silent.samples");
+    // A changed constant input starts a new quiet interval. In particular, a
+    // dormant primitive must not reuse the interval which preceded its wake.
+    // The current callback block may still be the first quiet block when it
+    // authors only cleared outputs.
+    auto* accumulation_base = builder.CreateSelect(
+        inputs_unchanged,
+        accumulated,
+        llvm::ConstantInt::get(size_type, 0),
+        "activity.silent.base");
+    auto* sum = builder.CreateAdd(
+        accumulation_base, block_size, "activity.silent.sum");
+    auto* overflow = builder.CreateICmpULT(
+        sum, accumulation_base, "activity.silent.overflow");
+    auto* saturated = builder.CreateSelect(
+        overflow,
+        llvm::ConstantInt::get(
+            size_type, std::numeric_limits<std::size_t>::max()),
+        sum,
+        "activity.silent.saturated");
+    auto* next_silent = builder.CreateSelect(
+        quiescent,
+        saturated,
+        llvm::ConstantInt::get(size_type, 0),
+        "activity.silent.next");
+    builder.CreateStore(next_silent, silent_samples_pointer);
+    auto* ttl_elapsed = builder.CreateICmpUGE(
+        next_silent,
+        size_constant(activity->ttl_samples),
+        "activity.ttl.elapsed");
+    auto* next_dormant = builder.CreateAnd(
+        quiescent, ttl_elapsed, "activity.dormant.next");
+    builder.CreateStore(
+        builder.CreateZExt(next_dormant, byte_type), dormant_pointer);
+    builder.CreateBr(merge_block);
+
+    builder.SetInsertPoint(merge_block);
 }
 
 void emit_sliced_primitive_calls(
     llvm::IRBuilder<>& builder,
-    llvm::Function* primitive_callback,
+    llvm::Function* tick_callback,
+    llvm::Function* skip_callback,
+    detail::DeclarationPlan const& declarations,
+    ActivityEmissionCache& activity_cache,
+    detail::PrimitiveActivityPlan const* activity,
+    bool force_skip,
     EmittedNodeConfiguration const& configuration,
     detail::PrimitiveStoragePlan const& storage,
     EmittedPrimitiveSamplePorts const& sample_ports,
     EmittedPrimitiveEventPorts const& event_ports,
     detail::PrimitiveSamplePortPlan const& sample_plan,
     detail::SampleStoragePlan const& sample_storage,
+    detail::PrimitiveEventPortPlan const& event_plan,
     BackgroundEvaluationPlan const* tick_background,
     TickNodeInvocationPlan const* tick_invocation,
     llvm::Value* invocation,
@@ -1734,13 +2145,19 @@ void emit_sliced_primitive_calls(
 
     emit_primitive_call(
         builder,
-        primitive_callback,
+        tick_callback,
+        skip_callback,
+        declarations,
+        activity_cache,
+        activity,
+        force_skip,
         configuration,
         storage,
         sample_ports,
         event_ports,
         sample_plan,
         sample_storage,
+        event_plan,
         tick_background,
         tick_invocation,
         invocation,
@@ -1754,7 +2171,7 @@ void emit_sliced_primitive_calls(
     auto* done = builder.CreateICmpUGE(
         next_offset, block_size, "primitive.slice.done");
     builder.CreateCondBr(done, exit, loop);
-    offset->addIncoming(next_offset, loop);
+    offset->addIncoming(next_offset, builder.GetInsertBlock());
 
     builder.SetInsertPoint(exit);
 }
@@ -1769,11 +2186,6 @@ bool supports_linear_audio_channel_conversion(
         && geometry.value_size_bytes
             == geometry.channel_scalar_lane_count * sizeof(float);
 }
-
-struct EmittedLatticeProjection {
-    llvm::Value* begin_ordinal = nullptr;
-    llvm::Value* value_count = nullptr;
-};
 
 EmittedLatticeProjection emit_lattice_projection(
     llvm::IRBuilder<>& builder,
@@ -2036,28 +2448,40 @@ emit_channel_conversion(
     llvm::IRBuilder<>& builder,
     ChannelTypeId source_type,
     ChannelTypeId target_type,
+    detail::SampleChannelTransformPlan const* transform,
     std::span<llvm::Value* const> source_values,
     std::string_view name)
 {
+    auto const source_count = transform && !transform->empty()
+        ? transform->source_channel_count
+        : channel_count(source_type);
+    auto const target_count = transform && !transform->empty()
+        ? transform->target_channel_count
+        : channel_count(target_type);
     if (!is_registered_channel_type(source_type)
         || !is_registered_channel_type(target_type)
-        || source_values.size() != channel_count(source_type)) {
+        || source_values.size() != source_count
+        || (transform && !transform->empty()
+            && transform->coefficients.size() != source_count * target_count)) {
         return std::unexpected(
             "GraphJit channel conversion has an invalid registered type or source value count");
     }
 
     auto* sample_type = llvm::Type::getFloatTy(builder.getContext());
     std::vector<llvm::Value*> result;
-    result.reserve(channel_count(target_type));
+    result.reserve(target_count);
     for (std::size_t target_channel = 0;
-         target_channel < channel_count(target_type);
+         target_channel < target_count;
          ++target_channel) {
         llvm::Value* value = nullptr;
         for (std::size_t source_channel = 0;
              source_channel < source_values.size();
              ++source_channel) {
-            auto const coefficient = channel_conversion_coefficient(
-                source_type, target_type, source_channel, target_channel);
+            auto const coefficient = transform && !transform->empty()
+                ? transform->coefficients[
+                    target_channel * source_count + source_channel]
+                : channel_conversion_coefficient(
+                    source_type, target_type, source_channel, target_channel);
             if (coefficient == 0.0f) continue;
             llvm::Value* term = source_values[source_channel];
             if (coefficient != 1.0f) {
@@ -2242,6 +2666,9 @@ std::expected<void, std::string> emit_sample_materialization(
             builder,
             materialization.source_layout.channel_type,
             materialization.target_layout.channel_type,
+            materialization.transform.empty()
+                ? nullptr
+                : &materialization.transform,
             source_values,
             "continuous.materialize.convert." + std::to_string(element));
         if (!converted) return std::unexpected(std::move(converted.error()));
@@ -2354,6 +2781,7 @@ std::expected<void, std::string> emit_sample_composition_write(
     struct ContributionBinding {
         ChannelLayout source_layout{};
         ChannelLayout converted_layout{};
+        detail::SampleChannelTransformPlan transform{};
         std::vector<SourceBinding> sources{};
         std::vector<std::size_t> target_channels{};
         std::vector<std::size_t> shifted_write_latencies{};
@@ -2366,26 +2794,36 @@ std::expected<void, std::string> emit_sample_composition_write(
     contributions.reserve(contribution_plans.size());
     std::vector<bool> populated_targets(channel_count(target_layout), false);
     for (auto const& contribution_plan : contribution_plans) {
-        if (contribution_plan.sources.size()
-                != channel_count(contribution_plan.source_layout)
-            || contribution_plan.target_channels.size()
-                != channel_count(contribution_plan.converted_layout)) {
+        auto const source_channel_count = contribution_plan.transform.empty()
+            ? channel_count(contribution_plan.source_layout)
+            : contribution_plan.transform.source_channel_count;
+        auto const target_channel_count = contribution_plan.transform.empty()
+            ? channel_count(contribution_plan.converted_layout)
+            : contribution_plan.transform.target_channel_count;
+        if (contribution_plan.sources.size() != source_channel_count
+            || contribution_plan.target_channels.size() != target_channel_count
+            || (!contribution_plan.transform.empty()
+                && contribution_plan.transform.coefficients.size()
+                    != source_channel_count * target_channel_count)) {
             return std::unexpected(
                 "GraphJit sample composition contribution has inconsistent semantic channel counts");
         }
-        try {
-            (void)ChannelConversionRegistry::plan(
-                contribution_plan.source_layout,
-                contribution_plan.converted_layout);
-        } catch (std::exception const& e) {
-            return std::unexpected(
-                "GraphJit sample composition conversion is unsupported: "
-                + std::string(e.what()));
+        if (contribution_plan.transform.empty()) {
+            try {
+                (void)ChannelConversionRegistry::plan(
+                    contribution_plan.source_layout,
+                    contribution_plan.converted_layout);
+            } catch (std::exception const& e) {
+                return std::unexpected(
+                    "GraphJit sample composition conversion is unsupported: "
+                    + std::string(e.what()));
+            }
         }
 
         ContributionBinding contribution{
             .source_layout = contribution_plan.source_layout,
             .converted_layout = contribution_plan.converted_layout,
+            .transform = contribution_plan.transform,
             .target_channels = contribution_plan.target_channels,
         };
         contribution.sources.reserve(contribution_plan.sources.size());
@@ -2435,7 +2873,7 @@ std::expected<void, std::string> emit_sample_composition_write(
             auto const source_type = contribution.source_layout.channel_type;
             auto const converted_type = contribution.converted_layout.channel_type;
             contribution.shifted_write_latencies.resize(
-                channel_count(converted_type));
+                target_channel_count);
             auto const [minimum_source, maximum_source] =
                 std::ranges::minmax_element(
                     contribution.sources,
@@ -2443,8 +2881,33 @@ std::expected<void, std::string> emit_sample_composition_write(
                     &SourceBinding::read_latency);
             auto const minimum_latency = minimum_source->read_latency;
             auto const maximum_latency = maximum_source->read_latency;
-            auto const needs_alignment = channel_conversion_mixes_sources(
-                    source_type, converted_type)
+            auto coefficient = [&](std::size_t source_channel,
+                                   std::size_t target_channel) {
+                return contribution_plan.transform.empty()
+                    ? channel_conversion_coefficient(
+                        source_type,
+                        converted_type,
+                        source_channel,
+                        target_channel)
+                    : contribution_plan.transform.coefficients[
+                        target_channel * source_channel_count + source_channel];
+            };
+            auto const transform_mixes_sources = [&] {
+                for (std::size_t target_channel = 0;
+                     target_channel < target_channel_count;
+                     ++target_channel) {
+                    std::size_t contributors = 0;
+                    for (std::size_t source_channel = 0;
+                         source_channel < source_channel_count;
+                         ++source_channel) {
+                        contributors += coefficient(source_channel, target_channel)
+                            != 0.0f;
+                    }
+                    if (contributors > 1) return true;
+                }
+                return false;
+            }();
+            auto const needs_alignment = transform_mixes_sources
                 && minimum_latency != maximum_latency;
 
             if (needs_alignment) {
@@ -2488,12 +2951,7 @@ std::expected<void, std::string> emit_sample_composition_write(
                     for (std::size_t source_channel = 0;
                          source_channel < contribution.sources.size();
                          ++source_channel) {
-                        if (channel_conversion_coefficient(
-                                source_type,
-                                converted_type,
-                                source_channel,
-                                target_channel)
-                            == 0.0f) {
+                        if (coefficient(source_channel, target_channel) == 0.0f) {
                             continue;
                         }
                         auto const candidate =
@@ -2701,6 +3159,9 @@ std::expected<void, std::string> emit_sample_composition_write(
                 builder,
                 contribution.source_layout.channel_type,
                 contribution.converted_layout.channel_type,
+                contribution.transform.empty()
+                    ? nullptr
+                    : &contribution.transform,
                 source_values,
                 "continuous.compose.convert."
                     + std::to_string(contribution_index) + "."
@@ -3450,6 +3911,10 @@ std::expected<void, std::string> initialize_event_feedback_cursors_after_carry_r
             != carry.working_representation) {
             continue;
         }
+        if (event_ports.feedback_operations[feedback_index]
+                .source_sequence_restarts_each_append) {
+            continue;
+        }
         if (feedback_index >= event_feedback_cursors.size()
             || event_feedback_cursors[feedback_index] == nullptr) {
             return std::unexpected(
@@ -3472,7 +3937,9 @@ std::expected<void, std::string> initialize_event_feedback_cursors_after_carry_r
          feedback_index < event_ports.feedback_operations.size();
          ++feedback_index) {
         if (event_ports.feedback_operations[feedback_index].source_representation
-            == carry.working_representation) {
+                == carry.working_representation
+            && !event_ports.feedback_operations[feedback_index]
+                    .source_sequence_restarts_each_append) {
             builder.CreateStore(
                 restored_count, event_feedback_cursors[feedback_index]);
         }
@@ -3604,7 +4071,8 @@ std::expected<void, std::string> emit_event_feedback_append(
         return std::unexpected(
             "GraphJit event feedback references a missing storage");
     }
-    if (feedback_cursor_pointer == nullptr) {
+    if (feedback_cursor_pointer == nullptr
+        && !feedback.source_sequence_restarts_each_append) {
         return std::unexpected(
             "GraphJit event feedback has no root-call source cursor");
     }
@@ -3630,6 +4098,7 @@ std::expected<void, std::string> emit_event_feedback_append(
     auto& context = builder.getContext();
     auto* size_type = llvm::IntegerType::get(
         context, static_cast<unsigned>(sizeof(std::size_t) * 8));
+    auto* plan_word_type = llvm::Type::getInt32Ty(context);
     auto* pointer_type = llvm::PointerType::getUnqual(context);
     auto* ordering_origin = feedback.ordering_history_samples == 0
         ? sample_index
@@ -3639,10 +4108,15 @@ std::expected<void, std::string> emit_event_feedback_append(
                 sample_index->getType(),
                 feedback.ordering_history_samples),
             "event.feedback.ordering.origin");
-    auto* source_begin = builder.CreateLoad(
-        size_type,
-        feedback_cursor_pointer,
-        "event.feedback.source.cursor");
+    llvm::Value* source_begin = nullptr;
+    if (feedback.source_sequence_restarts_each_append) {
+        source_begin = llvm::ConstantInt::get(size_type, 0);
+    } else {
+        source_begin = builder.CreateLoad(
+            size_type,
+            feedback_cursor_pointer,
+            "event.feedback.source.cursor");
+    }
     llvm::Value* source_end = nullptr;
     auto* source_base = realtime_storage.event_representations[
         feedback.source_representation];
@@ -3684,6 +4158,22 @@ std::expected<void, std::string> emit_event_feedback_append(
         source_base,
         source.events_relative_offset,
         "event.feedback.source.events");
+    llvm::Value* source_indices = llvm::ConstantPointerNull::get(pointer_type);
+    if (feedback.source_index_filter) {
+        if (!source.has_source_indices) {
+            return std::unexpected(
+                "GraphJit filtered event feedback lost its source-index sidecar");
+        }
+        source_indices = byte_offset_pointer(
+            builder,
+            source_base,
+            source.source_indices_relative_offset,
+            "event.feedback.source.indices");
+    }
+    auto* source_index_filter = llvm::ConstantInt::get(
+        size_type, feedback.source_index_filter.value_or(0));
+    auto* filter_source_index = llvm::ConstantInt::get(
+        plan_word_type, feedback.source_index_filter.has_value());
     auto* target_events = byte_offset_pointer(
         builder,
         target_base,
@@ -3691,9 +4181,11 @@ std::expected<void, std::string> emit_event_feedback_append(
         "event.feedback.target.events");
 
     // Most event slices produce no events. Keep the audio-thread fast path to a
-    // source-index load/compare and avoid the out-of-line feedback helper
-    // entirely unless this producer appended a new suffix.
-    builder.CreateStore(source_end, feedback_cursor_pointer);
+    // source-count comparison and avoid the out-of-line feedback helper
+    // entirely unless this producer supplied events.
+    if (!feedback.source_sequence_restarts_each_append) {
+        builder.CreateStore(source_end, feedback_cursor_pointer);
+    }
     auto* has_new_events = builder.CreateICmpULT(
         source_begin, source_end, "event.feedback.has_new_events");
     auto* function = builder.GetInsertBlock()->getParent();
@@ -3719,7 +4211,8 @@ std::expected<void, std::string> emit_event_feedback_append(
         if (source.persistent_ring) {
             auto* helper_type = llvm::FunctionType::get(
                 llvm::Type::getVoidTy(context),
-                {pointer_type, size_type, size_type, size_type, size_type, size_type,
+                {pointer_type, pointer_type, size_type, plan_word_type,
+                 size_type, size_type, size_type, size_type, size_type,
                  pointer_type, size_type, pointer_type, pointer_type},
                 false);
             auto helper = module->getOrInsertFunction(
@@ -3727,6 +4220,9 @@ std::expected<void, std::string> emit_event_feedback_append(
             builder.CreateCall(
                 helper,
                 {source_events,
+                 source_indices,
+                 source_index_filter,
+                 filter_source_index,
                  llvm::ConstantInt::get(size_type, source.event_capacity),
                  source_begin,
                  source_end,
@@ -3739,7 +4235,8 @@ std::expected<void, std::string> emit_event_feedback_append(
         } else {
             auto* helper_type = llvm::FunctionType::get(
                 llvm::Type::getVoidTy(context),
-                {pointer_type, size_type, size_type, size_type, size_type,
+                {pointer_type, pointer_type, size_type, plan_word_type,
+                 size_type, size_type, size_type, size_type,
                  pointer_type, size_type, pointer_type, pointer_type},
                 false);
             auto helper = module->getOrInsertFunction(
@@ -3747,6 +4244,9 @@ std::expected<void, std::string> emit_event_feedback_append(
             builder.CreateCall(
                 helper,
                 {source_events,
+                 source_indices,
+                 source_index_filter,
+                 filter_source_index,
                  source_begin,
                  source_end,
                  ordering_origin,
@@ -3765,7 +4265,8 @@ std::expected<void, std::string> emit_event_feedback_append(
         if (source.persistent_ring) {
             auto* helper_type = llvm::FunctionType::get(
                 llvm::Type::getVoidTy(context),
-                {pointer_type, size_type, size_type, size_type, size_type, size_type,
+                {pointer_type, pointer_type, size_type, plan_word_type,
+                 size_type, size_type, size_type, size_type, size_type,
                  pointer_type, size_type, pointer_type},
                 false);
             auto helper = module->getOrInsertFunction(
@@ -3774,6 +4275,9 @@ std::expected<void, std::string> emit_event_feedback_append(
             builder.CreateCall(
                 helper,
                 {source_events,
+                 source_indices,
+                 source_index_filter,
+                 filter_source_index,
                  llvm::ConstantInt::get(size_type, source.event_capacity),
                  source_begin,
                  source_end,
@@ -3785,7 +4289,8 @@ std::expected<void, std::string> emit_event_feedback_append(
         } else {
             auto* helper_type = llvm::FunctionType::get(
                 llvm::Type::getVoidTy(context),
-                {pointer_type, size_type, size_type, size_type, size_type,
+                {pointer_type, pointer_type, size_type, plan_word_type,
+                 size_type, size_type, size_type, size_type,
                  pointer_type, size_type, pointer_type},
                 false);
             auto helper = module->getOrInsertFunction(
@@ -3793,6 +4298,9 @@ std::expected<void, std::string> emit_event_feedback_append(
             builder.CreateCall(
                 helper,
                 {source_events,
+                 source_indices,
+                 source_index_filter,
+                 filter_source_index,
                  source_begin,
                  source_end,
                  ordering_origin,
@@ -3860,16 +4368,6 @@ std::expected<void, std::string> emit_event_merge(
         return std::unexpected(
             "GraphJit persistent event merge must preserve retained target events");
     }
-    if (merge.target_is_semantic_source
-        && (target.persistent_ring || merge.preserve_existing_target)) {
-        return std::unexpected(
-            "GraphJit transient event producer-home merge has inconsistent target storage");
-    }
-    if (merge.target_is_semantic_source && ordered_merge) {
-        return std::unexpected(
-            "GraphJit ordered event merge cannot use producer-home storage");
-    }
-
     auto& context = builder.getContext();
     auto* size_type = llvm::IntegerType::get(
         context, static_cast<unsigned>(sizeof(std::size_t) * 8));
@@ -3923,7 +4421,7 @@ std::expected<void, std::string> emit_event_merge(
             target_base,
             target.count_relative_offset,
             "event.merge.target.count.ptr");
-        if (merge.preserve_existing_target || merge.target_is_semantic_source) {
+        if (merge.preserve_existing_target) {
             target_write = builder.CreateLoad(
                 size_type, count_pointer, "event.merge.target.count");
         }
@@ -3944,75 +4442,6 @@ std::expected<void, std::string> emit_event_merge(
         }
         return &source;
     };
-
-    if (merge.target_is_semantic_source) {
-        auto const source_count = merge.source_representations.size();
-        auto* source_event_pointers = builder.CreateAlloca(
-            pointer_type,
-            llvm::ConstantInt::get(size_type, source_count),
-            "event.merge.sources.ptrs");
-        auto* source_remaining = builder.CreateAlloca(
-            size_type,
-            llvm::ConstantInt::get(size_type, source_count),
-            "event.merge.sources.remaining");
-
-        for (std::size_t source_index = 0;
-             source_index < source_count; ++source_index) {
-            auto const representation_index =
-                merge.source_representations[source_index];
-            auto source = validate_source(representation_index);
-            if (!source) return std::unexpected(std::move(source.error()));
-
-            auto* source_count_pointer = byte_offset_pointer(
-                builder,
-                realtime_storage.event_representations[representation_index],
-                (*source)->count_relative_offset,
-                "event.merge.source.count.ptr." + std::to_string(source_index));
-            auto* source_count_value = builder.CreateLoad(
-                size_type,
-                source_count_pointer,
-                "event.merge.source.count." + std::to_string(source_index));
-            auto* source_events = byte_offset_pointer(
-                builder,
-                realtime_storage.event_representations[representation_index],
-                (*source)->events_relative_offset,
-                "event.merge.source.events." + std::to_string(source_index));
-
-            auto* source_pointer_index = builder.CreateInBoundsGEP(
-                pointer_type,
-                source_event_pointers,
-                llvm::ConstantInt::get(size_type, source_index),
-                "event.merge.source.ptr.index." + std::to_string(source_index));
-            builder.CreateStore(source_events, source_pointer_index);
-            auto* source_count_index = builder.CreateInBoundsGEP(
-                size_type,
-                source_remaining,
-                llvm::ConstantInt::get(size_type, source_index),
-                "event.merge.source.remaining.index." + std::to_string(source_index));
-            builder.CreateStore(source_count_value, source_count_index);
-        }
-
-        auto* helper_type = llvm::FunctionType::get(
-            size_type,
-            {pointer_type, size_type, size_type,
-             pointer_type, pointer_type, size_type, size_type},
-            false);
-        auto* module = builder.GetInsertBlock()->getModule();
-        auto helper = module->getOrInsertFunction(
-            detail::event_sequence_k_way_merge_symbol, helper_type);
-        auto* merged_count = builder.CreateCall(
-            helper,
-            {target_events,
-             llvm::ConstantInt::get(size_type, target.event_capacity),
-             target_write,
-             source_event_pointers,
-             source_remaining,
-             llvm::ConstantInt::get(size_type, source_count),
-             merge_origin},
-            "event.merge.kway.count");
-        builder.CreateStore(merged_count, target_count_or_write_pointer);
-        return {};
-    }
 
     auto* module = builder.GetInsertBlock()->getModule();
 
@@ -4125,13 +4554,28 @@ std::expected<void, std::string> emit_event_materialization(
         source_base,
         source.events_relative_offset,
         "event.materialize.source.events");
+    llvm::Value* source_indices = llvm::ConstantPointerNull::get(
+        llvm::PointerType::getUnqual(context));
+    if (materialization.source_index_filter) {
+        if (!source.has_source_indices) {
+            return std::unexpected(
+                "GraphJit event source selection lost its source-index sidecar");
+        }
+        source_indices = byte_offset_pointer(
+            builder,
+            source_base,
+            source.source_indices_relative_offset,
+            "event.materialize.source.indices");
+    }
     auto* target_events = byte_offset_pointer(
         builder,
         target_base,
         target.events_relative_offset,
         "event.materialize.target.events");
 
-    if (materialization.select_invocation_window || source.persistent_ring) {
+    if (materialization.source_index_filter
+        || materialization.select_invocation_window
+        || source.persistent_ring) {
         llvm::Value* source_read_index = llvm::ConstantInt::get(size_type, 0);
         llvm::Value* source_write_index = nullptr;
         if (source.persistent_ring) {
@@ -4170,9 +4614,10 @@ std::expected<void, std::string> emit_event_materialization(
         auto* helper_type = llvm::FunctionType::get(
             size_type,
             {plan_word_type, plan_word_type, plan_word_type, plan_word_type,
-             plan_word_type, size_type, pointer_type, size_type, size_type,
-             size_type, sample_index->getType(), size_type, size_type,
-             pointer_type, size_type},
+             plan_word_type, size_type, pointer_type, pointer_type, size_type,
+             plan_word_type, size_type, size_type, size_type,
+             sample_index->getType(), size_type, size_type, pointer_type,
+             size_type},
             false);
         auto* module = builder.GetInsertBlock()->getModule();
         auto helper = module->getOrInsertFunction(
@@ -4196,6 +4641,13 @@ std::expected<void, std::string> emit_event_materialization(
              llvm::ConstantInt::get(
                  size_type, materialization.conversion.step_count),
              source_events,
+             source_indices,
+             llvm::ConstantInt::get(
+                 size_type,
+                 materialization.source_index_filter.value_or(0)),
+             llvm::ConstantInt::get(
+                 plan_word_type,
+                 materialization.source_index_filter.has_value()),
              llvm::ConstantInt::get(size_type, source.event_capacity),
              source_read_index,
              source_write_index,
@@ -4403,6 +4855,92 @@ std::expected<void, std::string> emit_event_operations(
     return {};
 }
 
+std::expected<void, std::string> mark_event_activity_writes(
+    detail::LoweringPlan const& plan,
+    std::span<detail::EventOperationRef const> operations,
+    ActivityEmissionCache& activity_cache)
+{
+    auto advance = [&](std::size_t representation)
+        -> std::expected<void, std::string> {
+        if (representation
+            >= activity_cache.event_representation_epochs.size()) {
+            return std::unexpected(
+                "GraphJit activity cache references missing event storage");
+        }
+        auto& epoch = activity_cache
+            .event_representation_epochs[representation];
+        if (epoch == std::numeric_limits<std::size_t>::max()) {
+            return std::unexpected(
+                "GraphJit event activity emission epoch overflows size_t");
+        }
+        ++epoch;
+        return {};
+    };
+
+    for (auto const operation : operations) {
+        std::size_t target = 0;
+        switch (operation.kind) {
+        case detail::EventOperationKind::sequence_reset:
+            // A sequence-reset operation stores the representation index
+            // directly. EventSequenceResetPlan is only the planning input that
+            // supplies this value.
+            if (operation.index >= plan.event_ports.ports.size()) {
+                return std::unexpected(
+                    "GraphJit event activity lost a sequence reset");
+            }
+            target = operation.index;
+            break;
+        case detail::EventOperationKind::persistent_ring_prune:
+            if (operation.index >= plan.event_ports.persistent_rings.size()) {
+                return std::unexpected(
+                    "GraphJit event activity lost a persistent-ring prune");
+            }
+            target = plan.event_ports.persistent_rings[operation.index].storage;
+            break;
+        case detail::EventOperationKind::carry_restore:
+        case detail::EventOperationKind::carry_commit:
+            if (operation.index >= plan.event_ports.carry_operations.size()) {
+                return std::unexpected(
+                    "GraphJit event activity lost a carry operation");
+            }
+            target = operation.kind
+                    == detail::EventOperationKind::carry_restore
+                ? plan.event_ports.carry_operations[operation.index]
+                      .working_representation
+                : plan.event_ports.carry_operations[operation.index]
+                      .persistent_representation;
+            break;
+        case detail::EventOperationKind::merge:
+            if (operation.index >= plan.event_ports.merges.size()) {
+                return std::unexpected(
+                    "GraphJit event activity lost a merge");
+            }
+            target = plan.event_ports.merges[operation.index]
+                .target_representation;
+            break;
+        case detail::EventOperationKind::materialize:
+            if (operation.index >= plan.event_ports.materializations.size()) {
+                return std::unexpected(
+                    "GraphJit event activity lost a materialization");
+            }
+            target = plan.event_ports.materializations[operation.index]
+                .target_representation;
+            break;
+        case detail::EventOperationKind::feedback_append:
+            if (operation.index
+                >= plan.event_ports.feedback_operations.size()) {
+                return std::unexpected(
+                    "GraphJit event activity lost a feedback append");
+            }
+            target = plan.event_ports.feedback_operations[operation.index]
+                .target_representation;
+            break;
+        }
+        if (auto marked = advance(target); !marked) return marked;
+    }
+    return {};
+}
+
 std::expected<void, std::string> emit_tick_capture_operations(
     llvm::IRBuilder<>& builder,
     BackgroundEvaluationPlan const& background,
@@ -4573,6 +5111,7 @@ std::expected<void, std::string> emit_execution_step(
     detail::PrimitiveExecutionStep const& step,
     std::vector<llvm::Value*> const& event_feedback_cursors,
     EmittedRealtimeStorage const& realtime_storage,
+    ActivityEmissionCache& activity_cache,
     llvm::Value* invocation,
     llvm::Value* root_index,
     llvm::Value* sample_index,
@@ -4596,6 +5135,20 @@ std::expected<void, std::string> emit_execution_step(
         return std::unexpected(
             "GraphJit execution plan references a missing event-port runtime plan");
     }
+    auto mark_sample_write = [&](std::size_t representation)
+        -> std::expected<void, std::string> {
+        if (representation >= activity_cache.representation_epochs.size()) {
+            return std::unexpected(
+                "GraphJit activity cache references missing sample storage");
+        }
+        auto& epoch = activity_cache.representation_epochs[representation];
+        if (epoch == std::numeric_limits<std::size_t>::max()) {
+            return std::unexpected(
+                "GraphJit activity cache emission epoch overflows size_t");
+        }
+        ++epoch;
+        return {};
+    };
     BackgroundEvaluationPlan const* tick_background = nullptr;
     TickNodeInvocationPlan const* tick_bindings = nullptr;
     std::optional<BackgroundNodeIndex> tick_node{};
@@ -4673,6 +5226,11 @@ std::expected<void, std::string> emit_execution_step(
         sample_index,
         block_size);
     if (!event_before) return std::unexpected(std::move(event_before.error()));
+    if (auto marked = mark_event_activity_writes(
+            plan, step.event_operations_before, activity_cache);
+        !marked) {
+        return marked;
+    }
 
     for (auto const carry_index : step.sample_carry_restores_before) {
         if (carry_index >= plan.sample_ports.storage.carry_operations.size()) {
@@ -4690,6 +5248,12 @@ std::expected<void, std::string> emit_execution_step(
             true);
         if (!restored) {
             return std::unexpected(std::move(restored.error()));
+        }
+        if (auto marked = mark_sample_write(
+                plan.sample_ports.storage.carry_operations[carry_index]
+                    .representation_index);
+            !marked) {
+            return marked;
         }
     }
 
@@ -4710,16 +5274,63 @@ std::expected<void, std::string> emit_execution_step(
         if (!materialized) {
             return std::unexpected(std::move(materialized.error()));
         }
+        if (auto marked = mark_sample_write(
+                plan.sample_ports.storage
+                    .materializations[materialization_index]
+                    .target_representation);
+            !marked) {
+            return marked;
+        }
     }
 
-    auto const& callback_symbol =
-        skip ? step.skip_callback_symbol : step.tick_callback_symbol;
-    if (callback_symbol.empty()) {
+    for (auto const composition_index : step.sample_compositions_before) {
+        if (composition_index >= plan.sample_ports.storage.compositions.size()) {
+            return std::unexpected(
+                "GraphJit execution plan references a missing pre-sample composition");
+        }
+        auto composed = emit_sample_composition(
+            builder,
+            plan.sample_ports.storage,
+            plan.sample_ports.storage.compositions[composition_index],
+            realtime_storage,
+            root_index,
+            sample_index,
+            block_size);
+        if (!composed) {
+            return std::unexpected(std::move(composed.error()));
+        }
+        if (auto marked = mark_sample_write(
+                plan.sample_ports.storage.compositions[composition_index]
+                    .target_representation);
+            !marked) {
+            return marked;
+        }
+    }
+
+    detail::PrimitiveActivityPlan const* activity = nullptr;
+    if (!skip) {
+        if (step.configuration_index
+            >= plan.declarations.primitive_activity.size()) {
+            return std::unexpected(
+                "GraphJit execution plan references a missing activity plan");
+        }
+        auto const& selected = plan.declarations
+            .primitive_activity[step.configuration_index];
+        if (selected) activity = &*selected;
+    }
+    auto const needs_skip_callback = skip || activity != nullptr;
+    if (step.tick_callback_symbol.empty()
+        || (needs_skip_callback && step.skip_callback_symbol.empty())) {
         return std::unexpected(
             "GraphJit execution plan references a missing primitive callback");
     }
-    auto* primitive_callback = module.getFunction(callback_symbol);
-    if (!primitive_callback || primitive_callback->isDeclaration()) {
+    auto* tick_callback = module.getFunction(step.tick_callback_symbol);
+    auto* skip_callback = needs_skip_callback
+        ? module.getFunction(step.skip_callback_symbol)
+        : nullptr;
+    if (!tick_callback || tick_callback->isDeclaration()
+        || (needs_skip_callback
+            && (!skip_callback || skip_callback->isDeclaration()))) {
         return std::unexpected(
             "GraphJit execution plan references an unmaterialized primitive callback");
     }
@@ -4731,13 +5342,19 @@ std::expected<void, std::string> emit_execution_step(
         && step.maximum_block_size < plan.declarations.node_layout.max_block_size) {
         emit_sliced_primitive_calls(
             builder,
-            primitive_callback,
+            tick_callback,
+            skip_callback,
+            plan.declarations,
+            activity_cache,
+            activity,
+            skip,
             configurations[step.configuration_index],
             plan.declarations.primitive_storage[step.storage_index],
             sample_bindings.primitives[step.configuration_index],
             event_bindings.primitives[step.configuration_index],
             plan.sample_ports.primitives[step.configuration_index],
             plan.sample_ports.storage,
+            plan.event_ports.primitives[step.configuration_index],
             tick_background,
             tick_bindings,
             invocation,
@@ -4749,13 +5366,19 @@ std::expected<void, std::string> emit_execution_step(
     } else {
         emit_primitive_call(
             builder,
-            primitive_callback,
+            tick_callback,
+            skip_callback,
+            plan.declarations,
+            activity_cache,
+            activity,
+            skip,
             configurations[step.configuration_index],
             plan.declarations.primitive_storage[step.storage_index],
             sample_bindings.primitives[step.configuration_index],
             event_bindings.primitives[step.configuration_index],
             plan.sample_ports.primitives[step.configuration_index],
             plan.sample_ports.storage,
+            plan.event_ports.primitives[step.configuration_index],
             tick_background,
             tick_bindings,
             invocation,
@@ -4763,6 +5386,30 @@ std::expected<void, std::string> emit_execution_step(
             root_index,
             sample_index,
             block_size);
+    }
+    for (auto const& output :
+         plan.sample_ports.primitives[step.configuration_index].outputs) {
+        if (!output.realtime || !output.storage) continue;
+        if (auto marked = mark_sample_write(*output.storage); !marked) {
+            return marked;
+        }
+    }
+    for (auto const& output :
+         plan.event_ports.primitives[step.configuration_index].outputs) {
+        if (!output.realtime || !output.storage) continue;
+        auto const representation = *output.storage;
+        if (representation
+            >= activity_cache.event_representation_epochs.size()) {
+            return std::unexpected(
+                "GraphJit activity cache references missing event output storage");
+        }
+        auto& epoch = activity_cache
+            .event_representation_epochs[representation];
+        if (epoch == std::numeric_limits<std::size_t>::max()) {
+            return std::unexpected(
+                "GraphJit event activity emission epoch overflows size_t");
+        }
+        ++epoch;
     }
 
     auto event_after = emit_event_operations(
@@ -4775,6 +5422,11 @@ std::expected<void, std::string> emit_execution_step(
         sample_index,
         block_size);
     if (!event_after) return std::unexpected(std::move(event_after.error()));
+    if (auto marked = mark_event_activity_writes(
+            plan, step.event_operations_after, activity_cache);
+        !marked) {
+        return marked;
+    }
 
     for (auto const materialization_index : step.sample_materializations_after) {
         if (materialization_index
@@ -4792,6 +5444,13 @@ std::expected<void, std::string> emit_execution_step(
             block_size);
         if (!materialized) {
             return std::unexpected(std::move(materialized.error()));
+        }
+        if (auto marked = mark_sample_write(
+                plan.sample_ports.storage
+                    .materializations[materialization_index]
+                    .target_representation);
+            !marked) {
+            return marked;
         }
     }
 
@@ -4811,6 +5470,12 @@ std::expected<void, std::string> emit_execution_step(
         if (!written) {
             return std::unexpected(std::move(written.error()));
         }
+        if (auto marked = mark_sample_write(
+                plan.sample_ports.storage.feedback_timelines[timeline_index]
+                    .timeline_representation);
+            !marked) {
+            return marked;
+        }
     }
 
     for (auto const composition_index : step.sample_compositions_after) {
@@ -4828,6 +5493,12 @@ std::expected<void, std::string> emit_execution_step(
             block_size);
         if (!composed) {
             return std::unexpected(std::move(composed.error()));
+        }
+        if (auto marked = mark_sample_write(
+                plan.sample_ports.storage.compositions[composition_index]
+                    .target_representation);
+            !marked) {
+            return marked;
         }
     }
 
@@ -4848,6 +5519,13 @@ std::expected<void, std::string> emit_execution_step(
             block_size);
         if (!materialized) {
             return std::unexpected(std::move(materialized.error()));
+        }
+        if (auto marked = mark_sample_write(
+                plan.sample_ports.storage
+                    .materializations[materialization_index]
+                    .target_representation);
+            !marked) {
+            return marked;
         }
     }
 
@@ -5152,6 +5830,10 @@ std::expected<llvm::Function*, std::string> define_root_operation(
         }
         auto const& source =
             plan.event_ports.ports[feedback.source_representation];
+        if (feedback.source_sequence_restarts_each_append) {
+            event_feedback_cursors.push_back(nullptr);
+            continue;
+        }
         auto* cursor = builder.CreateAlloca(
             feedback_cursor_type, nullptr,
             "event.feedback.cursor." + std::to_string(i));
@@ -5176,6 +5858,13 @@ std::expected<llvm::Function*, std::string> define_root_operation(
         event_feedback_cursors.push_back(cursor);
     }
 
+    ActivityEmissionCache activity_cache{
+        .representation_epochs = std::vector<std::size_t>(
+            plan.sample_ports.storage.representations.size(), 0),
+        .event_representation_epochs = std::vector<std::size_t>(
+            plan.event_ports.ports.size(), 0),
+    };
+
     for (std::size_t region_index = 0;
          region_index < plan.execution.regions.size(); ++region_index) {
         auto const& region = plan.execution.regions[region_index];
@@ -5195,6 +5884,7 @@ std::expected<llvm::Function*, std::string> define_root_operation(
                     plan.execution.primitive_steps[step_index],
                     event_feedback_cursors,
                     realtime_storage,
+                    activity_cache,
                     invocation,
                     sample_index,
                     sample_index,
@@ -5225,6 +5915,11 @@ std::expected<llvm::Function*, std::string> define_root_operation(
             block_size);
         if (!region_before) {
             return std::unexpected(std::move(region_before.error()));
+        }
+        if (auto marked = mark_event_activity_writes(
+                plan, region.event_operations_before, activity_cache);
+            !marked) {
+            return std::unexpected(std::move(marked.error()));
         }
 
         auto& context = module.getContext();
@@ -5274,6 +5969,7 @@ std::expected<llvm::Function*, std::string> define_root_operation(
                 step,
                 event_feedback_cursors,
                 realtime_storage,
+                activity_cache,
                 invocation,
                 sample_index,
                 slice_index,
@@ -5304,6 +6000,11 @@ std::expected<llvm::Function*, std::string> define_root_operation(
             block_size);
         if (!region_after) {
             return std::unexpected(std::move(region_after.error()));
+        }
+        if (auto marked = mark_event_activity_writes(
+                plan, region.event_operations_after, activity_cache);
+            !marked) {
+            return std::unexpected(std::move(marked.error()));
         }
     }
 
@@ -5391,7 +6092,7 @@ std::expected<llvm::Function*, std::string> define_background_root_operation(
     BackgroundRootOperation phase)
 {
     auto& context = module.getContext();
-    auto* function_type = background_operation_type(context);
+    auto* function_type = background_root_operation_type(context);
     auto* function = llvm::Function::Create(
         function_type,
         llvm::GlobalValue::ExternalLinkage,
@@ -5400,8 +6101,6 @@ std::expected<llvm::Function*, std::string> define_background_root_operation(
     function->setCallingConv(llvm::CallingConv::C);
 
     auto arguments = function->arg_begin();
-    llvm::Value* storage_base = &*arguments++;
-    storage_base->setName("storage");
     llvm::Value* batch = &*arguments;
     batch->setName("batch");
 
@@ -5659,33 +6358,6 @@ std::expected<llvm::Function*, std::string> define_background_root_operation(
                 node,
                 BackgroundNodeActivity::evaluate,
                 [&](llvm::Value* node_frame) {
-                    auto const& storage =
-                        plan.declarations.primitive_storage[*primitive];
-                    llvm::Value* tock_state =
-                        llvm::ConstantPointerNull::get(pointer_type);
-                    auto background_state_size = std::size_t{0};
-                    if (storage.has_background_state) {
-                        tock_state = byte_offset_pointer(
-                            builder,
-                            storage_base,
-                            storage.background_state_offset,
-                            "background.state");
-                        background_state_size = storage.background_state_size;
-                    }
-                    builder.CreateStore(
-                        tock_state,
-                        byte_offset_pointer(
-                            builder,
-                            node_frame,
-                            offsets.tock_background_state_data,
-                            "background.state.index"));
-                    builder.CreateStore(
-                        llvm::ConstantInt::get(size_type, background_state_size),
-                        byte_offset_pointer(
-                            builder,
-                            node_frame,
-                            offsets.tock_background_state_size,
-                            "background.state.size.index"));
                     emit_authored(
                         node_frame,
                         *primitive,
@@ -5885,6 +6557,47 @@ specialize_transition_plan(
         steady_plan.realtime_port_state_realizations);
     if (!realized) return std::unexpected(std::move(realized.error()));
 
+    // A shared steady event sequence is deliberately not the destination of
+    // any transition-only semantic state. Start that sequence fresh so its
+    // normal callback operations accumulate only successor events. The private
+    // suffix regions receive predecessor state through event_transfers.
+    for (auto const& transition : realized->plan.event_states) {
+        if (transition.inherited_state_realization
+                != InheritedRealtimePortStateRealization::
+                    transition_only_storage
+            || transition.current_realization_index
+                >= steady_plan.realtime_port_state_realizations
+                    .event_states.size()) {
+            continue;
+        }
+        auto const& current = steady_plan.realtime_port_state_realizations
+            .event_states[transition.current_realization_index];
+        if (!current.retained_storage
+            || !current.retained_storage->node_storage_offset) {
+            continue;
+        }
+        auto const offset = *current.retained_storage->node_storage_offset;
+        bool found = false;
+        for (auto& region : realized->node_layout.regions) {
+            if (!region.transition_only
+                && region.kind == NodeLayout::Region::Kind::raw
+                && region.storage_offset == offset
+                && region.size == current.retained_storage->size_bytes
+                && region.alignment == current.retained_storage->alignment) {
+                if (found) {
+                    return std::unexpected(
+                        "GraphJit transition event state has duplicate steady raw storage");
+                }
+                found = true;
+                region.migration_identity.clear();
+            }
+        }
+        if (!found) {
+            return std::unexpected(
+                "GraphJit transition event state lost its steady raw storage");
+        }
+    }
+
     transition_plan.declarations.node_layout = realized->node_layout;
     steady_plan.declarations.node_layout = realized->node_layout;
     auto transition_realizations = steady_plan.realtime_port_state_realizations;
@@ -6075,7 +6788,10 @@ specialize_transition_plan(
             } else if (composition
                        != transition_plan.sample_ports.storage
                            .compositions.end()) {
-                source_position = composition->after_execution_position;
+                source_position = composition->before_execution_position
+                    ? composition->before_execution_position
+                    : std::optional<std::size_t>{
+                        composition->after_execution_position};
                 source_after_composition = true;
             } else {
                 if (source.producer_group_index
@@ -6312,10 +7028,7 @@ specialize_transition_plan(
                     == RealtimePortStateRole::tick_output_history
                 || requirement.role
                     == RealtimePortStateRole::tick_output_latency);
-        if (output_window) {
-            return std::unexpected(
-                "GraphJit event output state lost its indexed steady retention");
-        }
+        std::size_t retained_history = requirement.extent_samples;
         if (input_history) {
             if (requirement.configured_port.port_index
                     >= steady_primitive_ports.inputs.size()) {
@@ -6324,6 +7037,22 @@ specialize_transition_plan(
             }
             steady_representation = steady_primitive_ports.inputs[
                 requirement.configured_port.port_index].storage;
+        } else if (output_window) {
+            if (requirement.configured_port.port_index
+                    >= steady_primitive_ports.outputs.size()) {
+                return std::unexpected(
+                    "GraphJit transition event output lost its binding");
+            }
+            auto const& output = steady_primitive_ports.outputs[
+                requirement.configured_port.port_index];
+            if (!output.realtime || !output.storage
+                || !output.canonical_storage
+                || output.storage == output.canonical_storage) {
+                return std::unexpected(
+                    "GraphJit transition event output lost its callback-local retention path");
+            }
+            steady_representation = output.storage;
+            retained_history = output.history;
         } else {
             return std::unexpected(
                 "GraphJit transition suffix has an unsupported event-state role");
@@ -6394,7 +7123,6 @@ specialize_transition_plan(
                     .overflow_count_storage_offset = 0,
                 });
 
-            auto const retained_history = requirement.extent_samples;
             auto const prune_index =
                 transition_plan.event_ports.persistent_rings.size();
             transition_plan.event_ports.persistent_rings.push_back(
@@ -6409,7 +7137,7 @@ specialize_transition_plan(
                 .index = prune_index,
             });
 
-            {
+            if (input_history) {
                 constexpr auto event_alignment = alignof(TimedEvent);
                 constexpr auto event_mask = event_alignment - 1;
                 auto const temp_events_offset =
@@ -6499,10 +7227,27 @@ specialize_transition_plan(
                     .kind = detail::EventOperationKind::merge,
                     .index = merge_index,
                 });
+            } else {
+                auto const merge_index =
+                    transition_plan.event_ports.merges.size();
+                transition_plan.event_ports.merges.push_back(
+                    detail::EventMergePlan{
+                        .source_representations = {source_representation},
+                        .target_representation = *suffix_representation,
+                        .ordering_history_samples = retained_history,
+                        .preserve_existing_target = true,
+                        .before_materialization = true,
+                    });
+                step.event_operations_after.push_back({
+                    .kind = detail::EventOperationKind::merge,
+                    .index = merge_index,
+                });
             }
         }
-        primitive_ports.inputs[requirement.configured_port.port_index]
-            .storage = *suffix_representation;
+        if (input_history) {
+            primitive_ports.inputs[requirement.configured_port.port_index]
+                .storage = *suffix_representation;
+        }
         auto& transition_realization = transition_realizations.event_states[
             transition.current_realization_index];
         transition_realization.authored_storage = transfer->target_storage;
@@ -6644,6 +7389,7 @@ std::expected<LoweringOutput, std::string> emit_lowering_plan(
     return LoweringOutput{
         .port_realization = std::move(plan.port_realization),
         .node_layout = std::move(plan.declarations.node_layout),
+        .tock_state_layout = std::move(plan.declarations.tock_state_layout),
         .background_evaluation_plan = std::move(plan.connections.background),
         .realtime_port_state_requirements =
             std::move(plan.connections.realtime_port_states),

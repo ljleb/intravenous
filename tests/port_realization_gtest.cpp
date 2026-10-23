@@ -247,8 +247,6 @@ struct MixedCoverageOrderingSource {
         };
     }
 
-    void tick_block(
-        iv::TickBlockContext<MixedCoverageOrderingSource> const&) const {}
     void tock_coverage(
         iv::TockCoverageContext<MixedCoverageOrderingSource>&) const {}
     void propagate_forward_coverage(
@@ -288,8 +286,6 @@ struct MixedCoverageOrderingRelay {
             = ctx.input<"events">().ordering();
     }
 
-    void tick_block(
-        iv::TickBlockContext<MixedCoverageOrderingRelay> const&) const {}
     void tock_coverage(
         iv::TockCoverageContext<MixedCoverageOrderingRelay>&) const {}
     void propagate_forward_coverage(
@@ -339,7 +335,11 @@ iv::ConfiguredSampleConnection mono_connection(
 {
     return {
         .source_type = iv::ChannelTypeId::mono,
-        .source_channels = {{source, source_port, 0}},
+        .source_channels = {
+            iv::ConfiguredSampleConnectionSource{
+                .channel = {source, source_port, 0},
+            },
+        },
         .target_type = iv::ChannelTypeId::mono,
         .target_channels = {{target, target_port, 0}},
     };
@@ -841,10 +841,12 @@ TEST(PortRealization, SortedCoverageRequirementCrossesMixedFanInAndRelay)
         iv::ConfiguredSampleConnection sample_fan_in{
             .source_type = iv::ChannelTypeId::stereo,
             .source_channels = reverse_sources
-                ? std::vector<iv::SampleOutputChannelId>{
-                    {second, 0, 0}, {first, 0, 0}}
-                : std::vector<iv::SampleOutputChannelId>{
-                    {first, 0, 0}, {second, 0, 0}},
+                ? std::vector<iv::ConfiguredSampleConnectionSource>{
+                    {.channel = {second, 0, 0}},
+                    {.channel = {first, 0, 0}}}
+                : std::vector<iv::ConfiguredSampleConnectionSource>{
+                    {.channel = {first, 0, 0}},
+                    {.channel = {second, 0, 0}}},
             .target_type = iv::ChannelTypeId::mono,
             .target_channels = {{relay, 0, 0}},
         };
@@ -863,16 +865,16 @@ TEST(PortRealization, SortedCoverageRequirementCrossesMixedFanInAndRelay)
         iv::ConfiguredEventConnection event_fan_in{
             .source_type = iv::EventTypeId::trigger,
             .sources = reverse_sources
-                ? std::vector<iv::EventOutputPortId>{
-                    {second, 0}, {first, 0}}
-                : std::vector<iv::EventOutputPortId>{
-                    {first, 0}, {second, 0}},
+                ? std::vector<iv::ConfiguredEventConnectionSource>{
+                    {.port = {second, 0}}, {.port = {first, 0}}}
+                : std::vector<iv::ConfiguredEventConnectionSource>{
+                    {.port = {first, 0}}, {.port = {second, 0}}},
             .target_type = iv::EventTypeId::trigger,
             .targets = {{relay, 0}},
         };
         iv::ConfiguredEventConnection const event_to_sink{
             .source_type = iv::EventTypeId::trigger,
-            .sources = {{relay, 0}},
+            .sources = {{.port = {relay, 0}}},
             .target_type = iv::EventTypeId::trigger,
             .targets = {{sink, 0}},
         };

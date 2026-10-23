@@ -224,6 +224,9 @@ extern "C" std::size_t iv_graph_jit_prune_event_persistent_ring(
 
 extern "C" void iv_graph_jit_append_event_feedback(
     void const* source_events,
+    std::size_t const* source_indices,
+    std::size_t source_index_filter,
+    std::uint32_t filter_source_index,
     std::size_t source_begin_index,
     std::size_t source_end_index,
     GlobalIndex sample_index,
@@ -234,6 +237,7 @@ extern "C" void iv_graph_jit_append_event_feedback(
     std::size_t* ring_write_index) noexcept
 {
     if (source_events == nullptr || ring_events == nullptr
+        || (filter_source_index != 0 && source_indices == nullptr)
         || ring_capacity == 0 || ring_read_index == nullptr
         || ring_write_index == nullptr) {
         return;
@@ -253,6 +257,8 @@ extern "C" void iv_graph_jit_append_event_feedback(
 
     source_begin_index = std::min(source_begin_index, source_end_index);
     for (std::size_t i = source_begin_index; i < source_end_index; ++i) {
+        if (filter_source_index != 0
+            && source_indices[i] != source_index_filter) continue;
         insert_delayed_ring(
             source[i],
             sample_index,
@@ -268,6 +274,9 @@ extern "C" void iv_graph_jit_append_event_feedback(
 
 extern "C" void iv_graph_jit_append_event_feedback_sequence(
     void const* source_events,
+    std::size_t const* source_indices,
+    std::size_t source_index_filter,
+    std::uint32_t filter_source_index,
     std::size_t source_begin_index,
     std::size_t source_end_index,
     GlobalIndex sample_index,
@@ -277,6 +286,7 @@ extern "C" void iv_graph_jit_append_event_feedback_sequence(
     std::size_t* target_count) noexcept
 {
     if (source_events == nullptr || target_events == nullptr
+        || (filter_source_index != 0 && source_indices == nullptr)
         || target_count == nullptr || target_capacity == 0) {
         return;
     }
@@ -287,6 +297,8 @@ extern "C" void iv_graph_jit_append_event_feedback_sequence(
     source_begin_index = std::min(source_begin_index, source_end_index);
     for (std::size_t i = source_begin_index;
          i < source_end_index; ++i) {
+        if (filter_source_index != 0
+            && source_indices[i] != source_index_filter) continue;
         insert_delayed_sequence(
             source[i],
             sample_index,
@@ -300,6 +312,9 @@ extern "C" void iv_graph_jit_append_event_feedback_sequence(
 
 extern "C" void iv_graph_jit_append_event_feedback_sequence_ring_source(
     void const* source_events,
+    std::size_t const* source_indices,
+    std::size_t source_index_filter,
+    std::uint32_t filter_source_index,
     std::size_t source_capacity,
     std::size_t source_begin_index,
     std::size_t source_end_index,
@@ -310,6 +325,7 @@ extern "C" void iv_graph_jit_append_event_feedback_sequence_ring_source(
     std::size_t* target_count) noexcept
 {
     if (source_events == nullptr || source_capacity == 0
+        || (filter_source_index != 0 && source_indices == nullptr)
         || target_events == nullptr || target_count == nullptr
         || target_capacity == 0) {
         return;
@@ -322,6 +338,8 @@ extern "C" void iv_graph_jit_append_event_feedback_sequence_ring_source(
     source_begin_index = std::min(source_begin_index, source_end_index);
     for (std::size_t i = source_begin_index;
          i < source_end_index; ++i) {
+        if (filter_source_index != 0
+            && source_indices[i & source_mask] != source_index_filter) continue;
         insert_delayed_sequence(
             source[i & source_mask],
             sample_index,
@@ -335,6 +353,9 @@ extern "C" void iv_graph_jit_append_event_feedback_sequence_ring_source(
 
 extern "C" void iv_graph_jit_append_event_feedback_ring_source(
     void const* source_events,
+    std::size_t const* source_indices,
+    std::size_t source_index_filter,
+    std::uint32_t filter_source_index,
     std::size_t source_capacity,
     std::size_t source_begin_index,
     std::size_t source_end_index,
@@ -346,6 +367,7 @@ extern "C" void iv_graph_jit_append_event_feedback_ring_source(
     std::size_t* ring_write_index) noexcept
 {
     if (source_events == nullptr || source_capacity == 0
+        || (filter_source_index != 0 && source_indices == nullptr)
         || ring_events == nullptr || ring_capacity == 0
         || ring_read_index == nullptr || ring_write_index == nullptr) {
         return;
@@ -366,6 +388,8 @@ extern "C" void iv_graph_jit_append_event_feedback_ring_source(
 
     source_begin_index = std::min(source_begin_index, source_end_index);
     for (std::size_t i = source_begin_index; i < source_end_index; ++i) {
+        if (filter_source_index != 0
+            && source_indices[i & source_mask] != source_index_filter) continue;
         insert_delayed_ring(
             source[i & source_mask],
             sample_index,

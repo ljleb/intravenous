@@ -94,6 +94,25 @@ bool event_storage_is_persistent_sequence(
         && !storage.callback_arena_offset;
 }
 
+std::expected<EventConversionPlan, std::string> append_event_conversion(
+    EventConversionPlan prefix,
+    EventConversionPlan const& suffix)
+{
+    if (prefix.target_type != suffix.source_type
+        || prefix.step_count > EventConversionPlan::max_steps
+        || suffix.step_count > EventConversionPlan::max_steps
+        || suffix.step_count
+            > EventConversionPlan::max_steps - prefix.step_count) {
+        return std::unexpected(
+            "event state transition has an invalid conversion chain");
+    }
+    for (std::size_t step = 0; step < suffix.step_count; ++step) {
+        prefix.steps[prefix.step_count++] = suffix.steps[step];
+    }
+    prefix.target_type = suffix.target_type;
+    return prefix;
+}
+
 bool supports_linear_audio_channel_conversion(
     ContinuousValueStorageGeometry const& geometry) noexcept
 {
@@ -801,6 +820,100 @@ std::expected<void, std::string> build_steady_storage_transfers(
             .inherited_end = transition.inherited_end,
         });
     }
+
+    // An input producer-group carry can contain both the input's negative
+    // history interval and one or more source-output future intervals. The
+    // steady producer-group merge reads callback-local source sequences, so a
+    // cutover must seed those future intervals here exactly once. Ordinary
+    // calls continue to use the producer-group carry and callback-local merge.
+    for (auto const& target : current_realizations.event_states) {
+        if (target.retained_future_sources.empty()) continue;
+        if ((target.retained_access
+                    != EventRealtimePortStateAccess::direct
+                && target.retained_access
+                    != EventRealtimePortStateAccess::materialized)
+            || !target.retained_storage
+            || !event_storage_is_persistent_sequence(
+                *target.retained_storage)) {
+            return std::unexpected(
+                "event input future provenance has no successor steady storage");
+        }
+
+        for (auto const& future : target.retained_future_sources) {
+            auto const transition = std::ranges::find_if(
+                plan.event_states,
+                [&](RealtimePortStateTransition const& candidate) {
+                    return candidate.current_requirement_index
+                        == future.requirement_index;
+                });
+            // A new output has no predecessor future to preserve. Its first
+            // successor callback authors the new future normally.
+            if (transition == plan.event_states.end()) continue;
+            if (transition->inherited_begin != 0
+                || transition->previous_realization_index
+                    >= previous_realizations.event_states.size()) {
+                return std::unexpected(
+                    "event input future provenance names a non-latency transition");
+            }
+            if (transition->inherited_state_realization
+                == InheritedRealtimePortStateRealization::fresh_state) {
+                continue;
+            }
+            auto const& source = previous_realizations.event_states[
+                transition->previous_realization_index];
+            if (!source.retained_storage
+                || !event_storage_is_persistent_sequence(
+                    *source.retained_storage)) {
+                return std::unexpected(
+                    "event input future provenance lost its predecessor output storage");
+            }
+
+            EventConversionPlan prefix;
+            try {
+                prefix = EventConversionRegistry::plan(
+                    source.retained_storage->type,
+                    future.conversion.source_type);
+            } catch (std::exception const&) {
+                return std::unexpected(
+                    "event input future provenance lost its output type conversion");
+            }
+            auto conversion = append_event_conversion(
+                std::move(prefix), future.conversion);
+            if (!conversion) {
+                return std::unexpected(std::move(conversion.error()));
+            }
+            if (conversion->target_type != target.retained_storage->type) {
+                return std::unexpected(
+                    "event input future provenance changed retained input type");
+            }
+
+            auto const transition_index = static_cast<std::size_t>(
+                std::distance(plan.event_states.begin(), transition));
+            plan.event_transfers.push_back(EventRealtimePortStateTransfer{
+                .transition_index = transition_index,
+                .supplemental_target = true,
+                .source_access = source.retained_access,
+                .source_storage = *source.retained_storage,
+                .source_index = source.retained_source_index,
+                .source_conversion = conversion->size() == 0
+                    ? std::optional<EventConversionPlan>{}
+                    : std::optional<EventConversionPlan>{
+                        std::move(*conversion)},
+                .source_history_samples =
+                    source.materialization_history_samples,
+                .source_selects_invocation_window =
+                    source.materialization_selects_invocation_window,
+                .target_storage = *target.retained_storage,
+                .target_index = future.target_source_index,
+                .target_begin = 0,
+                .target_end = static_cast<std::int64_t>(
+                    transition->inherited_extent_samples
+                    + transition->newly_exposed_extent_samples),
+                .inherited_begin = transition->inherited_begin,
+                .inherited_end = transition->inherited_end,
+            });
+        }
+    }
     return {};
 }
 
@@ -1242,11 +1355,16 @@ std::expected<void, std::string> validate_prepared_transitions(
         auto const transition_only = plan.event_states[
             transfer.transition_index].inherited_state_realization
             == InheritedRealtimePortStateRealization::transition_only_storage;
-        if (transfer.target_transition_only != transition_only) {
+        if ((!transfer.supplemental_target
+                && transfer.target_transition_only != transition_only)
+            || (transfer.supplemental_target
+                && transfer.target_transition_only)) {
             return std::unexpected(
                 "event transfer disagrees with its target storage extent");
         }
-        ++event_transfer_counts[transfer.transition_index];
+        if (!transfer.supplemental_target) {
+            ++event_transfer_counts[transfer.transition_index];
+        }
         if ((transfer.source_access != EventRealtimePortStateAccess::direct
              && transfer.source_access
                 != EventRealtimePortStateAccess::materialized
@@ -1289,7 +1407,9 @@ std::expected<void, std::string> validate_prepared_transitions(
                 return std::unexpected(
                     "event transitions disagree about shared target storage");
             }
-            if (transfer.target_index == previous.target_index
+            if (!transfer.supplemental_target
+                && !previous.supplemental_target
+                && transfer.target_index == previous.target_index
                 && transfer.inherited_begin < previous.inherited_end
                 && previous.inherited_begin < transfer.inherited_end) {
                 return std::unexpected(

@@ -36,8 +36,8 @@ struct RealtimeStorageCostModel {
 // Operation work that is known before storage placement is selected. Counts
 // are values rather than bytes so sample channels and event sequences
 // can share the same policy. Invariant work is reported for every candidate;
-// candidate-specific work lets topology planning account for producer-home
-// fan-in, conversion/fanout materialization, and similar alternatives without
+// candidate-specific work lets topology planning account for feedback writers,
+// conversion/fanout materialization, and similar alternatives without
 // introducing new storage kinds.
 struct RealtimeStorageOperationCounts {
     std::size_t invariant_copied_values = 0;
@@ -47,10 +47,10 @@ struct RealtimeStorageOperationCounts {
     std::size_t full_ring_addressed_values = 0;
 
     // Additional invocation-local working storage required by a realization
-    // beyond the canonical current+retained sequence. Fan-in producer-local
-    // streams are the first user: producer-home realization removes the home
-    // source from these footprints rather than pretending those temporaries do
-    // not exist in whole-group costing.
+    // beyond the canonical current+retained sequence. Event fan-in uses these
+    // counts for per-source conversion sequences. Sample planning also uses
+    // them for callback and composition storage that depends on the selected
+    // realization.
     std::size_t transient_extra_stack_values = 0;
     std::size_t carry_extra_stack_values = 0;
     std::size_t full_extra_stack_values = 0;

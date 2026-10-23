@@ -94,6 +94,12 @@ EventPortRef::EventPortRef(
     *this = builder.make_event_port(type, sources);
 }
 
+EventPortRef::EventPortRef(
+    GraphBuilder& builder, std::span<EventPortRef const> sources)
+{
+    *this = builder.make_event_port(sources);
+}
+
 std::span<EventOutputPortId const> EventPortRef::sources() const
 {
     if (!graph_builder)

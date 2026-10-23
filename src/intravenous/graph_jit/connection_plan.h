@@ -37,6 +37,9 @@ struct PlannedGraphNode {
     std::size_t sample_output_count = 0;
     std::size_t event_input_count = 0;
     std::size_t event_output_count = 0;
+    // Tock-only primitives participate in background dependency planning but
+    // never acquire a position in the realtime execution schedule.
+    bool tick_execution = true;
     bool intrinsically_replayable = false;
     bool contextually_replayable = false;
 };
@@ -86,6 +89,9 @@ struct SchedulePlan {
 struct SampleSourceChannelTimingPlan {
     SampleOutputChannelId source{};
     ChannelLayout source_layout{};
+    std::optional<ConfiguredSampleConnectionDetach> detach{};
+    std::optional<std::vector<std::byte>> detach_initial_value{};
+    std::optional<std::size_t> detach_region{};
     PlannedSourceProduction production = PlannedSourceProduction::tick;
     OutputRetention retention = OutputRetention::ephemeral;
     PlannedDestinationAccess destination_access = PlannedDestinationAccess::sequential;
@@ -100,6 +106,24 @@ struct SampleSourceChannelTimingPlan {
     std::size_t read_latency = 0;
 };
 
+// Optional target-major linear transform for a sample route composed from
+// several ConfiguredSampleConnection records. An empty coefficient vector
+// means the ordinary registered conversion from source_type to target_type.
+// build_structural_sample_routes() fills this when resolving subgraph,
+// boundary, or tiled NodeBundle ports requires more than that conversion.
+struct SampleChannelTransformPlan {
+    std::size_t source_channel_count = 0;
+    std::size_t target_channel_count = 0;
+    std::vector<float> coefficients{};
+
+    [[nodiscard]] bool empty() const noexcept
+    {
+        return coefficients.empty();
+    }
+
+    auto operator<=>(SampleChannelTransformPlan const&) const = default;
+};
+
 // One semantic contribution to a normalized target-port composition. Source
 // indices name entries in SampleConnectionPlan::source_channel_timings in the
 // semantic source-channel order expected by source_type. target_channels are
@@ -111,6 +135,21 @@ struct SampleProjectionContributionPlan {
     std::vector<std::size_t> source_channel_indices{};
     ChannelTypeId target_type = ChannelTypeId::mono;
     std::vector<std::size_t> target_channels{};
+    SampleChannelTransformPlan transform{};
+};
+
+// One scalar contribution in a route whose configured sample source channels
+// do not all have the same detach settings. source_coefficients are aligned
+// with SampleConnectionPlan::source_channel_timings. target_coefficients are
+// aligned with SampleConnectionPlan::target_channels. A detach cuts every
+// dependency used to compute this scalar contribution before it is added to
+// the target channels.
+struct SampleRoutedContributionPlan {
+    std::vector<float> source_coefficients{};
+    std::vector<float> target_coefficients{};
+    std::optional<ConfiguredSampleConnectionDetach> detach{};
+    std::optional<std::vector<std::byte>> detach_initial_value{};
+    std::optional<std::size_t> detach_region{};
 };
 
 struct SampleConnectionPlan {
@@ -123,10 +162,12 @@ struct SampleConnectionPlan {
     // retains its own gather -> semantic channel-conversion -> projection
     // boundary rather than flattening channel-count conversion away.
     std::vector<SampleProjectionContributionPlan> projection_contributions{};
+    std::vector<SampleRoutedContributionPlan> routed_contributions{};
     std::optional<NodeBundlePortId> canonical_source_port{};
     std::optional<ChannelLayout> canonical_source_layout{};
     ChannelTypeId target_type = ChannelTypeId::mono;
     ChannelLayout target_layout{};
+    SampleChannelTransformPlan transform{};
     // After partial/projected connections are normalized, this covers the
     // whole target port in canonical declaration order. The actual semantic
     // projection/permutation remains in projection_contributions.target_channels.
@@ -157,11 +198,17 @@ struct SampleConnectionPlan {
 
 struct EventSourcePlan {
     EventOutputPortId source{};
+    // The concrete output writes source_type. conversion maps that raw event
+    // stream to EventConnectionPlan::source_type before fan-in composition.
+    EventTypeId source_type = EventTypeId::empty;
+    EventConversionPlan conversion{};
     PlannedSourceProduction production = PlannedSourceProduction::tick;
     OutputRetention retention = OutputRetention::ephemeral;
     std::size_t history = 0;
     std::size_t latency = 0;
     double max_events_per_index = 0.0;
+    std::optional<ConfiguredEventConnectionDetach> detach{};
+    std::optional<std::size_t> detach_region{};
 };
 
 struct EventTargetPlan {
@@ -195,6 +242,7 @@ struct EventConnectionPlan {
     bool requires_conversion = false;
     bool requires_block_materialization = false;
     bool external_boundary = false;
+    bool requires_source_composition = false;
     std::optional<ConfiguredEventConnectionDetach> detach{};
     std::optional<std::size_t> detach_region{};
 };
@@ -213,6 +261,30 @@ struct EventConnectionPlan {
         connection.source_channel_timings,
         [](SampleSourceChannelTimingPlan const& source) {
             return uses_realtime_storage(source.delivery);
+        });
+}
+
+[[nodiscard]] inline bool has_detached_source(
+    SampleConnectionPlan const& connection) noexcept
+{
+    return connection.detach.has_value() || std::ranges::any_of(
+        connection.source_channel_timings,
+        [](SampleSourceChannelTimingPlan const& source) {
+            return source.detach.has_value();
+        }) || std::ranges::any_of(
+        connection.routed_contributions,
+        [](SampleRoutedContributionPlan const& contribution) {
+            return contribution.detach.has_value();
+        });
+}
+
+[[nodiscard]] inline bool has_detached_source(
+    EventConnectionPlan const& connection) noexcept
+{
+    return connection.detach.has_value() || std::ranges::any_of(
+        connection.source_plans,
+        [](EventSourcePlan const& source) {
+            return source.detach.has_value();
         });
 }
 
@@ -277,8 +349,11 @@ struct SampleProducerGroupPlan {
 };
 
 struct EventProducerGroupPlan {
+    // This is a derived fan-in identity. Concrete callback outputs own their
+    // raw storage independently and may participate in several groups.
     EventTypeId source_type = EventTypeId::empty;
     std::vector<EventOutputPortId> sources{};
+    std::vector<EventConversionPlan> source_conversions{};
     std::vector<PortSubsetIndex> source_atom_indices{};
     std::vector<PortSubsetIndex> target_atom_indices{};
     // The semantic fan-in source set is retained above. Realtime storage

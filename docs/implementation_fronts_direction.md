@@ -537,14 +537,13 @@ Prepared event transfer now accepts both ring and compact-carry predecessors and
 successors, applies a planned type conversion when one exists, and merges multiple
 semantic transfers into one target without resetting earlier contributions. Indexed
 fan-in targets retain the current producer index beside every copied event, including
-deterministic equal-time ordering. This lets Tick-output history/latency and multiple
-recoverable producers enter the ordinary steady aggregate directly. Generated retained
-fan-in already requests that sidecar whenever a producer owns history or latency, so an
-event output transition suffix is neither needed nor used. A derived Sequential input
-whose authored view cannot receive a direct transfer instead gets one private
-transition ring; the transition root materializes each current invocation into it
-before the consumer, and the steady root takes over after the inherited history
-horizon.
+deterministic equal-time ordering. A semantic event state that cannot receive a direct
+steady-storage transfer gets a private transition ring. Front 7 now uses this rule for
+both derived Sequential inputs and a raw event output that shares its steady sequence
+with an input. The input ring receives current delivery before its consumer executes.
+The output ring receives the callback-local raw sequence after its producer executes.
+The earlier output-suffix assumption is preserved in
+[`historical/front_6_event_output_transition_suffix_assumption.md`](historical/front_6_event_output_transition_suffix_assumption.md).
 
 The continuous side now carries flattened retained composition sources and evaluates
 their nonzero channel coefficients during prepared reconstruction. Same-type dynamic
@@ -729,6 +728,14 @@ past frames. It now records the output latency as the carry's future extent, all
 the transition to reconstruct both halves of the output window in the shared monotonic
 Sequential coordinate. Front 6 remains open for another collaborator verification run.
 
+**Front 6 completed and verified (2026-10-21):** the collaborator's following full
+548-test run passed. The final run verifies the corrected semantic-coverage fixture and
+the disconnected Tick-output history/latency reconstruction together with the rest of
+the suite. No known Front 6 correctness boundary or unresolved implementation friction
+remains. Front 6 is closed and active implementation moves to Front 7. The possible
+per-node/per-pace grouping of callback ordinal stores remains measurement-driven
+cleanup, not transition correctness work and not a Front 6 completion condition.
+
 ## Front 7: remaining GraphJit and node execution semantics
 
 **Primary ownership:** legal authored node/layout constructs that still have explicit
@@ -755,6 +762,475 @@ cross-node SIMD opportunities.
 
 **Dependencies:** front 1 for final realization predicates; front 2 for normalized
 batch operations. Other sub-items can proceed earlier.
+
+**Entry assessment (2026-10-21):** Front 6's verified completion satisfies the
+state-continuity prerequisite for this front. The first dependency-ready work should
+separate background-only `TockState` from canonical realtime `NodeStorage` before
+opening nested declarations and their nested-background-state spans in GraphJit. This
+is a receiving-structure correction, not a prerequisite invented by the transition
+implementation: the normative storage model already makes `TockState` a
+background-owned sidecar, while the current lowering still requires a canonical
+`NodeStorage` offset for it. Implementing nested declarations first would extend that
+known temporary ownership into more layout forms and create avoidable migration work.
+After the sidecar boundary is complete, nested declarations plus declaration-owned
+regions form the next coherent authored-layout slice; activity/TTL plus actual skip
+scheduling form a separate subsequent scheduling slice.
+
+**Active Front 7 lifecycle friction (2026-10-21; collaborator decision required):**
+the intended storage split cannot be implemented faithfully through the current
+authored lifecycle ABI. `InitializationContext`, `MoveContext`, and `ReleaseContext`
+simultaneously expose realtime `State`, background-only `TockState`, and
+`NodeStorage`; each erased lifecycle callback consequently receives one
+`NodeStorage` containing both objects. Realtime and background execution currently
+work around that coupling by constructing two complete `NodeStorage` instances. The
+background copy supplies `TockState`; the realtime copy therefore also allocates an
+unused `TockState`, and generation migration can execute authored `TockState` work on
+the realtime cutover boundary.
+
+Separating only the allocation is not a valid fix. A node may define both state
+types and one authored callback may access both. Giving realtime lifecycle a null or
+temporary `TockState` changes that callback's contract; retaining a sidecar beside
+realtime storage preserves the wrong ownership and realtime migration work; invoking
+the combined callback once per domain duplicates arbitrary authored side effects;
+and initializing only the background instance leaves realtime `State` lifecycle
+incomplete.
+
+The recommended dependency change is to split authored lifecycle by execution
+domain before implementing the sidecar. Keep realtime `initialize`/`move`/`release`
+contexts limited to `State`, realtime declaration-owned storage, resources, and
+`NodeStorage`. Add a distinct background lifecycle context limited to `TockState`,
+configuration, and resources; construct and release it under `BackgroundExecutor`.
+Initially rebuild `TockState` for each generation instead of migrating it, because it
+is explicitly non-semantic acceleration and compatible retention is only an optional
+optimization. Nodes with only one state kind retain one obvious lifecycle; nodes with
+both kinds must author the two domain callbacks explicitly rather than relying on one
+ambiguous combined callback. After this boundary is selected, remove TockState-owned
+declaration regions and `DeclarationContext::tock_state()`, implement the background
+sidecar, and then open nested realtime declarations.
+
+**Accepted Front 7 lifecycle resolution and source implementation (2026-10-21;
+collaborator verification pending):** the collaborator accepted the domain split
+above. Realtime authored lifecycle remains `initialize(InitializationContext<Node>)`,
+`move(MoveContext<Node>)`, and `release(ReleaseContext<Node>)`; those contexts now
+expose only realtime `State`, realtime declared storage/resources, and `NodeStorage`.
+Background authored lifecycle uses overloads of the same operation names with
+`TockInitializationContext<Node>` and `TockReleaseContext<Node>`, which expose only
+`TockState` and resources. There is deliberately no Tock move callback.
+
+Source now builds a separate `TockStateLayout` beside `NodeLayout`. `NodeStorage`
+contains only realtime state and declared regions; `DeclarationContext::tock_state()`,
+Tock-owned local/import/export arrays, and nested-background-state spans are removed.
+`BackgroundExecutor` owns one compact `TockStateStorage` sidecar allocation per
+execution generation, with aligned fixed Tock objects indexed independently from
+realtime layout offsets. A pending generation allocates only unconstructed sidecar
+memory, while the background worker constructs and initializes it on first use or
+successor reconciliation and releases/destroys it on the same worker. Each successor
+starts with fresh Tock state; only semantic background coverage/materialization
+reconciliation migrates. Generated background roots now receive one call-frame
+pointer, and each authored Tock frame is prebound to its indexed sidecar slot, so
+generated background code has no realtime `NodeStorage` base from which it could
+address `State`.
+
+This resolves the recorded lifecycle friction without retaining a compatibility
+sidecar on the realtime path. The next dependency-ready Front 7 slice is nested
+realtime declarations plus their declaration-owned regions. Compilation and test
+verification remain with the collaborator; a failure there reopens this boundary at
+the failing invariant rather than changing the accepted ownership model.
+
+**Accepted Front 7 primitive-domain split and source implementation (2026-10-21;
+collaborator verification pending):** a concrete executable primitive now authors
+exactly one primary callback family: one of `tick()`/`tick_block()` (and later
+`tick_block_batch()`), or one of `tock_coverage()` (and later
+`tock_coverage_batch()`). Tick primitives declare only Tick outputs; Tock primitives
+declare only Tock outputs. A module node is the explicit grouping mechanism when one
+authored abstraction needs work in both domains.
+
+Compiler records now omit Tick/skip anchors for Tock primitives. Package scanning and
+lowering accept that exclusive record shape, imports are conditional on the selected
+family, and connection scheduling gives only Tick primitives realtime execution
+positions. Tock-only primitives remain present in semantic/background planning but
+cannot appear as implicit no-op Tick steps. Replay preserves the deliberate
+asymmetry: an eligible Tick wrapper may run in a generated background replay program,
+but authored Tock never creates an implicit Tick callback. The superseded dual-family
+policy is preserved in
+[the historical callback-policy record](./historical/dual_tick_tock_primitive_callback_policy.md).
+After collaborator compilation/test verification, nested realtime declarations and
+their declaration-owned regions remain the next dependency-ready Front 7 slice.
+
+**Nested declaration/layout slice implemented in source (2026-10-21; collaborator
+verification pending):** GraphJit no longer assumes that graph primitive index and
+`NodeLayout` node index are identical. Lowering retains a map from each top-level
+primitive to its layout node. Nested declarations can therefore occupy layout records
+without entering graph execution, configuration, port, or background namespaces.
+The map supplies each primitive `State` offset and authored-Tock sidecar index.
+
+The same slice admits authored realtime local arrays, nested-node-state spans, and
+typed import/export array bindings. The existing `NodeLayout` remains their only
+implementation. It owns initialization order, pointer patching, lifecycle, and
+migration. A runtime fixture puts two nested layout nodes before later top-level
+primitives. The fixture combines local, nested, exported, and imported storage. It
+makes sure that lifecycle and Tick calls address the correct state and Tock sidecar
+records. GraphJit still rejects arbitrary raw regions that have no compiler owner.
+
+After collaborator compilation/test verification, this closes the nested-declaration
+and declared-array portion of Front 7. Activity/TTL and actual skip scheduling are the
+next dependency-ready coherent slice; the other guarded edge cases remain separately
+tracked above.
+
+**Front 7 activity/TTL friction recorded before resolution (2026-10-21):** the stored
+TTL fields did not define activity for generalized continuous
+values. The removed graph runtime used two `Sample`-only tests. It compared input
+samples for a constant unchanged value, and it compared output samples with zero.
+The current continuous-value registry has no type-owned equality or clear-value test.
+A byte comparison is not correct for floating-point signed zero or storage padding.
+A `Sample`-only implementation will also break the generalized Front 1 path.
+
+GraphJit also has no project default for TTL. A node instance can supply an explicit
+TTL, and a node type can supply a default TTL. If both are absent, the old runtime used
+the project default. `GraphJitConfig` currently supplies no such value. Treating the
+missing value as infinite preserves execution, but it silently removes the former
+project policy.
+
+The recommended resolution adds type-owned block operations to the sole
+continuous-value registry. The operations test equality with one remembered value and
+test equality with the type's cleared output value. GraphJit can call each block
+operation once per relevant frontier port, then propagate compact activity facts
+through the generated schedule. It stores only a dormancy flag, a TTL counter, valid
+bits, and one remembered value for each dynamic input. A stable compiler-owned raw
+region retains that state across compatible generations. Static constant inputs need
+no scan. Event activity uses empty-sequence facts. `GraphJitConfig` must also receive
+the project default TTL, with infinity as its explicit default value. This design keeps
+type switches in the registry and avoids repeated scans at downstream fanout points.
+
+**Accepted Front 7 activity/TTL resolution and source implementation (2026-10-21;
+collaborator verification pending):** TTL is opt-in. An explicit instance TTL wins.
+The node-type TTL is the fallback. If neither value exists, TTL is disabled. The
+compiler does not add activity storage, scans, or branches in that case. An explicit
+infinite TTL also disables the feature. `GraphJitConfig` does not contain a project
+default. The activity-summary optimization pass now exists. A later project or user
+setting will provide a configurable default. Its exact owner remains open. This
+supersedes the earlier proposal to add a project default now.
+
+The continuous-value registry now owns semantic value equality and cleared-value
+tests. This keeps signed-zero and dynamic-value rules out of generic GraphJit code.
+Each enabled primitive owns a compact compiler raw region. It contains the dormancy
+flag and the elapsed quiet-sample count. Dynamic continuous inputs also need validity
+bits and remembered values. Equal ordinary fanout inputs share that comparison state
+when both consumers use the same unsliced root window. Exact compatible generations
+can migrate these regions. Static constant inputs need no state or scan. Empty event
+windows contribute activity facts without persistent remembered values.
+
+Generated execution checks input activity before a callback. A dormant primitive uses
+its skip callback while its inputs remain unchanged. A changed input wakes it. After a
+Tick callback, constant inputs and cleared continuous or empty event outputs advance
+the TTL. A changed constant input starts a new quiet interval, so quiet time from
+before a wake cannot make the primitive dormant again too early. The TTL counter uses
+project samples and saturates on overflow. Primitive slicing applies the same rule to
+each legal callback slice.
+
+Generated lowering now reuses compact continuous and event activity summaries across
+equal fanout branches. A representation epoch invalidates a summary after any planned
+write. The summary key also includes the callback window. Continuous comparison state
+is shared only for unsliced acyclic consumers of the same root window. SCC callbacks,
+privately sliced callbacks, and external Tick-frame overlays keep independent state.
+This optimization does not change the accepted TTL policy or runtime ABI. Focused
+runtime coverage verifies shared ordinary fanout, opt-in dormancy, wake-up on a
+changed constant input, and the disabled default. Compilation and test execution
+remain with the collaborator.
+
+**Resolved Front 7 structural-routing friction (2026-10-21):** the planned assumption
+was that connection analysis could replace each
+tiled or subgraph port with concrete endpoint ports. The existing connection plan
+could then consume the result without a new intermediate representation.
+
+The configured graph does not contain only endpoint aliases. A tiled sample input is
+one semantic channel layout that spans several concrete input ports. Its conversion
+must occur before the result is projected to those members. Splitting the connection
+into unrelated mono edges can change mono-to-stereo duplication, stereo projection,
+and other conversion semantics. Tiled event inputs broadcast one stream, while tiled
+event outputs merge member streams. These operations are also route stages.
+
+A subgraph boundary creates a chain of configured connections. Each segment in that
+chain can carry detach metadata. At the time of this friction report,
+`SampleConnectionPlan` and `EventConnectionPlan` contained only one optional detach
+for a complete connection. Collapsing the chain could therefore lose a delay or a
+sample initial value. Keeping the boundary as an execution node was also incorrect
+because it has no callback, state, or storage identity.
+
+Adding cases directly to connection inventory would make scheduling, SCC construction,
+sample/event storage, background dependencies, transition identities, and replay
+planning understand subgraph, boundary, and tiled `NodeBundle` ports. It would also
+require each phase to reconstruct the same conversion and detach ordering.
+
+The initial recommendation was a structural-routing normalization pass before ordinary
+connection analysis. Its output would have contained concrete endpoints and an ordered
+route of conversion, projection, broadcast, merge, and detach stages. This would have
+made one more representation for information that `ConfiguredGraph` already retains.
+
+The accepted correction keeps the authored structure in `GraphBuilder` and
+`ConfiguredGraph`. `build_structural_sample_routes()` and
+`build_structural_event_routes()` traverse the configured connections while GraphJit
+builds the ordinary connection plans. They compose sample channel mappings and event
+conversions across subgraph, boundary, and tiled `NodeBundle` ports. They expand tiled
+sample targets after semantic channel conversion, broadcast tiled event inputs, and
+merge tiled event outputs. They do not create a persistent general route graph or
+runtime routing objects.
+
+Each concrete source dependency can contain at most one detach. GraphBuilder rejects
+a second `detach()` call when any source in the expression is already detached.
+Structural traversal also rejects two detach records that become serial operations on
+the same concrete source dependency across a subgraph boundary.
+
+This restriction follows from the graph invariant. GraphJit removes detached
+dependencies to form the execution DAG. Each removed dependency must close a cycle
+when restored while all other detached dependencies remain removed. Two serial
+detaches on one route cannot both satisfy that requirement. The existing
+`validate_detached_connections()` path already enforces detach necessity for supported
+concrete graphs. The structural traversal must preserve this validation after bundle
+expansion.
+
+Front 7 work now implements the structural traversal and its tests first. It then
+removes the tiled/subgraph inventory guards and feeds concrete routes through existing
+sample, event, background, SCC, and transition planning. Native block and batch replay
+remains after Front 2 because its
+legal invocation quanta come from normalized callback operations. Non-pointwise replay
+with Random Access inputs also needs an explicit Tick-replay coverage propagation
+contract. The current propagation callbacks belong only to authored Tock primitives.
+
+**Front 7 non-detached structural routing implemented in source (2026-10-21;
+collaborator verification pending):** connection analysis resolves configured
+connections whose endpoints are tiled, subgraph, or internal boundary `NodeBundle`
+ports. Only concrete primitive bundles enter execution inventory. Lowering keeps the
+same concrete primitive list.
+
+The traversal resolves subgraph input and output aliases in both directions. It
+projects a tiled sample input to its mono members after semantic conversion. It merges
+tiled sample outputs before the next conversion. It broadcasts tiled event inputs and
+merges tiled event outputs. The final connection plans contain only concrete endpoints
+or the root boundary.
+
+Serial sample conversions are multiplied into one target-major coefficient transform.
+Realtime composition and background materialization consume that transform directly.
+A subgraph boundary `NodeBundle` therefore does not add a runtime conversion layer.
+Serial event conversion steps are concatenated into one checked conversion program.
+Focused tests cover a subgraph sample input with two conversions, tiled sample input
+projection, and a two-step event conversion across a subgraph input.
+
+**Front 7 per-source detach representation implemented in source (2026-10-22;
+collaborator verification pending):** `ConfiguredSampleConnectionSource` and
+`ConfiguredEventConnectionSource` pair each configured sample channel or event source
+port with its optional detach settings. Structural routing later expands a tiled or
+subgraph `NodeBundle` source to concrete primitive ports. `SamplePortExpression` and
+`EventPortExpression` preserve the same information while GraphBuilder constructs an
+expression. The binary configured-graph archive stores the detach beside each source.
+
+`EventPortRef(GraphBuilder&, std::span<EventPortRef const>)` forms event fan-in from
+existing event expressions. It concatenates each expression's sources and detach
+settings. The older constructor that accepts `EventOutputPortId` values still creates
+an undetached expression. Code does not need to extract `EventPortRef::sources()` and
+lose detach settings when it combines event expressions.
+
+Structural sample routing carries detach settings through channel transforms and
+target projection. Structural event routing concatenates its existing non-expanding,
+timestamp-preserving conversion program and carries the detach on each resolved event
+source. It does not introduce separate conversions before and after detach storage.
+This follows the dependency meaning of `detach()` and removes the proposed conversion
+split.
+
+GraphJit validates each detached event source as a necessary cycle-breaking
+dependency and binds it to the consumer SCC. Uniformly detached event sources with
+equal settings retain the existing shared feedback buffer. A connection that mixes
+ordinary and detached sources, or different detach latencies, keeps the producer
+group's source-index sidecar for its ordinary branches. Each detached
+`EventSourcePlan` reads the exact callback-local or source-converted representation
+that also feeds the producer-group merge. Immediately before each consumer, GraphJit
+selects ordinary branches from the retained fan-in representation, combines them with
+the delayed source streams in authored source order, and applies the one fused event
+conversion. No authored detach identity or general route-stage graph exists. The
+superseded merged-sequence filtering implementation is preserved in
+[`historical/front_7_merged_event_detach_filter.md`](historical/front_7_merged_event_detach_filter.md).
+
+Focused tests cover all four filtered feedback runtime combinations: sequence or ring
+source into sequence or ring feedback storage. A GraphJit runtime test combines one
+detached `EventFeedbackA` source and one ordinary `TriggerEventSource` source before
+`EventFeedbackB`. This case also covers an acyclic producer feeding a sliced SCC.
+Connection-plan tests cover mixed ordinary and detached sources and two detached
+sources with different latencies. Compilation and test execution remain with the
+collaborator.
+
+The rejected conversion-split proposal is preserved in
+[`historical/front_7_single_route_detach_split_false_start.md`](historical/front_7_single_route_detach_split_false_start.md).
+
+**Front 7 event-route representation friction recorded before resolution
+(2026-10-22):**
+`ResolvedEventBranch` can carry a different `source_type` and
+`EventConversionPlan` for each source that reaches one authored event fan-in.
+`RoutedEventConnection` and `EventConnectionPlan` still require one shared source
+type and one shared conversion. `build_structural_event_routes()` therefore creates
+separate `RoutedEventConnection` records when the resolved conversions differ. If
+those records have the same concrete `EventInputPortId`, event lowering tries to bind
+that input twice and rejects the second binding.
+
+A concrete valid case is one subgraph output declared as `EventTypeId::trigger` and
+backed by a MIDI-to-boundary-to-trigger chain, plus a second trigger output backed by
+a boundary-to-trigger chain. Combining those two `EventPortRef` values creates one
+trigger fan-in. The resolved terminal sources and conversion programs differ even
+though the authored fan-in type is the same.
+
+The required representation keeps a conversion from each resolved source to the
+authored fan-in source type. Lowering must convert each source to that type, merge the
+converted streams in authored source order, and then apply the one common connection
+conversion. The same change must make canonical raw event output storage reusable by
+`EventOutputPortId`. The current exact-source-set `EventProducerGroupPlan` can assign
+one output to two groups when that output participates in two different fan-in sets,
+while `PrimitiveEventOutputBindingPlan` permits only one storage binding. Solving only
+the differing-conversion example would leave this related ownership error in place.
+Do not add a special rejection or another connection-wide conversion split. This is
+the next event-planning receiving-structure change.
+
+**Front 7 event-route representation resolved in source (2026-10-22; collaborator
+verification pending):** `EventSourcePlan` now keeps the concrete raw `source_type` and
+the `EventConversionPlan` from that type to `EventConnectionPlan::source_type`.
+`build_structural_event_routes()` keeps one `RoutedEventConnection` for the authored
+fan-in. It composes each structural branch only as far as the authored source type.
+Realtime and background materialization convert each raw source first, merge the
+converted streams in authored source order, and apply `EventConnectionPlan::conversion`
+once after the merge.
+
+`PrimitiveEventOutputBindingPlan` now owns one callback-facing raw sequence and, when
+history or latency requires it, one canonical raw sequence for each concrete
+`EventOutputPortId`. Several `EventProducerGroupPlan` records can read the same raw
+sequence, so one output can participate in different fan-in sets without acquiring a
+second callback binding. A retained acyclic identity connection still aliases the raw
+canonical sequence and does not add a derived copy.
+
+A multi-source `EventProducerGroupPlan` always uses a separate fan-in representation.
+It does not use one source's raw `EventOutputPortId` representation as the aggregate.
+This keeps the raw output valid for another fan-in set and for a later graph
+transition. The superseded producer-home design is preserved in
+[`historical/front_7_event_fan_in_producer_home.md`](historical/front_7_event_fan_in_producer_home.md).
+
+The direct alias exposed one transition case that the earlier indexed fan-in storage
+had hidden. If an event output and input share one steady sequence, their predecessor
+states cannot both be transferred into it. Transition specialization now starts that
+shared steady sequence fresh, gives each semantic state its own transition-only ring,
+merges new callback-local events into the output ring after the producer, and continues
+to materialize current delivery into the input ring before the consumer. The prior
+assumption is preserved in
+[`historical/front_6_event_output_transition_suffix_assumption.md`](historical/front_6_event_output_transition_suffix_assumption.md).
+
+Focused connection and runtime tests cover different source conversions in one fan-in,
+one output used by two fan-in sets, conversion before merge, and transition of shared
+retained event output/input storage. Compilation and test execution remain with the
+collaborator.
+
+### Front 7 detach semantics correction (2026-10-21)
+
+`detach()` marks dependencies that GraphJit removes to break a cycle. It does not
+create storage or select a storage layout. GraphJit makes those decisions later.
+Therefore, GraphBuilder does not need an authored detach identity.
+
+Equal detach settings on the same source contributions have equal meaning. For
+example, `g.tile<stereo>(l, r).detach(1)` and
+`g.tile<stereo>(l.detach(1), r.detach(1))` must produce the same configured
+representation. Storage planning can combine or separate the retained values without
+changing that representation.
+
+Calling `detach()` when any source contribution is already detached is an error. This
+rule also applies when the existing and requested settings are equal. The equivalent
+forms above remain valid because neither form applies `detach()` twice to one source
+contribution.
+
+`SamplePortExpression` and `EventPortExpression` now keep optional detach settings for
+each source contribution. GraphJit preserves those settings through sample conversion,
+target projection, event conversion, SCC validation, and storage planning. This does
+not create a detach identity.
+
+The previous identity proposal is preserved in
+[`historical/front_7_detach_identity_false_start.md`](historical/front_7_detach_identity_false_start.md).
+
+### Front 7 dependency-ready status (2026-10-22)
+
+All Front 7 work that does not depend on Front 2 is implemented in source. This
+includes the `TockStateLayout` ownership split, the exclusive Tick-or-Tock primitive
+callback rule, nested declarations, local/shared array bindings, opt-in activity and
+skip scheduling, tiled/subgraph routing, per-source detach settings, and the event-route
+representation described above.
+
+`plan_declarations()` still rejects a `NodeLayout::Region::Kind::raw` region that has
+no GraphJit owner. This is a deliberate validation. `NodeLayoutBuilder::declare_raw_region()`
+does not create a node-state field binding, so accepting such a region would allocate
+bytes that an authored callback cannot address. GraphJit-owned sample, event, activity,
+and transition raw regions remain supported through their exact plan records.
+
+Root sample/event boundary storage also remains outside this front. Concrete system or
+communication nodes provide those boundaries, as specified for Front 8. Normalized
+block replayability remains deferred until Front 2 provides normalized batch operations.
+Front 7 is therefore source-complete at its current dependency boundary. Collaborator
+compilation and test verification are still pending.
+
+**Front 7 verification follow-up (2026-10-22; collaborator re-run pending):** the
+first full run after the event producer-home and per-source detach changes passed 555
+of 572 tests. Four projected-sample tests still inspected the superseded
+`SampleConnectionPlan::detach` and `projection_contributions` fields; they now inspect
+`routed_contributions`, the two mono feedback timelines, and the final target-port
+composition. Two alignment-migration tests used the superseded
+`graphjit.sample.composed_feedback_alignment` identity prefix; routed feedback now
+owns the same alignment ring under `graphjit.sample.routed_feedback`.
+
+The runtime failures exposed one transient-arena defect. An `EventMergePlan` with
+`preserve_existing_target == true` can extend its target after every primitive
+invocation in a cyclic `ExecutionRegionPlan`. Its transient lifetime began at the
+merge primitive, so an earlier primitive on the next SCC slice could reuse and
+overwrite the accumulated sequence. Event lifetime planning now keeps that target
+live across the complete cyclic region. This adds no representation or realtime
+operation, but the packed transient arena can grow when it previously reused that
+memory illegally.
+
+The same run exposed one Tick/Tock-domain omission: disconnected sample-port planning
+requested a realtime execution position for a Tock-only primitive. Tock sample and
+event ports come from `BackgroundNodeCall` batch bindings, so `plan_sample_ports()`
+and `plan_event_ports_once()` leave their realtime primitive binding records empty;
+disconnected Tick sample/event planning, event transient-lifetime planning, and
+execution-operation planning also skip those primitives. The remaining
+failures were stale assertions: `midi_to_trigger` emits two note-on triggers rather
+than the source's note-off, raw event producer ownership adds one expected region,
+the final packed-stack diagnostic supersedes a local chooser diagnostic, and already
+separate event producer/input state needs no transition-only root for an unchanged
+graph. These corrections require collaborator compilation and full-suite verification
+before Front 7 is closed.
+
+**Second Front 7 verification follow-up (2026-10-22; collaborator re-run pending):**
+the next run passed 566 of 572 tests. The two sample-feedback migration tests still
+required the old `:samples` suffix even though routed alignment-ring identities now
+end at their `:alignment=` extent. Their lookup now accepts the routed identity.
+
+The mixed ordinary/detached event test exposed a source-cursor error. The first
+implementation filtered a detached source out of the sorted producer-group sequence.
+A later SCC slice can insert a new event before the saved numeric cursor, so that event
+was never appended to the delayed stream. `EventPortBindingPlan` now records the exact
+per-source representation used by each producer-group merge. A detached
+`EventFeedbackPlan` reads that representation and, for its callback-local source,
+starts at element zero on each append scope.
+
+The retained-event transition test was not stale. The single-source producer-group
+carry contains both the input-history interval and the source-output future interval,
+but its `EventRealtimePortStateRealization` described only the input requirement.
+Input realizations now record the exact output-latency requirements and conversions
+whose future events are present in their retained producer-group storage. Transition
+planning uses one supplemental `EventRealtimePortStateTransfer` to seed that future
+interval at cutover. Steady execution still merges only the callback-local source, so
+ordinary calls do not duplicate already-retained future events. The compact-retention
+inspection also now matches each
+`RealtimePortStateRealization::retained_storage` to its own `NodeLayout` region; the
+output and input roles intentionally use different compact carries.
+
+Finally, a callback cannot write directly into a full persistent event ring because
+`EventOutputPort` requires producer overflow telemetry. Raw-output storage costing now
+includes the required callback-local sequence for the full-`NodeStorage` candidate.
+This lets the final packed-stack check report the requested unavoidable-budget
+diagnostic instead of failing earlier on a missing telemetry field. These source and
+test corrections await collaborator compilation and the next full-suite run.
 
 ## Front 8: application execution and system-audio integration
 
@@ -1004,11 +1480,33 @@ Candidate work includes:
 - callback/kernel fusion;
 - storage-layout co-optimization for batched nodes;
 - alias/materialization cost models;
+- in-place event fan-in over a transient source whose last read is the merge;
 - transient storage reuse/liveness improvements;
 - immutable-value specialization;
 - finer NodeInstances cache invalidation/reuse;
 - measured builder/package reload optimization;
 - runtime PGO experiments if profiling demonstrates a worthwhile target.
+
+The event fan-in item is not implemented in Front 7. `EventOutputPortId` and
+`EventProducerGroupPlan` must remain separate logical representations. Front 16 can
+let two transient `EventRepresentationPlan` records use one allocation when the
+source ends at its `EventMergePlan` and the target begins there.
+
+The proof must show that all other source reads finish before the merge. Both
+representations must be transient. The group cannot restore retained history or
+accumulate events across SCC slices. The callback must still see its own logical
+capacity when the shared allocation has the larger group capacity.
+
+A group-private per-source conversion result is the preferred in-place source. A raw
+callback sequence is legal only when its raw view is dead at the merge. If a common
+post-merge conversion can replace the group representation, fusion is a separate
+candidate and can cost less. The cost model must compare the separate, fused, and
+in-place forms.
+
+`EventMergePlan` will need an explicit in-place source index. The transient allocator
+must permit this one proven overlap. The merge helper must preserve semantic source
+order and the optional source-index sidecar. This optimization must not restore the
+old `producer_home_source_index` ownership model.
 
 Node-facing Tick port capabilities are another candidate for this front. The complete
 legal API remains enabled by default. The intended explicit configuration must make

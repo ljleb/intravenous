@@ -210,7 +210,7 @@ TEST(GraphConnections, SamplePortChannelSelectorRemainsDistinctFromNodePathSelec
     EXPECT_EQ(project_connection.target_type, iv::ChannelTypeId::mono);
     ASSERT_EQ(project_connection.source_channels.size(), 1u);
     ASSERT_EQ(project_connection.target_channels.size(), 1u);
-    EXPECT_EQ(project_connection.source_channels.front().channel, 1u);
+    EXPECT_EQ(project_connection.source_channels.front().channel.channel, 1u);
     EXPECT_EQ(project_connection.target_channels.front().channel, 1u);
 }
 

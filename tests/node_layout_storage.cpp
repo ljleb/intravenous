@@ -32,6 +32,16 @@ static_assert(std::is_nothrow_invocable_v<
     void const*,
     size_t,
     iv::NodeStorage&>);
+static_assert(std::is_nothrow_invocable_v<
+    decltype(iv::TockStateLifecycleCallbacks::initialize_fn),
+    void const*,
+    size_t,
+    iv::TockStateStorage&>);
+static_assert(std::is_nothrow_invocable_v<
+    decltype(iv::TockStateLifecycleCallbacks::release_fn),
+    void const*,
+    size_t,
+    iv::TockStateStorage&>);
 static_assert(noexcept(std::declval<iv::NodeStorage::Migration&>().commit()));
 
 namespace {
@@ -317,7 +327,6 @@ namespace {
     struct NestedParent {
         struct State {
             std::span<std::span<std::byte>> nested;
-            std::span<std::span<std::byte>> nested_background;
         };
 
         void declare(iv::DeclarationContext<NestedParent> const& ctx) const
@@ -328,7 +337,6 @@ namespace {
             do_declare(a, ctx, {});
             do_declare(b, ctx, {});
             ctx.nested_node_states(state.nested);
-            ctx.nested_node_background_states(state.nested_background);
         }
     };
 
@@ -360,25 +368,15 @@ namespace {
         }
 
         void initialize(
-            iv::InitializationContext<BackgroundLifecycleNode> const& ctx) const
+            iv::TockInitializationContext<BackgroundLifecycleNode> const& ctx) const
         {
             auto& state = ctx.tock_state();
             ++state.initialized;
             state.value = 17;
         }
 
-        void move(iv::MoveContext<BackgroundLifecycleNode> const& ctx) const
-        {
-            auto& state = ctx.tock_state();
-            auto const& previous = ctx.previous_background_state();
-            state.initialized = previous.initialized;
-            state.moved = previous.moved + 1;
-            state.released = previous.released;
-            state.value = previous.value;
-        }
-
         void release(
-            iv::ReleaseContext<BackgroundLifecycleNode> const& ctx) const
+            iv::TockReleaseContext<BackgroundLifecycleNode> const& ctx) const
         {
             ++ctx.tock_state().released;
         }
@@ -398,6 +396,11 @@ namespace {
         void initialize(iv::InitializationContext<StatefulTickingNode> const& ctx) const
         {
             ctx.state().initialized += 1;
+        }
+
+        void initialize(
+            iv::TockInitializationContext<StatefulTickingNode> const& ctx) const
+        {
             ctx.tock_state().initialized += 1;
         }
 
@@ -407,49 +410,6 @@ namespace {
         }
     };
 
-    struct BackgroundStorageProducer {
-        struct TockState {
-            std::span<int> values;
-        };
-
-        void declare(iv::DeclarationContext<BackgroundStorageProducer> const& ctx) const
-        {
-            auto const& state = ctx.tock_state();
-            ctx.local_array(state.values, 3);
-            ctx.export_array("background-values", state.values);
-        }
-
-        void initialize(
-            iv::InitializationContext<BackgroundStorageProducer> const& ctx) const
-        {
-            auto& state = ctx.tock_state();
-            state.values[0] = 5;
-            state.values[1] = 7;
-            state.values[2] = 11;
-        }
-    };
-
-    struct BackgroundStorageConsumer {
-        struct TockState {
-            std::span<int> imported;
-            int observed_sum = 0;
-        };
-
-        void declare(iv::DeclarationContext<BackgroundStorageConsumer> const& ctx) const
-        {
-            auto const& state = ctx.tock_state();
-            ctx.import_array("background-values", state.imported);
-        }
-
-        void initialize(
-            iv::InitializationContext<BackgroundStorageConsumer> const& ctx) const
-        {
-            auto& state = ctx.tock_state();
-            for (auto const value : state.imported) {
-                state.observed_sum += value;
-            }
-        }
-    };
 }
 
 int main()
@@ -818,38 +778,6 @@ int main()
     }
 
     {
-        iv::NodeLayoutBuilder builder(8);
-        BackgroundStorageProducer producer;
-        BackgroundStorageConsumer consumer;
-        iv::do_declare(producer, builder, {});
-        iv::do_declare(consumer, builder, {});
-
-        auto layout = std::move(builder).build();
-        auto resources = make_resources();
-        auto storage = layout.create_storage(resources);
-        storage.initialize();
-
-        auto& producer_state = *static_cast<BackgroundStorageProducer::TockState*>(
-            storage.background_state_ptr(0));
-        auto& consumer_state = *static_cast<BackgroundStorageConsumer::TockState*>(
-            storage.background_state_ptr(1));
-        iv::test::require(
-            producer_state.values.size() == 3,
-            "local_array declared from TockState should be patched");
-        iv::test::require(
-            consumer_state.imported.data() == producer_state.values.data(),
-            "TockState import/export bindings should resolve through TockState");
-        auto const exported =
-            storage.resolve_exported_array_storage<int>("background-values");
-        iv::test::require(
-            exported.data() == producer_state.values.data() && exported.size() == 3,
-            "host export resolution should read TockState span fields");
-        iv::test::require(
-            consumer_state.observed_sum == 23,
-            "TockState imports should be available during initialize");
-    }
-
-    {
         iv::NodeLayoutBuilder builder(4);
         auto const leading = builder.declare_raw_region(13, 32);
         LocalOnly node;
@@ -910,70 +838,67 @@ int main()
         iv::NodeLayoutBuilder builder(4);
         BackgroundLifecycleNode node { .id = "background-state" };
         iv::do_declare(node, builder, {});
+        iv::TockStateLayout tock_layout = builder.build_tock_state_layout();
         iv::NodeLayout layout = std::move(builder).build();
         iv::test::require(
-            layout.nodes.front().background_state_structure.has_value(),
+            tock_layout.nodes.front().state_structure.has_value(),
             "background-state layout should carry ABI metadata");
-        layout.nodes.front().background_state_structure->type_identity = {
+        tock_layout.nodes.front().state_structure->type_identity = {
             .nominal_id = "test.BackgroundLifecycleNode.TockState",
             .definition_fingerprint = "v1",
             .display_name = "BackgroundLifecycleNode::TockState",
         };
-        iv::NodeLayout reloaded_layout = layout;
+        iv::TockStateLayout reloaded_tock_layout = tock_layout;
         static int reloaded_node_type_token = 0;
-        reloaded_layout.nodes.front().node_type = &reloaded_node_type_token;
+        reloaded_tock_layout.nodes.front().node_type = &reloaded_node_type_token;
 
         iv::test::require(layout.nodes.size() == 1, "background-state layout should contain its node");
         auto const& record = layout.nodes.front();
+        auto const& tock_record = tock_layout.nodes.front();
         iv::test::require(record.state_size == 0, "test node should have no sequential State");
         iv::test::require(
-            record.background_state_size == sizeof(BackgroundLifecycleNode::TockState),
-            "layout should record TockState size");
+            tock_record.state_size == sizeof(BackgroundLifecycleNode::TockState),
+            "TockState layout should record its state size");
         iv::test::require(
-            record.background_state_alignment == alignof(BackgroundLifecycleNode::TockState),
-            "layout should record TockState alignment");
+            tock_record.state_alignment == alignof(BackgroundLifecycleNode::TockState),
+            "TockState layout should record its state alignment");
         iv::test::require(
-            record.background_state_offset >= 0,
-            "layout should assign TockState storage");
+            layout.storage_size == 0,
+            "background-only state must not consume realtime NodeStorage");
         iv::test::require(
-            static_cast<size_t>(record.background_state_offset) %
-                    alignof(BackgroundLifecycleNode::TockState) ==
-                0,
-            "TockState offset should satisfy its alignment");
+            tock_layout.storage_size
+                == sizeof(BackgroundLifecycleNode::TockState),
+            "TockState sidecar should pack its fixed state object exactly once");
+        iv::test::require(
+            tock_record.state_offset % tock_record.state_alignment == 0,
+            "packed TockState placement should satisfy its alignment");
 
         auto resources = make_resources();
         {
-            iv::NodeStorage original = layout.create_storage(resources);
+            auto original = tock_layout.create_storage(resources);
             original.initialize();
             auto& original_background =
                 *static_cast<BackgroundLifecycleNode::TockState*>(
-                    original.background_state_ptr(0));
+                    original.state_ptr(0));
             iv::test::require(
                 original_background.initialized == 1,
                 "initialize should receive the default-constructed TockState");
             original_background.value = 91;
 
-            iv::NodeStorage reloaded = reloaded_layout.create_storage(resources);
-            iv::test::require(
-                reloaded.can_move_from(original, 0, 0),
-                "same reflected TockState definition should remain movable across package generations");
-            auto migration = reloaded.prepare_migration_from(original);
-            migration.commit();
+            auto reloaded = reloaded_tock_layout.create_storage(resources);
+            reloaded.initialize();
             auto& reloaded_background =
                 *static_cast<BackgroundLifecycleNode::TockState*>(
-                    reloaded.background_state_ptr(0));
+                    reloaded.state_ptr(0));
             iv::test::require(
                 reloaded_background.initialized == 1,
-                "move should preserve TockState initialization data");
+                "a successor should initialize a fresh TockState");
             iv::test::require(
-                reloaded_background.moved == 1,
-                "move should receive current and previous TockState objects");
+                reloaded_background.moved == 0,
+                "TockState must not migrate between graph generations");
             iv::test::require(
-                reloaded_background.value == 91,
-                "move should be able to transfer TockState contents");
-            iv::test::require(
-                original.initialized_nodes.empty(),
-                "successful background-state migration should transfer release ownership");
+                reloaded_background.value == 17,
+                "fresh TockState initialization must not inherit predecessor data");
 
             reloaded.release();
             iv::test::require(
@@ -983,7 +908,35 @@ int main()
 
         iv::test::require(
             BackgroundLifecycleNode::TockState::live_instances == 0,
-            "NodeStorage destruction should destroy every constructed TockState");
+            "TockStateStorage destruction should destroy every constructed TockState");
+    }
+
+    {
+        iv::NodeLayoutBuilder builder(4);
+        StatefulTickingNode node;
+        iv::do_declare(node, builder, {});
+        auto tock_layout = builder.build_tock_state_layout();
+        auto layout = std::move(builder).build();
+        auto resources = make_resources();
+
+        auto realtime = layout.create_storage(resources);
+        realtime.initialize();
+        auto& realtime_state =
+            *static_cast<StatefulTickingNode::State*>(realtime.state_ptr(0));
+        iv::test::require(
+            realtime_state.initialized == 1,
+            "realtime initialization should run only the State lifecycle overload");
+
+        auto background = tock_layout.create_storage(resources);
+        background.initialize();
+        auto& tock_state = *static_cast<StatefulTickingNode::TockState*>(
+            background.state_ptr(0));
+        iv::test::require(
+            tock_state.initialized == 1,
+            "background initialization should run the TockState lifecycle overload");
+        iv::test::require(
+            realtime_state.initialized == 1,
+            "background initialization must not repeat realtime State lifecycle");
     }
 
     {
@@ -1026,6 +979,7 @@ int main()
         iv::NodeLayoutBuilder builder(4);
         NestedParent node;
         iv::do_declare(node, builder, {});
+        auto tock_layout = builder.build_tock_state_layout();
         auto initialize_transition = +[](
             std::span<std::byte> storage,
             std::span<std::byte const>) {
@@ -1060,10 +1014,11 @@ int main()
             steady_storage.region_bytes(transition).empty(),
             "steady-only storage must not expose transition-only region bytes");
         steady_storage.initialize();
+        auto tock_states = tock_layout.create_storage(resources);
+        tock_states.initialize();
 
         auto& state = *static_cast<NestedParent::State*>(storage.state_ptr(0));
         iv::test::require(state.nested.size() == 2, "nested_node_states should record directly declared child nodes");
-        iv::test::require(state.nested_background.size() == 2, "nested_node_background_states should record the same directly declared child nodes");
         iv::test::require(state.nested[0].data() != nullptr, "first nested node state pointer should be patched");
         iv::test::require(state.nested[1].data() != nullptr, "second nested node state pointer should be patched");
         auto* steady_end = storage.buffer().data() + layout.steady_storage_size;
@@ -1081,12 +1036,17 @@ int main()
             steady_state.nested[0].data() + steady_state.nested[0].size()
                 == steady_allocation_end,
             "nested node state should fit exactly inside steady-only storage");
-        iv::test::require(state.nested_background[0].size() == sizeof(NestedLeaf::TockState), "first nested background-state span should have the exact TockState size");
-        iv::test::require(state.nested_background[1].size() == sizeof(NestedLeaf::TockState), "second nested background-state span should have the exact TockState size");
         auto& first = *reinterpret_cast<NestedLeaf::State*>(state.nested[0].data());
         auto& second = *reinterpret_cast<NestedLeaf::State*>(state.nested[1].data());
-        auto& first_background = *reinterpret_cast<NestedLeaf::TockState*>(state.nested_background[0].data());
-        auto& second_background = *reinterpret_cast<NestedLeaf::TockState*>(state.nested_background[1].data());
+        auto& first_background = *static_cast<NestedLeaf::TockState*>(
+            tock_states.state_ptr(1));
+        auto& second_background = *static_cast<NestedLeaf::TockState*>(
+            tock_states.state_ptr(2));
+        iv::test::require(
+            reinterpret_cast<std::byte*>(&second_background)
+                    - reinterpret_cast<std::byte*>(&first_background)
+                == static_cast<std::ptrdiff_t>(sizeof(NestedLeaf::TockState)),
+            "fixed nested TockState objects should share one compact sidecar allocation");
         iv::test::require(first.marker == 17, "first nested node state should be addressable");
         iv::test::require(second.marker == 17, "second nested node state should be addressable");
         iv::test::require(first_background.marker == 23, "first nested TockState should be addressable");

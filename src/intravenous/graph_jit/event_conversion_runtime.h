@@ -15,8 +15,6 @@ inline constexpr char event_sequence_merge_symbol[] =
     "iv_graph_jit_merge_event_sequence";
 inline constexpr char ordered_event_sequence_merge_symbol[] =
     "iv_graph_jit_merge_ordered_event_sequence";
-inline constexpr char event_sequence_k_way_merge_symbol[] =
-    "iv_graph_jit_merge_event_sequences_into_home";
 
 #if defined(_WIN32)
 #define IV_GRAPH_JIT_RUNTIME_EXPORT __declspec(dllexport)
@@ -40,7 +38,7 @@ iv_graph_jit_convert_event_sequence(
     void* target_events,
     std::size_t target_capacity) noexcept;
 
-// Stable in-place merge of one producer-local sequence into an aggregate
+// Stable in-place merge of one bounded source sequence into an aggregate
 // sequence/ring. Both sequences are ordered forward from origin. Existing
 // target events precede newly merged source events when timestamps are equal,
 // so invoking this helper in semantic source order gives deterministic tie
@@ -58,7 +56,7 @@ iv_graph_jit_merge_event_sequence(
 
 // Stable in-place merge used by staged fan-in. source_indices is parallel to
 // the target event ring/sequence; source_index identifies every event in the
-// producer-local source. Ordering is lexicographic by (forward distance from
+// bounded source. Ordering is lexicographic by (forward distance from
 // origin, semantic source index), with existing events of the same source
 // remaining first.
 extern "C" IV_GRAPH_JIT_RUNTIME_EXPORT std::size_t
@@ -73,17 +71,14 @@ iv_graph_jit_merge_ordered_event_sequence(
     std::size_t source_count,
     std::size_t source_index,
     GlobalIndex origin) noexcept;
-
-
-
-// Stable k-way merge for transient fan-in where semantic source 0 already
-// resides in target storage. source_events/source_remaining describe semantic
-// sources 1..N in order. All streams are required by the EventOutputPort
-// contract to be nondecreasing in forward order from origin. The merge walks
+// Stable k-way merge into a target that already contains semantic source 0.
+// source_events/source_remaining describe semantic sources 1..N in order. All
+// streams must be nondecreasing in forward order from origin. The merge walks
 // the streams backwards so it can write the final aggregate in place without
 // allocating scratch event storage. Equal timestamps are ordered by semantic
-// source index. source_remaining is caller-owned stack scratch and is
-// decremented in place; no heap allocation occurs.
+// source index. source_remaining is caller-owned scratch and is decremented in
+// place. Background event materialization uses this helper after per-source
+// conversion.
 extern "C" IV_GRAPH_JIT_RUNTIME_EXPORT std::size_t
 iv_graph_jit_merge_event_sequences_into_home(
     void* target_events,
@@ -110,6 +105,9 @@ iv_graph_jit_materialize_event_sequence(
     std::uint32_t step2,
     std::size_t step_count,
     void const* source_events,
+    std::size_t const* source_indices,
+    std::size_t source_index_filter,
+    std::uint32_t filter_source_index,
     std::size_t source_capacity,
     std::size_t source_read_index,
     std::size_t source_write_index,

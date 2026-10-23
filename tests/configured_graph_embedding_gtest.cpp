@@ -60,6 +60,14 @@ iv::SampleInputChannelId translate(
     return value;
 }
 
+iv::ConfiguredSampleConnectionSource translate(
+    iv::ConfiguredGraphEmbedding const& embedding,
+    iv::ConfiguredSampleConnectionSource value)
+{
+    value.channel = translate(embedding, value.channel);
+    return value;
+}
+
 void expect_connection_is_translation(
     iv::ConfiguredSampleConnection const& child,
     iv::ConfiguredSampleConnection const& parent,
@@ -85,7 +93,8 @@ TEST(ConfiguredGraphEmbedding, RepeatedEmbeddingKeepsFrozenHandlesLocalAndReturn
         child.virtual_nodes.records().front().node_bundle_handles.front();
     auto const child_connections = child.connections.configured_sample_connections();
     ASSERT_FALSE(child_connections.empty());
-    auto const child_first_source_bundle = child_connections.front().source_channels.front().bundle;
+    auto const child_first_source_bundle =
+        child_connections.front().source_channels.front().channel.bundle;
 
     iv::GraphBuilder parent;
     auto const first = parent.embed(child, "instance-a");
@@ -107,7 +116,8 @@ TEST(ConfiguredGraphEmbedding, RepeatedEmbeddingKeepsFrozenHandlesLocalAndReturn
         child.virtual_nodes.records().front().node_bundle_handles.front(),
         child_virtual_bundle);
     EXPECT_EQ(
-        child.connections.configured_sample_connections().front().source_channels.front().bundle,
+        child.connections.configured_sample_connections()
+            .front().source_channels.front().channel.bundle,
         child_first_source_bundle);
 
     auto const& parent_virtuals = configured.virtual_nodes.records();

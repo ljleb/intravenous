@@ -3,6 +3,7 @@
 #include <intravenous/coverage.h>
 #include <intravenous/graph_jit/background_evaluation_call.h>
 #include <intravenous/graph_jit/background_evaluation_plan.h>
+#include <intravenous/node/layout.h>
 #include <intravenous/runtime/background_storage_realization.h>
 
 #include <cstddef>
@@ -36,6 +37,7 @@ class BackgroundEvaluationCallFrame {
 
     graph_jit::BackgroundEvaluationPlan const* plan_ = nullptr;
     BackgroundStorageRealization* realization_ = nullptr;
+    TockStateStorage* tock_states_ = nullptr;
     BackgroundEvaluationCallFrameSelection selection_{};
     std::vector<graph_jit::BackgroundNodeCall> nodes_{};
     std::vector<std::unique_ptr<BackgroundStorageOperationFrame>>
@@ -53,6 +55,7 @@ public:
     BackgroundEvaluationCallFrame(
         graph_jit::BackgroundEvaluationPlan const& plan,
         BackgroundStorageRealization& realization,
+        TockStateStorage& tock_states,
         BackgroundEvaluationCallFrameSelection selection);
     ~BackgroundEvaluationCallFrame();
 

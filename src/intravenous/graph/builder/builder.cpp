@@ -396,6 +396,11 @@ EventPortRef GraphBuilder::make_event_port(
 {
     return state(*this).make_event_port(type, sources);
 }
+EventPortRef GraphBuilder::make_event_port(
+    std::span<EventPortRef const> sources)
+{
+    return state(*this).make_event_port(sources);
+}
 std::span<EventOutputPortId const>
 GraphBuilder::event_port_sources(EventPortRef const& ref) const
 {

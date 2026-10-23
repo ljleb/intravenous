@@ -37,6 +37,9 @@ struct NodeCompilerOperations {
         NodeStateStructures const*,
         NodeLayoutBuilder&,
         ReflectedNodePortRealization const&) = nullptr;
+    // Exactly one primary family is present. Tick primitives carry both the
+    // normalized Tick and skip wrappers; Tock primitives carry Tock plus
+    // forward propagation and never carry a realtime wrapper.
     void (*tick_block)(
         void const*, ReflectedNodeTickContext const&, GlobalIndex, std::size_t) = nullptr;
     void (*skip_block)(
@@ -74,8 +77,12 @@ struct NodeCompilerOperations {
 
     constexpr bool valid() const
     {
-        return declare_node != nullptr && tick_block != nullptr
-            && skip_block != nullptr;
+        auto const tick = tick_block != nullptr;
+        auto const tock = tock_coverage != nullptr;
+        return declare_node != nullptr
+            && tick != tock
+            && (skip_block != nullptr) == tick
+            && (propagate_forward_coverage != nullptr) == tock;
     }
 };
 

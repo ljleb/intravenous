@@ -935,10 +935,30 @@ bool combine_node_sequential_input_values(
 template<class Node>
 constexpr NodeCompilerOperations node_compiler_operations()
 {
+    static_assert(primary_callback_declaration_is_valid_v<Node>,
+        "a concrete node must author exactly one of tick(), tick_block(), or "
+        "tock_coverage(); Tick nodes may declare only Tick outputs and Tock "
+        "nodes may declare only Tock outputs");
     return {
         .declare_node = &declare_node<Node>,
-        .tick_block = &tick_node_block<Node>,
-        .skip_block = &skip_node_block<Node>,
+        .tick_block = [] {
+            if constexpr (has_tick<Node> || has_tick_block<Node>) {
+                return &tick_node_block<Node>;
+            } else {
+                return static_cast<void (*)(
+                    void const*, ReflectedNodeTickContext const&,
+                    GlobalIndex, std::size_t)>(nullptr);
+            }
+        }(),
+        .skip_block = [] {
+            if constexpr (has_tick<Node> || has_tick_block<Node>) {
+                return &skip_node_block<Node>;
+            } else {
+                return static_cast<void (*)(
+                    void const*, ReflectedNodeTickContext const&,
+                    GlobalIndex, std::size_t)>(nullptr);
+            }
+        }(),
         .tock_coverage = node_tock_coverage_operation<Node>(),
         .propagate_forward_coverage =
             node_propagate_forward_coverage_operation<Node>(),
@@ -1049,6 +1069,10 @@ void describe_node(void const* node_data, NodeDescriptionSink& sink)
     auto const& node = *static_cast<Node const*>(node_data);
     static_assert(has_constexpr_port_configs<Node>,
         "concrete node ports must be declared by static constexpr inputs() and outputs()");
+    static_assert(primary_callback_declaration_is_valid_v<Node>,
+        "a concrete node must author exactly one of tick(), tick_block(), or "
+        "tock_coverage(); Tick nodes may declare only Tick outputs and Tock "
+        "nodes may declare only Tock outputs");
     if constexpr (has_inputs<Node>) {
         for_each_port_config(Node::inputs(), [&](auto const& input) {
             sink.add_input(erase_port_config(input));
@@ -1074,7 +1098,9 @@ void describe_node(void const* node_data, NodeDescriptionSink& sink)
     sink.set_intrinsically_replayable(intrinsically_replayable_v<Node>);
     sink.set_maximum_block_size(get_max_block_size(node));
     sink.set_default_ttl(get_ttl_samples(node));
-    sink.set_block_skippable(get_can_skip_block(node));
+    sink.set_block_skippable(
+        (has_tick<Node> || has_tick_block<Node>)
+        && get_can_skip_block(node));
     if constexpr (std::same_as<std::remove_cvref_t<Node>, Constant>) {
         sink.set_static_sample_value(node._value);
     }
@@ -1086,6 +1112,10 @@ NodeBuildRequest make_node_build_request(Node const& node)
     using Value = std::remove_cvref_t<Node>;
     static_assert(has_constexpr_port_configs<Value>,
         "concrete node ports must be declared by static constexpr inputs() and outputs()");
+    static_assert(primary_callback_declaration_is_valid_v<Value>,
+        "a concrete node must author exactly one of tick(), tick_block(), or "
+        "tock_coverage(); Tick nodes may declare only Tick outputs and Tock "
+        "nodes may declare only Tock outputs");
     static_assert(replay_declaration_is_valid_v<Value>,
         "intrinsically replayable nodes must author tick() (not tick_block()), "
         "have no State/TockState or RandomAccess inputs, and declare only "

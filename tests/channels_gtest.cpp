@@ -309,7 +309,7 @@ TEST(Channels, GraphBuilderTileIsPureStructuralComposition)
     EXPECT_EQ(tiled.channels()[1].bundle, right.node_bundle_handle());
 }
 
-TEST(Channels, TiledDetachStaysConfiguredConnectionMetadata)
+TEST(Channels, TiledDetachIsStoredOnEveryConfiguredSourceChannel)
 {
     iv::GraphBuilder graph;
     auto left = iv::details::configure_concrete_node<iv::Constant>(
@@ -326,8 +326,49 @@ TEST(Channels, TiledDetachStaysConfiguredConnectionMetadata)
     ASSERT_EQ(connections.size(), 1u);
     EXPECT_EQ(connections.front().source_type, iv::ChannelTypeId::stereo);
     EXPECT_EQ(connections.front().source_channels.size(), 2u);
-    ASSERT_TRUE(connections.front().detach.has_value());
-    EXPECT_EQ(connections.front().detach->loop_extra_latency, 1u);
+    for (auto const& source : connections.front().source_channels) {
+        ASSERT_TRUE(source.detach.has_value());
+        EXPECT_EQ(source.detach->loop_extra_latency, 1u);
+    }
+}
+
+TEST(Channels, TiledAndPerChannelDetachProduceTheSameConfiguredConnection)
+{
+    auto build = [](bool detach_after_tiling) {
+        iv::GraphBuilder graph;
+        auto left = iv::details::configure_concrete_node<iv::Constant>(
+            graph, iv::Sample{0.25f});
+        auto right = iv::details::configure_concrete_node<iv::Constant>(
+            graph, iv::Sample{-0.5f});
+        auto const output = detach_after_tiling
+            ? static_cast<iv::SamplePortRef>(
+                graph.tile<iv::stereo>(left, right)).detach(3)
+            : static_cast<iv::SamplePortRef>(graph.tile<iv::stereo>(
+                static_cast<iv::SamplePortRef>(left).detach(3),
+                static_cast<iv::SamplePortRef>(right).detach(3)));
+        graph.outputs(output);
+        auto configured = std::move(graph).finish();
+        auto const connections =
+            configured.connections.configured_sample_connections();
+        EXPECT_EQ(connections.size(), 1u);
+        return connections.front();
+    };
+
+    EXPECT_EQ(build(true), build(false));
+}
+
+TEST(Channels, DetachRejectsAnExpressionContainingAnAlreadyDetachedChannel)
+{
+    iv::GraphBuilder graph;
+    auto left = iv::details::configure_concrete_node<iv::Constant>(
+        graph, iv::Sample{0.25f});
+    auto right = iv::details::configure_concrete_node<iv::Constant>(
+        graph, iv::Sample{-0.5f});
+    auto mixed = static_cast<iv::SamplePortRef>(graph.tile<iv::stereo>(
+        static_cast<iv::SamplePortRef>(left).detach(3), right));
+
+    EXPECT_THROW((void)mixed.detach(3), std::logic_error);
+    EXPECT_THROW((void)mixed.detach(7), std::logic_error);
 }
 
 TEST(Channels, NamedPublicInputsRetainRequestedChannelTypes)

@@ -142,7 +142,7 @@ std::vector<std::byte> queued_bytes(iv::PinnedBlockPrefix const& prefix)
 }
 
 void no_op_background(
-    std::byte*, iv::graph_jit::BackgroundEvaluationCall*)
+    iv::graph_jit::BackgroundEvaluationCall*)
 {}
 
 iv::CompiledGraph queued_persisted_graph(iv::PortKind kind)
@@ -1033,6 +1033,9 @@ TEST(BackgroundEvaluationTransaction,
      AppliesOverlappingQueuedSampleOverwritesInPublicationOrder)
 {
     auto graph = queued_persisted_graph(iv::PortKind::sample);
+    iv::ResourceContext resources;
+    auto tock_states = graph.tock_state_layout.create_storage(resources);
+    tock_states.initialize();
     iv::BackgroundCoverageState coverage{1};
     iv::BackgroundPropagationWorkspace propagation{
         graph.background_evaluation_plan, graph.specialization.sample_rate};
@@ -1082,7 +1085,7 @@ TEST(BackgroundEvaluationTransaction,
     std::array selections{pending.pin()};
     iv::BackgroundEvaluationTransaction transaction{
         graph,
-        nullptr,
+        tock_states,
         coverage,
         propagation,
         data,
@@ -1114,6 +1117,9 @@ TEST(BackgroundEvaluationTransaction,
     iv::CompiledGraph graph;
     graph.project_generation = 2;
     graph.specialization.sample_rate = 48000;
+    iv::ResourceContext resources;
+    auto tock_states = graph.tock_state_layout.create_storage(resources);
+    tock_states.initialize();
     iv::BackgroundCoverageState coverage{0};
     iv::BackgroundPropagationWorkspace propagation{
         graph.background_evaluation_plan, graph.specialization.sample_rate};
@@ -1136,7 +1142,7 @@ TEST(BackgroundEvaluationTransaction,
     std::array retired{output};
     iv::BackgroundEvaluationTransaction transaction{
         graph,
-        nullptr,
+        tock_states,
         coverage,
         propagation,
         data,
@@ -1162,6 +1168,9 @@ TEST(BackgroundEvaluationTransaction,
      RetiresInheritedDestinationBeforeApplyingSuccessorWrites)
 {
     auto graph = queued_persisted_graph(iv::PortKind::sample);
+    iv::ResourceContext resources;
+    auto tock_states = graph.tock_state_layout.create_storage(resources);
+    tock_states.initialize();
     iv::BackgroundCoverageState coverage{1};
     iv::BackgroundPropagationWorkspace propagation{
         graph.background_evaluation_plan, graph.specialization.sample_rate};
@@ -1209,7 +1218,7 @@ TEST(BackgroundEvaluationTransaction,
     std::array selections{pending.pin()};
     iv::BackgroundEvaluationTransaction transaction{
         graph,
-        nullptr,
+        tock_states,
         coverage,
         propagation,
         data,
@@ -1237,6 +1246,9 @@ TEST(BackgroundEvaluationTransaction,
      EmptyQueuedEventWindowAuthoritativelyReplacesExistingEvents)
 {
     auto graph = queued_persisted_graph(iv::PortKind::event);
+    iv::ResourceContext resources;
+    auto tock_states = graph.tock_state_layout.create_storage(resources);
+    tock_states.initialize();
     iv::BackgroundCoverageState coverage{1};
     iv::BackgroundPropagationWorkspace propagation{
         graph.background_evaluation_plan, graph.specialization.sample_rate};
@@ -1273,7 +1285,7 @@ TEST(BackgroundEvaluationTransaction,
     std::array selections{pending.pin()};
     iv::BackgroundEvaluationTransaction transaction{
         graph,
-        nullptr,
+        tock_states,
         coverage,
         propagation,
         data,
@@ -1297,6 +1309,9 @@ TEST(BackgroundEvaluationTransaction,
      QueuedSampleVoidErasesOnlyItsAddressedPersistedRange)
 {
     auto graph = queued_persisted_graph(iv::PortKind::sample);
+    iv::ResourceContext resources;
+    auto tock_states = graph.tock_state_layout.create_storage(resources);
+    tock_states.initialize();
     iv::BackgroundCoverageState coverage{1};
     iv::BackgroundPropagationWorkspace propagation{
         graph.background_evaluation_plan, graph.specialization.sample_rate};
@@ -1332,7 +1347,7 @@ TEST(BackgroundEvaluationTransaction,
     std::array selections{pending.pin()};
     iv::BackgroundEvaluationTransaction transaction{
         graph,
-        nullptr,
+        tock_states,
         coverage,
         propagation,
         data,
@@ -1357,6 +1372,9 @@ TEST(BackgroundEvaluationTransaction,
      QueuedEventVoidErasesOnlyItsAddressedPersistedRange)
 {
     auto graph = queued_persisted_graph(iv::PortKind::event);
+    iv::ResourceContext resources;
+    auto tock_states = graph.tock_state_layout.create_storage(resources);
+    tock_states.initialize();
     iv::BackgroundCoverageState coverage{1};
     iv::BackgroundPropagationWorkspace propagation{
         graph.background_evaluation_plan, graph.specialization.sample_rate};
@@ -1393,7 +1411,7 @@ TEST(BackgroundEvaluationTransaction,
     std::array selections{pending.pin()};
     iv::BackgroundEvaluationTransaction transaction{
         graph,
-        nullptr,
+        tock_states,
         coverage,
         propagation,
         data,

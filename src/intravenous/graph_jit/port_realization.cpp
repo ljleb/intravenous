@@ -768,7 +768,9 @@ class PortRealizationSolver {
                 return {};
             };
             for (auto const& source : connection.source_channels) {
-                auto result = connect(bundles_.at(source.bundle).outputs.at(source.port));
+                auto result = connect(
+                    bundles_.at(source.channel.bundle)
+                        .outputs.at(source.channel.port));
                 if (!result) return result;
             }
             for (auto const& target : connection.target_channels) {
@@ -781,7 +783,7 @@ class PortRealizationSolver {
         for (auto const& connection : graph_.connections.configured_event_connections()) {
             for (auto const& source : connection.sources) {
                 auto const& source_variables =
-                    bundles_.at(source.bundle).event_outputs.at(source.port);
+                    bundles_.at(source.port.bundle).event_outputs.at(source.port.port);
                 if (!source_variables.ordering) continue;
                 for (auto const& target : connection.targets) {
                     auto const& target_variables =
@@ -822,7 +824,8 @@ class PortRealizationSolver {
         for (auto const& connection : graph_.connections.configured_sample_connections()) {
             for (auto const& source : connection.source_channels) {
                 auto const source_pace = resolved_local_pace(
-                    bundles_.at(source.bundle).outputs.at(source.port));
+                    bundles_.at(source.channel.bundle)
+                        .outputs.at(source.channel.port));
                 for (auto const& target : connection.target_channels) {
                     auto const target_pace = resolved_local_pace(
                         bundles_.at(target.bundle).inputs.at(target.port));
@@ -830,7 +833,7 @@ class PortRealizationSolver {
                     if (!difference)
                         return std::unexpected(std::move(difference.error()));
                     auto result = rates.unite(
-                        source.bundle, target.bundle, *difference,
+                        source.channel.bundle, target.bundle, *difference,
                         "continuous connection pace");
                     if (!result) return std::unexpected(std::move(result.error()));
                 }

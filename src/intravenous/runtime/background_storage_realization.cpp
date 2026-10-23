@@ -922,19 +922,32 @@ BackgroundStorageRealization::execute_operation(
         }
 
         struct RuntimeProjection {
-            ChannelConversionPlan conversion{};
+            std::optional<ChannelConversionPlan> conversion{};
             std::vector<std::size_t> source_indices{};
             std::vector<std::size_t> target_channels{};
+            std::vector<float> transform_coefficients{};
         };
         std::vector<RuntimeProjection> projections;
         auto append_projection = [&] (
             ChannelTypeId source_type,
             std::vector<std::size_t> source_indices,
             ChannelTypeId target_type,
-            std::vector<std::size_t> target_channels)
+            std::vector<std::size_t> target_channels,
+            std::size_t transform_source_count = 0,
+            std::size_t transform_target_count = 0,
+            std::vector<float> transform_coefficients = {})
             -> std::expected<void, std::string> {
-            if (source_indices.size() != channel_count(source_type)
-                || target_channels.size() != channel_count(target_type)) {
+            auto const source_count = transform_coefficients.empty()
+                ? channel_count(source_type)
+                : transform_source_count;
+            auto const target_count = transform_coefficients.empty()
+                ? channel_count(target_type)
+                : transform_target_count;
+            if (source_indices.size() != source_count
+                || target_channels.size() != target_count
+                || (!transform_coefficients.empty()
+                    && transform_coefficients.size()
+                        != source_count * target_count)) {
                 return std::unexpected(
                     "background sample projection has invalid channel arity");
             }
@@ -960,9 +973,14 @@ BackgroundStorageRealization::execute_operation(
                 return std::unexpected(
                     "background sample projection has no target channel");
             }
+            RuntimeProjection projection{
+                .source_indices = std::move(source_indices),
+                .target_channels = std::move(target_channels),
+                .transform_coefficients = std::move(transform_coefficients),
+            };
             try {
-                projections.push_back(RuntimeProjection{
-                    .conversion = ChannelConversionRegistry::plan(
+                if (projection.transform_coefficients.empty()) {
+                    projection.conversion = ChannelConversionRegistry::plan(
                         ChannelLayout{
                             .channel_type = source_type,
                             .sample_layout = SampleStreamLayout::interleaved,
@@ -970,15 +988,14 @@ BackgroundStorageRealization::execute_operation(
                         ChannelLayout{
                             .channel_type = target_type,
                             .sample_layout = SampleStreamLayout::interleaved,
-                        }),
-                    .source_indices = std::move(source_indices),
-                    .target_channels = std::move(target_channels),
-                });
+                        });
+                }
             } catch (std::exception const& error) {
                 return std::unexpected(
                     "background sample projection conversion is unsupported: "
                     + std::string(error.what()));
             }
+            projections.push_back(std::move(projection));
             return {};
         };
 
@@ -997,7 +1014,10 @@ BackgroundStorageRealization::execute_operation(
                     projection.source_type,
                     projection.source_channel_indices,
                     projection.target_type,
-                    projection.target_channels);
+                    projection.target_channels,
+                    projection.transform_source_channel_count,
+                    projection.transform_target_channel_count,
+                    projection.transform_coefficients);
                 if (!result) break;
             }
         }
@@ -1032,8 +1052,26 @@ BackgroundStorageRealization::execute_operation(
                                 .channel);
                     }
                     if (!result) break;
-                    projection.conversion.convert(
-                        source_values.data(), target_values.data(), 1);
+                    if (projection.conversion) {
+                        projection.conversion->convert(
+                            source_values.data(), target_values.data(), 1);
+                    } else {
+                        for (std::size_t target_channel = 0;
+                             target_channel < projection.target_channels.size();
+                             ++target_channel) {
+                            Sample value{};
+                            for (std::size_t source_channel = 0;
+                                 source_channel < projection.source_indices.size();
+                                 ++source_channel) {
+                                value += source_values[source_channel]
+                                    * projection.transform_coefficients[
+                                        target_channel
+                                            * projection.source_indices.size()
+                                        + source_channel];
+                            }
+                            target_values[target_channel] = value;
+                        }
+                    }
                     for (std::size_t channel = 0;
                          channel < projection.target_channels.size(); ++channel) {
                         if (!target->write(
@@ -1075,7 +1113,9 @@ BackgroundStorageRealization::execute_operation(
                 "background event materialization has no sources");
             break;
         }
-        if (materialization.conversion.source_type
+        if (materialization.source_conversions.size()
+                != materialization.inputs.size()
+            || materialization.conversion.source_type
                 != materialization.source_type
             || materialization.conversion.target_type
                 != materialization.target_type
@@ -1095,7 +1135,15 @@ BackgroundStorageRealization::execute_operation(
              source_index < materialization.inputs.size(); ++source_index) {
             auto const* source = event_read(
                 materialization.inputs[source_index]);
-            if (!source || source->type != materialization.source_type) {
+            auto const& source_conversion =
+                materialization.source_conversions[source_index];
+            if (!source || source->type != source_conversion.source_type
+                || source_conversion.target_type
+                    != materialization.source_type
+                || source_conversion.step_count
+                    > EventConversionPlan::max_steps
+                || !EventConversionRegistry::is_nonexpanding(
+                    source_conversion)) {
                 result = std::unexpected(
                     "background event materialization has no compatible source");
                 break;
@@ -1122,7 +1170,7 @@ BackgroundStorageRealization::execute_operation(
             }
             converted[source_index].resize(source_events.size());
             if (!source_events.empty()) {
-                auto const& conversion = materialization.conversion;
+                auto const& conversion = source_conversion;
                 auto const written = graph_jit::detail::
                     iv_graph_jit_convert_event_sequence(
                         static_cast<std::uint32_t>(conversion.source_type),
@@ -1179,8 +1227,23 @@ BackgroundStorageRealization::execute_operation(
                 "background event materialization merge failed");
             break;
         }
-        for (std::size_t event = 0; event < merged_count; ++event) {
-            if (!target->write(merged[event])) {
+        std::vector<TimedEvent> final_events(merged_count);
+        auto const& conversion = materialization.conversion;
+        auto const final_count = merged_count == 0
+            ? std::size_t{0}
+            : graph_jit::detail::iv_graph_jit_convert_event_sequence(
+                static_cast<std::uint32_t>(conversion.source_type),
+                static_cast<std::uint32_t>(conversion.target_type),
+                static_cast<std::uint32_t>(conversion.steps[0]),
+                static_cast<std::uint32_t>(conversion.steps[1]),
+                static_cast<std::uint32_t>(conversion.steps[2]),
+                conversion.step_count,
+                merged.data(),
+                merged_count,
+                final_events.data(),
+                final_events.size());
+        for (std::size_t event = 0; event < final_count; ++event) {
+            if (!target->write(final_events[event])) {
                 result = std::unexpected(
                     "background event materialization write failed");
                 break;

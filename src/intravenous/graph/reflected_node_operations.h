@@ -27,6 +27,10 @@ struct ReflectedSpan {
     std::size_t extent = 0;
 
     constexpr ReflectedSpan() noexcept = default;
+    constexpr ReflectedSpan(T* pointer, std::size_t extent) noexcept
+        : pointer(pointer)
+        , extent(extent)
+    {}
     constexpr ReflectedSpan(std::span<T> value) noexcept
         : pointer(value.data())
         , extent(value.size())
@@ -126,10 +130,10 @@ struct ReflectedEventOutputPortBinding {
     EventTypeId source_type = EventTypeId::empty;
     std::size_t history = 0;
     std::size_t latency = 0;
-    // Direct flow owns one primitive invocation, so the wrapper may clear the
-    // sequence when reconstructing the output facade. Materialized flow can
-    // span several primitive slices; in that case lowering clears the raw
-    // sequence once before the producer step and every slice appends.
+    // An unretained acyclic output can use this sequence as its complete
+    // root-call aggregate. If that primitive is sliced, every slice appends.
+    // Retained and cyclic outputs instead use one callback-local sequence per
+    // invocation and compiler operations accumulate it into canonical storage.
     bool append_existing = false;
     // Invocation-local authored state whose address is given only to the
     // Tick/persisted facade and its generated post-step operation.
@@ -234,8 +238,11 @@ struct ReflectedNodeRuntimeOperations {
 
     constexpr bool valid() const
     {
-        return declare_node != nullptr && tick_block != nullptr
-            && skip_block != nullptr;
+        // Tock-only primitives retain declaration/configuration operations in
+        // the configured graph but have no realtime callbacks. The complete
+        // compiler record validates that their Tock family is present.
+        return declare_node != nullptr
+            && (tick_block != nullptr) == (skip_block != nullptr);
     }
 };
 

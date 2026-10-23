@@ -212,27 +212,44 @@ TEST(ConfiguredGraphBinaryArchive, PreservesIntrinsicReplayMetadata)
 TEST(ConfiguredGraphBinaryArchive, RoundTripsConnectionLocalDetachMetadata)
 {
     iv::ConfiguredSampleConnection sample{
-        .source_type = iv::ChannelTypeId::mono,
+        .source_type = iv::ChannelTypeId::stereo,
         .source_channels = {
-            iv::SampleOutputChannelId{.bundle = 4, .port = 1, .channel = 0},
+            iv::ConfiguredSampleConnectionSource{
+                .channel = {
+                    .bundle = 4,
+                    .port = 1,
+                    .channel = 0,
+                },
+                .detach = iv::ConfiguredSampleConnectionDetach{
+                    .loop_extra_latency = 9,
+                    .initial_value_override = iv::Sample{-0.375f},
+                },
+            },
+            iv::ConfiguredSampleConnectionSource{
+                .channel = {
+                    .bundle = 5,
+                    .port = 2,
+                    .channel = 0,
+                },
+            },
         },
         .target_type = iv::ChannelTypeId::mono,
         .target_channels = {
             iv::SampleInputChannelId{.bundle = 6, .port = 0, .channel = 0},
         },
-        .detach = iv::ConfiguredSampleConnectionDetach{
-            .loop_extra_latency = 9,
-            .initial_value_override = iv::Sample{-0.375f},
-        },
     };
     iv::ConfiguredEventConnection event{
         .source_type = iv::EventTypeId::trigger,
-        .sources = {iv::EventOutputPortId{.bundle = 7, .port = 2}},
+        .sources = {
+            iv::ConfiguredEventConnectionSource{
+                .port = {.bundle = 7, .port = 2},
+                .detach = iv::ConfiguredEventConnectionDetach{
+                    .loop_extra_latency = 11,
+                },
+            },
+        },
         .target_type = iv::EventTypeId::trigger,
         .targets = {iv::EventInputPortId{.bundle = 8, .port = 3}},
-        .detach = iv::ConfiguredEventConnectionDetach{
-            .loop_extra_latency = 11,
-        },
     };
     iv::ConfiguredGraph configured;
     configured.connections = iv::GraphBuilderConnections::from_configured_connections(
@@ -246,16 +263,25 @@ TEST(ConfiguredGraphBinaryArchive, RoundTripsConnectionLocalDetachMetadata)
 
     auto const samples = decoded.connections.configured_sample_connections();
     ASSERT_EQ(samples.size(), 1u);
-    ASSERT_TRUE(samples[0].detach.has_value());
-    EXPECT_EQ(samples[0].detach->loop_extra_latency, 9u);
-    ASSERT_TRUE(samples[0].detach->initial_value_override.has_value());
+    ASSERT_EQ(samples[0].source_channels.size(), 2u);
+    ASSERT_TRUE(samples[0].source_channels[0].detach.has_value());
+    EXPECT_EQ(samples[0].source_channels[0].detach->loop_extra_latency, 9u);
+    ASSERT_TRUE(
+        samples[0].source_channels[0].detach->initial_value_override.has_value());
     EXPECT_FLOAT_EQ(
-        static_cast<float>(*samples[0].detach->initial_value_override), -0.375f);
+        static_cast<float>(
+            *samples[0].source_channels[0].detach->initial_value_override),
+        -0.375f);
+    EXPECT_FALSE(samples[0].source_channels[1].detach.has_value());
 
     auto const events = decoded.connections.configured_event_connections();
     ASSERT_EQ(events.size(), 1u);
-    ASSERT_TRUE(events[0].detach.has_value());
-    EXPECT_EQ(events[0].detach->loop_extra_latency, 11u);
+    ASSERT_EQ(events[0].sources.size(), 1u);
+    EXPECT_EQ(
+        events[0].sources[0].port,
+        (iv::EventOutputPortId{.bundle = 7, .port = 2}));
+    ASSERT_TRUE(events[0].sources[0].detach.has_value());
+    EXPECT_EQ(events[0].sources[0].detach->loop_extra_latency, 11u);
 }
 
 TEST(ConfiguredGraphBinaryArchive, RoundTripsOrthogonalPortAccessConfigs)

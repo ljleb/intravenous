@@ -14,8 +14,8 @@
 #include <vector>
 
 namespace iv {
-    // Selects which immutable NodeLayout extent one mutable storage instance
-    // owns. Background execution cannot address transition-only realtime bytes.
+    // Selects which immutable NodeLayout extent one mutable realtime storage
+    // instance owns. A steady-only instance omits transition suffix bytes.
     enum class NodeStorageExtent : std::uint8_t {
         full,
         steady_prefix,
@@ -38,16 +38,13 @@ namespace iv {
         struct Region {
             enum class Kind {
                 state,
-                tock_state,
                 local_array,
                 nested_node_states,
-                nested_node_background_states,
                 raw,
             };
 
             Kind kind = Kind::state;
             size_t owner_node = no_owner_node;
-            bool background_state_field = false;
             ptrdiff_t state_field_offset = 0;
             size_t storage_offset = 0;
             size_t size = 0;
@@ -80,7 +77,6 @@ namespace iv {
         struct ArrayBinding {
             size_t owner_node = 0;
             std::string id;
-            bool background_state_field = false;
             ptrdiff_t state_field_offset = 0;
             void const* element_type = nullptr;
             size_t element_size = 0;
@@ -97,13 +93,9 @@ namespace iv {
             void const* node_type = nullptr;
             char const* node_type_name = nullptr;
             std::optional<NodeStateStructure> state_structure {};
-            std::optional<NodeStateStructure> background_state_structure {};
             ptrdiff_t state_offset = 0;
             size_t state_size = 0;
             size_t state_alignment = 1;
-            ptrdiff_t background_state_offset = -1;
-            size_t background_state_size = 0;
-            size_t background_state_alignment = 1;
             std::vector<size_t> dependencies;
             NodeLifecycleCallbacks lifecycle;
         };
@@ -124,6 +116,26 @@ namespace iv {
         NodeStorage create_storage(
             ResourceContext const& resources,
             NodeStorageExtent extent = NodeStorageExtent::full) const;
+    };
+
+    struct TockStateLayout {
+        struct NodeRecord {
+            void const* node = nullptr;
+            void const* node_type = nullptr;
+            char const* node_type_name = nullptr;
+            std::optional<NodeStateStructure> state_structure {};
+            size_t state_offset = 0;
+            size_t state_size = 0;
+            size_t state_alignment = 1;
+            TockStateLifecycleCallbacks lifecycle {};
+        };
+
+        size_t storage_size = 0;
+        size_t storage_alignment = 1;
+        std::vector<NodeRecord> nodes{};
+
+        TockStateStorage create_storage(
+            ResourceContext const& resources) const;
     };
 
     struct NodeLayoutBuilder {
@@ -181,6 +193,7 @@ namespace iv {
         }
 
         NodeLayout build() &&;
+        [[nodiscard]] TockStateLayout build_tock_state_layout() const;
 
     private:
         size_t _max_block_size = 1;
@@ -190,6 +203,7 @@ namespace iv {
         size_t _storage_alignment = 1;
         bool _transition_suffix_started = false;
         std::vector<NodeLayout::NodeRecord> _nodes;
+        std::vector<TockStateLayout::NodeRecord> _tock_states;
         std::vector<NodeLayout::Region> _regions;
         std::vector<NodeLayout::ArrayBinding> _imports;
         std::vector<NodeLayout::ArrayBinding> _exports;
@@ -205,8 +219,6 @@ namespace iv {
         friend void details::declare_local_array(
             NodeLayoutBuilder&, details::NodeLayoutArrayDeclaration const&);
         friend size_t details::declare_nested_node_states(
-            NodeLayoutBuilder&, size_t, ptrdiff_t);
-        friend size_t details::declare_nested_node_background_states(
             NodeLayoutBuilder&, size_t, ptrdiff_t);
         friend void details::finalize_nested_node_states(
             NodeLayoutBuilder&, size_t, std::vector<size_t>);
@@ -270,7 +282,6 @@ namespace iv {
         size_t allocation_size = 0;
         std::unique_ptr<std::byte[], StorageDeleter> storage;
         std::vector<size_t> constructed_nodes;
-        std::vector<size_t> constructed_background_states;
         std::vector<size_t> initialized_nodes;
 
         NodeStorage();
@@ -287,7 +298,6 @@ namespace iv {
         std::span<std::byte> buffer() const;
         size_t max_block_size() const;
         void* state_ptr(size_t node_index) const;
-        void* background_state_ptr(size_t node_index) const;
         std::span<std::byte> region_bytes(NodeLayout::RegionHandle region) const;
 
         template<typename A>
@@ -307,6 +317,40 @@ namespace iv {
         void initialize(NodeStorage const* previous = nullptr);
         void release();
         void destroy_constructed_states();
+    };
+
+    struct TockStateStorage {
+        struct StorageDeleter {
+            size_t alignment = alignof(std::max_align_t);
+
+            constexpr StorageDeleter() noexcept = default;
+            constexpr explicit StorageDeleter(size_t alignment_) noexcept
+                : alignment(alignment_)
+            {}
+
+            void operator()(std::byte* p) const noexcept;
+        };
+
+        TockStateLayout const* layout = nullptr;
+        ResourceContext const* resources = nullptr;
+        std::unique_ptr<std::byte[], StorageDeleter> storage;
+        std::vector<size_t> constructed_nodes{};
+        std::vector<size_t> initialized_nodes{};
+
+        TockStateStorage();
+        TockStateStorage(
+            TockStateLayout const& layout,
+            ResourceContext const& resources);
+        TockStateStorage(TockStateStorage&&) noexcept;
+        TockStateStorage& operator=(TockStateStorage&&) noexcept;
+        TockStateStorage(TockStateStorage const&) = delete;
+        TockStateStorage& operator=(TockStateStorage const&) = delete;
+        ~TockStateStorage();
+
+        void* state_ptr(size_t node_index) const;
+        void initialize();
+        void release() noexcept;
+        void destroy_constructed_states() noexcept;
     };
 
     struct NodeStorage::Migration {

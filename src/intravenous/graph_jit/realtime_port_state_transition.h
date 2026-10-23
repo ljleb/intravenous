@@ -80,11 +80,15 @@ struct SampleRealtimePortStateTransfer {
 
 // Concrete cold descriptor for selecting/converting one predecessor event
 // interval into successor steady or transition storage. Several descriptors
-// may merge disjoint roles or distinct indexed producers into one aggregate.
+// may merge disjoint roles or producer contributions into one aggregate.
 // Ephemeral Sequential payloads are rebased across a transport seam before
 // this cutover-relative filter is applied.
 struct EventRealtimePortStateTransfer {
     std::size_t transition_index = 0;
+    // True when the same semantic state must also populate another steady
+    // representation. This descriptor does not satisfy the one-primary-
+    // transfer requirement for transition_index.
+    bool supplemental_target = false;
     bool target_transition_only = false;
     EventRealtimePortStateAccess source_access =
         EventRealtimePortStateAccess::callback_only;
@@ -97,8 +101,8 @@ struct EventRealtimePortStateTransfer {
     // Populated when several semantic output states share one indexed target
     // aggregate. Every inserted event receives this stable producer index.
     std::optional<std::size_t> target_index{};
-    // Complete successor interval; events outside the inherited sub-interval
-    // are authoritatively absent after reconstruction.
+    // Successor interval initialized by this descriptor. Descriptors which
+    // share a physical target contribute the union of these intervals.
     std::int64_t target_begin = 0;
     std::int64_t target_end = 0;
     std::int64_t inherited_begin = 0;

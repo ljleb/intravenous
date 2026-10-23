@@ -207,6 +207,17 @@ struct EventRealtimePortStateStorageView {
     std::optional<std::size_t> callback_arena_offset{};
 };
 
+// One Tick output-latency state whose future interval is present in a retained
+// event input representation. requirement_index names the output-latency
+// requirement in the same compiled graph. conversion is the exact path from
+// that output's raw type to the retained input type. target_source_index is
+// present only when the retained representation owns a source-index sidecar.
+struct EventRealtimePortStateFutureSource {
+    std::size_t requirement_index = 0;
+    EventConversionPlan conversion{};
+    std::optional<std::size_t> target_source_index{};
+};
+
 struct EventRealtimePortStateRealization {
     std::size_t requirement_index = 0;
     // Exact representation bound to the authored node callback.
@@ -226,6 +237,12 @@ struct EventRealtimePortStateRealization {
     std::optional<EventConversionPlan> materialization_conversion{};
     std::size_t materialization_history_samples = 0;
     bool materialization_selects_invocation_window = false;
+
+    // Input history and source-authored future events can occupy one retained
+    // producer-group representation. Transition planning uses these records to
+    // reconstruct its future interval from the independently owned output
+    // latency states without changing steady execution.
+    std::vector<EventRealtimePortStateFutureSource> retained_future_sources{};
 };
 
 struct RealtimePortStateRealizations {

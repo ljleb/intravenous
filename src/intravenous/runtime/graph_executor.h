@@ -148,9 +148,10 @@ class GraphExecutor {
     };
 
     struct BackgroundGeneration {
-        // Uses the canonical layout's steady prefix. Transition-only realtime
-        // suffix bytes are neither allocated nor addressable in this instance.
-        NodeStorage storage{};
+        // Background-only state is a separate sidecar. Pending generations may
+        // allocate it on the control path, but only the background worker
+        // constructs, initializes, releases, and destroys authored TockState.
+        TockStateStorage tock_states{};
         BackgroundCoverageState coverage{};
         BackgroundPropagationWorkspace propagation;
         std::vector<std::unique_ptr<PendingQueue>> pending_inputs{};
@@ -191,7 +192,6 @@ class GraphExecutor {
         BackgroundGeneration background;
         std::unique_ptr<RealtimePersistedState> initial_persisted_state{};
         std::optional<NodeStorage::Migration> realtime_migration{};
-        std::optional<NodeStorage::Migration> background_migration{};
         std::optional<BackgroundCoverageState::Migration>
             background_coverage_migration{};
         // Fully checked ownership/range reconciliation and physical transfer
@@ -224,6 +224,7 @@ class GraphExecutor {
             AsyncWorkSignal& background_work_signal);
 
         void initialize_first_generation();
+        void initialize_first_background_generation();
         void prepare_realtime_migration_from(ExecutionGeneration& previous);
         void prepare_background_migration_from(
             ExecutionGeneration& previous,
@@ -354,8 +355,9 @@ public:
     [[nodiscard]] GraphExecutorStageContext prepare_stage(
         std::uint64_t successor_generation) const noexcept;
 
-    // Builds a complete pending execution generation and prepares both storage
-    // migrations without copying mutable active state. A newer pending
+    // Builds a complete pending execution generation and prepares realtime
+    // state migration plus background coverage reconciliation without copying
+    // mutable active state. A newer pending
     // generation supersedes an older one without disturbing the active one.
     // If realtime activated a different predecessor after prepare_stage(), the
     // caller must specialize again from a fresh context.

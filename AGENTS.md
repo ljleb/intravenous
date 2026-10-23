@@ -22,3 +22,18 @@ In particular:
 - write implementation tests after the feature's actual shape is known, then refactor
   the working bottom-up implementation without changing its semantics.
 
+## Communication and repository terminology
+
+When describing source code, use the repository's existing identifiers and terms.
+Name the relevant type, field, function, node-bundle kind, and file before describing
+their relationship.
+
+Do not introduce an umbrella term for several source concepts and present it as a
+repository concept. If a temporary shorthand is useful, label it as local shorthand,
+define the exact identifiers that it includes, and do not imply that one source type
+implements it.
+
+Explain implementation friction through the concrete records that enter a function,
+the fields that the function can preserve, and the output record that is insufficient.
+Diagrams and conceptual summaries may supplement that explanation, but they must not
+replace it.

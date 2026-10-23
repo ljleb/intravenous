@@ -754,7 +754,8 @@ TEST(BackgroundStorageRealization, ExecutesHeterogeneousSampleProjectionPlan)
     EXPECT_FLOAT_EQ(output->at(index(11), 1).value, 10.0f);
 }
 
-TEST(BackgroundStorageRealization, ConvertsAndStablyMergesEventSources)
+TEST(BackgroundStorageRealization,
+     ConvertsEventSourcesBeforeMergeAndConvertsTheMergedStream)
 {
     iv::graph_jit::BackgroundEvaluationPlan plan;
     plan.ports = {
@@ -781,25 +782,30 @@ TEST(BackgroundStorageRealization, ConvertsAndStablyMergesEventSources)
             .kind = iv::PortKind::event,
             .storage = iv::graph_jit::PortStorageKind::background,
             .output_port = 1,
-            .event_type = iv::EventTypeId::midi,
+            .event_type = iv::EventTypeId::boundary,
             .max_events_per_index = 1.0,
         },
         {
             .kind = iv::PortKind::event,
             .storage = iv::graph_jit::PortStorageKind::background,
-            .event_type = iv::EventTypeId::boundary,
+            .event_type = iv::EventTypeId::trigger,
             .max_events_per_index = 2.0,
             .event_materialization = 0,
         },
     };
-    auto const conversion = iv::EventConversionRegistry::instance().plan(
+    auto const midi_to_boundary = iv::EventConversionRegistry::instance().plan(
         iv::EventTypeId::midi, iv::EventTypeId::boundary);
+    auto const boundary_identity = iv::EventConversionRegistry::instance().plan(
+        iv::EventTypeId::boundary, iv::EventTypeId::boundary);
+    auto const boundary_to_trigger = iv::EventConversionRegistry::instance().plan(
+        iv::EventTypeId::boundary, iv::EventTypeId::trigger);
     plan.storage.event_materializations = {{
         .storage = iv::graph_jit::PortStorageKind::background,
         .inputs = {0, 1},
-        .source_type = iv::EventTypeId::midi,
-        .target_type = iv::EventTypeId::boundary,
-        .conversion = conversion,
+        .source_conversions = {midi_to_boundary, boundary_identity},
+        .source_type = iv::EventTypeId::boundary,
+        .target_type = iv::EventTypeId::trigger,
+        .conversion = boundary_to_trigger,
         .output = 2,
     }};
     plan.storage.direct_events = {{.storage = 0}};
@@ -835,23 +841,22 @@ TEST(BackgroundStorageRealization, ConvertsAndStablyMergesEventSources)
     }));
     ASSERT_TRUE(realization.event_write(1)->write({
         .time = index(1),
-        .value = iv::MidiEvent{
-            .bytes = {0x80, 60, 0},
-            .size = 3,
-        },
+        .value = iv::BoundaryEvent{.is_begin = true},
     }));
 
     ASSERT_TRUE(realization.seal().has_value());
     ASSERT_TRUE(realization.execute_operation(0).has_value());
     ASSERT_TRUE(realization.execute_operation(1).has_value());
-    std::vector<bool> boundaries;
+    std::vector<iv::GlobalIndex> triggers;
     realization.event_read(2)->for_each(
         range(0, 4),
         [&](iv::TimedEvent const& event) {
-            boundaries.push_back(std::get<iv::BoundaryEvent>(event.value)
-                .is_begin);
+            EXPECT_TRUE(std::holds_alternative<iv::TriggerEvent>(event.value));
+            triggers.push_back(event.time);
         });
-    EXPECT_EQ(boundaries, (std::vector<bool>{true, false}));
+    EXPECT_EQ(
+        triggers,
+        (std::vector<iv::GlobalIndex>{index(1), index(1)}));
 }
 
 TEST(BackgroundStorageRealization, ResolvesAnonymousGenerationLocalOutputHandle)
@@ -893,6 +898,7 @@ TEST(BackgroundEvaluationCallFrame, OwnsOperationFramesAndTockBindings)
 {
     iv::graph_jit::BackgroundEvaluationPlan plan;
     plan.nodes = {{
+        .tock_state_node = 0,
         .authored_tock_execution = true,
         .inputs = {0},
         .outputs = {1, 2},
@@ -1044,9 +1050,16 @@ TEST(BackgroundEvaluationCallFrame, OwnsOperationFramesAndTockBindings)
     ASSERT_TRUE(realization.sample_write(0)->write(index(10), 0, 4.0f));
     ASSERT_TRUE(realization.seal().has_value());
 
+    iv::ResourceContext resources;
+    iv::TockStateLayout tock_layout;
+    tock_layout.nodes.resize(plan.nodes.size());
+    auto tock_states = tock_layout.create_storage(resources);
+    tock_states.initialize();
+
     iv::BackgroundEvaluationCallFrame frame{
         plan,
         realization,
+        tock_states,
         {
             .binding_coverage =
                 {
@@ -1219,9 +1232,15 @@ TEST(BackgroundEvaluationCallFrame, ReservesAndValidatesReplaySchedule)
              4, index_coverage({{0, 10}}))}};
     ASSERT_TRUE(realization.sample_write(0)->write(index(0), 0, 3.0f));
     ASSERT_TRUE(realization.seal().has_value());
+    iv::ResourceContext resources;
+    iv::TockStateLayout tock_layout;
+    tock_layout.nodes.resize(plan.nodes.size());
+    auto tock_states = tock_layout.create_storage(resources);
+    tock_states.initialize();
     iv::BackgroundEvaluationCallFrame frame{
         plan,
         realization,
+        tock_states,
         {.binding_coverage = std::vector<iv::IndexCoverage>(
              4, index_coverage({{0, 10}}))}};
     EXPECT_EQ(frame.replay_sample_inputs(0).size(), 1);
@@ -1347,9 +1366,15 @@ TEST(
             },
         }};
     ASSERT_TRUE(realization.seal().has_value());
+    iv::ResourceContext resources;
+    iv::TockStateLayout tock_layout;
+    tock_layout.nodes.resize(plan.nodes.size());
+    auto tock_states = tock_layout.create_storage(resources);
+    tock_states.initialize();
     iv::BackgroundEvaluationCallFrame frame{
         plan,
         realization,
+        tock_states,
         {
             .binding_coverage = {
                 index_coverage({{0, 4}}),

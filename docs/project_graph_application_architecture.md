@@ -944,6 +944,11 @@ The implementation checkpoints now stand as follows:
    **target work, not landed**.
    The detailed dependency order is normative in
    [coverage_and_background_evaluation.md §32](./coverage_and_background_evaluation.md#32-implementation-landing-order).
+   Implementation update (2026-10-21): the storage-split portion of this status
+   is superseded. Current source places `TockState` in one compact,
+   generation-local background sidecar owned and lifecycle-managed by
+   `BackgroundExecutor`; `NodeStorage` no longer contains `TockState`. The
+   remaining target-work qualifications in this item are unchanged.
 8. **Landed (compiler shell + storage/lifecycle ABI cleanup):** `GraphJit`
    synchronously captures exact package LLVM/provenance, resolves compiler
    anchors/config relocations, verifies and O3 optimizes generated project LLVM,

@@ -64,20 +64,20 @@ class BackgroundEvaluationTransaction {
 
 public:
     BackgroundEvaluationTransaction(CompiledGraph const& graph,
-                                    std::byte* node_storage,
+                                    TockStateStorage& tock_states,
                                     BackgroundCoverageState& coverage,
                                     BackgroundPropagationWorkspace& propagation,
                                     PersistedDataStore& data,
                                     BackgroundTransactionInputs inputs = {});
     BackgroundEvaluationTransaction(CompiledGraph const& graph,
-                                    std::byte* node_storage,
+                                    TockStateStorage& tock_states,
                                     BackgroundCoverageState& coverage,
                                     BackgroundPropagationWorkspace& propagation,
                                     PersistedDataStore& data,
                                     TickMaterializationStore& materializations,
                                     BackgroundTransactionInputs inputs = {});
     BackgroundEvaluationTransaction(CompiledGraph const& graph,
-                                    std::byte* node_storage,
+                                    TockStateStorage& tock_states,
                                     BackgroundCoverageState& coverage,
                                     BackgroundPropagationWorkspace& propagation,
                                     PersistedDataStore& data,

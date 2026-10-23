@@ -44,9 +44,9 @@ struct NodeImplementation {
     bool block_input_access = false;
 
     // Host declaration data is part of lowering because the canonical
-    // NodeLayout must be finalized before final LLVM is emitted. That lets
-    // generated code embed State/TockState/raw-region offsets as constants
-    // and gives O3 the opportunity to optimize through those addresses.
+    // realtime NodeLayout must be finalized before final LLVM is emitted. That
+    // lets generated code embed State/raw-region offsets as constants. The
+    // separately retained TockState metadata creates background sidecars.
     void const* node_data = nullptr;
     NodeStateStructures const* state_structures = nullptr;
     std::size_t (*declare_node)(
@@ -128,15 +128,15 @@ struct LoweredGraphTransition {
 
 // The lowerer owns graph analysis and canonical storage planning as well as
 // selected primitive-LLVM import/inlining and construction of the complete
-// project module. It must finish node_layout before emitting final storage
-// accesses into output_module. State, TockState, graph-persistent arrays,
-// and bounded compiler workspaces therefore share one NodeStorage allocation,
-// and generated accesses may use final NodeLayout offsets as constants.
+// project module. It must finish node_layout before emitting final realtime
+// storage accesses into output_module. TockState remains separately owned
+// background sidecar state and is supplied through background call frames.
 // Immutable lowering-shared tables should be emitted as LLVM globals so their
 // lifetime is exactly the materialized ORC generation.
 struct LoweringOutput {
     ResolvedPortRealization port_realization{};
     NodeLayout node_layout{};
+    TockStateLayout tock_state_layout{};
     BackgroundEvaluationPlan background_evaluation_plan{};
     RealtimePortStateRequirements realtime_port_state_requirements{};
     RealtimePortStateRealizations realtime_port_state_realizations{};

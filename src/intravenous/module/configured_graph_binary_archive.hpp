@@ -45,7 +45,7 @@ struct SerializedConfiguredGraph {
 namespace iv::binary_wire_details {
 
 inline constexpr std::uint32_t archive_magic = 0x49564147; // IVAG
-inline constexpr std::uint32_t archive_version = 9;
+inline constexpr std::uint32_t archive_version = 10;
 
 class Writer {
 public:
@@ -933,25 +933,29 @@ inline SerializedConfiguredGraph serialize_binary_configured_graph(
     auto const samples = configured.connections.configured_sample_connections();
     writer.list(samples, [&](ConfiguredSampleConnection const& value) {
         write_enum(writer, value.source_type);
-        write_values<SampleOutputChannelId>(writer, value.source_channels, write_output_channel);
+        writer.list(value.source_channels, [&](auto const& source) {
+            write_output_channel(writer, source.channel);
+            writer.flag(source.detach.has_value());
+            if (!source.detach) return;
+            writer.size(source.detach->loop_extra_latency);
+            writer.flag(source.detach->initial_value_override.has_value());
+            if (source.detach->initial_value_override)
+                writer.pod(source.detach->initial_value_override->value);
+        });
         write_enum(writer, value.target_type);
         write_values<SampleInputChannelId>(writer, value.target_channels, write_input_channel);
-        writer.flag(value.detach.has_value());
-        if (value.detach) {
-            writer.size(value.detach->loop_extra_latency);
-            writer.flag(value.detach->initial_value_override.has_value());
-            if (value.detach->initial_value_override)
-                writer.pod(value.detach->initial_value_override->value);
-        }
     });
     auto const events = configured.connections.configured_event_connections();
     writer.list(events, [&](ConfiguredEventConnection const& value) {
         write_enum(writer, value.source_type);
-        write_values<EventOutputPortId>(writer, value.sources, write_event_output_port);
+        writer.list(value.sources, [&](auto const& source) {
+            write_event_output_port(writer, source.port);
+            writer.flag(source.detach.has_value());
+            if (source.detach)
+                writer.size(source.detach->loop_extra_latency);
+        });
         write_enum(writer, value.target_type);
         write_values<EventInputPortId>(writer, value.targets, write_event_input_port);
-        writer.flag(value.detach.has_value());
-        if (value.detach) writer.size(value.detach->loop_extra_latency);
     });
 
     auto const public_ports = configured.public_ports.configured_record();
@@ -1096,31 +1100,44 @@ inline ConfiguredGraph deserialize_binary_configured_graph(
     auto sample_connections = read_list<ConfiguredSampleConnection>(reader, [&] {
         ConfiguredSampleConnection result{
             .source_type = read_enum<ChannelTypeId>(reader),
-            .source_channels = read_values<SampleOutputChannelId>(reader, read_output_channel),
-            .target_type = read_enum<ChannelTypeId>(reader),
-            .target_channels = read_values<SampleInputChannelId>(reader, read_input_channel),
         };
-        if (reader.flag()) {
-            ConfiguredSampleConnectionDetach detach{
-                .loop_extra_latency = reader.size(),
-            };
-            if (reader.flag()) detach.initial_value_override = Sample{reader.pod<Sample::storage>()};
-            result.detach = detach;
-        }
+        result.source_channels = read_list<ConfiguredSampleConnectionSource>(
+            reader, [&] {
+                ConfiguredSampleConnectionSource source{
+                    .channel = read_output_channel(reader),
+                };
+                if (!reader.flag()) return source;
+                ConfiguredSampleConnectionDetach detach{
+                    .loop_extra_latency = reader.size(),
+                };
+                if (reader.flag())
+                    detach.initial_value_override =
+                        Sample{reader.pod<Sample::storage>()};
+                source.detach = detach;
+                return source;
+            });
+        result.target_type = read_enum<ChannelTypeId>(reader);
+        result.target_channels =
+            read_values<SampleInputChannelId>(reader, read_input_channel);
         return result;
     });
     auto event_connections = read_list<ConfiguredEventConnection>(reader, [&] {
         ConfiguredEventConnection result{
             .source_type = read_enum<EventTypeId>(reader),
-            .sources = read_values<EventOutputPortId>(reader, read_event_output_port),
+            .sources = read_list<ConfiguredEventConnectionSource>(reader, [&] {
+                ConfiguredEventConnectionSource source{
+                    .port = read_event_output_port(reader),
+                };
+                if (reader.flag()) {
+                    source.detach = ConfiguredEventConnectionDetach{
+                        .loop_extra_latency = reader.size(),
+                    };
+                }
+                return source;
+            }),
             .target_type = read_enum<EventTypeId>(reader),
             .targets = read_values<EventInputPortId>(reader, read_event_input_port),
         };
-        if (reader.flag()) {
-            result.detach = ConfiguredEventConnectionDetach{
-                .loop_extra_latency = reader.size(),
-            };
-        }
         return result;
     });
     ConfiguredPublicPortsRecord public_ports{.boundary = reader.size(),

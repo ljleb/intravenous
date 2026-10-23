@@ -212,7 +212,7 @@ extern "C" std::size_t iv_graph_jit_merge_event_sequences_into_home(
         }
         if (source_remaining[source] > target_capacity - total_count) {
             // Planning reserves enough aggregate capacity. Preserve the
-            // producer-home sequence if that invariant is ever violated.
+            // prepopulated target prefix if that invariant is ever violated.
             return target_count;
         }
         total_count += source_remaining[source];
@@ -283,6 +283,9 @@ extern "C" std::size_t iv_graph_jit_materialize_event_sequence(
     std::uint32_t step2,
     std::size_t step_count,
     void const* source_events,
+    std::size_t const* source_indices,
+    std::size_t source_index_filter,
+    std::uint32_t filter_source_index,
     std::size_t source_capacity,
     std::size_t source_read_index,
     std::size_t source_write_index,
@@ -296,6 +299,7 @@ extern "C" std::size_t iv_graph_jit_materialize_event_sequence(
         || source_type >= static_cast<std::uint32_t>(EventTypeId::count)
         || target_type >= static_cast<std::uint32_t>(EventTypeId::count)
         || source_events == nullptr || target_events == nullptr
+        || (filter_source_index != 0 && source_indices == nullptr)
         || (source_capacity != 0 && !is_power_of_2(source_capacity))) {
         return 0;
     }
@@ -328,7 +332,12 @@ extern "C" std::size_t iv_graph_jit_materialize_event_sequence(
 
     std::size_t written = 0;
     for (std::size_t offset = 0; offset < available; ++offset) {
-        auto const& event = source[(source_read_index + offset) & mask];
+        auto const source_offset = (source_read_index + offset) & mask;
+        if (filter_source_index != 0
+            && source_indices[source_offset] != source_index_filter) {
+            continue;
+        }
+        auto const& event = source[source_offset];
         if (!window.contains(event.time)) {
             continue;
         }

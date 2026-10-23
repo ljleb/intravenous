@@ -237,8 +237,10 @@ std::unordered_map<NodeCodeKey, IrNodeRecord, NodeCodeKeyHash> scan_node_records
                 "malformed iv_node_types block input access flag");
         }
         IrNodeRecord parsed{
-            .tick_block = compiler_callback(operations->getOperand(1), "tick_block", true),
-            .skip_block = compiler_callback(operations->getOperand(2), "skip_block", true),
+            .tick_block = compiler_callback(
+                operations->getOperand(1), "tick_block", false),
+            .skip_block = compiler_callback(
+                operations->getOperand(2), "skip_block", false),
             .tock_coverage = compiler_callback(
                 operations->getOperand(3), "tock_coverage", false),
             .propagate_forward_coverage = compiler_callback(
@@ -694,7 +696,11 @@ void verify_compiler_record(
             "NodeCompilerRecord state/replay ABI disagrees with retained package LLVM for node '"
                 + captured.identity.node_type_id + "'");
     }
-    if (static_cast<bool>(accepted.operations.tock_coverage)
+    if (static_cast<bool>(accepted.operations.tick_block)
+            != static_cast<bool>(ir_record.tick_block)
+        || static_cast<bool>(accepted.operations.skip_block)
+            != static_cast<bool>(ir_record.skip_block)
+        || static_cast<bool>(accepted.operations.tock_coverage)
             != static_cast<bool>(ir_record.tock_coverage)
         || static_cast<bool>(accepted.operations.propagate_forward_coverage)
             != static_cast<bool>(ir_record.propagate_forward_coverage)
@@ -762,6 +768,49 @@ void validate_node_layout(NodeLayout const& layout)
     }
 }
 
+void validate_tock_state_layout(
+    TockStateLayout const& layout, NodeLayout const& node_layout)
+{
+    if (layout.nodes.size() != node_layout.nodes.size()) {
+        fail(
+            GraphJitDiagnosticStage::lowering,
+            "graph lowerer returned a TockStateLayout whose node count disagrees with NodeLayout");
+    }
+    if (!valid_storage_alignment(layout.storage_alignment)) {
+        fail(
+            GraphJitDiagnosticStage::lowering,
+            "graph lowerer returned a TockStateLayout with invalid storage alignment");
+    }
+    for (std::size_t node_index = 0; node_index < layout.nodes.size();
+         ++node_index) {
+        auto const& state = layout.nodes[node_index];
+        if (!valid_storage_alignment(state.state_alignment)) {
+            fail(
+                GraphJitDiagnosticStage::lowering,
+                "graph lowerer returned a TockStateLayout node with invalid alignment at index "
+                    + std::to_string(node_index));
+        }
+        if (state.state_offset % state.state_alignment != 0
+            || layout.storage_alignment < state.state_alignment
+            || state.state_offset > layout.storage_size
+            || state.state_size
+                > layout.storage_size - state.state_offset) {
+            fail(
+                GraphJitDiagnosticStage::lowering,
+                "graph lowerer returned an invalid TockStateLayout placement at index "
+                    + std::to_string(node_index));
+        }
+        if (state.state_size != 0
+            && (!state.lifecycle.default_construct_background_state_fn
+                || !state.lifecycle.destroy_background_state_fn)) {
+            fail(
+                GraphJitDiagnosticStage::lowering,
+                "graph lowerer returned a TockStateLayout node without state lifetime operations at index "
+                    + std::to_string(node_index));
+        }
+    }
+}
+
 llvm::FunctionType* root_block_operation_type(llvm::LLVMContext& context)
 {
     auto* pointer = llvm::PointerType::getUnqual(context);
@@ -777,7 +826,7 @@ llvm::FunctionType* root_background_operation_type(llvm::LLVMContext& context)
 {
     auto* pointer = llvm::PointerType::getUnqual(context);
     return llvm::FunctionType::get(
-        llvm::Type::getVoidTy(context), {pointer, pointer}, false);
+        llvm::Type::getVoidTy(context), {pointer}, false);
 }
 
 void validate_root_operation(
@@ -817,6 +866,21 @@ void validate_lowering_output(
     graph_jit::LoweringOutput const& output)
 {
     validate_node_layout(output.node_layout);
+    validate_tock_state_layout(output.tock_state_layout, output.node_layout);
+    for (std::size_t node_index = 0;
+         node_index < output.background_evaluation_plan.nodes.size();
+         ++node_index) {
+        auto const& node = output.background_evaluation_plan.nodes[node_index];
+        if (node.authored_tock_execution
+            && (!node.tock_state_node
+                || *node.tock_state_node
+                    >= output.tock_state_layout.nodes.size())) {
+            fail(
+                GraphJitDiagnosticStage::lowering,
+                "graph lowerer returned an authored background node without a valid TockState sidecar index at index "
+                    + std::to_string(node_index));
+        }
+    }
 
     auto* block_type = root_block_operation_type(module.getContext());
     validate_root_operation(
@@ -1355,6 +1419,7 @@ public:
                 .package_revisions = std::move(package_revisions),
                 .port_realization = std::move(lowering->port_realization),
                 .node_layout = std::move(lowering->node_layout),
+                .tock_state_layout = std::move(lowering->tock_state_layout),
                 .background_evaluation_plan = std::move(lowering->background_evaluation_plan),
                 .realtime_port_state_requirements =
                     std::move(lowering->realtime_port_state_requirements),

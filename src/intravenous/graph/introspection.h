@@ -88,14 +88,14 @@ constexpr ConfiguredGraphConnectivity configured_graph_connectivity(
     for (auto const& connection : connections.configured_sample_connections()) {
         result.sample_inputs.insert_range(
             connection.target_channels.begin(), connection.target_channels.end());
-        result.sample_outputs.insert_range(
-            connection.source_channels.begin(), connection.source_channels.end());
+        for (auto const& source : connection.source_channels)
+            result.sample_outputs.insert(source.channel);
     }
     for (auto const& connection : connections.configured_event_connections()) {
         result.event_inputs.insert_range(
             connection.targets.begin(), connection.targets.end());
-        result.event_outputs.insert_range(
-            connection.sources.begin(), connection.sources.end());
+        for (auto const& source : connection.sources)
+            result.event_outputs.insert(source.port);
     }
     return result;
 }

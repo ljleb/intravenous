@@ -29,7 +29,8 @@ A batch of size one is always legal.
 
 ## 2. Authored callback vocabulary
 
-For ordinary Tick processing, a concrete node type authors **exactly one** of:
+One concrete executable node type authors **exactly one primary callback family**.
+It chooses either one ordinary Tick form:
 
 ```cpp
 void tick(TickSampleContext<MyNode> const&) const;
@@ -58,12 +59,24 @@ If neither is authored, the existing generated neutral/silence skip behavior rem
 the semantic default. The traits layer still exposes both normalized skip operations,
 so GraphJit may batch skipped nodes as readily as active nodes.
 
-A node with authored Tock production authors **exactly one** of:
+or one authored Tock form:
 
 ```cpp
 void tock_coverage(TockCoverageContext<MyNode>&) const;
 static void tock_coverage_batch(TockCoverageBatchContext<MyNode>&);
 ```
+
+It cannot author both families. Tick primitives declare only Tick outputs, and Tock
+primitives declare only Region/Coverage outputs. A module node is the composition
+mechanism when one authored abstraction should group realtime and background work.
+This restriction does not make output production cease to be a port-schema axis; it
+makes one executable primitive homogeneous in the execution domain that owns those
+outputs.
+
+Background replay does not weaken this rule. An eligible Tick primitive may be invoked
+off-thread through its normalized Tick operation, but that is a generated replay plan,
+not an implicit authored Tock callback. Conversely, an authored Tock callback never
+produces or backs an implicit Tick callback.
 
 Each authored coverage-propagation direction independently chooses its scalar or
 batched form:
@@ -332,6 +345,8 @@ struct NodeCompilerOperations {
 The exact reflected ABI remains an implementation detail, but the package compiler
 must retain LLVM definitions for both choices. GraphJit then selects an operation from
 scheduling/cost facts rather than from authored callback syntax.
+The conceptual fields are optional by execution domain: Tick/skip and
+Tock/propagation primary anchors are mutually exclusive on one primitive record.
 
 The reflected batch ABI should carry an explicit pointer/count or equivalent stable
 span record for lanes. It must not assume the object representation of
@@ -499,9 +514,11 @@ design requirement to phase it out.
 
 1. Add batch context/range types with lane proxies, `size()`, `operator[]`,
    `begin()`, and `end()`.
-2. Extend node concepts/validation so Tick accepts exactly one of `tick()`,
-   `tick_block()`, or `tick_block_batch()`; Tock accepts scalar or batch coverage; and
-   skip/propagation accept their corresponding optional scalar-or-batch forms.
+2. Extend node concepts/validation so each primitive accepts exactly one primary
+   family: one of `tick()`/`tick_block()`/`tick_block_batch()`, or one of
+   `tock_coverage()`/`tock_coverage_batch()`. Tick and Tock output declarations must
+   match that family. Skip/propagation accept their corresponding optional
+   scalar-or-batch forms.
 3. Add the complete normalized `do_*` scalar/batch helper pairs. Keep every authored
    callback-shape `if constexpr` inside that layer.
 4. Retain both scalar and batch compiler anchors in package bitcode/reflection and
@@ -521,8 +538,9 @@ design requirement to phase it out.
 
 1. Node authors choose the implementation shape; GraphJit sees normalized scalar and
    batched operations.
-2. `tick()`, `tick_block()`, and `tick_block_batch()` are mutually exclusive authored
-   Tick forms. `tick()` remains a supported optimized form.
+2. `tick()`, `tick_block()`, `tick_block_batch()`, `tock_coverage()`, and
+   `tock_coverage_batch()` form one exclusive primary choice: a primitive selects one
+   Tick form or one Tock form. `tick()` remains a supported optimized form.
 3. `skip_block_batch()` is a first-class authored callback. With no custom skip
    callback, both normalized skip forms are still generated.
 4. Batch contexts are ordinary ranges with `size()`, `operator[]`, `begin()`, and

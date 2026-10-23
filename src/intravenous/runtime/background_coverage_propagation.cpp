@@ -149,6 +149,8 @@ struct StableSampleConnectionSource {
 
 struct StableEventConnectionSource {
     graph_jit::StableOutputPortId port{};
+    EventTypeId source_type = EventTypeId::empty;
+    EventConversionPlan conversion{};
     graph_jit::PlannedDeliveryMechanism delivery =
         graph_jit::PlannedDeliveryMechanism::tick_to_sequential;
 
@@ -245,6 +247,8 @@ std::optional<StableInputConnectionDescription> describe_connection(
         }
         result.event_sources.push_back({
             .port = *plan.ports[*delivery.source_port].stable_identity,
+            .source_type = delivery.source_type,
+            .conversion = delivery.conversion,
             .delivery = delivery.mechanism,
         });
     }
@@ -920,7 +924,7 @@ BackgroundPropagationWorkspace::BackgroundPropagationWorkspace(
 
 [[nodiscard]] PreparedCoveragePropagation
 BackgroundPropagationWorkspace::prepare(
-    CompiledGraphBackgroundOperations const& operations, std::byte* storage,
+    CompiledGraphBackgroundOperations const& operations,
     BackgroundCoverageState const& coverage,
     CoveragePropagationRequest const& request,
     BackgroundCoverageDemandExpansion expansion)
@@ -967,7 +971,7 @@ BackgroundPropagationWorkspace::prepare(
         set_input_change(root.port, root.coverage, root.changed);
     }
 
-    operations.propagate_forward(storage, &call_);
+    operations.propagate_forward(&call_);
 
     for (auto const& root : request.input_demands) {
         require_input(root.port, root.required);
@@ -996,7 +1000,7 @@ BackgroundPropagationWorkspace::prepare(
             require_output(index, additional, true);
         }
     }
-    operations.propagate_reverse(storage, &call_);
+    operations.propagate_reverse(&call_);
 
     CoveragePropagationResult result;
     result.output_changes.reserve(output_changes_.size());

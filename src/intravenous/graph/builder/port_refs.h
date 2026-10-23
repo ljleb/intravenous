@@ -282,6 +282,7 @@ struct EventPortRef {
   explicit EventPortRef(GraphBuilder&, NodeBundlePortId bundle_port);
   explicit EventPortRef(
       GraphBuilder&, EventTypeId, std::span<EventOutputPortId const>);
+  explicit EventPortRef(GraphBuilder&, std::span<EventPortRef const>);
 
   constexpr EventPortRef& operator=(EventPortRef const&) = default;
   constexpr EventPortRef& operator=(EventPortRef&&) noexcept = default;

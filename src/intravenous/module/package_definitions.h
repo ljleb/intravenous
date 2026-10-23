@@ -514,6 +514,10 @@ RegisteredSignature const* node_constructor_signature()
         "IV_NODE requires inputs() and outputs() to return static constexpr tuples of authored port configs. " \
         "Each array carries both sample and event ports through its config variant. " \
         "Dynamic-arity or configuration-dependent nodes must remain internal lowering nodes."); \
+    static_assert(::iv::details::primary_callback_declaration_is_valid_v<Node>, \
+        "IV_NODE requires exactly one primary callback: tick(), tick_block(), or " \
+        "tock_coverage(). Tick nodes may declare only Tick outputs; Tock nodes may " \
+        "declare only Tock outputs. Use a module node to group both domains."); \
     static_assert(::iv::details::replay_declaration_is_valid_v<Node>, \
         "IV_NODE intrinsically replayable nodes must author tick() (not tick_block()), " \
         "have no State/TockState or RandomAccess inputs, and declare only " \

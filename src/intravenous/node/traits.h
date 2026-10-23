@@ -219,6 +219,18 @@ namespace iv {
         }
 
         template<typename Node>
+        consteval bool declares_tick_outputs()
+        {
+            if constexpr (!has_outputs<Node> || !has_constexpr_port_configs<Node>) {
+                return false;
+            } else {
+                return any_port_config(
+                    Node::outputs(),
+                    [](auto const& config) { return is_tick(config); });
+            }
+        }
+
+        template<typename Node>
         consteval bool declares_random_access_sample_inputs()
         {
             if constexpr (!has_inputs<Node> || !has_constexpr_port_configs<Node>) {
@@ -273,6 +285,10 @@ namespace iv {
         template<typename Node>
         inline constexpr bool declares_tock_outputs_v =
             declares_tock_outputs<Node>();
+
+        template<typename Node>
+        inline constexpr bool declares_tick_outputs_v =
+            declares_tick_outputs<Node>();
 
         template<typename Node>
         inline constexpr bool declares_random_access_sample_inputs_v =
@@ -338,10 +354,28 @@ namespace iv {
             { node.skip_block(context) } -> std::same_as<void>;
         };
 
+        // One concrete primitive has one authored execution domain. Tick and
+        // tick_block are alternative realtime forms; tock_coverage is the
+        // background form. A module node is the composition mechanism when a
+        // developer wants to group realtime and background work.
+        template<typename Node>
+        inline constexpr bool primary_callback_declaration_is_valid_v =
+            (static_cast<unsigned>(has_tick<Node>)
+                + static_cast<unsigned>(has_tick_block<Node>)
+                + static_cast<unsigned>(has_tock_coverage<Node>) == 1)
+            && (!has_skip_block<Node>
+                || has_tick<Node> || has_tick_block<Node>)
+            && (!declares_tock_outputs_v<Node>
+                || has_tock_coverage<Node>)
+            && (!has_tock_coverage<Node>
+                || (declares_tock_outputs_v<Node>
+                    && !declares_tick_outputs_v<Node>));
+
         template<typename Node>
         inline constexpr bool background_dsp_node_declaration_is_valid_v =
             background_state_type_is_valid_v<Node>
             && has_constexpr_port_configs<Node>
+            && primary_callback_declaration_is_valid_v<Node>
             && (!declares_tock_outputs_v<Node>
                 || has_tock_coverage<Node>)
             && (!has_tock_coverage<Node>

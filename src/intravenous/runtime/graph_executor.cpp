@@ -127,8 +127,7 @@ GraphExecutor::BackgroundGeneration::BackgroundGeneration(
     ResourceContext const& resources,
     RealtimeGeneration& realtime,
     AsyncWorkSignal& work_signal)
-    : storage(graph.node_layout.create_storage(
-          resources, NodeStorageExtent::steady_prefix))
+    : tock_states(graph.tock_state_layout.create_storage(resources))
     , coverage(graph.background_evaluation_plan.accumulators.output_change_count)
     , propagation(
         graph.background_evaluation_plan,
@@ -242,8 +241,16 @@ GraphExecutor::ExecutionGeneration::ExecutionGeneration(
 void GraphExecutor::ExecutionGeneration::initialize_first_generation()
 {
     realtime.storage.initialize();
-    background.storage.initialize();
     realtime_initialized = true;
+}
+
+void GraphExecutor::ExecutionGeneration::initialize_first_background_generation()
+{
+    if (background_initialized || background_coverage_migration) {
+        throw std::logic_error(
+            "GraphExecutor first background generation is already initialized or has migration state");
+    }
+    background.tock_states.initialize();
     background_initialized = true;
 }
 
@@ -251,7 +258,7 @@ void GraphExecutor::ExecutionGeneration::prepare_realtime_migration_from(
     ExecutionGeneration& previous)
 {
     if (realtime_initialized || background_initialized
-        || realtime_migration || background_migration
+        || realtime_migration
         || realtime_port_state_transition) {
         throw std::logic_error(
             "GraphExecutor generation migration is already prepared");
@@ -305,13 +312,10 @@ void GraphExecutor::ExecutionGeneration::prepare_background_migration_from(
     ExecutionGeneration& previous,
     PersistedDataStore& data)
 {
-    if (background_initialized || background_migration
-        || background_coverage_migration) {
+    if (background_initialized || background_coverage_migration) {
         throw std::logic_error(
             "GraphExecutor background generation migration is already prepared");
     }
-    background_migration.emplace(
-        background.storage.prepare_migration_from(previous.background.storage));
     background_coverage_migration.emplace(
         background.coverage.prepare_migration_from(
             previous.background.coverage,
@@ -394,13 +398,13 @@ void GraphExecutor::ExecutionGeneration::update_realtime_phase(
 
 void GraphExecutor::ExecutionGeneration::commit_background_migration()
 {
-    if (background_initialized || !background_migration
-        || !background_coverage_migration) {
+    if (background_initialized || !background_coverage_migration) {
         throw std::logic_error(
             "GraphExecutor background generation migration is not prepared");
     }
-    background_migration->commit();
-    background_migration.reset();
+    // TockState is non-semantic acceleration state. Each generation starts
+    // fresh on the background worker instead of migrating it across code.
+    background.tock_states.initialize();
     background_coverage_migration->commit();
     background.reconciliation_roots =
         background_coverage_migration->take_reconciliation_roots();
@@ -477,15 +481,20 @@ void GraphExecutor::BackgroundExecutor::install_first_generation(
         throw std::invalid_argument(
             "BackgroundExecutor cannot install an empty generation");
     }
-    std::lock_guard lock{commands_mutex_};
-    if (stopping_ || generation_chain_ || first_command_) {
-        throw std::logic_error(
-            "BackgroundExecutor cannot install this first generation");
+    {
+        std::lock_guard lock{commands_mutex_};
+        if (stopping_ || generation_chain_ || first_command_) {
+            throw std::logic_error(
+                "BackgroundExecutor cannot install this first generation");
+        }
+        current_generation_.store(
+            prepared->graph->project_generation, std::memory_order_relaxed);
+        generation_chain_ = std::move(prepared);
+        has_generation_.store(true, std::memory_order_release);
     }
-    current_generation_.store(
-        prepared->graph->project_generation, std::memory_order_relaxed);
-    generation_chain_ = std::move(prepared);
-    has_generation_.store(true, std::memory_order_release);
+    // Initialization belongs to the worker even when this graph has no
+    // immediate producer input or reconciliation work.
+    work_signal_.notify_work();
 }
 
 void GraphExecutor::BackgroundExecutor::enqueue(Command& command)
@@ -565,7 +574,16 @@ void GraphExecutor::BackgroundExecutor::run(std::stop_token stop) noexcept
         Command* command = nullptr;
         {
             std::lock_guard lock{commands_mutex_};
-            if (stopping_ || stop.stop_requested()) return;
+            if (stopping_ || stop.stop_requested()) {
+                // Run background lifecycle teardown on its owning worker.
+                for (auto* generation = generation_chain_.get(); generation;
+                     generation = generation->successor_owner.get()) {
+                    generation->background.tock_states.release();
+                    generation->background.tock_states
+                        .destroy_constructed_states();
+                }
+                return;
+            }
             if (first_command_) {
                 command = first_command_;
                 first_command_ = command->next;
@@ -880,7 +898,7 @@ GraphExecutor::evaluate_generation(
     background.select_inputs();
     BackgroundEvaluationTransaction transaction{
         *generation.graph,
-        background.storage.buffer().data(),
+        background.tock_states,
         background.coverage,
         background.propagation,
         persisted_data_,
@@ -975,6 +993,9 @@ GraphExecutor::BackgroundExecutor::process_available_work()
 {
     for (;;) {
         auto& current = generation();
+        if (!current.background_initialized) {
+            current.initialize_first_background_generation();
+        }
         current.background.select_inputs();
         if (current.background.reconciliation_required
             && !current.graph->background_operations.valid()) {

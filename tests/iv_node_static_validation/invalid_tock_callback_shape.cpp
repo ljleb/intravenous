@@ -8,7 +8,6 @@ struct InvalidInputOnlyTockCallback {
         return std::array {iv::input<iv::Sample>("input", iv::InputAccess::coverage)};
     }
 
-    void tick_block(iv::TickBlockContext<InvalidInputOnlyTockCallback> const&) const {}
     void tock_coverage(iv::TockCoverageContext<InvalidInputOnlyTockCallback>&) const {}
 };
 
@@ -36,7 +35,6 @@ struct InvalidOutputOnlyPropagationCallback {
         return std::array {iv::output<iv::Sample>("output", iv::OutputProduction::coverage)};
     }
 
-    void tick_block(iv::TickBlockContext<InvalidOutputOnlyPropagationCallback> const&) const {}
     void tock_coverage(
         iv::TockCoverageContext<InvalidOutputOnlyPropagationCallback>&) const {}
     void propagate_forward_coverage(

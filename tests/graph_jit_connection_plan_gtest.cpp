@@ -100,7 +100,7 @@ struct PlainSamplePass {
     void tick_block(iv::TickBlockContext<PlainSamplePass> const&) const {}
 };
 
-struct MixedAccessPass {
+struct PersistedSccPass {
     static constexpr auto inputs()
     {
         return std::array{iv::input<iv::Sample>("in", iv::InputAccess::sequential)};
@@ -108,19 +108,12 @@ struct MixedAccessPass {
 
     static constexpr auto outputs()
     {
-        return std::tuple{
-            iv::output<iv::Sample>("realtime", iv::OutputProduction::tick),
-            iv::output<iv::Sample>("background", iv::OutputProduction::coverage, iv::OutputRetention::persisted),
-        };
+        return std::array{iv::output<iv::Sample>(
+            "out", iv::OutputProduction::tick,
+            iv::OutputRetention::persisted)};
     }
 
-    void tick_block(iv::TickBlockContext<MixedAccessPass> const&) const {}
-    void tock_coverage(iv::TockCoverageContext<MixedAccessPass>&) const {}
-    void propagate_forward_coverage(
-        iv::PropagateForwardCoverageContext<MixedAccessPass>& context) const
-    {
-        context.template output<"background">().publish_coverage({});
-    }
+    void tick_block(iv::TickBlockContext<PersistedSccPass> const&) const {}
 };
 
 struct NeutralSamplePass {
@@ -174,6 +167,24 @@ struct PersistedTickEventSource {
 
     void tick_block(
         iv::TickBlockContext<PersistedTickEventSource> const&) const {}
+};
+
+struct TickMidiEventSource {
+    static constexpr auto inputs()
+    {
+        return std::tuple{};
+    }
+
+    static constexpr auto outputs()
+    {
+        return std::array{iv::event_output(
+            "out",
+            iv::EventTypeId::midi,
+            iv::OutputProduction::tick,
+            {.max_events_per_index = 0.25})};
+    }
+
+    void tick_block(iv::TickBlockContext<TickMidiEventSource> const&) const {}
 };
 
 struct MonoSource {
@@ -262,7 +273,6 @@ struct BackgroundSource {
         return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::coverage)};
     }
 
-    void tick_block(iv::TickBlockContext<BackgroundSource> const&) const {}
     void tock_coverage(iv::TockCoverageContext<BackgroundSource>&) const {}
     void propagate_forward_coverage(
         iv::PropagateForwardCoverageContext<BackgroundSource>& context) const
@@ -288,7 +298,6 @@ struct BackgroundStereoSource {
             })};
     }
 
-    void tick_block(iv::TickBlockContext<BackgroundStereoSource> const&) const {}
     void tock_coverage(iv::TockCoverageContext<BackgroundStereoSource>&) const {}
     void propagate_forward_coverage(
         iv::PropagateForwardCoverageContext<BackgroundStereoSource>& context) const
@@ -308,7 +317,6 @@ struct BackgroundSamplePass {
         return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::coverage)};
     }
 
-    void tick_block(iv::TickBlockContext<BackgroundSamplePass> const&) const {}
     void tock_coverage(iv::TockCoverageContext<BackgroundSamplePass>&) const {}
     void propagate_forward_coverage(
         iv::PropagateForwardCoverageContext<BackgroundSamplePass>& context) const
@@ -333,7 +341,6 @@ struct BackgroundEventPass {
         };
     }
 
-    void tick_block(iv::TickBlockContext<BackgroundEventPass> const&) const {}
     void tock_coverage(iv::TockCoverageContext<BackgroundEventPass>&) const {}
     void propagate_forward_coverage(
         iv::PropagateForwardCoverageContext<BackgroundEventPass>& context) const
@@ -356,7 +363,6 @@ struct BackgroundMidiSource {
         };
     }
 
-    void tick_block(iv::TickBlockContext<BackgroundMidiSource> const&) const {}
     void tock_coverage(iv::TockCoverageContext<BackgroundMidiSource>&) const {}
     void propagate_forward_coverage(
         iv::PropagateForwardCoverageContext<BackgroundMidiSource>&) const {}
@@ -373,7 +379,6 @@ struct TockTriggerSource {
         return std::array{iv::event_output("out", iv::EventTypeId::trigger, iv::OutputProduction::coverage, {.max_events_per_index = 0.5})};
     }
 
-    void tick_block(iv::TickBlockContext<TockTriggerSource> const&) const {}
     void tock_coverage(iv::TockCoverageContext<TockTriggerSource>&) const {}
     void propagate_forward_coverage(
         iv::PropagateForwardCoverageContext<TockTriggerSource>&) const {}
@@ -407,13 +412,12 @@ struct BackgroundTwoInputPass {
         return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::coverage)};
     }
 
-    void tick_block(iv::TickBlockContext<BackgroundTwoInputPass> const&) const {}
     void tock_coverage(iv::TockCoverageContext<BackgroundTwoInputPass>&) const {}
     void propagate_forward_coverage(
         iv::PropagateForwardCoverageContext<BackgroundTwoInputPass>&) const {}
 };
 
-struct OutputAccessRetentionModes {
+struct RealtimeOutputRetentionModes {
     static constexpr auto inputs()
     {
         return std::tuple{};
@@ -424,25 +428,39 @@ struct OutputAccessRetentionModes {
         return std::tuple{
             iv::output<iv::Sample>("realtime_ephemeral", iv::OutputProduction::tick, iv::OutputRetention::ephemeral),
             iv::output<iv::Sample>("realtime_persisted", iv::OutputProduction::tick, iv::OutputRetention::persisted),
-            iv::output<iv::Sample>("background_ephemeral", iv::OutputProduction::coverage, iv::OutputRetention::ephemeral),
-            iv::output<iv::Sample>("background_persisted", iv::OutputProduction::coverage, iv::OutputRetention::persisted),
-            iv::event_output("background_persisted_events", iv::EventTypeId::trigger, iv::OutputProduction::coverage, iv::OutputRetention::persisted, {.max_events_per_index = 0.25}),
         };
     }
 
     void constrain_ports(
-        iv::ConstrainPortsContext<OutputAccessRetentionModes>& ctx) const
+        iv::ConstrainPortsContext<RealtimeOutputRetentionModes>& ctx) const
     {
         ctx.output<"realtime_persisted">().history() = 3;
         ctx.output<"realtime_persisted">().latency() = 2;
     }
 
     void tick_block(
-        iv::TickBlockContext<OutputAccessRetentionModes> const&) const {}
+        iv::TickBlockContext<RealtimeOutputRetentionModes> const&) const {}
+};
+
+struct BackgroundOutputRetentionModes {
+    static constexpr auto inputs()
+    {
+        return std::tuple{};
+    }
+
+    static constexpr auto outputs()
+    {
+        return std::tuple{
+            iv::output<iv::Sample>("background_ephemeral", iv::OutputProduction::coverage, iv::OutputRetention::ephemeral),
+            iv::output<iv::Sample>("background_persisted", iv::OutputProduction::coverage, iv::OutputRetention::persisted),
+            iv::event_output("background_persisted_events", iv::EventTypeId::trigger, iv::OutputProduction::coverage, iv::OutputRetention::persisted, {.max_events_per_index = 0.25}),
+        };
+    }
+
     void tock_coverage(
-        iv::TockCoverageContext<OutputAccessRetentionModes>&) const {}
+        iv::TockCoverageContext<BackgroundOutputRetentionModes>&) const {}
     void propagate_forward_coverage(
-        iv::PropagateForwardCoverageContext<OutputAccessRetentionModes>&) const {}
+        iv::PropagateForwardCoverageContext<BackgroundOutputRetentionModes>&) const {}
 };
 
 struct RealtimeSink {
@@ -888,6 +906,185 @@ TEST(GraphJitConnectionPlan, DerivesScheduleTemporalRequirementsAndProducerPolic
         }));
 }
 
+TEST(GraphJitConnectionPlan, FusesSampleConversionsAcrossASubgraphInput)
+{
+    using namespace iv;
+    GraphBuilder graph;
+    auto source = details::configure_concrete_node<PersistedStereoSource>(graph);
+    auto const source_handle = source.node_bundle_handle();
+    NodeBundleHandle sink_handle = 0;
+    auto nested = graph.subgraph([&](SubgraphBuilder& boundary) {
+        auto input = boundary.input<"in">();
+        auto sink = details::configure_concrete_node<StereoSink>(graph);
+        sink_handle = sink.node_bundle_handle();
+        sink(input);
+        boundary.outputs();
+    }, "sample-conversion-boundary");
+    nested(source);
+    graph.outputs();
+
+    auto configured = std::move(graph).finish();
+    auto plan = build_connection_analysis_plan(configured, 64);
+    ASSERT_TRUE(plan.has_value()) << (plan ? std::string{} : plan.error());
+
+    ASSERT_EQ(plan->nodes.size(), 2u);
+    ASSERT_EQ(plan->dependencies.size(), 1u);
+    EXPECT_EQ(plan->dependencies.front().source_bundle, source_handle);
+    EXPECT_EQ(plan->dependencies.front().target_bundle, sink_handle);
+
+    auto const route = std::ranges::find_if(
+        plan->sample_connections,
+        [&](graph_jit::detail::SampleConnectionPlan const& connection) {
+            return connection.target_port.node_bundle_handle == sink_handle;
+        });
+    ASSERT_NE(route, plan->sample_connections.end());
+    ASSERT_EQ(route->projection_contributions.size(), 1u);
+    auto const& transform = route->projection_contributions.front().transform;
+    EXPECT_EQ(transform.source_channel_count, 2u);
+    EXPECT_EQ(transform.target_channel_count, 2u);
+    ASSERT_EQ(transform.coefficients.size(), 4u);
+    EXPECT_FLOAT_EQ(transform.coefficients[0], 0.5f);
+    EXPECT_FLOAT_EQ(transform.coefficients[1], 0.5f);
+    EXPECT_FLOAT_EQ(transform.coefficients[2], 0.5f);
+    EXPECT_FLOAT_EQ(transform.coefficients[3], 0.5f);
+}
+
+TEST(GraphJitConnectionPlan, ExpandsTiledSampleInputsAfterSemanticConversion)
+{
+    using namespace iv;
+    GraphBuilder graph;
+    auto source = details::configure_concrete_node<PersistedStereoSource>(graph);
+    auto tiled = details::configure_concrete_tiled_node<PlainSamplePass, stereo>(
+        graph);
+    auto const tiled_handle = tiled.node_bundle_handle();
+    tiled(source);
+    graph.outputs();
+
+    auto configured = std::move(graph).finish();
+    auto const member_span =
+        configured.node_bundles.bundle(tiled_handle).tiled_members();
+    std::vector<NodeBundleHandle> const members{
+        member_span.begin(), member_span.end()};
+    ASSERT_EQ(members.size(), 2u);
+    auto plan = build_connection_analysis_plan(configured, 64);
+    ASSERT_TRUE(plan.has_value()) << (plan ? std::string{} : plan.error());
+
+    for (std::size_t channel = 0; channel < members.size(); ++channel) {
+        auto const route = std::ranges::find_if(
+            plan->sample_connections,
+            [&](graph_jit::detail::SampleConnectionPlan const& connection) {
+                return connection.target_port.node_bundle_handle
+                    == members[channel];
+            });
+        ASSERT_NE(route, plan->sample_connections.end());
+        ASSERT_EQ(route->projection_contributions.size(), 1u);
+        auto const& transform = route->projection_contributions.front().transform;
+        ASSERT_EQ(transform.coefficients.size(), 2u);
+        EXPECT_FLOAT_EQ(transform.coefficients[channel], 1.0f);
+        EXPECT_FLOAT_EQ(transform.coefficients[1 - channel], 0.0f);
+    }
+}
+
+TEST(GraphJitConnectionPlan, ComposesEventConversionsAcrossASubgraphInput)
+{
+    using namespace iv;
+    GraphBuilder graph;
+    auto source = details::configure_concrete_node<BackgroundMidiSource>(graph);
+    NodeBundleHandle sink_handle = 0;
+    auto nested = graph.subgraph([&](SubgraphBuilder& boundary) {
+        auto input = boundary.event_input<"in">(EventTypeId::boundary);
+        auto sink = details::configure_concrete_node<PlainEventPass>(graph);
+        sink_handle = sink.node_bundle_handle();
+        sink.connect_event_input(0, input);
+        boundary.outputs();
+    }, "event-conversion-boundary");
+    nested.connect_event_input(0, source.event_port());
+    graph.outputs();
+
+    auto configured = std::move(graph).finish();
+    auto plan = build_connection_analysis_plan(configured, 64);
+    ASSERT_TRUE(plan.has_value()) << (plan ? std::string{} : plan.error());
+
+    auto const route = std::ranges::find_if(
+        plan->event_connections,
+        [&](graph_jit::detail::EventConnectionPlan const& connection) {
+            return std::ranges::any_of(
+                connection.targets,
+                [&](EventInputPortId target) {
+                    return target.bundle == sink_handle;
+                });
+        });
+    ASSERT_NE(route, plan->event_connections.end());
+    ASSERT_EQ(route->source_plans.size(), 1u);
+    ASSERT_EQ(route->source_plans.front().conversion.step_count, 1u);
+    EXPECT_EQ(
+        route->source_plans.front().conversion.steps[0],
+        EventConversionStepId::midi_to_boundary);
+    ASSERT_EQ(route->conversion.step_count, 1u);
+    EXPECT_EQ(
+        route->conversion.steps[0],
+        EventConversionStepId::boundary_to_trigger);
+}
+
+TEST(GraphJitConnectionPlan,
+     KeepsDifferentStructuralSourceConversionsInOneEventFanIn)
+{
+    using namespace iv;
+    GraphBuilder graph;
+    NodeBundleHandle midi_source_handle = 0;
+    auto midi_branch = graph.subgraph([&](SubgraphBuilder& boundary) {
+        auto source = details::configure_concrete_node<TickMidiEventSource>(graph);
+        midi_source_handle = source.node_bundle_handle();
+        auto raw = source.event_port();
+        EventPortRef converted{
+            graph, EventTypeId::trigger, raw.sources()};
+        boundary.event_outputs(converted);
+    }, "midi-trigger-source");
+
+    NodeBundleHandle trigger_source_handle = 0;
+    auto trigger_branch = graph.subgraph([&](SubgraphBuilder& boundary) {
+        auto source =
+            details::configure_concrete_node<PersistedTickEventSource>(graph);
+        trigger_source_handle = source.node_bundle_handle();
+        boundary.event_outputs(source.event_port());
+    }, "trigger-source");
+
+    auto sink = details::configure_concrete_node<PlainEventPass>(graph);
+    auto const sink_handle = sink.node_bundle_handle();
+    std::array<EventPortRef, 2> sources{
+        midi_branch.event_port(), trigger_branch.event_port()};
+    sink.connect_event_input(
+        0, EventPortRef{graph, std::span<EventPortRef const>{sources}});
+    graph.outputs();
+
+    auto configured = std::move(graph).finish();
+    auto plan = build_connection_analysis_plan(configured, 64);
+    ASSERT_TRUE(plan.has_value()) << (plan ? std::string{} : plan.error());
+
+    auto const route = std::ranges::find_if(
+        plan->event_connections,
+        [&](graph_jit::detail::EventConnectionPlan const& connection) {
+            return connection.targets
+                == std::vector{EventInputPortId{sink_handle, 0}};
+        });
+    ASSERT_NE(route, plan->event_connections.end());
+    ASSERT_EQ(route->source_plans.size(), 2u);
+    EXPECT_EQ(route->source_type, EventTypeId::trigger);
+    EXPECT_EQ(route->conversion.step_count, 0u);
+    EXPECT_EQ(route->source_plans[0].source.bundle, midi_source_handle);
+    EXPECT_EQ(route->source_plans[0].source_type, EventTypeId::midi);
+    ASSERT_EQ(route->source_plans[0].conversion.step_count, 1u);
+    EXPECT_EQ(
+        route->source_plans[0].conversion.steps[0],
+        EventConversionStepId::midi_to_trigger);
+    EXPECT_EQ(route->source_plans[1].source.bundle, trigger_source_handle);
+    EXPECT_EQ(route->source_plans[1].source_type, EventTypeId::trigger);
+    EXPECT_EQ(route->source_plans[1].conversion.step_count, 0u);
+    ASSERT_EQ(plan->event_producer_groups.size(), 1u);
+    EXPECT_EQ(
+        plan->event_producer_groups.front().source_conversions.size(), 2u);
+}
+
 TEST(GraphJitConnectionPlan, EqualizesFeedForwardSamplePathsAtConvergence)
 {
     using namespace iv;
@@ -1204,6 +1401,155 @@ TEST(GraphJitConnectionPlan, RejectsDetachThatDoesNotBreakCycle)
         std::string::npos);
 }
 
+TEST(GraphBuilder, RejectsRepeatedDetachOnTheSameExpression)
+{
+    using namespace iv;
+
+    GraphBuilder sample_graph;
+    auto sample_source =
+        details::configure_concrete_node<MonoSource>(sample_graph);
+    auto const detached_sample =
+        static_cast<SamplePortRef>(sample_source).detach(5);
+    EXPECT_THROW((void)detached_sample.detach(5), std::logic_error);
+    EXPECT_THROW((void)detached_sample.detach(7), std::logic_error);
+
+    GraphBuilder event_graph;
+    auto event_source =
+        details::configure_concrete_node<PlainEventPass>(event_graph);
+    auto const detached_event = event_source.event_port().detach(5);
+    EXPECT_THROW((void)detached_event.detach(5), std::logic_error);
+    EXPECT_THROW((void)detached_event.detach(7), std::logic_error);
+}
+
+TEST(GraphBuilder, StoresEventDetachOnTheTiledOutputPort)
+{
+    using namespace iv;
+    GraphBuilder graph;
+    auto tiled = details::configure_concrete_tiled_node<PlainEventPass, stereo>(
+        graph);
+    auto sink = details::configure_concrete_node<PlainEventPass>(graph);
+    auto const sink_handle = sink.node_bundle_handle();
+    sink.connect_event_input(0, tiled.event_port().detach(5));
+    graph.outputs();
+
+    auto configured = std::move(graph).finish();
+    auto const connection = std::ranges::find_if(
+        configured.connections.configured_event_connections(),
+        [&](ConfiguredEventConnection const& candidate) {
+            return candidate.targets
+                == std::vector<EventInputPortId>{{sink_handle, 0}};
+        });
+    ASSERT_NE(
+        connection,
+        configured.connections.configured_event_connections().end());
+    ASSERT_EQ(connection->sources.size(), 1u);
+    ASSERT_TRUE(connection->sources.front().detach.has_value());
+    EXPECT_EQ(connection->sources.front().detach->loop_extra_latency, 5u);
+}
+
+TEST(GraphJitConnectionPlan, PreservesMixedDetachedAndOrdinaryTiledSources)
+{
+    using namespace iv;
+
+    GraphBuilder graph;
+    auto state = details::configure_concrete_node<TimedStereoStateNode>(graph);
+    auto ordinary = details::configure_concrete_node<MonoSource>(graph);
+    auto const state_handle = state.node_bundle_handle();
+    auto const ordinary_handle = ordinary.node_bundle_handle();
+    state(graph.tile<stereo>(
+        static_cast<SamplePortRef>(state[stereo::left]).detach(
+            3, Sample{-0.25f}),
+        ordinary));
+    graph.outputs();
+
+    auto configured = std::move(graph).finish();
+    auto analysis = build_connection_analysis_plan(configured, 64);
+    ASSERT_TRUE(analysis.has_value())
+        << (analysis ? std::string{} : analysis.error());
+    auto const connection = std::ranges::find_if(
+        analysis->sample_connections,
+        [&](graph_jit::detail::SampleConnectionPlan const& candidate) {
+            return candidate.target_port.node_bundle_handle == state_handle;
+        });
+    ASSERT_NE(connection, analysis->sample_connections.end());
+    ASSERT_EQ(connection->routed_contributions.size(), 2u);
+    EXPECT_EQ(
+        std::ranges::count_if(
+            connection->routed_contributions,
+            [](auto const& contribution) {
+                return contribution.detach.has_value();
+            }),
+        1u);
+    EXPECT_TRUE(std::ranges::any_of(
+        analysis->dependencies,
+        [&](graph_jit::detail::DependencyEdgePlan const& dependency) {
+            return dependency.source_bundle == ordinary_handle
+                && dependency.target_bundle == state_handle;
+        }));
+
+    auto storage = graph_jit::detail::build_sample_storage_plan(*analysis, 64);
+    ASSERT_TRUE(storage.has_value())
+        << (storage ? std::string{} : storage.error());
+    ASSERT_EQ(storage->feedback_timelines.size(), 1u);
+    ASSERT_EQ(storage->compositions.size(), 1u);
+    ASSERT_TRUE(storage->compositions.front().before_execution_position);
+    ASSERT_LT(state_handle, analysis->schedule.bundle_execution_position.size());
+    ASSERT_TRUE(analysis->schedule.bundle_execution_position[state_handle]);
+    EXPECT_EQ(
+        *storage->compositions.front().before_execution_position,
+        *analysis->schedule.bundle_execution_position[state_handle]);
+}
+
+TEST(GraphJitConnectionPlan, PreservesDifferentDetachLatenciesPerTiledChannel)
+{
+    using namespace iv;
+
+    GraphBuilder graph;
+    auto state = details::configure_concrete_node<TimedStereoStateNode>(graph);
+    auto const state_handle = state.node_bundle_handle();
+    state(graph.tile<stereo>(
+        static_cast<SamplePortRef>(state[stereo::left]).detach(
+            3, Sample{-0.25f}),
+        static_cast<SamplePortRef>(state[stereo::right]).detach(
+            7, Sample{0.5f})));
+    graph.outputs();
+
+    auto configured = std::move(graph).finish();
+    auto analysis = build_connection_analysis_plan(configured, 64);
+    ASSERT_TRUE(analysis.has_value())
+        << (analysis ? std::string{} : analysis.error());
+    auto const connection = std::ranges::find_if(
+        analysis->sample_connections,
+        [&](graph_jit::detail::SampleConnectionPlan const& candidate) {
+            return candidate.target_port.node_bundle_handle == state_handle;
+        });
+    ASSERT_NE(connection, analysis->sample_connections.end());
+    ASSERT_EQ(connection->routed_contributions.size(), 2u);
+    std::vector<std::size_t> detach_latencies;
+    for (auto const& contribution : connection->routed_contributions) {
+        ASSERT_TRUE(contribution.detach.has_value());
+        detach_latencies.push_back(
+            contribution.detach->loop_extra_latency);
+    }
+    std::ranges::sort(detach_latencies);
+    EXPECT_EQ(detach_latencies, (std::vector<std::size_t>{3u, 7u}));
+
+    auto const region = analysis->schedule.bundle_to_region[state_handle];
+    ASSERT_TRUE(region.has_value());
+    ASSERT_LT(*region, analysis->schedule.regions.size());
+    EXPECT_EQ(analysis->schedule.regions[*region].maximum_block_size, 2u);
+
+    auto storage = graph_jit::detail::build_sample_storage_plan(*analysis, 64);
+    ASSERT_TRUE(storage.has_value())
+        << (storage ? std::string{} : storage.error());
+    ASSERT_EQ(storage->feedback_timelines.size(), 2u);
+    std::vector<std::size_t> timeline_latencies;
+    for (auto const& timeline : storage->feedback_timelines)
+        timeline_latencies.push_back(timeline.loop_extra_latency);
+    std::ranges::sort(timeline_latencies);
+    EXPECT_EQ(timeline_latencies, (std::vector<std::size_t>{3u, 7u}));
+}
+
 TEST(GraphJitConnectionPlan, RejectsBackgroundEdgesInWholeSemanticScc)
 {
     using namespace iv;
@@ -1258,19 +1604,19 @@ TEST(GraphJitConnectionPlan, RejectsBackgroundSemanticSelfLoop)
     EXPECT_NE(plan.error().find("semantic SCC"), std::string::npos);
 }
 
-TEST(GraphJitConnectionPlan, AllowsRealtimeSccToExportBackgroundData)
+TEST(GraphJitConnectionPlan, AllowsRealtimeSccToExposePersistedDataToBackground)
 {
     using namespace iv;
     GraphBuilder graph;
-    auto first = details::configure_concrete_node<MixedAccessPass>(graph);
+    auto first = details::configure_concrete_node<PersistedSccPass>(graph);
     auto second = details::configure_concrete_node<PlainSamplePass>(graph);
     auto background_sink = details::configure_concrete_node<BackgroundSink>(graph);
     auto const first_handle = first.node_bundle_handle();
     auto const second_handle = second.node_bundle_handle();
     auto const background_sink_handle = background_sink.node_bundle_handle();
     first(second);
-    second(first["realtime"].detach(5));
-    background_sink(first["background"]);
+    second(first["out"].detach(5));
+    background_sink(first["out"]);
     graph.outputs();
 
     auto configured = std::move(graph).finish();
@@ -1283,7 +1629,7 @@ TEST(GraphJitConnectionPlan, AllowsRealtimeSccToExportBackgroundData)
                 connection.source_channel_timings,
                 [](graph_jit::detail::SampleSourceChannelTimingPlan const& source) {
                     return source.delivery
-                        == graph_jit::PlannedDeliveryMechanism::tock_to_random_access;
+                        == graph_jit::PlannedDeliveryMechanism::persisted_tick_to_random_access;
                 });
         }));
     ASSERT_TRUE(plan->background.bundle_to_semantic_node[first_handle]);
@@ -1476,6 +1822,104 @@ TEST(GraphJitConnectionPlan, DerivesEventDetachExecutionRegion)
             std::distance(region.execution_order.begin(), found));
     };
     EXPECT_LT(position(second_handle), position(first_handle));
+}
+
+TEST(GraphJitConnectionPlan, PreservesMixedDetachedAndOrdinaryEventSources)
+{
+    using namespace iv;
+    GraphBuilder graph;
+    auto feedback_source =
+        details::configure_concrete_node<PlainEventPass>(graph);
+    auto ordinary_source =
+        details::configure_concrete_node<PlainEventPass>(graph);
+    auto target = details::configure_concrete_node<PlainEventPass>(graph);
+    auto const feedback_handle = feedback_source.node_bundle_handle();
+    auto const ordinary_handle = ordinary_source.node_bundle_handle();
+    auto const target_handle = target.node_bundle_handle();
+    feedback_source.connect_event_input(0, target.event_port());
+    std::array sources{
+        feedback_source.event_port().detach(3),
+        ordinary_source.event_port(),
+    };
+    target.connect_event_input(0, EventPortRef(graph, sources));
+    graph.outputs();
+
+    auto configured = std::move(graph).finish();
+
+    auto plan = build_connection_analysis_plan(configured, 64);
+    ASSERT_TRUE(plan.has_value()) << (plan ? std::string{} : plan.error());
+    auto const mixed = std::ranges::find_if(
+        plan->event_connections,
+        [&](graph_jit::detail::EventConnectionPlan const& connection) {
+            return connection.targets
+                    == std::vector<EventInputPortId>{{target_handle, 0}}
+                && connection.sources.size() == 2;
+        });
+    ASSERT_NE(mixed, plan->event_connections.end());
+    EXPECT_TRUE(mixed->requires_source_composition);
+    EXPECT_FALSE(mixed->detach.has_value());
+    ASSERT_EQ(mixed->source_plans.size(), 2u);
+    EXPECT_EQ(mixed->source_plans[0].source.bundle, feedback_handle);
+    ASSERT_TRUE(mixed->source_plans[0].detach.has_value());
+    EXPECT_EQ(mixed->source_plans[0].detach->loop_extra_latency, 3u);
+    ASSERT_TRUE(mixed->source_plans[0].detach_region.has_value());
+    EXPECT_EQ(mixed->source_plans[1].source.bundle, ordinary_handle);
+    EXPECT_FALSE(mixed->source_plans[1].detach.has_value());
+    auto const region = *mixed->source_plans[0].detach_region;
+    ASSERT_LT(region, plan->schedule.regions.size());
+    EXPECT_TRUE(plan->schedule.regions[region].cyclic);
+    EXPECT_EQ(plan->schedule.regions[region].maximum_block_size, 2u);
+}
+
+TEST(GraphJitConnectionPlan, PreservesDifferentEventDetachLatenciesPerSource)
+{
+    using namespace iv;
+    GraphBuilder graph;
+    auto first_source =
+        details::configure_concrete_node<PlainEventPass>(graph);
+    auto second_source =
+        details::configure_concrete_node<PlainEventPass>(graph);
+    auto target = details::configure_concrete_node<PlainEventPass>(graph);
+    auto const target_handle = target.node_bundle_handle();
+    first_source.connect_event_input(0, target.event_port());
+    second_source.connect_event_input(0, target.event_port());
+    std::array sources{
+        first_source.event_port().detach(3),
+        second_source.event_port().detach(7),
+    };
+    target.connect_event_input(0, EventPortRef(graph, sources));
+    graph.outputs();
+
+    auto configured = std::move(graph).finish();
+
+    auto plan = build_connection_analysis_plan(configured, 64);
+    ASSERT_TRUE(plan.has_value()) << (plan ? std::string{} : plan.error());
+    auto const detached = std::ranges::find_if(
+        plan->event_connections,
+        [&](graph_jit::detail::EventConnectionPlan const& connection) {
+            return connection.targets
+                    == std::vector<EventInputPortId>{{target_handle, 0}}
+                && connection.sources.size() == 2;
+        });
+    ASSERT_NE(detached, plan->event_connections.end());
+    EXPECT_TRUE(detached->requires_source_composition);
+    EXPECT_FALSE(detached->detach.has_value());
+    ASSERT_EQ(detached->source_plans.size(), 2u);
+    ASSERT_TRUE(detached->source_plans[0].detach.has_value());
+    ASSERT_TRUE(detached->source_plans[1].detach.has_value());
+    EXPECT_EQ(
+        detached->source_plans[0].detach->loop_extra_latency, 3u);
+    EXPECT_EQ(
+        detached->source_plans[1].detach->loop_extra_latency, 7u);
+    ASSERT_TRUE(detached->source_plans[0].detach_region.has_value());
+    ASSERT_TRUE(detached->source_plans[1].detach_region.has_value());
+    EXPECT_EQ(
+        detached->source_plans[0].detach_region,
+        detached->source_plans[1].detach_region);
+    auto const region = *detached->source_plans[0].detach_region;
+    ASSERT_LT(region, plan->schedule.regions.size());
+    EXPECT_TRUE(plan->schedule.regions[region].cyclic);
+    EXPECT_EQ(plan->schedule.regions[region].maximum_block_size, 2u);
 }
 
 TEST(GraphJitConnectionPlan, SimpleRealtimeSampleEdgeChoosesDirect)
@@ -1690,6 +2134,8 @@ TEST(GraphJitConnectionPlan, BackgroundConnectionsDoNotUseRealtimeStoragePolicy)
     GraphBuilder graph;
     auto source = details::configure_concrete_node<BackgroundSource>(graph);
     auto sink = details::configure_concrete_node<BackgroundSink>(graph);
+    auto const source_handle = source.node_bundle_handle();
+    auto const sink_handle = sink.node_bundle_handle();
     sink(source);
     graph.outputs();
 
@@ -1709,6 +2155,10 @@ TEST(GraphJitConnectionPlan, BackgroundConnectionsDoNotUseRealtimeStoragePolicy)
     EXPECT_TRUE(plan->sample_producer_groups[0].has_background_connections);
     EXPECT_FALSE(plan->sample_producer_groups[0].storage_plan.has_value());
     EXPECT_TRUE(plan->storage.regions.empty());
+    ASSERT_LT(source_handle, plan->schedule.bundle_execution_position.size());
+    ASSERT_LT(sink_handle, plan->schedule.bundle_execution_position.size());
+    EXPECT_FALSE(plan->schedule.bundle_execution_position[source_handle]);
+    EXPECT_TRUE(plan->schedule.bundle_execution_position[sink_handle]);
     ASSERT_EQ(plan->background.sample_source_subsets.size(), 1u);
     EXPECT_TRUE(plan->background.sample_source_subsets.front()
         .storage.tick_random_access);
@@ -1723,13 +2173,17 @@ TEST(GraphJitConnectionPlan, RetainsCompleteBackgroundTopologyAndRetention)
 {
     using namespace iv;
     GraphBuilder graph;
+    auto realtime_source =
+        details::configure_concrete_node<RealtimeOutputRetentionModes>(graph);
     auto source =
-        details::configure_concrete_node<OutputAccessRetentionModes>(graph);
+        details::configure_concrete_node<BackgroundOutputRetentionModes>(graph);
     auto left = details::configure_concrete_node<BackgroundSamplePass>(graph);
     auto right = details::configure_concrete_node<BackgroundSamplePass>(graph);
     auto join = details::configure_concrete_node<BackgroundTwoInputPass>(graph);
     auto const source_handle = source.node_bundle_handle();
+    auto const realtime_source_handle = realtime_source.node_bundle_handle();
     _annotate_node_source_info(source.node_ref(), "source");
+    _annotate_node_source_info(realtime_source.node_ref(), "realtime-source");
     _annotate_node_source_info(left.node_ref(), "left");
     _annotate_node_source_info(right.node_ref(), "right");
     _annotate_node_source_info(join.node_ref(), "join");
@@ -1756,17 +2210,23 @@ TEST(GraphJitConnectionPlan, RetainsCompleteBackgroundTopologyAndRetention)
     EXPECT_EQ(planned_source->stable_identity->direct_member, 0u);
     auto const& plan = built->background;
 
-    ASSERT_EQ(plan.nodes.size(), 4u);
+    ASSERT_EQ(plan.nodes.size(), 5u);
     ASSERT_EQ(plan.connections.size(), 4u);
-    ASSERT_EQ(plan.components.size(), 1u);
-    EXPECT_EQ(plan.component_order, (std::vector<std::size_t>{0}));
-    auto const& component = plan.components.front();
-    ASSERT_EQ(component.forward_order.size(), 4u);
-    EXPECT_EQ(component.tock_order, component.forward_order);
-    auto expected_reverse = component.forward_order;
+    ASSERT_EQ(plan.components.size(), 2u);
+    ASSERT_TRUE(plan.bundle_to_background_node[source_handle]);
+    auto const source_node = *plan.bundle_to_background_node[source_handle];
+    auto const component = std::ranges::find_if(
+        plan.components,
+        [&](graph_jit::BackgroundComponentPlan const& candidate) {
+            return std::ranges::contains(candidate.nodes, source_node);
+        });
+    ASSERT_NE(component, plan.components.end());
+    ASSERT_EQ(component->forward_order.size(), 4u);
+    EXPECT_EQ(component->tock_order, component->forward_order);
+    auto expected_reverse = component->forward_order;
     std::ranges::reverse(expected_reverse);
-    EXPECT_EQ(component.reverse_order, expected_reverse);
-    EXPECT_EQ(component.connections.size(), 4u);
+    EXPECT_EQ(component->reverse_order, expected_reverse);
+    EXPECT_EQ(component->connections.size(), 4u);
 
     EXPECT_EQ(plan.accumulators.input_change_count, 4u);
     EXPECT_EQ(plan.accumulators.input_requirement_count, 4u);
@@ -1842,10 +2302,20 @@ TEST(GraphJitConnectionPlan, RetainsCompleteBackgroundTopologyAndRetention)
             });
         return found == plan.sample_source_subsets.end() ? nullptr : &*found;
     };
-    auto const* tick_ephemeral_atom = sample_atom_for_port(0);
-    auto const* tick_persisted_atom = sample_atom_for_port(1);
-    auto const* tock_ephemeral_atom = sample_atom_for_port(2);
-    auto const* tock_persisted_atom = sample_atom_for_port(3);
+    auto sample_atom_for_realtime_port = [&](std::size_t port)
+        -> graph_jit::SampleSourcePortSubsetPlan const* {
+        auto const found = std::ranges::find_if(
+            plan.sample_source_subsets,
+            [&](graph_jit::SampleSourcePortSubsetPlan const& subset) {
+                return subset.port.node_bundle_handle == realtime_source_handle
+                    && subset.port.port_index == port;
+            });
+        return found == plan.sample_source_subsets.end() ? nullptr : &*found;
+    };
+    auto const* tick_ephemeral_atom = sample_atom_for_realtime_port(0);
+    auto const* tick_persisted_atom = sample_atom_for_realtime_port(1);
+    auto const* tock_ephemeral_atom = sample_atom_for_port(0);
+    auto const* tock_persisted_atom = sample_atom_for_port(1);
     ASSERT_NE(tick_ephemeral_atom, nullptr);
     ASSERT_NE(tick_persisted_atom, nullptr);
     ASSERT_NE(tock_ephemeral_atom, nullptr);
@@ -2267,7 +2737,9 @@ TEST(GraphJitConnectionPlan, BackgroundSampleMaterializationIsTargetAtomLocal)
         ConfiguredSampleConnection{
             .source_type = ChannelTypeId::mono,
             .source_channels = {
-                SampleOutputChannelId{mono_handle, 0u, 0u},
+                ConfiguredSampleConnectionSource{
+                    .channel = {mono_handle, 0u, 0u},
+                },
             },
             .target_type = ChannelTypeId::mono,
             .target_channels = {
@@ -2277,8 +2749,12 @@ TEST(GraphJitConnectionPlan, BackgroundSampleMaterializationIsTargetAtomLocal)
         ConfiguredSampleConnection{
             .source_type = ChannelTypeId::stereo,
             .source_channels = {
-                SampleOutputChannelId{stereo_handle, 0u, 0u},
-                SampleOutputChannelId{stereo_handle, 0u, 1u},
+                ConfiguredSampleConnectionSource{
+                    .channel = {stereo_handle, 0u, 0u},
+                },
+                ConfiguredSampleConnectionSource{
+                    .channel = {stereo_handle, 0u, 1u},
+                },
             },
             .target_type = ChannelTypeId::mono,
             .target_channels = {
@@ -2552,7 +3028,7 @@ TEST(GraphJitConnectionPlan, PersistedTickToRandomAccessUsesStoredBoundary)
     using namespace iv;
 
     GraphBuilder graph;
-    auto source = details::configure_concrete_node<OutputAccessRetentionModes>(graph);
+    auto source = details::configure_concrete_node<RealtimeOutputRetentionModes>(graph);
     auto sink = details::configure_concrete_node<BackgroundSink>(graph);
     auto const source_handle = source.node_bundle_handle();
     auto const sink_handle = sink.node_bundle_handle();

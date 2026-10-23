@@ -199,6 +199,8 @@ SamplePortRef GraphBuilderState::make_sample_port(
   _sample_port_expressions.push_back({
       .channel_type = type,
       .channels = {channels.begin(), channels.end()},
+      .detaches = std::vector<
+          std::optional<ConfiguredSampleConnectionDetach>>(channels.size()),
   });
   SamplePortRef result;
   result.graph_builder = &facade();
@@ -212,9 +214,9 @@ SamplePortRef GraphBuilderState::make_tiled_sample_port(
 {
   if (members.empty()) details::error("cannot tile an empty sample output");
   std::vector<SampleOutputChannelId> channels;
+  std::vector<std::optional<ConfiguredSampleConnectionDetach>> detaches;
   channels.reserve(members.size());
-  std::optional<ConfiguredSampleConnectionDetach> detach;
-  bool detach_initialized = false;
+  detaches.reserve(members.size());
   for (auto const& member : members) {
     if (member.graph_builder != &facade()
         || member.handle >= _sample_port_expressions.size())
@@ -223,16 +225,11 @@ SamplePortRef GraphBuilderState::make_tiled_sample_port(
     if (member.channel_type != ChannelTypeId::mono
         || expression.channels.size() != 1)
       details::error("each g.tile channel must be a scalar sample expression");
-    if (!detach_initialized) {
-      detach = expression.detach;
-      detach_initialized = true;
-    } else if (detach != expression.detach) {
-      details::error("g.tile cannot mix different detach semantics");
-    }
     channels.push_back(expression.channels.front());
+    detaches.push_back(expression.detaches.front());
   }
   auto result = make_sample_port(type, channels);
-  _sample_port_expressions[result.handle].detach = detach;
+  _sample_port_expressions[result.handle].detaches = std::move(detaches);
   return result;
 }
 
@@ -243,12 +240,14 @@ SamplePortRef GraphBuilderState::select_sample_port_channel(
       || ref.handle >= _sample_port_expressions.size())
     details::error("sample port does not belong to this builder");
   auto const& expression = _sample_port_expressions[ref.handle];
+  if (expression.channels.size() != expression.detaches.size())
+    details::error("sample expression lost its per-channel detach settings");
   if (channel >= expression.channels.size())
     details::error("sample channel index is out of bounds");
   std::array<SampleOutputChannelId, 1> channels{expression.channels[channel]};
-  auto detach = expression.detach;
+  auto detach = expression.detaches[channel];
   auto result = make_sample_port(ChannelTypeId::mono, channels);
-  _sample_port_expressions[result.handle].detach = std::move(detach);
+  _sample_port_expressions[result.handle].detaches = {std::move(detach)};
   return result;
 }
 
@@ -271,17 +270,50 @@ EventPortRef GraphBuilderState::make_event_port(
   if (sources.empty())
     details::error("event expression has no semantic sources");
   for (auto source : sources) {
-    auto config = _node_bundles.resolve_event_output(
-        {source.bundle, PortKind::event, source.port}).config;
-    if (config.type != type)
-      details::error(
-          "event expression source does not match its semantic event type");
+    (void)_node_bundles.resolve_event_output(
+        {source.bundle, PortKind::event, source.port});
   }
   auto const handle = _event_port_expressions.size();
   _event_port_expressions.push_back({
       .type = type,
       .sources = {sources.begin(), sources.end()},
+      .detaches = std::vector<
+          std::optional<ConfiguredEventConnectionDetach>>(sources.size()),
   });
+  EventPortRef result;
+  result.graph_builder = &facade();
+  result.type = type;
+  result.handle = handle;
+  return result;
+}
+
+EventPortRef GraphBuilderState::make_event_port(
+    std::span<EventPortRef const> operands)
+{
+  if (operands.empty())
+    details::error("event fan-in expression has no source expressions");
+  auto const type = operands.front().type;
+  EventPortExpression expression{.type = type};
+  for (auto const& operand : operands) {
+    if (operand.graph_builder != &facade()
+        || operand.handle >= _event_port_expressions.size()) {
+      details::error(
+          "event fan-in expression contains a port from another builder");
+    }
+    auto const& source = _event_port_expressions[operand.handle];
+    if (operand.type != type || source.type != type)
+      details::error("event fan-in expressions have different event types");
+    if (source.sources.size() != source.detaches.size())
+      details::error("event fan-in source lost its per-source detach settings");
+    expression.sources.insert(
+        expression.sources.end(), source.sources.begin(), source.sources.end());
+    expression.detaches.insert(
+        expression.detaches.end(),
+        source.detaches.begin(),
+        source.detaches.end());
+  }
+  auto const handle = _event_port_expressions.size();
+  _event_port_expressions.push_back(std::move(expression));
   EventPortRef result;
   result.graph_builder = &facade();
   result.type = type;
@@ -297,7 +329,8 @@ GraphBuilderState::event_port_sources(EventPortRef const& ref) const
     details::error("event port does not belong to this builder");
   }
   auto const& expression = _event_port_expressions[ref.handle];
-  if (expression.type != ref.type)
+  if (expression.type != ref.type
+      || expression.sources.size() != expression.detaches.size())
     details::error("event port has an invalid semantic event type");
   return expression.sources;
 }
@@ -623,9 +656,8 @@ void GraphBuilderState::record_configured_sample_connection(
   if (sources.size() != targets.size())
     details::error(
         "sample channel source count does not match NodeBundle port layout");
-  std::vector<SampleOutputChannelId> channels;
-  std::optional<ConfiguredSampleConnectionDetach> detach;
-  bool detach_initialized = false;
+  std::vector<ConfiguredSampleConnectionSource> configured_sources;
+  configured_sources.reserve(sources.size());
   for (auto const& source : sources) {
     if (source.graph_builder != &facade() ||
         source.channel_type != ChannelTypeId::mono ||
@@ -636,21 +668,16 @@ void GraphBuilderState::record_configured_sample_connection(
     if (expression.channels.size() != 1)
       details::error(
           "channel-wise sample connection requires scalar sources");
-    if (!detach_initialized) {
-      detach = expression.detach;
-      detach_initialized = true;
-    } else if (detach != expression.detach) {
-      details::error(
-          "channel-wise sample connection cannot mix different detach semantics");
-    }
-    channels.push_back(expression.channels.front());
+    configured_sources.push_back({
+        .channel = expression.channels.front(),
+        .detach = expression.detaches.front(),
+    });
   }
   _connections.record_configured_sample_connection({
       .source_type = type,
-      .source_channels = std::move(channels),
+      .source_channels = std::move(configured_sources),
       .target_type = type,
       .target_channels = std::move(targets),
-      .detach = detach,
   });
 }
 
@@ -664,12 +691,21 @@ void GraphBuilderState::record_configured_event_connection(
     details::error("invalid configured event connection");
   auto target_type = _node_bundles.resolve_event_input(target).config.type;
   auto const& expression = _event_port_expressions[source.handle];
+  if (expression.sources.size() != expression.detaches.size())
+    details::error("event expression lost its per-source detach settings");
+  std::vector<ConfiguredEventConnectionSource> configured_sources;
+  configured_sources.reserve(expression.sources.size());
+  for (std::size_t i = 0; i < expression.sources.size(); ++i) {
+    configured_sources.push_back({
+        .port = expression.sources[i],
+        .detach = expression.detaches[i],
+    });
+  }
   _connections.record_configured_event_connection({
       .source_type = source.type,
-      .sources = {expression.sources.begin(), expression.sources.end()},
+      .sources = std::move(configured_sources),
       .target_type = target_type,
       .targets = _node_bundles.event_input_ports(target),
-      .detach = expression.detach,
   });
 }
 

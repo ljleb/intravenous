@@ -3,6 +3,7 @@
 #include <intravenous/ports.h>
 
 #include <cstddef>
+#include <cstdint>
 
 namespace iv::graph_jit::detail {
 
@@ -120,6 +121,9 @@ iv_graph_jit_prune_event_persistent_ring(
 extern "C" IV_GRAPH_JIT_RETENTION_RUNTIME_EXPORT void
 iv_graph_jit_append_event_feedback(
     void const* source_events,
+    std::size_t const* source_indices,
+    std::size_t source_index_filter,
+    std::uint32_t filter_source_index,
     std::size_t source_begin_index,
     std::size_t source_end_index,
     GlobalIndex sample_index,
@@ -135,6 +139,9 @@ iv_graph_jit_append_event_feedback(
 extern "C" IV_GRAPH_JIT_RETENTION_RUNTIME_EXPORT void
 iv_graph_jit_append_event_feedback_sequence(
     void const* source_events,
+    std::size_t const* source_indices,
+    std::size_t source_index_filter,
+    std::uint32_t filter_source_index,
     std::size_t source_begin_index,
     std::size_t source_end_index,
     GlobalIndex sample_index,
@@ -150,6 +157,9 @@ iv_graph_jit_append_event_feedback_sequence(
 extern "C" IV_GRAPH_JIT_RETENTION_RUNTIME_EXPORT void
 iv_graph_jit_append_event_feedback_sequence_ring_source(
     void const* source_events,
+    std::size_t const* source_indices,
+    std::size_t source_index_filter,
+    std::uint32_t filter_source_index,
     std::size_t source_capacity,
     std::size_t source_begin_index,
     std::size_t source_end_index,
@@ -162,6 +172,9 @@ iv_graph_jit_append_event_feedback_sequence_ring_source(
 extern "C" IV_GRAPH_JIT_RETENTION_RUNTIME_EXPORT void
 iv_graph_jit_append_event_feedback_ring_source(
     void const* source_events,
+    std::size_t const* source_indices,
+    std::size_t source_index_filter,
+    std::uint32_t filter_source_index,
     std::size_t source_capacity,
     std::size_t source_begin_index,
     std::size_t source_end_index,

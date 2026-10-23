@@ -434,7 +434,7 @@ callbacks. Constants require no mutable state migration. Compact carries and rin
 their canonical cross-callback `NodeStorage` backing directly.
 
 Event state is mapped separately because an authored event output may write a
-producer-local callback stream that is subsequently merged into different retained
+raw `EventOutputPortId` callback stream that is subsequently merged into different retained
 fan-in storage. Each cold event realization therefore records both the exact authored
 callback view and, when one exists, the canonical cross-callback backing. It distinguishes
 callback-local sequences, compact carries, and persistent rings; records finalized header,
@@ -746,8 +746,9 @@ The following are operations over those representations, not additional storage
 categories:
 
 - identity/direct fanout aliases an existing representation and performs no copy;
-- fan-in performs an explicitly planned stable merge and chooses a producer home
-  that minimizes moved events;
+- fan-in converts each raw `EventOutputPortId` sequence to the
+  `EventProducerGroupPlan::source_type`, then performs an explicitly planned
+  stable merge into a separate group representation;
 - sample conversion aliases existing channels when conversion is only layout,
   permutation, or duplication; arithmetic conversion materializes only the
   computed result channels, with equivalent fanout results shared where planned;
@@ -907,8 +908,9 @@ The storage-model and storage-placement refactors have landed:
   reads those operations perform, and identity fanout adds no copy. Each shared
   delayed feedback stream accounts once for producer-to-feedback writes, exact
   compact-tail restore/commit work, persistent-ring addressing, and any shared
-  consumer conversion. Fan-in producer-home and separate-target alternatives
-  receive the same downstream operation costs before the final choice;
+  consumer conversion. Fan-in raw callback sequences and the separate group
+  representation receive the same downstream operation costs before the final
+  storage choice;
 - event fan-in whose producers span execution regions is staged into one
   canonical aggregate. Because execution order need not match semantic source
   order, only these canonical staged aggregates carry a fixed-capacity parallel
@@ -1424,16 +1426,14 @@ producer share the same source event stream. A merge of independent producers
 sums their rates for the merged representation. Tick event producers are
 contractually sorted in nondecreasing forward order from the invocation's
 legal window begin. For transient
-feed-forward multi-producer fan-in, semantic source 0 writes directly into the
-canonical aggregate allocation while retaining its own logical producer
-capacity; the other sources use bounded local sequences. After the last producer
-completes, one backwards k-way merge writes the final sorted aggregate in place.
-Each final event is therefore written at most once by merge rather than being
-rewritten through an incrementally growing pairwise aggregate. Equal-timestamp
-events retain deterministic semantic-source ordering, and conversion/fanout
-operate on the merged stream. Retained fan-in intentionally keeps the existing
-separate-target realization for now; cyclic multi-producer fan-in remains a
-separate SCC capability. Implicit event
+feed-forward multi-producer fan-in, each concrete `EventOutputPortId` writes its
+own bounded raw sequence. Per-source conversion produces the
+`EventProducerGroupPlan::source_type`. Stable merges then write a separate group
+representation in semantic source order. Equal-timestamp events retain
+deterministic semantic-source ordering. Common connection conversion and fanout
+operate on the merged stream. The previous producer-home design is preserved in
+[`front_7_event_fan_in_producer_home.md`](historical/front_7_event_fan_in_producer_home.md).
+Implicit event
 conversions are required to be
 **non-expanding**: each source event produces zero or one target event, timestamps
 are preserved, and the conversion may only preserve or discard information. Any
@@ -1479,7 +1479,7 @@ work, inflating static event budgets, or duplicating events in feedback state.
 
 Current event lowering packs invocation-local event buffers into one fixed
 root-stack allocation. Each buffer is live only from its first scheduled access
-to its last scheduled access: producer-local fan-in buffers end at the merge,
+to its last scheduled access: raw callback and per-source conversion buffers end at the merge,
 conversion/materialization results begin when they are written and end at their
 last consumer, and feedback working buffers include their restore/append/consume/
 commit steps. Buffers whose intervals do not overlap may use the same stack

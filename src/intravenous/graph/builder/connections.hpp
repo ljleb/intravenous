@@ -123,12 +123,19 @@ struct ConfiguredSampleConnectionDetach {
   bool operator==(ConfiguredSampleConnectionDetach const&) const = default;
 };
 
+struct ConfiguredSampleConnectionSource {
+  SampleOutputChannelId channel{};
+  // A value marks this dependency for removal when GraphJit forms the
+  // execution DAG. It does not identify or prescribe runtime storage.
+  std::optional<ConfiguredSampleConnectionDetach> detach{};
+  bool operator==(ConfiguredSampleConnectionSource const&) const = default;
+};
+
 struct ConfiguredSampleConnection {
   ChannelTypeId source_type = ChannelTypeId::mono;
-  std::vector<SampleOutputChannelId> source_channels{};
+  std::vector<ConfiguredSampleConnectionSource> source_channels{};
   ChannelTypeId target_type = ChannelTypeId::mono;
   std::vector<SampleInputChannelId> target_channels{};
-  std::optional<ConfiguredSampleConnectionDetach> detach{};
   bool operator==(ConfiguredSampleConnection const&) const = default;
 };
 
@@ -146,12 +153,19 @@ struct ConfiguredEventConnectionDetach {
   bool operator==(ConfiguredEventConnectionDetach const&) const = default;
 };
 
+struct ConfiguredEventConnectionSource {
+  EventOutputPortId port{};
+  // A value marks this dependency for removal when GraphJit forms the
+  // execution DAG. It does not identify or prescribe runtime storage.
+  std::optional<ConfiguredEventConnectionDetach> detach{};
+  bool operator==(ConfiguredEventConnectionSource const&) const = default;
+};
+
 struct ConfiguredEventConnection {
   EventTypeId source_type = EventTypeId::empty;
-  std::vector<EventOutputPortId> sources{};
+  std::vector<ConfiguredEventConnectionSource> sources{};
   EventTypeId target_type = EventTypeId::empty;
   std::vector<EventInputPortId> targets{};
-  std::optional<ConfiguredEventConnectionDetach> detach{};
   bool operator==(ConfiguredEventConnection const&) const = default;
 };
 
@@ -215,7 +229,11 @@ constexpr bool GraphBuilderConnections::sample_input_is_connected(
 constexpr bool GraphBuilderConnections::sample_output_is_connected(
     SampleOutputChannelId source) const {
   return std::ranges::any_of(_configured_sample_connections,
-      [&](auto const& c) { return std::ranges::contains(c.source_channels, source); });
+      [&](auto const& c) {
+        return std::ranges::any_of(c.source_channels, [&](auto const& candidate) {
+          return candidate.channel == source;
+        });
+      });
 }
 constexpr bool GraphBuilderConnections::event_input_is_connected(
     EventInputPortId target) const {
@@ -225,7 +243,11 @@ constexpr bool GraphBuilderConnections::event_input_is_connected(
 constexpr bool GraphBuilderConnections::event_output_is_connected(
     EventOutputPortId source) const {
   return std::ranges::any_of(_configured_event_connections,
-      [&](auto const& c) { return std::ranges::contains(c.sources, source); });
+      [&](auto const& c) {
+        return std::ranges::any_of(c.sources, [&](auto const& candidate) {
+          return candidate.port == source;
+        });
+      });
 }
 
 constexpr std::span<ConfiguredSampleConnection const>
@@ -436,12 +458,13 @@ GraphBuilderConnections::collect_virtual_sample_output_families(
 constexpr void GraphBuilderConnections::import_child(
     GraphBuilderConnections const& child, size_t bundle_offset) {
   for (auto connection : child._configured_sample_connections) {
-    for (auto& channel : connection.source_channels) channel.bundle += bundle_offset;
+    for (auto& source : connection.source_channels)
+      source.channel.bundle += bundle_offset;
     for (auto& channel : connection.target_channels) channel.bundle += bundle_offset;
     _configured_sample_connections.push_back(std::move(connection));
   }
   for (auto connection : child._configured_event_connections) {
-    for (auto& source : connection.sources) source.bundle += bundle_offset;
+    for (auto& source : connection.sources) source.port.bundle += bundle_offset;
     for (auto& target : connection.targets) target.bundle += bundle_offset;
     _configured_event_connections.push_back(std::move(connection));
   }
