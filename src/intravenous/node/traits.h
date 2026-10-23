@@ -30,7 +30,22 @@ namespace iv {
     struct TickBlockContext;
 
     template<typename Node>
+    class TickBlockBatchContext;
+
+    template<typename Node>
     struct SkipBlockContext;
+
+    template<typename Node>
+    class SkipBlockBatchContext;
+
+    template<typename Node>
+    class TockCoverageBatchContext;
+
+    template<typename Node>
+    class PropagateForwardCoverageBatchContext;
+
+    template<typename Node>
+    class PropagateReverseCoverageBatchContext;
 
     template<typename Node>
     void do_tock_coverage(Node const&, TockCoverageContext<Node>&);
@@ -323,6 +338,12 @@ namespace iv {
         };
 
         template<typename Node>
+        concept has_tock_coverage_batch = requires(
+            TockCoverageBatchContext<Node>& context) {
+            { Node::tock_coverage_batch(context) } -> std::same_as<void>;
+        };
+
+        template<typename Node>
         concept has_propagate_forward_coverage = requires(Node const& node) {
             { node.propagate_forward_coverage(
                 std::declval<PropagateForwardCoverageContext<Node>&>()) }
@@ -330,9 +351,23 @@ namespace iv {
         };
 
         template<typename Node>
+        concept has_propagate_forward_coverage_batch = requires(
+            PropagateForwardCoverageBatchContext<Node>& context) {
+            { Node::propagate_forward_coverage_batch(context) }
+                -> std::same_as<void>;
+        };
+
+        template<typename Node>
         concept has_propagate_reverse_coverage = requires(Node const& node) {
             { node.propagate_reverse_coverage(
                 std::declval<PropagateReverseCoverageContext<Node>&>()) }
+                -> std::same_as<void>;
+        };
+
+        template<typename Node>
+        concept has_propagate_reverse_coverage_batch = requires(
+            PropagateReverseCoverageBatchContext<Node>& context) {
+            { Node::propagate_reverse_coverage_batch(context) }
                 -> std::same_as<void>;
         };
 
@@ -349,10 +384,30 @@ namespace iv {
         };
 
         template<typename Node>
+        concept has_tick_block_batch = requires(
+            TickBlockBatchContext<Node> const& context) {
+            { Node::tick_block_batch(context) } -> std::same_as<void>;
+        };
+
+        template<typename Node>
         concept has_skip_block = requires(
             Node const& node, SkipBlockContext<Node> const& context) {
             { node.skip_block(context) } -> std::same_as<void>;
         };
+
+        template<typename Node>
+        concept has_skip_block_batch = requires(
+            SkipBlockBatchContext<Node> const& context) {
+            { Node::skip_block_batch(context) } -> std::same_as<void>;
+        };
+
+        template<typename Node>
+        inline constexpr bool has_tick_family_v =
+            has_tick<Node> || has_tick_block<Node> || has_tick_block_batch<Node>;
+
+        template<typename Node>
+        inline constexpr bool has_tock_family_v =
+            has_tock_coverage<Node> || has_tock_coverage_batch<Node>;
 
         // One concrete primitive has one authored execution domain. Tick and
         // tick_block are alternative realtime forms; tock_coverage is the
@@ -362,12 +417,22 @@ namespace iv {
         inline constexpr bool primary_callback_declaration_is_valid_v =
             (static_cast<unsigned>(has_tick<Node>)
                 + static_cast<unsigned>(has_tick_block<Node>)
-                + static_cast<unsigned>(has_tock_coverage<Node>) == 1)
-            && (!has_skip_block<Node>
-                || has_tick<Node> || has_tick_block<Node>)
+                + static_cast<unsigned>(has_tick_block_batch<Node>)
+                + static_cast<unsigned>(has_tock_coverage<Node>)
+                + static_cast<unsigned>(has_tock_coverage_batch<Node>) == 1)
+            && (static_cast<unsigned>(has_skip_block<Node>)
+                + static_cast<unsigned>(has_skip_block_batch<Node>) <= 1)
+            && (static_cast<unsigned>(has_propagate_forward_coverage<Node>)
+                + static_cast<unsigned>(
+                    has_propagate_forward_coverage_batch<Node>) <= 1)
+            && (static_cast<unsigned>(has_propagate_reverse_coverage<Node>)
+                + static_cast<unsigned>(
+                    has_propagate_reverse_coverage_batch<Node>) <= 1)
+            && (!(has_skip_block<Node> || has_skip_block_batch<Node>)
+                || has_tick_family_v<Node>)
             && (!declares_tock_outputs_v<Node>
-                || has_tock_coverage<Node>)
-            && (!has_tock_coverage<Node>
+                || has_tock_family_v<Node>)
+            && (!has_tock_family_v<Node>
                 || (declares_tock_outputs_v<Node>
                     && !declares_tick_outputs_v<Node>));
 
@@ -377,14 +442,17 @@ namespace iv {
             && has_constexpr_port_configs<Node>
             && primary_callback_declaration_is_valid_v<Node>
             && (!declares_tock_outputs_v<Node>
-                || has_tock_coverage<Node>)
-            && (!has_tock_coverage<Node>
+                || has_tock_family_v<Node>)
+            && (!has_tock_family_v<Node>
                 || declares_tock_outputs_v<Node>)
             && (!declares_tock_outputs_v<Node>
-                || has_propagate_forward_coverage<Node>)
-            && (!has_propagate_forward_coverage<Node>
+                || has_propagate_forward_coverage<Node>
+                || has_propagate_forward_coverage_batch<Node>)
+            && (!(has_propagate_forward_coverage<Node>
+                    || has_propagate_forward_coverage_batch<Node>)
                 || declares_tock_outputs_v<Node>)
-            && (!has_propagate_reverse_coverage<Node>
+            && (!(has_propagate_reverse_coverage<Node>
+                    || has_propagate_reverse_coverage_batch<Node>)
                 || (declares_tock_outputs_v<Node>
                     && declares_random_access_inputs_v<Node>));
 
@@ -429,8 +497,7 @@ namespace iv {
         inline constexpr bool replay_declaration_is_valid_v =
             !intrinsically_replayable_v<Node>
             || (has_constexpr_port_configs<Node>
-                && has_tick<Node>
-                && !has_tick_block<Node>
+                && has_tick_family_v<Node>
                 && !has_State<Node>
                 && !has_BackgroundState<Node>
                 && replay_ports_are_pointwise<Node>());

@@ -307,6 +307,13 @@ llvm::FunctionType* background_operation_type(llvm::LLVMContext& context)
         llvm::Type::getVoidTy(context), {pointer, pointer}, false);
 }
 
+llvm::FunctionType* batch_operation_type(llvm::LLVMContext& context)
+{
+    auto* pointer = llvm::PointerType::getUnqual(context);
+    return llvm::FunctionType::get(
+        llvm::Type::getVoidTy(context), {pointer}, false);
+}
+
 llvm::FunctionType* background_root_operation_type(llvm::LLVMContext& context)
 {
     auto* pointer = llvm::PointerType::getUnqual(context);
@@ -463,6 +470,7 @@ std::expected<void, std::string> emit_package_imports(
 {
     auto* block_type = primitive_block_operation_type(output_module.getContext());
     auto* background_type = background_operation_type(output_module.getContext());
+    auto* batch_type = batch_operation_type(output_module.getContext());
     for (auto const& package_plan : plan.packages) {
         if (package_plan.package_index >= input.packages.size()
             || !input.packages[package_plan.package_index].module) {
@@ -477,9 +485,20 @@ std::expected<void, std::string> emit_package_imports(
         auto source_module =
             std::move(input.packages[package_plan.package_index].module);
         for (auto const& callback : package_plan.callbacks) {
-            auto* callback_type = callback.abi == detail::CallbackImportAbi::block
-                ? block_type
-                : background_type;
+            llvm::FunctionType* callback_type = nullptr;
+            switch (callback.abi) {
+            case detail::CallbackImportAbi::block:
+                callback_type = block_type;
+                break;
+            case detail::CallbackImportAbi::background:
+                callback_type = background_type;
+                break;
+            case detail::CallbackImportAbi::batch:
+                callback_type = batch_type;
+                break;
+            }
+            IV_ASSERT(callback_type != nullptr,
+                "unknown primitive callback import ABI");
             auto imported = import_primitive_callback(
                 output_module,
                 *source_module,
@@ -1508,28 +1527,26 @@ void store_sequential_begin_ordinal(
     builder.CreateStore(ordinal, pointer);
 }
 
-void emit_primitive_call(
+struct EmittedPrimitiveTickContext {
+    llvm::Value* storage = nullptr;
+    llvm::Value* continuous_input_bindings = nullptr;
+    llvm::Value* event_input_bindings = nullptr;
+};
+
+EmittedPrimitiveTickContext emit_primitive_tick_context(
     llvm::IRBuilder<>& builder,
-    llvm::Function* tick_callback,
-    llvm::Function* skip_callback,
-    detail::DeclarationPlan const& declarations,
-    ActivityEmissionCache& activity_cache,
-    detail::PrimitiveActivityPlan const* activity,
-    bool force_skip,
     EmittedNodeConfiguration const& configuration,
     detail::PrimitiveStoragePlan const& storage,
     EmittedPrimitiveSamplePorts const& sample_ports,
     EmittedPrimitiveEventPorts const& event_ports,
     detail::PrimitiveSamplePortPlan const& sample_plan,
     detail::SampleStoragePlan const& sample_storage,
-    detail::PrimitiveEventPortPlan const& event_plan,
     BackgroundEvaluationPlan const* tick_background,
     TickNodeInvocationPlan const* tick_invocation,
     llvm::Value* invocation,
     EmittedRealtimeStorage const& realtime_storage,
     llvm::Value* root_index,
-    llvm::Value* sample_index,
-    llvm::Value* block_size)
+    llvm::Value* sample_index)
 {
     auto* storage_base = realtime_storage.persistent_base;
     auto* size_type = llvm::IntegerType::get(
@@ -1731,6 +1748,55 @@ void emit_primitive_call(
             storage.state_size);
     }
 
+    return {
+        .storage = context_storage,
+        .continuous_input_bindings = continuous_input_bindings,
+        .event_input_bindings = event_input_bindings,
+    };
+}
+
+void emit_primitive_call(
+    llvm::IRBuilder<>& builder,
+    llvm::Function* tick_callback,
+    llvm::Function* skip_callback,
+    detail::DeclarationPlan const& declarations,
+    ActivityEmissionCache& activity_cache,
+    detail::PrimitiveActivityPlan const* activity,
+    bool force_skip,
+    EmittedNodeConfiguration const& configuration,
+    detail::PrimitiveStoragePlan const& storage,
+    EmittedPrimitiveSamplePorts const& sample_ports,
+    EmittedPrimitiveEventPorts const& event_ports,
+    detail::PrimitiveSamplePortPlan const& sample_plan,
+    detail::SampleStoragePlan const& sample_storage,
+    detail::PrimitiveEventPortPlan const& event_plan,
+    BackgroundEvaluationPlan const* tick_background,
+    TickNodeInvocationPlan const* tick_invocation,
+    llvm::Value* invocation,
+    EmittedRealtimeStorage const& realtime_storage,
+    llvm::Value* root_index,
+    llvm::Value* sample_index,
+    llvm::Value* block_size)
+{
+    auto const emitted_context = emit_primitive_tick_context(
+        builder,
+        configuration,
+        storage,
+        sample_ports,
+        event_ports,
+        sample_plan,
+        sample_storage,
+        tick_background,
+        tick_invocation,
+        invocation,
+        realtime_storage,
+        root_index,
+        sample_index);
+    auto* context_storage = emitted_context.storage;
+    auto* continuous_input_bindings =
+        emitted_context.continuous_input_bindings;
+    auto* event_input_bindings = emitted_context.event_input_bindings;
+
     auto invoke = [&](llvm::Function* callback) {
         auto* call = builder.CreateCall(
             callback,
@@ -1750,6 +1816,9 @@ void emit_primitive_call(
     }
 
     auto& llvm_context = builder.getContext();
+    auto* storage_base = realtime_storage.persistent_base;
+    auto* size_type = llvm::IntegerType::get(
+        builder.getContext(), static_cast<unsigned>(sizeof(std::size_t) * 8));
     auto* function = builder.GetInsertBlock()->getParent();
     auto* byte_type = llvm::Type::getInt8Ty(llvm_context);
     auto* bool_type = llvm::Type::getInt1Ty(llvm_context);
@@ -5571,6 +5640,437 @@ std::expected<void, std::string> emit_execution_step(
     return {};
 }
 
+std::expected<bool, std::string> try_emit_execution_batch(
+    llvm::Module& module,
+    llvm::IRBuilder<>& builder,
+    detail::LoweringPlan const& plan,
+    std::vector<EmittedNodeConfiguration> const& configurations,
+    EmittedSamplePortBindings const& sample_bindings,
+    EmittedEventPortBindings const& event_bindings,
+    detail::ExecutionReadyGroupPlan const& group,
+    EmittedRealtimeStorage const& realtime_storage,
+    ActivityEmissionCache& activity_cache,
+    llvm::Value* invocation,
+    llvm::Value* root_index,
+    llvm::Value* sample_index,
+    llvm::Value* block_size,
+    bool skip)
+{
+    if (group.cyclic_region || group.primitive_steps.size() < 2) return false;
+
+    std::string_view batch_symbol;
+    struct LanePlan {
+        detail::PrimitiveExecutionStep const* step = nullptr;
+        BackgroundEvaluationPlan const* background = nullptr;
+        TickNodeInvocationPlan const* tick_invocation = nullptr;
+    };
+    std::vector<LanePlan> lanes;
+    lanes.reserve(group.primitive_steps.size());
+    for (auto const step_index : group.primitive_steps) {
+        if (step_index >= plan.execution.primitive_steps.size()) {
+            return std::unexpected(
+                "GraphJit realtime batch references a missing primitive step");
+        }
+        auto const& step = plan.execution.primitive_steps[step_index];
+        if (step.configuration_index >= configurations.size()
+            || step.storage_index >= plan.declarations.primitive_storage.size()
+            || step.configuration_index
+                >= plan.imports.primitive_callbacks.size()
+            || step.configuration_index >= sample_bindings.primitives.size()
+            || step.configuration_index >= event_bindings.primitives.size()
+            || step.configuration_index >= plan.sample_ports.primitives.size()
+            || step.configuration_index >= plan.event_ports.primitives.size()
+            || step.configuration_index
+                >= plan.declarations.primitive_activity.size()) {
+            return std::unexpected(
+                "GraphJit realtime batch references an incomplete primitive plan");
+        }
+        auto const& selected_symbol = skip
+            ? step.skip_batch_callback_symbol
+            : step.tick_batch_callback_symbol;
+        if (selected_symbol.empty()) return false;
+        if (batch_symbol.empty()) batch_symbol = selected_symbol;
+        if (selected_symbol != batch_symbol
+            || step.maximum_block_size
+                < plan.declarations.node_layout.max_block_size
+            || (!skip
+                && plan.declarations
+                    .primitive_activity[step.configuration_index])) {
+            return false;
+        }
+
+        // These operations delimit a producer's authored callback. Moving all
+        // pre-operations before one batch and all post-operations after it is
+        // legal for an antichain, but it can extend transient live ranges and
+        // increase stack pressure. The initial cost model keeps such groups
+        // scalar; Front 16 can cost that transformation with layout jointly.
+        if (!step.sample_carry_restores_before.empty()
+            || !step.sample_materializations_before.empty()
+            || !step.sample_compositions_before.empty()
+            || !step.sample_feedback_writes_after.empty()
+            || !step.sample_materializations_after.empty()
+            || !step.sample_compositions_after.empty()
+            || !step.sample_transition_materializations_after.empty()
+            || !step.sample_carry_commits_after.empty()
+            || !step.event_operations_before.empty()
+            || !step.event_operations_after.empty()) {
+            return false;
+        }
+
+        BackgroundEvaluationPlan const* background = nullptr;
+        TickNodeInvocationPlan const* tick_invocation = nullptr;
+        auto const bundle = plan.imports
+            .primitive_callbacks[step.configuration_index].bundle;
+        auto const& background_plan = plan.connections.background;
+        if (bundle < background_plan.bundle_to_background_node.size()
+            && background_plan.bundle_to_background_node[bundle]) {
+            auto const node =
+                *background_plan.bundle_to_background_node[bundle];
+            if (node >= background_plan.tick_runtime.nodes.size()) {
+                return std::unexpected(
+                    "GraphJit realtime batch references a missing Tick invocation");
+            }
+            background = &background_plan;
+            tick_invocation = &background_plan.tick_runtime.nodes[node];
+            if (tick_invocation->sample_capture_count != 0
+                || tick_invocation->event_capture_count != 0) {
+                return false;
+            }
+        }
+        lanes.push_back(LanePlan{
+            .step = std::addressof(step),
+            .background = background,
+            .tick_invocation = tick_invocation,
+        });
+    }
+
+    // Transient placement is planned against the flattened scalar execution
+    // positions. Two representations whose scalar lifetimes do not overlap may
+    // therefore share bytes even when their primitives are later selected for
+    // one native batch. A batch callback can retain and access every lane
+    // facade until it returns, so a writable lane range must not overlap any
+    // other lane's callback-facing range. Shared read-only inputs remain legal.
+    // Front 16 can widen/co-plan these lifetimes when the additional storage is
+    // cheaper than scalar fallback.
+    enum class CallbackStorageBase : std::uint8_t {
+        root_transient,
+        node_storage,
+    };
+    struct CallbackStorageAccess {
+        CallbackStorageBase base = CallbackStorageBase::root_transient;
+        std::size_t begin = 0;
+        std::size_t end = 0;
+        std::size_t lane = 0;
+        bool writable = false;
+    };
+    std::vector<CallbackStorageAccess> callback_storage;
+    auto append_range = [&](CallbackStorageBase base,
+                            std::size_t begin,
+                            std::size_t size,
+                            std::size_t lane,
+                            bool writable)
+        -> std::expected<void, std::string> {
+        if (size == 0
+            || begin > std::numeric_limits<std::size_t>::max() - size) {
+            return std::unexpected(
+                "GraphJit realtime batch callback storage range is invalid");
+        }
+        callback_storage.push_back(CallbackStorageAccess{
+            .base = base,
+            .begin = begin,
+            .end = begin + size,
+            .lane = lane,
+            .writable = writable,
+        });
+        return {};
+    };
+    auto append_sample_representation = [&](std::size_t representation,
+                                            std::size_t lane,
+                                            bool writable)
+        -> std::expected<void, std::string> {
+        if (representation >= plan.sample_ports.storage.representations.size()) {
+            return std::unexpected(
+                "GraphJit realtime batch references missing sample storage");
+        }
+        auto const& storage =
+            plan.sample_ports.storage.representations[representation];
+        if (storage.constant_value) {
+            if (writable) {
+                return std::unexpected(
+                    "GraphJit realtime batch output references immutable sample storage");
+            }
+            return {};
+        }
+        if (storage.transient_allocation
+            != detail::no_sample_transient_allocation) {
+            if (storage.transient_allocation
+                >= plan.sample_ports.storage.transient_allocations.size()) {
+                return std::unexpected(
+                    "GraphJit realtime batch references missing transient sample storage");
+            }
+            auto const& allocation = plan.sample_ports.storage
+                .transient_allocations[storage.transient_allocation];
+            if (plan.root_stack.sample_offset
+                > std::numeric_limits<std::size_t>::max()
+                    - allocation.region_relative_offset) {
+                return std::unexpected(
+                    "GraphJit realtime batch sample storage offset overflows size_t");
+            }
+            return append_range(
+                CallbackStorageBase::root_transient,
+                plan.root_stack.sample_offset
+                    + allocation.region_relative_offset,
+                allocation.size_bytes,
+                lane,
+                writable);
+        }
+        if (storage.persistent_allocation
+            != detail::no_sample_persistent_allocation) {
+            if (storage.persistent_allocation
+                >= plan.sample_ports.storage.persistent_allocations.size()) {
+                return std::unexpected(
+                    "GraphJit realtime batch references missing persistent sample storage");
+            }
+            auto const& allocation = plan.sample_ports.storage
+                .persistent_allocations[storage.persistent_allocation];
+            return append_range(
+                CallbackStorageBase::node_storage,
+                allocation.storage_offset,
+                allocation.size_bytes,
+                lane,
+                writable);
+        }
+        return std::unexpected(
+            "GraphJit realtime batch sample storage has no physical allocation");
+    };
+    auto append_event_representation = [&](std::size_t representation,
+                                           std::size_t lane,
+                                           bool writable)
+        -> std::expected<void, std::string> {
+        if (representation >= plan.event_ports.ports.size()) {
+            return std::unexpected(
+                "GraphJit realtime batch references missing event storage");
+        }
+        auto const& storage = plan.event_ports.ports[representation];
+        if (storage.persistent) {
+            return append_range(
+                CallbackStorageBase::node_storage,
+                storage.storage_offset,
+                storage.size_bytes,
+                lane,
+                writable);
+        }
+        if (storage.transient_allocation
+            == detail::no_event_transient_allocation
+            || storage.transient_allocation
+                >= plan.event_ports.transient_allocations.size()) {
+            return std::unexpected(
+                "GraphJit realtime batch references missing transient event storage");
+        }
+        auto const& allocation = plan.event_ports.transient_allocations[
+            storage.transient_allocation];
+        if (plan.root_stack.event_offset
+            > std::numeric_limits<std::size_t>::max()
+                - allocation.region_relative_offset) {
+            return std::unexpected(
+                "GraphJit realtime batch event storage offset overflows size_t");
+        }
+        return append_range(
+            CallbackStorageBase::root_transient,
+            plan.root_stack.event_offset + allocation.region_relative_offset,
+            allocation.size_bytes,
+            lane,
+            writable);
+    };
+
+    for (std::size_t lane_index = 0; lane_index < lanes.size(); ++lane_index) {
+        auto const primitive = lanes[lane_index].step->configuration_index;
+        auto const& sample_ports = plan.sample_ports.primitives[primitive];
+        for (auto const& input : sample_ports.inputs) {
+            if (input.has_contiguous_scratch) return false;
+            for (auto const& channel : input.channels) {
+                auto appended = append_sample_representation(
+                    channel.storage, lane_index, false);
+                if (!appended) {
+                    return std::unexpected(std::move(appended.error()));
+                }
+            }
+        }
+        for (auto const& output : sample_ports.outputs) {
+            if (!output.realtime || !output.storage) continue;
+            auto appended = append_sample_representation(
+                *output.storage, lane_index, true);
+            if (!appended) {
+                return std::unexpected(std::move(appended.error()));
+            }
+        }
+
+        auto const& event_ports = plan.event_ports.primitives[primitive];
+        for (auto const& input : event_ports.inputs) {
+            if (!input.storage) continue;
+            auto appended = append_event_representation(
+                *input.storage, lane_index, false);
+            if (!appended) {
+                return std::unexpected(std::move(appended.error()));
+            }
+        }
+        for (auto const& output : event_ports.outputs) {
+            if (!output.realtime || !output.storage) continue;
+            auto appended = append_event_representation(
+                *output.storage, lane_index, true);
+            if (!appended) {
+                return std::unexpected(std::move(appended.error()));
+            }
+        }
+    }
+    for (std::size_t left = 0; left < callback_storage.size(); ++left) {
+        for (std::size_t right = left + 1;
+             right < callback_storage.size(); ++right) {
+            auto const& a = callback_storage[left];
+            auto const& b = callback_storage[right];
+            if (a.lane == b.lane || a.base != b.base
+                || (!a.writable && !b.writable)) {
+                continue;
+            }
+            if (a.begin < b.end && b.begin < a.end) return false;
+        }
+    }
+
+    auto* callback = module.getFunction(
+        llvm::StringRef(batch_symbol.data(), batch_symbol.size()));
+    if (!callback || callback->isDeclaration()) {
+        return std::unexpected(
+            "GraphJit realtime batch references an unmaterialized callback");
+    }
+    auto& context = builder.getContext();
+    auto* byte_type = llvm::Type::getInt8Ty(context);
+    auto* size_type = llvm::IntegerType::get(
+        context, static_cast<unsigned>(sizeof(std::size_t) * 8));
+    auto constant = [&](std::size_t value) {
+        return llvm::ConstantInt::get(size_type, value);
+    };
+    if (lanes.size() > std::numeric_limits<std::size_t>::max()
+            / sizeof(ReflectedNodeTickBatchLane)) {
+        return std::unexpected("GraphJit realtime batch lane storage overflows size_t");
+    }
+    auto* lane_storage = builder.CreateAlloca(
+        byte_type,
+        constant(lanes.size() * sizeof(ReflectedNodeTickBatchLane)),
+        "tick.batch.lanes");
+    lane_storage->setAlignment(llvm::Align(alignof(ReflectedNodeTickBatchLane)));
+
+    for (std::size_t lane_index = 0; lane_index < lanes.size(); ++lane_index) {
+        auto const& lane = lanes[lane_index];
+        auto const& step = *lane.step;
+        auto* lane_pointer = byte_offset_pointer(
+            builder,
+            lane_storage,
+            lane_index * sizeof(ReflectedNodeTickBatchLane),
+            "tick.batch.lane");
+        auto* node_pointer = byte_offset_pointer(
+            builder,
+            lane_pointer,
+            offsetof(ReflectedNodeTickBatchLane, node_data),
+            "tick.batch.node.pointer");
+        builder.CreateStore(
+            configurations[step.configuration_index].node_config,
+            node_pointer);
+        auto const tick_context = emit_primitive_tick_context(
+            builder,
+            configurations[step.configuration_index],
+            plan.declarations.primitive_storage[step.storage_index],
+            sample_bindings.primitives[step.configuration_index],
+            event_bindings.primitives[step.configuration_index],
+            plan.sample_ports.primitives[step.configuration_index],
+            plan.sample_ports.storage,
+            lane.background,
+            lane.tick_invocation,
+            invocation,
+            realtime_storage,
+            root_index,
+            sample_index);
+        auto* context_pointer = byte_offset_pointer(
+            builder,
+            lane_pointer,
+            offsetof(ReflectedNodeTickBatchLane, context),
+            "tick.batch.context.pointer");
+        builder.CreateMemCpy(
+            context_pointer,
+            llvm::Align(alignof(ReflectedNodeTickContext)),
+            tick_context.storage,
+            llvm::Align(alignof(ReflectedNodeTickContext)),
+            sizeof(ReflectedNodeTickContext));
+        auto* index_pointer = byte_offset_pointer(
+            builder,
+            lane_pointer,
+            offsetof(ReflectedNodeTickBatchLane, index),
+            "tick.batch.index.pointer");
+        builder.CreateStore(sample_index, index_pointer);
+        auto* size_pointer = byte_offset_pointer(
+            builder,
+            lane_pointer,
+            offsetof(ReflectedNodeTickBatchLane, block_size),
+            "tick.batch.size.pointer");
+        builder.CreateStore(block_size, size_pointer);
+    }
+
+    auto* batch_context = builder.CreateAlloca(
+        byte_type,
+        constant(sizeof(ReflectedNodeTickBatchContext)),
+        "tick.batch.context");
+    batch_context->setAlignment(
+        llvm::Align(alignof(ReflectedNodeTickBatchContext)));
+    store_context_span_pointer(
+        builder,
+        batch_context,
+        offsetof(ReflectedNodeTickBatchContext, lanes)
+            + offsetof(ReflectedSpan<ReflectedNodeTickBatchLane const>, pointer),
+        offsetof(ReflectedNodeTickBatchContext, lanes)
+            + offsetof(ReflectedSpan<ReflectedNodeTickBatchLane const>, extent),
+        lane_storage,
+        lanes.size());
+    auto* call = builder.CreateCall(callback, {batch_context});
+    call->setCallingConv(callback->getCallingConv());
+
+    // Keep compile-time activity-cache epochs identical to scalar emission.
+    // The selected conservative groups have no generated post-operations or
+    // capture hooks, so the callback is the only runtime producer action.
+    for (auto const& lane : lanes) {
+        auto const configuration_index = lane.step->configuration_index;
+        for (auto const& output :
+             plan.sample_ports.primitives[configuration_index].outputs) {
+            if (!output.realtime || !output.storage) continue;
+            if (*output.storage >= activity_cache.representation_epochs.size()) {
+                return std::unexpected(
+                    "GraphJit realtime batch sample output references a missing activity epoch");
+            }
+            auto& epoch = activity_cache.representation_epochs[*output.storage];
+            if (epoch == std::numeric_limits<std::size_t>::max()) {
+                return std::unexpected(
+                    "GraphJit realtime batch sample activity epoch overflows size_t");
+            }
+            ++epoch;
+        }
+        for (auto const& output :
+             plan.event_ports.primitives[configuration_index].outputs) {
+            if (!output.realtime || !output.storage) continue;
+            if (*output.storage
+                >= activity_cache.event_representation_epochs.size()) {
+                return std::unexpected(
+                    "GraphJit realtime batch event output references a missing activity epoch");
+            }
+            auto& epoch =
+                activity_cache.event_representation_epochs[*output.storage];
+            if (epoch == std::numeric_limits<std::size_t>::max()) {
+                return std::unexpected(
+                    "GraphJit realtime batch event activity epoch overflows size_t");
+            }
+            ++epoch;
+        }
+    }
+    return true;
+}
+
 std::expected<llvm::Function*, std::string> define_root_operation(
     llvm::Module& module,
     std::string_view symbol,
@@ -5865,14 +6365,33 @@ std::expected<llvm::Function*, std::string> define_root_operation(
             plan.event_ports.ports.size(), 0),
     };
 
-    for (std::size_t region_index = 0;
-         region_index < plan.execution.regions.size(); ++region_index) {
-        auto const& region = plan.execution.regions[region_index];
-        if (!region.cyclic) {
-            for (auto const step_index : region.primitive_steps) {
+    for (std::size_t group_index = 0;
+         group_index < plan.execution.ready_groups.size(); ++group_index) {
+        auto const& group = plan.execution.ready_groups[group_index];
+        if (!group.cyclic_region) {
+            auto batched = try_emit_execution_batch(
+                module,
+                builder,
+                plan,
+                configurations,
+                *sample_bindings,
+                *event_bindings,
+                group,
+                realtime_storage,
+                activity_cache,
+                invocation,
+                sample_index,
+                sample_index,
+                block_size,
+                skip);
+            if (!batched) {
+                return std::unexpected(std::move(batched.error()));
+            }
+            if (*batched) continue;
+            for (auto const step_index : group.primitive_steps) {
                 if (step_index >= plan.execution.primitive_steps.size()) {
                     return std::unexpected(
-                        "GraphJit execution region references a missing primitive step");
+                        "GraphJit ready group references a missing primitive step");
                 }
                 auto emitted = emit_execution_step(
                     module,
@@ -5896,6 +6415,17 @@ std::expected<llvm::Function*, std::string> define_root_operation(
                 }
             }
             continue;
+        }
+
+        auto const region_index = *group.cyclic_region;
+        if (region_index >= plan.execution.regions.size()) {
+            return std::unexpected(
+                "GraphJit ready group references a missing cyclic region");
+        }
+        auto const& region = plan.execution.regions[region_index];
+        if (!region.cyclic || !group.primitive_steps.empty()) {
+            return std::unexpected(
+                "GraphJit cyclic ready group has invalid execution contents");
         }
 
         if (region.maximum_block_size == 0
@@ -6266,6 +6796,244 @@ std::expected<llvm::Function*, std::string> define_background_root_operation(
                  builder, node_frame, context_offset, "background.context")});
     };
 
+    auto try_emit_authored_batch = [&](std::span<BackgroundNodeIndex const> group)
+        -> std::expected<bool, std::string> {
+        if (group.size() < 2) return false;
+
+        std::vector<std::pair<BackgroundNodeIndex, std::size_t>> candidates;
+        candidates.reserve(group.size());
+        std::string_view callback_symbol;
+        std::size_t scalar_context_offset = 0;
+        std::size_t lane_context_offset = 0;
+        std::size_t lane_size = 0;
+        std::size_t lane_alignment = 1;
+        std::size_t batch_size = 0;
+        std::size_t batch_alignment = 1;
+        BackgroundNodeActivity activity = BackgroundNodeActivity::none;
+        switch (phase) {
+        case BackgroundRootOperation::forward:
+            scalar_context_offset = offsets.forward_context;
+            lane_context_offset = offsetof(
+                ReflectedNodeForwardCoverageBatchLane, context);
+            lane_size = sizeof(ReflectedNodeForwardCoverageBatchLane);
+            lane_alignment = alignof(ReflectedNodeForwardCoverageBatchLane);
+            batch_size = sizeof(ReflectedNodeForwardCoverageBatchContext);
+            batch_alignment = alignof(ReflectedNodeForwardCoverageBatchContext);
+            activity = BackgroundNodeActivity::forward;
+            break;
+        case BackgroundRootOperation::reverse:
+            scalar_context_offset = offsets.reverse_context;
+            lane_context_offset = offsetof(
+                ReflectedNodeReverseCoverageBatchLane, context);
+            lane_size = sizeof(ReflectedNodeReverseCoverageBatchLane);
+            lane_alignment = alignof(ReflectedNodeReverseCoverageBatchLane);
+            batch_size = sizeof(ReflectedNodeReverseCoverageBatchContext);
+            batch_alignment = alignof(ReflectedNodeReverseCoverageBatchContext);
+            activity = BackgroundNodeActivity::reverse;
+            break;
+        case BackgroundRootOperation::evaluate:
+            scalar_context_offset = offsets.tock_context;
+            lane_context_offset = offsetof(
+                ReflectedNodeTockCoverageBatchLane, context);
+            lane_size = sizeof(ReflectedNodeTockCoverageBatchLane);
+            lane_alignment = alignof(ReflectedNodeTockCoverageBatchLane);
+            batch_size = sizeof(ReflectedNodeTockCoverageBatchContext);
+            batch_alignment = alignof(ReflectedNodeTockCoverageBatchContext);
+            activity = BackgroundNodeActivity::evaluate;
+            break;
+        }
+
+        for (auto const node : group) {
+            if (node >= plan.connections.background.nodes.size()) {
+                return std::unexpected(
+                    "GraphJit background batch references a missing node");
+            }
+            auto const& background_node =
+                plan.connections.background.nodes[node];
+            if (!background_node.authored_tock_execution) return false;
+            if (phase == BackgroundRootOperation::reverse
+                && background_node.accumulators.input_requirement_count == 0) {
+                continue;
+            }
+            auto primitive = primitive_for(node);
+            if (!primitive) {
+                return std::unexpected(std::move(primitive.error()));
+            }
+            auto const& callbacks =
+                plan.imports.primitive_callbacks[*primitive];
+            std::string const* selected = nullptr;
+            switch (phase) {
+            case BackgroundRootOperation::forward:
+                selected = &callbacks.propagate_forward_coverage_batch;
+                break;
+            case BackgroundRootOperation::reverse:
+                selected = &callbacks.propagate_reverse_coverage_batch;
+                break;
+            case BackgroundRootOperation::evaluate:
+                selected = &callbacks.tock_coverage_batch;
+                break;
+            }
+            if (selected == nullptr || selected->empty()) return false;
+            if (callback_symbol.empty()) callback_symbol = *selected;
+            if (*selected != callback_symbol) return false;
+            candidates.emplace_back(node, *primitive);
+        }
+        if (candidates.size() < 2) return false;
+
+        auto* imported = module.getFunction(
+            llvm::StringRef(callback_symbol.data(), callback_symbol.size()));
+        if (!imported || imported->isDeclaration()) {
+            return std::unexpected(
+                "GraphJit background batch references an unmaterialized callback");
+        }
+        if (candidates.size() > std::numeric_limits<std::size_t>::max()
+                / lane_size) {
+            return std::unexpected(
+                "GraphJit background batch lane storage overflows size_t");
+        }
+        auto size_constant = [&](std::size_t value) {
+            return llvm::ConstantInt::get(size_type, value);
+        };
+        auto* lane_storage = builder.CreateAlloca(
+            byte_type,
+            size_constant(candidates.size() * lane_size),
+            "background.batch.lanes");
+        lane_storage->setAlignment(llvm::Align(lane_alignment));
+        auto* active_count = builder.CreateAlloca(
+            size_type, nullptr, "background.batch.active.count");
+        builder.CreateStore(size_constant(0), active_count);
+
+        auto emit_if_active = [&](BackgroundNodeIndex node, auto&& emit) {
+            auto* node_frame = node_pointer(node);
+            auto* activity_value = builder.CreateLoad(
+                byte_type,
+                byte_offset_pointer(
+                    builder, node_frame, offsets.activity,
+                    "background.batch.activity.index"),
+                "background.batch.activity");
+            auto* active = builder.CreateICmpNE(
+                builder.CreateAnd(
+                    activity_value,
+                    llvm::ConstantInt::get(
+                        byte_type, static_cast<std::uint8_t>(activity))),
+                llvm::ConstantInt::get(byte_type, 0),
+                "background.batch.active");
+            auto* invoke = llvm::BasicBlock::Create(
+                context, "background.batch.collect", function);
+            auto* next = llvm::BasicBlock::Create(
+                context, "background.batch.next", function);
+            builder.CreateCondBr(active, invoke, next);
+            builder.SetInsertPoint(invoke);
+            emit(node_frame);
+            builder.CreateBr(next);
+            builder.SetInsertPoint(next);
+        };
+
+        for (auto const& [node, primitive] : candidates) {
+            emit_if_active(node, [&](llvm::Value* node_frame) {
+                if (phase == BackgroundRootOperation::evaluate) {
+                    emit_operation_hook(
+                        node_frame,
+                        offsets.prepare_operations,
+                        "background.batch.prepare");
+                }
+                auto* count = builder.CreateLoad(
+                    size_type, active_count, "background.batch.lane.index");
+                auto* lane = builder.CreateInBoundsGEP(
+                    byte_type,
+                    lane_storage,
+                    builder.CreateMul(
+                        count, size_constant(lane_size),
+                        "background.batch.lane.offset"),
+                    "background.batch.lane");
+                builder.CreateStore(
+                    configurations[primitive].node_config,
+                    byte_offset_pointer(
+                        builder,
+                        lane,
+                        offsetof(ReflectedNodeForwardCoverageBatchLane, node_data),
+                        "background.batch.node.pointer"));
+                builder.CreateMemCpy(
+                    byte_offset_pointer(
+                        builder,
+                        lane,
+                        lane_context_offset,
+                        "background.batch.context.pointer"),
+                    llvm::Align(1),
+                    byte_offset_pointer(
+                        builder,
+                        node_frame,
+                        scalar_context_offset,
+                        "background.batch.scalar.context"),
+                    llvm::Align(1),
+                    lane_size - lane_context_offset);
+                builder.CreateStore(
+                    builder.CreateAdd(
+                        count, size_constant(1),
+                        "background.batch.active.next"),
+                    active_count);
+            });
+        }
+
+        auto* count = builder.CreateLoad(
+            size_type, active_count, "background.batch.active.total");
+        auto* invoke = llvm::BasicBlock::Create(
+            context, "background.batch.invoke", function);
+        auto* next = llvm::BasicBlock::Create(
+            context, "background.batch.complete", function);
+        builder.CreateCondBr(
+            builder.CreateICmpNE(
+                count, size_constant(0), "background.batch.nonempty"),
+            invoke,
+            next);
+        builder.SetInsertPoint(invoke);
+        auto* batch_context = builder.CreateAlloca(
+            byte_type, size_constant(batch_size), "background.batch.context");
+        batch_context->setAlignment(llvm::Align(batch_alignment));
+        store_context_span_pointer(
+            builder,
+            batch_context,
+            offsetof(ReflectedNodeForwardCoverageBatchContext, lanes)
+                + offsetof(
+                    ReflectedSpan<ReflectedNodeForwardCoverageBatchLane const>,
+                    pointer),
+            offsetof(ReflectedNodeForwardCoverageBatchContext, lanes)
+                + offsetof(
+                    ReflectedSpan<ReflectedNodeForwardCoverageBatchLane const>,
+                    extent),
+            lane_storage,
+            0);
+        builder.CreateStore(
+            count,
+            byte_offset_pointer(
+                builder,
+                batch_context,
+                offsetof(ReflectedNodeForwardCoverageBatchContext, lanes)
+                    + offsetof(
+                        ReflectedSpan<
+                            ReflectedNodeForwardCoverageBatchLane const>,
+                        extent),
+                "background.batch.extent.pointer"));
+        auto* call = builder.CreateCall(
+            batch_operation_type(context), imported, {batch_context});
+        call->setCallingConv(imported->getCallingConv());
+        builder.CreateBr(next);
+        builder.SetInsertPoint(next);
+
+        if (phase == BackgroundRootOperation::evaluate) {
+            for (auto const& [node, primitive] : candidates) {
+                (void)primitive;
+                emit_if_active(node, [&](llvm::Value* node_frame) {
+                    emit_operation_hook(
+                        node_frame,
+                        offsets.finalize_operations,
+                        "background.batch.finalize");
+                });
+            }
+        }
+        return true;
+    };
+
     auto emit_node = [&](BackgroundNodeIndex node)
         -> std::expected<void, std::string> {
         if (node >= plan.connections.background.nodes.size()) {
@@ -6473,24 +7241,17 @@ std::expected<llvm::Function*, std::string> define_background_root_operation(
         return {};
     };
 
-    if (phase == BackgroundRootOperation::evaluate) {
-        for (auto const node :
-             plan.connections.background.background_evaluation_order) {
-            auto emitted = emit_node(node);
-            if (!emitted) return std::unexpected(std::move(emitted.error()));
-        }
-    } else {
-        for (auto const component_index : plan.connections.background.component_order) {
-            if (component_index >= plan.connections.background.components.size()) {
-                return std::unexpected(
-                    "GraphJit background traversal references a missing component");
-            }
-            auto const& component =
-                plan.connections.background.components[component_index];
-            auto const& order = phase == BackgroundRootOperation::forward
-                ? component.forward_order
-                : component.reverse_order;
-            for (auto const node : order) {
+    auto const& ready_groups = phase == BackgroundRootOperation::forward
+        ? plan.connections.background.forward_ready_groups
+        : phase == BackgroundRootOperation::reverse
+            ? plan.connections.background.reverse_ready_groups
+            : plan.connections.background.evaluation_ready_groups;
+    for (auto const& group : ready_groups) {
+        auto batched = try_emit_authored_batch(
+            std::span<BackgroundNodeIndex const>{group});
+        if (!batched) return std::unexpected(std::move(batched.error()));
+        if (!*batched) {
+            for (auto const node : group) {
                 auto emitted = emit_node(node);
                 if (!emitted) {
                     return std::unexpected(std::move(emitted.error()));

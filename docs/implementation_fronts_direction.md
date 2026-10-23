@@ -150,6 +150,31 @@ features do not keep the Front 1 execution contract open.
 **Primary ownership:** first-class scalar/batched node callback normalization and the
 scheduler's ability to exploit same-implementation batches.
 
+**Implementation status (2026-10-23):** implemented in source; repository-owner
+compilation and test validation are pending. The implementation now includes the
+public lane ranges, exclusive authored scalar/batch forms, every normalized helper
+and compiler anchor, exact implementation-plus-resolved-realization classification,
+dependency-safe `SchedulePlan::ready_groups`, conservative realtime batch lowering,
+and dynamic active-lane background batches for authored forward, reverse, and Tock
+callbacks. The initial scheduler caps one emitted batch at eight lanes. It keeps a
+ready group scalar when TTL activity, primitive slicing, persisted capture, or
+producer-side storage operations would require extra control flow or longer transient
+live ranges. It also compares callback-facing physical ranges from
+`SampleTransientAllocationPlan`, `SamplePersistentAllocationPlan`, and
+`EventTransientAllocationPlan`. A group stays scalar if a writable range overlaps
+another lane or if a lane uses the shared contiguous-input scratch area.
+Measurement-driven sizing and joint storage/layout costing remain Front 16 work, as
+intended.
+
+Focused source tests cover scalar/batch trait exclusivity, singleton adaptation,
+sample-major/lane-minor pointwise order, separate reflected port bindings per lane,
+dependency-preserving ready groups, aliased-storage scalar fallback, and generated
+Tick, skip, forward, reverse, and Tock batch calls. The generated-root fixtures use
+two instances with different configuration bytes. Both instances must observe a
+two-lane batch. This enforces the rule that configuration values do not belong to the
+compatibility key. A generated replay fixture also executes a batch-only Tick source
+through the normalized one-lane scalar adapter.
+
 This front owns:
 
 - authored `tick()`, `tick_block()`, and `tick_block_batch()` normalization;
@@ -170,9 +195,9 @@ This front owns:
 The node-trait API is the only place that branches on which authored callback exists.
 GraphJit sees `do_*` and `do_*_batch` operations unconditionally.
 
-Front 1 may later enrich the batch-compatibility key with solved size/pace/history/
-latency/ordering facts. That should not prevent this front from landing against the
-current realization identity first.
+`same_callback_batch_class()` compares the concrete implementation and every
+callback-facing entry in `ResolvedPortRealization`. It excludes configured values,
+`State`, `TockState`, coverage values, and storage addresses.
 
 **Can start independently:** yes.
 
@@ -1261,6 +1286,51 @@ the authored state migrated. This fixture initializes authored node state afresh
 compiler-owned activity region migrates separately, as shown by the successor's
 immediate `skip_block()` call. The assertion now expects zero successor tick calls and
 one successor skip call. A collaborator rerun remains pending.
+
+**Front 7 adversarial completion verification (2026-10-23):** the collaborator's
+following full run passed all 576 tests. Front 7 is complete for every contract that
+does not depend on Front 2. Its remaining normalized block-replay integration is part
+of the Front 2 callback-normalization pass rather than an independently implementable
+Front 7 slice.
+
+**Remaining-front dependency re-audit (2026-10-23):** with Fronts 1, 6, and 7 closed
+at their stated boundaries, 13 numbered fronts remain (`2`-`5` and `8`-`16`), not 14.
+The older summary below remains useful as an ownership graph, but later implementation
+work has overtaken two of its status edges. The Front 4 Tick-time dynamic-binding
+checkpoint is marked complete in
+[`coverage_and_background_evaluation.md`](./coverage_and_background_evaluation.md),
+and current source contains `TickInvocationWorkspace`,
+`TickMaterializationSnapshot`, persisted sample/event playback, and missing-position
+neutrality. Front 4 therefore needs a focused closure audit and status cleanup, not a
+new prerequisite implementation pass. Front 5's producer reserves, pending queues,
+capture disposition, transaction consumption, and persisted-state mailbox have also
+landed. Front 5 remains open for generalized continuous-value capture/publication and
+the separately recorded bulk-span performance work.
+
+The revised execution-path order is:
+
+1. Front 2 callback normalization and scalar/batch scheduling, including the deferred
+   normalized block-replay consumer;
+2. Front 3 node-facing `Region`/`Coverage` data representation over the already-landed
+   persisted region/chunk substrate;
+3. the remaining Front 5 generalized capture/publication work;
+4. Front 8 application execution and system-audio integration;
+5. the Front 16 measurement/baseline step required before structural optimization;
+6. Front 12 scoped builder migration; and
+7. the remaining Front 16 optimizations after the correctness architecture and
+   builder path are measurable together.
+
+Front 2 reached source implementation on 2026-10-23. After collaborator compilation
+and full-suite verification, the first item above closes and Front 3 becomes the next
+large dependency-ready implementation front. Any Front 2 verification failure reopens
+the exact callback, ABI, scheduling, or lowering boundary that fails.
+
+The control-plane order remains Front 9 before complete Front 10 and Front 13, then
+Front 14 and Front 15 after their stated inputs exist. Front 10 may continue to use
+opaque configuration source while Front 9 lands, but cannot complete typed replay
+without Front 9. Front 11 remains independent and may be scheduled wherever package
+build/cache cost becomes the highest practical impediment. This is a dependency order,
+not a requirement to delay independent control-plane or Front 11 work.
 
 ## Front 8: application execution and system-audio integration
 

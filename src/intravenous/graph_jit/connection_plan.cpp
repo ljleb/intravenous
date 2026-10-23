@@ -28,6 +28,11 @@
 namespace iv::graph_jit::detail {
 namespace {
 
+// Front 2 starts with a small fixed cap so native batch adapters cannot turn a
+// large ready frontier into an unbounded callback stack frame. Front 16 owns
+// measurement-driven sizing and joint stack/layout costing.
+constexpr std::size_t initial_callback_batch_lane_limit = 8;
+
 std::size_t saturating_add(std::size_t a, std::size_t b) noexcept
 {
     auto const max = std::numeric_limits<std::size_t>::max();
@@ -2680,7 +2685,8 @@ std::expected<void, std::string> populate_background_topology(
     ResolvedPortRealization const& realization,
     ConnectionAnalysisPlan const& connections,
     BackgroundEvaluationPlan& plan,
-    std::size_t kernel_block_size)
+    std::size_t kernel_block_size,
+    std::span<std::size_t const> callback_batch_classes)
 {
     plan.intrinsic_replay_candidates.clear();
     for (auto const& node : connections.nodes) {
@@ -3393,18 +3399,74 @@ std::expected<void, std::string> populate_background_topology(
     }
     std::vector<BackgroundNodeIndex> background_order;
     background_order.reserve(plan.nodes.size());
+    auto callback_batch_class = [&](BackgroundNodeIndex node)
+        -> std::optional<std::size_t> {
+        if (node >= plan.nodes.size()
+            || !plan.nodes[node].authored_tock_execution
+            || callback_batch_classes.empty()) {
+            return std::nullopt;
+        }
+        auto const bundle = plan.nodes[node].bundle;
+        if (bundle >= callback_batch_classes.size()) return std::nullopt;
+        auto const selected = callback_batch_classes[bundle];
+        if (selected == std::numeric_limits<std::size_t>::max()) {
+            return std::nullopt;
+        }
+        return selected;
+    };
     while (!ready_nodes.empty()) {
-        auto const node = ready_nodes.front();
-        ready_nodes.erase(ready_nodes.begin());
-        background_order.push_back(node);
-        for (auto const target : background_outgoing[node]) {
-            if (--indegree[target] == 0) insert_ready_node(target);
+        auto selected_class = callback_batch_class(ready_nodes.front());
+        std::size_t selected_count = selected_class ? 0 : 1;
+        for (auto const candidate : ready_nodes) {
+            auto const candidate_class = callback_batch_class(candidate);
+            if (!candidate_class) continue;
+            auto const count = static_cast<std::size_t>(std::ranges::count_if(
+                ready_nodes,
+                [&](BackgroundNodeIndex node) {
+                    return callback_batch_class(node) == candidate_class;
+                }));
+            if (count > selected_count) {
+                selected_class = candidate_class;
+                selected_count = count;
+            }
+        }
+        std::vector<BackgroundNodeIndex> selected;
+        if (selected_class) {
+            for (auto const node : ready_nodes) {
+                if (callback_batch_class(node) == selected_class) {
+                    selected.push_back(node);
+                }
+            }
+        } else {
+            selected.push_back(ready_nodes.front());
+        }
+        for (std::size_t begin = 0; begin < selected.size();
+             begin += initial_callback_batch_lane_limit) {
+            auto const end = std::min(
+                selected.size(), begin + initial_callback_batch_lane_limit);
+            plan.forward_ready_groups.emplace_back(
+                selected.begin() + static_cast<std::ptrdiff_t>(begin),
+                selected.begin() + static_cast<std::ptrdiff_t>(end));
+        }
+        for (auto const node : selected) {
+            background_order.push_back(node);
+            auto const found = std::ranges::find(ready_nodes, node);
+            IV_ASSERT(found != ready_nodes.end(),
+                "selected background node is absent from the ready frontier");
+            ready_nodes.erase(found);
+        }
+        for (auto const node : selected) {
+            for (auto const target : background_outgoing[node]) {
+                if (--indegree[target] == 0) insert_ready_node(target);
+            }
         }
     }
     if (background_order.size() != plan.nodes.size()) {
         return std::unexpected(
             "GraphJit background coverage dependency graph is cyclic after semantic SCC validation");
     }
+    plan.reverse_ready_groups = plan.forward_ready_groups;
+    std::ranges::reverse(plan.reverse_ready_groups);
 
     // The background evaluation DAG is deliberately distinct from semantic SCC
     // membership and from coverage propagation. Stored Tick boundaries terminate
@@ -3443,12 +3505,51 @@ std::expected<void, std::string> populate_background_topology(
         if (background_indegree[node] == 0) insert_background_ready(node);
     }
     while (!background_ready.empty()) {
-        auto const node = background_ready.front();
-        background_ready.erase(background_ready.begin());
-        plan.background_evaluation_order.push_back(node);
-        for (auto const target : evaluation_outgoing[node]) {
-            if (--background_indegree[target] == 0) {
-                insert_background_ready(target);
+        auto selected_class = callback_batch_class(background_ready.front());
+        std::size_t selected_count = selected_class ? 0 : 1;
+        for (auto const candidate : background_ready) {
+            auto const candidate_class = callback_batch_class(candidate);
+            if (!candidate_class) continue;
+            auto const count = static_cast<std::size_t>(std::ranges::count_if(
+                background_ready,
+                [&](BackgroundNodeIndex node) {
+                    return callback_batch_class(node) == candidate_class;
+                }));
+            if (count > selected_count) {
+                selected_class = candidate_class;
+                selected_count = count;
+            }
+        }
+        std::vector<BackgroundNodeIndex> selected;
+        if (selected_class) {
+            for (auto const node : background_ready) {
+                if (callback_batch_class(node) == selected_class) {
+                    selected.push_back(node);
+                }
+            }
+        } else {
+            selected.push_back(background_ready.front());
+        }
+        for (std::size_t begin = 0; begin < selected.size();
+             begin += initial_callback_batch_lane_limit) {
+            auto const end = std::min(
+                selected.size(), begin + initial_callback_batch_lane_limit);
+            plan.evaluation_ready_groups.emplace_back(
+                selected.begin() + static_cast<std::ptrdiff_t>(begin),
+                selected.begin() + static_cast<std::ptrdiff_t>(end));
+        }
+        for (auto const node : selected) {
+            plan.background_evaluation_order.push_back(node);
+            auto const found = std::ranges::find(background_ready, node);
+            IV_ASSERT(found != background_ready.end(),
+                "selected background evaluation node is absent from the ready frontier");
+            background_ready.erase(found);
+        }
+        for (auto const node : selected) {
+            for (auto const target : evaluation_outgoing[node]) {
+                if (--background_indegree[target] == 0) {
+                    insert_background_ready(target);
+                }
             }
         }
     }
@@ -3612,7 +3713,8 @@ std::size_t floor_power_of_two(std::size_t value) noexcept
 
 std::expected<SchedulePlan, std::string> build_schedule(
     ConfiguredGraph const& graph,
-    ConnectionAnalysisPlan const& plan)
+    ConnectionAnalysisPlan const& plan,
+    std::span<std::size_t const> callback_batch_classes)
 {
     SchedulePlan schedule;
     schedule.bundle_to_region.resize(graph.node_bundles.size());
@@ -3727,23 +3829,77 @@ std::expected<SchedulePlan, std::string> build_schedule(
     auto region_key = [&](std::size_t region) {
         return schedule.regions[region].nodes.front();
     };
+    auto region_batch_class = [&](std::size_t region)
+        -> std::optional<std::size_t> {
+        auto const& candidate = schedule.regions[region];
+        if (candidate.cyclic || candidate.execution_order.size() != 1
+            || callback_batch_classes.empty()) {
+            return std::nullopt;
+        }
+        auto const bundle = candidate.execution_order.front();
+        if (bundle >= callback_batch_classes.size()) return std::nullopt;
+        auto const selected = callback_batch_classes[bundle];
+        if (selected == std::numeric_limits<std::size_t>::max()) {
+            return std::nullopt;
+        }
+        return selected;
+    };
     std::vector<std::size_t> ready_regions;
     for (std::size_t region = 0; region < schedule.regions.size(); ++region) {
         if (region_indegree[region] == 0) ready_regions.push_back(region);
     }
     std::ranges::sort(ready_regions, {}, region_key);
     while (!ready_regions.empty()) {
-        auto const region = ready_regions.front();
-        ready_regions.erase(ready_regions.begin());
-        schedule.region_order.push_back(region);
-        for (auto const target : region_outgoing[region]) {
-            if (--region_indegree[target] == 0) {
-                auto const insertion = std::lower_bound(
-                    ready_regions.begin(), ready_regions.end(), target,
-                    [&](std::size_t lhs, std::size_t rhs) {
-                        return region_key(lhs) < region_key(rhs);
-                    });
-                ready_regions.insert(insertion, target);
+        auto selected_class = region_batch_class(ready_regions.front());
+        std::size_t selected_count = selected_class ? 0 : 1;
+        for (auto const candidate : ready_regions) {
+            auto const candidate_class = region_batch_class(candidate);
+            if (!candidate_class) continue;
+            auto const count = static_cast<std::size_t>(std::ranges::count_if(
+                ready_regions,
+                [&](std::size_t region) {
+                    return region_batch_class(region) == candidate_class;
+                }));
+            if (count > selected_count) {
+                selected_class = candidate_class;
+                selected_count = count;
+            }
+        }
+        std::vector<std::size_t> selected;
+        if (selected_class) {
+            for (auto const region : ready_regions) {
+                if (region_batch_class(region) == selected_class) {
+                    selected.push_back(region);
+                }
+            }
+        } else {
+            selected.push_back(ready_regions.front());
+        }
+        for (std::size_t begin = 0; begin < selected.size();
+             begin += initial_callback_batch_lane_limit) {
+            auto const end = std::min(
+                selected.size(), begin + initial_callback_batch_lane_limit);
+            schedule.ready_groups.emplace_back(
+                selected.begin() + static_cast<std::ptrdiff_t>(begin),
+                selected.begin() + static_cast<std::ptrdiff_t>(end));
+        }
+        for (auto const region : selected) {
+            schedule.region_order.push_back(region);
+            auto const found = std::ranges::find(ready_regions, region);
+            IV_ASSERT(found != ready_regions.end(),
+                "selected ready SCC region is absent from the ready frontier");
+            ready_regions.erase(found);
+        }
+        for (auto const region : selected) {
+            for (auto const target : region_outgoing[region]) {
+                if (--region_indegree[target] == 0) {
+                    auto const insertion = std::lower_bound(
+                        ready_regions.begin(), ready_regions.end(), target,
+                        [&](std::size_t lhs, std::size_t rhs) {
+                            return region_key(lhs) < region_key(rhs);
+                        });
+                    ready_regions.insert(insertion, target);
+                }
             }
         }
     }
@@ -5354,7 +5510,8 @@ std::expected<ConnectionAnalysisPlan, std::string> build_connection_analysis_pla
     ResolvedPortRealization const& port_realization,
     std::size_t kernel_block_size,
     RealtimeStorageCostModel const& cost_model,
-    BackgroundEvaluationPlan const* retained_background_plan)
+    BackgroundEvaluationPlan const* retained_background_plan,
+    std::span<std::size_t const> callback_batch_classes)
 {
     if (kernel_block_size == 0) {
         return std::unexpected(
@@ -5438,7 +5595,12 @@ std::expected<ConnectionAnalysisPlan, std::string> build_connection_analysis_pla
     }
     if (!retained_background_plan) {
         if (auto populated = populate_background_topology(
-                graph, port_realization, plan, plan.background, kernel_block_size);
+                graph,
+                port_realization,
+                plan,
+                plan.background,
+                kernel_block_size,
+                callback_batch_classes);
             !populated) {
             return std::unexpected(std::move(populated.error()));
         }
@@ -5449,7 +5611,7 @@ std::expected<ConnectionAnalysisPlan, std::string> build_connection_analysis_pla
     if (auto detaches = validate_detached_connections(graph, plan); !detaches) {
         return std::unexpected(std::move(detaches.error()));
     }
-    auto schedule = build_schedule(graph, plan);
+    auto schedule = build_schedule(graph, plan, callback_batch_classes);
     if (!schedule) return std::unexpected(std::move(schedule.error()));
     plan.schedule = std::move(*schedule);
     if (auto detach_regions = bind_detach_regions(plan); !detach_regions) {

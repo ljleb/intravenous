@@ -2226,16 +2226,14 @@ and skip plus each authored
 propagation direction choose at most one scalar-or-batch form as specified in
 [Batched Node Callback Direction](./batched_node_callbacks_direction.md).
 
-The checked-in replayability validation still requires `tick()` without native
-`tick_block()`, no `State`, no random-access inputs, zero port history/latency and zero
-internal latency. This is an implementation checkpoint, not the target semantic rule:
-the target replayability trait removes the prohibition on Random Access inputs while
-retaining the deterministic/side-effect-free, state/history/latency restrictions. The
-later batching/replay direction moves the callback-shape test to the normalized
-`do_tick_block()` semantics so eligible authored `tick_block()` and
-`tick_block_batch()` implementations can participate without source-shape special
-cases; the replay contract still requires pure deterministic evaluation under a fixed
-version.
+The checked-in replayability validation accepts `tick()`, `tick_block()`, or
+`tick_block_batch()` through the normalized `do_tick_block()` operation. It rejects
+`State`, `TockState`, Random Access inputs, nonzero port history or latency, and
+nonzero internal latency. This is an implementation checkpoint, not the target
+semantic rule. The target replayability trait removes the prohibition on Random
+Access inputs. It retains the deterministic, side-effect-free, state, history, and
+latency restrictions. Front 2 removed the callback-shape special case. The replay
+contract still requires pure deterministic evaluation under a fixed version.
 
 Whole-project GraphJit validation resolves per-channel connections and semantic
 SCCs, derives contextual replayability and exact available coverage, rejects

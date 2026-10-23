@@ -667,14 +667,20 @@ std::expected<iv::graph_jit::detail::ConnectionAnalysisPlan, std::string>
 build_connection_analysis_plan(
     iv::ConfiguredGraph const& graph,
     std::size_t kernel_block_size,
-    iv::RealtimeStorageCostModel const& cost_model = {})
+    iv::RealtimeStorageCostModel const& cost_model = {},
+    std::span<std::size_t const> callback_batch_classes = {})
 {
     auto port_realization = iv::graph_jit::resolve_port_realization(graph);
     if (!port_realization) {
         return std::unexpected(std::move(port_realization.error()));
     }
     return iv::graph_jit::detail::build_connection_analysis_plan(
-        graph, *port_realization, kernel_block_size, cost_model);
+        graph,
+        *port_realization,
+        kernel_block_size,
+        cost_model,
+        nullptr,
+        callback_batch_classes);
 }
 
 } // namespace
@@ -904,6 +910,65 @@ TEST(GraphJitConnectionPlan, DerivesScheduleTemporalRequirementsAndProducerPolic
                     == graph_jit::detail::ConnectionStorageLifetime::transient
                 && region.current_block_frames == 64u;
         }));
+}
+
+TEST(GraphJitConnectionPlan, GroupsOneCompatibleReadyFrontierWithoutHidingDependencies)
+{
+    using namespace iv;
+    GraphBuilder graph;
+    auto input = graph.input<"in">();
+    auto first_source = details::configure_concrete_node<PlainSamplePass>(graph);
+    auto second_source = details::configure_concrete_node<PlainSamplePass>(graph);
+    auto first_target = details::configure_concrete_node<PlainSamplePass>(graph);
+    auto second_target = details::configure_concrete_node<PlainSamplePass>(graph);
+    auto const first_source_handle = first_source.node_bundle_handle();
+    auto const second_source_handle = second_source.node_bundle_handle();
+    auto const first_target_handle = first_target.node_bundle_handle();
+    auto const second_target_handle = second_target.node_bundle_handle();
+    first_source(input);
+    second_source(input);
+    first_target(first_source);
+    second_target(second_source);
+    graph.outputs(
+        "first"_P = first_target,
+        "second"_P = second_target);
+
+    auto configured = std::move(graph).finish();
+    std::vector<std::size_t> classes(
+        configured.node_bundles.size(),
+        std::numeric_limits<std::size_t>::max());
+    classes[first_source_handle] = 0;
+    classes[second_source_handle] = 0;
+    classes[first_target_handle] = 1;
+    classes[second_target_handle] = 1;
+    auto plan = build_connection_analysis_plan(
+        configured, 64, {}, std::span<std::size_t const>{classes});
+    ASSERT_TRUE(plan.has_value()) << (plan ? std::string{} : plan.error());
+
+    ASSERT_EQ(plan->schedule.ready_groups.size(), 2u);
+    ASSERT_EQ(plan->schedule.ready_groups[0].size(), 2u);
+    ASSERT_EQ(plan->schedule.ready_groups[1].size(), 2u);
+    auto bundles_in = [&](std::vector<std::size_t> const& group) {
+        std::vector<NodeBundleHandle> result;
+        for (auto const region : group) {
+            EXPECT_LT(region, plan->schedule.regions.size());
+            if (region >= plan->schedule.regions.size()) continue;
+            EXPECT_EQ(plan->schedule.regions[region].execution_order.size(), 1u);
+            if (plan->schedule.regions[region].execution_order.empty()) continue;
+            result.push_back(
+                plan->schedule.regions[region].execution_order.front());
+        }
+        std::ranges::sort(result);
+        return result;
+    };
+    EXPECT_EQ(
+        bundles_in(plan->schedule.ready_groups[0]),
+        (std::vector<NodeBundleHandle>{
+            first_source_handle, second_source_handle}));
+    EXPECT_EQ(
+        bundles_in(plan->schedule.ready_groups[1]),
+        (std::vector<NodeBundleHandle>{
+            first_target_handle, second_target_handle}));
 }
 
 TEST(GraphJitConnectionPlan, FusesSampleConversionsAcrossASubgraphInput)

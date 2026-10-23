@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <iterator>
 #include <memory>
 #include <span>
 #include <type_traits>
@@ -509,24 +510,257 @@ struct PropagateReverseCoverageContext {
 
 };
 
+namespace details {
+
+template<typename Node, typename Context>
+struct BackgroundBatchLaneBinding {
+    Node const* node = nullptr;
+    Context* context = nullptr;
+};
+
+template<typename Node, typename Context>
+class BackgroundBatchLane {
+    BackgroundBatchLaneBinding<Node, Context> const* binding_ = nullptr;
+
+public:
+    BackgroundBatchLane() = default;
+    explicit BackgroundBatchLane(
+        BackgroundBatchLaneBinding<Node, Context> const& binding) noexcept
+        : binding_(std::addressof(binding))
+    {}
+
+    [[nodiscard]] Node const& node() const noexcept
+    {
+        IV_ASSERT(binding_ != nullptr && binding_->node != nullptr,
+            "background batch lane has no configured node");
+        return *binding_->node;
+    }
+
+    [[nodiscard]] Context& context() const noexcept
+    {
+        IV_ASSERT(binding_ != nullptr && binding_->context != nullptr,
+            "background batch lane has no scalar context");
+        return *binding_->context;
+    }
+
+    template<fixed_string Name>
+    [[nodiscard]] decltype(auto) input() const
+    requires requires(Context& context) { context.template input<Name>(); }
+    {
+        return context().template input<Name>();
+    }
+
+    template<fixed_string Name>
+    [[nodiscard]] decltype(auto) output() const
+    requires requires(Context& context) { context.template output<Name>(); }
+    {
+        return context().template output<Name>();
+    }
+
+    [[nodiscard]] decltype(auto) tock_state() const
+    requires requires(Context& context) { context.tock_state(); }
+    {
+        return context().tock_state();
+    }
+};
+
+template<typename Node, typename Context>
+class BackgroundBatchIterator {
+    BackgroundBatchLaneBinding<Node, Context> const* current_ = nullptr;
+
+public:
+    using value_type = BackgroundBatchLane<Node, Context>;
+    using difference_type = std::ptrdiff_t;
+    using iterator_category = std::forward_iterator_tag;
+
+    BackgroundBatchIterator() = default;
+    explicit BackgroundBatchIterator(
+        BackgroundBatchLaneBinding<Node, Context> const* current) noexcept
+        : current_(current)
+    {}
+
+    [[nodiscard]] value_type operator*() const noexcept
+    {
+        return value_type{*current_};
+    }
+
+    BackgroundBatchIterator& operator++() noexcept
+    {
+        ++current_;
+        return *this;
+    }
+
+    BackgroundBatchIterator operator++(int) noexcept
+    {
+        auto result = *this;
+        ++*this;
+        return result;
+    }
+
+    friend bool operator==(
+        BackgroundBatchIterator const&,
+        BackgroundBatchIterator const&) = default;
+};
+
+template<typename Node, typename Context>
+class BackgroundBatchContextBase {
+    std::span<BackgroundBatchLaneBinding<Node, Context> const> lanes_ {};
+
+protected:
+    explicit BackgroundBatchContextBase(
+        std::span<BackgroundBatchLaneBinding<Node, Context> const> lanes) noexcept
+        : lanes_(lanes)
+    {}
+
+public:
+    using Lane = BackgroundBatchLane<Node, Context>;
+    using iterator = BackgroundBatchIterator<Node, Context>;
+
+    [[nodiscard]] std::size_t size() const noexcept { return lanes_.size(); }
+    [[nodiscard]] bool empty() const noexcept { return lanes_.empty(); }
+
+    [[nodiscard]] Lane operator[](std::size_t index) const noexcept
+    {
+        IV_ASSERT(index < lanes_.size(),
+            "background batch lane is out of range");
+        return Lane{lanes_[index]};
+    }
+
+    [[nodiscard]] iterator begin() const noexcept
+    {
+        return iterator{lanes_.data()};
+    }
+
+    [[nodiscard]] iterator end() const noexcept
+    {
+        return iterator{lanes_.empty()
+            ? lanes_.data()
+            : lanes_.data() + lanes_.size()};
+    }
+};
+
+} // namespace details
+
+template<typename Node>
+class TockCoverageBatchContext
+    : public details::BackgroundBatchContextBase<
+        Node, TockCoverageContext<Node>> {
+    using Base = details::BackgroundBatchContextBase<
+        Node, TockCoverageContext<Node>>;
+
+public:
+    explicit TockCoverageBatchContext(
+        std::span<details::BackgroundBatchLaneBinding<
+            Node, TockCoverageContext<Node>> const> lanes) noexcept
+        : Base(lanes)
+    {}
+};
+
+template<typename Node>
+class PropagateForwardCoverageBatchContext
+    : public details::BackgroundBatchContextBase<
+        Node, PropagateForwardCoverageContext<Node>> {
+    using Base = details::BackgroundBatchContextBase<
+        Node, PropagateForwardCoverageContext<Node>>;
+
+public:
+    explicit PropagateForwardCoverageBatchContext(
+        std::span<details::BackgroundBatchLaneBinding<
+            Node, PropagateForwardCoverageContext<Node>> const> lanes) noexcept
+        : Base(lanes)
+    {}
+};
+
+template<typename Node>
+class PropagateReverseCoverageBatchContext
+    : public details::BackgroundBatchContextBase<
+        Node, PropagateReverseCoverageContext<Node>> {
+    using Base = details::BackgroundBatchContextBase<
+        Node, PropagateReverseCoverageContext<Node>>;
+
+public:
+    explicit PropagateReverseCoverageBatchContext(
+        std::span<details::BackgroundBatchLaneBinding<
+            Node, PropagateReverseCoverageContext<Node>> const> lanes) noexcept
+        : Base(lanes)
+    {}
+};
+
 template<typename Node>
 void do_tock_coverage(Node const& node, TockCoverageContext<Node>& context)
 {
-    node.tock_coverage(context);
+    if constexpr (details::has_tock_coverage_batch<Node>) {
+        details::BackgroundBatchLaneBinding<
+            Node, TockCoverageContext<Node>> lane{
+                .node = std::addressof(node),
+                .context = std::addressof(context),
+            };
+        TockCoverageBatchContext<Node> batch{{std::addressof(lane), 1}};
+        Node::tock_coverage_batch(batch);
+    } else {
+        node.tock_coverage(context);
+    }
+}
+
+template<typename Node>
+void do_tock_coverage_batch(TockCoverageBatchContext<Node>& context)
+{
+    if (context.empty()) return;
+    if constexpr (details::has_tock_coverage_batch<Node>) {
+        Node::tock_coverage_batch(context);
+    } else {
+        for (auto lane : context) {
+            lane.node().tock_coverage(lane.context());
+        }
+    }
 }
 
 template<typename Node>
 void do_propagate_forward_coverage(
     Node const& node, PropagateForwardCoverageContext<Node>& context)
 {
-    node.propagate_forward_coverage(context);
+    if constexpr (details::has_propagate_forward_coverage_batch<Node>) {
+        details::BackgroundBatchLaneBinding<
+            Node, PropagateForwardCoverageContext<Node>> lane{
+                .node = std::addressof(node),
+                .context = std::addressof(context),
+            };
+        PropagateForwardCoverageBatchContext<Node> batch{
+            {std::addressof(lane), 1}};
+        Node::propagate_forward_coverage_batch(batch);
+    } else {
+        node.propagate_forward_coverage(context);
+    }
+}
+
+template<typename Node>
+void do_propagate_forward_coverage_batch(
+    PropagateForwardCoverageBatchContext<Node>& context)
+{
+    if (context.empty()) return;
+    if constexpr (details::has_propagate_forward_coverage_batch<Node>) {
+        Node::propagate_forward_coverage_batch(context);
+    } else {
+        for (auto lane : context) {
+            lane.node().propagate_forward_coverage(lane.context());
+        }
+    }
 }
 
 template<typename Node>
 void do_propagate_reverse_coverage(
     Node const& node, PropagateReverseCoverageContext<Node>& context)
 {
-    if constexpr (details::has_propagate_reverse_coverage<Node>) {
+    if constexpr (details::has_propagate_reverse_coverage_batch<Node>) {
+        details::BackgroundBatchLaneBinding<
+            Node, PropagateReverseCoverageContext<Node>> lane{
+                .node = std::addressof(node),
+                .context = std::addressof(context),
+            };
+        PropagateReverseCoverageBatchContext<Node> batch{
+            {std::addressof(lane), 1}};
+        Node::propagate_reverse_coverage_batch(batch);
+    } else if constexpr (details::has_propagate_reverse_coverage<Node>) {
         node.propagate_reverse_coverage(context);
     } else {
         bool required = false;
@@ -539,6 +773,20 @@ void do_propagate_reverse_coverage(
         if (!required) return;
         for (auto const& input : context.inputs) input.require(input.coverage());
         for (auto const& input : context.event_inputs) input.require(input.coverage());
+    }
+}
+
+template<typename Node>
+void do_propagate_reverse_coverage_batch(
+    PropagateReverseCoverageBatchContext<Node>& context)
+{
+    if (context.empty()) return;
+    if constexpr (details::has_propagate_reverse_coverage_batch<Node>) {
+        Node::propagate_reverse_coverage_batch(context);
+    } else {
+        for (auto lane : context) {
+            do_propagate_reverse_coverage(lane.node(), lane.context());
+        }
     }
 }
 

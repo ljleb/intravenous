@@ -427,6 +427,33 @@ The governing performance invariant is:
    call demonstrated the intended migration. The corrected assertion awaits a
    collaborator rerun.
 
+   **Adversarial completion verification (2026-10-23):** the corrected suite passed
+   all 576 tests. Front 7 is closed at its Front 2 dependency boundary. Normalized
+   block replay now belongs to the next Front 2 callback-normalization pass.
+
+   **Front 2 source implementation (2026-10-23; collaborator verification pending):**
+   public Tick, skip, Tock, forward, and reverse batch ranges and their scalar/batch
+   normalization now exist. `NodeCompilerOperations` retains both anchors for each
+   applicable operation. GraphJit imports them, classifies nodes by `NodeCodeKey`,
+   package revision, and callback-facing `ResolvedPortRealization`, and records exact
+   ready-frontier antichains in `SchedulePlan::ready_groups`. Realtime lowering uses
+   native batches for uncomplicated groups and scalarizes groups with TTL activity,
+   slicing, capture, or producer-side storage operations. Generated background roots
+   compact currently active authored nodes into forward, reverse, and Tock batch
+   records. The initial eight-lane cap bounds adapter stack growth; Front 16 owns
+   measured sizing and joint layout costing. Intrinsic replay eligibility now follows
+   the normalized Tick block operation, including authored block and batch-only forms.
+   Realtime lowering keeps a ready group scalar when its callback-facing writable
+   storage overlaps another lane. It also keeps the group scalar when a lane uses the
+   shared contiguous-input scratch area. Front 16 can plan these storage lifetimes and
+   batch choices together after measurement.
+   Focused fixtures distinguish a real generated batch from scalar singleton fallback
+   by recording the received lane count. They cover different configured values,
+   separate lane port bindings, dependency-frontier grouping, aliased-storage scalar
+   fallback, Tick, skip, forward and reverse propagation, Tock evaluation, and a
+   batch-only Tick source executed through generated replay.
+   Compilation and test execution remain with the collaborator.
+
    This leaves Front 6 source-complete pending the collaborator's compilation and full
    suite run. Verification failure reopens the front at the failing boundary; a clean
    run closes it without another implementation pass.

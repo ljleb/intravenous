@@ -81,6 +81,7 @@ struct DeclarationPlan {
 enum class CallbackImportAbi : std::uint8_t {
     block,
     background,
+    batch,
 };
 
 struct CallbackImportPlan {
@@ -105,10 +106,15 @@ struct PackageImportGroup {
 struct PrimitiveCallbackPlan {
     NodeBundleHandle bundle = 0;
     std::string tick_block{};
+    std::string tick_block_batch{};
     std::string skip_block{};
+    std::string skip_block_batch{};
     std::string tock_coverage{};
+    std::string tock_coverage_batch{};
     std::string propagate_forward_coverage{};
+    std::string propagate_forward_coverage_batch{};
     std::string propagate_reverse_coverage{};
+    std::string propagate_reverse_coverage_batch{};
 };
 
 struct PackageImportPlan {
@@ -461,7 +467,9 @@ struct PrimitiveExecutionStep {
     // this as the single invocation-slicing boundary for both tick and skip.
     std::size_t maximum_block_size = 0;
     std::string tick_callback_symbol{};
+    std::string tick_batch_callback_symbol{};
     std::string skip_callback_symbol{};
+    std::string skip_batch_callback_symbol{};
 
     // Explicit sample storage operations surrounding this producer. These are
     // storage-plan indices, not OutputPort behavior or runtime objects.
@@ -490,12 +498,21 @@ struct ExecutionRegionPlan {
     std::size_t scc_feedback_latency = 0;
 };
 
+struct ExecutionReadyGroupPlan {
+    // A multi-step entry is one compatible antichain discovered from one
+    // scheduler ready-frontier snapshot. A singleton remains a legal scalar
+    // choice. Cyclic SCC execution is represented by cyclic_region instead.
+    std::vector<std::size_t> primitive_steps{};
+    std::optional<std::size_t> cyclic_region{};
+};
+
 struct ExecutionPlan {
     // Ordered root execution sequence. For disconnected zero-port primitives this
     // is configured-bundle order; connection-aware scheduling will later replace
     // that provisional order without changing the LLVM-emission boundary.
     std::vector<PrimitiveExecutionStep> primitive_steps{};
     std::vector<ExecutionRegionPlan> regions{};
+    std::vector<ExecutionReadyGroupPlan> ready_groups{};
 };
 
 

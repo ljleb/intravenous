@@ -627,6 +627,12 @@ struct BackgroundEvaluationPlan {
     std::vector<BackgroundPortIndex> tick_sequential_inputs{};
     std::vector<BackgroundDependencyPlan> background_dependencies{};
     std::vector<BackgroundNodeIndex> background_evaluation_order{};
+    // Ready-frontier snapshots used by generated background roots. A
+    // multi-node entry contains authored callbacks from one equal compiler
+    // batch class; generated replay adapters remain singleton entries.
+    std::vector<std::vector<BackgroundNodeIndex>> forward_ready_groups{};
+    std::vector<std::vector<BackgroundNodeIndex>> reverse_ready_groups{};
+    std::vector<std::vector<BackgroundNodeIndex>> evaluation_ready_groups{};
     CoverageAccumulatorCounts accumulators{};
 
     [[nodiscard]] bool empty() const noexcept

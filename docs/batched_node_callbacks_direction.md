@@ -1,6 +1,16 @@
 # Batched Node Callback Direction
 
-_Status: planned node API, trait-normalization, and GraphJit scheduling direction. The checked-in source does not yet provide the batch context types or compiler callback anchors described here._
+_Status: implementation in progress on 2026-10-23; repository-owner compilation and
+test validation are pending. The superseded pre-implementation status is retained
+in [Front 2 pre-implementation status](./historical/front_2_preimplementation_status.md)._
+
+The traits layer and reflected compiler ABI provide normalized scalar and batch Tick
+and skip operations. GraphJit can invoke compatible active primitives through one
+`tick_block_batch()` call. Its activity lowering still selects `tick_block()` or
+`skip_block()` separately for each primitive. It does not yet partition one ready
+group into active and dormant lanes and invoke `skip_block_batch()` for the dormant
+subset. This is remaining Front 2 work; a root-level `skip_block` operation is not the
+solution because the generated Tick root owns each primitive's activity decision.
 
 [DSP Execution And Storage Glossary](./dsp_execution_storage_glossary.md) defines the execution terminology used here. This document complements [Graph JIT Direction](./graph_jit_direction.md), [Sequential Port Storage And Connection Planning](./sequential_port_storage_planning.md), and [Coverage, Random Access, And Background Evaluation](./coverage_and_background_evaluation.md).
 
@@ -438,6 +448,13 @@ Skip scheduling uses the same mechanism. Once activity/TTL lowering chooses a sk
 operation, compatible skipped nodes may be collected into `skip_block_batch()` rather
 than forcing scalar skip callbacks.
 
+The first lowering pass also compares the physical callback storage for all lanes.
+It uses `SampleTransientAllocationPlan`, `SamplePersistentAllocationPlan`, and
+`EventTransientAllocationPlan` to identify overlapping byte ranges. Shared read-only
+inputs are legal. A group stays scalar if a writable range overlaps another lane or
+if a lane uses the shared contiguous-input scratch area. Front 16 can plan storage
+lifetimes and batch choices together when measurements justify the extra storage.
+
 ## 9. Pace-aware Tick batching
 
 Port pacing is resolved before batch compatibility is decided. Every lane in one Tick
@@ -487,14 +504,10 @@ otherwise dominate the useful work.
 
 ## 11. Replayability
 
-Replayability should ultimately be a semantic property of the normalized Tick block
-operation, not of which authoring spelling created it.
-
-The checked-in implementation currently restricts the intrinsic replay trait to
-`tick()`-only nodes. The intended later direction is to allow normalized
-`do_tick_block()` to be a replay candidate when the callback-visible semantics permit
-it, for example when there is no realtime `State`, no relevant history or latency,
-and the deterministic/side-effect-free replay contract is satisfied.
+Replayability is a semantic property of the normalized Tick block operation, not of
+which authoring spelling created it. The node declaration accepts `tick()`,
+`tick_block()`, or `tick_block_batch()` when the other replay restrictions hold. The
+whole-graph planner separately validates the resolved timing restrictions.
 
 An authored `tick_block()` does not become unreplayable merely because it mixes values
 within one block. Block callbacks are invoked at legal multiples of their configured

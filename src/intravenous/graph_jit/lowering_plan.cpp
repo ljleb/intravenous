@@ -210,29 +210,58 @@ std::expected<GraphAnalysis, std::string> analyze_graph(
             return std::unexpected(
                 "resolved primitive implementation is incomplete at the GraphJit lowering boundary");
         }
-        if (has_tick && !implementation->skip_block) {
+        if (has_tick && (!implementation->tick_block_batch
+                || !implementation->skip_block
+                || !implementation->skip_block_batch)) {
             return std::unexpected(
-                "Tick primitive has no resolved skip_block implementation");
+                "Tick primitive has an incomplete normalized scalar/batch callback family");
         }
-        if (has_tock && !implementation->propagate_forward_coverage) {
+        if (has_tock && (!implementation->tock_coverage_batch
+                || !implementation->propagate_forward_coverage
+                || !implementation->propagate_forward_coverage_batch)) {
             return std::unexpected(
-                "Tock primitive has no resolved forward-propagation implementation");
+                "Tock primitive has an incomplete normalized scalar/batch callback family");
         }
-        if ((!has_tick && implementation->skip_block)
+        if ((!has_tick && (implementation->tick_block_batch
+                || implementation->skip_block
+                || implementation->skip_block_batch))
+            || (!has_tock && (implementation->tock_coverage_batch
+                || implementation->propagate_forward_coverage
+                || implementation->propagate_forward_coverage_batch
+                || implementation->propagate_reverse_coverage
+                || implementation->propagate_reverse_coverage_batch))
+            || (static_cast<bool>(implementation->propagate_reverse_coverage)
+                != static_cast<bool>(
+                    implementation->propagate_reverse_coverage_batch))
             || (has_tick
                 && implementation->tick_block->getParent()
                     != implementation->package_module)
             || (implementation->skip_block
                 && implementation->skip_block->getParent()
                     != implementation->package_module)
+            || (implementation->tick_block_batch
+                && implementation->tick_block_batch->getParent()
+                    != implementation->package_module)
+            || (implementation->skip_block_batch
+                && implementation->skip_block_batch->getParent()
+                    != implementation->package_module)
             || (implementation->tock_coverage
                 && implementation->tock_coverage->getParent()
+                    != implementation->package_module)
+            || (implementation->tock_coverage_batch
+                && implementation->tock_coverage_batch->getParent()
                     != implementation->package_module)
             || (implementation->propagate_forward_coverage
                 && implementation->propagate_forward_coverage->getParent()
                     != implementation->package_module)
+            || (implementation->propagate_forward_coverage_batch
+                && implementation->propagate_forward_coverage_batch->getParent()
+                    != implementation->package_module)
             || (implementation->propagate_reverse_coverage
                 && implementation->propagate_reverse_coverage->getParent()
+                    != implementation->package_module)
+            || (implementation->propagate_reverse_coverage_batch
+                && implementation->propagate_reverse_coverage_batch->getParent()
                     != implementation->package_module)) {
             return std::unexpected(
                 "resolved primitive callbacks do not belong to the selected package LLVM module");
@@ -1878,6 +1907,12 @@ std::expected<PackageImportPlan, std::string> plan_package_imports(
                 primitive_callback_import_symbol(i, "tick_block"),
                 "tick_block",
                 CallbackImportAbi::block);
+            callbacks.tick_block_batch = add_callback(
+                package,
+                implementation.tick_block_batch->getName().str(),
+                primitive_callback_import_symbol(i, "tick_block_batch"),
+                "tick_block_batch",
+                CallbackImportAbi::batch);
             if (primitive.bundle.block_skippable) {
                 callbacks.skip_block = add_callback(
                     package,
@@ -1885,6 +1920,12 @@ std::expected<PackageImportPlan, std::string> plan_package_imports(
                     primitive_callback_import_symbol(i, "skip_block"),
                     "skip_block",
                     CallbackImportAbi::block);
+                callbacks.skip_block_batch = add_callback(
+                    package,
+                    implementation.skip_block_batch->getName().str(),
+                    primitive_callback_import_symbol(i, "skip_block_batch"),
+                    "skip_block_batch",
+                    CallbackImportAbi::batch);
             }
         }
 
@@ -1910,6 +1951,12 @@ std::expected<PackageImportPlan, std::string> plan_package_imports(
                     primitive_callback_import_symbol(i, "tock_coverage"),
                     "tock_coverage",
                     CallbackImportAbi::background);
+                callbacks.tock_coverage_batch = add_callback(
+                    package,
+                    implementation.tock_coverage_batch->getName().str(),
+                    primitive_callback_import_symbol(i, "tock_coverage_batch"),
+                    "tock_coverage_batch",
+                    CallbackImportAbi::batch);
                 callbacks.propagate_forward_coverage = add_callback(
                     package,
                     implementation.propagate_forward_coverage->getName().str(),
@@ -1917,6 +1964,13 @@ std::expected<PackageImportPlan, std::string> plan_package_imports(
                         i, "propagate_forward_coverage"),
                     "propagate_forward_coverage",
                     CallbackImportAbi::background);
+                callbacks.propagate_forward_coverage_batch = add_callback(
+                    package,
+                    implementation.propagate_forward_coverage_batch->getName().str(),
+                    primitive_callback_import_symbol(
+                        i, "propagate_forward_coverage_batch"),
+                    "propagate_forward_coverage_batch",
+                    CallbackImportAbi::batch);
                 if (node.accumulators.input_requirement_count != 0) {
                     if (!implementation.propagate_reverse_coverage) {
                         return std::unexpected(
@@ -1929,6 +1983,13 @@ std::expected<PackageImportPlan, std::string> plan_package_imports(
                             i, "propagate_reverse_coverage"),
                         "propagate_reverse_coverage",
                         CallbackImportAbi::background);
+                    callbacks.propagate_reverse_coverage_batch = add_callback(
+                        package,
+                        implementation.propagate_reverse_coverage_batch->getName().str(),
+                        primitive_callback_import_symbol(
+                            i, "propagate_reverse_coverage_batch"),
+                        "propagate_reverse_coverage_batch",
+                        CallbackImportAbi::batch);
                 }
             }
         }
@@ -6749,7 +6810,9 @@ std::expected<ExecutionPlan, std::string> plan_execution(
                 .storage_index = i,
                 .maximum_block_size = primitive->bundle.maximum_block_size,
                 .tick_callback_symbol = callbacks.tick_block,
+                .tick_batch_callback_symbol = callbacks.tick_block_batch,
                 .skip_callback_symbol = callbacks.skip_block,
+                .skip_batch_callback_symbol = callbacks.skip_block_batch,
             });
             region.primitive_steps.push_back(step_index);
         }
@@ -6761,6 +6824,56 @@ std::expected<ExecutionPlan, std::string> plan_execution(
             schedule_region_execution_region[region_index] = execution_region_index;
             plan.regions.push_back(std::move(region));
         }
+    }
+    plan.ready_groups.reserve(connections.schedule.ready_groups.size());
+    for (auto const& scheduled_group : connections.schedule.ready_groups) {
+        if (scheduled_group.empty()) {
+            return std::unexpected(
+                "GraphJit connection schedule contains an empty ready group");
+        }
+        ExecutionReadyGroupPlan group;
+        for (auto const schedule_region : scheduled_group) {
+            if (schedule_region >= schedule_region_execution_region.size()
+                || !schedule_region_execution_region[schedule_region]) {
+                return std::unexpected(
+                    "GraphJit ready group references a missing execution region");
+            }
+            auto const execution_region =
+                *schedule_region_execution_region[schedule_region];
+            auto const& region = plan.regions[execution_region];
+            if (region.cyclic) {
+                if (scheduled_group.size() != 1 || group.cyclic_region
+                    || !group.primitive_steps.empty()) {
+                    return std::unexpected(
+                        "GraphJit cyclic SCC was placed in a realtime batch group");
+                }
+                group.cyclic_region = execution_region;
+                continue;
+            }
+            if (region.primitive_steps.size() != 1 || group.cyclic_region) {
+                return std::unexpected(
+                    "GraphJit acyclic ready group has an invalid execution region");
+            }
+            group.primitive_steps.push_back(region.primitive_steps.front());
+        }
+        if (group.primitive_steps.size() > 1) {
+            auto const& first = plan.primitive_steps[group.primitive_steps.front()];
+            for (auto const step_index : group.primitive_steps) {
+                auto const& step = plan.primitive_steps[step_index];
+                if (step.tick_batch_callback_symbol.empty()
+                    || step.tick_batch_callback_symbol
+                        != first.tick_batch_callback_symbol
+                    || step.maximum_block_size != first.maximum_block_size) {
+                    return std::unexpected(
+                        "GraphJit ready group contains incompatible batch callbacks");
+                }
+            }
+        }
+        plan.ready_groups.push_back(std::move(group));
+    }
+    if (plan.ready_groups.empty() && !plan.regions.empty()) {
+        return std::unexpected(
+            "GraphJit connection schedule lost its ready-frontier groups");
     }
     for (std::size_t i = 0; i < scheduled.size(); ++i) {
         auto const tick = !imports.primitive_callbacks[i].tick_block.empty();
@@ -7063,6 +7176,12 @@ std::expected<ExecutionPlan, std::string> plan_execution(
     for (auto& region : plan.regions) {
         order_operations(region.event_operations_before);
         order_operations(region.event_operations_after);
+        if (!region.cyclic
+            && (!region.event_operations_before.empty()
+                || !region.event_operations_after.empty())) {
+            return std::unexpected(
+                "GraphJit acyclic execution region unexpectedly owns region-scoped event operations");
+        }
     }
 
     return plan;
@@ -7149,6 +7268,88 @@ std::expected<LoweringPlan, std::string> build_lowering_plan(
     auto port_realization = resolve_port_realization(input.graph);
     if (!port_realization) {
         return std::unexpected(std::move(port_realization.error()));
+    }
+
+    // The identifier has no semantic meaning outside this compilation. Equal
+    // values mean that the package callback and every callback-facing solved
+    // port fact are equal. Configured values, state, and storage addresses are
+    // intentionally absent.
+    auto same_callback_batch_class = [&](PrimitiveAnalysis const& left,
+                                         PrimitiveAnalysis const& right) {
+        if ((left.implementation->tick_block != nullptr)
+                != (right.implementation->tick_block != nullptr)
+            || left.implementation->code_key
+                != right.implementation->code_key
+            || left.implementation->revision.get()
+                != right.implementation->revision.get()
+            || left.implementation->provider_version
+                != right.implementation->provider_version
+            || (left.implementation->tick_block != nullptr
+                && left.bundle.maximum_block_size
+                    != right.bundle.maximum_block_size)) {
+            return false;
+        }
+        auto const left_bundle = left.bundle.node_bundle;
+        auto const right_bundle = right.bundle.node_bundle;
+        auto const& left_configured =
+            input.graph.node_bundles.bundle(left_bundle);
+        auto const& right_configured =
+            input.graph.node_bundles.bundle(right_bundle);
+        if (left_configured.sample_input_count()
+                != right_configured.sample_input_count()
+            || left_configured.sample_output_count()
+                != right_configured.sample_output_count()
+            || left_configured.event_input_count()
+                != right_configured.event_input_count()
+            || left_configured.event_output_count()
+                != right_configured.event_output_count()
+            || port_realization->execution_rate(left_bundle)
+                != port_realization->execution_rate(right_bundle)) {
+            return false;
+        }
+        for (std::size_t port = 0;
+             port < left_configured.sample_input_count(); ++port) {
+            if (port_realization->input(left_bundle, port)
+                != port_realization->input(right_bundle, port)) return false;
+        }
+        for (std::size_t port = 0;
+             port < left_configured.sample_output_count(); ++port) {
+            if (port_realization->output(left_bundle, port)
+                != port_realization->output(right_bundle, port)) return false;
+        }
+        for (std::size_t port = 0;
+             port < left_configured.event_input_count(); ++port) {
+            if (port_realization->event_input(left_bundle, port)
+                != port_realization->event_input(right_bundle, port)) return false;
+        }
+        for (std::size_t port = 0;
+             port < left_configured.event_output_count(); ++port) {
+            if (port_realization->event_output(left_bundle, port)
+                != port_realization->event_output(right_bundle, port)) return false;
+        }
+        return true;
+    };
+    std::vector<std::size_t> callback_batch_classes(
+        input.graph.node_bundles.size(),
+        std::numeric_limits<std::size_t>::max());
+    std::vector<std::size_t> class_representatives;
+    for (std::size_t primitive_index = 0;
+         primitive_index < analysis->primitives.size(); ++primitive_index) {
+        auto const& primitive = analysis->primitives[primitive_index];
+        auto selected = class_representatives.size();
+        for (std::size_t candidate = 0;
+             candidate < class_representatives.size(); ++candidate) {
+            if (same_callback_batch_class(
+                    primitive,
+                    analysis->primitives[class_representatives[candidate]])) {
+                selected = candidate;
+                break;
+            }
+        }
+        if (selected == class_representatives.size()) {
+            class_representatives.push_back(primitive_index);
+        }
+        callback_batch_classes[primitive.bundle.node_bundle] = selected;
     }
 
     for (auto const& primitive : analysis->primitives) {
@@ -7320,7 +7521,8 @@ std::expected<LoweringPlan, std::string> build_lowering_plan(
             *port_realization,
             input.specialization.block_size,
             cost_model,
-            retained_background_plan ? &*retained_background_plan : nullptr);
+            retained_background_plan ? &*retained_background_plan : nullptr,
+            callback_batch_classes);
         if (!connections) {
             return std::unexpected(std::move(connections.error()));
         }

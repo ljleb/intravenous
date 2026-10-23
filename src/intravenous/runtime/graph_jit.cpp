@@ -129,10 +129,15 @@ struct NodeCodeKeyHash {
 
 struct IrNodeRecord {
     llvm::Function* tick_block = nullptr;
+    llvm::Function* tick_block_batch = nullptr;
     llvm::Function* skip_block = nullptr;
+    llvm::Function* skip_block_batch = nullptr;
     llvm::Function* tock_coverage = nullptr;
+    llvm::Function* tock_coverage_batch = nullptr;
     llvm::Function* propagate_forward_coverage = nullptr;
+    llvm::Function* propagate_forward_coverage_batch = nullptr;
     llvm::Function* propagate_reverse_coverage = nullptr;
+    llvm::Function* propagate_reverse_coverage_batch = nullptr;
     llvm::Function* initialize_sequential_input = nullptr;
     llvm::Function* combine_sequential_input_values = nullptr;
     std::size_t state_size = 0;
@@ -208,7 +213,7 @@ std::unordered_map<NodeCodeKey, IrNodeRecord, NodeCodeKeyHash> scan_node_records
         auto* key = llvm::dyn_cast<llvm::ConstantStruct>(record->getOperand(0));
         auto* operations = llvm::dyn_cast<llvm::ConstantStruct>(record->getOperand(1));
         if (!key || key->getNumOperands() != 2 || !operations
-            || operations->getNumOperands() != 8) {
+            || operations->getNumOperands() != 13) {
             fail(GraphJitDiagnosticStage::package_llvm, "malformed iv_node_types record ABI");
         }
         NodeCodeKey code_key{
@@ -239,20 +244,34 @@ std::unordered_map<NodeCodeKey, IrNodeRecord, NodeCodeKeyHash> scan_node_records
         IrNodeRecord parsed{
             .tick_block = compiler_callback(
                 operations->getOperand(1), "tick_block", false),
+            .tick_block_batch = compiler_callback(
+                operations->getOperand(2), "tick_block_batch", false),
             .skip_block = compiler_callback(
-                operations->getOperand(2), "skip_block", false),
+                operations->getOperand(3), "skip_block", false),
+            .skip_block_batch = compiler_callback(
+                operations->getOperand(4), "skip_block_batch", false),
             .tock_coverage = compiler_callback(
-                operations->getOperand(3), "tock_coverage", false),
+                operations->getOperand(5), "tock_coverage", false),
+            .tock_coverage_batch = compiler_callback(
+                operations->getOperand(6), "tock_coverage_batch", false),
             .propagate_forward_coverage = compiler_callback(
-                operations->getOperand(4), "propagate_forward_coverage", false),
+                operations->getOperand(7), "propagate_forward_coverage", false),
+            .propagate_forward_coverage_batch = compiler_callback(
+                operations->getOperand(8),
+                "propagate_forward_coverage_batch",
+                false),
             .propagate_reverse_coverage = compiler_callback(
-                operations->getOperand(5), "propagate_reverse_coverage", false),
+                operations->getOperand(9), "propagate_reverse_coverage", false),
+            .propagate_reverse_coverage_batch = compiler_callback(
+                operations->getOperand(10),
+                "propagate_reverse_coverage_batch",
+                false),
             .initialize_sequential_input = compiler_callback(
-                operations->getOperand(6),
+                operations->getOperand(11),
                 "initialize_sequential_input",
                 false),
             .combine_sequential_input_values = compiler_callback(
-                operations->getOperand(7),
+                operations->getOperand(12),
                 "combine_sequential_input_values",
                 false),
             .state_size = constant_size(record->getOperand(4), "state size"),
@@ -698,14 +717,26 @@ void verify_compiler_record(
     }
     if (static_cast<bool>(accepted.operations.tick_block)
             != static_cast<bool>(ir_record.tick_block)
+        || static_cast<bool>(accepted.operations.tick_block_batch)
+            != static_cast<bool>(ir_record.tick_block_batch)
         || static_cast<bool>(accepted.operations.skip_block)
             != static_cast<bool>(ir_record.skip_block)
+        || static_cast<bool>(accepted.operations.skip_block_batch)
+            != static_cast<bool>(ir_record.skip_block_batch)
         || static_cast<bool>(accepted.operations.tock_coverage)
             != static_cast<bool>(ir_record.tock_coverage)
+        || static_cast<bool>(accepted.operations.tock_coverage_batch)
+            != static_cast<bool>(ir_record.tock_coverage_batch)
         || static_cast<bool>(accepted.operations.propagate_forward_coverage)
             != static_cast<bool>(ir_record.propagate_forward_coverage)
+        || static_cast<bool>(
+                accepted.operations.propagate_forward_coverage_batch)
+            != static_cast<bool>(ir_record.propagate_forward_coverage_batch)
         || static_cast<bool>(accepted.operations.propagate_reverse_coverage)
             != static_cast<bool>(ir_record.propagate_reverse_coverage)
+        || static_cast<bool>(
+                accepted.operations.propagate_reverse_coverage_batch)
+            != static_cast<bool>(ir_record.propagate_reverse_coverage_batch)
         || static_cast<bool>(
                 accepted.operations.initialize_sequential_input)
             != static_cast<bool>(
@@ -1256,12 +1287,19 @@ public:
                     .state_structures = captured_node.state_structures,
                     .declare_node = captured_node.declare_node,
                     .tick_block = record->second.tick_block,
+                    .tick_block_batch = record->second.tick_block_batch,
                     .skip_block = record->second.skip_block,
+                    .skip_block_batch = record->second.skip_block_batch,
                     .tock_coverage = record->second.tock_coverage,
+                    .tock_coverage_batch = record->second.tock_coverage_batch,
                     .propagate_forward_coverage =
                         record->second.propagate_forward_coverage,
+                    .propagate_forward_coverage_batch =
+                        record->second.propagate_forward_coverage_batch,
                     .propagate_reverse_coverage =
                         record->second.propagate_reverse_coverage,
+                    .propagate_reverse_coverage_batch =
+                        record->second.propagate_reverse_coverage_batch,
                     .initialize_sequential_input =
                         record->second.initialize_sequential_input,
                     .combine_sequential_input_values =

@@ -73,6 +73,175 @@ iv::ReflectedContinuousOutputPortBinding sample_output_binding(
     };
 }
 
+struct BatchOnlyTickNode {
+    int id = 0;
+    static inline std::vector<int>* calls = nullptr;
+
+    static constexpr auto inputs() { return std::tuple{}; }
+    static constexpr auto outputs() { return std::tuple{}; }
+
+    static void tick_block_batch(
+        iv::TickBlockBatchContext<BatchOnlyTickNode> const& context)
+    {
+        for (auto lane : context) calls->push_back(lane.node().id);
+    }
+};
+
+struct PointwiseBatchNode {
+    int id = 0;
+    static inline std::vector<std::pair<std::uint64_t, int>>* calls = nullptr;
+
+    static constexpr auto inputs() { return std::tuple{}; }
+    static constexpr auto outputs() { return std::tuple{}; }
+
+    void tick(iv::TickSampleContext<PointwiseBatchNode> const& context) const
+    {
+        calls->emplace_back(context.value_index, id);
+    }
+};
+
+struct ReflectedBatchOutputNode {
+    iv::Sample value = 0.0f;
+
+    static constexpr auto inputs() { return std::tuple{}; }
+    static constexpr auto outputs()
+    {
+        return std::array{iv::output<iv::Sample>(
+            "output", iv::OutputProduction::tick)};
+    }
+
+    static void tick_block_batch(
+        iv::TickBlockBatchContext<ReflectedBatchOutputNode> const& context)
+    {
+        for (auto lane : context) {
+            auto output = lane.template output<"output">().block();
+            for (auto& sample : output) sample = lane.node().value;
+        }
+    }
+
+    static void skip_block_batch(
+        iv::SkipBlockBatchContext<ReflectedBatchOutputNode> const& context)
+    {
+        for (auto lane : context) {
+            auto output = lane.template output<"output">().block();
+            for (auto& sample : output) sample = -lane.node().value;
+        }
+    }
+};
+
+TEST(TickBatchContext, BatchOnlyCallbackHasScalarAndRangeAdapters)
+{
+    BatchOnlyTickNode first{.id = 1};
+    BatchOnlyTickNode second{.id = 2};
+    iv::TickBlockContext<BatchOnlyTickNode> first_context{
+        iv::TickContext<BatchOnlyTickNode>{},
+        iv::FractionalGlobalIndex::from_global(index(0)), 8};
+    iv::TickBlockContext<BatchOnlyTickNode> second_context{
+        iv::TickContext<BatchOnlyTickNode>{},
+        iv::FractionalGlobalIndex::from_global(index(0)), 8};
+    std::array bindings{
+        iv::details::TickBatchLaneBinding<
+            BatchOnlyTickNode,
+            iv::TickBlockContext<BatchOnlyTickNode>>{
+                .node = &first, .context = &first_context},
+        iv::details::TickBatchLaneBinding<
+            BatchOnlyTickNode,
+            iv::TickBlockContext<BatchOnlyTickNode>>{
+                .node = &second, .context = &second_context},
+    };
+    std::vector<int> calls;
+    BatchOnlyTickNode::calls = &calls;
+
+    iv::do_tick_block(first, first_context);
+    iv::TickBlockBatchContext<BatchOnlyTickNode> batch{bindings};
+    EXPECT_EQ(batch.size(), 2u);
+    EXPECT_FALSE(batch.empty());
+    EXPECT_EQ(batch[1].node().id, 2);
+    iv::do_tick_block_batch(batch);
+
+    EXPECT_EQ(calls, (std::vector<int>{1, 1, 2}));
+}
+
+TEST(TickBatchContext, PointwiseAdapterRunsSampleMajorThenLaneMinor)
+{
+    PointwiseBatchNode first{.id = 1};
+    PointwiseBatchNode second{.id = 2};
+    iv::TickBlockContext<PointwiseBatchNode> first_context{
+        iv::TickContext<PointwiseBatchNode>{},
+        iv::FractionalGlobalIndex::from_global(index(0)), 3};
+    iv::TickBlockContext<PointwiseBatchNode> second_context{
+        iv::TickContext<PointwiseBatchNode>{},
+        iv::FractionalGlobalIndex::from_global(index(0)), 3};
+    std::array bindings{
+        iv::details::TickBatchLaneBinding<
+            PointwiseBatchNode,
+            iv::TickBlockContext<PointwiseBatchNode>>{
+                .node = &first, .context = &first_context},
+        iv::details::TickBatchLaneBinding<
+            PointwiseBatchNode,
+            iv::TickBlockContext<PointwiseBatchNode>>{
+                .node = &second, .context = &second_context},
+    };
+    std::vector<std::pair<std::uint64_t, int>> calls;
+    PointwiseBatchNode::calls = &calls;
+    iv::TickBlockBatchContext<PointwiseBatchNode> batch{bindings};
+
+    iv::do_tick_block_batch(batch);
+
+    EXPECT_EQ(calls, (std::vector<std::pair<std::uint64_t, int>>{
+        {0, 1}, {0, 2}, {1, 1}, {1, 2}, {2, 1}, {2, 2}}));
+}
+
+TEST(TickBatchContext, ReflectedBatchAnchorsKeepLanePortBindingsSeparate)
+{
+    ReflectedBatchOutputNode first{.value = 1.25f};
+    ReflectedBatchOutputNode second{.value = -3.5f};
+    std::array<iv::Sample, 8> first_storage{};
+    std::array<iv::Sample, 8> second_storage{};
+    std::array first_outputs{
+        sample_output_binding(std::span{first_storage})};
+    std::array second_outputs{
+        sample_output_binding(std::span{second_storage})};
+    first_outputs[0].sequential_begin_ordinal = 2;
+    second_outputs[0].sequential_begin_ordinal = 3;
+    std::array lanes{
+        iv::ReflectedNodeTickBatchLane{
+            .node_data = &first,
+            .context = iv::ReflectedNodeTickContext{
+                .continuous_output_bindings = first_outputs,
+            },
+            .index = index(40),
+            .block_size = 4,
+        },
+        iv::ReflectedNodeTickBatchLane{
+            .node_data = &second,
+            .context = iv::ReflectedNodeTickContext{
+                .continuous_output_bindings = second_outputs,
+            },
+            .index = index(40),
+            .block_size = 4,
+        },
+    };
+    auto const operations =
+        iv::details::node_compiler_operations<ReflectedBatchOutputNode>();
+
+    operations.tick_block_batch(
+        iv::ReflectedNodeTickBatchContext{.lanes = lanes});
+
+    EXPECT_EQ(first_storage, (std::array<iv::Sample, 8>{
+        0.0f, 0.0f, 1.25f, 1.25f, 1.25f, 1.25f, 0.0f, 0.0f}));
+    EXPECT_EQ(second_storage, (std::array<iv::Sample, 8>{
+        0.0f, 0.0f, 0.0f, -3.5f, -3.5f, -3.5f, -3.5f, 0.0f}));
+
+    operations.skip_block_batch(
+        iv::ReflectedNodeTickBatchContext{.lanes = lanes});
+
+    EXPECT_EQ(first_storage, (std::array<iv::Sample, 8>{
+        0.0f, 0.0f, -1.25f, -1.25f, -1.25f, -1.25f, 0.0f, 0.0f}));
+    EXPECT_EQ(second_storage, (std::array<iv::Sample, 8>{
+        0.0f, 0.0f, 0.0f, 3.5f, 3.5f, 3.5f, 3.5f, 0.0f}));
+}
+
 struct PointwisePhysicalOriginNode {
     static constexpr auto inputs()
     {
@@ -1141,6 +1310,8 @@ static_assert(ExposesBackgroundState<iv::TockCoverageContext<BackgroundSource>>)
 static_assert(iv::details::node_compiler_operations<BackgroundSource>()
     .tock_coverage != nullptr);
 static_assert(iv::details::node_compiler_operations<BackgroundSource>()
+    .tock_coverage_batch != nullptr);
+static_assert(iv::details::node_compiler_operations<BackgroundSource>()
     .tick_block == nullptr);
 static_assert(iv::details::node_compiler_operations<BackgroundSource>()
     .skip_block == nullptr);
@@ -1148,15 +1319,25 @@ static_assert(iv::details::node_compiler_operations<BackgroundSource>().valid())
 static_assert(iv::details::node_compiler_operations<BackgroundSource>()
     .propagate_forward_coverage != nullptr);
 static_assert(iv::details::node_compiler_operations<BackgroundSource>()
+    .propagate_forward_coverage_batch != nullptr);
+static_assert(iv::details::node_compiler_operations<BackgroundSource>()
     .propagate_reverse_coverage == nullptr);
+static_assert(iv::details::node_compiler_operations<BackgroundSource>()
+    .propagate_reverse_coverage_batch == nullptr);
 static_assert(iv::details::node_compiler_operations<BackgroundTransform>()
     .propagate_reverse_coverage != nullptr);
+static_assert(iv::details::node_compiler_operations<BackgroundTransform>()
+    .propagate_reverse_coverage_batch != nullptr);
 static_assert(iv::details::node_compiler_operations<BackgroundInputOnly>()
     .tock_coverage == nullptr);
 static_assert(iv::details::node_compiler_operations<PersistedRealtimeNode>()
     .tock_coverage == nullptr);
 static_assert(iv::details::node_compiler_operations<PersistedRealtimeNode>()
     .propagate_forward_coverage == nullptr);
+static_assert(iv::details::node_compiler_operations<PersistedRealtimeNode>()
+    .tick_block_batch != nullptr);
+static_assert(iv::details::node_compiler_operations<PersistedRealtimeNode>()
+    .skip_block_batch != nullptr);
 static_assert(iv::details::node_compiler_operations<PersistedRealtimeNode>().valid());
 
 struct SampleData {
@@ -1743,8 +1924,11 @@ TEST(BackgroundDspPorts, CompilerRecordAnchorsAllBackgroundOperations)
 {
     auto const operations = iv::details::node_compiler_operations<BackgroundTransform>();
     ASSERT_NE(operations.tock_coverage, nullptr);
+    ASSERT_NE(operations.tock_coverage_batch, nullptr);
     ASSERT_NE(operations.propagate_forward_coverage, nullptr);
+    ASSERT_NE(operations.propagate_forward_coverage_batch, nullptr);
     ASSERT_NE(operations.propagate_reverse_coverage, nullptr);
+    ASSERT_NE(operations.propagate_reverse_coverage_batch, nullptr);
 }
 
 } // namespace

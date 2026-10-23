@@ -115,3 +115,86 @@ struct ValidReplayableNode {
 static_assert(iv::details::replay_declaration_is_valid_v<ValidReplayableNode>);
 static_assert(iv::details::intrinsically_replayable_v<ValidReplayableNode>);
 IV_NODE("iv.test.valid_replayable_node", ValidReplayableNode);
+
+struct ValidBatchTickNode {
+    static constexpr auto outputs()
+    {
+        return std::array {
+            iv::output<iv::Sample>("output", iv::OutputProduction::tick),
+        };
+    }
+
+    static void tick_block_batch(
+        iv::TickBlockBatchContext<ValidBatchTickNode> const& context)
+    {
+        for (auto lane : context) (void)lane.template output<"output">();
+    }
+
+    static void skip_block_batch(
+        iv::SkipBlockBatchContext<ValidBatchTickNode> const& context)
+    {
+        for (auto lane : context) (void)lane.context();
+    }
+};
+
+IV_NODE("iv.test.valid_batch_tick_node", ValidBatchTickNode);
+
+struct ValidBatchBackgroundNode {
+    static constexpr auto inputs()
+    {
+        return std::array {
+            iv::input<iv::Sample>("input", iv::InputAccess::coverage),
+        };
+    }
+
+    static constexpr auto outputs()
+    {
+        return std::array {
+            iv::output<iv::Sample>("output", iv::OutputProduction::coverage),
+        };
+    }
+
+    static void tock_coverage_batch(
+        iv::TockCoverageBatchContext<ValidBatchBackgroundNode>& context)
+    {
+        for (auto lane : context) (void)lane.template output<"output">();
+    }
+
+    static void propagate_forward_coverage_batch(
+        iv::PropagateForwardCoverageBatchContext<
+            ValidBatchBackgroundNode>& context)
+    {
+        for (auto lane : context) {
+            lane.template output<"output">().publish_coverage(
+                iv::IndexCoverage{});
+        }
+    }
+
+    static void propagate_reverse_coverage_batch(
+        iv::PropagateReverseCoverageBatchContext<
+            ValidBatchBackgroundNode>& context)
+    {
+        for (auto lane : context) {
+            lane.template input<"input">().require(
+                lane.template output<"output">().required());
+        }
+    }
+};
+
+IV_NODE("iv.test.valid_batch_background_node", ValidBatchBackgroundNode);
+
+struct ValidReplayableBlockNode {
+    static constexpr bool intrinsically_replayable = true;
+    static constexpr auto outputs()
+    {
+        return std::array {
+            iv::output<iv::Sample>("output", iv::OutputProduction::tick),
+        };
+    }
+    void tick_block(
+        iv::TickBlockContext<ValidReplayableBlockNode> const&) const {}
+};
+
+static_assert(iv::details::replay_declaration_is_valid_v<
+    ValidReplayableBlockNode>);
+IV_NODE("iv.test.valid_replayable_block_node", ValidReplayableBlockNode);

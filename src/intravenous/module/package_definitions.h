@@ -515,29 +515,33 @@ RegisteredSignature const* node_constructor_signature()
         "Each array carries both sample and event ports through its config variant. " \
         "Dynamic-arity or configuration-dependent nodes must remain internal lowering nodes."); \
     static_assert(::iv::details::primary_callback_declaration_is_valid_v<Node>, \
-        "IV_NODE requires exactly one primary callback: tick(), tick_block(), or " \
-        "tock_coverage(). Tick nodes may declare only Tick outputs; Tock nodes may " \
+        "IV_NODE requires exactly one primary callback: one scalar or batch Tick/Tock form. " \
+        "Tick nodes may declare only Tick outputs; Tock nodes may " \
         "declare only Tock outputs. Use a module node to group both domains."); \
     static_assert(::iv::details::replay_declaration_is_valid_v<Node>, \
-        "IV_NODE intrinsically replayable nodes must author tick() (not tick_block()), " \
+        "IV_NODE intrinsically replayable nodes must author a Tick callback, " \
         "have no State/TockState or RandomAccess inputs, and declare only " \
         "Sequential inputs and Tick outputs; resolved timing is validated by " \
         "the whole-graph planner."); \
     static_assert(::iv::details::background_state_type_is_valid_v<Node>, \
         "IV_NODE Node::TockState must be a mutable, non-volatile, default-constructible object type."); \
     static_assert(!::iv::details::declares_tock_outputs_v<Node> \
-            || ::iv::details::has_tock_coverage<Node>, \
-        "IV_NODE node type declares a Tock output port; define tock_coverage(TockCoverageContext<Node>&)."); \
-    static_assert(!::iv::details::has_tock_coverage<Node> \
+            || ::iv::details::has_tock_family_v<Node>, \
+        "IV_NODE node type declares a Tock output port; define tock_coverage() or tock_coverage_batch()."); \
+    static_assert(!(::iv::details::has_tock_coverage<Node> \
+                || ::iv::details::has_tock_coverage_batch<Node>) \
             || ::iv::details::declares_tock_outputs_v<Node>, \
         "IV_NODE node type defines tock_coverage but declares no Tock output port."); \
     static_assert(!::iv::details::declares_tock_outputs_v<Node> \
-            || ::iv::details::has_propagate_forward_coverage<Node>, \
-        "IV_NODE node type declares a Tock output port; define exact propagate_forward_coverage(PropagateForwardCoverageContext<Node>&)."); \
-    static_assert(!::iv::details::has_propagate_forward_coverage<Node> \
+            || ::iv::details::has_propagate_forward_coverage<Node> \
+            || ::iv::details::has_propagate_forward_coverage_batch<Node>, \
+        "IV_NODE node type declares a Tock output port; define exact propagate_forward_coverage() or propagate_forward_coverage_batch()."); \
+    static_assert(!(::iv::details::has_propagate_forward_coverage<Node> \
+                || ::iv::details::has_propagate_forward_coverage_batch<Node>) \
             || ::iv::details::declares_tock_outputs_v<Node>, \
         "IV_NODE node type defines propagate_forward_coverage but declares no Tock output port."); \
-    static_assert(!::iv::details::has_propagate_reverse_coverage<Node> \
+    static_assert(!(::iv::details::has_propagate_reverse_coverage<Node> \
+                || ::iv::details::has_propagate_reverse_coverage_batch<Node>) \
             || (::iv::details::declares_tock_outputs_v<Node> \
                 && ::iv::details::declares_random_access_inputs_v<Node>), \
         "IV_NODE node type defines propagate_reverse_coverage but does not declare both random-access input and Tock output ports.")

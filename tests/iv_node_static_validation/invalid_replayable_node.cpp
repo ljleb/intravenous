@@ -16,17 +16,4 @@ struct InvalidReplayWithRandomAccess {
     void tick(iv::TickSampleContext<InvalidReplayWithRandomAccess> const&) const {}
 };
 
-// An authored block callback cannot be substituted by generated pointwise
-// replay even if the type also happens to provide tick().
-struct InvalidReplayWithBlock {
-    static constexpr bool intrinsically_replayable = true;
-    static constexpr auto outputs()
-    {
-        return std::array {iv::output<iv::Sample>("output", iv::OutputProduction::tick)};
-    }
-    void tick(iv::TickSampleContext<InvalidReplayWithBlock> const&) const {}
-    void tick_block(iv::TickBlockContext<InvalidReplayWithBlock> const&) const {}
-};
-
 IV_NODE("iv.test.invalid_replay_random_access", InvalidReplayWithRandomAccess);
-IV_NODE("iv.test.invalid_replay_with_block", InvalidReplayWithBlock);

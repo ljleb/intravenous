@@ -11,6 +11,7 @@
 #include <expected>
 #include <optional>
 #include <ranges>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -78,6 +79,11 @@ struct SccRegionPlan {
 struct SchedulePlan {
     std::vector<SccRegionPlan> regions{};
     std::vector<std::size_t> region_order{};
+    // Each entry is one snapshot of mutually ready SCC regions. A multi-entry
+    // group contains only acyclic one-node regions with one equal batch-class
+    // identifier. Later lowering may keep the group scalar, but it need not
+    // rediscover whether its members form an antichain.
+    std::vector<std::vector<std::size_t>> ready_groups{};
     // Entry positions correspond to configured NodeBundleHandle values.
     // Boundary/non-concrete bundles have no region.
     std::vector<std::optional<std::size_t>> bundle_to_region{};
@@ -431,6 +437,10 @@ std::expected<ConnectionAnalysisPlan, std::string> build_connection_analysis_pla
     // Stack-pressure retries change only realtime storage policy. Supplying
     // the immutable plan retained from the first analysis avoids repeating
     // semantic SCC/background topology work for the same graph specialization.
-    BackgroundEvaluationPlan const* retained_background_plan = nullptr);
+    BackgroundEvaluationPlan const* retained_background_plan = nullptr,
+    // Optional entry positions are ConfiguredGraph NodeBundleHandle values.
+    // Equal identifiers mean equal callback-facing implementation/realization.
+    // The empty span preserves the ordinary deterministic bundle order.
+    std::span<std::size_t const> callback_batch_classes = {});
 
 } // namespace iv::graph_jit::detail

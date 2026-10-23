@@ -15,10 +15,14 @@ namespace iv {
 struct NodeLayoutBuilder;
 struct NodeStateStructures;
 struct ReflectedNodeTickContext;
+struct ReflectedNodeTickBatchContext;
 struct ReflectedNodePortRealization;
 struct ReflectedNodeTockCoverageContext;
+struct ReflectedNodeTockCoverageBatchContext;
 struct ReflectedNodeForwardCoverageContext;
+struct ReflectedNodeForwardCoverageBatchContext;
 struct ReflectedNodeReverseCoverageContext;
+struct ReflectedNodeReverseCoverageBatchContext;
 enum class ContinuousValueTypeId : std::uint8_t;
 
 namespace details {
@@ -42,19 +46,26 @@ struct NodeCompilerOperations {
     // forward propagation and never carry a realtime wrapper.
     void (*tick_block)(
         void const*, ReflectedNodeTickContext const&, GlobalIndex, std::size_t) = nullptr;
+    void (*tick_block_batch)(ReflectedNodeTickBatchContext const&) = nullptr;
     void (*skip_block)(
         void const*, ReflectedNodeTickContext const&, GlobalIndex, std::size_t) = nullptr;
+    void (*skip_block_batch)(ReflectedNodeTickBatchContext const&) = nullptr;
 
-    // Compiler-facing one-node background callback anchors. Reflected contexts use
-    // explicit pointer/count spans; wrappers reconstruct the Node-specialized
-    // public contexts before entering authored code. Whole-project batching is
-    // a separate root ABI.
+    // Compiler-facing scalar and batch background callback anchors. Reflected
+    // contexts use explicit pointer/count spans; wrappers reconstruct the
+    // Node-specialized public contexts before entering authored code.
     void (*tock_coverage)(
         void const*, ReflectedNodeTockCoverageContext const&) = nullptr;
+    void (*tock_coverage_batch)(
+        ReflectedNodeTockCoverageBatchContext const&) = nullptr;
     void (*propagate_forward_coverage)(
         void const*, ReflectedNodeForwardCoverageContext const&) = nullptr;
+    void (*propagate_forward_coverage_batch)(
+        ReflectedNodeForwardCoverageBatchContext const&) = nullptr;
     void (*propagate_reverse_coverage)(
         void const*, ReflectedNodeReverseCoverageContext const&) = nullptr;
+    void (*propagate_reverse_coverage_batch)(
+        ReflectedNodeReverseCoverageBatchContext const&) = nullptr;
 
     // Executable Sequential fan-in semantics stay in package LLVM. The
     // configured graph serializes declarative metadata, never native function
@@ -82,7 +93,13 @@ struct NodeCompilerOperations {
         return declare_node != nullptr
             && tick != tock
             && (skip_block != nullptr) == tick
-            && (propagate_forward_coverage != nullptr) == tock;
+            && (tick_block_batch != nullptr) == tick
+            && (skip_block_batch != nullptr) == tick
+            && (tock_coverage_batch != nullptr) == tock
+            && (propagate_forward_coverage != nullptr) == tock
+            && (propagate_forward_coverage_batch != nullptr) == tock
+            && (propagate_reverse_coverage_batch != nullptr)
+                == (propagate_reverse_coverage != nullptr);
     }
 };
 

@@ -59,6 +59,10 @@ expect_invalid(
     "IV_NODE requires exactly one primary callback")
 
 expect_invalid(
+    invalid_duplicate_batch_callbacks.cpp
+    "IV_NODE requires exactly one primary callback")
+
+expect_invalid(
     invalid_tock_callback_shape.cpp
     "defines tock_coverage but declares no Tock output port"
     "defines propagate_forward_coverage but declares no Tock output port"
@@ -70,4 +74,4 @@ expect_invalid(
 
 expect_invalid(
     invalid_replayable_node.cpp
-    "IV_NODE intrinsically replayable nodes must author tick() (not tick_block())")
+    "IV_NODE intrinsically replayable nodes must author a Tick callback")

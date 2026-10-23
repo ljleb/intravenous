@@ -57,10 +57,15 @@ struct NodeImplementation {
 
     // Runtime/compiler LLVM anchors imported into the whole-project module.
     llvm::Function* tick_block = nullptr;
+    llvm::Function* tick_block_batch = nullptr;
     llvm::Function* skip_block = nullptr;
+    llvm::Function* skip_block_batch = nullptr;
     llvm::Function* tock_coverage = nullptr;
+    llvm::Function* tock_coverage_batch = nullptr;
     llvm::Function* propagate_forward_coverage = nullptr;
+    llvm::Function* propagate_forward_coverage_batch = nullptr;
     llvm::Function* propagate_reverse_coverage = nullptr;
+    llvm::Function* propagate_reverse_coverage_batch = nullptr;
     llvm::Function* initialize_sequential_input = nullptr;
     llvm::Function* combine_sequential_input_values = nullptr;
 

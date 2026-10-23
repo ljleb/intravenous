@@ -8,6 +8,7 @@
 
 #include <array>
 #include <cstdint>
+#include <iterator>
 #include <memory>
 #include <optional>
 #include <span>
@@ -848,6 +849,176 @@ namespace iv {
         {}
     };
 
+    namespace details {
+        template<typename Node, typename Context>
+        struct TickBatchLaneBinding {
+            Node const* node = nullptr;
+            Context const* context = nullptr;
+        };
+
+        template<typename Node, typename Context>
+        class TickBatchLane {
+            TickBatchLaneBinding<Node, Context> const* binding_ = nullptr;
+
+        public:
+            TickBatchLane() = default;
+            explicit TickBatchLane(
+                TickBatchLaneBinding<Node, Context> const& binding) noexcept
+                : binding_(std::addressof(binding))
+            {}
+
+            [[nodiscard]] Node const& node() const noexcept
+            {
+                IV_ASSERT(binding_ != nullptr && binding_->node != nullptr,
+                    "Tick batch lane has no configured node");
+                return *binding_->node;
+            }
+
+            [[nodiscard]] Context const& context() const noexcept
+            {
+                IV_ASSERT(binding_ != nullptr && binding_->context != nullptr,
+                    "Tick batch lane has no scalar context");
+                return *binding_->context;
+            }
+
+            template<std::size_t Index>
+            [[nodiscard]] auto input() const
+            {
+                return context().template input<Index>();
+            }
+
+            template<fixed_string Name>
+            [[nodiscard]] auto input() const
+            {
+                return context().template input<Name>();
+            }
+
+            template<std::size_t Index>
+            [[nodiscard]] auto output() const
+            {
+                return context().template output<Index>();
+            }
+
+            template<fixed_string Name>
+            [[nodiscard]] auto output() const
+            {
+                return context().template output<Name>();
+            }
+
+            [[nodiscard]] decltype(auto) state() const
+            requires (!std::is_void_v<typename NodeState<Node>::Type>)
+            {
+                return context().state();
+            }
+        };
+
+        template<typename Node, typename Context>
+        class TickBatchIterator {
+            TickBatchLaneBinding<Node, Context> const* current_ = nullptr;
+
+        public:
+            using value_type = TickBatchLane<Node, Context>;
+            using difference_type = std::ptrdiff_t;
+            using iterator_category = std::forward_iterator_tag;
+
+            TickBatchIterator() = default;
+            explicit TickBatchIterator(
+                TickBatchLaneBinding<Node, Context> const* current) noexcept
+                : current_(current)
+            {}
+
+            [[nodiscard]] value_type operator*() const noexcept
+            {
+                return value_type{*current_};
+            }
+
+            TickBatchIterator& operator++() noexcept
+            {
+                ++current_;
+                return *this;
+            }
+
+            TickBatchIterator operator++(int) noexcept
+            {
+                auto result = *this;
+                ++*this;
+                return result;
+            }
+
+            friend bool operator==(
+                TickBatchIterator const&, TickBatchIterator const&) = default;
+        };
+
+        template<typename Node, typename Context>
+        class TickBatchContextBase {
+            std::span<TickBatchLaneBinding<Node, Context> const> lanes_ {};
+
+        protected:
+            explicit TickBatchContextBase(
+                std::span<TickBatchLaneBinding<Node, Context> const> lanes) noexcept
+                : lanes_(lanes)
+            {}
+
+        public:
+            using Lane = TickBatchLane<Node, Context>;
+            using iterator = TickBatchIterator<Node, Context>;
+
+            [[nodiscard]] std::size_t size() const noexcept
+            {
+                return lanes_.size();
+            }
+
+            [[nodiscard]] bool empty() const noexcept
+            {
+                return lanes_.empty();
+            }
+
+            [[nodiscard]] Lane operator[](std::size_t index) const noexcept
+            {
+                IV_ASSERT(index < lanes_.size(), "Tick batch lane is out of range");
+                return Lane{lanes_[index]};
+            }
+
+            [[nodiscard]] iterator begin() const noexcept
+            {
+                return iterator{lanes_.data()};
+            }
+
+            [[nodiscard]] iterator end() const noexcept
+            {
+                return iterator{lanes_.empty()
+                    ? lanes_.data()
+                    : lanes_.data() + lanes_.size()};
+            }
+        };
+    }
+
+    template<typename Node>
+    class TickBlockBatchContext
+        : public details::TickBatchContextBase<Node, TickBlockContext<Node>> {
+        using Base = details::TickBatchContextBase<Node, TickBlockContext<Node>>;
+
+    public:
+        explicit TickBlockBatchContext(
+            std::span<details::TickBatchLaneBinding<
+                Node, TickBlockContext<Node>> const> lanes) noexcept
+            : Base(lanes)
+        {}
+    };
+
+    template<typename Node>
+    class SkipBlockBatchContext
+        : public details::TickBatchContextBase<Node, SkipBlockContext<Node>> {
+        using Base = details::TickBatchContextBase<Node, SkipBlockContext<Node>>;
+
+    public:
+        explicit SkipBlockBatchContext(
+            std::span<details::TickBatchLaneBinding<
+                Node, SkipBlockContext<Node>> const> lanes) noexcept
+            : Base(lanes)
+        {}
+    };
+
     template<typename Node>
     IV_FORCEINLINE std::add_lvalue_reference_t<typename TickContext<Node>::State> TickContext<Node>::state() const
     requires(!std::is_void_v<State>)
@@ -884,7 +1055,13 @@ namespace iv {
     void do_tick_block(Node const& node, TickBlockContext<Node> const& state);
 
     template<typename Node>
+    void do_tick_block_batch(TickBlockBatchContext<Node> const& state);
+
+    template<typename Node>
     void do_skip_block(Node const& node, SkipBlockContext<Node> const& state);
+
+    template<typename Node>
+    void do_skip_block_batch(SkipBlockBatchContext<Node> const& state);
 
     namespace details {
         template<typename Node>
@@ -995,7 +1172,16 @@ namespace iv {
             return;
         }
 
-        if constexpr (details::has_tick_block<Node>)
+        if constexpr (details::has_tick_block_batch<Node>)
+        {
+            details::TickBatchLaneBinding<Node, TickBlockContext<Node>> lane{
+                .node = std::addressof(node),
+                .context = std::addressof(ctx),
+            };
+            TickBlockBatchContext<Node> batch{{std::addressof(lane), 1}};
+            Node::tick_block_batch(batch);
+        }
+        else if constexpr (details::has_tick_block<Node>)
         {
             node.tick_block(ctx);
         }
@@ -1020,6 +1206,59 @@ namespace iv {
         }
     }
 
+    template<typename Node>
+    IV_FORCEINLINE void do_tick_block_batch(
+        TickBlockBatchContext<Node> const& ctx)
+    {
+        if (ctx.empty()) return;
+        auto const block_size = ctx[0].context().block_size;
+        auto const index = ctx[0].context().index;
+        if (block_size == 0) return;
+        for (auto lane : ctx) {
+            IV_ASSERT(lane.context().block_size == block_size,
+                "Tick batch lanes have different block extents");
+            IV_ASSERT(lane.context().index == index,
+                "Tick batch lanes have different callback positions");
+        }
+
+        if constexpr (details::has_tick_block_batch<Node>) {
+            Node::tick_block_batch(ctx);
+        } else if constexpr (details::has_tick_block<Node>) {
+            for (auto lane : ctx) {
+                lane.node().tick_block(lane.context());
+            }
+        } else {
+            static_assert(details::has_tick<Node>);
+            auto const& first = ctx[0].context();
+            auto const pace = details::pointwise_tick_pace<Node>(first);
+            auto const projected = details::project_tick_port(
+                pace, first.index, first.block_size);
+            auto const step = details::tick_lattice_step(pace);
+            auto value_coordinate = projected.begin;
+            for (std::size_t sample = 0; sample < projected.count; ++sample) {
+                for (auto lane : ctx) {
+                    auto const& block = lane.context();
+                    IV_ASSERT(
+                        details::pointwise_tick_pace<Node>(block) == pace,
+                        "pointwise Tick batch lanes have different port paces");
+                    auto const lane_projection = details::project_tick_port(
+                        pace, block.index, block.block_size);
+                    IV_ASSERT(lane_projection.count == projected.count,
+                        "pointwise Tick batch lanes have different block extents");
+                    do_tick(lane.node(), TickSampleContext<Node>{
+                        static_cast<TickContext<Node> const&>(block),
+                        value_coordinate,
+                        lane_projection.begin_ordinal_bits + sample,
+                        sample,
+                    });
+                }
+                if (sample + 1 < projected.count) {
+                    value_coordinate = value_coordinate.advanced_by(step);
+                }
+            }
+        }
+    }
+
     // skip_block() follows the same block anchoring/advancement contract. A
     // custom skip_block owns its output semantics; when absent, the runtime
     // generates one block of silence for every sample output. Inputs always
@@ -1031,7 +1270,16 @@ namespace iv {
             return;
         }
 
-        if constexpr (details::has_skip_block<Node>)
+        if constexpr (details::has_skip_block_batch<Node>)
+        {
+            details::TickBatchLaneBinding<Node, SkipBlockContext<Node>> lane{
+                .node = std::addressof(node),
+                .context = std::addressof(ctx),
+            };
+            SkipBlockBatchContext<Node> batch{{std::addressof(lane), 1}};
+            Node::skip_block_batch(batch);
+        }
+        else if constexpr (details::has_skip_block<Node>)
         {
             node.skip_block(ctx);
         }
@@ -1040,5 +1288,29 @@ namespace iv {
             details::author_default_skip_outputs<Node>(ctx);
         }
 
+    }
+
+    template<typename Node>
+    IV_FORCEINLINE void do_skip_block_batch(
+        SkipBlockBatchContext<Node> const& ctx)
+    {
+        if (ctx.empty()) return;
+        auto const block_size = ctx[0].context().block_size;
+        auto const index = ctx[0].context().index;
+        if (block_size == 0) return;
+        for (auto lane : ctx) {
+            IV_ASSERT(lane.context().block_size == block_size,
+                "skip batch lanes have different block extents");
+            IV_ASSERT(lane.context().index == index,
+                "skip batch lanes have different callback positions");
+        }
+
+        if constexpr (details::has_skip_block_batch<Node>) {
+            Node::skip_block_batch(ctx);
+        } else {
+            for (auto lane : ctx) {
+                do_skip_block(lane.node(), lane.context());
+            }
+        }
     }
 }

@@ -485,7 +485,8 @@ IV_FORCEINLINE void tick_node_block(
 {
     auto const& node = *static_cast<Node const*>(node_data);
     validate_reflected_continuous_bindings<Node>(ctx);
-    prepare_reflected_continuous_inputs<has_tick_block<Node>>(
+    prepare_reflected_continuous_inputs<
+        has_tick_block<Node> || has_tick_block_batch<Node>>(
         ctx, index, block_size);
     with_reflected_event_ports<Node>(
         ctx,
@@ -516,6 +517,84 @@ IV_FORCEINLINE void tick_node_block(
 }
 
 template<class Node>
+IV_FORCEINLINE void tick_node_block_batch(
+    ReflectedNodeTickBatchContext const& reflected)
+{
+    auto const lanes = static_cast<
+        std::span<ReflectedNodeTickBatchLane const>>(reflected.lanes);
+    if (lanes.empty()) return;
+
+    constexpr auto input_count = reflected_event_input_count_v<Node>;
+    constexpr auto output_count = reflected_event_output_count_v<Node>;
+    using Inputs = ReflectedEventInputPorts<input_count>;
+    using Outputs = ReflectedEventOutputPorts<output_count>;
+    using Context = TickBlockContext<Node>;
+    using Binding = TickBatchLaneBinding<Node, Context>;
+
+    auto* inputs = static_cast<Inputs*>(
+        __builtin_alloca(sizeof(Inputs) * lanes.size()));
+    auto* outputs = static_cast<Outputs*>(
+        __builtin_alloca(sizeof(Outputs) * lanes.size()));
+    auto* contexts = static_cast<Context*>(
+        __builtin_alloca(sizeof(Context) * lanes.size()));
+    auto* bindings = static_cast<Binding*>(
+        __builtin_alloca(sizeof(Binding) * lanes.size()));
+
+    for (std::size_t i = 0; i < lanes.size(); ++i) {
+        auto const& lane = lanes[i];
+        auto const& ctx = lane.context;
+        IV_ASSERT(lane.node_data != nullptr,
+            "reflected Tick batch lane has no configured node");
+        validate_reflected_continuous_bindings<Node>(ctx);
+        prepare_reflected_continuous_inputs<
+            has_tick_block<Node> || has_tick_block_batch<Node>>(
+                ctx, lane.index, lane.block_size);
+
+        std::construct_at(inputs + i);
+        std::construct_at(outputs + i);
+        initialize_reflected_event_inputs(
+            inputs[i], ctx, std::make_index_sequence<input_count>{});
+        initialize_reflected_event_outputs<Node>(
+            outputs[i], ctx, lane.index, lane.block_size,
+            std::make_index_sequence<output_count>{});
+        std::construct_at(
+            contexts + i,
+            TickContext<Node>{
+                TickPortBindings<Node>{
+                    .continuous_inputs = ctx.continuous_input_bindings,
+                    .continuous_outputs = ctx.continuous_output_bindings,
+                    .event_inputs = std::span<EventInputPort>{inputs[i].ports},
+                    .event_outputs = std::span<EventOutputPort>{outputs[i].ports},
+                    .random_access_inputs = ctx.random_access_inputs,
+                    .random_access_event_inputs = ctx.random_access_event_inputs,
+                    .recording = make_tick_recording_bindings<Node>(ctx),
+                },
+                ctx.sample_rate,
+                ctx.scc_feedback_latency,
+                ctx.state,
+            },
+            FractionalGlobalIndex::from_global(lane.index),
+            lane.block_size);
+        std::construct_at(bindings + i, Binding{
+            .node = static_cast<Node const*>(lane.node_data),
+            .context = contexts + i,
+        });
+    }
+
+    TickBlockBatchContext<Node> batch{{bindings, lanes.size()}};
+    do_tick_block_batch(batch);
+
+    for (std::size_t i = lanes.size(); i != 0; --i) {
+        auto const index = i - 1;
+        commit_reflected_event_outputs(outputs[index]);
+        std::destroy_at(bindings + index);
+        std::destroy_at(contexts + index);
+        std::destroy_at(outputs + index);
+        std::destroy_at(inputs + index);
+    }
+}
+
+template<class Node>
 IV_FORCEINLINE void skip_node_block(
     void const* node_data,
     ReflectedNodeTickContext const& ctx,
@@ -524,7 +603,7 @@ IV_FORCEINLINE void skip_node_block(
 {
     auto const& node = *static_cast<Node const*>(node_data);
     validate_reflected_continuous_bindings<Node>(ctx);
-    if constexpr (has_skip_block<Node>) {
+    if constexpr (has_skip_block<Node> || has_skip_block_batch<Node>) {
         prepare_reflected_continuous_inputs<true>(ctx, index, block_size);
     }
     with_reflected_event_ports<Node>(
@@ -556,6 +635,85 @@ IV_FORCEINLINE void skip_node_block(
 }
 
 template<class Node>
+IV_FORCEINLINE void skip_node_block_batch(
+    ReflectedNodeTickBatchContext const& reflected)
+{
+    auto const lanes = static_cast<
+        std::span<ReflectedNodeTickBatchLane const>>(reflected.lanes);
+    if (lanes.empty()) return;
+
+    constexpr auto input_count = reflected_event_input_count_v<Node>;
+    constexpr auto output_count = reflected_event_output_count_v<Node>;
+    using Inputs = ReflectedEventInputPorts<input_count>;
+    using Outputs = ReflectedEventOutputPorts<output_count>;
+    using Context = SkipBlockContext<Node>;
+    using Binding = TickBatchLaneBinding<Node, Context>;
+
+    auto* inputs = static_cast<Inputs*>(
+        __builtin_alloca(sizeof(Inputs) * lanes.size()));
+    auto* outputs = static_cast<Outputs*>(
+        __builtin_alloca(sizeof(Outputs) * lanes.size()));
+    auto* contexts = static_cast<Context*>(
+        __builtin_alloca(sizeof(Context) * lanes.size()));
+    auto* bindings = static_cast<Binding*>(
+        __builtin_alloca(sizeof(Binding) * lanes.size()));
+
+    for (std::size_t i = 0; i < lanes.size(); ++i) {
+        auto const& lane = lanes[i];
+        auto const& ctx = lane.context;
+        IV_ASSERT(lane.node_data != nullptr,
+            "reflected skip batch lane has no configured node");
+        validate_reflected_continuous_bindings<Node>(ctx);
+        if constexpr (has_skip_block<Node> || has_skip_block_batch<Node>) {
+            prepare_reflected_continuous_inputs<true>(
+                ctx, lane.index, lane.block_size);
+        }
+
+        std::construct_at(inputs + i);
+        std::construct_at(outputs + i);
+        initialize_reflected_event_inputs(
+            inputs[i], ctx, std::make_index_sequence<input_count>{});
+        initialize_reflected_event_outputs<Node>(
+            outputs[i], ctx, lane.index, lane.block_size,
+            std::make_index_sequence<output_count>{});
+        std::construct_at(
+            contexts + i,
+            TickContext<Node>{
+                TickPortBindings<Node>{
+                    .continuous_inputs = ctx.continuous_input_bindings,
+                    .continuous_outputs = ctx.continuous_output_bindings,
+                    .event_inputs = std::span<EventInputPort>{inputs[i].ports},
+                    .event_outputs = std::span<EventOutputPort>{outputs[i].ports},
+                    .random_access_inputs = ctx.random_access_inputs,
+                    .random_access_event_inputs = ctx.random_access_event_inputs,
+                    .recording = make_tick_recording_bindings<Node>(ctx),
+                },
+                ctx.sample_rate,
+                ctx.scc_feedback_latency,
+                ctx.state,
+            },
+            FractionalGlobalIndex::from_global(lane.index),
+            lane.block_size);
+        std::construct_at(bindings + i, Binding{
+            .node = static_cast<Node const*>(lane.node_data),
+            .context = contexts + i,
+        });
+    }
+
+    SkipBlockBatchContext<Node> batch{{bindings, lanes.size()}};
+    do_skip_block_batch(batch);
+
+    for (std::size_t i = lanes.size(); i != 0; --i) {
+        auto const index = i - 1;
+        commit_reflected_event_outputs(outputs[index]);
+        std::destroy_at(bindings + index);
+        std::destroy_at(contexts + index);
+        std::destroy_at(outputs + index);
+        std::destroy_at(inputs + index);
+    }
+}
+
+template<class Node>
 IV_FORCEINLINE void tock_node_coverage(
     void const* node_data, ReflectedNodeTockCoverageContext const& reflected)
 {
@@ -569,6 +727,44 @@ IV_FORCEINLINE void tock_node_coverage(
         .sample_rate = reflected.sample_rate,
     };
     do_tock_coverage(node, context);
+}
+
+template<class Node>
+IV_FORCEINLINE void tock_node_coverage_batch(
+    ReflectedNodeTockCoverageBatchContext const& reflected)
+{
+    auto const lanes = static_cast<
+        std::span<ReflectedNodeTockCoverageBatchLane const>>(reflected.lanes);
+    if (lanes.empty()) return;
+    using Context = TockCoverageContext<Node>;
+    using Binding = BackgroundBatchLaneBinding<Node, Context>;
+    auto* contexts = static_cast<Context*>(
+        __builtin_alloca(sizeof(Context) * lanes.size()));
+    auto* bindings = static_cast<Binding*>(
+        __builtin_alloca(sizeof(Binding) * lanes.size()));
+    for (std::size_t i = 0; i < lanes.size(); ++i) {
+        auto const& lane = lanes[i];
+        IV_ASSERT(lane.node_data != nullptr,
+            "reflected Tock batch lane has no configured node");
+        std::construct_at(contexts + i, Context{
+            .inputs = lane.context.inputs,
+            .outputs = lane.context.outputs,
+            .event_inputs = lane.context.event_inputs,
+            .event_outputs = lane.context.event_outputs,
+            .background_state_storage = lane.context.background_state_storage,
+            .sample_rate = lane.context.sample_rate,
+        });
+        std::construct_at(bindings + i, Binding{
+            .node = static_cast<Node const*>(lane.node_data),
+            .context = contexts + i,
+        });
+    }
+    TockCoverageBatchContext<Node> batch{{bindings, lanes.size()}};
+    do_tock_coverage_batch(batch);
+    for (std::size_t i = lanes.size(); i != 0; --i) {
+        std::destroy_at(bindings + i - 1);
+        std::destroy_at(contexts + i - 1);
+    }
 }
 
 template<class Node>
@@ -588,6 +784,44 @@ IV_FORCEINLINE void propagate_node_forward_coverage(
 }
 
 template<class Node>
+IV_FORCEINLINE void propagate_node_forward_coverage_batch(
+    ReflectedNodeForwardCoverageBatchContext const& reflected)
+{
+    auto const lanes = static_cast<
+        std::span<ReflectedNodeForwardCoverageBatchLane const>>(reflected.lanes);
+    if (lanes.empty()) return;
+    using Context = PropagateForwardCoverageContext<Node>;
+    using Binding = BackgroundBatchLaneBinding<Node, Context>;
+    auto* contexts = static_cast<Context*>(
+        __builtin_alloca(sizeof(Context) * lanes.size()));
+    auto* bindings = static_cast<Binding*>(
+        __builtin_alloca(sizeof(Binding) * lanes.size()));
+    for (std::size_t i = 0; i < lanes.size(); ++i) {
+        auto const& lane = lanes[i];
+        IV_ASSERT(lane.node_data != nullptr,
+            "reflected forward-coverage batch lane has no configured node");
+        std::construct_at(contexts + i, Context{
+            .inputs = lane.context.inputs,
+            .outputs = lane.context.outputs,
+            .event_inputs = lane.context.event_inputs,
+            .event_outputs = lane.context.event_outputs,
+            .local_state_changed = lane.context.local_state_changed,
+            .sample_rate = lane.context.sample_rate,
+        });
+        std::construct_at(bindings + i, Binding{
+            .node = static_cast<Node const*>(lane.node_data),
+            .context = contexts + i,
+        });
+    }
+    PropagateForwardCoverageBatchContext<Node> batch{{bindings, lanes.size()}};
+    do_propagate_forward_coverage_batch(batch);
+    for (std::size_t i = lanes.size(); i != 0; --i) {
+        std::destroy_at(bindings + i - 1);
+        std::destroy_at(contexts + i - 1);
+    }
+}
+
+template<class Node>
 IV_FORCEINLINE void propagate_node_reverse_coverage(
     void const* node_data, ReflectedNodeReverseCoverageContext const& reflected)
 {
@@ -603,10 +837,48 @@ IV_FORCEINLINE void propagate_node_reverse_coverage(
 }
 
 template<class Node>
+IV_FORCEINLINE void propagate_node_reverse_coverage_batch(
+    ReflectedNodeReverseCoverageBatchContext const& reflected)
+{
+    auto const lanes = static_cast<
+        std::span<ReflectedNodeReverseCoverageBatchLane const>>(reflected.lanes);
+    if (lanes.empty()) return;
+    using Context = PropagateReverseCoverageContext<Node>;
+    using Binding = BackgroundBatchLaneBinding<Node, Context>;
+    auto* contexts = static_cast<Context*>(
+        __builtin_alloca(sizeof(Context) * lanes.size()));
+    auto* bindings = static_cast<Binding*>(
+        __builtin_alloca(sizeof(Binding) * lanes.size()));
+    for (std::size_t i = 0; i < lanes.size(); ++i) {
+        auto const& lane = lanes[i];
+        IV_ASSERT(lane.node_data != nullptr,
+            "reflected reverse-coverage batch lane has no configured node");
+        std::construct_at(contexts + i, Context{
+            .inputs = lane.context.inputs,
+            .outputs = lane.context.outputs,
+            .event_inputs = lane.context.event_inputs,
+            .event_outputs = lane.context.event_outputs,
+            .sample_rate = lane.context.sample_rate,
+        });
+        std::construct_at(bindings + i, Binding{
+            .node = static_cast<Node const*>(lane.node_data),
+            .context = contexts + i,
+        });
+    }
+    PropagateReverseCoverageBatchContext<Node> batch{{bindings, lanes.size()}};
+    do_propagate_reverse_coverage_batch(batch);
+    for (std::size_t i = lanes.size(); i != 0; --i) {
+        std::destroy_at(bindings + i - 1);
+        std::destroy_at(contexts + i - 1);
+    }
+}
+
+template<class Node>
 consteval auto node_tock_coverage_operation()
 {
     if constexpr (details::declares_tock_outputs_v<Node>) {
-        static_assert(details::has_tock_coverage<Node>,
+        static_assert(details::has_tock_coverage<Node>
+                || details::has_tock_coverage_batch<Node>,
             "background-output node has no valid tock_coverage implementation");
         return &tock_node_coverage<Node>;
     } else {
@@ -616,15 +888,38 @@ consteval auto node_tock_coverage_operation()
 }
 
 template<class Node>
+consteval auto node_tock_coverage_batch_operation()
+{
+    if constexpr (details::declares_tock_outputs_v<Node>) {
+        return &tock_node_coverage_batch<Node>;
+    } else {
+        return static_cast<void (*)(
+            ReflectedNodeTockCoverageBatchContext const&)>(nullptr);
+    }
+}
+
+template<class Node>
 consteval auto node_propagate_forward_coverage_operation()
 {
     if constexpr (details::declares_tock_outputs_v<Node>) {
-        static_assert(details::has_propagate_forward_coverage<Node>,
+        static_assert(details::has_propagate_forward_coverage<Node>
+                || details::has_propagate_forward_coverage_batch<Node>,
             "background-output node has no exact propagate_forward_coverage implementation");
         return &propagate_node_forward_coverage<Node>;
     } else {
         return static_cast<void (*)(
             void const*, ReflectedNodeForwardCoverageContext const&)>(nullptr);
+    }
+}
+
+template<class Node>
+consteval auto node_propagate_forward_coverage_batch_operation()
+{
+    if constexpr (details::declares_tock_outputs_v<Node>) {
+        return &propagate_node_forward_coverage_batch<Node>;
+    } else {
+        return static_cast<void (*)(
+            ReflectedNodeForwardCoverageBatchContext const&)>(nullptr);
     }
 }
 
@@ -637,6 +932,18 @@ consteval auto node_propagate_reverse_coverage_operation()
     } else {
         return static_cast<void (*)(
             void const*, ReflectedNodeReverseCoverageContext const&)>(nullptr);
+    }
+}
+
+template<class Node>
+consteval auto node_propagate_reverse_coverage_batch_operation()
+{
+    if constexpr (details::declares_tock_outputs_v<Node>
+        && details::declares_random_access_inputs_v<Node>) {
+        return &propagate_node_reverse_coverage_batch<Node>;
+    } else {
+        return static_cast<void (*)(
+            ReflectedNodeReverseCoverageBatchContext const&)>(nullptr);
     }
 }
 
@@ -936,13 +1243,13 @@ template<class Node>
 constexpr NodeCompilerOperations node_compiler_operations()
 {
     static_assert(primary_callback_declaration_is_valid_v<Node>,
-        "a concrete node must author exactly one of tick(), tick_block(), or "
-        "tock_coverage(); Tick nodes may declare only Tick outputs and Tock "
+        "a concrete node must author exactly one scalar or batch Tick/Tock "
+        "primary callback; Tick nodes may declare only Tick outputs and Tock "
         "nodes may declare only Tock outputs");
     return {
         .declare_node = &declare_node<Node>,
         .tick_block = [] {
-            if constexpr (has_tick<Node> || has_tick_block<Node>) {
+            if constexpr (has_tick_family_v<Node>) {
                 return &tick_node_block<Node>;
             } else {
                 return static_cast<void (*)(
@@ -950,8 +1257,16 @@ constexpr NodeCompilerOperations node_compiler_operations()
                     GlobalIndex, std::size_t)>(nullptr);
             }
         }(),
+        .tick_block_batch = [] {
+            if constexpr (has_tick_family_v<Node>) {
+                return &tick_node_block_batch<Node>;
+            } else {
+                return static_cast<void (*)(
+                    ReflectedNodeTickBatchContext const&)>(nullptr);
+            }
+        }(),
         .skip_block = [] {
-            if constexpr (has_tick<Node> || has_tick_block<Node>) {
+            if constexpr (has_tick_family_v<Node>) {
                 return &skip_node_block<Node>;
             } else {
                 return static_cast<void (*)(
@@ -959,11 +1274,24 @@ constexpr NodeCompilerOperations node_compiler_operations()
                     GlobalIndex, std::size_t)>(nullptr);
             }
         }(),
+        .skip_block_batch = [] {
+            if constexpr (has_tick_family_v<Node>) {
+                return &skip_node_block_batch<Node>;
+            } else {
+                return static_cast<void (*)(
+                    ReflectedNodeTickBatchContext const&)>(nullptr);
+            }
+        }(),
         .tock_coverage = node_tock_coverage_operation<Node>(),
+        .tock_coverage_batch = node_tock_coverage_batch_operation<Node>(),
         .propagate_forward_coverage =
             node_propagate_forward_coverage_operation<Node>(),
+        .propagate_forward_coverage_batch =
+            node_propagate_forward_coverage_batch_operation<Node>(),
         .propagate_reverse_coverage =
             node_propagate_reverse_coverage_operation<Node>(),
+        .propagate_reverse_coverage_batch =
+            node_propagate_reverse_coverage_batch_operation<Node>(),
         .initialize_sequential_input = [] {
             if constexpr (declares_sequential_continuous_inputs<Node>()) {
                 return &initialize_node_sequential_input<Node>;
@@ -1057,8 +1385,11 @@ IV_NODE_COMPILER_RECORD_ATTR inline const NodeCompilerRecord
         .background_state_size = node_background_state_size<Node>(),
         .background_state_alignment = node_background_state_alignment<Node>(),
         .intrinsically_replayable = intrinsically_replayable_v<Node>,
-        .pointwise_tick = has_tick<Node> && !has_tick_block<Node>,
-        .block_input_access = has_tick_block<Node> || has_skip_block<Node>,
+        .pointwise_tick = has_tick<Node>,
+        .block_input_access = has_tick_block<Node>
+            || has_tick_block_batch<Node>
+            || has_skip_block<Node>
+            || has_skip_block_batch<Node>,
     };
 
 #undef IV_NODE_COMPILER_RECORD_ATTR
@@ -1070,8 +1401,8 @@ void describe_node(void const* node_data, NodeDescriptionSink& sink)
     static_assert(has_constexpr_port_configs<Node>,
         "concrete node ports must be declared by static constexpr inputs() and outputs()");
     static_assert(primary_callback_declaration_is_valid_v<Node>,
-        "a concrete node must author exactly one of tick(), tick_block(), or "
-        "tock_coverage(); Tick nodes may declare only Tick outputs and Tock "
+        "a concrete node must author exactly one scalar or batch Tick/Tock "
+        "primary callback; Tick nodes may declare only Tick outputs and Tock "
         "nodes may declare only Tock outputs");
     if constexpr (has_inputs<Node>) {
         for_each_port_config(Node::inputs(), [&](auto const& input) {
@@ -1090,7 +1421,7 @@ void describe_node(void const* node_data, NodeDescriptionSink& sink)
         node.constrain_ports(port_constraints);
     }
     static_assert(replay_declaration_is_valid_v<Node>,
-        "intrinsically replayable nodes must author tick() (not tick_block()), "
+        "intrinsically replayable nodes must author a Tick callback, "
         "have no State/TockState or RandomAccess inputs, and declare only "
         "Sequential inputs and Tick outputs; resolved timing is validated by "
         "the whole-graph planner");
@@ -1099,7 +1430,7 @@ void describe_node(void const* node_data, NodeDescriptionSink& sink)
     sink.set_maximum_block_size(get_max_block_size(node));
     sink.set_default_ttl(get_ttl_samples(node));
     sink.set_block_skippable(
-        (has_tick<Node> || has_tick_block<Node>)
+        has_tick_family_v<Node>
         && get_can_skip_block(node));
     if constexpr (std::same_as<std::remove_cvref_t<Node>, Constant>) {
         sink.set_static_sample_value(node._value);
@@ -1113,11 +1444,11 @@ NodeBuildRequest make_node_build_request(Node const& node)
     static_assert(has_constexpr_port_configs<Value>,
         "concrete node ports must be declared by static constexpr inputs() and outputs()");
     static_assert(primary_callback_declaration_is_valid_v<Value>,
-        "a concrete node must author exactly one of tick(), tick_block(), or "
-        "tock_coverage(); Tick nodes may declare only Tick outputs and Tock "
+        "a concrete node must author exactly one scalar or batch Tick/Tock "
+        "primary callback; Tick nodes may declare only Tick outputs and Tock "
         "nodes may declare only Tock outputs");
     static_assert(replay_declaration_is_valid_v<Value>,
-        "intrinsically replayable nodes must author tick() (not tick_block()), "
+        "intrinsically replayable nodes must author a Tick callback, "
         "have no State/TockState or RandomAccess inputs, and declare only "
         "Sequential inputs and Tick outputs; resolved timing is validated by "
         "the whole-graph planner");

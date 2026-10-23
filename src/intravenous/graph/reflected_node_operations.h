@@ -216,12 +216,91 @@ struct ReflectedNodeReverseCoverageContext {
     std::size_t sample_rate = 48000;
 };
 
+// Compact compiler-facing batch records. These carry only one configured node
+// pointer and its scalar reflected context per lane. The package wrapper
+// reconstructs the public range and lane proxies; whole-project LLVM never
+// depends on a C++ batch-context or iterator representation.
+struct ReflectedNodeTickBatchLane {
+    void const* node_data = nullptr;
+    ReflectedNodeTickContext context {};
+    GlobalIndex index {};
+    std::size_t block_size = 0;
+};
+
+struct ReflectedNodeTickBatchContext {
+    ReflectedSpan<ReflectedNodeTickBatchLane const> lanes {};
+};
+
+struct ReflectedNodeTockCoverageBatchLane {
+    void const* node_data = nullptr;
+    ReflectedNodeTockCoverageContext context {};
+};
+
+struct ReflectedNodeTockCoverageBatchContext {
+    ReflectedSpan<ReflectedNodeTockCoverageBatchLane const> lanes {};
+};
+
+struct ReflectedNodeForwardCoverageBatchLane {
+    void const* node_data = nullptr;
+    ReflectedNodeForwardCoverageContext context {};
+};
+
+struct ReflectedNodeForwardCoverageBatchContext {
+    ReflectedSpan<ReflectedNodeForwardCoverageBatchLane const> lanes {};
+};
+
+struct ReflectedNodeReverseCoverageBatchLane {
+    void const* node_data = nullptr;
+    ReflectedNodeReverseCoverageContext context {};
+};
+
+struct ReflectedNodeReverseCoverageBatchContext {
+    ReflectedSpan<ReflectedNodeReverseCoverageBatchLane const> lanes {};
+};
+
 static_assert(std::is_standard_layout_v<ReflectedNodeTockCoverageContext>);
 static_assert(std::is_trivially_copyable_v<ReflectedNodeTockCoverageContext>);
 static_assert(std::is_standard_layout_v<ReflectedNodeForwardCoverageContext>);
 static_assert(std::is_trivially_copyable_v<ReflectedNodeForwardCoverageContext>);
 static_assert(std::is_standard_layout_v<ReflectedNodeReverseCoverageContext>);
 static_assert(std::is_trivially_copyable_v<ReflectedNodeReverseCoverageContext>);
+static_assert(std::is_standard_layout_v<ReflectedNodeTickBatchLane>);
+static_assert(std::is_trivially_copyable_v<ReflectedNodeTickBatchLane>);
+static_assert(std::is_standard_layout_v<ReflectedNodeTickBatchContext>);
+static_assert(std::is_trivially_copyable_v<ReflectedNodeTickBatchContext>);
+static_assert(std::is_standard_layout_v<ReflectedNodeTockCoverageBatchLane>);
+static_assert(std::is_trivially_copyable_v<ReflectedNodeTockCoverageBatchLane>);
+static_assert(std::is_standard_layout_v<ReflectedNodeTockCoverageBatchContext>);
+static_assert(std::is_trivially_copyable_v<ReflectedNodeTockCoverageBatchContext>);
+static_assert(std::is_standard_layout_v<ReflectedNodeForwardCoverageBatchLane>);
+static_assert(std::is_trivially_copyable_v<ReflectedNodeForwardCoverageBatchLane>);
+static_assert(std::is_standard_layout_v<ReflectedNodeForwardCoverageBatchContext>);
+static_assert(std::is_trivially_copyable_v<ReflectedNodeForwardCoverageBatchContext>);
+static_assert(std::is_standard_layout_v<ReflectedNodeReverseCoverageBatchLane>);
+static_assert(std::is_trivially_copyable_v<ReflectedNodeReverseCoverageBatchLane>);
+static_assert(std::is_standard_layout_v<ReflectedNodeReverseCoverageBatchContext>);
+static_assert(std::is_trivially_copyable_v<ReflectedNodeReverseCoverageBatchContext>);
+static_assert(offsetof(ReflectedNodeTockCoverageBatchLane, node_data)
+    == offsetof(ReflectedNodeForwardCoverageBatchLane, node_data));
+static_assert(offsetof(ReflectedNodeTockCoverageBatchLane, node_data)
+    == offsetof(ReflectedNodeReverseCoverageBatchLane, node_data));
+static_assert(offsetof(ReflectedNodeTockCoverageBatchLane, context)
+        + sizeof(ReflectedNodeTockCoverageContext)
+    == sizeof(ReflectedNodeTockCoverageBatchLane));
+static_assert(offsetof(ReflectedNodeForwardCoverageBatchLane, context)
+        + sizeof(ReflectedNodeForwardCoverageContext)
+    == sizeof(ReflectedNodeForwardCoverageBatchLane));
+static_assert(offsetof(ReflectedNodeReverseCoverageBatchLane, context)
+        + sizeof(ReflectedNodeReverseCoverageContext)
+    == sizeof(ReflectedNodeReverseCoverageBatchLane));
+static_assert(offsetof(ReflectedNodeTockCoverageBatchContext, lanes)
+    == offsetof(ReflectedNodeForwardCoverageBatchContext, lanes));
+static_assert(offsetof(ReflectedNodeTockCoverageBatchContext, lanes)
+    == offsetof(ReflectedNodeReverseCoverageBatchContext, lanes));
+static_assert(sizeof(ReflectedNodeTockCoverageBatchContext)
+    == sizeof(ReflectedNodeForwardCoverageBatchContext));
+static_assert(sizeof(ReflectedNodeTockCoverageBatchContext)
+    == sizeof(ReflectedNodeReverseCoverageBatchContext));
 
 struct ReflectedNodeRuntimeOperations {
     void const* node_data = nullptr;
