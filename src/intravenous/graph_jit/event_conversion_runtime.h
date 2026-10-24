@@ -105,7 +105,7 @@ iv_graph_jit_merge_mixed_event_sequences(
     GlobalIndex position) noexcept;
 
 // Insert only the current callback window from an invocation-supplied
-// sequence/ring into a transition-only persistent ring. SIZE_MAX reports
+// sequence/ring into the node-owned persistent input timeline. SIZE_MAX reports
 // invalid storage or insufficient target capacity.
 extern "C" IV_GRAPH_JIT_RUNTIME_EXPORT std::size_t
 iv_graph_jit_merge_staged_event_window(

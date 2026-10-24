@@ -1013,6 +1013,37 @@ history](./historical/background_fed_input_playback_history_2026-10-23.md). The
 end-to-end revision fixtures recorded under Front 4 passed, so Front 6 is closed
 again.
 
+**Post-completion raw-migration audit correction (2026-10-24; human verification
+pending):** the new node-owned sample and event input timelines were semantically
+visible to Front 6 through `RealtimePortStateRequirement::stable_identity`, but their
+exact-shape `NodeStorage` raw-region migration identities still used
+`NodeBundleHandle` and input-port index. Those are generation-local coordinates. A
+different stable node which reused the same coordinates and physical timeline shape
+could therefore receive the predecessor's bytes before Front 6 correctly found no
+semantic state match.
+
+Lowering now derives the raw-region identity from the same stable concrete node,
+input-port name/index/kind, direction, and `sequential_input_history` role used by the
+semantic inventory. The physical storage kind, value/event shape, pace, retained
+extent, and capacity remain suffixes used only for exact-shape migration. An anonymous
+input or a zero-history input has no stable semantic state identity, so its persistent
+timeline carries an empty raw migration identity and is initialized for the new
+generation. Sample and event adversarial fixtures cover both sides: equal numeric
+bundle/port coordinates with different stable identities do not migrate, while the
+same stable port continues to migrate after every bundle handle is shifted. Front 6 is
+reopened only through the collaborator's compile and full-suite verification of this
+bounded correction.
+
+The first verification run passed 597 of 598 tests. The only failure was in the new
+bundle-handle-shift fixture: `GraphBuilderNodeBundles::import_child()` correctly clears
+the imported bundles' inverse `virtual_node_handles()` lists because normal embedding
+rebuilds them through `GraphBuilderVirtualNodes::import_child()`. The fixture preserved
+the original virtual-node IDs instead but initially rebuilt only the forward
+`VirtualNodeRecord::node_bundle_handles` side. It now restores the inverse lists after
+shifting the records, so the changed-bundle graph retains the intended stable concrete
+node identities. No production migration behavior changed in this follow-up; another
+collaborator verification run remains pending.
+
 ## Front 7: remaining GraphJit and node execution semantics
 
 **Primary ownership:** legal authored node/layout constructs that still have explicit

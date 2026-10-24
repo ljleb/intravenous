@@ -883,10 +883,6 @@ std::expected<SampleStoragePlan, std::string> build_sample_storage_plan(
         ContinuousValueStorageGeometry geometry,
         std::optional<std::vector<std::byte>> initialize_value)
         -> std::expected<std::size_t, std::string> {
-        if (migration_identity.empty()) {
-            return std::unexpected(
-                "GraphJit synthetic sample persistent allocation requires a migration identity");
-        }
         if (initialize_value
             && initialize_value->size() != geometry.value_size_bytes) {
             return std::unexpected(
@@ -2970,10 +2966,6 @@ std::expected<SampleStoragePlan, std::string> build_sample_storage_plan(
             return std::unexpected(
                 "GraphJit retained sample window has no execution position");
         }
-        if (sink.migration_identity.empty()) {
-            return std::unexpected(
-                "GraphJit retained sample window requires a stable storage identity");
-        }
         if (sink.history
             > std::numeric_limits<std::size_t>::max() - sink.latency) {
             return std::unexpected(
@@ -3008,6 +3000,7 @@ std::expected<SampleStoragePlan, std::string> build_sample_storage_plan(
         };
 
         auto persistent_identity = [&](SamplePersistentStorageKind kind) {
+            if (sink.migration_identity.empty()) return std::string{};
             std::ostringstream out;
             out << sink.migration_identity
                 << ":kind=" << static_cast<unsigned>(kind)
@@ -3209,8 +3202,7 @@ std::expected<void, std::string> declare_sample_storage(
         for (auto& allocation : plan.persistent_allocations) {
             if (allocation.representation_index >= plan.representations.size()
                 || allocation.size_bytes == 0 || allocation.alignment == 0
-                || (allocation.alignment & (allocation.alignment - 1)) != 0
-                || allocation.migration_identity.empty()) {
+                || (allocation.alignment & (allocation.alignment - 1)) != 0) {
                 return std::unexpected(
                     "GraphJit sample persistent allocation is invalid");
             }

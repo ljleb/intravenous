@@ -297,6 +297,74 @@ std::optional<std::size_t> align_activity_offset(
     return (offset + mask) & ~mask;
 }
 
+// A retained input timeline may combine several channel-specific semantic
+// state requirements in one raw region. Its raw migration identity therefore
+// names the stable input port and role, while the storage planner appends the
+// current physical shape. Anonymous inputs and zero-history inputs deliberately
+// return no identity: their generation-local bundle/port coordinate must never
+// become cross-generation identity.
+std::expected<std::string, std::string> input_timeline_migration_identity(
+    RealtimePortStateRequirements const& requirements,
+    NodeBundlePortId configured_port,
+    std::string_view prefix)
+{
+    std::optional<StableRealtimePortStateId> selected;
+    bool found_anonymous = false;
+    for (auto const& requirement : requirements.states) {
+        if (requirement.configured_port != configured_port
+            || requirement.direction != PortDirection::input
+            || requirement.role
+                != RealtimePortStateRole::sequential_input_history) {
+            continue;
+        }
+        if (!requirement.stable_identity) {
+            found_anonymous = true;
+            continue;
+        }
+        auto const& identity = *requirement.stable_identity;
+        if (identity.direction != PortDirection::input
+            || identity.kind != configured_port.port_kind
+            || identity.port_index != configured_port.port_index
+            || identity.role
+                != RealtimePortStateRole::sequential_input_history) {
+            return std::unexpected(
+                "GraphJit input timeline has inconsistent stable port identity");
+        }
+        if (selected
+            && (selected->node != identity.node
+                || selected->direction != identity.direction
+                || selected->kind != identity.kind
+                || selected->port_name != identity.port_name
+                || selected->port_index != identity.port_index
+                || selected->role != identity.role)) {
+            return std::unexpected(
+                "GraphJit input timeline combines different stable ports");
+        }
+        selected = identity;
+    }
+    if (found_anonymous && selected) {
+        return std::unexpected(
+            "GraphJit input timeline mixes stable and anonymous state identities");
+    }
+    if (!selected) return std::string{};
+
+    auto const& identity = *selected;
+    std::ostringstream out;
+    out << prefix
+        << ":graph=" << identity.node.graph.size() << ':'
+        << identity.node.graph
+        << ":node=" << identity.node.virtual_node.size() << ':'
+        << identity.node.virtual_node
+        << ":member=" << identity.node.direct_member
+        << ":direction=" << static_cast<unsigned>(identity.direction)
+        << ":kind=" << static_cast<unsigned>(identity.kind)
+        << ":port_name=" << identity.port_name.size() << ':'
+        << identity.port_name
+        << ":port_index=" << identity.port_index
+        << ":role=" << static_cast<unsigned>(identity.role);
+    return std::move(out).str();
+}
+
 // Locates the TickSequentialBindingPlan slot through which background
 // evaluation supplies this Sequential input in the generated root's
 // TickInvocationCall, as an index in the kind-specific TickRuntimePlan array.
@@ -766,8 +834,7 @@ std::expected<DeclarationPlan, std::string> plan_declarations(
         }
         if (storage.persistent) {
             if (storage.transient_allocation
-                    != no_event_transient_allocation
-                || storage.migration_identity.empty()) {
+                    != no_event_transient_allocation) {
                 return std::unexpected(
                     "GraphJit persistent event storage has invalid ownership");
             }
@@ -2907,6 +2974,13 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
         if (!neutral) return std::unexpected(std::move(neutral.error()));
         auto const bundle =
             analysis.primitives[primitive_index].bundle.node_bundle;
+        auto migration_identity = input_timeline_migration_identity(
+            connections.realtime_port_states,
+            NodeBundlePortId{bundle, PortKind::sample, port},
+            "graphjit.sample.input_timeline");
+        if (!migration_identity) {
+            return std::unexpected(std::move(migration_identity.error()));
+        }
         timeline_inputs.push_back({.primitive = primitive_index, .port = port});
         timeline_requests.push_back(SampleInputTimelineRequest{
             .channel_layout = binding.channel_layout,
@@ -2915,8 +2989,7 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
             .history = binding.history,
             .neutral_value = std::move(*neutral),
             .execution_position = execution_position,
-            .migration_identity = "graphjit.sample.input_timeline:"
-                + std::to_string(bundle) + "." + std::to_string(port),
+            .migration_identity = std::move(*migration_identity),
         });
         return {};
     };
@@ -4272,17 +4345,25 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
         auto const capacity = rounded_event_capacity(
             std::max<std::size_t>(required_capacity, 1));
         if (!capacity) return std::unexpected(std::move(capacity.error()));
+        auto migration_identity = input_timeline_migration_identity(
+            connections.realtime_port_states,
+            NodeBundlePortId{target.bundle, PortKind::event, target.port},
+            "graphjit.event.input_timeline");
+        if (!migration_identity) {
+            return std::unexpected(std::move(migration_identity.error()));
+        }
+        if (!migration_identity->empty()) {
+            *migration_identity += ":type="
+                + std::to_string(static_cast<unsigned>(type))
+                + ":capacity=" + std::to_string(*capacity);
+        }
         auto timeline = append_representation(
             connections.event_producer_groups.size(),
             type,
             *capacity,
             false,
             true,
-            "graphjit.event.input_timeline:"
-                + std::to_string(static_cast<unsigned>(type)) + ":"
-                + std::to_string(target.bundle) + "."
-                + std::to_string(target.port) + ":capacity="
-                + std::to_string(*capacity),
+            std::move(*migration_identity),
             true);
         if (!timeline) return std::unexpected(std::move(timeline.error()));
         // Like a raw Tick output, a primitive sliced inside a cyclic region

@@ -200,8 +200,9 @@ enum class SamplePersistentStorageKind {
 
 // Persistent connection state is always represented by canonical raw
 // NodeStorage. compact_carry stores exactly retained_frames; ring stores the
-// whole power-of-two working ring. migration_identity is non-empty so exact-
-// shape NodeStorage migration preserves connection history across generations.
+// whole power-of-two working ring. A non-empty migration_identity permits
+// exact-shape NodeStorage migration. An empty identity is intentional for
+// generation-local state whose concrete node port has no stable identity.
 struct SamplePersistentAllocationPlan {
     std::size_t representation_index = no_sample_representation;
     SamplePersistentStorageKind kind = SamplePersistentStorageKind::ring;

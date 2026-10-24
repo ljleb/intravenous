@@ -513,6 +513,21 @@ The governing performance invariant is:
    inputs into this domain: those private playback rings are intentionally rebuilt in
    visible `GlobalIndex` coordinates for each requested window.
 
+   **Front 6 raw-migration audit correction (2026-10-24; human verification
+   pending):** sample and event input-timeline raw regions no longer use
+   generation-local bundle/port coordinates as cross-generation migration identity.
+   They use the stable concrete input-port identity already recorded for Front 6.
+   Inputs without that stable identity keep an empty raw identity and start from their
+   initializer. Adversarial GraphJit fixtures now distinguish reused numeric
+   coordinates belonging to different stable nodes from one stable port whose bundle
+   handle changes. This is cold metadata only; it adds no realtime work or storage.
+   The first full run passed 597 of 598 tests. Its sole failure was a defect in the new
+   shifted-bundle fixture: `GraphBuilderNodeBundles::import_child()` clears inverse
+   virtual-node handles, and the fixture had restored only the forward virtual-node
+   records. The fixture now restores both directions while retaining the original
+   virtual-node IDs. Production source was unchanged by that follow-up; verification
+   is pending.
+
 3. Complete realtime persisted playback and recording span operations. Persisted
    playback now clears only requested sample windows, traverses relevant sample
    regions, copies ring-wrap runs, and binary-searches clipped event chunks. Realtime

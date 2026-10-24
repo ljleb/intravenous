@@ -253,6 +253,8 @@ struct EventRepresentationPlan {
     bool immutable_empty = false;
     bool persistent = false;
     bool persistent_ring = false;
+    // Empty means generation-local persistent storage. A non-empty value is
+    // used only for exact-shape NodeStorage migration.
     std::string migration_identity{};
     bool has_producer_overflow_counter = false;
     std::size_t count_relative_offset = 0;

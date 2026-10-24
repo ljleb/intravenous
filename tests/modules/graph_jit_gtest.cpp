@@ -7118,6 +7118,19 @@ void playback_sample_history_module(iv::GraphBuilder& graph)
     graph.outputs();
 }
 
+// This replacement has the same node and connection shape as
+// playback_sample_history_module, but its module definition gives the
+// ConfiguredGraph a different identity. The event replacement below does the
+// same for playback_event_history_module. They exercise reuse of the same
+// generation-local bundle/port coordinates by different semantic nodes.
+void playback_sample_history_replacement_module(iv::GraphBuilder& graph)
+{
+    auto source = graph.node<"iv.test.graph_jit.state_context.playback_sample_source">();
+    auto sink = graph.node<"iv.test.graph_jit.state_context.playback_history_consumer">();
+    sink(source);
+    graph.outputs();
+}
+
 void playback_sample_window_module(iv::GraphBuilder& graph)
 {
     auto source = graph.node<"iv.test.graph_jit.state_context.playback_sample_source">();
@@ -7136,6 +7149,14 @@ void playback_mixed_sample_module(iv::GraphBuilder& graph)
 }
 
 void playback_event_history_module(iv::GraphBuilder& graph)
+{
+    auto source = graph.node<"iv.test.graph_jit.state_context.playback_trigger_source">();
+    auto sink = graph.node<"iv.test.graph_jit.state_context.playback_event_history_consumer">();
+    sink.connect_event_input(0, source.event_port());
+    graph.outputs();
+}
+
+void playback_event_history_replacement_module(iv::GraphBuilder& graph)
 {
     auto source = graph.node<"iv.test.graph_jit.state_context.playback_trigger_source">();
     auto sink = graph.node<"iv.test.graph_jit.state_context.playback_event_history_consumer">();
@@ -7186,9 +7207,11 @@ IV_NODE("iv.test.graph_jit.state_context.playback_stereo_history_consumer", Play
 IV_NODE("iv.test.graph_jit.state_context.playback_event_history_consumer", PlaybackEventHistoryConsumer);
 IV_NODE("iv.test.graph_jit.state_context.playback_event_history_peer", PlaybackEventHistoryPeer);
 IV_MODULE("iv.test.graph_jit.state_context.playback_sample_history_module", playback_sample_history_module);
+IV_MODULE("iv.test.graph_jit.state_context.playback_sample_history_replacement_module", playback_sample_history_replacement_module);
 IV_MODULE("iv.test.graph_jit.state_context.playback_sample_window_module", playback_sample_window_module);
 IV_MODULE("iv.test.graph_jit.state_context.playback_mixed_sample_module", playback_mixed_sample_module);
 IV_MODULE("iv.test.graph_jit.state_context.playback_event_history_module", playback_event_history_module);
+IV_MODULE("iv.test.graph_jit.state_context.playback_event_history_replacement_module", playback_event_history_replacement_module);
 IV_MODULE("iv.test.graph_jit.state_context.playback_mixed_event_module", playback_mixed_event_module);
 IV_MODULE("iv.test.graph_jit.state_context.playback_sample_rewire_module", playback_sample_rewire_module);
 IV_MODULE("iv.test.graph_jit.state_context.playback_event_rewire_module", playback_event_rewire_module);
@@ -16660,12 +16683,16 @@ namespace {
 
 constexpr char graph_jit_playback_sample_history_module_id[] =
     "iv.test.graph_jit.state_context.playback_sample_history_module";
+constexpr char graph_jit_playback_sample_history_replacement_module_id[] =
+    "iv.test.graph_jit.state_context.playback_sample_history_replacement_module";
 constexpr char graph_jit_playback_sample_window_module_id[] =
     "iv.test.graph_jit.state_context.playback_sample_window_module";
 constexpr char graph_jit_playback_mixed_sample_module_id[] =
     "iv.test.graph_jit.state_context.playback_mixed_sample_module";
 constexpr char graph_jit_playback_event_history_module_id[] =
     "iv.test.graph_jit.state_context.playback_event_history_module";
+constexpr char graph_jit_playback_event_history_replacement_module_id[] =
+    "iv.test.graph_jit.state_context.playback_event_history_replacement_module";
 constexpr char graph_jit_playback_mixed_event_module_id[] =
     "iv.test.graph_jit.state_context.playback_mixed_event_module";
 constexpr char graph_jit_playback_sample_rewire_module_id[] =
@@ -16878,7 +16905,253 @@ std::shared_ptr<iv::ConfiguredGraph const> exchange_connection_sources(
     return successor;
 }
 
+// Rebuild the same ConfiguredGraph with one unused scope-boundary bundle in
+// front of every original bundle. Stable virtual-node records and graph
+// identity are preserved; only generation-local bundle coordinates move.
+std::shared_ptr<iv::ConfiguredGraph const> shift_bundle_handles(
+    std::shared_ptr<iv::ConfiguredGraph const> const& graph)
+{
+    auto shifted = std::make_shared<iv::ConfiguredGraph>(*graph);
+
+    iv::GraphBuilderNodeBundles bundles;
+    (void)bundles.append_scope_boundary();
+    auto const offset = bundles.import_child(graph->node_bundles);
+    if (offset == 0) {
+        throw std::runtime_error(
+            "playback bundle-shift fixture did not create an offset");
+    }
+    shifted->node_bundles = std::move(bundles);
+
+    iv::GraphBuilderConnections connections;
+    connections.import_child(graph->connections, offset);
+    shifted->connections = std::move(connections);
+
+    auto virtual_nodes = graph->virtual_nodes.records();
+    auto shift_port = [offset](iv::NodeBundlePortId& port) {
+        port.node_bundle_handle += offset;
+    };
+    auto shift_channel = [offset](auto& channel) {
+        channel.bundle += offset;
+    };
+    for (auto& node : virtual_nodes) {
+        for (auto& bundle : node.node_bundle_handles) bundle += offset;
+        for (auto& mapping : node.sample_inputs) {
+            for (auto& channel : mapping.channels) shift_channel(channel);
+            for (auto& member : mapping.member_channels) {
+                for (auto& channel : member) shift_channel(channel);
+            }
+        }
+        for (auto& mapping : node.sample_outputs) {
+            for (auto& channel : mapping.channels) shift_channel(channel);
+            for (auto& member : mapping.member_channels) {
+                for (auto& channel : member) shift_channel(channel);
+            }
+        }
+        for (auto& mapping : node.event_inputs) {
+            for (auto& port : mapping.node_bundle_ports) shift_port(port);
+        }
+        for (auto& mapping : node.event_outputs) {
+            for (auto& port : mapping.node_bundle_ports) shift_port(port);
+        }
+    }
+    // GraphBuilderNodeBundles::import_child() clears inverse virtual-node
+    // handles because ordinary child import rebuilds them through
+    // GraphBuilderVirtualNodes::import_child(). This fixture preserves the
+    // original virtual-node IDs instead, so restore the inverse relation
+    // explicitly after shifting every record's bundle coordinates.
+    for (std::size_t virtual_handle = 0;
+         virtual_handle < virtual_nodes.size();
+         ++virtual_handle) {
+        for (auto const bundle :
+             virtual_nodes[virtual_handle].node_bundle_handles) {
+            auto& inverse = shifted->node_bundles
+                .bundle(bundle)
+                .virtual_node_handles();
+            if (!std::ranges::contains(inverse, virtual_handle)) {
+                inverse.push_back(virtual_handle);
+            }
+        }
+    }
+    shifted->virtual_nodes =
+        iv::GraphBuilderVirtualNodes::from_configured_records(virtual_nodes);
+
+    auto public_ports = graph->public_ports.configured_record();
+    public_ports.boundary += offset;
+    shifted->public_ports =
+        iv::GraphBuilderPublicPorts::from_configured_record(public_ports);
+    return shifted;
+}
+
+iv::NodeLayout::Region const& input_timeline_region(
+    iv::CompiledGraph const& graph,
+    std::string_view prefix)
+{
+    iv::NodeLayout::Region const* result = nullptr;
+    for (auto const& region : graph.node_layout.regions) {
+        if (region.kind != iv::NodeLayout::Region::Kind::raw
+            || !region.migration_identity.starts_with(prefix)) {
+            continue;
+        }
+        if (result) {
+            throw std::runtime_error(
+                "playback fixture has multiple input timeline regions");
+        }
+        result = &region;
+    }
+    if (!result) {
+        throw std::runtime_error(
+            "playback fixture has no stable input timeline region");
+    }
+    return *result;
+}
+
+iv::graph_jit::RealtimePortStateRequirement const& stable_input_history(
+    iv::CompiledGraph const& graph,
+    iv::PortKind kind)
+{
+    auto const found = std::ranges::find_if(
+        graph.realtime_port_state_requirements.states,
+        [kind](auto const& requirement) {
+            return requirement.direction
+                    == iv::graph_jit::PortDirection::input
+                && requirement.configured_port.port_kind == kind
+                && requirement.role == iv::graph_jit::RealtimePortStateRole::
+                    sequential_input_history
+                && requirement.stable_identity.has_value();
+        });
+    if (found == graph.realtime_port_state_requirements.states.end()) {
+        throw std::runtime_error(
+            "playback fixture has no stable input-history requirement");
+    }
+    return *found;
+}
+
 } // namespace
+
+TEST_F(
+    GraphJitRuntimeFixture,
+    InputTimelineRawMigrationUsesStablePortIdentityForSamplesAndEvents)
+{
+    // RealtimePortStateTransition.MatchesStableStateAcrossGenerationLocalPorts
+    // already covers semantic requirement matching after a bundle-number
+    // change. This fixture verifies that the exact-shape NodeStorage fast path
+    // uses that same identity rule and does not copy a different node's bytes.
+    auto verify = [&] (
+        std::string_view module_id,
+        std::string_view replacement_module_id,
+        iv::PortKind kind,
+        std::string_view region_prefix,
+        std::uint64_t generation) {
+        SCOPED_TRACE(region_prefix);
+        auto graph = configured_module_graph(*revision, module_id);
+        auto replacement_graph = configured_module_graph(
+            *revision, replacement_module_id);
+        ASSERT_TRUE(graph);
+        ASSERT_TRUE(replacement_graph);
+        auto shifted_graph = shift_bundle_handles(graph);
+
+        auto predecessor = compile_graph(graph, generation);
+        auto replacement = compile_graph(replacement_graph, generation + 1);
+        auto shifted = compile_graph(shifted_graph, generation + 2);
+        ASSERT_TRUE(predecessor.succeeded())
+            << (predecessor.diagnostics.empty()
+                    ? ""
+                    : predecessor.diagnostics.front().message);
+        ASSERT_TRUE(replacement.succeeded())
+            << (replacement.diagnostics.empty()
+                    ? ""
+                    : replacement.diagnostics.front().message);
+        ASSERT_TRUE(shifted.succeeded())
+            << (shifted.diagnostics.empty()
+                    ? ""
+                    : shifted.diagnostics.front().message);
+
+        auto const& predecessor_compiled = *predecessor.compiled_graph;
+        auto const& replacement_compiled = *replacement.compiled_graph;
+        auto const& shifted_compiled = *shifted.compiled_graph;
+        auto const& predecessor_requirement = stable_input_history(
+            predecessor_compiled, kind);
+        auto const& replacement_requirement = stable_input_history(
+            replacement_compiled, kind);
+        auto const& shifted_requirement = stable_input_history(
+            shifted_compiled, kind);
+        ASSERT_TRUE(predecessor_requirement.stable_identity);
+        ASSERT_TRUE(replacement_requirement.stable_identity);
+        ASSERT_TRUE(shifted_requirement.stable_identity);
+        EXPECT_EQ(
+            predecessor_requirement.configured_port,
+            replacement_requirement.configured_port);
+        EXPECT_NE(
+            predecessor_requirement.stable_identity->node,
+            replacement_requirement.stable_identity->node);
+        EXPECT_NE(
+            predecessor_requirement.configured_port.node_bundle_handle,
+            shifted_requirement.configured_port.node_bundle_handle);
+        EXPECT_EQ(
+            predecessor_requirement.stable_identity,
+            shifted_requirement.stable_identity);
+
+        auto const& predecessor_region = input_timeline_region(
+            predecessor_compiled, region_prefix);
+        auto const& replacement_region = input_timeline_region(
+            replacement_compiled, region_prefix);
+        auto const& shifted_region = input_timeline_region(
+            shifted_compiled, region_prefix);
+        EXPECT_NE(
+            predecessor_region.migration_identity,
+            replacement_region.migration_identity);
+        EXPECT_EQ(
+            predecessor_region.migration_identity,
+            shifted_region.migration_identity);
+        ASSERT_EQ(predecessor_region.size, replacement_region.size);
+        ASSERT_EQ(predecessor_region.size, shifted_region.size);
+        ASSERT_EQ(predecessor_region.alignment, replacement_region.alignment);
+        ASSERT_EQ(predecessor_region.alignment, shifted_region.alignment);
+
+        auto predecessor_storage =
+            predecessor_compiled.node_layout.create_storage(resources);
+        predecessor_storage.initialize();
+        auto predecessor_bytes = predecessor_storage.buffer().subspan(
+            predecessor_region.storage_offset, predecessor_region.size);
+        std::ranges::fill(predecessor_bytes, std::byte{0x5a});
+
+        auto fresh_replacement =
+            replacement_compiled.node_layout.create_storage(resources);
+        fresh_replacement.initialize();
+        auto const fresh_region_bytes = fresh_replacement.buffer().subspan(
+            replacement_region.storage_offset, replacement_region.size);
+        auto const fresh_bytes = std::vector<std::byte>(
+            fresh_region_bytes.begin(), fresh_region_bytes.end());
+        auto migrated_replacement =
+            replacement_compiled.node_layout.create_storage(resources);
+        migrated_replacement.initialize(&predecessor_storage);
+        EXPECT_TRUE(std::ranges::equal(
+            fresh_bytes,
+            migrated_replacement.buffer().subspan(
+                replacement_region.storage_offset, replacement_region.size)));
+
+        auto migrated_shifted =
+            shifted_compiled.node_layout.create_storage(resources);
+        migrated_shifted.initialize(&predecessor_storage);
+        EXPECT_TRUE(std::ranges::all_of(
+            migrated_shifted.buffer().subspan(
+                shifted_region.storage_offset, shifted_region.size),
+            [](std::byte value) { return value == std::byte{0x5a}; }));
+    };
+
+    verify(
+        graph_jit_playback_sample_history_module_id,
+        graph_jit_playback_sample_history_replacement_module_id,
+        iv::PortKind::sample,
+        "graphjit.sample.input_timeline",
+        621);
+    verify(
+        graph_jit_playback_event_history_module_id,
+        graph_jit_playback_event_history_replacement_module_id,
+        iv::PortKind::event,
+        "graphjit.event.input_timeline",
+        631);
+}
 
 TEST_F(GraphJitRuntimeFixture, PlaybackSampleInputKeepsItsConsumedHistory)
 {
