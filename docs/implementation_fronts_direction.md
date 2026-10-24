@@ -440,8 +440,9 @@ owned by Front 6, not by this delivery front.
 - *Documentation retention:* the status text replaced at closure is retained in
   [Front 4 status before closure](./historical/front_4_status_before_closure_2026-10-23.md).
 
-**Reopened and implemented in source: node-owned history for background-fed inputs
-(2026-10-23; not yet compiled or tested).** A Tick primitive's Sequential input fed
+**Reopened and implemented: node-owned history for background-fed inputs
+(2026-10-23; the collaborator's full suite passed; end-to-end fixtures added and not
+yet run).** A Tick primitive's Sequential input fed
 through a `TickInvocationCall` slot now keeps the history it consumed, in Tick
 invocation order, with neutral history before its first invocation, as [GraphJit
 direction](./graph_jit_direction.md) requires for every Sequential input. The
@@ -479,12 +480,23 @@ playback history](./historical/background_fed_input_playback_history_2026-10-23.
   transfers and transition suffixes. The playback-slot transfer source and the
   Tick-to-Tock staging transition root were removed with the superseded
   representation.
-- *Remaining:*
-  - compilation and the collaborator's suite run;
-  - a compiled GraphJit fixture that drives real `TickInvocationCall` slots through
-    pure and mixed sample and event inputs with history, and through graph
-    revisions in both delivery directions. No existing test executes this
-    generated path.
+- *End-to-end fixtures (added, not yet run):* compiled GraphJit roots driven
+  through a real `TickInvocationWorkspace` and `TickInvocationFrame`, with each
+  callback's playback published as a `TickMaterializationSnapshot`.
+  - Pure sample and pure event inputs keep neutral pre-start history. They keep
+    consumed values when earlier positions are republished, and keep
+    invocation-order history across a seek; event history moves with the
+    transport.
+  - A slot-fed input without history reads its window at a position that is not
+    a multiple of the slot capacity.
+  - A mixed stereo sample input and a mixed event input keep their combined
+    history.
+  - One graph revision exchanges the sources of two consumers, so one moves from
+    realtime to background delivery and the other from background to realtime,
+    for samples and for events. Each keeps the history it consumed before
+    cutover.
+- *Remaining:* the collaborator's run of these fixtures. A failure reopens the
+  boundary it exposes.
 
 Detailed direction:
 [Coverage And Background Evaluation](./coverage_and_background_evaluation.md).
@@ -999,7 +1011,7 @@ so the completed Front 6 transfer and transition-suffix paths apply unchanged an
 this front needs no delivery-kind special case. The superseded cross-kind machinery
 and its friction record are retained in [Background-fed input playback
 history](./historical/background_fed_input_playback_history_2026-10-23.md). Front 6
-closes again once the end-to-end fixture recorded under Front 4 passes.
+closes again once the end-to-end revision fixtures recorded under Front 4 pass.
 
 ## Front 7: remaining GraphJit and node execution semantics
 
