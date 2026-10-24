@@ -142,6 +142,37 @@ template<typename Node>
 inline constexpr std::size_t reflected_event_output_count_v =
     reflected_event_output_count<Node>();
 
+// A Random Access input keeps its declared entry in the reflected Sequential
+// binding array, but that entry has no Sequential storage: the node-facing
+// access reads only the callback's RandomAccess*InputPort view.
+template<typename Node>
+consteval auto reflected_sample_input_random_access_mask()
+{
+    std::array<bool, reflected_sample_input_count_v<Node>> result{};
+    if constexpr (has_inputs<Node> && has_constexpr_port_configs<Node>) {
+        std::size_t sample_index = 0;
+        for_each_port_config(Node::inputs(), [&](auto const& config) {
+            if (!is_continuous(config)) return;
+            result[sample_index++] = is_random_access(config);
+        });
+    }
+    return result;
+}
+
+template<typename Node>
+consteval auto reflected_event_input_random_access_mask()
+{
+    std::array<bool, reflected_event_input_count_v<Node>> result{};
+    if constexpr (has_inputs<Node> && has_constexpr_port_configs<Node>) {
+        std::size_t event_index = 0;
+        for_each_port_config(Node::inputs(), [&](auto const& config) {
+            if (is_continuous(config)) return;
+            result[event_index++] = is_random_access(config);
+        });
+    }
+    return result;
+}
+
 template<typename Node, std::size_t Index>
 consteval bool reflected_sample_output_is_recording()
 {
@@ -246,15 +277,19 @@ IV_FORCEINLINE void validate_reflected_continuous_bindings(
         ctx, std::make_index_sequence<output_count>{});
 }
 
-template<bool CompleteBlockAccess>
+template<typename Node, bool CompleteBlockAccess>
 IV_FORCEINLINE void prepare_reflected_continuous_inputs(
     ReflectedNodeTickContext const& ctx,
     GlobalIndex index,
     std::size_t block_size)
 {
-    for (auto const& binding :
-         std::span<ReflectedContinuousInputPortBinding const>{
-             ctx.continuous_input_bindings}) {
+    constexpr auto random_access =
+        reflected_sample_input_random_access_mask<Node>();
+    std::span<ReflectedContinuousInputPortBinding const> const bindings{
+        ctx.continuous_input_bindings};
+    for (std::size_t input = 0; input < bindings.size(); ++input) {
+        if (random_access[input]) continue;
+        auto const& binding = bindings[input];
         if constexpr (!CompleteBlockAccess) {
             // Pointwise block_extended() needs preparation only when it has
             // history. With zero history its one current value is directly
@@ -364,7 +399,7 @@ IV_FORCEINLINE std::size_t* reflected_event_write_index(
         binding.storage + binding.write_index_offset);
 }
 
-template<std::size_t N, std::size_t... I>
+template<typename Node, std::size_t N, std::size_t... I>
 IV_FORCEINLINE void initialize_reflected_event_inputs(
     ReflectedEventInputPorts<N>& result,
     ReflectedNodeTickContext const& ctx,
@@ -372,20 +407,24 @@ IV_FORCEINLINE void initialize_reflected_event_inputs(
 {
     static_assert(N == sizeof...(I));
     (([&] {
-        auto const& binding = ctx.event_input_bindings.pointer[I].storage;
-        auto const read_index = binding.persistent_ring
-            ? *reflected_event_read_index(binding)
-            : std::size_t{0};
-        auto const write_index = binding.persistent_ring
-            ? *reflected_event_write_index(binding)
-            : *reflected_event_count(binding);
-        result.shared[I] = EventSharedPortData{
-            reflected_event_buffer(binding),
-            read_index,
-            write_index,
-            binding.type,
-        };
-        result.ports[I] = EventInputPort{result.shared[I]};
+        // See reflected_sample_input_random_access_mask(). A Random Access
+        // entry keeps its default EventInputPort, which node code never sees.
+        if constexpr (!reflected_event_input_random_access_mask<Node>()[I]) {
+            auto const& binding = ctx.event_input_bindings.pointer[I].storage;
+            auto const read_index = binding.persistent_ring
+                ? *reflected_event_read_index(binding)
+                : std::size_t{0};
+            auto const write_index = binding.persistent_ring
+                ? *reflected_event_write_index(binding)
+                : *reflected_event_count(binding);
+            result.shared[I] = EventSharedPortData{
+                reflected_event_buffer(binding),
+                read_index,
+                write_index,
+                binding.type,
+            };
+            result.ports[I] = EventInputPort{result.shared[I]};
+        }
     }()), ...);
 }
 
@@ -465,7 +504,7 @@ IV_FORCEINLINE void with_reflected_event_ports(
 
     ReflectedEventInputPorts<input_count> inputs;
     ReflectedEventOutputPorts<output_count> outputs;
-    initialize_reflected_event_inputs(
+    initialize_reflected_event_inputs<Node>(
         inputs, ctx, std::make_index_sequence<input_count>{});
     initialize_reflected_event_outputs<Node>(
         outputs, ctx, index, block_size,
@@ -486,7 +525,7 @@ IV_FORCEINLINE void tick_node_block(
     auto const& node = *static_cast<Node const*>(node_data);
     validate_reflected_continuous_bindings<Node>(ctx);
     prepare_reflected_continuous_inputs<
-        has_tick_block<Node> || has_tick_block_batch<Node>>(
+        Node, has_tick_block<Node> || has_tick_block_batch<Node>>(
         ctx, index, block_size);
     with_reflected_event_ports<Node>(
         ctx,
@@ -547,12 +586,12 @@ IV_FORCEINLINE void tick_node_block_batch(
             "reflected Tick batch lane has no configured node");
         validate_reflected_continuous_bindings<Node>(ctx);
         prepare_reflected_continuous_inputs<
-            has_tick_block<Node> || has_tick_block_batch<Node>>(
+            Node, has_tick_block<Node> || has_tick_block_batch<Node>>(
                 ctx, lane.index, lane.block_size);
 
         std::construct_at(inputs + i);
         std::construct_at(outputs + i);
-        initialize_reflected_event_inputs(
+        initialize_reflected_event_inputs<Node>(
             inputs[i], ctx, std::make_index_sequence<input_count>{});
         initialize_reflected_event_outputs<Node>(
             outputs[i], ctx, lane.index, lane.block_size,
@@ -604,7 +643,7 @@ IV_FORCEINLINE void skip_node_block(
     auto const& node = *static_cast<Node const*>(node_data);
     validate_reflected_continuous_bindings<Node>(ctx);
     if constexpr (has_skip_block<Node> || has_skip_block_batch<Node>) {
-        prepare_reflected_continuous_inputs<true>(ctx, index, block_size);
+        prepare_reflected_continuous_inputs<Node, true>(ctx, index, block_size);
     }
     with_reflected_event_ports<Node>(
         ctx,
@@ -665,13 +704,13 @@ IV_FORCEINLINE void skip_node_block_batch(
             "reflected skip batch lane has no configured node");
         validate_reflected_continuous_bindings<Node>(ctx);
         if constexpr (has_skip_block<Node> || has_skip_block_batch<Node>) {
-            prepare_reflected_continuous_inputs<true>(
+            prepare_reflected_continuous_inputs<Node, true>(
                 ctx, lane.index, lane.block_size);
         }
 
         std::construct_at(inputs + i);
         std::construct_at(outputs + i);
-        initialize_reflected_event_inputs(
+        initialize_reflected_event_inputs<Node>(
             inputs[i], ctx, std::make_index_sequence<input_count>{});
         initialize_reflected_event_outputs<Node>(
             outputs[i], ctx, lane.index, lane.block_size,

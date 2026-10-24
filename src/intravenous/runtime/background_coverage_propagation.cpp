@@ -1105,8 +1105,25 @@ BackgroundPropagationWorkspace::prepare(
 
     operations.propagate_forward(&call_);
 
+    BackgroundForwardOutputChanges const forward{
+        .data = this,
+        .changed_value = +[](void const* opaque,
+                             graph_jit::BackgroundPortIndex output)
+            -> IndexCoverage const& {
+            auto const& workspace =
+                *static_cast<BackgroundPropagationWorkspace const*>(opaque);
+            return workspace.output_changes_[
+                workspace.output_index(output)].changed;
+        },
+    };
     for (auto const& root : request.input_demands) {
-        require_input(root.port, root.required);
+        if (!expansion.restrict_input) {
+            require_input(root.port, root.required);
+            continue;
+        }
+        auto required = root.required;
+        expansion.restrict_input(expansion.data, root.port, forward, required);
+        require_input(root.port, required);
     }
     for (auto const& root : request.output_demands) {
         auto const& planned = port(root.port);

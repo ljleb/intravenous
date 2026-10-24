@@ -129,6 +129,85 @@ iv::PersistedEventChunk event_chunk(
     return result;
 }
 
+TEST(TickMaterializationSnapshot,
+     CarryForwardSharesOnlyRetainedRegionsNotReplacedByNewMaterialization)
+{
+    auto previous_sample = iv::make_tick_materialized_sample_input(
+        1,
+        iv::mono_planar_channel_layout,
+        {0},
+        iv::IndexCoverage{range(0, 8)},
+        {0.0f, 1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f, 7.0f});
+    auto previous_event = iv::make_tick_materialized_event_input(
+        2,
+        iv::EventTypeId::trigger,
+        iv::IndexCoverage{range(0, 8)},
+        {
+            {.time = index(1), .value = iv::TriggerEvent{}},
+            {.time = index(3), .value = iv::TriggerEvent{}},
+            {.time = index(5), .value = iv::TriggerEvent{}},
+            {.time = index(7), .value = iv::TriggerEvent{}},
+        },
+        {});
+    iv::TickMaterializationSnapshot previous{
+        4,
+        1,
+        {},
+        {std::move(previous_sample)},
+        {std::move(previous_event)},
+    };
+
+    auto replacement_sample = iv::make_tick_materialized_sample_input(
+        1,
+        iv::mono_planar_channel_layout,
+        {0},
+        iv::IndexCoverage{range(3, 2)},
+        {30.0f, 40.0f});
+    auto replacement_event = iv::make_tick_materialized_event_input(
+        2,
+        iv::EventTypeId::trigger,
+        iv::IndexCoverage{range(3, 2)},
+        {{.time = index(4), .value = iv::TriggerEvent{}}},
+        {});
+    iv::TickMaterializationSnapshot current{
+        4,
+        2,
+        {},
+        {std::move(replacement_sample)},
+        {std::move(replacement_event)},
+    };
+    std::array retention{
+        iv::TickMaterializationRetention{
+            .port = 1,
+            .retained = iv::IndexCoverage{range(0, 8)},
+        },
+        iv::TickMaterializationRetention{
+            .port = 2,
+            .retained = iv::IndexCoverage{range(0, 8)},
+        },
+    };
+
+    current.carry_forward(previous, retention);
+
+    auto const* sample = current.find_sample(1);
+    ASSERT_NE(sample, nullptr);
+    EXPECT_FLOAT_EQ(sample->at(index(2), 0).value, 2.0f);
+    EXPECT_FLOAT_EQ(sample->at(index(3), 0).value, 30.0f);
+    EXPECT_FLOAT_EQ(sample->at(index(4), 0).value, 40.0f);
+    EXPECT_FLOAT_EQ(sample->at(index(5), 0).value, 5.0f);
+    auto const* event = current.find_event(2);
+    ASSERT_NE(event, nullptr);
+    std::vector<std::int64_t> times;
+    event->for_each(
+        range(0, 8),
+        &times,
+        [](void* opaque, iv::TimedEvent const& value) {
+            static_cast<std::vector<std::int64_t>*>(opaque)->push_back(
+                value.time.signed_value());
+        });
+    EXPECT_EQ(times, (std::vector<std::int64_t>{1, 4, 5, 7}));
+}
+
 std::vector<std::byte> queued_bytes(iv::PinnedBlockPrefix const& prefix)
 {
     std::vector<std::byte> result;
@@ -828,13 +907,12 @@ TEST(TickInvocationWorkspace,
             1,
             iv::PersistedDataVersion{},
             std::vector<iv::TickMaterializedSampleInput>{
-                {
-                    .port = 1,
-                    .coverage = iv::IndexCoverage{range(4, 3)},
-                    .layout = plan.ports[1].sample_layout,
-                    .channels = {0},
-                    .values = {40.0f, 50.0f, 60.0f},
-                },
+                iv::make_tick_materialized_sample_input(
+                    1,
+                    plan.ports[1].sample_layout,
+                    {0},
+                    iv::IndexCoverage{range(4, 3)},
+                    {40.0f, 50.0f, 60.0f}),
             },
             std::vector<iv::TickMaterializedEventInput>{}));
 

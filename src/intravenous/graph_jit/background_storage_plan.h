@@ -21,6 +21,12 @@ std::expected<void, std::string> finalize_background_runtime_plan(
 std::expected<void, std::string> validate_background_runtime_plan(
     BackgroundEvaluationPlan const& plan);
 
+// A Random Access input that no BackgroundConnectionPlan targets has empty
+// coverage. Its runtime binding is the only input binding without storage.
+[[nodiscard]] bool is_disconnected_random_access_input(
+    BackgroundEvaluationPlan const& plan,
+    BackgroundPortIndex port);
+
 // Retain compact per-node Tick input-binding and persisted-output capture ranges
 // over the same immutable storage plan. Runtime realization never rediscovers
 // topology.

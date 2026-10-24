@@ -17,6 +17,13 @@
 namespace iv::graph_jit {
 namespace {
 
+void initialize_zero_raw_region(
+    std::span<std::byte> storage,
+    std::span<std::byte const>)
+{
+    std::ranges::fill(storage, std::byte{});
+}
+
 void hash_combine(std::size_t& seed, std::size_t value) noexcept
 {
     seed ^= value + 0x9e3779b97f4a7c15ULL + (seed << 6) + (seed >> 2);
@@ -81,8 +88,23 @@ bool sample_storage_source_is_recoverable(
             && !source.node_storage_offset
             && !source.callback_arena_offset;
     }
+    if (source.storage
+        == SampleRealtimePortStateStorage::invocation_playback) {
+        return source.invocation_slot.has_value()
+            && !source.node_storage_offset
+            && !source.callback_arena_offset;
+    }
     return source.node_storage_offset.has_value()
         && !source.callback_arena_offset;
+}
+
+bool event_storage_is_invocation_playback(
+    EventRealtimePortStateStorageView const& storage) noexcept
+{
+    return storage.storage == EventRealtimePortStateStorage::invocation_playback
+        && storage.invocation_slot.has_value()
+        && !storage.node_storage_offset
+        && !storage.callback_arena_offset;
 }
 
 bool event_storage_is_persistent_sequence(
@@ -131,19 +153,18 @@ select_sample_inherited_state_realization(
 {
     // Background playback re-reads an invocation-supplied window from the
     // published data on every invocation, so an input supplied that way on
-    // both sides of the splice inherits nothing. A delivery-kind change must
-    // still preserve the history the consumer observed; that composition of
-    // inherited and playback data is not lowered yet.
-    if ((current.retained_access
-            == SampleRealtimePortStateAccess::invocation_supplied)
-        != (previous.retained_access
-            == SampleRealtimePortStateAccess::invocation_supplied)) {
-        return std::unexpected(
-            "GraphJit transition of a Sequential sample input between realtime and background delivery is not implemented");
-    }
+    // both sides of the splice inherits nothing. A delivery-kind change
+    // preserves the history the consumer observed: a background-fed
+    // predecessor's history is its final playback window. A background-fed
+    // successor must present inherited realtime history through a private
+    // transition ring until that history expires.
     if (current.retained_access
         == SampleRealtimePortStateAccess::invocation_supplied) {
-        return InheritedRealtimePortStateRealization::already_represented;
+        if (previous.retained_access
+            == SampleRealtimePortStateAccess::invocation_supplied) {
+            return InheritedRealtimePortStateRealization::already_represented;
+        }
+        return InheritedRealtimePortStateRealization::transition_only_storage;
     }
     bool predecessor_recoverable = false;
     switch (previous.retained_access) {
@@ -173,8 +194,14 @@ select_sample_inherited_state_realization(
                             source.storage);
                 });
         break;
-    case SampleRealtimePortStateAccess::callback_only:
     case SampleRealtimePortStateAccess::invocation_supplied:
+        predecessor_recoverable = previous.retained_sources.size() == 1
+            && previous.retained_sources.front().storage
+                == SampleRealtimePortStateStorage::invocation_playback
+            && sample_storage_source_is_recoverable(
+                previous.retained_sources.front());
+        break;
+    case SampleRealtimePortStateAccess::callback_only:
         break;
     }
     if (!predecessor_recoverable) {
@@ -231,6 +258,8 @@ select_sample_inherited_state_realization(
         auto const& target = current.retained_sources.front();
         auto const sources_are_direct_storage = previous.retained_access
                 == SampleRealtimePortStateAccess::immutable_constant
+            || previous.retained_access
+                == SampleRealtimePortStateAccess::invocation_supplied
             || (previous.retained_access
                     == SampleRealtimePortStateAccess::composed
                 ? std::ranges::all_of(
@@ -268,16 +297,13 @@ select_event_inherited_state_realization(
     EventRealtimePortStateRealization const& current)
 {
     // See select_sample_inherited_state_realization().
-    if ((current.retained_access
-            == EventRealtimePortStateAccess::invocation_supplied)
-        != (previous.retained_access
-            == EventRealtimePortStateAccess::invocation_supplied)) {
-        return std::unexpected(
-            "GraphJit transition of a Sequential event input between realtime and background delivery is not implemented");
-    }
     if (current.retained_access
         == EventRealtimePortStateAccess::invocation_supplied) {
-        return InheritedRealtimePortStateRealization::already_represented;
+        if (previous.retained_access
+            == EventRealtimePortStateAccess::invocation_supplied) {
+            return InheritedRealtimePortStateRealization::already_represented;
+        }
+        return InheritedRealtimePortStateRealization::transition_only_storage;
     }
     bool predecessor_recoverable = false;
     switch (previous.retained_access) {
@@ -302,9 +328,13 @@ select_event_inherited_state_realization(
             && previous.retained_storage->has_source_indices
             && previous.retained_source_index.has_value();
         break;
+    case EventRealtimePortStateAccess::invocation_supplied:
+        predecessor_recoverable = previous.retained_storage.has_value()
+            && event_storage_is_invocation_playback(
+                *previous.retained_storage);
+        break;
     case EventRealtimePortStateAccess::shared_merged_source:
     case EventRealtimePortStateAccess::callback_only:
-    case EventRealtimePortStateAccess::invocation_supplied:
         break;
     }
     if (!predecessor_recoverable) {
@@ -793,8 +823,9 @@ std::expected<void, std::string> build_steady_storage_transfers(
         auto const& target = current_realizations.event_states[
             transition.current_realization_index];
         if (!source.retained_storage
-            || !source.retained_storage->node_storage_offset
-            || source.retained_storage->callback_arena_offset) {
+            || (!event_storage_is_invocation_playback(*source.retained_storage)
+                && (!source.retained_storage->node_storage_offset
+                    || source.retained_storage->callback_arena_offset))) {
             return std::unexpected(
                 "event state transfer lost its recoverable predecessor storage");
         }
@@ -984,6 +1015,18 @@ std::expected<void, std::string> validate_sample_storage_view(
         }
         return {};
     }
+    if (view.storage == SampleRealtimePortStateStorage::invocation_playback) {
+        if (!view.invocation_slot || view.node_storage_offset
+            || view.callback_arena_offset || view.constant_value
+            || view.geometry.value_size_bytes == 0
+            || view.timeline_offset_frames != 0
+            || view.representation_channel
+                >= channel_count(view.channel_layout)) {
+            return std::unexpected(
+                std::string{role} + " is not a valid invocation playback window");
+        }
+        return {};
+    }
     if ((view.storage != SampleRealtimePortStateStorage::ring
          && view.storage != SampleRealtimePortStateStorage::compact_carry)
         || !view.node_storage_offset
@@ -1090,6 +1133,13 @@ std::expected<void, std::string> validate_event_storage_view(
     bool allow_compact_carry,
     std::string_view role)
 {
+    if (view.storage == EventRealtimePortStateStorage::invocation_playback) {
+        if (!event_storage_is_invocation_playback(view)) {
+            return std::unexpected(
+                std::string{role} + " is not a valid invocation playback window");
+        }
+        return {};
+    }
     auto const ring = view.storage == EventRealtimePortStateStorage::ring;
     auto const compact =
         view.storage == EventRealtimePortStateStorage::compact_carry;
@@ -1141,10 +1191,73 @@ std::expected<void, std::string> validate_event_storage_view(
     return {};
 }
 
+// An invocation_playback source reads the predecessor slot window
+// [end - history, end), which every invocation repopulates.
+std::expected<void, std::string> validate_sample_playback_source(
+    SampleRealtimePortStateTransfer const& transfer,
+    RealtimePortStatePlaybackSlots const& playback)
+{
+    auto const& source = transfer.source_storage.front();
+    if (*source.invocation_slot >= playback.sequential_samples.size()) {
+        return std::unexpected(
+            "sample transition playback source names a missing slot");
+    }
+    auto const& binding =
+        playback.sequential_samples[*source.invocation_slot];
+    if (binding.storage.channel_layout != source.channel_layout
+        || binding.storage.geometry != source.geometry
+        || source.representation_channel
+            >= binding.storage.channels.size()) {
+        return std::unexpected(
+            "sample transition playback source disagrees with its slot geometry");
+    }
+    auto const& channel =
+        binding.storage.channels[source.representation_channel];
+    if (!channel.storage || channel.value_capacity == 0
+        || !std::has_single_bit(channel.value_capacity)
+        || channel.value_stride_bytes < source.geometry.value_size_bytes) {
+        return std::unexpected(
+            "sample transition playback slot is not a playback ring");
+    }
+    if (transfer.inherited_end > 0
+        || binding.history > channel.value_capacity
+        || !std::in_range<std::int64_t>(binding.history)
+        || transfer.inherited_begin
+            < -static_cast<std::int64_t>(binding.history)) {
+        return std::unexpected(
+            "sample transition playback window does not hold the inherited history");
+    }
+    return {};
+}
+
+std::expected<void, std::string> validate_event_playback_source(
+    EventRealtimePortStateTransfer const& transfer,
+    RealtimePortStatePlaybackSlots const& playback)
+{
+    auto const& source = transfer.source_storage;
+    if (*source.invocation_slot >= playback.sequential_events.size()) {
+        return std::unexpected(
+            "event transition playback source names a missing slot");
+    }
+    auto const& binding = playback.sequential_events[*source.invocation_slot];
+    if (!binding.storage.storage || binding.storage.persistent_ring
+        || binding.storage.type != source.type
+        || binding.storage.event_capacity == 0) {
+        return std::unexpected(
+            "event transition playback source disagrees with its slot");
+    }
+    if (transfer.inherited_end > 0) {
+        return std::unexpected(
+            "event transition playback window holds no authored future");
+    }
+    return {};
+}
+
 std::expected<void, std::string> validate_prepared_transitions(
     RealtimePortStateTransitionPlan const& plan,
     std::size_t previous_storage_size,
-    std::size_t current_storage_size)
+    std::size_t current_storage_size,
+    RealtimePortStatePlaybackSlots const& playback)
 {
     std::vector<std::size_t> sample_transfer_counts(
         plan.sample_states.size());
@@ -1162,10 +1275,13 @@ std::expected<void, std::string> validate_prepared_transitions(
                 "sample transfer disagrees with its target storage extent");
         }
         ++sample_transfer_counts[transfer.transition_index];
+        auto const playback_source = transfer.source_access
+            == SampleRealtimePortStateAccess::invocation_supplied;
         auto const direct_source = transfer.source_access
                 == SampleRealtimePortStateAccess::direct
             || transfer.source_access
-                == SampleRealtimePortStateAccess::immutable_constant;
+                == SampleRealtimePortStateAccess::immutable_constant
+            || playback_source;
         auto const materialized_source = transfer.source_access
             == SampleRealtimePortStateAccess::materialized;
         auto const composed_source = transfer.source_access
@@ -1189,6 +1305,24 @@ std::expected<void, std::string> validate_prepared_transitions(
                 "sample transition source");
             if (!validated) return validated;
         }
+        if (std::ranges::any_of(
+                transfer.source_storage,
+                [&](auto const& source) {
+                    return (source.storage
+                            == SampleRealtimePortStateStorage::
+                                invocation_playback)
+                        != playback_source;
+                })
+            || transfer.target_storage.storage
+                == SampleRealtimePortStateStorage::invocation_playback) {
+            return std::unexpected(
+                "sample transfer disagrees with its invocation playback source");
+        }
+        if (playback_source) {
+            auto validated =
+                validate_sample_playback_source(transfer, playback);
+            if (!validated) return validated;
+        }
         auto validated = validate_sample_storage_view(
             transfer.target_storage,
             current_storage_size,
@@ -1200,8 +1334,9 @@ std::expected<void, std::string> validate_prepared_transitions(
             [&](auto const& source) {
                 return source.geometry == transfer.target_storage.geometry;
             });
-        auto const direct_shape_migration = transfer.source_access
-                == SampleRealtimePortStateAccess::direct
+        auto const direct_shape_migration = (transfer.source_access
+                    == SampleRealtimePortStateAccess::direct
+                || playback_source)
             && transfer.source_storage.size() == 1
             && transfer.source_storage.front().geometry.value_type
                 == transfer.target_storage.geometry.value_type
@@ -1395,11 +1530,19 @@ std::expected<void, std::string> validate_prepared_transitions(
         if (!transfer.supplemental_target) {
             ++event_transfer_counts[transfer.transition_index];
         }
+        auto const playback_source = transfer.source_access
+            == EventRealtimePortStateAccess::invocation_supplied;
         if ((transfer.source_access != EventRealtimePortStateAccess::direct
              && transfer.source_access
                 != EventRealtimePortStateAccess::materialized
              && transfer.source_access
-                != EventRealtimePortStateAccess::indexed_merged_source)
+                != EventRealtimePortStateAccess::indexed_merged_source
+             && !playback_source)
+            || (transfer.source_storage.storage
+                    == EventRealtimePortStateStorage::invocation_playback)
+                != playback_source
+            || transfer.target_storage.storage
+                == EventRealtimePortStateStorage::invocation_playback
             || transfer.target_begin > transfer.inherited_begin
             || transfer.inherited_begin > transfer.inherited_end
             || transfer.inherited_end > transfer.target_end) {
@@ -1412,6 +1555,10 @@ std::expected<void, std::string> validate_prepared_transitions(
             true,
             "event transition source");
         if (!validated) return validated;
+        if (playback_source) {
+            validated = validate_event_playback_source(transfer, playback);
+            if (!validated) return validated;
+        }
         validated = validate_event_storage_view(
             transfer.target_storage,
             current_storage_size,
@@ -1498,10 +1645,13 @@ std::expected<void, std::string> validate_prepared_transitions(
 PreparedRealtimePortStateTransition::PreparedRealtimePortStateTransition(
     RealtimePortStateTransitionPlan plan,
     std::size_t previous_storage_size,
-    std::size_t current_storage_size)
+    std::size_t current_storage_size,
+    RealtimePortStatePlaybackSlots const& playback)
     : plan_(std::move(plan))
     , previous_storage_size_(previous_storage_size)
     , current_storage_size_(current_storage_size)
+    , playback_sample_slot_count_(playback.sequential_samples.size())
+    , playback_event_slot_count_(playback.sequential_events.size())
 {}
 
 std::expected<RealtimePortStateTransitionPlan, std::string>
@@ -1607,6 +1757,8 @@ realize_realtime_port_state_transition_storage(
     std::vector<std::pair<std::size_t, NodeLayout::RegionHandle>>
         suffix_targets;
     std::vector<std::pair<std::size_t, NodeLayout::RegionHandle>>
+        suffix_cursor_targets;
+    std::vector<std::pair<std::size_t, NodeLayout::RegionHandle>>
         event_suffix_targets;
     struct SuffixTargetGroup {
         NodeBundlePortId configured_port{};
@@ -1622,6 +1774,11 @@ realize_realtime_port_state_transition_storage(
         std::vector<Occupant> occupants{};
     };
     std::vector<SuffixTargetGroup> suffix_groups;
+    struct SuffixPaceCursor {
+        std::int32_t absolute_pace_exponent = 0;
+        NodeLayout::RegionHandle region{};
+    };
+    std::vector<SuffixPaceCursor> suffix_pace_cursors;
     struct EventSuffixTargetGroup {
         NodeBundlePortId configured_port{};
         PortDirection direction = PortDirection::input;
@@ -1673,9 +1830,13 @@ realize_realtime_port_state_transition_storage(
             && source.retained_access
                  != SampleRealtimePortStateAccess::materialized
              && source.retained_access
-                 != SampleRealtimePortStateAccess::composed)
-            || (source.retained_access
-                    == SampleRealtimePortStateAccess::direct
+                 != SampleRealtimePortStateAccess::composed
+             && source.retained_access
+                 != SampleRealtimePortStateAccess::invocation_supplied)
+            || ((source.retained_access
+                        == SampleRealtimePortStateAccess::direct
+                    || source.retained_access
+                        == SampleRealtimePortStateAccess::invocation_supplied)
                 && source.retained_sources.size() != 1)
             || (source.retained_access
                     == SampleRealtimePortStateAccess::materialized
@@ -1692,7 +1853,9 @@ realize_realtime_port_state_transition_storage(
                 && current.retained_access
                     != SampleRealtimePortStateAccess::materialized
                 && current.retained_access
-                    != SampleRealtimePortStateAccess::composed)) {
+                    != SampleRealtimePortStateAccess::composed
+                && current.retained_access
+                    != SampleRealtimePortStateAccess::invocation_supplied)) {
             return std::unexpected(
                 "transition suffix requires a recoverable predecessor and supported successor sample view");
         }
@@ -1725,6 +1888,52 @@ realize_realtime_port_state_transition_storage(
             target = steady_target;
         }
         auto const retained_timeline_offset = target.timeline_offset_frames;
+        std::optional<NodeLayout::RegionHandle> suffix_cursor_region;
+        if (current.retained_access
+            == SampleRealtimePortStateAccess::invocation_supplied) {
+            auto const channels = channel_count(target.channel_layout);
+            if (target.working_frame_capacity == 0
+                || !std::has_single_bit(target.working_frame_capacity)
+                || channels == 0 || target.geometry.value_size_bytes == 0
+                || target.storage_frame_count
+                    != target.working_frame_capacity
+                || channels > std::numeric_limits<std::size_t>::max()
+                        / target.storage_frame_count
+                || channels * target.storage_frame_count
+                    > std::numeric_limits<std::size_t>::max()
+                        / target.geometry.value_size_bytes
+                || target.storage_size_bytes
+                    != channels * target.storage_frame_count
+                        * target.geometry.value_size_bytes) {
+                return std::unexpected(
+                    "transition suffix cannot realize an invocation-supplied sample input");
+            }
+            target.storage = SampleRealtimePortStateStorage::ring;
+            target.node_storage_offset.reset();
+            target.callback_arena_offset.reset();
+            target.invocation_slot.reset();
+            if (!target.sequential_cursor_node_storage_offset) {
+                auto cursor = std::ranges::find(
+                    suffix_pace_cursors,
+                    target.absolute_pace_exponent,
+                    &SuffixPaceCursor::absolute_pace_exponent);
+                if (cursor == suffix_pace_cursors.end()) {
+                    std::vector<std::byte> zero(sizeof(std::uint64_t));
+                    auto const region = layout_builder.declare_raw_region(
+                        sizeof(std::uint64_t),
+                        alignof(std::uint64_t),
+                        &initialize_zero_raw_region,
+                        std::move(zero));
+                    suffix_pace_cursors.push_back({
+                        .absolute_pace_exponent =
+                            target.absolute_pace_exponent,
+                        .region = region,
+                    });
+                    cursor = std::prev(suffix_pace_cursors.end());
+                }
+                suffix_cursor_region = cursor->region;
+            }
+        }
         if (target.storage
                 == SampleRealtimePortStateStorage::compact_carry
             || target.storage
@@ -1865,6 +2074,11 @@ realize_realtime_port_state_transition_storage(
         });
         suffix_targets.emplace_back(
             plan.sample_transfers.size() - 1, group->region);
+        if (suffix_cursor_region) {
+            suffix_cursor_targets.emplace_back(
+                plan.sample_transfers.size() - 1,
+                *suffix_cursor_region);
+        }
     }
 
     for (std::size_t index = 0; index < plan.event_states.size(); ++index) {
@@ -1887,15 +2101,21 @@ realize_realtime_port_state_transition_storage(
             transition.current_realization_index];
         auto const& requirement = current_requirements.states[
             transition.current_requirement_index];
+        auto const playback_source = source.retained_access
+                == EventRealtimePortStateAccess::invocation_supplied
+            && source.retained_storage
+            && event_storage_is_invocation_playback(*source.retained_storage);
         if (!source.retained_storage
-            || !event_storage_is_persistent_sequence(
-                *source.retained_storage)
-            || (source.retained_access
-                    != EventRealtimePortStateAccess::direct
-                && source.retained_access
-                    != EventRealtimePortStateAccess::materialized
-                && source.retained_access
-                    != EventRealtimePortStateAccess::indexed_merged_source)
+            || (!playback_source
+                && (!event_storage_is_persistent_sequence(
+                        *source.retained_storage)
+                    || (source.retained_access
+                            != EventRealtimePortStateAccess::direct
+                        && source.retained_access
+                            != EventRealtimePortStateAccess::materialized
+                        && source.retained_access
+                            != EventRealtimePortStateAccess::
+                                indexed_merged_source)))
             || current.authored_storage.event_capacity == 0) {
             return std::unexpected(
                 "transition suffix requires recoverable predecessor event storage");
@@ -2039,6 +2259,17 @@ realize_realtime_port_state_transition_storage(
             .node_storage_offset =
                 node_layout.regions[region.index].storage_offset;
     }
+    for (auto const& [transfer_index, region] : suffix_cursor_targets) {
+        if (transfer_index >= plan.sample_transfers.size()
+            || region.index >= node_layout.regions.size()
+            || !node_layout.regions[region.index].transition_only) {
+            return std::unexpected(
+                "transition suffix sample cursor lost its layout region");
+        }
+        plan.sample_transfers[transfer_index].target_storage
+            .sequential_cursor_node_storage_offset =
+                node_layout.regions[region.index].storage_offset;
+    }
     for (auto const& [transfer_index, region] : event_suffix_targets) {
         if (transfer_index >= plan.event_transfers.size()
             || region.index >= node_layout.regions.size()
@@ -2089,10 +2320,11 @@ std::expected<PreparedRealtimePortStateTransition, std::string>
 prepare_realtime_port_state_transfers(
     RealtimePortStateTransitionPlan plan,
     std::span<std::byte const> previous_storage,
-    std::span<std::byte> current_storage)
+    std::span<std::byte> current_storage,
+    RealtimePortStatePlaybackSlots const& playback)
 {
     auto validated = validate_prepared_transitions(
-        plan, previous_storage.size(), current_storage.size());
+        plan, previous_storage.size(), current_storage.size(), playback);
     if (!validated) {
         return std::unexpected(std::move(validated.error()));
     }
@@ -2115,14 +2347,19 @@ prepare_realtime_port_state_transfers(
             *transfer.target_storage.node_storage_offset);
     }
     return PreparedRealtimePortStateTransition{
-        std::move(plan), previous_storage.size(), current_storage.size()};
+        std::move(plan),
+        previous_storage.size(),
+        current_storage.size(),
+        playback};
 }
 
 void execute_realtime_port_state_transfers(
     PreparedRealtimePortStateTransition const& transition,
     std::span<std::byte const> previous_storage,
     std::span<std::byte> current_storage,
-    GlobalIndex sample_index) noexcept
+    GlobalIndex sample_index,
+    RealtimePortStatePlaybackSlots const& playback,
+    std::optional<GlobalIndex> playback_end) noexcept
 {
     IV_ASSERT(
         previous_storage.size() == transition.previous_storage_size_,
@@ -2130,6 +2367,12 @@ void execute_realtime_port_state_transfers(
     IV_ASSERT(
         current_storage.size() == transition.current_storage_size_,
         "prepared transition successor storage size changed");
+    IV_ASSERT(
+        playback.sequential_samples.size()
+                == transition.playback_sample_slot_count_
+            && playback.sequential_events.size()
+                == transition.playback_event_slot_count_,
+        "prepared transition predecessor playback slots changed");
     auto const& plan = transition.plan_;
     auto storage_base = [](auto bytes, auto const& view)
         -> decltype(bytes.data()) {
@@ -2210,13 +2453,35 @@ void execute_realtime_port_state_transfers(
         return reinterpret_cast<decltype(bytes.data())>(base)
             + sample * view.geometry.value_size_bytes;
     };
+    // The external binding carries the current block's Sequential ordinal.
+    // It is the playback counterpart of a generation-owned pace cursor and is
+    // independent of the visible GlobalIndex used to select its data.
+    auto playback_sample_at = [&](
+                                  SampleRealtimePortStateStorageView const& view,
+                                  std::int64_t relative) {
+        auto const& binding =
+            playback.sequential_samples[*view.invocation_slot];
+        auto const& channel = binding.storage.channels[
+            view.representation_channel];
+        auto const ordinal = binding.sequential_begin_ordinal
+            + static_cast<std::uint64_t>(relative)
+            - binding.read_latency
+            - channel.value_delay;
+        auto const frame = static_cast<std::size_t>(
+            ordinal & (channel.value_capacity - 1));
+        return static_cast<std::byte const*>(channel.storage)
+            + frame * channel.value_stride_bytes;
+    };
 
     for (auto const& transfer : plan.sample_transfers) {
         auto const target_root_ordinal = sequential_cursor(
             std::span<std::byte>{current_storage}, transfer.target_storage);
+        auto const playback_source = transfer.source_access
+            == SampleRealtimePortStateAccess::invocation_supplied;
         auto const source_root_ordinal =
             transfer.source_access
                     == SampleRealtimePortStateAccess::immutable_constant
+                || playback_source
             ? std::uint64_t{0}
             : sequential_cursor(
                 std::span<std::byte const>{previous_storage},
@@ -2236,6 +2501,8 @@ void execute_realtime_port_state_transfers(
                 0,
                 transfer.target_storage.geometry.value_size_bytes);
         }
+        // A predecessor that never invoked observed no history.
+        if (playback_source && !playback_end) continue;
         for (auto relative = transfer.inherited_begin;
              relative < transfer.inherited_end; ++relative) {
             auto* target = sample_at(
@@ -2254,12 +2521,15 @@ void execute_realtime_port_state_transfers(
                     source.constant_value->data(),
                     source.geometry.value_size_bytes);
             } else if (transfer.source_access
-                       == SampleRealtimePortStateAccess::direct) {
-                auto const* address = sample_at(
-                    std::span<std::byte const>{previous_storage},
-                    source,
-                    source_root_ordinal,
-                    relative);
+                           == SampleRealtimePortStateAccess::direct
+                       || playback_source) {
+                auto const* address = playback_source
+                    ? playback_sample_at(source, relative)
+                    : sample_at(
+                        std::span<std::byte const>{previous_storage},
+                        source,
+                        source_root_ordinal,
+                        relative);
                 IV_ASSERT(
                     address != nullptr,
                     "prepared sample transition source is out of bounds");
@@ -2367,40 +2637,66 @@ void execute_realtime_port_state_transfers(
         auto const& transfer = plan.event_transfers[transfer_index];
         auto const& source = transfer.source_storage;
         auto const& target = transfer.target_storage;
-        auto const* source_base = storage_base(previous_storage, source);
-        auto* target_base = storage_base(current_storage, target);
-        IV_ASSERT(
-            source_base != nullptr && target_base != nullptr,
-            "prepared event transition ring is out of bounds");
         auto read_size = [](auto const* base, std::size_t offset) {
             std::size_t value = 0;
             std::memcpy(&value, base + offset, sizeof(value));
             return value;
         };
+        auto* target_base = storage_base(current_storage, target);
+        IV_ASSERT(
+            target_base != nullptr,
+            "prepared event transition target is out of bounds");
+        std::byte const* source_base = nullptr;
+        auto source_events_offset = source.events_relative_offset;
+        auto source_capacity = source.event_capacity;
         auto const source_is_ring =
             source.storage == EventRealtimePortStateStorage::ring;
-        auto const read = source_is_ring
-            ? read_size(source_base, source.read_index_relative_offset)
-            : std::size_t{0};
-        auto const write = source_is_ring
-            ? read_size(source_base, source.write_index_relative_offset)
-            : read_size(source_base, source.count_relative_offset);
+        std::size_t read = 0;
+        std::size_t write = 0;
+        auto seam_displacement = GlobalIndex::extent_type{0};
+        if (source.storage
+            == EventRealtimePortStateStorage::invocation_playback) {
+            // The playback sequence holds exactly the final predecessor
+            // invocation window, which ends at playback_end.
+            auto const& binding =
+                playback.sequential_events[*source.invocation_slot].storage;
+            source_base = binding.storage;
+            source_events_offset = binding.events_offset;
+            source_capacity = binding.event_capacity;
+            if (playback_end) {
+                write = read_size(source_base, binding.count_offset);
+                seam_displacement =
+                    playback_end->forward_distance_to(sample_index);
+            }
+        } else {
+            source_base = storage_base(previous_storage, source);
+            IV_ASSERT(
+                source_base != nullptr,
+                "prepared event transition source is out of bounds");
+            read = source_is_ring
+                ? read_size(source_base, source.read_index_relative_offset)
+                : std::size_t{0};
+            write = source_is_ring
+                ? read_size(source_base, source.write_index_relative_offset)
+                : read_size(source_base, source.count_relative_offset);
+            std::uint8_t timeline_initialized = 0;
+            std::memcpy(
+                &timeline_initialized,
+                source_base + source.timeline_initialized_relative_offset,
+                sizeof(timeline_initialized));
+            GlobalIndex expected_position{};
+            std::memcpy(
+                &expected_position,
+                source_base + source.expected_next_time_relative_offset,
+                sizeof(expected_position));
+            if (timeline_initialized != 0) {
+                seam_displacement =
+                    expected_position.forward_distance_to(sample_index);
+            }
+        }
         IV_ASSERT(
-            write >= read && write - read <= source.event_capacity,
+            write >= read && write - read <= source_capacity,
             "prepared event transition source has invalid cursors");
-        std::uint8_t timeline_initialized = 0;
-        std::memcpy(
-            &timeline_initialized,
-            source_base + source.timeline_initialized_relative_offset,
-            sizeof(timeline_initialized));
-        GlobalIndex expected_position{};
-        std::memcpy(
-            &expected_position,
-            source_base + source.expected_next_time_relative_offset,
-            sizeof(expected_position));
-        auto const seam_displacement = timeline_initialized != 0
-            ? expected_position.forward_distance_to(sample_index)
-            : GlobalIndex::extent_type{0};
         auto const target_is_ring =
             target.storage == EventRealtimePortStateStorage::ring;
         auto const continues_shared_target = std::ranges::any_of(
@@ -2506,9 +2802,9 @@ void execute_realtime_port_state_transfers(
             TimedEvent event{};
             std::memcpy(
                 &event,
-                source_base + source.events_relative_offset
+                source_base + source_events_offset
                     + (source_is_ring
-                            ? cursor % source.event_capacity
+                            ? cursor % source_capacity
                             : cursor)
                         * sizeof(TimedEvent),
                 sizeof(event));

@@ -3164,30 +3164,31 @@ TEST(GraphJitConnectionPlan, MixedTickAndTockEventFanInPlansPerSource)
         storage.event_materializations[materialization_index];
     EXPECT_EQ(
         materialization.storage,
-        graph_jit::PortStorageKind::current_tick);
-    ASSERT_EQ(materialization.inputs.size(), 2u);
-    std::vector<graph_jit::PortStorageKind> input_storage_kinds;
-    for (auto const port_index : materialization.inputs) {
-        input_storage_kinds.push_back(
-            storage.ports[port_index].storage);
-    }
-    EXPECT_TRUE(std::ranges::contains(
-        input_storage_kinds,
-        graph_jit::PortStorageKind::current_tick));
-    EXPECT_TRUE(std::ranges::contains(
-        input_storage_kinds,
-        graph_jit::PortStorageKind::tick_sequential));
+        graph_jit::PortStorageKind::tick_sequential);
+    ASSERT_EQ(materialization.inputs.size(), 1u);
+    ASSERT_EQ(materialization.semantic_source_indices.size(), 1u);
+    EXPECT_EQ(materialization.semantic_source_indices.front(), 1u);
+    EXPECT_EQ(
+        storage.ports[materialization.inputs.front()].storage,
+        graph_jit::PortStorageKind::tick_sequential);
     EXPECT_DOUBLE_EQ(
         storage.ports[materialization.output]
             .max_events_per_index,
-        0.75);
+        0.5);
 
     auto const& tick_runtime = plan->background.tick_runtime;
-    EXPECT_TRUE(tick_runtime.sequential_event_inputs.empty());
+    ASSERT_EQ(tick_runtime.sequential_event_inputs.size(), 1u);
+    auto const& binding = tick_runtime.sequential_event_inputs.front();
+    ASSERT_LT(binding.port, plan->background.ports.size());
+    EXPECT_EQ(
+        plan->background.ports[binding.port].configured_port,
+        (NodeBundlePortId{sink_handle, PortKind::event, 0}));
+    ASSERT_EQ(binding.storage.size(), 1u);
+    EXPECT_EQ(binding.storage.front(), materialization.output);
     auto const sink_node =
         *plan->background.bundle_to_background_node[sink_handle];
     EXPECT_EQ(
-        tick_runtime.nodes[sink_node].sequential_event_count, 0u);
+        tick_runtime.nodes[sink_node].sequential_event_count, 1u);
 }
 
 TEST(GraphJitConnectionPlan, PersistedTickToRandomAccessUsesStoredBoundary)

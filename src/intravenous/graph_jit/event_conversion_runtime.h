@@ -17,6 +17,8 @@ inline constexpr char ordered_event_sequence_merge_symbol[] =
     "iv_graph_jit_merge_ordered_event_sequence";
 inline constexpr char mixed_event_sequence_merge_symbol[] =
     "iv_graph_jit_merge_mixed_event_sequences";
+inline constexpr char staged_event_window_merge_symbol[] =
+    "iv_graph_jit_merge_staged_event_window";
 
 #if defined(_WIN32)
 #define IV_GRAPH_JIT_RUNTIME_EXPORT __declspec(dllexport)
@@ -98,6 +100,23 @@ iv_graph_jit_merge_mixed_event_sequences(
     std::size_t supplied_read_index,
     std::size_t supplied_write_index,
     GlobalIndex origin) noexcept;
+
+// Insert only the current callback window from an invocation-supplied
+// sequence/ring into a transition-only persistent ring. SIZE_MAX reports
+// invalid storage or insufficient target capacity.
+extern "C" IV_GRAPH_JIT_RUNTIME_EXPORT std::size_t
+iv_graph_jit_merge_staged_event_window(
+    void* target_events,
+    std::size_t target_capacity,
+    std::size_t target_read_index,
+    std::size_t target_write_index,
+    void const* source_events,
+    std::size_t source_capacity,
+    std::size_t source_read_index,
+    std::size_t source_write_index,
+    GlobalIndex block_index,
+    std::size_t block_size,
+    std::size_t ordering_history_samples) noexcept;
 // Stable k-way merge into a target that already contains semantic source 0.
 // source_events/source_remaining describe semantic sources 1..N in order. All
 // streams must be nondecreasing in forward order from origin. The merge walks

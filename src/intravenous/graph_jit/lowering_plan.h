@@ -188,6 +188,19 @@ struct PrimitiveSampleInputBindingPlan {
     // slot contains the independently materialized background contribution.
     // Generated lowering combines both into this input's scratch window.
     bool combines_invocation_supplied = false;
+    // A transition root copies the invocation-supplied current block into its
+    // private retained ring before invoking the consumer. The ring preserves
+    // predecessor history until it expires; the steady root then resumes the
+    // ordinary invocation-supplied binding.
+    bool stages_invocation_supplied = false;
+    // Transition-only Sequential cursor owned by that private retained ring.
+    // It is distinct from the generation cursor for the same pace because the
+    // suffix begins at cutover-local ordinal zero.
+    std::optional<std::size_t> staging_cursor_storage_offset{};
+    // A Random Access input reads only its TickInvocationCall Random Access
+    // view. Its declared entry in the reflected Sequential binding array has
+    // no storage and is never read by node code.
+    bool random_access = false;
 };
 
 struct PrimitiveSampleOutputBindingPlan {
@@ -291,6 +304,10 @@ struct PrimitiveEventInputBindingPlan {
     // Background evaluation supplies this Sequential input through its
     // TickSequentialBindingPlan slot on every invocation; storage is empty.
     bool invocation_supplied = false;
+    // Capacity of the corresponding TickInvocationCall event sequence. It is
+    // retained in the lowering plan so transition specialization can allocate
+    // an equivalent private ring without rediscovering runtime storage.
+    std::size_t invocation_event_capacity = 0;
     // Mixed delivery keeps the realtime contribution in storage and receives
     // the background contribution through TickInvocationCall. Generated code
     // merges both into combined_storage before constructing EventInputPort.
@@ -299,6 +316,14 @@ struct PrimitiveEventInputBindingPlan {
     // A single realtime source needs no compiler sidecar. This retains its
     // EventConnectionPlan::sources position for the final ordered merge.
     std::optional<std::size_t> realtime_semantic_source_index{};
+    // See PrimitiveSampleInputBindingPlan::stages_invocation_supplied.
+    bool stages_invocation_supplied = false;
+    // History retained by the transition-only event ring. Generated staging
+    // uses its beginning as the ordering origin when it inserts the current
+    // invocation-supplied window.
+    std::size_t staging_history_samples = 0;
+    // See PrimitiveSampleInputBindingPlan::random_access.
+    bool random_access = false;
 };
 
 struct PrimitiveEventOutputBindingPlan {

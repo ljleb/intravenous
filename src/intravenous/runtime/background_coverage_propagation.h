@@ -71,12 +71,32 @@ struct CoveragePropagationResult {
 // and before reverse propagation. Persisted-data planning uses this narrow
 // seam to complete bounded output demands without teaching propagation about
 // persisted-data storage. The callback may only add to `additional`.
+// Changed coverage of every output after the forward traversal.
+struct BackgroundForwardOutputChanges {
+    void const* data = nullptr;
+    IndexCoverage const& (*changed_value)(
+        void const*, graph_jit::BackgroundPortIndex output) = nullptr;
+
+    [[nodiscard]] IndexCoverage const& changed(
+        graph_jit::BackgroundPortIndex output) const
+    {
+        return changed_value(data, output);
+    }
+};
+
 struct BackgroundCoverageDemandExpansion {
     void* data = nullptr;
     void (*expand_output)(
         void*, graph_jit::BackgroundPortIndex, IndexCoverage const& available,
         IndexCoverage const& changed, IndexCoverage const& required,
         IndexCoverage& additional) = nullptr;
+    // Optional policy for explicit input demand roots, invoked after the
+    // forward traversal and before the root reaches reverse propagation. The
+    // callback may only remove coverage from `required`.
+    void (*restrict_input)(
+        void*, graph_jit::BackgroundPortIndex,
+        BackgroundForwardOutputChanges const& forward,
+        IndexCoverage& required) = nullptr;
 };
 
 class BackgroundPropagationWorkspace;

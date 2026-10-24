@@ -459,7 +459,6 @@ The governing performance invariant is:
    separate lane port bindings, dependency-frontier grouping, aliased-storage scalar
    fallback, Tick, skip, forward and reverse propagation, Tock evaluation, and a
    batch-only Tick source executed through generated replay.
-   Compilation and test execution remain with the collaborator.
 
    This leaves Front 6 source-complete pending the collaborator's compilation and full
    suite run. Verification failure reopens the front at the failing boundary; a clean
@@ -487,6 +486,13 @@ The governing performance invariant is:
    known correctness friction. Any future grouping of callback ordinal stores by
    node/pace must be justified by measurement and is ordinary runtime cleanup rather
    than incomplete transition behavior.
+
+   **Front 2 and Front 4 completion verification (2026-10-23):** the collaborator's
+   complete 592-test suite passed after the Front 4 background-delivery closure. This
+   verifies Front 2's previously blocked replay and reverse-propagation fixtures,
+   closes Front 2 and Front 4, and satisfies Front 7's remaining normalized
+   block-replay dependency. The separate Front 6 follow-up for graph revisions that
+   migrate a mixed `combines_invocation_supplied` input remains open.
 
    **Sequential cursor scope:** GraphJit continuous Tick storage already uses the
    proposed seek-independent scheme: one monotonic `uint64_t` cursor per distinct

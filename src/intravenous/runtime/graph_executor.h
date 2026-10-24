@@ -240,7 +240,9 @@ class GraphExecutor {
         void prepare_background_migration_from(
             ExecutionGeneration& previous,
             PersistedDataStore& data);
-        void commit_realtime_migration(GlobalIndex sample_index) noexcept;
+        void commit_realtime_migration(
+            GlobalIndex sample_index,
+            TickInvocationWorkspace const& previous_tick_invocation) noexcept;
         void commit_background_migration();
         void update_realtime_phase(
             std::size_t event_samples_advanced = 0) noexcept;

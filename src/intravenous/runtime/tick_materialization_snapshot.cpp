@@ -60,50 +60,77 @@ bool TickMaterializedSampleInput::has_channel(
     return std::ranges::contains(channels, channel);
 }
 
+std::size_t TickMaterializedSampleInput::channel_slot(
+    std::size_t channel) const noexcept
+{
+    auto const found = std::ranges::lower_bound(channels, channel);
+    return found != channels.end() && *found == channel
+        ? static_cast<std::size_t>(std::distance(channels.begin(), found))
+        : channels.size();
+}
+
 Sample TickMaterializedSampleInput::at(
     GlobalIndex index, std::size_t channel) const noexcept
 {
-    auto const found = std::ranges::lower_bound(channels, channel);
-    if (found == channels.end() || *found != channel) return {};
-    std::size_t frame = 0;
-    bool covered = false;
-    for (auto const region : coverage) {
-        if (region.contains(index)) {
-            frame += static_cast<std::size_t>(
-                region.begin.forward_distance_to(index));
-            covered = true;
-            break;
-        }
-        if (SignedGlobalIndexOrder{}(index, region.begin)) break;
-        frame += static_cast<std::size_t>(region.extent);
-    }
-    if (!covered) return {};
-    std::size_t frames = 0;
-    for (auto const region : coverage) {
-        frames += static_cast<std::size_t>(region.extent);
-    }
-    auto const selected = static_cast<std::size_t>(
-        std::distance(channels.begin(), found));
-    auto const offset = selected * frames + frame;
-    return offset < values.size() ? values[offset] : Sample{};
+    auto const slot = channel_slot(channel);
+    if (slot == channels.size() || regions.empty()) return {};
+    auto found = std::ranges::upper_bound(
+        regions, index, SignedGlobalIndexOrder{},
+        [](TickMaterializedSampleRegion const& region) {
+            return region.range.begin;
+        });
+    auto const* region = found == regions.begin()
+        ? &regions.back()
+        : &*std::prev(found);
+    if (!region->range.contains(index)) return {};
+    return region->channel_frames(slot)[static_cast<std::size_t>(
+        region->range.begin.forward_distance_to(index))];
 }
+
+namespace {
+
+template<typename Visit>
+void for_each_chunk_event(
+    std::vector<TickMaterializedEventChunk> const& chunks,
+    GlobalIndexRange range,
+    Visit&& visit)
+{
+    for (auto const& chunk : chunks) {
+        for_each_range_intersection(chunk.range, range,
+            [&](GlobalIndexRange part) {
+            part.for_each_signed_order_segment([&](GlobalIndexRange segment) {
+                auto const first = chunk.events->begin()
+                    + static_cast<std::ptrdiff_t>(chunk.begin);
+                auto const last = chunk.events->begin()
+                    + static_cast<std::ptrdiff_t>(chunk.end);
+                auto event = std::lower_bound(
+                    first, last, segment.begin,
+                    [](TimedEvent const& value, GlobalIndex begin) {
+                        return SignedGlobalIndexOrder{}(value.time, begin);
+                    });
+                for (; event != last && segment.contains(event->time);
+                     ++event) {
+                    visit(chunk, *event, static_cast<std::size_t>(
+                        std::distance(chunk.events->begin(), event)));
+                }
+            });
+        });
+    }
+}
+
+} // namespace
 
 void TickMaterializedEventInput::for_each(
     GlobalIndexRange range,
     void* visitor_data,
     RandomAccessEventInputPort::VisitEvent visitor) const
 {
-    if (range.empty() || visitor == nullptr) return;
-    range.for_each_signed_order_segment([&](GlobalIndexRange segment) {
-        auto event = std::ranges::lower_bound(events, segment.begin,
-            SignedGlobalIndexOrder{},
-            [](TimedEvent const& value) {
-                return value.time;
-            });
-        for (; event != events.end() && segment.contains(event->time); ++event) {
-            visitor(visitor_data, *event);
-        }
-    });
+    if (visitor == nullptr) return;
+    for_each_chunk_event(chunks, range,
+        [&](TickMaterializedEventChunk const&, TimedEvent const& event,
+            std::size_t) {
+            visitor(visitor_data, event);
+        });
 }
 
 void TickMaterializedEventInput::for_each_indexed(
@@ -111,20 +138,94 @@ void TickMaterializedEventInput::for_each_indexed(
     void* visitor_data,
     VisitIndexedEvent visitor) const
 {
-    if (range.empty() || visitor == nullptr) return;
-    range.for_each_signed_order_segment([&](GlobalIndexRange segment) {
-        auto event = std::ranges::lower_bound(events, segment.begin,
-            SignedGlobalIndexOrder{},
-            [](TimedEvent const& value) { return value.time; });
-        for (; event != events.end() && segment.contains(event->time); ++event) {
-            auto const offset = static_cast<std::size_t>(
-                std::distance(events.cbegin(), event));
+    if (visitor == nullptr) return;
+    for_each_chunk_event(chunks, range,
+        [&](TickMaterializedEventChunk const& chunk, TimedEvent const& event,
+            std::size_t offset) {
             visitor(
                 visitor_data,
-                *event,
-                semantic_source_indices[offset]);
+                event,
+                (*chunk.semantic_source_indices)[offset]);
+        });
+}
+
+TickMaterializedSampleInput make_tick_materialized_sample_input(
+    graph_jit::BackgroundPortIndex port,
+    ChannelLayout layout,
+    std::vector<std::size_t> channels,
+    IndexCoverage coverage,
+    std::vector<Sample> values)
+{
+    auto const frames = coverage_sample_count(coverage);
+    if (values.size() != checked_product(frames, channels.size())) {
+        throw std::invalid_argument(
+            "Tick sample materialization values disagree with their coverage");
+    }
+    auto storage = std::make_shared<std::vector<Sample> const>(
+        std::move(values));
+    TickMaterializedSampleInput result{
+        .port = port,
+        .layout = layout,
+        .channels = std::move(channels),
+    };
+    std::size_t first_frame = 0;
+    for (auto const region : coverage) {
+        result.regions.push_back(TickMaterializedSampleRegion{
+            .range = region,
+            .values = storage,
+            .storage_frames = frames,
+            .first_frame = first_frame,
+        });
+        first_frame += static_cast<std::size_t>(region.extent);
+    }
+    result.coverage = std::move(coverage);
+    return result;
+}
+
+TickMaterializedEventInput make_tick_materialized_event_input(
+    graph_jit::BackgroundPortIndex port,
+    EventTypeId type,
+    IndexCoverage coverage,
+    std::vector<TimedEvent> events,
+    std::vector<std::size_t> semantic_source_indices)
+{
+    if (semantic_source_indices.empty()) {
+        semantic_source_indices.resize(
+            events.size(), std::numeric_limits<std::size_t>::max());
+    }
+    if (semantic_source_indices.size() != events.size()) {
+        throw std::invalid_argument(
+            "Tick event materialization source indices disagree with its events");
+    }
+    auto shared_events = std::make_shared<std::vector<TimedEvent> const>(
+        std::move(events));
+    auto shared_indices = std::make_shared<std::vector<std::size_t> const>(
+        std::move(semantic_source_indices));
+    TickMaterializedEventInput result{
+        .port = port,
+        .type = type,
+    };
+    std::size_t cursor = 0;
+    for (auto const region : coverage) {
+        auto const begin = cursor;
+        while (cursor < shared_events->size()
+            && region.contains((*shared_events)[cursor].time)) {
+            ++cursor;
         }
-    });
+        result.chunks.push_back(TickMaterializedEventChunk{
+            .range = region,
+            .events = shared_events,
+            .semantic_source_indices = shared_indices,
+            .begin = begin,
+            .end = cursor,
+        });
+    }
+    if (cursor != shared_events->size()) {
+        throw std::invalid_argument(
+            "Tick event materialization events lie outside their coverage");
+    }
+    result.coverage = std::move(coverage);
+    return result;
 }
 
 TickMaterializationSnapshot::TickMaterializationSnapshot(
@@ -139,48 +240,79 @@ TickMaterializationSnapshot::TickMaterializationSnapshot(
     , samples_(std::move(samples))
     , events_(std::move(events))
 {
+    validate();
+}
+
+void TickMaterializationSnapshot::validate() const
+{
+    auto ordered = [](GlobalIndexRange const& left,
+                      GlobalIndexRange const& right) {
+        return SignedGlobalIndexOrder{}(left.begin, right.begin);
+    };
     std::vector<graph_jit::BackgroundPortIndex> ports;
     ports.reserve(samples_.size() + events_.size());
     for (auto const& sample : samples_) {
-        if (sample.coverage.empty()
-            || !is_valid_channel_type(sample.layout.channel_type)
-            || !is_valid_sample_stream_layout(sample.layout.sample_layout)
-            || sample.channels.empty()
-            || !std::ranges::is_sorted(sample.channels)
-            || std::ranges::adjacent_find(sample.channels)
-                != sample.channels.end()
-            || std::ranges::any_of(
+        IndexCoverage covered;
+        bool valid = !sample.regions.empty()
+            && is_valid_channel_type(sample.layout.channel_type)
+            && is_valid_sample_stream_layout(sample.layout.sample_layout)
+            && !sample.channels.empty()
+            && std::ranges::is_sorted(sample.channels)
+            && std::ranges::adjacent_find(sample.channels)
+                == sample.channels.end()
+            && std::ranges::none_of(
                 sample.channels,
                 [&](std::size_t channel) {
                     return channel >= channel_count(sample.layout);
-                })
-            || sample.values.size()
-                != checked_product(
-                    coverage_sample_count(sample.coverage),
-                    sample.channels.size())) {
+                });
+        for (std::size_t index = 0;
+             valid && index < sample.regions.size(); ++index) {
+            auto const& region = sample.regions[index];
+            auto const extent = static_cast<std::size_t>(region.range.extent);
+            valid = !region.range.empty() && region.values != nullptr
+                && region.first_frame <= region.storage_frames
+                && extent <= region.storage_frames - region.first_frame
+                && region.values->size()
+                    == checked_product(
+                        region.storage_frames, sample.channels.size())
+                && (index == 0
+                    || ordered(sample.regions[index - 1].range, region.range))
+                && !covered.intersects(region.range);
+            covered.include(region.range);
+        }
+        if (!valid || covered != sample.coverage) {
             throw std::invalid_argument(
                 "Tick sample materialization is inconsistent");
         }
         ports.push_back(sample.port);
     }
-    for (auto& event : events_) {
-        if (event.semantic_source_indices.empty()) {
-            event.semantic_source_indices.resize(
-                event.events.size(), std::numeric_limits<std::size_t>::max());
+    for (auto const& event : events_) {
+        IndexCoverage covered;
+        bool valid = !event.chunks.empty() && event.type < EventTypeId::count;
+        for (std::size_t index = 0;
+             valid && index < event.chunks.size(); ++index) {
+            auto const& chunk = event.chunks[index];
+            valid = !chunk.range.empty() && chunk.events != nullptr
+                && chunk.semantic_source_indices != nullptr
+                && chunk.semantic_source_indices->size()
+                    == chunk.events->size()
+                && chunk.begin <= chunk.end
+                && chunk.end <= chunk.events->size()
+                && (index == 0
+                    || ordered(event.chunks[index - 1].range, chunk.range))
+                && !covered.intersects(chunk.range);
+            for (auto offset = chunk.begin; valid && offset < chunk.end;
+                 ++offset) {
+                auto const& value = (*chunk.events)[offset];
+                valid = chunk.range.contains(value.time)
+                    && event_matches_type(event.type, value.value)
+                    && (offset == chunk.begin
+                        || !SignedGlobalIndexOrder{}(
+                            value.time, (*chunk.events)[offset - 1].time));
+            }
+            covered.include(chunk.range);
         }
-        bool valid = !event.coverage.empty()
-            && event.type < EventTypeId::count
-            && event.semantic_source_indices.size() == event.events.size();
-        GlobalIndex previous{};
-        bool first = true;
-        for (auto const& value : event.events) {
-            valid = valid && event.coverage.contains(value.time)
-                && event_matches_type(event.type, value.value)
-                && (first || !SignedGlobalIndexOrder{}(value.time, previous));
-            previous = value.time;
-            first = false;
-        }
-        if (!valid) {
+        if (!valid || covered != event.coverage) {
             throw std::invalid_argument(
                 "Tick event materialization is inconsistent");
         }
@@ -191,6 +323,117 @@ TickMaterializationSnapshot::TickMaterializationSnapshot(
         throw std::invalid_argument(
             "Tick materialization input port is duplicated");
     }
+}
+
+void TickMaterializationSnapshot::carry_forward(
+    TickMaterializationSnapshot const& previous,
+    std::span<TickMaterializationRetention const> retention)
+{
+    if (previous.generation_ != generation_) {
+        throw std::invalid_argument(
+            "Tick materialization can only carry forward within one generation");
+    }
+    auto by_begin = [](auto const& left, auto const& right) {
+        return SignedGlobalIndexOrder{}(left.range.begin, right.range.begin);
+    };
+    for (auto const& retained : retention) {
+        if (retained.retained.empty()) continue;
+        if (auto const* source = previous.find_sample(retained.port)) {
+            // This snapshot's own materialization supersedes carried data.
+            IndexCoverage produced;
+            if (auto const* own = find_sample(retained.port)) {
+                produced = own->coverage;
+            }
+            std::vector<TickMaterializedSampleRegion> carried;
+            for (auto const& region : source->regions) {
+                auto const kept = (IndexCoverage{region.range}
+                    & retained.retained) - produced;
+                for (auto const part : kept) {
+                    carried.push_back(TickMaterializedSampleRegion{
+                        .range = part,
+                        .values = region.values,
+                        .storage_frames = region.storage_frames,
+                        .first_frame = region.first_frame
+                            + static_cast<std::size_t>(
+                                region.range.begin.forward_distance_to(
+                                    part.begin)),
+                    });
+                }
+            }
+            if (!carried.empty()) {
+                auto target = std::ranges::find(
+                    samples_, retained.port, &TickMaterializedSampleInput::port);
+                if (target == samples_.end()) {
+                    samples_.push_back(TickMaterializedSampleInput{
+                        .port = source->port,
+                        .layout = source->layout,
+                        .channels = source->channels,
+                    });
+                    target = std::prev(samples_.end());
+                } else if (target->layout != source->layout
+                    || target->channels != source->channels) {
+                    throw std::invalid_argument(
+                        "carried Tick sample materialization changed its layout");
+                }
+                for (auto& region : carried) {
+                    target->coverage.include(region.range);
+                    target->regions.push_back(std::move(region));
+                }
+                std::ranges::sort(target->regions, by_begin);
+            }
+        }
+        if (auto const* source = previous.find_event(retained.port)) {
+            IndexCoverage produced;
+            if (auto const* own = find_event(retained.port)) {
+                produced = own->coverage;
+            }
+            std::vector<TickMaterializedEventChunk> carried;
+            for (auto const& chunk : source->chunks) {
+                auto const kept = (IndexCoverage{chunk.range}
+                    & retained.retained) - produced;
+                for (auto const part : kept) {
+                    auto begin = chunk.begin;
+                    while (begin < chunk.end
+                        && !part.contains((*chunk.events)[begin].time)) {
+                        ++begin;
+                    }
+                    auto end = begin;
+                    while (end < chunk.end
+                        && part.contains((*chunk.events)[end].time)) {
+                        ++end;
+                    }
+                    carried.push_back(TickMaterializedEventChunk{
+                        .range = part,
+                        .events = chunk.events,
+                        .semantic_source_indices =
+                            chunk.semantic_source_indices,
+                        .begin = begin,
+                        .end = end,
+                    });
+                }
+            }
+            if (!carried.empty()) {
+                auto target = std::ranges::find(
+                    events_, retained.port, &TickMaterializedEventInput::port);
+                if (target == events_.end()) {
+                    events_.push_back(TickMaterializedEventInput{
+                        .port = source->port,
+                        .type = source->type,
+                    });
+                    target = std::prev(events_.end());
+                } else if (target->type != source->type) {
+                    throw std::invalid_argument(
+                        "carried Tick event materialization changed its type");
+                }
+                for (auto& chunk : carried) {
+                    target->coverage.include(chunk.range);
+                    target->chunks.push_back(std::move(chunk));
+                }
+                std::ranges::sort(target->chunks, by_begin);
+            }
+        }
+    }
+    validate();
 }
 
 TickMaterializedSampleInput const* TickMaterializationSnapshot::find_sample(

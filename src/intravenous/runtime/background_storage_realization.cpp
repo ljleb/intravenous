@@ -1461,18 +1461,14 @@ BackgroundStorageRealization::make_tick_materialization_snapshot(
         }
         if (complete_coverage.empty()) continue;
 
-        TickMaterializedSampleInput frozen{
-            .port = binding.port,
-            .coverage = std::move(complete_coverage),
-            .layout = port.sample_layout,
-        };
-        frozen.channels.resize(channels);
-        std::iota(frozen.channels.begin(), frozen.channels.end(), 0);
-        frozen.values.reserve(checked_product(
-            coverage_sample_count(frozen.coverage), channels));
+        std::vector<std::size_t> frozen_channels(channels);
+        std::iota(frozen_channels.begin(), frozen_channels.end(), 0);
+        std::vector<Sample> frozen_values;
+        frozen_values.reserve(checked_product(
+            coverage_sample_count(complete_coverage), channels));
         bool missing_route = false;
-        for (auto const channel : frozen.channels) {
-            for (auto const region : frozen.coverage) {
+        for (auto const channel : frozen_channels) {
+            for (auto const region : complete_coverage) {
                 for (GlobalIndex::extent_type frame = 0;
                      frame < region.extent; ++frame) {
                     auto const sample = region.begin.advanced_by(frame);
@@ -1486,7 +1482,7 @@ BackgroundStorageRealization::make_tick_materialization_snapshot(
                         missing_route = true;
                         break;
                     }
-                    frozen.values.push_back(found->view->at(
+                    frozen_values.push_back(found->view->at(
                         sample.retreated_by(found->latency),
                         found->storage_channel));
                 }
@@ -1498,7 +1494,12 @@ BackgroundStorageRealization::make_tick_materialization_snapshot(
             return std::unexpected(
                 "Tick sample materialization has incomplete routed coverage");
         }
-        samples.push_back(std::move(frozen));
+        samples.push_back(make_tick_materialized_sample_input(
+            binding.port,
+            port.sample_layout,
+            std::move(frozen_channels),
+            std::move(complete_coverage),
+            std::move(frozen_values)));
     }
 
     std::vector<TickMaterializedEventInput> events;
@@ -1580,12 +1581,9 @@ BackgroundStorageRealization::make_tick_materialization_snapshot(
             available.include(route.view->coverage());
         }
         if (available.empty()) continue;
-        TickMaterializedEventInput frozen{
-            .port = binding.port,
-            .coverage = std::move(available),
-            .type = port.event_type,
-        };
-        for (auto const region : frozen.coverage) {
+        std::vector<TimedEvent> frozen_events;
+        std::vector<std::size_t> frozen_indices;
+        for (auto const region : available) {
             GlobalIndex::extent_type consumed = 0;
             while (consumed < region.extent) {
                 auto const cursor = region.begin.advanced_by(consumed);
@@ -1610,15 +1608,20 @@ BackgroundStorageRealization::make_tick_materialization_snapshot(
                 selected->view->for_each_indexed(
                     {cursor, selected_extent},
                     [&](TimedEvent const& event, std::size_t source_index) {
-                        frozen.events.push_back(event);
-                        frozen.semantic_source_indices.push_back(
+                        frozen_events.push_back(event);
+                        frozen_indices.push_back(
                             selected->fixed_source_index.value_or(
                                 source_index));
                     });
                 consumed += selected_extent;
             }
         }
-        events.push_back(std::move(frozen));
+        events.push_back(make_tick_materialized_event_input(
+            binding.port,
+            port.event_type,
+            std::move(available),
+            std::move(frozen_events),
+            std::move(frozen_indices)));
     }
 
     return std::make_unique<TickMaterializationSnapshot>(

@@ -150,11 +150,11 @@ features do not keep the Front 1 execution contract open.
 **Primary ownership:** first-class scalar/batched node callback normalization and the
 scheduler's ability to exploit same-implementation batches.
 
-**Implementation status (2026-10-23):** source implementation complete. The latest
-retained collaborator run passed 584 of 586 tests before the pending Front 4
-background-only delivery changes. Those changes remove the reported guards, so a
-full collaborator rerun is required. Per-lane contiguous scratch (friction item 2)
-is deferred to Front 16 as an optimization. The implementation now includes the
+**Implementation status (2026-10-23):** complete and verified. The collaborator's
+full suite passed all 592 tests after Front 4 supplied the background-only delivery
+required by the final replay and reverse-propagation fixtures. Per-lane contiguous
+scratch (friction item 2) is deferred to Front 16 as an optimization. The
+implementation includes the
 public lane ranges, exclusive authored scalar/batch forms, every normalized helper
 and compiler anchor, exact implementation-plus-resolved-realization classification,
 dependency-safe `SchedulePlan::ready_groups`, conservative realtime batch lowering,
@@ -282,9 +282,11 @@ unchanged.
 connections", which is the expected Front 4 boundary. They should pass once Front 4
 delivers background-only samples.
 
-**Pending verification:** the working-tree Front 4 changes remove that
-background-only sample guard. No later collaborator result has been recorded, so the
-two fixtures and the complete suite must be rerun before Front 2 is marked verified.
+**Completion verification (2026-10-23):** the working-tree Front 4 changes removed
+the background-only sample guard. The collaborator's complete 592-test suite passed.
+This verifies both previously blocked fixtures and closes Front 2. The earlier
+verification records above remain as the defect history that led to the final
+scheduler and lowering shape.
 
 This front owns:
 
@@ -369,29 +371,69 @@ Sequential input changes delivery kind.
 
 **Implementation status (2026-10-23):** background planning, storage,
 transactions, materialized playback, neutral fill, and generated-root
-`TickInvocationCall` binding exist. Realtime planning now accepts background-only
-Sequential sample and event inputs. `PrimitiveSampleInputBindingPlan` and
-`PrimitiveEventInputBindingPlan` mark those inputs as `invocation_supplied`, so
-they do not acquire false realtime storage. Disconnected Sequential event inputs
-share compiler-emitted immutable empty sequences.
+`TickInvocationCall` binding exist. Realtime planning accepts background-only
+Sequential sample and event inputs, which `PrimitiveSampleInputBindingPlan` and
+`PrimitiveEventInputBindingPlan` mark as `invocation_supplied`. Mixed Tick/background
+composition is implemented for samples (`combines_invocation_supplied` and the node's
+`combine_sequential_input_values`). It is also implemented for events
+(`iv_graph_jit_merge_mixed_event_sequences`, with semantic source indices carried
+through background materialization). Disconnected Sequential event inputs share
+compiler-emitted immutable empty sequences.
+`GraphExecutor::set_tick_materialization_demand()` accepts an exact `IndexCoverage`
+of future Tick positions; its caller chooses the extent.
 
-Mixed Tick/background composition, disconnected Random Access inputs, and
-cross-kind graph-revision history transfer remain incomplete. An
-`EventConnectionPlan` retains its original `targets`, `target_plans`, and
-per-delivery `EventDeliveryPlan::mechanism`; realtime lowering must consume the
-realtime subset without cloning the connection record.
+**Source closure pass implemented and verified (2026-10-23):**
 
-Cross-kind transition work needs an explicit interface between
-`TickInvocationWorkspace` and transition preparation. The predecessor playback
-window is not stored in predecessor `NodeStorage`, which is the only source that
-`RealtimePortStateTransitionPlan` can currently address. Until that interface is
-implemented, changing a Sequential input between background and realtime delivery
-is an explicit compilation error. The required semantics and the superseded
-handoff steps are retained in
-[Front 4 Opus handoff](./historical/front_4_opus_handoff_2026-10-23.md).
+- *Done in source:* Random Access inputs on Tick primitives are view-only.
+  `StaticRandomAccessSampleInputTickAccess` and
+  `StaticRandomAccessEventInputTickAccess` expose only the callback-pinned view,
+  as published-snapshot-only Tick-time Random Access requires. The binding plans mark
+  such inputs `random_access`; their declared reflected Sequential entries are never
+  read. A primitive with a Random Access input does not enter TTL dormancy.
+  A disconnected Random Access input has empty coverage. Its binding has no storage,
+  which `is_disconnected_random_access_input()` admits, and
+  `binding_selection()` selects nothing for it. Mixed event delivery is now decided
+  per target, so a connection that also feeds a Random Access target no longer
+  makes its realtime Sequential targets mixed.
+- *Done in source:* `TickMaterializationSnapshot` inputs are ordered immutable
+  `TickMaterializedSampleRegion` records and `TickMaterializedEventChunk` records
+  over shared storage, not one flat vector per port. Playback copies whole region
+  spans without allocating, and `at()` binary-searches. A transaction restricts each
+  Tick Sequential playback demand through
+  `BackgroundCoverageDemandExpansion::restrict_input`. It removes the coverage that
+  the same generation's published snapshot still represents: that coverage minus
+  the forward-changed coverage of the routed source outputs, shifted by read latency.
+  `TickMaterializationSnapshot::carry_forward()` then shares those retained records
+  in the new snapshot. A transaction triggered by recorded data therefore
+  recomputes only invalidated playback coverage.
+- *Done in source:* Front 4 now exposes the predecessor playback window needed by
+  Front 6. `TickInvocationWorkspace::playback_slots()` exposes its fixed Sequential
+  sample/event bindings, and `TickInvocationWorkspace::playback_end()` identifies the
+  exclusive end of the last populated window. For a pure `invocation_supplied` input,
+  background-to-realtime transition transfer reads the final predecessor playback
+  binding. Realtime-to-background transition specialization appends a private sample
+  or event ring, binds the transition root to it, copies inherited realtime history at
+  cutover, stages each current `TickInvocationCall` window into it, and returns to the
+  ordinary invocation-supplied binding after expiry. Background delivery on both sides
+  needs no realtime transfer. Focused transition tests cover sample binding latency and
+  channel delay, event-window selection, both direction choices, and suffix storage
+  realization.
+- *Cross-front limitation found:* a mixed input marked
+  `combines_invocation_supplied` has only its background contribution in the
+  `TickInvocationWorkspace` slot. Its combined callback-facing sample scratch or event
+  sequence is classified as `callback_only`, so a graph revision that must migrate
+  that input's history fails explicitly. Front 4's mixed callback execution is
+  implemented; resolving this case requires Front 6 to retain or reconstruct the exact
+  combined input state rather than treating the background slot as that state.
+- *Verification result:* the collaborator's complete 592-test suite passed. The two
+  final failures were stale fixtures: the mixed Tick/Tock event-fan-in test still
+  expected both sources to be materialized, and a manually constructed
+  `EventMaterializationPlan` omitted its required `semantic_source_indices`. Their
+  corrected expectations passed with the complete suite. Front 4 is complete for its
+  background-to-Tick delivery scope.
 
-**Can start now:** yes. Prefer consuming the target Region/Coverage representation from
-front 3 when practical, but do not merge the ownership of the two fronts.
+**Status:** complete and verified. The separate mixed-input transition follow-up is
+owned by Front 6, not by this delivery front.
 
 Detailed direction:
 [Coverage And Background Evaluation](./coverage_and_background_evaluation.md).
@@ -895,6 +937,18 @@ the suite. No known Front 6 correctness boundary or unresolved implementation fr
 remains. Front 6 is closed and active implementation moves to Front 7. The possible
 per-node/per-pace grouping of callback ordinal stores remains measurement-driven
 cleanup, not transition correctness work and not a Front 6 completion condition.
+
+**Front 6 follow-up exposed by Front 4 (2026-10-23):** the completed Front 6 cases did
+not include a Sequential input whose `PrimitiveSampleInputBindingPlan` or
+`PrimitiveEventInputBindingPlan` has `combines_invocation_supplied`. The
+`TickInvocationWorkspace` slot retains only that input's background contribution; the
+generated sample scratch or merged event sequence that the callback observes is
+`callback_only` after the root returns. Pure `invocation_supplied` delivery-kind
+changes now have a complete transition path, but migration involving the mixed form
+still fails explicitly. Front 4 is now verified, so Front 6 is reopened for this
+bounded case: either retain the exact combined input state or preserve enough source
+and combination metadata to reconstruct it. The background contribution alone is not
+the node-owned input history and must not be substituted for it.
 
 ## Front 7: remaining GraphJit and node execution semantics
 
@@ -1428,6 +1482,12 @@ does not depend on Front 2. Its remaining normalized block-replay integration is
 of the Front 2 callback-normalization pass rather than an independently implementable
 Front 7 slice.
 
+**Front 7 dependency completion (2026-10-23):** Front 2 now supplies normalized
+scalar and batched Tick operations, including one-lane replay of a batch-only Tick
+callback. The collaborator's 592-test run verifies that replay path with the completed
+Front 4 delivery path. The final Front 2 dependency is therefore satisfied and Front 7
+is complete.
+
 **Remaining-front dependency re-audit (2026-10-23):** with Fronts 1, 6, and 7 closed
 at their stated boundaries, 13 numbered fronts remain (`2`-`5` and `8`-`16`), not 14.
 The older summary below remains useful as an ownership graph, but later implementation
@@ -1463,6 +1523,13 @@ The re-audit's claim that Front 4 needs only a closure audit no longer holds.
 Background-only Sequential sample and event inputs have a partial implementation, but
 mixed Tick/background delivery and disconnected Random Access inputs remain rejected.
 Front 4 therefore still needs an implementation pass.
+
+**Post-verification update (2026-10-23):** the implementation pass described above is
+complete. Fronts 2 and 4 passed the complete 592-test suite, and Front 7's normalized
+block-replay dependency is satisfied. Eleven numbered fronts remain outside those
+closed fronts, plus the bounded reopened Front 6 mixed-input transition case described
+above. Complete that transition case before starting an unrelated front. Front 3 is
+then the next dependency-ready correctness front in the execution-path order.
 
 The control-plane order remains Front 9 before complete Front 10 and Front 13, then
 Front 14 and Front 15 after their stated inputs exist. Front 10 may continue to use

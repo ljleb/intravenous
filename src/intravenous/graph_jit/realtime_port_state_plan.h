@@ -63,12 +63,16 @@ struct RealtimePortStateRequirements {
 // valid only while the generated root owns its invocation arena, so a graph
 // transition cannot mistake them for cross-callback state. compact_carry and
 // ring name canonical NodeStorage representations; immutable_constant owns no
-// mutable bytes.
+// mutable bytes. invocation_playback names the predecessor
+// TickInvocationWorkspace window bound to one TickSequentialBindingPlan slot;
+// it is readable only at the cutover that follows that workspace's final
+// invocation.
 enum class SampleRealtimePortStateStorage : std::uint8_t {
     immutable_constant,
     callback_transient,
     compact_carry,
     ring,
+    invocation_playback,
 };
 
 enum class SampleRealtimePortStateAccess : std::uint8_t {
@@ -86,7 +90,9 @@ enum class SampleRealtimePortStateAccess : std::uint8_t {
     // No recoverable cross-callback source is currently known.
     callback_only,
     // Background evaluation supplies the complete window, including history,
-    // on every invocation. No realtime cross-callback state exists.
+    // on every invocation. No realtime cross-callback state exists; the one
+    // retained source is the invocation_playback window that the final
+    // predecessor invocation observed.
     invocation_supplied,
 };
 
@@ -120,9 +126,12 @@ struct SampleRealtimePortStateStorageView {
     // persistent rings.
     std::size_t carry_future_frames = 0;
 
-    // Exactly one location form is populated according to storage.
+    // Exactly one location form is populated according to storage. An
+    // invocation_playback view populates invocation_slot, an index into
+    // TickRuntimePlan::sequential_sample_inputs.
     std::optional<std::size_t> node_storage_offset{};
     std::optional<std::size_t> callback_arena_offset{};
+    std::optional<std::size_t> invocation_slot{};
     std::size_t storage_size_bytes = 0;
     std::optional<std::vector<std::byte>> constant_value{};
 };
@@ -166,6 +175,9 @@ enum class EventRealtimePortStateStorage : std::uint8_t {
     // Compiler-emitted read-only zero-count sequence. No location is
     // populated.
     immutable_empty,
+    // See SampleRealtimePortStateStorage::invocation_playback. Populates
+    // invocation_slot, an index into TickRuntimePlan::sequential_event_inputs.
+    invocation_playback,
 };
 
 // Describes how one semantic event-state requirement can be recovered after
@@ -189,7 +201,9 @@ enum class EventRealtimePortStateAccess : std::uint8_t {
     // planning must trace/add retention rather than reading expired arena data.
     callback_only,
     // Background evaluation supplies the complete window, including history,
-    // on every invocation. No realtime cross-callback state exists.
+    // on every invocation. No realtime cross-callback state exists; the
+    // retained storage is the invocation_playback window that the final
+    // predecessor invocation observed.
     invocation_supplied,
 };
 
@@ -212,9 +226,11 @@ struct EventRealtimePortStateStorageView {
     std::size_t source_indices_relative_offset = 0;
 
     // Persistent storage populates node_storage_offset, callback_transient
-    // populates callback_arena_offset, and immutable_empty populates neither.
+    // populates callback_arena_offset, invocation_playback populates
+    // invocation_slot, and immutable_empty populates none of them.
     std::optional<std::size_t> node_storage_offset{};
     std::optional<std::size_t> callback_arena_offset{};
+    std::optional<std::size_t> invocation_slot{};
 };
 
 // One Tick output-latency state whose future interval is present in a retained
@@ -235,7 +251,7 @@ struct EventRealtimePortStateRealization {
     EventRealtimePortStateAccess retained_access =
         EventRealtimePortStateAccess::callback_only;
     // Cross-callback representation, when retained_access is not
-    // immutable_empty, callback_only, or invocation_supplied.
+    // immutable_empty or callback_only.
     std::optional<EventRealtimePortStateStorageView> retained_storage{};
 
     // Populated for indexed_merged_source and shared_merged_source. In the

@@ -3,6 +3,7 @@
 #include <intravenous/runtime/background_evaluation_call_frame.h>
 #include <intravenous/runtime/background_storage_realization.h>
 #include <intravenous/runtime/realtime_produced_record.h>
+#include <intravenous/graph_jit/background_storage_plan.h>
 
 #include <algorithm>
 #include <cstring>
@@ -112,6 +113,10 @@ class BackgroundEvaluationTransaction::Impl {
     PersistedDataStore::ReaderSlot reader_{};
     std::optional<PersistedDataStore::ReaderPin> pin_{};
     std::optional<PreparedCoveragePropagation> prepared_{};
+    // The published Tick materialization of this generation, if any, and the
+    // part of each demanded Tick Sequential input that it still represents.
+    TickMaterializationSnapshot const* previous_materialization_ = nullptr;
+    std::vector<TickMaterializationRetention> materialization_retention_{};
     std::vector<DataMutation> data_mutations_{};
     std::vector<std::pair<PersistedOutputHandle, IndexCoverage>>
         captured_coverage_{};
@@ -555,6 +560,87 @@ class BackgroundEvaluationTransaction::Impl {
         }
     }
 
+    // Coverage of a Tick Sequential input that the forward traversal changed.
+    // Its materialized values derive from the routed source outputs, each
+    // shifted forward by its read latency.
+    [[nodiscard]] IndexCoverage changed_tick_input_coverage(
+        graph_jit::BackgroundPortIndex input,
+        BackgroundForwardOutputChanges const& forward) const
+    {
+        auto const& plan = graph_->background_evaluation_plan;
+        IndexCoverage changed;
+        for (auto const& connection : plan.connections) {
+            if (connection.kind == PortKind::sample) {
+                if (connection.sample_target_port != input) continue;
+                for (std::size_t channel = 0;
+                     channel < connection.sample_source_port_by_channel.size();
+                     ++channel) {
+                    auto const source =
+                        connection.sample_source_port_by_channel[channel];
+                    if (!source) continue;
+                    auto const latency =
+                        channel < connection.sample_read_latencies.size()
+                        ? connection.sample_read_latencies[channel]
+                        : std::size_t{0};
+                    for (auto const region : forward.changed(*source)) {
+                        changed.include({
+                            .begin = region.begin.advanced_by(latency),
+                            .extent = region.extent,
+                        });
+                    }
+                }
+                continue;
+            }
+            for (auto const& delivery : connection.event_deliveries) {
+                if (delivery.target_port != input || !delivery.source_port) {
+                    continue;
+                }
+                changed.include(forward.changed(*delivery.source_port));
+            }
+        }
+        return changed;
+    }
+
+    // Removes from a Tick playback demand the coverage that the previous
+    // snapshot still represents. Other input demands, such as external
+    // Random Access fetches, are never restricted.
+    static void restrict_input_demand(
+        void* opaque,
+        graph_jit::BackgroundPortIndex port,
+        BackgroundForwardOutputChanges const& forward,
+        IndexCoverage& required)
+    {
+        auto& self = *static_cast<Impl*>(opaque);
+        auto const& plan = self.graph_->background_evaluation_plan;
+        if (!self.previous_materialization_
+            || !std::ranges::contains(plan.tick_sequential_inputs, port)) {
+            return;
+        }
+        IndexCoverage materialized;
+        if (auto const* sample = self.previous_materialization_->find_sample(port)) {
+            materialized = sample->coverage;
+        } else if (auto const* event =
+                       self.previous_materialization_->find_event(port)) {
+            materialized = event->coverage;
+        }
+        if (materialized.empty()) return;
+        auto retained = (materialized
+            - self.changed_tick_input_coverage(port, forward)) & required;
+        if (retained.empty()) return;
+        required = required - retained;
+        auto existing = std::ranges::find(
+            self.materialization_retention_, port,
+            &TickMaterializationRetention::port);
+        if (existing == self.materialization_retention_.end()) {
+            self.materialization_retention_.push_back({
+                .port = port,
+                .retained = std::move(retained),
+            });
+        } else {
+            existing->retained.include(retained);
+        }
+    }
+
     [[nodiscard]] BackgroundEvaluationCallFrameSelection
     binding_selection() const
     {
@@ -565,6 +651,12 @@ class BackgroundEvaluationTransaction::Impl {
             .sample_rate = graph_->specialization.sample_rate,
         };
         for (auto const& required : prepared_->result().input_requirements) {
+            // A disconnected Random Access input has empty coverage, so its
+            // requirement selects nothing.
+            if (graph_jit::detail::is_disconnected_random_access_input(
+                    plan, required.port)) {
+                continue;
+            }
             auto const slot = plan.runtime.port_bindings[required.port];
             if (slot)
                 selection.binding_coverage[*slot].include(required.required);
@@ -831,12 +923,20 @@ class BackgroundEvaluationTransaction::Impl {
         working_data_ = candidate
             ? &candidate->working_snapshot()
             : &base;
+        if (materializations_) {
+            auto const* published = materializations_->published_for_writer();
+            if (published
+                && published->generation() == graph_->project_generation) {
+                previous_materialization_ = published;
+            }
+        }
         prepared_.emplace(
             propagation_->prepare(graph_->background_operations,
                                   *coverage_, inputs_.roots,
                                   BackgroundCoverageDemandExpansion{
                                       .data = this,
                                       .expand_output = &expand_output_demand,
+                                      .restrict_input = &restrict_input_demand,
                                   }));
 
         auto binding = binding_selection();
@@ -928,6 +1028,11 @@ class BackgroundEvaluationTransaction::Impl {
                 return std::unexpected(std::move(frozen.error()));
             }
             tick_materialization = std::move(*frozen);
+            if (previous_materialization_
+                && !materialization_retention_.empty()) {
+                tick_materialization->carry_forward(
+                    *previous_materialization_, materialization_retention_);
+            }
         }
 
         std::optional<PersistedDataVersion> published;

@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <expected>
 #include <iterator>
+#include <numeric>
 #include <optional>
 #include <ranges>
 #include <span>
@@ -1332,6 +1333,29 @@ std::expected<BackgroundStoragePlan, std::string> build_background_storage_plan(
     return result;
 }
 
+bool is_disconnected_random_access_input(
+    BackgroundEvaluationPlan const& plan,
+    BackgroundPortIndex port)
+{
+    if (port >= plan.ports.size()) return false;
+    auto const& logical = plan.ports[port];
+    if (logical.direction != PortDirection::input
+        || !logical.random_access_input) {
+        return false;
+    }
+    return std::ranges::none_of(
+        plan.connections,
+        [&](auto const& connection) {
+            return std::ranges::contains(connection.target_coverage_ports, port)
+                || connection.sample_target_port == port
+                || std::ranges::any_of(
+                    connection.event_deliveries,
+                    [&](auto const& delivery) {
+                        return delivery.target_port == port;
+                    });
+        });
+}
+
 std::expected<void, std::string> validate_background_runtime_plan(
     BackgroundEvaluationPlan const& plan)
 {
@@ -1375,7 +1399,8 @@ std::expected<void, std::string> validate_background_runtime_plan(
             || binding.node != port.node
             || binding.kind != port.kind
             || binding.direction != port.direction
-            || binding.storage.empty()) {
+            || (binding.storage.empty()
+                && !is_disconnected_random_access_input(plan, port_index))) {
             return std::unexpected(
                 "GraphJit background runtime binding does not match its logical port");
         }

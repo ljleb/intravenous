@@ -802,6 +802,7 @@ TEST(BackgroundStorageRealization,
     plan.storage.event_materializations = {{
         .storage = iv::graph_jit::PortStorageKind::background,
         .inputs = {0, 1},
+        .semantic_source_indices = {0, 1},
         .source_conversions = {midi_to_boundary, boundary_identity},
         .source_type = iv::EventTypeId::boundary,
         .target_type = iv::EventTypeId::trigger,
@@ -846,7 +847,9 @@ TEST(BackgroundStorageRealization,
 
     ASSERT_TRUE(realization.seal().has_value());
     ASSERT_TRUE(realization.execute_operation(0).has_value());
-    ASSERT_TRUE(realization.execute_operation(1).has_value());
+    auto materialized = realization.execute_operation(1);
+    ASSERT_TRUE(materialized.has_value())
+        << (materialized ? std::string{} : materialized.error());
     std::vector<iv::GlobalIndex> triggers;
     realization.event_read(2)->for_each(
         range(0, 4),

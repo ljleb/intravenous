@@ -343,7 +343,8 @@ void GraphExecutor::ExecutionGeneration::prepare_realtime_migration_from(
         graph_jit::prepare_realtime_port_state_transfers(
             std::move(*transition),
             previous.realtime.storage.buffer(),
-            realtime.storage.buffer());
+            realtime.storage.buffer(),
+            previous.realtime.tick_invocation.playback_slots());
     if (!prepared_transition) {
         throw std::runtime_error(
             "GraphExecutor could not prepare realtime port-state cutover: "
@@ -375,7 +376,8 @@ void GraphExecutor::ExecutionGeneration::prepare_background_migration_from(
 }
 
 void GraphExecutor::ExecutionGeneration::commit_realtime_migration(
-    GlobalIndex sample_index) noexcept
+    GlobalIndex sample_index,
+    TickInvocationWorkspace const& previous_tick_invocation) noexcept
 {
     IV_ASSERT(
         !realtime_initialized && realtime_migration
@@ -386,7 +388,9 @@ void GraphExecutor::ExecutionGeneration::commit_realtime_migration(
         *realtime_port_state_transition,
         realtime_migration->previous->buffer(),
         realtime.storage.buffer(),
-        sample_index);
+        sample_index,
+        previous_tick_invocation.playback_slots(),
+        previous_tick_invocation.playback_end());
     realtime_migration.reset();
     if (!transition_cursor_progress.empty()
         || (graph->cutover
@@ -948,7 +952,8 @@ bool GraphExecutor::activate_pending(GlobalIndex sample_index)
         throw std::logic_error(
             "GraphExecutor initial persisted state was not prepared");
     }
-    pending_generation_->commit_realtime_migration(sample_index);
+    pending_generation_->commit_realtime_migration(
+        sample_index, previous.realtime.tick_invocation);
     previous.background.close_inputs();
     auto* next = pending_generation_.get();
     realtime_persisted_state_.activate_generation(

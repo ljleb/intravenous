@@ -280,40 +280,35 @@ namespace iv {
             }
         }
 
-        template<class Current, ChannelTypeId Type>
-        class StaticBackgroundContinuousInputTickAccess : public Current {
-            RandomAccessSampleInputPort const* _background = nullptr;
+        // A Random Access input exposes only the published-snapshot view
+        // selected for this callback. Current Tick buffers never extend its
+        // coverage, so it has no Sequential current-block access.
+        template<ChannelTypeId Type>
+        class StaticRandomAccessSampleInputTickAccess {
+            RandomAccessSampleInputPort const* _port = nullptr;
 
         public:
-            StaticBackgroundContinuousInputTickAccess(
-                Current current,
-                RandomAccessSampleInputPort const* background)
-                : Current(std::move(current))
-                , _background(background)
+            explicit StaticRandomAccessSampleInputTickAccess(
+                RandomAccessSampleInputPort const& port) noexcept
+                : _port(std::addressof(port))
             {}
 
             [[nodiscard]] IndexCoverage const& coverage() const noexcept
             {
-                IV_ASSERT(_background != nullptr,
-                    "background sample input has no arbitrary-access binding");
-                return _background->coverage();
+                return _port->coverage();
             }
 
             [[nodiscard]] Sample at(GlobalIndex index) const noexcept
             requires (Type == ChannelTypeId::mono)
             {
-                IV_ASSERT(_background != nullptr,
-                    "background sample input has no arbitrary-access binding");
-                return _background->at(index);
+                return _port->at(index);
             }
 
             template<class Channel>
             [[nodiscard]] Sample at(Channel, GlobalIndex index) const noexcept
             requires (Type != ChannelTypeId::mono)
             {
-                IV_ASSERT(_background != nullptr,
-                    "background sample input has no arbitrary-access binding");
-                return _background->at(index, static_channel_index<Type, Channel>());
+                return _port->at(index, static_channel_index<Type, Channel>());
             }
         };
 
@@ -356,39 +351,26 @@ namespace iv {
 
         };
 
-        template<TickPortAccessKind Access>
-        class StaticBackgroundEventInputTickAccess
-            : public StaticEventInputTickAccess<Access> {
-            RandomAccessEventInputPort const* _background = nullptr;
+        // See StaticRandomAccessSampleInputTickAccess.
+        class StaticRandomAccessEventInputTickAccess {
+            RandomAccessEventInputPort const* _port = nullptr;
 
         public:
-            using StaticEventInputTickAccess<Access>::for_each;
-
-            StaticBackgroundEventInputTickAccess(
-                EventInputPort const& current,
-                GlobalIndex index,
-                std::size_t block_size,
-                RandomAccessEventInputPort const* background)
-                : StaticEventInputTickAccess<Access>(
-                    current, index, block_size)
-                , _background(background)
+            explicit StaticRandomAccessEventInputTickAccess(
+                RandomAccessEventInputPort const& port) noexcept
+                : _port(std::addressof(port))
             {}
 
             [[nodiscard]] IndexCoverage const& coverage() const noexcept
             {
-                IV_ASSERT(_background != nullptr,
-                    "background event input has no arbitrary-access binding");
-                return _background->coverage();
+                return _port->coverage();
             }
 
             template<typename Fn>
             void for_each(GlobalIndexRange region, Fn&& fn) const
             {
-                IV_ASSERT(_background != nullptr,
-                    "background event input has no arbitrary-access binding");
-                _background->for_each(region, std::forward<Fn>(fn));
+                _port->for_each(region, std::forward<Fn>(fn));
             }
-
         };
 
         template<TickPortAccessKind Access, bool Recording>
@@ -505,55 +487,49 @@ namespace iv {
                 details::static_input_port_kind_at<Node, Index>();
             auto const& ports = this->port_bindings();
             if constexpr (port_kind == PortKind::sample) {
-                constexpr auto port_index =
-                    details::static_sample_input_port_index_at<Node, Index>();
-                IV_ASSERT(port_index < ports.continuous_inputs.size(),
-                    "static input port is absent from execution context");
-                auto const& binding = ports.continuous_inputs[port_index];
-                auto current = details::make_continuous_input_access<
-                    Node, Index, details::TickPortAccessKind::point>(
-                    binding,
-                    this->index,
-                    this->value_index,
-                    binding.sequential_begin_ordinal
-                        + this->sequential_value_offset_,
-                    1);
-                constexpr bool background =
-                    details::static_input_port_is_random_access_at<Node, Index>();
-                if constexpr (background) {
+                if constexpr (details::static_input_port_is_random_access_at<
+                                  Node, Index>()) {
                     constexpr auto background_index =
                         details::static_random_access_input_port_index_at<
                             Node, Index>();
                     constexpr auto layout =
                         details::static_input_port_layout_at<Node, Index>();
-                    auto const* background_port =
-                        background_index < ports.random_access_inputs.size()
-                        ? &ports.random_access_inputs[background_index] : nullptr;
-                    return details::StaticBackgroundContinuousInputTickAccess<
-                        decltype(current), layout.channel_type>{
-                            std::move(current), background_port};
+                    IV_ASSERT(background_index < ports.random_access_inputs.size(),
+                        "static Random Access input port is absent from execution context");
+                    return details::StaticRandomAccessSampleInputTickAccess<
+                        layout.channel_type>{
+                            ports.random_access_inputs[background_index]};
                 } else {
-                    return current;
+                    constexpr auto port_index =
+                        details::static_sample_input_port_index_at<Node, Index>();
+                    IV_ASSERT(port_index < ports.continuous_inputs.size(),
+                        "static input port is absent from execution context");
+                    auto const& binding = ports.continuous_inputs[port_index];
+                    return details::make_continuous_input_access<
+                        Node, Index, details::TickPortAccessKind::point>(
+                        binding,
+                        this->index,
+                        this->value_index,
+                        binding.sequential_begin_ordinal
+                            + this->sequential_value_offset_,
+                        1);
                 }
             } else {
-                constexpr auto port_index =
-                    details::static_event_input_port_index_at<Node, Index>();
-                IV_ASSERT(port_index < ports.event_inputs.size(),
-                    "static event input port is absent from execution context");
-                constexpr bool background =
-                    details::static_input_port_is_random_access_at<Node, Index>();
-                if constexpr (background) {
+                if constexpr (details::static_input_port_is_random_access_at<
+                                  Node, Index>()) {
                     constexpr auto background_index =
                         details::static_random_access_event_input_port_index_at<
                             Node, Index>();
-                    auto const* background_port =
-                        background_index < ports.random_access_event_inputs.size()
-                        ? &ports.random_access_event_inputs[background_index] : nullptr;
-                    return details::StaticBackgroundEventInputTickAccess<
-                        details::TickPortAccessKind::point>(
-                        ports.event_inputs[port_index], this->event_index(), 1,
-                        background_port);
+                    IV_ASSERT(
+                        background_index < ports.random_access_event_inputs.size(),
+                        "static Random Access event input port is absent from execution context");
+                    return details::StaticRandomAccessEventInputTickAccess{
+                        ports.random_access_event_inputs[background_index]};
                 } else {
+                    constexpr auto port_index =
+                        details::static_event_input_port_index_at<Node, Index>();
+                    IV_ASSERT(port_index < ports.event_inputs.size(),
+                        "static event input port is absent from execution context");
                     return details::StaticEventInputTickAccess<
                         details::TickPortAccessKind::point>(
                         ports.event_inputs[port_index], this->event_index(), 1);
@@ -677,60 +653,52 @@ namespace iv {
                 details::static_input_port_kind_at<Node, Index>();
             auto const& ports = this->port_bindings();
             if constexpr (port_kind == PortKind::sample) {
-                constexpr auto port_index =
-                    details::static_sample_input_port_index_at<Node, Index>();
-                IV_ASSERT(port_index < ports.continuous_inputs.size(),
-                    "static input port is absent from execution context");
-                auto const& binding = ports.continuous_inputs[port_index];
-                auto const projected = details::project_tick_port(
-                    binding.absolute_pace_exponent,
-                    this->index,
-                    this->block_size);
-                auto current = details::make_continuous_input_access<
-                    Node, Index, details::TickPortAccessKind::block>(
-                    binding,
-                    projected.begin,
-                    projected.begin_ordinal_bits,
-                    binding.sequential_begin_ordinal,
-                    projected.count);
-                constexpr bool background =
-                    details::static_input_port_is_random_access_at<Node, Index>();
-                if constexpr (background) {
+                if constexpr (details::static_input_port_is_random_access_at<
+                                  Node, Index>()) {
                     constexpr auto background_index =
                         details::static_random_access_input_port_index_at<
                             Node, Index>();
                     constexpr auto layout =
                         details::static_input_port_layout_at<Node, Index>();
-                    auto const* background_port =
-                        background_index < ports.random_access_inputs.size()
-                        ? &ports.random_access_inputs[background_index] : nullptr;
-                    return details::StaticBackgroundContinuousInputTickAccess<
-                        decltype(current), layout.channel_type>{
-                            std::move(current), background_port};
+                    IV_ASSERT(background_index < ports.random_access_inputs.size(),
+                        "static Random Access input port is absent from execution context");
+                    return details::StaticRandomAccessSampleInputTickAccess<
+                        layout.channel_type>{
+                            ports.random_access_inputs[background_index]};
                 } else {
-                    return current;
+                    constexpr auto port_index =
+                        details::static_sample_input_port_index_at<Node, Index>();
+                    IV_ASSERT(port_index < ports.continuous_inputs.size(),
+                        "static input port is absent from execution context");
+                    auto const& binding = ports.continuous_inputs[port_index];
+                    auto const projected = details::project_tick_port(
+                        binding.absolute_pace_exponent,
+                        this->index,
+                        this->block_size);
+                    return details::make_continuous_input_access<
+                        Node, Index, details::TickPortAccessKind::block>(
+                        binding,
+                        projected.begin,
+                        projected.begin_ordinal_bits,
+                        binding.sequential_begin_ordinal,
+                        projected.count);
                 }
             } else {
-                constexpr auto port_index =
-                    details::static_event_input_port_index_at<Node, Index>();
-                IV_ASSERT(port_index < ports.event_inputs.size(),
-                    "static event input port is absent from execution context");
-                constexpr bool background =
-                    details::static_input_port_is_random_access_at<Node, Index>();
-                if constexpr (background) {
+                if constexpr (details::static_input_port_is_random_access_at<
+                                  Node, Index>()) {
                     constexpr auto background_index =
                         details::static_random_access_event_input_port_index_at<
                             Node, Index>();
-                    auto const* background_port =
-                        background_index < ports.random_access_event_inputs.size()
-                        ? &ports.random_access_event_inputs[background_index] : nullptr;
-                    return details::StaticBackgroundEventInputTickAccess<
-                        details::TickPortAccessKind::block>(
-                        ports.event_inputs[port_index],
-                        this->event_index(),
-                        this->block_size,
-                        background_port);
+                    IV_ASSERT(
+                        background_index < ports.random_access_event_inputs.size(),
+                        "static Random Access event input port is absent from execution context");
+                    return details::StaticRandomAccessEventInputTickAccess{
+                        ports.random_access_event_inputs[background_index]};
                 } else {
+                    constexpr auto port_index =
+                        details::static_event_input_port_index_at<Node, Index>();
+                    IV_ASSERT(port_index < ports.event_inputs.size(),
+                        "static event input port is absent from execution context");
                     return details::StaticEventInputTickAccess<
                         details::TickPortAccessKind::block>(
                         ports.event_inputs[port_index],

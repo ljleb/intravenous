@@ -1,5 +1,6 @@
 #pragma once
 
+#include <intravenous/graph/reflected_node_operations.h>
 #include <intravenous/graph_jit/realtime_port_state_plan.h>
 #include <intravenous/node/layout.h>
 
@@ -147,6 +148,16 @@ struct RealtimePortStateTransitionStorage {
     RealtimePortStateTransitionPlan plan{};
 };
 
+// The predecessor TickInvocationWorkspace's Sequential playback bindings,
+// indexed by TickRuntimePlan slot. invocation_playback transfer sources read
+// these globally addressed windows in place at cutover. The bindings are
+// fixed when the workspace is constructed, so cold preparation may inspect
+// their geometry while the predecessor is still running.
+struct RealtimePortStatePlaybackSlots {
+    std::span<ReflectedContinuousInputPortBinding const> sequential_samples{};
+    std::span<ReflectedEventInputPortBinding const> sequential_events{};
+};
+
 // Fully checked cutover program. Construction validates every cold descriptor,
 // storage extent, and supported realization before the realtime boundary. The
 // executor can therefore run the contained transfers without allocation or a
@@ -155,22 +166,28 @@ class PreparedRealtimePortStateTransition {
     RealtimePortStateTransitionPlan plan_{};
     std::size_t previous_storage_size_ = 0;
     std::size_t current_storage_size_ = 0;
+    std::size_t playback_sample_slot_count_ = 0;
+    std::size_t playback_event_slot_count_ = 0;
 
     PreparedRealtimePortStateTransition(
         RealtimePortStateTransitionPlan plan,
         std::size_t previous_storage_size,
-        std::size_t current_storage_size);
+        std::size_t current_storage_size,
+        RealtimePortStatePlaybackSlots const& playback);
 
     friend std::expected<PreparedRealtimePortStateTransition, std::string>
     prepare_realtime_port_state_transfers(
         RealtimePortStateTransitionPlan,
         std::span<std::byte const>,
-        std::span<std::byte>);
+        std::span<std::byte>,
+        RealtimePortStatePlaybackSlots const&);
     friend void execute_realtime_port_state_transfers(
         PreparedRealtimePortStateTransition const&,
         std::span<std::byte const>,
         std::span<std::byte>,
-        GlobalIndex) noexcept;
+        GlobalIndex,
+        RealtimePortStatePlaybackSlots const&,
+        std::optional<GlobalIndex>) noexcept;
 
 public:
     PreparedRealtimePortStateTransition(
@@ -204,8 +221,10 @@ plan_realtime_port_state_transition(
 // fixed. A predecessor input produced by one retained linear channel
 // materialization can be reconstructed during the prepared cutover. Direct,
 // materialized, and composed successor callback views can then be mirrored into
-// the suffix by transition lowering. Composed predecessor state and event
-// transition state remain explicit errors.
+// the suffix by transition lowering. A pure invocation-supplied successor is
+// staged into that suffix from TickInvocationCall until expiry; a pure
+// invocation-supplied predecessor is read from its final playback slots.
+// Mixed realtime/background callback-only inputs remain nonrecoverable.
 [[nodiscard]] std::expected<RealtimePortStateTransitionStorage, std::string>
 realize_realtime_port_state_transition_storage(
     NodeLayout steady_layout,
@@ -217,20 +236,29 @@ realize_realtime_port_state_transition_storage(
 // Validates and owns the complete bounded cutover program before activation.
 // A transition-only state is accepted only after suffix realization has added
 // its one concrete transfer; unavailable inherited state remains an error.
+// playback names the predecessor's slots when any transfer source is
+// invocation_playback.
 [[nodiscard]] std::expected<PreparedRealtimePortStateTransition, std::string>
 prepare_realtime_port_state_transfers(
     RealtimePortStateTransitionPlan plan,
     std::span<std::byte const> previous_storage,
-    std::span<std::byte> current_storage);
+    std::span<std::byte> current_storage,
+    RealtimePortStatePlaybackSlots const& playback = {});
 
 // Executes already-prepared transfers between canonical persistent sample
 // storage and event rings. sample_index is the first sample processed by the
-// successor generation. All validation, allocation, and diagnostic creation
+// successor generation. playback must be the slots given to preparation.
+// playback_end is the exclusive end of the predecessor's final invocation
+// window, the playback counterpart of a Sequential cursor; it is absent when
+// the predecessor never invoked, in which case playback sources contribute
+// no inherited values. All validation, allocation, and diagnostic creation
 // happens in prepare_realtime_port_state_transfers().
 void execute_realtime_port_state_transfers(
     PreparedRealtimePortStateTransition const& transition,
     std::span<std::byte const> previous_storage,
     std::span<std::byte> current_storage,
-    GlobalIndex sample_index) noexcept;
+    GlobalIndex sample_index,
+    RealtimePortStatePlaybackSlots const& playback = {},
+    std::optional<GlobalIndex> playback_end = std::nullopt) noexcept;
 
 } // namespace iv::graph_jit

@@ -1186,6 +1186,11 @@ concept HasEventSubrange = requires(
 };
 
 template<class Access>
+concept HasCurrentEvents = requires(Access const& access) {
+    access.events();
+};
+
+template<class Access>
 concept HasEventOffsetPush = requires(Access const& access) {
     access.push(iv::TriggerEvent{}, std::size_t{});
 };
@@ -1600,27 +1605,11 @@ TEST(BackgroundDspPorts, EphemeralWritesDoNotObserveOutputDisposition)
     EXPECT_EQ(events.count, 0u);
 }
 
-TEST(BackgroundDspPorts, BackgroundInputsRemainAvailableFromTickBlock)
+// Tick-time Random Access reads only the callback-pinned published or
+// materialized view; it never aliases current Tick data and therefore exposes
+// no Sequential current-block access.
+TEST(BackgroundDspPorts, RandomAccessInputsExposeOnlyTheirPinnedViewsFromTickBlock)
 {
-    std::array<iv::Sample, 8> realtime_samples {
-        10.0f, 11.0f, 12.0f, 13.0f, 14.0f, 15.0f, 16.0f, 17.0f,
-    };
-    std::array realtime_inputs{
-        sample_input_binding(std::span{realtime_samples})};
-
-    std::array<iv::TimedEvent, 8> realtime_event_storage {};
-    realtime_event_storage[0] = {
-        .time = index(8), .value = iv::TriggerEvent {}};
-    realtime_event_storage[1] = {
-        .time = index(13), .value = iv::TriggerEvent {}};
-    iv::EventSharedPortData event_shared {
-        realtime_event_storage,
-        0,
-        2,
-        iv::EventTypeId::trigger,
-    };
-    std::array realtime_event_inputs {iv::EventInputPort(event_shared)};
-
     auto const sample_coverage = index_coverage({{0, 8}});
     auto const event_coverage = index_coverage({{0, 4}, {10, 14}});
     SampleData sample_data;
@@ -1639,8 +1628,6 @@ TEST(BackgroundDspPorts, BackgroundInputsRemainAvailableFromTickBlock)
     iv::TickBlockContext<BackgroundInputOnly> context {
         iv::TickContext<BackgroundInputOnly> {
             iv::details::TickPortBindings<BackgroundInputOnly>{
-                .continuous_inputs = realtime_inputs,
-                .event_inputs = realtime_event_inputs,
                 .random_access_inputs = random_access_inputs,
                 .random_access_event_inputs = random_access_event_inputs,
             },
@@ -1650,16 +1637,14 @@ TEST(BackgroundDspPorts, BackgroundInputsRemainAvailableFromTickBlock)
     };
 
     auto samples = context.input<0>();
-    EXPECT_FLOAT_EQ(static_cast<float>(samples[0]), 10.0f);
+    static_assert(!HasCurrentBlockIndex<decltype(samples)>);
+    static_assert(!HasBlock<decltype(samples)>);
     EXPECT_EQ(samples.coverage(), sample_coverage);
     EXPECT_FLOAT_EQ(static_cast<float>(samples.at(index(2))), 2.0f);
 
     auto events = context.input<1>();
-    auto const current_block = events.events();
-    ASSERT_EQ(current_block.size(), 2u);
-    EXPECT_EQ(current_block[0].time, index(8));
-    EXPECT_EQ(current_block[1].time, index(13));
-
+    static_assert(!HasCurrentEvents<decltype(events)>);
+    EXPECT_EQ(events.coverage(), event_coverage);
     std::vector<iv::GlobalIndex> arbitrary;
     events.for_each(range(10, 14), [&](iv::TimedEvent const& event) {
         arbitrary.push_back(event.time);

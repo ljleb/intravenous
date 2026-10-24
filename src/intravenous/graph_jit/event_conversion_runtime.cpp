@@ -219,6 +219,64 @@ extern "C" std::size_t iv_graph_jit_merge_event_sequence(
     return target_read_index + target_count + bounded_source_count;
 }
 
+extern "C" std::size_t iv_graph_jit_merge_staged_event_window(
+    void* target_events,
+    std::size_t target_capacity,
+    std::size_t target_read_index,
+    std::size_t target_write_index,
+    void const* source_events,
+    std::size_t source_capacity,
+    std::size_t source_read_index,
+    std::size_t source_write_index,
+    GlobalIndex block_index,
+    std::size_t block_size,
+    std::size_t ordering_history_samples) noexcept
+{
+    if (target_events == nullptr || source_events == nullptr
+        || target_capacity == 0 || source_capacity == 0
+        || !is_power_of_2(target_capacity)
+        || !is_power_of_2(source_capacity)
+        || target_write_index < target_read_index
+        || source_write_index < source_read_index
+        || target_write_index - target_read_index > target_capacity
+        || source_write_index - source_read_index > source_capacity) {
+        return std::numeric_limits<std::size_t>::max();
+    }
+    auto const source_count = source_write_index - source_read_index;
+    auto const target_count = target_write_index - target_read_index;
+    auto const window = GlobalIndexRange{
+        .begin = block_index,
+        .extent = block_size,
+    };
+    auto const* source = static_cast<TimedEvent const*>(source_events);
+    auto const source_mask = source_capacity - 1;
+    std::size_t selected = 0;
+    for (std::size_t offset = 0; offset < source_count; ++offset) {
+        auto const index = (source_read_index + offset) & source_mask;
+        selected += window.contains(source[index].time);
+    }
+    if (selected > target_capacity - target_count) {
+        return std::numeric_limits<std::size_t>::max();
+    }
+
+    auto write = target_write_index;
+    auto const origin = block_index.retreated_by(ordering_history_samples);
+    for (std::size_t offset = 0; offset < source_count; ++offset) {
+        auto const index = (source_read_index + offset) & source_mask;
+        if (!window.contains(source[index].time)) continue;
+        write = iv_graph_jit_merge_event_sequence(
+            target_events,
+            target_capacity,
+            target_read_index,
+            write,
+            source + index,
+            1,
+            1,
+            origin);
+    }
+    return write;
+}
+
 extern "C" std::size_t iv_graph_jit_merge_ordered_event_sequence(
     void* target_events,
     std::size_t* target_source_indices,

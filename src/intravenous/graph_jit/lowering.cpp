@@ -907,10 +907,17 @@ std::expected<EmittedSamplePortBindings, std::string> emit_sample_port_bindings(
             std::vector<ReflectedContinuousInputPortBinding> bindings;
             bindings.reserve(primitive.inputs.size());
             for (auto const& input : primitive.inputs) {
+                // A Random Access input reads only its TickInvocationCall
+                // view; this declared entry is never read.
+                if (input.random_access) {
+                    bindings.emplace_back();
+                    continue;
+                }
                 // The TickInvocationCall slot replaces an invocation-supplied
                 // binding except for its compiler-owned scratch below.
                 auto storage = input.invocation_supplied
                         && !input.combines_invocation_supplied
+                        && !input.stages_invocation_supplied
                     ? std::expected<
                         ReflectedContinuousPortStorageBinding,
                         std::string>{ReflectedContinuousPortStorageBinding{
@@ -936,11 +943,13 @@ std::expected<EmittedSamplePortBindings, std::string> emit_sample_port_bindings(
                 "__iv_graph_sample_inputs_" + std::to_string(primitive_index));
             for (std::size_t i = 0; i < primitive.inputs.size(); ++i) {
                 auto const& input = primitive.inputs[i];
+                if (input.random_access) continue;
                 for (std::size_t target_channel = 0;
                      target_channel < channel_count(input.channel_layout);
                      ++target_channel) {
                     if (!input.invocation_supplied
-                        || input.combines_invocation_supplied) {
+                        || input.combines_invocation_supplied
+                        || input.stages_invocation_supplied) {
                         auto const& channel = input.channels[target_channel];
                         auto const storage = channel.storage;
                         if (storage
@@ -1091,8 +1100,11 @@ std::expected<EmittedEventPortBindings, std::string> emit_event_port_bindings(
             for (auto const& input : primitive.inputs) {
                 // A background-only slot replaces the whole binding. Mixed
                 // delivery retains this realtime binding for the final merge.
-                if (input.invocation_supplied
-                    && !input.combines_invocation_supplied) {
+                // A Random Access input reads only its TickInvocationCall view.
+                if ((input.invocation_supplied
+                        && !input.combines_invocation_supplied
+                        && !input.stages_invocation_supplied)
+                    || input.random_access) {
                     bindings.emplace_back();
                     continue;
                 }
@@ -1113,8 +1125,10 @@ std::expected<EmittedEventPortBindings, std::string> emit_event_port_bindings(
                 alignof(ReflectedEventInputPortBinding),
                 "__iv_graph_event_inputs_" + std::to_string(primitive_index));
             for (std::size_t i = 0; i < primitive.inputs.size(); ++i) {
-                if (primitive.inputs[i].invocation_supplied
-                    && !primitive.inputs[i].combines_invocation_supplied) {
+                if ((primitive.inputs[i].invocation_supplied
+                        && !primitive.inputs[i].combines_invocation_supplied
+                        && !primitive.inputs[i].stages_invocation_supplied)
+                    || primitive.inputs[i].random_access) {
                     continue;
                 }
                 auto const storage = *primitive.inputs[i].storage;
@@ -1441,11 +1455,13 @@ llvm::Value* overlay_tick_sequential_bindings(
         auto const target = background.ports[binding.port]
                                 .configured_port.port_index;
         if (target < sample_inputs.size()
-            && sample_inputs[target].combines_invocation_supplied) {
+            && (sample_inputs[target].combines_invocation_supplied
+                || sample_inputs[target].stages_invocation_supplied)) {
             continue;
         }
         if (target < event_inputs.size()
-            && event_inputs[target].combines_invocation_supplied) {
+            && (event_inputs[target].combines_invocation_supplied
+                || event_inputs[target].stages_invocation_supplied)) {
             continue;
         }
         auto* invocation_source = builder.CreateInBoundsGEP(
@@ -1648,11 +1664,24 @@ void combine_tick_sequential_sample_bindings(
             sample_index,
             planned.absolute_pace_exponent,
             "tick.mixed.sample.ordinary.ordinal");
-        auto* supplied_begin = load_size(
+        auto* supplied_root_begin = load_size(
             supplied,
             offsetof(ReflectedContinuousInputPortBinding,
                      sequential_begin_ordinal),
             "tick.mixed.sample.supplied.ordinal");
+        auto const supplied_prefix = emit_lattice_projection(
+            builder,
+            root_index,
+            builder.CreateSub(
+                sample_index,
+                root_index,
+                "tick.mixed.sample.prefix.extent"),
+            planned.absolute_pace_exponent,
+            "tick.mixed.sample.prefix");
+        auto* supplied_begin = builder.CreateAdd(
+            supplied_root_begin,
+            supplied_prefix.value_count,
+            "tick.mixed.sample.supplied.slice.ordinal");
         auto* supplied_latency = load_size(
             supplied,
             offsetof(ReflectedContinuousInputPortBinding, read_latency),
@@ -1798,7 +1827,7 @@ void combine_tick_sequential_sample_bindings(
             index->addIncoming(next, body_block);
 
             builder.SetInsertPoint(rejected);
-            auto* trap = llvm::Intrinsic::getDeclaration(
+            auto* trap = llvm::Intrinsic::getOrInsertDeclaration(
                 module, llvm::Intrinsic::trap);
             builder.CreateCall(trap);
             builder.CreateUnreachable();
@@ -1874,6 +1903,257 @@ void combine_tick_sequential_sample_bindings(
     }
 }
 
+void stage_tick_sequential_sample_bindings(
+    llvm::IRBuilder<>& builder,
+    llvm::Value* target_bindings,
+    llvm::Value* invocation,
+    std::size_t invocation_data_offset,
+    std::span<TickSequentialBindingPlan const> dynamic_bindings,
+    std::size_t dynamic_begin,
+    std::size_t dynamic_count,
+    BackgroundEvaluationPlan const& background,
+    std::span<detail::PrimitiveSampleInputBindingPlan const> inputs,
+    EmittedRealtimeStorage const& realtime_storage,
+    llvm::Value* root_index,
+    llvm::Value* sample_index,
+    llvm::Value* block_size)
+{
+    auto& context = builder.getContext();
+    auto* byte_type = llvm::Type::getInt8Ty(context);
+    auto* pointer_type = llvm::PointerType::getUnqual(context);
+    auto* size_type = llvm::IntegerType::get(
+        context, static_cast<unsigned>(sizeof(std::size_t) * 8));
+    auto constant = [&](std::size_t value) {
+        return llvm::ConstantInt::get(size_type, value);
+    };
+    auto binding_pointer = [&](llvm::Value* base,
+                               std::size_t input,
+                               llvm::Twine const& name) {
+        return builder.CreateInBoundsGEP(
+            byte_type,
+            base,
+            constant(input * sizeof(ReflectedContinuousInputPortBinding)),
+            name);
+    };
+    auto load_size = [&](llvm::Value* base,
+                         std::size_t offset,
+                         llvm::Twine const& name) {
+        return builder.CreateLoad(
+            size_type, byte_offset_pointer(builder, base, offset, name), name);
+    };
+    auto load_pointer = [&](llvm::Value* base,
+                            std::size_t offset,
+                            llvm::Twine const& name) {
+        return builder.CreateLoad(
+            pointer_type, byte_offset_pointer(builder, base, offset, name), name);
+    };
+    auto const channel_storage_offset = [](std::size_t channel) {
+        return offsetof(ReflectedContinuousInputPortBinding, storage)
+            + offsetof(ReflectedContinuousPortStorageBinding, channels)
+            + channel * sizeof(ReflectedContinuousChannelStorageBinding);
+    };
+    auto* invocation_data = builder.CreateLoad(
+        pointer_type,
+        byte_offset_pointer(
+            builder, invocation, invocation_data_offset,
+            "tick.staged.sample.invocation.data.ptr"),
+        "tick.staged.sample.invocation.data");
+
+    for (std::size_t slot = 0; slot < dynamic_count; ++slot) {
+        auto const& dynamic = dynamic_bindings[dynamic_begin + slot];
+        IV_ASSERT(dynamic.port < background.ports.size(),
+            "GraphJit staged sample binding references a missing port");
+        auto const input_index = background.ports[dynamic.port]
+                                     .configured_port.port_index;
+        if (input_index >= inputs.size()
+            || !inputs[input_index].stages_invocation_supplied) {
+            continue;
+        }
+        auto const& planned = inputs[input_index];
+        IV_ASSERT(planned.staging_cursor_storage_offset
+                && planned.channels.size()
+                    == channel_count(planned.channel_layout)
+                && planned.geometry.value_size_bytes != 0,
+            "GraphJit staged sample input lost its transition storage");
+        auto* target = binding_pointer(
+            target_bindings, input_index, "tick.staged.sample.target");
+        auto* supplied = builder.CreateInBoundsGEP(
+            byte_type,
+            invocation_data,
+            constant((dynamic_begin + slot)
+                * sizeof(ReflectedContinuousInputPortBinding)),
+            "tick.staged.sample.supplied");
+        auto* target_root_begin = builder.CreateLoad(
+            size_type,
+            byte_offset_pointer(
+                builder,
+                realtime_storage.persistent_base,
+                *planned.staging_cursor_storage_offset,
+                "tick.staged.sample.cursor.ptr"),
+            "tick.staged.sample.cursor");
+        auto* prefix_extent = builder.CreateSub(
+            sample_index,
+            root_index,
+            "tick.staged.sample.prefix.extent");
+        auto const prefix = emit_lattice_projection(
+            builder,
+            root_index,
+            prefix_extent,
+            planned.absolute_pace_exponent,
+            "tick.staged.sample.prefix");
+        auto* target_begin = builder.CreateAdd(
+            target_root_begin,
+            prefix.value_count,
+            "tick.staged.sample.ordinal");
+        auto* supplied_root_begin = load_size(
+            supplied,
+            offsetof(ReflectedContinuousInputPortBinding,
+                     sequential_begin_ordinal),
+            "tick.staged.sample.supplied.ordinal");
+        auto* supplied_begin = builder.CreateAdd(
+            supplied_root_begin,
+            prefix.value_count,
+            "tick.staged.sample.supplied.slice.ordinal");
+        auto* supplied_latency = load_size(
+            supplied,
+            offsetof(ReflectedContinuousInputPortBinding, read_latency),
+            "tick.staged.sample.supplied.latency");
+        auto const projection = emit_lattice_projection(
+            builder,
+            sample_index,
+            block_size,
+            planned.absolute_pace_exponent,
+            "tick.staged.sample.projection");
+
+        for (std::size_t channel = 0;
+             channel < channel_count(planned.channel_layout);
+             ++channel) {
+            auto const channel_offset = channel_storage_offset(channel);
+            auto* target_storage = load_pointer(
+                target,
+                channel_offset
+                    + offsetof(ReflectedContinuousChannelStorageBinding, storage),
+                "tick.staged.sample.target.storage");
+            auto* target_capacity = load_size(
+                target,
+                channel_offset
+                    + offsetof(ReflectedContinuousChannelStorageBinding,
+                               value_capacity),
+                "tick.staged.sample.target.capacity");
+            auto* target_stride = load_size(
+                target,
+                channel_offset
+                    + offsetof(ReflectedContinuousChannelStorageBinding,
+                               value_stride_bytes),
+                "tick.staged.sample.target.stride");
+            auto* target_delay = load_size(
+                target,
+                channel_offset
+                    + offsetof(ReflectedContinuousChannelStorageBinding,
+                               value_delay),
+                "tick.staged.sample.target.delay");
+            auto* supplied_storage = load_pointer(
+                supplied,
+                channel_offset
+                    + offsetof(ReflectedContinuousChannelStorageBinding, storage),
+                "tick.staged.sample.supplied.storage");
+            auto* supplied_capacity = load_size(
+                supplied,
+                channel_offset
+                    + offsetof(ReflectedContinuousChannelStorageBinding,
+                               value_capacity),
+                "tick.staged.sample.supplied.capacity");
+            auto* supplied_stride = load_size(
+                supplied,
+                channel_offset
+                    + offsetof(ReflectedContinuousChannelStorageBinding,
+                               value_stride_bytes),
+                "tick.staged.sample.supplied.stride");
+            auto* supplied_delay = load_size(
+                supplied,
+                channel_offset
+                    + offsetof(ReflectedContinuousChannelStorageBinding,
+                               value_delay),
+                "tick.staged.sample.supplied.delay");
+
+            auto* function = builder.GetInsertBlock()->getParent();
+            auto* loop = llvm::BasicBlock::Create(
+                context, "tick.staged.sample.loop", function);
+            auto* body = llvm::BasicBlock::Create(
+                context, "tick.staged.sample.body", function);
+            auto* done = llvm::BasicBlock::Create(
+                context, "tick.staged.sample.done", function);
+            auto* preheader = builder.GetInsertBlock();
+            builder.CreateBr(loop);
+            builder.SetInsertPoint(loop);
+            auto* index = builder.CreatePHI(
+                size_type, 2, "tick.staged.sample.index");
+            index->addIncoming(constant(0), preheader);
+            builder.CreateCondBr(
+                builder.CreateICmpULT(index, projection.value_count),
+                body,
+                done);
+
+            builder.SetInsertPoint(body);
+            auto storage_pointer = [&](llvm::Value* storage,
+                                       llvm::Value* capacity,
+                                       llvm::Value* stride,
+                                       llvm::Value* begin,
+                                       llvm::Value* latency,
+                                       llvm::Value* delay,
+                                       llvm::Twine const& name) {
+                auto* ordinal = builder.CreateSub(
+                    builder.CreateAdd(begin, index), latency, name + ".latency");
+                ordinal = builder.CreateSub(ordinal, delay, name + ".delay");
+                auto* slot_index = builder.CreateAnd(
+                    ordinal,
+                    builder.CreateSub(capacity, constant(1)),
+                    name + ".index");
+                return builder.CreateInBoundsGEP(
+                    byte_type,
+                    storage,
+                    builder.CreateMul(slot_index, stride),
+                    name + ".value");
+            };
+            auto* source = storage_pointer(
+                supplied_storage,
+                supplied_capacity,
+                supplied_stride,
+                supplied_begin,
+                supplied_latency,
+                supplied_delay,
+                "tick.staged.sample.source");
+            auto* destination = storage_pointer(
+                target_storage,
+                target_capacity,
+                target_stride,
+                target_begin,
+                constant(planned.read_latency),
+                target_delay,
+                "tick.staged.sample.destination");
+            builder.CreateMemCpy(
+                destination,
+                llvm::Align(planned.geometry.element_alignment),
+                source,
+                llvm::Align(planned.geometry.element_alignment),
+                planned.geometry.value_size_bytes);
+            auto* next = builder.CreateAdd(index, constant(1));
+            auto* body_block = builder.GetInsertBlock();
+            builder.CreateBr(loop);
+            index->addIncoming(next, body_block);
+            builder.SetInsertPoint(done);
+        }
+        builder.CreateStore(
+            target_begin,
+            byte_offset_pointer(
+                builder,
+                target,
+                offsetof(ReflectedContinuousInputPortBinding,
+                         sequential_begin_ordinal),
+                "tick.staged.sample.target.ordinal"));
+    }
+}
+
 void combine_tick_sequential_event_bindings(
     llvm::IRBuilder<>& builder,
     llvm::Value* target_bindings,
@@ -1886,7 +2166,8 @@ void combine_tick_sequential_event_bindings(
     std::span<detail::PrimitiveEventInputBindingPlan const> inputs,
     detail::EventPortBindingPlan const& event_ports,
     EmittedRealtimeStorage const& realtime_storage,
-    llvm::Value* sample_index)
+    llvm::Value* sample_index,
+    llvm::Value* block_size)
 {
     auto& context = builder.getContext();
     auto* module = builder.GetInsertBlock()->getModule();
@@ -2031,18 +2312,11 @@ void combine_tick_sequential_event_bindings(
         auto const input_index = background.ports[dynamic.port]
                                      .configured_port.port_index;
         if (input_index >= inputs.size()
-            || !inputs[input_index].combines_invocation_supplied) {
+            || (!inputs[input_index].combines_invocation_supplied
+                && !inputs[input_index].stages_invocation_supplied)) {
             continue;
         }
         auto const& planned = inputs[input_index];
-        IV_ASSERT(planned.storage
-                && planned.combined_storage
-                && *planned.storage < event_ports.ports.size()
-                && *planned.combined_storage < event_ports.ports.size()
-                && *planned.combined_storage
-                    < realtime_storage.event_representations.size(),
-            "GraphJit mixed event input lost its planned storage");
-        auto const& combined = event_ports.ports[*planned.combined_storage];
         auto* target_binding = binding_pointer(
             target_bindings, input_index, "tick.mixed.event.target.binding");
         auto* supplied_binding = builder.CreateInBoundsGEP(
@@ -2051,6 +2325,75 @@ void combine_tick_sequential_event_bindings(
             constant((dynamic_begin + slot)
                 * sizeof(ReflectedEventInputPortBinding)),
             "tick.mixed.event.supplied.binding");
+        if (planned.stages_invocation_supplied) {
+            IV_ASSERT(planned.storage
+                    && *planned.storage < event_ports.ports.size()
+                    && *planned.storage
+                        < realtime_storage.event_representations.size(),
+                "GraphJit staged event input lost its transition storage");
+            auto const& target = event_ports.ports[*planned.storage];
+            IV_ASSERT(target.persistent && target.persistent_ring,
+                "GraphJit staged event input has no persistent ring");
+            auto const target_sequence = load_sequence(
+                target_binding, "tick.staged.event.target");
+            auto const supplied_sequence = load_sequence(
+                supplied_binding, "tick.staged.event.supplied");
+            auto* helper_type = llvm::FunctionType::get(
+                size_type,
+                {pointer_type, size_type, size_type, size_type,
+                 pointer_type, size_type, size_type, size_type,
+                 sample_index->getType(), size_type, size_type},
+                false);
+            auto stage = module->getOrInsertFunction(
+                detail::staged_event_window_merge_symbol, helper_type);
+            auto* write = builder.CreateCall(
+                stage,
+                {target_sequence.events,
+                 target_sequence.capacity,
+                 target_sequence.read_index,
+                 target_sequence.write_index,
+                 supplied_sequence.events,
+                 supplied_sequence.capacity,
+                 supplied_sequence.read_index,
+                 supplied_sequence.write_index,
+                 sample_index,
+                 block_size,
+                 constant(planned.staging_history_samples)},
+                "tick.staged.event.write");
+            auto* function = builder.GetInsertBlock()->getParent();
+            auto* accepted = llvm::BasicBlock::Create(
+                context, "tick.staged.event.accepted", function);
+            auto* rejected = llvm::BasicBlock::Create(
+                context, "tick.staged.event.rejected", function);
+            builder.CreateCondBr(
+                builder.CreateICmpNE(
+                    write,
+                    constant(std::numeric_limits<std::size_t>::max())),
+                accepted,
+                rejected);
+            builder.SetInsertPoint(rejected);
+            auto* trap = llvm::Intrinsic::getOrInsertDeclaration(
+                module, llvm::Intrinsic::trap);
+            builder.CreateCall(trap);
+            builder.CreateUnreachable();
+            builder.SetInsertPoint(accepted);
+            builder.CreateStore(
+                write,
+                byte_offset_pointer(
+                    builder,
+                    realtime_storage.event_representations[*planned.storage],
+                    target.write_index_relative_offset,
+                    "tick.staged.event.write.ptr"));
+            continue;
+        }
+        IV_ASSERT(planned.storage
+                && planned.combined_storage
+                && *planned.storage < event_ports.ports.size()
+                && *planned.combined_storage < event_ports.ports.size()
+                && *planned.combined_storage
+                    < realtime_storage.event_representations.size(),
+            "GraphJit mixed event input lost its planned storage");
+        auto const& combined = event_ports.ports[*planned.combined_storage];
         auto const realtime_sequence = load_sequence(
             target_binding, "tick.mixed.event.realtime");
         auto const supplied_sequence = load_sequence(
@@ -2094,7 +2437,8 @@ void combine_tick_sequential_event_bindings(
             accepted,
             rejected);
         builder.SetInsertPoint(rejected);
-        auto* trap = llvm::Intrinsic::getDeclaration(module, llvm::Intrinsic::trap);
+        auto* trap = llvm::Intrinsic::getOrInsertDeclaration(
+            module, llvm::Intrinsic::trap);
         builder.CreateCall(trap);
         builder.CreateUnreachable();
         builder.SetInsertPoint(accepted);
@@ -2263,6 +2607,20 @@ EmittedPrimitiveTickContext emit_primitive_tick_context(
                 sample_index,
                 block_size,
                 combine_sequential_input_values_symbol);
+            stage_tick_sequential_sample_bindings(
+                builder,
+                bindings,
+                invocation,
+                call_offsets.sequential_sample_inputs_data,
+                tick_background->tick_runtime.sequential_sample_inputs,
+                tick_invocation->sequential_sample_begin,
+                tick_invocation->sequential_sample_count,
+                *tick_background,
+                sample_plan.inputs,
+                realtime_storage,
+                root_index,
+                sample_index,
+                block_size);
         }
         for (std::size_t input = 0; input < sample_plan.inputs.size(); ++input) {
             auto const external = tick_background != nullptr
@@ -2277,7 +2635,7 @@ EmittedPrimitiveTickContext emit_primitive_tick_context(
                         auto const& port = tick_background->ports[selected.port];
                         return port.configured_port.port_index == input;
                     });
-            if (external) continue;
+            if (external || sample_plan.inputs[input].random_access) continue;
             auto* ordinal = emit_sequential_begin_ordinal(
                 builder,
                 sample_storage,
@@ -2373,7 +2731,8 @@ EmittedPrimitiveTickContext emit_primitive_tick_context(
                 event_plan.inputs,
                 event_storage,
                 realtime_storage,
-                sample_index);
+                sample_index,
+                block_size);
         }
         store_context_span_pointer(
             builder,
@@ -7394,6 +7753,48 @@ std::expected<llvm::Function*, std::string> define_root_operation(
             pointer);
     }
 
+    std::vector<std::pair<std::size_t, std::int32_t>> staged_sample_cursors;
+    for (auto const& primitive : plan.sample_ports.primitives) {
+        for (auto const& input : primitive.inputs) {
+            if (!input.stages_invocation_supplied) continue;
+            IV_ASSERT(input.staging_cursor_storage_offset,
+                "GraphJit staged sample input has no transition cursor");
+            auto const offset = *input.staging_cursor_storage_offset;
+            auto const existing = std::ranges::find(
+                staged_sample_cursors,
+                offset,
+                &std::pair<std::size_t, std::int32_t>::first);
+            if (existing != staged_sample_cursors.end()) {
+                IV_ASSERT(existing->second == input.absolute_pace_exponent,
+                    "GraphJit transition cursor has inconsistent paces");
+                continue;
+            }
+            staged_sample_cursors.emplace_back(
+                offset, input.absolute_pace_exponent);
+        }
+    }
+    for (auto const& [offset, pace] : staged_sample_cursors) {
+        auto* pointer = byte_offset_pointer(
+            builder,
+            storage_base,
+            offset,
+            "continuous.staged.cursor");
+        auto* current = builder.CreateLoad(
+            size_type, pointer, "continuous.staged.cursor.current");
+        auto const projected = emit_lattice_projection(
+            builder,
+            sample_index,
+            block_size,
+            pace,
+            "continuous.staged.cursor.advance");
+        builder.CreateStore(
+            builder.CreateAdd(
+                current,
+                projected.value_count,
+                "continuous.staged.cursor.next"),
+            pointer);
+    }
+
     builder.CreateRetVoid();
     return function;
 }
@@ -8242,6 +8643,9 @@ specialize_transition_plan(
         auto const& current_realization = steady_plan
             .realtime_port_state_realizations.sample_states[
                 transition.current_realization_index];
+        auto const invocation_successor = input_history
+            && current_realization.retained_access
+                == SampleRealtimePortStateAccess::invocation_supplied;
         if ((current_realization.retained_access
                     == SampleRealtimePortStateAccess::direct
                 && current_realization.retained_sources.size() != 1)
@@ -8250,7 +8654,8 @@ specialize_transition_plan(
                 && current_realization.retained_access
                     != SampleRealtimePortStateAccess::materialized
                 && current_realization.retained_access
-                    != SampleRealtimePortStateAccess::composed)) {
+                    != SampleRealtimePortStateAccess::composed
+                && !invocation_successor)) {
             return std::unexpected(
                 "GraphJit transition sample state has an unsupported steady realization");
         }
@@ -8267,17 +8672,28 @@ specialize_transition_plan(
             auto const& steady_inputs = steady_plan.sample_ports
                 .primitives[*target_primitive].inputs;
             if (requirement.configured_port.port_index
-                    >= steady_inputs.size()
-                || *requirement.channel
-                    >= steady_inputs[
-                        requirement.configured_port.port_index]
-                        .channels.size()) {
+                    >= steady_inputs.size()) {
                 return std::unexpected(
                     "GraphJit transition input state lost its steady binding");
             }
-            source_representation = steady_inputs[
-                requirement.configured_port.port_index]
-                .channels[*requirement.channel].storage;
+            auto const& steady_input = steady_inputs[
+                requirement.configured_port.port_index];
+            if (invocation_successor) {
+                if (!steady_input.invocation_supplied
+                    || steady_input.combines_invocation_supplied
+                    || *requirement.channel
+                        >= channel_count(steady_input.channel_layout)) {
+                    return std::unexpected(
+                        "GraphJit transition input state lost its invocation binding");
+                }
+            } else {
+                if (*requirement.channel >= steady_input.channels.size()) {
+                    return std::unexpected(
+                        "GraphJit transition input state lost its steady channel");
+                }
+                source_representation = steady_input.channels[
+                    *requirement.channel].storage;
+            }
         } else {
             auto const& steady_ports = steady_plan.sample_ports
                 .primitives[*target_primitive];
@@ -8292,13 +8708,17 @@ specialize_transition_plan(
                 requirement.configured_port.port_index].storage;
         }
         auto const suffix_region = region_for_view(transfer->target_storage);
-        if (!source_representation || !suffix_region) {
+        if ((!source_representation && !invocation_successor)
+            || !suffix_region) {
             return std::unexpected(
                 "GraphJit transition sample state lost its source or suffix storage");
         }
 
-        auto const source = transition_plan.sample_ports.storage
-            .representations[*source_representation];
+        std::optional<detail::SampleRepresentationPlan> source;
+        if (source_representation) {
+            source = transition_plan.sample_ports.storage
+                .representations[*source_representation];
+        }
         if (requirement.configured_port.node_bundle_handle
             >= transition_plan.connections.schedule
                 .bundle_execution_position.size()) {
@@ -8311,7 +8731,7 @@ specialize_transition_plan(
         std::optional<std::size_t> source_position;
         bool source_after_composition = false;
         bool source_before_consumer_materialization = false;
-        if (output_window) {
+        if (output_window || invocation_successor) {
             source_position = target_position;
         } else {
             auto const materialization = std::ranges::find_if(
@@ -8345,13 +8765,14 @@ specialize_transition_plan(
                         composition->after_execution_position};
                 source_after_composition = true;
             } else {
-                if (source.producer_group_index
+                if (!source
+                    || source->producer_group_index
                         >= transition_plan.connections.sample_producer_groups.size()) {
                     return std::unexpected(
                         "GraphJit transition input suffix lost its producer group");
                 }
                 auto const& producer_group = transition_plan.connections
-                    .sample_producer_groups[source.producer_group_index];
+                    .sample_producer_groups[source->producer_group_index];
                 if (!producer_group.source_port
                     || producer_group.source_port->node_bundle_handle
                         >= transition_plan.connections.schedule
@@ -8381,15 +8802,25 @@ specialize_transition_plan(
             auto const& steady_binding = steady_plan.sample_ports
                 .primitives[*target_primitive]
                 .inputs[requirement.configured_port.port_index];
-            if (*requirement.channel >= steady_binding.channels.size()
-                || steady_binding.channels[*requirement.channel].storage
-                    != *source_representation
-                || steady_binding.channels[*requirement.channel]
-                        .representation_channel
-                    != current_realization.authored_storage
-                        .representation_channel) {
-                return std::unexpected(
-                    "GraphJit transition sample state disagrees with its authored input binding");
+            if (invocation_successor) {
+                if (!steady_binding.invocation_supplied
+                    || steady_binding.combines_invocation_supplied
+                    || *requirement.channel
+                        >= channel_count(steady_binding.channel_layout)) {
+                    return std::unexpected(
+                        "GraphJit transition sample state disagrees with its invocation input binding");
+                }
+            } else {
+                if (*requirement.channel >= steady_binding.channels.size()
+                    || steady_binding.channels[*requirement.channel].storage
+                        != *source_representation
+                    || steady_binding.channels[*requirement.channel]
+                            .representation_channel
+                        != current_realization.authored_storage
+                            .representation_channel) {
+                    return std::unexpected(
+                        "GraphJit transition sample state disagrees with its authored input binding");
+                }
             }
         } else {
             auto const& steady_outputs = steady_plan.sample_ports
@@ -8427,7 +8858,16 @@ specialize_transition_plan(
         auto const new_suffix = !suffix_representation;
         if (new_suffix) {
             suffix_representation = sample_storage.representations.size();
-            auto suffix = source;
+            auto suffix = source.value_or(detail::SampleRepresentationPlan{});
+            if (invocation_successor) {
+                suffix.producer_group_index =
+                    detail::no_sample_producer_group;
+                suffix.channel_layout =
+                    transfer->target_storage.channel_layout;
+                suffix.geometry = transfer->target_storage.geometry;
+                suffix.absolute_pace_exponent =
+                    transfer->target_storage.absolute_pace_exponent;
+            }
             suffix.canonical_producer_representation = false;
             suffix.storage = RealtimeBufferStorageKind::full_node_storage;
             suffix.channel_layout = transfer->target_storage.channel_layout;
@@ -8457,56 +8897,77 @@ specialize_transition_plan(
                         *transfer->target_storage.node_storage_offset,
                 });
 
-            auto const materialization_index =
-                sample_storage.materializations.size();
-            auto mirror = detail::SampleMaterializationPlan{
-                .source_representation = input_history
-                    ? *source_representation
-                    : *suffix_representation,
-                .target_representation = input_history
-                    ? *suffix_representation
-                    : *source_representation,
-                .source_layout = source.channel_layout,
-                .target_layout = source.channel_layout,
-            };
-            if (source_before_consumer_materialization) {
-                mirror.before_execution_position = *source_position;
-            } else {
-                mirror.after_execution_position = *source_position;
-            }
-            if (output_window) {
-                mirror.retained_before = target_ports.outputs[
-                    requirement.configured_port.port_index].latency;
-            }
-            sample_storage.materializations.push_back(std::move(mirror));
-            auto& source_step = transition_plan.execution
-                .primitive_steps[*source_position];
-            auto const source_is_feedback_timeline = input_history
-                && std::ranges::any_of(
-                    sample_storage.feedback_timelines,
-                    [&](detail::SampleFeedbackTimelinePlan const& timeline) {
-                        return timeline.timeline_representation
-                            == *source_representation;
-                    });
-            if (source_is_feedback_timeline || source_after_composition) {
-                source_step.sample_transition_materializations_after
-                    .push_back(materialization_index);
-            } else if (source_before_consumer_materialization) {
-                source_step.sample_materializations_before.push_back(
-                    materialization_index);
-            } else if (output_window) {
-                source_step.sample_materializations_after.insert(
-                    source_step.sample_materializations_after.begin(),
-                    materialization_index);
-            } else {
-                source_step.sample_materializations_after.push_back(
-                    materialization_index);
+            if (!invocation_successor) {
+                auto const materialization_index =
+                    sample_storage.materializations.size();
+                auto mirror = detail::SampleMaterializationPlan{
+                    .source_representation = input_history
+                        ? *source_representation
+                        : *suffix_representation,
+                    .target_representation = input_history
+                        ? *suffix_representation
+                        : *source_representation,
+                    .source_layout = source->channel_layout,
+                    .target_layout = source->channel_layout,
+                };
+                if (source_before_consumer_materialization) {
+                    mirror.before_execution_position = *source_position;
+                } else {
+                    mirror.after_execution_position = *source_position;
+                }
+                if (output_window) {
+                    mirror.retained_before = target_ports.outputs[
+                        requirement.configured_port.port_index].latency;
+                }
+                sample_storage.materializations.push_back(std::move(mirror));
+                auto& source_step = transition_plan.execution
+                    .primitive_steps[*source_position];
+                auto const source_is_feedback_timeline = input_history
+                    && std::ranges::any_of(
+                        sample_storage.feedback_timelines,
+                        [&](detail::SampleFeedbackTimelinePlan const& timeline) {
+                            return timeline.timeline_representation
+                                == *source_representation;
+                        });
+                if (source_is_feedback_timeline || source_after_composition) {
+                    source_step.sample_transition_materializations_after
+                        .push_back(materialization_index);
+                } else if (source_before_consumer_materialization) {
+                    source_step.sample_materializations_before.push_back(
+                        materialization_index);
+                } else if (output_window) {
+                    source_step.sample_materializations_after.insert(
+                        source_step.sample_materializations_after.begin(),
+                        materialization_index);
+                } else {
+                    source_step.sample_materializations_after.push_back(
+                        materialization_index);
+                }
             }
         }
         if (input_history) {
-            target_ports.inputs[requirement.configured_port.port_index]
-                .channels[*requirement.channel].storage =
-                    *suffix_representation;
+            auto& input = target_ports.inputs[
+                requirement.configured_port.port_index];
+            if (invocation_successor) {
+                if (!transfer->target_storage
+                         .sequential_cursor_node_storage_offset) {
+                    return std::unexpected(
+                        "GraphJit staged sample suffix lost its transition cursor");
+                }
+                if (input.channels.empty()) {
+                    input.channels.resize(
+                        channel_count(input.channel_layout));
+                }
+                input.stages_invocation_supplied = true;
+                input.staging_cursor_storage_offset = transfer->target_storage
+                    .sequential_cursor_node_storage_offset;
+            }
+            input.channels[*requirement.channel] = {
+                .storage = *suffix_representation,
+                .representation_channel =
+                    current_realization.authored_storage
+                        .representation_channel,
+            };
         } else {
             target_ports.outputs[requirement.configured_port.port_index]
                 .storage = *suffix_representation;
@@ -8570,6 +9031,9 @@ specialize_transition_plan(
             steady_plan.event_ports.primitives[*primitive];
         auto& primitive_ports =
             transition_plan.event_ports.primitives[*primitive];
+        auto const& current_realization = steady_plan
+            .realtime_port_state_realizations.event_states[
+                transition.current_realization_index];
         std::optional<std::size_t> steady_representation;
         auto const input_history = requirement.direction == PortDirection::input
             && requirement.role
@@ -8579,6 +9043,9 @@ specialize_transition_plan(
                     == RealtimePortStateRole::tick_output_history
                 || requirement.role
                     == RealtimePortStateRole::tick_output_latency);
+        auto const invocation_successor = input_history
+            && current_realization.retained_access
+                == EventRealtimePortStateAccess::invocation_supplied;
         std::size_t retained_history = requirement.extent_samples;
         if (input_history) {
             if (requirement.configured_port.port_index
@@ -8586,8 +9053,17 @@ specialize_transition_plan(
                 return std::unexpected(
                     "GraphJit transition event input lost its binding");
             }
-            steady_representation = steady_primitive_ports.inputs[
-                requirement.configured_port.port_index].storage;
+            auto const& input = steady_primitive_ports.inputs[
+                requirement.configured_port.port_index];
+            if (invocation_successor) {
+                if (!input.invocation_supplied
+                    || input.combines_invocation_supplied) {
+                    return std::unexpected(
+                        "GraphJit transition event input lost its invocation binding");
+                }
+            } else {
+                steady_representation = input.storage;
+            }
         } else if (output_window) {
             if (requirement.configured_port.port_index
                     >= steady_primitive_ports.outputs.size()) {
@@ -8609,14 +9085,19 @@ specialize_transition_plan(
                 "GraphJit transition suffix has an unsupported event-state role");
         }
         auto const region = event_region_for_view(transfer->target_storage);
-        if (!steady_representation || !region
-            || *steady_representation >= transition_plan.event_ports.ports.size()) {
+        if ((!steady_representation && !invocation_successor) || !region
+            || (steady_representation
+                && *steady_representation
+                    >= transition_plan.event_ports.ports.size())) {
             return std::unexpected(
                 "GraphJit transition event state lost its source or suffix storage");
         }
-        auto const source_representation = *steady_representation;
-        auto const source = transition_plan.event_ports.ports[
-            source_representation];
+        auto const source_representation = steady_representation.value_or(0);
+        std::optional<detail::EventRepresentationPlan> source;
+        if (steady_representation) {
+            source = transition_plan.event_ports.ports[
+                source_representation];
+        }
         std::optional<std::size_t> suffix_representation;
         for (std::size_t representation = 0;
              representation < transition_plan.event_ports.ports.size();
@@ -8644,7 +9125,9 @@ specialize_transition_plan(
             suffix_representation = transition_plan.event_ports.ports.size();
             transition_plan.event_ports.ports.push_back(
                 detail::EventRepresentationPlan{
-                    .producer_group_index = source.producer_group_index,
+                    .producer_group_index = source
+                        ? source->producer_group_index
+                        : std::size_t{0},
                     .type = transfer->target_storage.type,
                     .event_capacity = transfer->target_storage.event_capacity,
                     .persistent = true,
@@ -8688,7 +9171,7 @@ specialize_transition_plan(
                 .index = prune_index,
             });
 
-            if (input_history) {
+            if (input_history && !invocation_successor) {
                 constexpr auto event_alignment = alignof(TimedEvent);
                 constexpr auto event_mask = event_alignment - 1;
                 auto const temp_events_offset =
@@ -8719,7 +9202,7 @@ specialize_transition_plan(
                     transition_plan.event_ports.ports.size();
                 transition_plan.event_ports.ports.push_back(
                     detail::EventRepresentationPlan{
-                        .producer_group_index = source.producer_group_index,
+                        .producer_group_index = source->producer_group_index,
                         .type = transfer->target_storage.type,
                         .event_capacity =
                             transfer->target_storage.event_capacity,
@@ -8746,7 +9229,7 @@ specialize_transition_plan(
                 std::optional<EventConversionPlan> conversion;
                 try {
                     conversion = EventConversionRegistry::plan(
-                        source.type, transfer->target_storage.type);
+                        source->type, transfer->target_storage.type);
                 } catch (std::exception const&) {
                     return std::unexpected(
                         "GraphJit transition input suffix lost its event conversion");
@@ -8778,7 +9261,7 @@ specialize_transition_plan(
                     .kind = detail::EventOperationKind::merge,
                     .index = merge_index,
                 });
-            } else {
+            } else if (!invocation_successor) {
                 auto const merge_index =
                     transition_plan.event_ports.merges.size();
                 transition_plan.event_ports.merges.push_back(
@@ -8796,8 +9279,13 @@ specialize_transition_plan(
             }
         }
         if (input_history) {
-            primitive_ports.inputs[requirement.configured_port.port_index]
-                .storage = *suffix_representation;
+            auto& input = primitive_ports.inputs[
+                requirement.configured_port.port_index];
+            input.storage = *suffix_representation;
+            if (invocation_successor) {
+                input.stages_invocation_supplied = true;
+                input.staging_history_samples = retained_history;
+            }
         }
         auto& transition_realization = transition_realizations.event_states[
             transition.current_realization_index];

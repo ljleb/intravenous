@@ -708,7 +708,6 @@ public:
             // globally addressed. Generated execution leaves this overlaid
             // binding's ordinal intact.
             binding.sequential_begin_ordinal = sample_index.bits();
-            auto const channels = channel_count(layout);
             auto const begin = sample_index.retreated_by(history);
             auto const count = history + block_size;
             auto const requested = GlobalIndexRange{
@@ -727,19 +726,47 @@ public:
             }
 
             if (!materialized) return;
-            auto const mask = capacity - 1;
-            for (std::size_t offset = 0; offset < count; ++offset) {
-                auto const index = begin.advanced_by(offset);
-                if (!materialized->coverage.contains(index)) continue;
-                auto const frame = static_cast<std::size_t>(index.bits() & mask);
+            materialized->for_each_region(
+                requested,
+                [&](TickMaterializedSampleRegion const& region,
+                    GlobalIndexRange intersection) {
+                    copy(*materialized, region, intersection);
+                });
+        }
+
+        // The caller selected only complete materializations, so every
+        // logical channel has a slot in region.
+        void copy(
+            TickMaterializedSampleInput const& materialized,
+            TickMaterializedSampleRegion const& region,
+            GlobalIndexRange intersection) noexcept
+        {
+            auto remaining = static_cast<std::size_t>(intersection.extent);
+            auto source = static_cast<std::size_t>(
+                region.range.begin.forward_distance_to(intersection.begin));
+            auto destination = static_cast<std::size_t>(
+                intersection.begin.bits() & (capacity - 1));
+            auto const channels = channel_count(layout);
+            while (remaining != 0) {
+                auto const frames = std::min(remaining, capacity - destination);
                 for (std::size_t channel = 0; channel < channels; ++channel) {
-                    auto const value = materialized->at(index, channel);
+                    auto const* frames_begin = region.channel_frames(
+                        materialized.channel_slot(channel)) + source;
                     if (layout.sample_layout == SampleStreamLayout::planar) {
-                        values[channel * capacity + frame] = value;
+                        std::copy_n(
+                            frames_begin,
+                            frames,
+                            values.begin() + channel * capacity + destination);
                     } else {
-                        values[frame * channels + channel] = value;
+                        for (std::size_t frame = 0; frame < frames; ++frame) {
+                            values[(destination + frame) * channels + channel] =
+                                frames_begin[frame];
+                        }
                     }
                 }
+                remaining -= frames;
+                source += frames;
+                destination = 0;
             }
         }
     };
@@ -950,6 +977,7 @@ public:
     std::vector<std::uint8_t> producer_bounds_compatible{};
     std::uint64_t generation = 0;
     std::size_t maximum_block_size = 0;
+    std::optional<GlobalIndex> playback_end{};
 
     Impl(
         graph_jit::BackgroundEvaluationPlan const& plan,
@@ -1348,6 +1376,7 @@ public:
         auto const materialization_matches = materialized.generation() == generation
             && materialized.data_version() == published.version();
         auto const selected_block_size = std::min(block_size, maximum_block_size);
+        playback_end = sample_index.advanced_by(selected_block_size);
         for (auto& selected : sequential_sample_slots) {
             auto const* materialized_sample = materialization_matches
                     && selected.accepts_materialization
@@ -1499,6 +1528,20 @@ std::span<RealtimeProducerRequirement const>
 TickInvocationWorkspace::producer_requirements() const noexcept
 {
     return impl_->producer_requirements;
+}
+
+graph_jit::RealtimePortStatePlaybackSlots
+TickInvocationWorkspace::playback_slots() const noexcept
+{
+    return {
+        .sequential_samples = impl_->sequential_sample_views,
+        .sequential_events = impl_->sequential_event_views,
+    };
+}
+
+std::optional<GlobalIndex> TickInvocationWorkspace::playback_end() const noexcept
+{
+    return impl_->playback_end;
 }
 
 void TickInvocationWorkspace::bind_producer_endpoint(
