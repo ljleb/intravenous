@@ -440,9 +440,9 @@ owned by Front 6, not by this delivery front.
 - *Documentation retention:* the status text replaced at closure is retained in
   [Front 4 status before closure](./historical/front_4_status_before_closure_2026-10-23.md).
 
-**Reopened and implemented: node-owned history for background-fed inputs
-(2026-10-23; the collaborator's full suite passed; end-to-end fixtures added and not
-yet run).** A Tick primitive's Sequential input fed
+**Reopened, implemented and verified: node-owned history for background-fed inputs
+(2026-10-23; the collaborator's full suite, including the end-to-end fixtures below,
+passed without warnings).** A Tick primitive's Sequential input fed
 through a `TickInvocationCall` slot now keeps the history it consumed, in Tick
 invocation order, with neutral history before its first invocation, as [GraphJit
 direction](./graph_jit_direction.md) requires for every Sequential input. The
@@ -480,7 +480,7 @@ playback history](./historical/background_fed_input_playback_history_2026-10-23.
   transfers and transition suffixes. The playback-slot transfer source and the
   Tick-to-Tock staging transition root were removed with the superseded
   representation.
-- *End-to-end fixtures (added, not yet run):* compiled GraphJit roots driven
+- *End-to-end fixtures (verified):* compiled GraphJit roots driven
   through a real `TickInvocationWorkspace` and `TickInvocationFrame`, with each
   callback's playback published as a `TickMaterializationSnapshot`.
   - Pure sample and pure event inputs keep neutral pre-start history. They keep
@@ -495,8 +495,7 @@ playback history](./historical/background_fed_input_playback_history_2026-10-23.
     realtime to background delivery and the other from background to realtime,
     for samples and for events. Each keeps the history it consumed before
     cutover.
-- *Remaining:* the collaborator's run of these fixtures. A failure reopens the
-  boundary it exposes.
+- *Status:* complete and verified. Front 4 is closed again.
 
 Detailed direction:
 [Coverage And Background Evaluation](./coverage_and_background_evaluation.md).
@@ -1001,8 +1000,8 @@ remains. Front 6 is closed and active implementation moves to Front 7. The possi
 per-node/per-pace grouping of callback ordinal stores remains measurement-driven
 cleanup, not transition correctness work and not a Front 6 completion condition.
 
-**Front 6 follow-up exposed by Front 4 (2026-10-23; resolved by representation,
-not yet compiled or tested):** a Sequential input supplied through
+**Front 6 follow-up exposed by Front 4 (2026-10-23; resolved by representation and
+verified):** a Sequential input supplied through
 `TickInvocationCall`, alone or mixed with a realtime contribution, had no
 recoverable node-owned history, so a graph revision that changed its delivery kind
 could not preserve it. The reopened Front 4 item gives every such input with history
@@ -1010,8 +1009,9 @@ a node-owned retained timeline. Its realization is ordinary `direct` retained st
 so the completed Front 6 transfer and transition-suffix paths apply unchanged and
 this front needs no delivery-kind special case. The superseded cross-kind machinery
 and its friction record are retained in [Background-fed input playback
-history](./historical/background_fed_input_playback_history_2026-10-23.md). Front 6
-closes again once the end-to-end revision fixtures recorded under Front 4 pass.
+history](./historical/background_fed_input_playback_history_2026-10-23.md). The
+end-to-end revision fixtures recorded under Front 4 passed, so Front 6 is closed
+again.
 
 ## Front 7: remaining GraphJit and node execution semantics
 
@@ -1596,9 +1596,10 @@ then the next dependency-ready correctness front in the execution-path order.
 
 **Reopening update (2026-10-23):** the Front 6 case was traced to Front 4's playback
 representation, which rebuilt background-fed history from the snapshot instead of
-keeping the node-owned history. Front 4 is reopened for node-owned input timelines,
-implemented in source but not yet compiled or tested. Its end-to-end fixture closes
-both Front 4 and the Front 6 case. Front 3 remains the next front after that.
+keeping the node-owned history. Front 4 was reopened for node-owned input timelines.
+That work and its end-to-end fixtures passed the collaborator's full suite, closing
+both Front 4 and the Front 6 case. Front 3 is the next dependency-ready correctness
+front.
 
 The control-plane order remains Front 9 before complete Front 10 and Front 13, then
 Front 14 and Front 15 after their stated inputs exist. Front 10 may continue to use
