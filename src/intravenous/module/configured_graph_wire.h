@@ -12,10 +12,9 @@
 namespace iv {
 
 inline SerializedConfiguredGraph serialize_configured_graph(
-    ConfiguredGraph const& configured,
-    std::span<std::pair<NodeCodeKey, NodeStateStructure> const> state_structures = {})
+    ConfiguredGraph const& configured)
 {
-    return serialize_binary_configured_graph(configured, state_structures);
+    return serialize_binary_configured_graph(configured);
 }
 
 inline ConfiguredGraph deserialize_configured_graph(

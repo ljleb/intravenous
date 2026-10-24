@@ -1,0 +1,1800 @@
+#include <intravenous/runtime/background_storage_realization.h>
+
+#include <intravenous/compat.h>
+#include <intravenous/graph_jit/event_conversion_runtime.h>
+
+#include <algorithm>
+#include <array>
+#include <bit>
+#include <cmath>
+#include <limits>
+#include <numeric>
+#include <optional>
+#include <ranges>
+#include <stdexcept>
+#include <utility>
+
+namespace iv {
+namespace {
+
+IndexCoverage const empty_storage_coverage{};
+
+[[nodiscard]] std::size_t coverage_sample_count(IndexCoverage const& coverage)
+{
+    std::size_t result = 0;
+    for (auto const region : coverage) {
+        auto const size = region.extent;
+        if (size > std::numeric_limits<std::size_t>::max() - result) {
+            throw std::length_error("background storage coverage is too large");
+        }
+        result += static_cast<std::size_t>(size);
+    }
+    return result;
+}
+
+[[nodiscard]] std::size_t checked_product(
+    std::size_t left,
+    std::size_t right)
+{
+    if (right != 0 && left > std::numeric_limits<std::size_t>::max() / right) {
+        throw std::length_error("background sample storage is too large");
+    }
+    return left * right;
+}
+
+[[nodiscard]] bool contains_coverage(
+    IndexCoverage const& outer,
+    IndexCoverage const& inner) noexcept
+{
+    return std::ranges::all_of(inner, [&](GlobalIndexRange region) {
+        return outer.contains(region);
+    });
+}
+
+[[nodiscard]] bool contains_channels(
+    std::span<std::size_t const> outer,
+    std::span<std::size_t const> inner) noexcept
+{
+    return std::ranges::all_of(inner, [&](std::size_t channel) {
+        return std::ranges::contains(outer, channel);
+    });
+}
+
+[[nodiscard]] bool event_matches_type(
+    EventTypeId type,
+    Event const& event) noexcept
+{
+    switch (type) {
+    case EventTypeId::empty:
+        return std::holds_alternative<EmptyEvent>(event);
+    case EventTypeId::trigger:
+        return std::holds_alternative<TriggerEvent>(event);
+    case EventTypeId::boundary:
+        return std::holds_alternative<BoundaryEvent>(event);
+    case EventTypeId::midi:
+        return std::holds_alternative<MidiEvent>(event);
+    case EventTypeId::count:
+        break;
+    }
+    return false;
+}
+
+template<typename Fn>
+void for_each_intersection(
+    IndexCoverage const& left,
+    IndexCoverage const& right,
+    Fn&& fn)
+{
+    auto intersection = left & right;
+    for (auto const region : intersection) fn(region);
+}
+
+[[nodiscard]] std::expected<std::size_t, std::string>
+event_merge_capacity(std::size_t count)
+{
+    auto const requested = std::max<std::size_t>(count, 1);
+    auto const maximum_power_of_two = std::size_t{1}
+        << (std::numeric_limits<std::size_t>::digits - 1);
+    if (requested > maximum_power_of_two) {
+        return std::unexpected(
+            "background event materialization is too large to merge");
+    }
+    return std::bit_ceil(requested);
+}
+
+class TransactionSampleStorage {
+    IndexCoverage const* coverage_ = nullptr;
+    ChannelLayout layout_{};
+    std::vector<std::size_t> channels_{};
+    std::vector<std::size_t> region_offsets_{};
+    std::size_t frame_count_ = 0;
+    std::vector<Sample> values_{};
+    std::vector<std::uint8_t> written_{};
+
+    [[nodiscard]] std::optional<std::size_t> frame_offset(
+        GlobalIndex index) const noexcept
+    {
+        std::size_t region_index = 0;
+        for (auto const region : *coverage_) {
+            if (region.contains(index)) {
+                return region_offsets_[region_index]
+                    + static_cast<std::size_t>(
+                        region.begin.forward_distance_to(index));
+            }
+            if (SignedGlobalIndexOrder{}(index, region.begin)) break;
+            ++region_index;
+        }
+        return std::nullopt;
+    }
+
+    [[nodiscard]] std::optional<std::size_t> channel_offset(
+        std::size_t channel) const noexcept
+    {
+        auto const found = std::ranges::lower_bound(channels_, channel);
+        if (found == channels_.end() || *found != channel) return std::nullopt;
+        return static_cast<std::size_t>(
+            std::distance(channels_.begin(), found));
+    }
+
+public:
+    TransactionSampleStorage(
+        IndexCoverage const& coverage,
+        ChannelLayout layout,
+        std::span<std::size_t const> channels)
+        : coverage_(&coverage)
+        , layout_(layout)
+        , channels_(channels.begin(), channels.end())
+    {
+        if (!is_valid_channel_type(layout.channel_type)
+            || !is_valid_sample_stream_layout(layout.sample_layout)) {
+            throw std::invalid_argument(
+                "background sample storage has an invalid layout");
+        }
+        std::ranges::sort(channels_);
+        auto const duplicate = std::ranges::adjacent_find(channels_);
+        if (duplicate != channels_.end()
+            || std::ranges::any_of(channels_, [&](std::size_t channel) {
+                return channel >= channel_count(layout_);
+            })) {
+            throw std::invalid_argument(
+                "background sample storage has invalid channels");
+        }
+
+        region_offsets_.reserve(coverage_->size());
+        for (auto const region : *coverage_) {
+            region_offsets_.push_back(frame_count_);
+            auto const length = region.extent;
+            if (length > std::numeric_limits<std::size_t>::max() - frame_count_) {
+                throw std::length_error(
+                    "background sample storage coverage is too large");
+            }
+            frame_count_ += static_cast<std::size_t>(length);
+        }
+        auto const value_count = checked_product(frame_count_, channels_.size());
+        values_.resize(value_count);
+        written_.resize(value_count, 0);
+    }
+
+    [[nodiscard]] Sample read(
+        GlobalIndex index,
+        std::size_t channel) const noexcept
+    {
+        auto const frame = frame_offset(index);
+        auto const selected_channel = channel_offset(channel);
+        IV_ASSERT(frame && selected_channel,
+            "background sample read lies outside realized storage");
+        if (!frame || !selected_channel) return {};
+        return values_[*selected_channel * frame_count_ + *frame];
+    }
+
+    [[nodiscard]] bool write(
+        GlobalIndex index,
+        std::size_t channel,
+        Sample value) noexcept
+    {
+        auto const frame = frame_offset(index);
+        auto const selected_channel = channel_offset(channel);
+        if (!frame || !selected_channel) return false;
+        auto const offset = *selected_channel * frame_count_ + *frame;
+        values_[offset] = value;
+        written_[offset] = 1;
+        return true;
+    }
+
+    [[nodiscard]] bool complete() const noexcept
+    {
+        return std::ranges::all_of(
+            written_, [](std::uint8_t written) { return written != 0; });
+    }
+
+    [[nodiscard]] BackgroundSampleReadView read_view() const noexcept
+    {
+        return {
+            .data = this,
+            .coverage_value = coverage_,
+            .layout = layout_,
+            .channels = channels_,
+            .read_sample = +[](void const* opaque,
+                               GlobalIndex index,
+                               std::size_t channel) noexcept {
+                return static_cast<TransactionSampleStorage const*>(opaque)
+                    ->read(index, channel);
+            },
+        };
+    }
+
+    [[nodiscard]] BackgroundSampleWriteView write_view() noexcept
+    {
+        return {
+            .data = this,
+            .coverage_value = coverage_,
+            .layout = layout_,
+            .channels = channels_,
+            .write_sample = +[](void* opaque,
+                                GlobalIndex index,
+                                std::size_t channel,
+                                Sample value) noexcept {
+                return static_cast<TransactionSampleStorage*>(opaque)
+                    ->write(index, channel, value);
+            },
+        };
+    }
+};
+
+class TransactionEventStorage {
+    IndexCoverage const* coverage_ = nullptr;
+    EventTypeId type_ = EventTypeId::empty;
+    std::size_t capacity_ = 0;
+    std::vector<TimedEvent> events_{};
+    std::vector<std::size_t> source_indices_{};
+
+public:
+    TransactionEventStorage(
+        IndexCoverage const& coverage,
+        EventTypeId type,
+        double max_events_per_index)
+        : coverage_(&coverage)
+        , type_(type)
+    {
+        if (type >= EventTypeId::count) {
+            throw std::invalid_argument(
+                "background event storage has an invalid type");
+        }
+        auto const capacity = event_count_for_sample_span(
+            max_events_per_index, coverage_sample_count(coverage));
+        if (!capacity) {
+            throw std::length_error(
+                "background event storage capacity is not representable");
+        }
+        capacity_ = *capacity;
+        events_.reserve(capacity_);
+        source_indices_.reserve(capacity_);
+    }
+
+    [[nodiscard]] bool write(TimedEvent const& event) noexcept
+    {
+        return write(event, std::numeric_limits<std::size_t>::max());
+    }
+
+    [[nodiscard]] bool write(
+        TimedEvent const& event, std::size_t source_index) noexcept
+    {
+        if (!coverage_->contains(event.time)
+            || !event_matches_type(type_, event.value)
+            || events_.size() == capacity_
+            || (!events_.empty()
+                && SignedGlobalIndexOrder{}(
+                    event.time, events_.back().time))) {
+            return false;
+        }
+        events_.push_back(event);
+        source_indices_.push_back(source_index);
+        return true;
+    }
+
+    void for_each_indexed(
+        GlobalIndexRange region,
+        void* visitor_data,
+        BackgroundEventReadView::VisitIndexedEvent visitor) const
+    {
+        region.for_each_signed_order_segment([&](GlobalIndexRange segment) {
+            auto event = std::ranges::lower_bound(
+                events_, segment.begin, SignedGlobalIndexOrder{},
+                [](TimedEvent const& value) { return value.time; });
+            for (; event != events_.end() && segment.contains(event->time);
+                 ++event) {
+                auto const offset = static_cast<std::size_t>(
+                    std::distance(events_.cbegin(), event));
+                visitor(visitor_data, *event, source_indices_[offset]);
+            }
+        });
+    }
+
+    void for_each(
+        GlobalIndexRange region,
+        void* visitor_data,
+        BackgroundEventReadView::VisitEvent visitor) const
+    {
+        region.for_each_signed_order_segment([&](GlobalIndexRange segment) {
+            auto event = std::ranges::lower_bound(
+                events_, segment.begin, SignedGlobalIndexOrder{},
+                [](TimedEvent const& value) {
+                    return value.time;
+                });
+            for (; event != events_.end() && segment.contains(event->time);
+                 ++event) {
+                visitor(visitor_data, *event);
+            }
+        });
+    }
+
+    [[nodiscard]] BackgroundEventReadView read_view() const noexcept
+    {
+        return {
+            .data = this,
+            .coverage_value = coverage_,
+            .type = type_,
+            .for_each_event = +[](void const* opaque,
+                                  GlobalIndexRange region,
+                                  void* visitor_data,
+                                  BackgroundEventReadView::VisitEvent visitor) {
+                static_cast<TransactionEventStorage const*>(opaque)->for_each(
+                    region, visitor_data, visitor);
+            },
+            .for_each_indexed_event = +[](
+                void const* opaque,
+                GlobalIndexRange region,
+                void* visitor_data,
+                BackgroundEventReadView::VisitIndexedEvent visitor) {
+                static_cast<TransactionEventStorage const*>(opaque)
+                    ->for_each_indexed(region, visitor_data, visitor);
+            },
+        };
+    }
+
+    [[nodiscard]] BackgroundEventWriteView write_view() noexcept
+    {
+        return {
+            .data = this,
+            .coverage_value = coverage_,
+            .type = type_,
+            .write_event = +[](void* opaque, TimedEvent const& event) noexcept {
+                return static_cast<TransactionEventStorage*>(opaque)->write(event);
+            },
+            .write_indexed_event = +[](
+                void* opaque,
+                TimedEvent const& event,
+                std::size_t source_index) noexcept {
+                return static_cast<TransactionEventStorage*>(opaque)->write(
+                    event, source_index);
+            },
+        };
+    }
+};
+
+class PersistedSampleReader {
+    PersistedDataStore::Snapshot const* snapshot_ = nullptr;
+    PersistedOutputHandle output_{};
+    IndexCoverage const* coverage_ = nullptr;
+    ChannelLayout layout_{};
+    std::span<std::size_t const> channels_{};
+
+public:
+    PersistedSampleReader(
+        PersistedDataStore::Snapshot const& snapshot,
+        PersistedOutputHandle output,
+        IndexCoverage const& coverage,
+        ChannelLayout layout,
+        std::span<std::size_t const> channels) noexcept
+        : snapshot_(&snapshot)
+        , output_(std::move(output))
+        , coverage_(&coverage)
+        , layout_(layout)
+        , channels_(channels)
+    {}
+
+    [[nodiscard]] bool complete() const noexcept
+    {
+        if (coverage_->empty()) return true;
+        auto const* retained = snapshot_->find_sample_coverage(output_, layout_);
+        return retained && contains_coverage(*retained, *coverage_)
+            && std::ranges::none_of(channels_, [&](std::size_t channel) {
+                return channel >= channel_count(layout_);
+            });
+    }
+
+    [[nodiscard]] Sample read(
+        GlobalIndex index,
+        std::size_t channel) const noexcept
+    {
+        auto const* region = snapshot_->find_sample_region(output_, index);
+        IV_ASSERT(region != nullptr,
+            "persisted sample read has no retained region");
+        if (!region || region->layout != layout_
+            || channel >= channel_count(region->layout)) {
+            return {};
+        }
+        return region->at(index, channel);
+    }
+
+    [[nodiscard]] BackgroundSampleReadView view() const noexcept
+    {
+        return {
+            .data = this,
+            .coverage_value = coverage_,
+            .layout = layout_,
+            .channels = channels_,
+            .read_sample = +[](void const* opaque,
+                               GlobalIndex index,
+                               std::size_t channel) noexcept {
+                return static_cast<PersistedSampleReader const*>(opaque)
+                    ->read(index, channel);
+            },
+        };
+    }
+};
+
+class PersistedEventReader {
+    PersistedDataStore::Snapshot const* snapshot_ = nullptr;
+    PersistedOutputHandle output_{};
+    IndexCoverage const* coverage_ = nullptr;
+    EventTypeId type_ = EventTypeId::empty;
+
+public:
+    PersistedEventReader(
+        PersistedDataStore::Snapshot const& snapshot,
+        PersistedOutputHandle output,
+        IndexCoverage const& coverage,
+        EventTypeId type) noexcept
+        : snapshot_(&snapshot)
+        , output_(std::move(output))
+        , coverage_(&coverage)
+        , type_(type)
+    {}
+
+    [[nodiscard]] bool complete() const noexcept
+    {
+        if (coverage_->empty()) return true;
+        auto const* retained = snapshot_->find_event_coverage(output_, type_);
+        return retained && contains_coverage(*retained, *coverage_);
+    }
+
+    void for_each(
+        GlobalIndexRange region,
+        void* visitor_data,
+        BackgroundEventReadView::VisitEvent visitor) const
+    {
+        if (region.empty()) return;
+        snapshot_->for_each_event_chunk(
+            output_, region, [&](PersistedEventChunk const& chunk,
+                                 GlobalIndexRange intersection) {
+                IV_ASSERT(chunk.type == type_,
+                    "persisted event chunk type does not match its runtime view");
+                if (chunk.type != type_) return;
+                auto event = std::ranges::lower_bound(
+                    chunk.events,
+                    intersection.begin,
+                    SignedGlobalIndexOrder{},
+                    &TimedEvent::time);
+                for (; event != chunk.events.end()
+                       && intersection.contains(event->time); ++event) {
+                    visitor(visitor_data, *event);
+                }
+            });
+    }
+
+    [[nodiscard]] BackgroundEventReadView view() const noexcept
+    {
+        return {
+            .data = this,
+            .coverage_value = coverage_,
+            .type = type_,
+            .for_each_event = +[](void const* opaque,
+                                  GlobalIndexRange region,
+                                  void* visitor_data,
+                                  BackgroundEventReadView::VisitEvent visitor) {
+                static_cast<PersistedEventReader const*>(opaque)->for_each(
+                    region, visitor_data, visitor);
+            },
+        };
+    }
+};
+
+[[nodiscard]] bool storage_is_runtime_produced(
+    graph_jit::BackgroundEvaluationPlan const& plan,
+    graph_jit::PortStoragePlan const& storage) noexcept
+{
+    if (storage.sample_materialization || storage.event_materialization) {
+        return true;
+    }
+    if (!storage.output_port || *storage.output_port >= plan.ports.size()) {
+        return false;
+    }
+    auto const& output = plan.ports[*storage.output_port];
+    return output.authored_tock_output || output.replayed_tick_output;
+}
+
+} // namespace
+
+IndexCoverage const& BackgroundSampleReadView::coverage() const noexcept
+{
+    return coverage_value ? *coverage_value : empty_storage_coverage;
+}
+
+bool BackgroundSampleReadView::has_channel(
+    std::size_t channel) const noexcept
+{
+    return std::ranges::contains(channels, channel);
+}
+
+Sample BackgroundSampleReadView::at(
+    GlobalIndex index,
+    std::size_t channel) const noexcept
+{
+    IV_ASSERT(*this, "background sample storage has no readable view");
+    IV_ASSERT(coverage().contains(index) && has_channel(channel),
+        "background sample read lies outside selected storage");
+    return *this ? read_sample(data, index, channel) : Sample{};
+}
+
+IndexCoverage const& BackgroundSampleWriteView::coverage() const noexcept
+{
+    return coverage_value ? *coverage_value : empty_storage_coverage;
+}
+
+bool BackgroundSampleWriteView::has_channel(
+    std::size_t channel) const noexcept
+{
+    return std::ranges::contains(channels, channel);
+}
+
+bool BackgroundSampleWriteView::write(
+    GlobalIndex index,
+    std::size_t channel,
+    Sample value) const noexcept
+{
+    return *this && coverage().contains(index) && has_channel(channel)
+        && write_sample(data, index, channel, value);
+}
+
+IndexCoverage const& BackgroundEventReadView::coverage() const noexcept
+{
+    return coverage_value ? *coverage_value : empty_storage_coverage;
+}
+
+IndexCoverage const& BackgroundEventWriteView::coverage() const noexcept
+{
+    return coverage_value ? *coverage_value : empty_storage_coverage;
+}
+
+bool BackgroundEventWriteView::write(TimedEvent const& event) const noexcept
+{
+    return *this && coverage().contains(event.time)
+        && write_event(data, event);
+}
+
+bool BackgroundEventWriteView::write(
+    TimedEvent const& event, std::size_t source_index) const noexcept
+{
+    return *this && coverage().contains(event.time)
+        && write_indexed_event
+        && write_indexed_event(data, event, source_index);
+}
+
+struct BackgroundStorageRealization::Slot {
+    graph_jit::PortStoragePlan const* plan = nullptr;
+    IndexCoverage const* coverage = nullptr;
+    std::optional<PersistedOutputHandle> persisted_output{};
+    std::unique_ptr<TransactionSampleStorage> owned_sample{};
+    std::unique_ptr<TransactionEventStorage> owned_event{};
+    std::unique_ptr<PersistedSampleReader> persisted_sample{};
+    std::unique_ptr<PersistedEventReader> persisted_event{};
+    std::optional<BackgroundSampleReadView> sample_read{};
+    std::optional<BackgroundSampleWriteView> sample_write{};
+    std::optional<BackgroundEventReadView> event_read{};
+    std::optional<BackgroundEventWriteView> event_write{};
+};
+
+BackgroundStorageRealization::BackgroundStorageRealization(
+    graph_jit::BackgroundEvaluationPlan const& plan,
+    PersistedDataStore& data,
+    BackgroundStorageSelection selection)
+    : plan_(&plan)
+    , selection_(std::move(selection))
+    , executed_operations_(plan.runtime.operations.size(), false)
+{
+    if (selection_.storage_coverage.size() != plan.storage.ports.size()) {
+        throw std::invalid_argument(
+            "background storage coverage is not aligned with the compiled plan");
+    }
+    if (!selection_.produce_storage.empty()
+        && selection_.produce_storage.size() != plan.storage.ports.size()) {
+        throw std::invalid_argument(
+            "background storage production is not aligned with the compiled plan");
+    }
+    slots_.reserve(plan.storage.ports.size());
+    for (graph_jit::PortStorageIndex index = 0;
+         index < plan.storage.ports.size(); ++index) {
+        auto const& planned = plan.storage.ports[index];
+        auto created = std::make_unique<Slot>();
+        created->plan = &planned;
+        created->coverage = &selection_.storage_coverage[index];
+
+        if (planned.storage == graph_jit::PortStorageKind::persisted_data) {
+            created->persisted_output = data.resolve_output(
+                persisted_output_id(plan, index, selection_.generation));
+        }
+
+        auto const produced = selection_.produce_storage.empty()
+            ? storage_is_runtime_produced(plan, planned)
+            : selection_.produce_storage[index];
+        if (produced && planned.storage != graph_jit::PortStorageKind::current_tick) {
+            if (planned.kind == PortKind::sample) {
+                created->owned_sample = std::make_unique<TransactionSampleStorage>(
+                    *created->coverage,
+                    planned.sample_layout,
+                    planned.sample_channels);
+                created->sample_read = created->owned_sample->read_view();
+                created->sample_write = created->owned_sample->write_view();
+            } else {
+                created->owned_event = std::make_unique<TransactionEventStorage>(
+                    *created->coverage,
+                    planned.event_type,
+                    planned.max_events_per_index);
+                created->event_read = created->owned_event->read_view();
+                created->event_write = created->owned_event->write_view();
+            }
+        } else if (planned.storage
+                == graph_jit::PortStorageKind::persisted_data
+            && selection_.published) {
+            if (planned.kind == PortKind::sample) {
+                created->persisted_sample =
+                    std::make_unique<PersistedSampleReader>(
+                        *selection_.published,
+                        *created->persisted_output,
+                        *created->coverage,
+                        planned.sample_layout,
+                        planned.sample_channels);
+                created->sample_read = created->persisted_sample->view();
+            } else {
+                created->persisted_event =
+                    std::make_unique<PersistedEventReader>(
+                        *selection_.published,
+                        *created->persisted_output,
+                        *created->coverage,
+                        planned.event_type);
+                created->event_read = created->persisted_event->view();
+            }
+        }
+        slots_.push_back(std::move(created));
+    }
+}
+
+BackgroundStorageRealization::~BackgroundStorageRealization() = default;
+
+BackgroundStorageRealization::Slot& BackgroundStorageRealization::slot(
+    graph_jit::PortStorageIndex index)
+{
+    if (index >= slots_.size()) {
+        throw std::out_of_range("background storage index is out of range");
+    }
+    return *slots_[index];
+}
+
+BackgroundStorageRealization::Slot const& BackgroundStorageRealization::slot(
+    graph_jit::PortStorageIndex index) const
+{
+    if (index >= slots_.size()) {
+        throw std::out_of_range("background storage index is out of range");
+    }
+    return *slots_[index];
+}
+
+std::size_t BackgroundStorageRealization::storage_count() const noexcept
+{
+    return slots_.size();
+}
+
+std::size_t BackgroundStorageRealization::operation_count() const noexcept
+{
+    return executed_operations_.size();
+}
+
+bool BackgroundStorageRealization::operation_executed(
+    graph_jit::BackgroundRuntimeOperationIndex index) const noexcept
+{
+    return index < executed_operations_.size() && executed_operations_[index];
+}
+
+void BackgroundStorageRealization::bind_sample(
+    graph_jit::PortStorageIndex index,
+    BackgroundSampleReadView read,
+    BackgroundSampleWriteView write)
+{
+    if (sealed_) {
+        throw std::logic_error("background storage realization is sealed");
+    }
+    auto& selected = slot(index);
+    if (selected.plan->kind != PortKind::sample || !read) {
+        throw std::invalid_argument(
+            "background sample binding is incompatible with storage");
+    }
+    selected.sample_read = read;
+    if (write) selected.sample_write = write;
+}
+
+void BackgroundStorageRealization::bind_event(
+    graph_jit::PortStorageIndex index,
+    BackgroundEventReadView read,
+    BackgroundEventWriteView write)
+{
+    if (sealed_) {
+        throw std::logic_error("background storage realization is sealed");
+    }
+    auto& selected = slot(index);
+    if (selected.plan->kind != PortKind::event || !read) {
+        throw std::invalid_argument(
+            "background event binding is incompatible with storage");
+    }
+    selected.event_read = read;
+    if (write) selected.event_write = write;
+}
+
+BackgroundSampleReadView const* BackgroundStorageRealization::sample_read(
+    graph_jit::PortStorageIndex index) const
+{
+    auto const& selected = slot(index);
+    return selected.sample_read ? &*selected.sample_read : nullptr;
+}
+
+BackgroundSampleWriteView const* BackgroundStorageRealization::sample_write(
+    graph_jit::PortStorageIndex index) const
+{
+    auto const& selected = slot(index);
+    return selected.sample_write ? &*selected.sample_write : nullptr;
+}
+
+BackgroundEventReadView const* BackgroundStorageRealization::event_read(
+    graph_jit::PortStorageIndex index) const
+{
+    auto const& selected = slot(index);
+    return selected.event_read ? &*selected.event_read : nullptr;
+}
+
+BackgroundEventWriteView const* BackgroundStorageRealization::event_write(
+    graph_jit::PortStorageIndex index) const
+{
+    auto const& selected = slot(index);
+    return selected.event_write ? &*selected.event_write : nullptr;
+}
+
+PersistedOutputHandle const*
+BackgroundStorageRealization::persisted_output_handle(
+    graph_jit::PortStorageIndex index) const
+{
+    auto const& selected = slot(index);
+    return selected.persisted_output
+        ? &*selected.persisted_output
+        : nullptr;
+}
+
+std::expected<void, std::string> BackgroundStorageRealization::seal()
+{
+    auto const valid_sample_read = [&](Slot const& selected) {
+        auto const& planned = *selected.plan;
+        return selected.sample_read
+            && selected.sample_read->layout.channel_type
+                == planned.sample_layout.channel_type
+            && contains_coverage(
+                selected.sample_read->coverage(), *selected.coverage)
+            && contains_channels(
+                selected.sample_read->channels, planned.sample_channels);
+    };
+    auto const valid_sample_write = [&](Slot const& selected) {
+        auto const& planned = *selected.plan;
+        return selected.sample_write
+            && selected.sample_write->layout.channel_type
+                == planned.sample_layout.channel_type
+            && contains_coverage(
+                selected.sample_write->coverage(), *selected.coverage)
+            && contains_channels(
+                selected.sample_write->channels, planned.sample_channels);
+    };
+    auto const valid_event_read = [&](Slot const& selected) {
+        return selected.event_read
+            && selected.event_read->type == selected.plan->event_type
+            && contains_coverage(
+                selected.event_read->coverage(), *selected.coverage);
+    };
+    auto const valid_event_write = [&](Slot const& selected) {
+        return selected.event_write
+            && selected.event_write->type == selected.plan->event_type
+            && contains_coverage(
+                selected.event_write->coverage(), *selected.coverage);
+    };
+    auto require_read = [&](graph_jit::PortStorageIndex index)
+        -> std::expected<void, std::string> {
+        auto const& selected = slot(index);
+        if ((selected.persisted_sample &&
+             !selected.persisted_sample->complete()) ||
+            (selected.persisted_event &&
+             !selected.persisted_event->complete())) {
+            return std::unexpected(
+                "background persisted input is missing selected published "
+                "coverage");
+        }
+        auto const valid = selected.plan->kind == PortKind::sample
+            ? valid_sample_read(selected)
+            : valid_event_read(selected);
+        if (!valid) {
+            return std::unexpected(
+                "background storage has no compatible readable view");
+        }
+        return {};
+    };
+    auto require_write = [&](graph_jit::PortStorageIndex index)
+        -> std::expected<void, std::string> {
+        auto const& selected = slot(index);
+        auto const valid = selected.plan->kind == PortKind::sample
+            ? valid_sample_write(selected)
+            : valid_event_write(selected);
+        if (!valid) {
+            return std::unexpected(
+                "background storage has no compatible writable view");
+        }
+        return {};
+    };
+
+    for (auto const& binding : plan_->runtime.bindings) {
+        for (auto const storage : binding.storage) {
+            if (slot(storage).coverage->empty()) continue;
+            if (binding.direction == graph_jit::PortDirection::output
+                && !selection_.produce_storage.empty()
+                && !selection_.produce_storage[storage]) {
+                continue;
+            }
+            auto valid = binding.direction == graph_jit::PortDirection::input
+                ? require_read(storage)
+                : require_write(storage);
+            if (!valid) return valid;
+        }
+    }
+    for (auto const& materialization : plan_->storage.sample_materializations) {
+        if (slot(materialization.output).coverage->empty()) continue;
+        for (auto const input : materialization.inputs) {
+            if (auto valid = require_read(input); !valid) return valid;
+        }
+        if (auto valid = require_write(materialization.output); !valid) {
+            return valid;
+        }
+    }
+    for (auto const& materialization : plan_->storage.event_materializations) {
+        if (slot(materialization.output).coverage->empty()) continue;
+        for (auto const input : materialization.inputs) {
+            if (auto valid = require_read(input); !valid) return valid;
+        }
+        if (auto valid = require_write(materialization.output); !valid) {
+            return valid;
+        }
+    }
+    for (auto const& direct : plan_->storage.direct_samples) {
+        if (slot(direct.storage).coverage->empty()) continue;
+        if (auto valid = require_read(direct.storage); !valid) return valid;
+    }
+    for (auto const& direct : plan_->storage.direct_events) {
+        if (slot(direct.storage).coverage->empty()) continue;
+        if (auto valid = require_read(direct.storage); !valid) return valid;
+    }
+
+    sealed_ = true;
+    return {};
+}
+
+std::expected<void, std::string>
+BackgroundStorageRealization::execute_operation(
+    graph_jit::BackgroundRuntimeOperationIndex index)
+{
+    if (!sealed_) {
+        return std::unexpected(
+            "background storage operations require a sealed realization");
+    }
+    if (index >= plan_->runtime.operations.size()) {
+        return std::unexpected(
+            "background runtime operation index is out of range");
+    }
+    if (executed_operations_[index]) {
+        return std::unexpected(
+            "background runtime operation executed more than once");
+    }
+
+    auto const& operation = plan_->runtime.operations[index];
+    std::expected<void, std::string> result;
+    switch (operation.kind) {
+    case graph_jit::BackgroundRuntimeOperationKind::direct_sample: {
+        if (operation.operation >= plan_->storage.direct_samples.size()) {
+            result = std::unexpected(
+                "background direct-sample operation is out of range");
+            break;
+        }
+        auto const& direct =
+            plan_->storage.direct_samples[operation.operation];
+        auto const* source = sample_read(direct.storage);
+        if (!source || !source->has_channel(direct.source_channel)) {
+            result = std::unexpected(
+                "background direct-sample operation has no source channel");
+        }
+        // The node binding frame applies target_channel/read_latency. There is
+        // deliberately no copy or destination storage for a direct operation.
+        break;
+    }
+    case graph_jit::BackgroundRuntimeOperationKind::direct_event: {
+        if (operation.operation >= plan_->storage.direct_events.size()) {
+            result = std::unexpected(
+                "background direct-event operation is out of range");
+            break;
+        }
+        auto const& direct =
+            plan_->storage.direct_events[operation.operation];
+        if (!event_read(direct.storage)) {
+            result = std::unexpected(
+                "background direct-event operation has no source view");
+        }
+        // The binding frame applies the target history window directly to the
+        // selected source view; direct delivery owns no derived event buffer.
+        break;
+    }
+    case graph_jit::BackgroundRuntimeOperationKind::sample_materialization: {
+        if (operation.operation
+            >= plan_->storage.sample_materializations.size()) {
+            result = std::unexpected(
+                "background sample materialization is out of range");
+            break;
+        }
+        auto const& materialization =
+            plan_->storage.sample_materializations[operation.operation];
+        auto const* target = sample_write(materialization.output);
+        auto const& target_coverage =
+            *slot(materialization.output).coverage;
+        if (!target
+            || target->layout.channel_type
+                != materialization.target_layout.channel_type) {
+            result = std::unexpected(
+                "background sample materialization has no compatible target");
+            break;
+        }
+        if (materialization.inputs.size()
+                != materialization.source_channels.size()
+            || materialization.inputs.size()
+                != materialization.source_read_latencies.size()) {
+            result = std::unexpected(
+                "background sample materialization inputs are not aligned");
+            break;
+        }
+
+        struct RuntimeProjection {
+            std::optional<ChannelConversionPlan> conversion{};
+            std::vector<std::size_t> source_indices{};
+            std::vector<std::size_t> target_channels{};
+            std::vector<float> transform_coefficients{};
+        };
+        std::vector<RuntimeProjection> projections;
+        auto append_projection = [&] (
+            ChannelTypeId source_type,
+            std::vector<std::size_t> source_indices,
+            ChannelTypeId target_type,
+            std::vector<std::size_t> target_channels,
+            std::size_t transform_source_count = 0,
+            std::size_t transform_target_count = 0,
+            std::vector<float> transform_coefficients = {})
+            -> std::expected<void, std::string> {
+            auto const source_count = transform_coefficients.empty()
+                ? channel_count(source_type)
+                : transform_source_count;
+            auto const target_count = transform_coefficients.empty()
+                ? channel_count(target_type)
+                : transform_target_count;
+            if (source_indices.size() != source_count
+                || target_channels.size() != target_count
+                || (!transform_coefficients.empty()
+                    && transform_coefficients.size()
+                        != source_count * target_count)) {
+                return std::unexpected(
+                    "background sample projection has invalid channel arity");
+            }
+            for (auto const source_index : source_indices) {
+                if (source_index >= materialization.inputs.size()) {
+                    return std::unexpected(
+                        "background sample projection has an invalid source");
+                }
+                auto const* source = sample_read(
+                    materialization.inputs[source_index]);
+                auto const channel =
+                    materialization.source_channels[source_index].channel;
+                if (!source || !source->has_channel(channel)) {
+                    return std::unexpected(
+                        "background sample projection has no source channel");
+                }
+            }
+            if (!std::ranges::all_of(
+                    target_channels,
+                    [&](std::size_t channel) {
+                        return target->has_channel(channel);
+                    })) {
+                return std::unexpected(
+                    "background sample projection has no target channel");
+            }
+            RuntimeProjection projection{
+                .source_indices = std::move(source_indices),
+                .target_channels = std::move(target_channels),
+                .transform_coefficients = std::move(transform_coefficients),
+            };
+            try {
+                if (projection.transform_coefficients.empty()) {
+                    projection.conversion = ChannelConversionRegistry::plan(
+                        ChannelLayout{
+                            .channel_type = source_type,
+                            .sample_layout = SampleStreamLayout::interleaved,
+                        },
+                        ChannelLayout{
+                            .channel_type = target_type,
+                            .sample_layout = SampleStreamLayout::interleaved,
+                        });
+                }
+            } catch (std::exception const& error) {
+                return std::unexpected(
+                    "background sample projection conversion is unsupported: "
+                    + std::string(error.what()));
+            }
+            projections.push_back(std::move(projection));
+            return {};
+        };
+
+        if (materialization.projections.empty()) {
+            std::vector<std::size_t> source_indices(
+                materialization.inputs.size());
+            std::iota(source_indices.begin(), source_indices.end(), 0);
+            result = append_projection(
+                materialization.source_type,
+                std::move(source_indices),
+                materialization.target_layout.channel_type,
+                materialization.target_channels);
+        } else {
+            for (auto const& projection : materialization.projections) {
+                result = append_projection(
+                    projection.source_type,
+                    projection.source_channel_indices,
+                    projection.target_type,
+                    projection.target_channels,
+                    projection.transform_source_channel_count,
+                    projection.transform_target_channel_count,
+                    projection.transform_coefficients);
+                if (!result) break;
+            }
+        }
+        if (!result) break;
+
+        std::array<Sample, maximum_supported_channel_count> source_values{};
+        std::array<Sample, maximum_supported_channel_count> target_values{};
+        std::array<Sample, maximum_supported_channel_count>
+            accumulated_target_values{};
+        for (auto const region : target_coverage) {
+            for (GlobalIndex::extent_type frame = 0;
+                 frame < region.extent; ++frame) {
+                auto const sample_index = region.begin.advanced_by(frame);
+                std::ranges::fill(accumulated_target_values, Sample{});
+                for (auto const& projection : projections) {
+                    for (std::size_t channel = 0;
+                         channel < projection.source_indices.size(); ++channel) {
+                        auto const source_index =
+                            projection.source_indices[channel];
+                        auto const latency = materialization
+                            .source_read_latencies[source_index];
+                        auto const source_sample_index =
+                            sample_index.retreated_by(latency);
+                        auto const* source = sample_read(
+                            materialization.inputs[source_index]);
+                        if (!slot(materialization.inputs[source_index])
+                                .coverage->contains(source_sample_index)) {
+                            result = std::unexpected(
+                                "background sample source does not cover its delayed read");
+                            break;
+                        }
+                        source_values[channel] = source->at(
+                            source_sample_index,
+                            materialization.source_channels[source_index]
+                                .channel);
+                    }
+                    if (!result) break;
+                    if (projection.conversion) {
+                        projection.conversion->convert(
+                            source_values.data(), target_values.data(), 1);
+                    } else {
+                        for (std::size_t target_channel = 0;
+                             target_channel < projection.target_channels.size();
+                             ++target_channel) {
+                            Sample value{};
+                            for (std::size_t source_channel = 0;
+                                 source_channel < projection.source_indices.size();
+                                 ++source_channel) {
+                                value += source_values[source_channel]
+                                    * projection.transform_coefficients[
+                                        target_channel
+                                            * projection.source_indices.size()
+                                        + source_channel];
+                            }
+                            target_values[target_channel] = value;
+                        }
+                    }
+                    for (std::size_t channel = 0;
+                         channel < projection.target_channels.size(); ++channel) {
+                        accumulated_target_values[
+                            projection.target_channels[channel]] +=
+                                target_values[channel];
+                    }
+                }
+                if (!result) break;
+                for (auto const channel : materialization.target_channels) {
+                    if (!target->write(
+                            sample_index,
+                            channel,
+                            accumulated_target_values[channel])) {
+                        result = std::unexpected(
+                            "background sample materialization write failed");
+                        break;
+                    }
+                }
+                if (!result) break;
+            }
+            if (!result) break;
+        }
+        break;
+    }
+    case graph_jit::BackgroundRuntimeOperationKind::event_materialization: {
+        if (operation.operation
+            >= plan_->storage.event_materializations.size()) {
+            result = std::unexpected(
+                "background event materialization is out of range");
+            break;
+        }
+        auto const& materialization =
+            plan_->storage.event_materializations[operation.operation];
+        auto const* target = event_write(materialization.output);
+        auto const& target_coverage =
+            *slot(materialization.output).coverage;
+        if (!target || target->type != materialization.target_type) {
+            result = std::unexpected(
+                "background event materialization has no compatible target");
+            break;
+        }
+        if (materialization.inputs.empty()) {
+            result = std::unexpected(
+                "background event materialization has no sources");
+            break;
+        }
+        if (materialization.source_conversions.size()
+                != materialization.inputs.size()
+            || materialization.semantic_source_indices.size()
+                != materialization.inputs.size()
+            || materialization.conversion.source_type
+                != materialization.source_type
+            || materialization.conversion.target_type
+                != materialization.target_type
+            || materialization.conversion.step_count
+                > EventConversionPlan::max_steps
+            || !EventConversionRegistry::is_nonexpanding(
+                materialization.conversion)) {
+            result = std::unexpected(
+                "background event materialization has an invalid conversion");
+            break;
+        }
+
+        std::vector<std::vector<TimedEvent>> converted(
+            materialization.inputs.size());
+        std::size_t total_count = 0;
+        for (std::size_t source_index = 0;
+             source_index < materialization.inputs.size(); ++source_index) {
+            auto const* source = event_read(
+                materialization.inputs[source_index]);
+            auto const& source_conversion =
+                materialization.source_conversions[source_index];
+            if (!source || source->type != source_conversion.source_type
+                || source_conversion.target_type
+                    != materialization.source_type
+                || source_conversion.step_count
+                    > EventConversionPlan::max_steps
+                || !EventConversionRegistry::is_nonexpanding(
+                    source_conversion)) {
+                result = std::unexpected(
+                    "background event materialization has no compatible source");
+                break;
+            }
+            std::vector<TimedEvent> source_events;
+            bool ordered = true;
+            for_each_intersection(
+                *slot(materialization.inputs[source_index]).coverage,
+                target_coverage,
+                [&](GlobalIndexRange region) {
+                    source->for_each(region, [&](TimedEvent const& event) {
+                        if (!source_events.empty()
+                            && SignedGlobalIndexOrder{}(
+                                event.time, source_events.back().time)) {
+                            ordered = false;
+                        }
+                        source_events.push_back(event);
+                    });
+                });
+            if (!ordered) {
+                result = std::unexpected(
+                    "background event source is not time ordered");
+                break;
+            }
+            converted[source_index].resize(source_events.size());
+            if (!source_events.empty()) {
+                auto const& conversion = source_conversion;
+                auto const written = graph_jit::detail::
+                    iv_graph_jit_convert_event_sequence(
+                        static_cast<std::uint32_t>(conversion.source_type),
+                        static_cast<std::uint32_t>(conversion.target_type),
+                        static_cast<std::uint32_t>(conversion.steps[0]),
+                        static_cast<std::uint32_t>(conversion.steps[1]),
+                        static_cast<std::uint32_t>(conversion.steps[2]),
+                        conversion.step_count,
+                        source_events.data(),
+                        source_events.size(),
+                        converted[source_index].data(),
+                        converted[source_index].size());
+                converted[source_index].resize(written);
+            }
+            if (converted[source_index].size()
+                > std::numeric_limits<std::size_t>::max() - total_count) {
+                result = std::unexpected(
+                    "background event materialization is too large");
+                break;
+            }
+            total_count += converted[source_index].size();
+        }
+        if (!result) break;
+
+        auto capacity = event_merge_capacity(total_count);
+        if (!capacity) {
+            result = std::unexpected(std::move(capacity.error()));
+            break;
+        }
+        std::vector<TimedEvent> merged(*capacity);
+        std::vector<std::size_t> merged_source_indices(*capacity);
+        auto const merge_origin = target_coverage.empty()
+            ? GlobalIndex{}
+            : target_coverage.begin()->begin;
+        std::size_t merged_count = 0;
+        for (std::size_t source = 0; source < converted.size(); ++source) {
+            merged_count = graph_jit::detail::
+                iv_graph_jit_merge_ordered_event_sequence(
+                merged.data(),
+                merged_source_indices.data(),
+                merged.size(), 0, merged_count,
+                converted[source].data(),
+                converted[source].size(),
+                converted[source].size(),
+                materialization.semantic_source_indices[source],
+                merge_origin);
+        }
+        if (merged_count != total_count) {
+            result = std::unexpected(
+                "background event materialization merge failed");
+            break;
+        }
+        auto const& conversion = materialization.conversion;
+        for (std::size_t event = 0; event < merged_count; ++event) {
+            bool written = true;
+            EventConversionRegistry::instance().convert(
+                conversion,
+                merged[event],
+                [&](TimedEvent const& converted_event) {
+                    written = written && target->write(
+                        converted_event, merged_source_indices[event]);
+                });
+            if (!written) {
+                result = std::unexpected(
+                    "background event materialization write failed");
+                break;
+            }
+        }
+        break;
+    }
+    }
+
+    if (result) executed_operations_[index] = true;
+    return result;
+}
+
+std::expected<void, std::string>
+BackgroundStorageRealization::validate_produced_storage() const
+{
+    if (!sealed_) {
+        return std::unexpected(
+            "background storage realization is not sealed");
+    }
+    for (graph_jit::PortStorageIndex index = 0; index < slots_.size(); ++index) {
+        auto const& selected = *slots_[index];
+        if (selected.owned_sample && !selected.owned_sample->complete()) {
+            return std::unexpected(
+                "background sample output did not initialize every selected "
+                "sample and channel");
+        }
+    }
+    return {};
+}
+
+std::expected<std::unique_ptr<TickMaterializationSnapshot>, std::string>
+BackgroundStorageRealization::make_tick_materialization_snapshot(
+    std::uint64_t generation,
+    std::uint64_t semantic_version,
+    PersistedDataVersion data_version) const
+{
+    if (auto complete = validate_produced_storage(); !complete) {
+        return std::unexpected(std::move(complete.error()));
+    }
+
+    struct SampleRoute {
+        BackgroundSampleReadView const* view = nullptr;
+        std::size_t logical_channel = 0;
+        std::size_t storage_channel = 0;
+        std::size_t latency = 0;
+    };
+    auto shifted_forward = [](IndexCoverage const& source, std::size_t latency) {
+        IndexCoverage result;
+        for (auto const region : source) {
+            result.include({
+                .begin = region.begin.advanced_by(latency),
+                .extent = region.extent,
+            });
+        }
+        return result;
+    };
+    auto materialized_tick_storage = [&](graph_jit::PortStorageIndex index) {
+        return index < plan_->storage.ports.size()
+            && (plan_->storage.ports[index].storage
+                    == graph_jit::PortStorageKind::tick_sequential
+                || plan_->storage.ports[index].storage
+                    == graph_jit::PortStorageKind::tick_random_access);
+    };
+
+    struct TickBindingView {
+        graph_jit::BackgroundPortIndex port = 0;
+        std::span<graph_jit::PortStorageIndex const> storage{};
+    };
+    std::vector<TickBindingView> sample_bindings;
+    sample_bindings.reserve(
+        plan_->tick_runtime.sequential_sample_inputs.size()
+        + plan_->tick_runtime.random_access_sample_inputs.size());
+    for (auto const& binding :
+         plan_->tick_runtime.sequential_sample_inputs) {
+        sample_bindings.push_back({binding.port, binding.storage});
+    }
+    for (auto const& binding :
+         plan_->tick_runtime.random_access_sample_inputs) {
+        sample_bindings.push_back({binding.port, binding.storage});
+    }
+    std::vector<TickBindingView> event_bindings;
+    event_bindings.reserve(
+        plan_->tick_runtime.sequential_event_inputs.size()
+        + plan_->tick_runtime.random_access_event_inputs.size());
+    for (auto const& binding :
+         plan_->tick_runtime.sequential_event_inputs) {
+        event_bindings.push_back({binding.port, binding.storage});
+    }
+    for (auto const& binding :
+         plan_->tick_runtime.random_access_event_inputs) {
+        event_bindings.push_back({binding.port, binding.storage});
+    }
+
+    std::vector<TickMaterializedSampleInput> samples;
+    for (auto const& binding : sample_bindings) {
+        if (binding.port >= plan_->ports.size()) {
+            return std::unexpected(
+                "Tick sample materialization references a missing input port");
+        }
+        auto const& port = plan_->ports[binding.port];
+        std::vector<SampleRoute> routes;
+        auto append_route = [&](SampleRoute route) {
+            if (std::ranges::none_of(routes, [&](SampleRoute const& existing) {
+                    return existing.view->data == route.view->data
+                        && existing.logical_channel == route.logical_channel
+                        && existing.storage_channel == route.storage_channel
+                        && existing.latency == route.latency;
+                })) {
+                routes.push_back(route);
+            }
+        };
+        for (auto const& direct : plan_->storage.direct_samples) {
+            if (!materialized_tick_storage(direct.storage)
+                || !std::ranges::contains(binding.storage, direct.storage)
+                || direct.target_subset
+                    >= plan_->sample_target_subsets.size()
+                || plan_->sample_target_subsets[direct.target_subset].port
+                    != port.configured_port) {
+                continue;
+            }
+            auto const* view = sample_read(direct.storage);
+            if (view) {
+                append_route({
+                    .view = view,
+                    .logical_channel = direct.target_channel,
+                    .storage_channel = direct.source_channel,
+                    .latency = direct.read_latency,
+                });
+            }
+        }
+        for (auto const storage_index : binding.storage) {
+            if (!materialized_tick_storage(storage_index)) continue;
+            auto const* view = sample_read(storage_index);
+            if (!view) continue;
+            auto const& storage = plan_->storage.ports[storage_index];
+            for (auto const subset : storage.target_subsets) {
+                if (subset >= plan_->sample_target_subsets.size()) continue;
+                auto const& target = plan_->sample_target_subsets[subset];
+                if (target.port != port.configured_port) continue;
+                for (auto const channel : target.channels) {
+                    if (view->has_channel(channel.channel)) {
+                        append_route({
+                            .view = view,
+                            .logical_channel = channel.channel,
+                            .storage_channel = channel.channel,
+                        });
+                    }
+                }
+            }
+        }
+        IndexCoverage complete_coverage;
+        auto const channels = channel_count(port.sample_layout);
+        for (std::size_t channel = 0; channel < channels; ++channel) {
+            IndexCoverage available;
+            for (auto const& route : routes) {
+                if (route.logical_channel == channel) {
+                    available.include(shifted_forward(
+                        route.view->coverage(), route.latency));
+                }
+            }
+            complete_coverage = channel == 0
+                ? std::move(available)
+                : complete_coverage & available;
+        }
+        if (complete_coverage.empty()) continue;
+
+        std::vector<std::size_t> frozen_channels(channels);
+        std::iota(frozen_channels.begin(), frozen_channels.end(), 0);
+        std::vector<Sample> frozen_values;
+        frozen_values.reserve(checked_product(
+            coverage_sample_count(complete_coverage), channels));
+        bool missing_route = false;
+        for (auto const channel : frozen_channels) {
+            for (auto const region : complete_coverage) {
+                for (GlobalIndex::extent_type frame = 0;
+                     frame < region.extent; ++frame) {
+                    auto const sample = region.begin.advanced_by(frame);
+                    auto const found = std::ranges::find_if(
+                        routes, [&](SampleRoute const& route) {
+                            return route.logical_channel == channel
+                                && route.view->coverage().contains(
+                                    sample.retreated_by(route.latency));
+                        });
+                    if (found == routes.end()) {
+                        missing_route = true;
+                        break;
+                    }
+                    frozen_values.push_back(found->view->at(
+                        sample.retreated_by(found->latency),
+                        found->storage_channel));
+                }
+                if (missing_route) break;
+            }
+            if (missing_route) break;
+        }
+        if (missing_route) {
+            return std::unexpected(
+                "Tick sample materialization has incomplete routed coverage");
+        }
+        samples.push_back(make_tick_materialized_sample_input(
+            binding.port,
+            port.sample_layout,
+            std::move(frozen_channels),
+            std::move(complete_coverage),
+            std::move(frozen_values)));
+    }
+
+    std::vector<TickMaterializedEventInput> events;
+    for (auto const& binding : event_bindings) {
+        if (binding.port >= plan_->ports.size()) {
+            return std::unexpected(
+                "Tick event materialization references a missing input port");
+        }
+        auto const& port = plan_->ports[binding.port];
+        struct EventRoute {
+            BackgroundEventReadView const* view = nullptr;
+            std::optional<std::size_t> fixed_source_index{};
+        };
+        std::vector<EventRoute> routes;
+        auto append_route = [&] (
+            BackgroundEventReadView const* view,
+            std::optional<std::size_t> fixed_source_index = {}) {
+            if (!view || view->type != port.event_type) return;
+            auto existing = std::ranges::find_if(
+                routes,
+                [&](EventRoute const& candidate) {
+                    return candidate.view->data == view->data;
+                });
+            if (existing != routes.end()) {
+                if (!existing->fixed_source_index && fixed_source_index) {
+                    existing->fixed_source_index = fixed_source_index;
+                }
+                return;
+            }
+            routes.push_back({view, fixed_source_index});
+        };
+        for (auto const& direct : plan_->storage.direct_events) {
+            if (!materialized_tick_storage(direct.storage)
+                || !std::ranges::contains(binding.storage, direct.storage)
+                || direct.target_subset >= plan_->event_target_subsets.size()) {
+                continue;
+            }
+            auto const& target =
+                plan_->event_target_subsets[direct.target_subset].port;
+            if (target.bundle == port.configured_port.node_bundle_handle
+                && target.port == port.configured_port.port_index) {
+                std::optional<std::size_t> semantic_source_index;
+                if (direct.connection < plan_->connections.size()
+                    && direct.source_subset
+                        < plan_->event_source_subsets.size()) {
+                    auto const source = plan_->event_source_subsets[
+                        direct.source_subset].port;
+                    auto const& connection =
+                        plan_->connections[direct.connection];
+                    auto const delivery = std::ranges::find_if(
+                        connection.event_deliveries,
+                        [&](graph_jit::EventDeliveryPlan const& candidate) {
+                            return candidate.source == source
+                                && candidate.target == target;
+                        });
+                    if (delivery != connection.event_deliveries.end()) {
+                        semantic_source_index =
+                            delivery->semantic_source_index;
+                    }
+                }
+                append_route(
+                    event_read(direct.storage), semantic_source_index);
+            }
+        }
+        for (auto const storage_index : binding.storage) {
+            if (!materialized_tick_storage(storage_index)) continue;
+            auto const& storage = plan_->storage.ports[storage_index];
+            for (auto const subset : storage.target_subsets) {
+                if (subset >= plan_->event_target_subsets.size()) continue;
+                auto const& target = plan_->event_target_subsets[subset].port;
+                if (target.bundle == port.configured_port.node_bundle_handle
+                    && target.port == port.configured_port.port_index) {
+                    append_route(event_read(storage_index));
+                }
+            }
+        }
+        IndexCoverage available;
+        for (auto const& route : routes) {
+            available.include(route.view->coverage());
+        }
+        if (available.empty()) continue;
+        std::vector<TimedEvent> frozen_events;
+        std::vector<std::size_t> frozen_indices;
+        for (auto const region : available) {
+            GlobalIndex::extent_type consumed = 0;
+            while (consumed < region.extent) {
+                auto const cursor = region.begin.advanced_by(consumed);
+                EventRoute const* selected = nullptr;
+                GlobalIndex::extent_type selected_extent = 0;
+                for (auto const& route : routes) {
+                    for (auto const covered : route.view->coverage()) {
+                        auto const offset = covered.offset_of(cursor);
+                        if (!offset) continue;
+                        selected = std::addressof(route);
+                        selected_extent = std::min(
+                            region.extent - consumed,
+                            covered.extent - *offset);
+                        break;
+                    }
+                    if (selected) break;
+                }
+                if (!selected || selected_extent == 0) {
+                    return std::unexpected(
+                        "Tick event materialization has incomplete routed coverage");
+                }
+                selected->view->for_each_indexed(
+                    {cursor, selected_extent},
+                    [&](TimedEvent const& event, std::size_t source_index) {
+                        frozen_events.push_back(event);
+                        frozen_indices.push_back(
+                            selected->fixed_source_index.value_or(
+                                source_index));
+                    });
+                consumed += selected_extent;
+            }
+        }
+        events.push_back(make_tick_materialized_event_input(
+            binding.port,
+            port.event_type,
+            std::move(available),
+            std::move(frozen_events),
+            std::move(frozen_indices)));
+    }
+
+    return std::make_unique<TickMaterializationSnapshot>(
+        generation,
+        semantic_version,
+        data_version,
+        std::move(samples),
+        std::move(events));
+}
+
+std::expected<void, std::string>
+BackgroundStorageRealization::stage_persisted_data(
+    PersistedDataStore::Candidate& candidate) const
+{
+    if (auto complete = validate_produced_storage(); !complete)
+        return complete;
+
+    struct StagedRange {
+        PersistedOutputHandle output{};
+        graph_jit::PortStorageIndex storage = 0;
+        GlobalIndexRange range{};
+    };
+    std::vector<StagedRange> staged;
+
+    for (graph_jit::PortStorageIndex index = 0;
+         index < plan_->storage.ports.size(); ++index) {
+        auto const& planned = plan_->storage.ports[index];
+        auto const& selected = slot(index);
+        auto const produced = selection_.produce_storage.empty()
+            ? storage_is_runtime_produced(*plan_, planned)
+            : selection_.produce_storage[index];
+        if (planned.storage != graph_jit::PortStorageKind::persisted_data
+            || selected.coverage->empty() || !produced) {
+            continue;
+        }
+        if (!selected.persisted_output) {
+            return std::unexpected(
+                "produced persisted storage has no output identity");
+        }
+
+        for (auto const region : *selected.coverage) {
+            if (std::ranges::any_of(staged, [&](StagedRange const& previous) {
+                    return previous.output == *selected.persisted_output
+                        && previous.storage != index
+                        && IndexCoverage{previous.range}.intersects(region);
+                })) {
+                return std::unexpected(
+                    "persisted output range is produced by multiple storage slots");
+            }
+            if (planned.kind == PortKind::sample) {
+                auto const* view = sample_read(index);
+                auto const channels = channel_count(planned.sample_layout);
+                if (!view || planned.sample_channels.size() != channels
+                    || !std::ranges::all_of(
+                        planned.sample_channels,
+                        [&](std::size_t channel) {
+                            return channel < channels
+                                && view->has_channel(channel);
+                        })) {
+                    return std::unexpected(
+                        "persisted sample region has incomplete channels");
+                }
+                if (region.extent > std::numeric_limits<std::size_t>::max()) {
+                    return std::unexpected(
+                        "persisted sample region is too large");
+                }
+                auto const frames = static_cast<std::size_t>(region.extent);
+                PersistedSampleRegion retained{
+                    .output = *selected.persisted_output,
+                    .range = region,
+                    .layout = planned.sample_layout,
+                    .values = std::vector<Sample>(
+                        checked_product(frames, channels)),
+                };
+                for (std::size_t frame = 0; frame < frames; ++frame) {
+                    auto const sample = region.begin.advanced_by(frame);
+                    for (std::size_t channel = 0; channel < channels;
+                         ++channel) {
+                        auto const offset =
+                            planned.sample_layout.sample_layout
+                                    == SampleStreamLayout::planar
+                                ? channel * frames + frame
+                                : frame * channels + channel;
+                        retained.values[offset] = view->at(sample, channel);
+                    }
+                }
+                candidate.overwrite(std::move(retained));
+            } else {
+                auto const* view = event_read(index);
+                if (!view) {
+                    return std::unexpected(
+                        "persisted event chunk has no readable storage");
+                }
+                PersistedEventChunk retained{
+                    .output = *selected.persisted_output,
+                    .range = region,
+                    .type = planned.event_type,
+                };
+                view->for_each(region, [&](TimedEvent const& event) {
+                    retained.events.push_back(event);
+                });
+                candidate.overwrite(std::move(retained));
+            }
+            staged.push_back({
+                .output = *selected.persisted_output,
+                .storage = index,
+                .range = region,
+            });
+        }
+    }
+    return {};
+}
+
+BackgroundStorageOperationFrame::BackgroundStorageOperationFrame(
+    BackgroundStorageRealization& realization,
+    std::span<graph_jit::BackgroundRuntimeOperationIndex const> before,
+    std::span<graph_jit::BackgroundRuntimeOperationIndex const> after) noexcept
+    : realization_(&realization)
+    , before_(before)
+    , after_(after)
+{}
+
+void BackgroundStorageOperationFrame::set_leaf_hooks(
+    void* data, LeafHook prepare_leaf, LeafHook finalize_leaf) noexcept
+{
+    leaf_data_ = data;
+    prepare_leaf_ = prepare_leaf;
+    finalize_leaf_ = finalize_leaf;
+}
+
+void BackgroundStorageOperationFrame::execute(
+    std::span<graph_jit::BackgroundRuntimeOperationIndex const> operations)
+{
+    if (!realization_) {
+        throw std::logic_error(
+            "background storage operation frame has no realization");
+    }
+    for (auto const operation : operations) {
+        auto executed = realization_->execute_operation(operation);
+        if (!executed) {
+            throw std::runtime_error(std::move(executed.error()));
+        }
+    }
+}
+
+void BackgroundStorageOperationFrame::prepare()
+{
+    execute(before_);
+    if (prepare_leaf_) prepare_leaf_(leaf_data_);
+}
+
+void BackgroundStorageOperationFrame::finalize()
+{
+    if (finalize_leaf_) finalize_leaf_(leaf_data_);
+    execute(after_);
+}
+
+void BackgroundStorageOperationFrame::prepare_callback(void* opaque)
+{
+    if (!opaque) {
+        throw std::invalid_argument(
+            "background prepare callback has no operation frame");
+    }
+    static_cast<BackgroundStorageOperationFrame*>(opaque)->prepare();
+}
+
+void BackgroundStorageOperationFrame::finalize_callback(void* opaque)
+{
+    if (!opaque) {
+        throw std::invalid_argument(
+            "background finalize callback has no operation frame");
+    }
+    static_cast<BackgroundStorageOperationFrame*>(opaque)->finalize();
+}
+
+} // namespace iv

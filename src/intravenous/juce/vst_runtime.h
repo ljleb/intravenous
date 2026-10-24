@@ -1,7 +1,7 @@
 #pragma once
 
-#include <intravenous/graph/node.h>
 #include <intravenous/juce/vst_types.h>
+#include <intravenous/node/resources.h>
 
 #include <mutex>
 #include <memory>

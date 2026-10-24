@@ -67,6 +67,9 @@ namespace iv {
 
     inline void install_crash_handlers()
     {
+        // Open the configured file before a potentially resource-starved fatal
+        // path needs it. Lifecycle success paths never touch the stream.
+        (void)diagnostic_stream();
         std::set_terminate(terminate_with_stacktrace);
 #if defined(_WIN32)
         SetUnhandledExceptionFilter(unhandled_exception_stacktrace_filter);

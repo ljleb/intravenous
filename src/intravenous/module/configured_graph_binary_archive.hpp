@@ -20,6 +20,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <type_traits>
 #include <utility>
 #include <vector>
@@ -44,7 +45,7 @@ struct SerializedConfiguredGraph {
 namespace iv::binary_wire_details {
 
 inline constexpr std::uint32_t archive_magic = 0x49564147; // IVAG
-inline constexpr std::uint32_t archive_version = 5;
+inline constexpr std::uint32_t archive_version = 10;
 
 class Writer {
 public:
@@ -217,49 +218,260 @@ inline ChannelLayout read_layout(Reader& r)
     return {.channel_type = read_enum<ChannelTypeId>(r), .sample_layout = read_enum<SampleStreamLayout>(r)};
 }
 
-inline void write_input(Writer& w, SampleInputConfig const& value)
+template<class Metadata>
+void write_continuous_metadata(Writer& w, Metadata const& value)
 {
-    w.string(value.name); write_layout(w, value.channel_layout); w.flag(value.compiled); w.size(value.history);
-    w.pod(value.neutral_value.value); w.pod(value.default_value.value);
-    w.pod(value.min.value); w.pod(value.max.value);
+    value.write_binary(w);
 }
 
-inline SampleInputConfig read_input(Reader& r)
+template<class Metadata>
+Metadata read_continuous_metadata(Reader& r)
 {
-    return {.name = r.string(), .channel_layout = read_layout(r), .compiled = r.flag(), .history = r.size(),
-        .neutral_value = Sample{r.pod<Sample::storage>()},
-        .default_value = Sample{r.pod<Sample::storage>()},
-        .min = Sample{r.pod<Sample::storage>()}, .max = Sample{r.pod<Sample::storage>()}};
+    return Metadata::read_binary(r);
 }
 
-inline void write_output(Writer& w, SampleOutputConfig const& value)
+template<class Variant, std::size_t Index = 0>
+Variant read_continuous_metadata_variant(Reader& r, std::size_t selected)
 {
-    w.string(value.name); write_layout(w, value.channel_layout); w.flag(value.compiled); w.size(value.latency); w.size(value.history);
+    if constexpr (Index == std::variant_size_v<Variant>) {
+        throw std::runtime_error(
+            "configured graph archive has invalid continuous metadata type");
+    } else {
+        if (selected == Index) {
+            using Metadata = std::variant_alternative_t<Index, Variant>;
+            return Variant{
+                std::in_place_index<Index>,
+                read_continuous_metadata<Metadata>(r)};
+        }
+        return read_continuous_metadata_variant<Variant, Index + 1>(
+            r, selected);
+    }
 }
 
-inline SampleOutputConfig read_output(Reader& r)
+template<class Variant>
+void write_continuous_metadata_variant(Writer& w, Variant const& value)
 {
-    return {.name = r.string(), .channel_layout = read_layout(r), .compiled = r.flag(), .latency = r.size(), .history = r.size()};
+    write_enum(w, continuous_metadata_value_type(value));
+    std::visit([&](auto const& metadata) {
+        write_continuous_metadata(w, metadata);
+    }, value);
+}
+
+template<class Variant>
+void write_continuous_metadata_list(
+    Writer& w, std::vector<Variant> const& values)
+{
+    w.list(values, [&](auto const& value) {
+        write_continuous_metadata_variant(w, value);
+    });
+}
+
+template<class Variant>
+std::vector<Variant> read_continuous_metadata_list(Reader& r)
+{
+    return read_list<Variant>(r, [&] {
+        auto const type = read_enum<ContinuousValueTypeId>(r);
+        if (!is_registered_continuous_value_type(type)) {
+            throw std::runtime_error(
+                "configured graph archive has invalid continuous value type");
+        }
+        return read_continuous_metadata_variant<Variant>(
+            r, static_cast<std::size_t>(type));
+    });
+}
+
+inline void write_input_access(Writer& w, InputAccessConfig const& value)
+{
+    write_enum(w, value);
+}
+
+inline InputAccessConfig read_input_access(Reader& r)
+{
+    auto const value = read_enum<InputAccessKind>(r);
+    if (value < InputAccessKind::sequential
+        || value > InputAccessKind::coverage) {
+        throw std::runtime_error(
+            "configured graph archive has invalid input access");
+    }
+    return value;
+}
+
+inline void write_output_production(Writer& w, OutputProductionConfig const& value)
+{
+    write_enum(w, value);
+}
+
+inline OutputProductionConfig read_output_production(Reader& r)
+{
+    auto const value = read_enum<OutputProductionKind>(r);
+    if (value < OutputProductionKind::tick
+        || value > OutputProductionKind::coverage) {
+        throw std::runtime_error(
+            "configured graph archive has invalid output production");
+    }
+    return value;
+}
+
+inline void write_output_retention(Writer& w, OutputRetention retention)
+{
+    write_enum(w, retention);
+}
+
+inline OutputRetention read_output_retention(Reader& r)
+{
+    auto const retention = read_enum<OutputRetention>(r);
+    if (retention < OutputRetention::ephemeral
+        || retention > OutputRetention::persisted) {
+        throw std::runtime_error(
+            "configured graph archive has invalid output retention");
+    }
+    return retention;
+}
+
+template<class Metadata>
+void validate_continuous_metadata(std::vector<Metadata> const& metadata)
+{
+    if (metadata.empty()) {
+        throw std::runtime_error(
+            "configured graph has an empty continuous value-type domain");
+    }
+    ContinuousValueTypeSet observed;
+    for (auto const& value : metadata) {
+        auto const type = continuous_metadata_value_type(value);
+        if (observed.contains(type)) {
+            throw std::runtime_error(
+                "configured graph repeats continuous metadata for one value type");
+        }
+        observed |= ContinuousValueTypeSet{type};
+    }
+}
+
+inline void write_input(Writer& w, ContinuousInputConfig const& value)
+{
+    w.string(value.name);
+    write_layout(w, value.channel_layout);
+    write_input_access(w, input_access(value));
+    std::visit([&](auto const& access) {
+        validate_continuous_metadata(access.value_metadata);
+        write_continuous_metadata_list(w, access.value_metadata);
+    }, value.access);
+}
+
+inline ContinuousInputConfig read_input(Reader& r)
+{
+    ContinuousInputConfig result {
+        .name = r.string(),
+        .channel_layout = read_layout(r),
+    };
+    switch (read_input_access(r)) {
+    case InputAccessKind::sequential:
+        result.access = SequentialContinuousInputProperties{
+            .value_metadata =
+                read_continuous_metadata_list<ContinuousSequentialInputMetadata>(r),
+        };
+        break;
+    case InputAccessKind::region:
+        result.access = RegionContinuousInputProperties{
+            .value_metadata =
+                read_continuous_metadata_list<ContinuousRegionInputMetadata>(r),
+        };
+        break;
+    case InputAccessKind::coverage:
+        result.access = CoverageContinuousInputProperties{
+            .value_metadata =
+                read_continuous_metadata_list<ContinuousCoverageInputMetadata>(r),
+        };
+        break;
+    }
+    std::visit([&](auto const& access) {
+        validate_continuous_metadata(access.value_metadata);
+    }, result.access);
+    return result;
+}
+
+inline void write_output(Writer& w, ContinuousOutputConfig const& value)
+{
+    w.string(value.name);
+    write_layout(w, value.channel_layout);
+    write_output_production(w, output_production(value));
+    write_output_retention(w, value.retention);
+    std::visit([&](auto const& production) {
+        validate_continuous_metadata(production.value_metadata);
+        write_continuous_metadata_list(w, production.value_metadata);
+    }, value.production);
+}
+
+inline ContinuousOutputConfig read_output(Reader& r)
+{
+    auto name = r.string();
+    auto channel_layout = read_layout(r);
+    auto const production = read_output_production(r);
+    auto const retention = read_output_retention(r);
+    ContinuousOutputConfig result {
+        .name = std::move(name),
+        .channel_layout = channel_layout,
+        .retention = retention,
+    };
+    switch (production) {
+    case OutputProductionKind::tick:
+        result.production = TickContinuousOutputProperties{
+            .value_metadata =
+                read_continuous_metadata_list<ContinuousTickOutputMetadata>(r),
+        };
+        break;
+    case OutputProductionKind::region:
+        result.production = RegionContinuousOutputProperties{
+            .value_metadata =
+                read_continuous_metadata_list<ContinuousRegionOutputMetadata>(r),
+        };
+        break;
+    case OutputProductionKind::coverage:
+        result.production = CoverageContinuousOutputProperties{
+            .value_metadata =
+                read_continuous_metadata_list<ContinuousCoverageOutputMetadata>(r),
+        };
+        break;
+    }
+    std::visit([&](auto const& production) {
+        validate_continuous_metadata(production.value_metadata);
+    }, result.production);
+    return result;
 }
 
 inline void write_event_input(Writer& w, EventInputConfig const& value)
 {
-    w.string(value.name); write_enum(w, value.type); w.flag(value.compiled);
+    w.string(value.name);
+    write_enum(w, value.type);
+    write_input_access(w, value.access);
 }
 
 inline EventInputConfig read_event_input(Reader& r)
 {
-    return {.name = r.string(), .type = read_enum<EventTypeId>(r), .compiled = r.flag()};
+    return {
+        .name = r.string(),
+        .type = read_enum<EventTypeId>(r),
+        .access = read_input_access(r),
+    };
 }
 
 inline void write_event_output(Writer& w, EventOutputConfig const& value)
 {
-    w.string(value.name); write_enum(w, value.type); w.flag(value.compiled);
+    w.string(value.name);
+    write_enum(w, value.type);
+    w.pod(value.max_events_per_index);
+    write_output_production(w, value.production);
+    write_output_retention(w, value.retention);
 }
 
 inline EventOutputConfig read_event_output(Reader& r)
 {
-    return {.name = r.string(), .type = read_enum<EventTypeId>(r), .compiled = r.flag()};
+    return {
+        .name = r.string(),
+        .type = read_enum<EventTypeId>(r),
+        .max_events_per_index = r.pod<double>(),
+        .production = read_output_production(r),
+        .retention = read_output_retention(r),
+    };
 }
 
 template<class T, class Fn> void write_configs(Writer& w, std::span<T const> values, Fn&& write)
@@ -274,8 +486,8 @@ template<class T, class Fn> std::vector<T> read_configs(Reader& r, Fn&& read)
 
 inline void write_input_config(Writer& w, InputConfig const& value)
 {
-    w.flag(is_sample(value));
-    if (is_sample(value)) write_input(w, materialize_sample_config(value));
+    w.flag(is_continuous(value));
+    if (is_continuous(value)) write_input(w, materialize_continuous_config(value));
     else write_event_input(w, materialize_event_config(value));
 }
 
@@ -288,8 +500,8 @@ inline InputConfig read_input_config(Reader& r)
 
 inline void write_output_config(Writer& w, OutputConfig const& value)
 {
-    w.flag(is_sample(value));
-    if (is_sample(value)) write_output(w, materialize_sample_config(value));
+    w.flag(is_continuous(value));
+    if (is_continuous(value)) write_output(w, materialize_continuous_config(value));
     else write_event_output(w, materialize_event_config(value));
 }
 
@@ -314,16 +526,175 @@ inline NodePorts read_ports(Reader& r)
     };
 }
 
+inline void write_port_constraint_ref(Writer& w, PortConstraintRef value)
+{
+    write_enum(w, value.direction);
+    write_enum(w, value.kind);
+    w.size(value.port_index);
+}
+
+inline PortConstraintRef read_port_constraint_ref(Reader& r)
+{
+    auto const direction = read_enum<PortConstraintDirection>(r);
+    if (direction != PortConstraintDirection::input
+        && direction != PortConstraintDirection::output) {
+        throw std::runtime_error(
+            "configured graph archive has an invalid port-constraint direction");
+    }
+    auto const kind = read_enum<PortKind>(r);
+    if (kind != PortKind::sample && kind != PortKind::event) {
+        throw std::runtime_error(
+            "configured graph archive has an invalid port-constraint kind");
+    }
+    return {
+        .direction = direction,
+        .kind = kind,
+        .port_index = r.size(),
+    };
+}
+
+inline void write_port_constraints(Writer& w, NodePortConstraints const& value)
+{
+    w.list(value.value_type_equalities, [&](auto const& equality) {
+        write_port_constraint_ref(w, equality.first);
+        write_port_constraint_ref(w, equality.second);
+    });
+    w.list(value.value_type_anchors, [&](auto const& anchor) {
+        write_port_constraint_ref(w, anchor.port);
+        write_enum(w, anchor.value);
+    });
+    auto write_equalities = [&](auto const& equalities) {
+        w.list(equalities, [&](auto const& equality) {
+            write_port_constraint_ref(w, equality.first);
+            write_port_constraint_ref(w, equality.second);
+        });
+    };
+    auto write_sizes = [&](auto const& anchors) {
+        w.list(anchors, [&](auto const& anchor) {
+            write_port_constraint_ref(w, anchor.port);
+            w.size(anchor.value);
+        });
+    };
+    write_equalities(value.size_equalities);
+    write_sizes(value.size_anchors);
+    write_equalities(value.pace_equalities);
+    w.list(value.pace_anchors, [&](auto const& anchor) {
+        write_port_constraint_ref(w, anchor.port);
+        w.pod(anchor.value.exponent());
+    });
+    w.list(value.absolute_pace_anchors, [&](auto const& anchor) {
+        write_port_constraint_ref(w, anchor.port);
+        w.pod(anchor.value.exponent());
+    });
+    write_equalities(value.history_equalities);
+    write_sizes(value.history_anchors);
+    write_equalities(value.latency_equalities);
+    write_sizes(value.latency_anchors);
+    write_equalities(value.ordering_equalities);
+    w.list(value.ordering_anchors, [&](auto const& anchor) {
+        write_port_constraint_ref(w, anchor.port);
+        write_enum(w, anchor.value);
+    });
+}
+
+inline NodePortConstraints read_port_constraints(Reader& r)
+{
+    NodePortConstraints result;
+    result.value_type_equalities =
+        read_list<ContinuousValueTypeEqualityConstraint>(r, [&] {
+            return ContinuousValueTypeEqualityConstraint{
+                .first = read_port_constraint_ref(r),
+                .second = read_port_constraint_ref(r),
+            };
+        });
+    result.value_type_anchors =
+        read_list<ContinuousValueTypeAnchorConstraint>(r, [&] {
+            auto const port = read_port_constraint_ref(r);
+            auto const value_type = read_enum<ContinuousValueTypeId>(r);
+            if (!is_registered_continuous_value_type(value_type)) {
+                throw std::runtime_error(
+                    "configured graph archive has an unregistered continuous value type");
+            }
+            return ContinuousValueTypeAnchorConstraint{
+                .port = port,
+                .value = value_type,
+            };
+        });
+    auto read_equalities = [&]<class Constraint>() {
+        return read_list<Constraint>(r, [&] {
+            return Constraint{
+                .first = read_port_constraint_ref(r),
+                .second = read_port_constraint_ref(r),
+            };
+        });
+    };
+    auto read_sizes = [&]<class Constraint>() {
+        return read_list<Constraint>(r, [&] {
+            return Constraint{
+                .port = read_port_constraint_ref(r),
+                .value = r.size(),
+            };
+        });
+    };
+    result.size_equalities =
+        read_equalities.template operator()<ContinuousValueSizeEqualityConstraint>();
+    result.size_anchors =
+        read_sizes.template operator()<ContinuousValueSizeAnchorConstraint>();
+    result.pace_equalities =
+        read_equalities.template operator()<PortPaceEqualityConstraint>();
+    result.pace_anchors = read_list<PortPaceAnchorConstraint>(r, [&] {
+        auto const port = read_port_constraint_ref(r);
+        auto const exponent = r.pod<PortPace::exponent_type>();
+        return PortPaceAnchorConstraint{
+            .port = port,
+            .value = PortPace::from_exponent(exponent),
+        };
+    });
+    result.absolute_pace_anchors =
+        read_list<AbsolutePortPaceAnchorConstraint>(r, [&] {
+            auto const port = read_port_constraint_ref(r);
+            auto const exponent = r.pod<PortPace::exponent_type>();
+            return AbsolutePortPaceAnchorConstraint{
+                .port = port,
+                .value = PortPace::from_exponent(exponent),
+            };
+        });
+    result.history_equalities =
+        read_equalities.template operator()<PortHistoryEqualityConstraint>();
+    result.history_anchors =
+        read_sizes.template operator()<PortHistoryAnchorConstraint>();
+    result.latency_equalities =
+        read_equalities.template operator()<PortLatencyEqualityConstraint>();
+    result.latency_anchors =
+        read_sizes.template operator()<PortLatencyAnchorConstraint>();
+    result.ordering_equalities =
+        read_equalities.template operator()<CoverageOrderingEqualityConstraint>();
+    result.ordering_anchors = read_list<CoverageOrderingAnchorConstraint>(r, [&] {
+        auto const port = read_port_constraint_ref(r);
+        auto const ordering = read_enum<CoverageOrdering>(r);
+        if (ordering != CoverageOrdering::unspecified
+            && ordering != CoverageOrdering::sorted) {
+            throw std::runtime_error(
+                "configured graph archive has an invalid Coverage ordering");
+        }
+        return CoverageOrderingAnchorConstraint{
+            .port = port,
+            .value = ordering,
+        };
+    });
+    return result;
+}
+
 inline void write_code_key(Writer& w, NodeCodeKey value) { w.pod(value.low); w.pod(value.high); }
 inline NodeCodeKey read_code_key(Reader& r) { return {.low = r.pod<std::uint64_t>(), .high = r.pod<std::uint64_t>()}; }
 
 inline void write_bundle_port(Writer& w, NodeBundlePortId value)
 {
-    w.size(value.node_bundle_handle); write_enum(w, value.port_kind); w.size(value.port_ordinal);
+    w.size(value.node_bundle_handle); write_enum(w, value.port_kind); w.size(value.port_index);
 }
 inline NodeBundlePortId read_bundle_port(Reader& r)
 {
-    return {.node_bundle_handle = r.size(), .port_kind = read_enum<PortKind>(r), .port_ordinal = r.size()};
+    return {.node_bundle_handle = r.size(), .port_kind = read_enum<PortKind>(r), .port_index = r.size()};
 }
 
 inline void write_output_channel(Writer& w, SampleOutputChannelId value)
@@ -358,6 +729,9 @@ template<class T, class Fn> std::vector<T> read_values(Reader& r, Fn&& read)
 
 inline void write_state(Writer& w, NodeStateStructure const& value)
 {
+    w.string(value.type_identity.nominal_id);
+    w.string(value.type_identity.definition_fingerprint);
+    w.string(value.type_identity.display_name);
     w.size(value.size_bits); w.size(value.alignment_bits);
     w.list(value.fields, [&](NodeStateFieldStructure const& field) {
         w.string(field.name); w.string(field.type_name); w.size(field.bit_offset); w.size(field.size_bits);
@@ -368,7 +742,15 @@ inline void write_state(Writer& w, NodeStateStructure const& value)
 
 inline NodeStateStructure read_state(Reader& r)
 {
-    NodeStateStructure result{.size_bits = r.size(), .alignment_bits = r.size()};
+    NodeStateStructure result{
+        .type_identity = {
+            .nominal_id = r.string(),
+            .definition_fingerprint = r.string(),
+            .display_name = r.string(),
+        },
+        .size_bits = r.size(),
+        .alignment_bits = r.size(),
+    };
     result.fields = read_list<NodeStateFieldStructure>(r, [&] {
         NodeStateFieldStructure field{.name = r.string(), .type_name = r.string(), .bit_offset = r.size(),
             .size_bits = r.size(), .alignment_bits = r.size()};
@@ -380,7 +762,7 @@ inline NodeStateStructure read_state(Reader& r)
 
 template<class Channel, class Fn> void write_virtual_sample(Writer& w, VirtualSamplePortMapping<Channel> const& value, Fn&& write_channel)
 {
-    w.string(value.name); w.size(value.ordinal); write_layout(w, value.channel_layout);
+    w.string(value.name); w.size(value.index); write_layout(w, value.channel_layout);
     write_source_infos(w, value.source_infos);
     write_values<Channel>(w, value.channels, write_channel);
     w.list(value.member_channels, [&](auto const& members) { write_values<Channel>(w, members, write_channel); });
@@ -388,7 +770,7 @@ template<class Channel, class Fn> void write_virtual_sample(Writer& w, VirtualSa
 
 template<class Channel, class Fn> VirtualSamplePortMapping<Channel> read_virtual_sample(Reader& r, Fn&& read_channel)
 {
-    VirtualSamplePortMapping<Channel> result{.name = r.string(), .ordinal = r.size(), .channel_layout = read_layout(r),
+    VirtualSamplePortMapping<Channel> result{.name = r.string(), .index = r.size(), .channel_layout = read_layout(r),
         .source_infos = read_source_infos(r),
         .channels = read_values<Channel>(r, read_channel)};
     result.member_channels = read_list<std::vector<Channel>>(r, [&] { return read_values<Channel>(r, read_channel); });
@@ -397,13 +779,13 @@ template<class Channel, class Fn> VirtualSamplePortMapping<Channel> read_virtual
 
 inline void write_virtual_event(Writer& w, VirtualEventPortMapping const& value)
 {
-    w.string(value.name); w.size(value.ordinal); write_enum(w, value.type);
+    w.string(value.name); w.size(value.index); write_enum(w, value.type);
     write_source_infos(w, value.source_infos);
     write_values<NodeBundlePortId>(w, value.node_bundle_ports, write_bundle_port);
 }
 inline VirtualEventPortMapping read_virtual_event(Reader& r)
 {
-    return {.name = r.string(), .ordinal = r.size(), .type = read_enum<EventTypeId>(r),
+    return {.name = r.string(), .index = r.size(), .type = read_enum<EventTypeId>(r),
         .source_infos = read_source_infos(r),
         .node_bundle_ports = read_values<NodeBundlePortId>(r, read_bundle_port)};
 }
@@ -441,14 +823,13 @@ inline details::NodeCompilerRecord const& find_type(std::span<details::NodeCompi
 namespace iv {
 
 inline SerializedConfiguredGraph serialize_binary_configured_graph(
-    ConfiguredGraph const& configured,
-    std::span<std::pair<NodeCodeKey, NodeStateStructure> const> state_structures)
+    ConfiguredGraph const& configured)
 {
     using namespace binary_wire_details;
     SerializedConfiguredGraph result;
     Writer bundles;
     std::size_t bundle_count = 0;
-    std::size_t config_ordinal = 0;
+    std::size_t config_index = 0;
     configured.node_bundles.for_each_configured_bundle([&](ConfiguredNodeBundleView view) {
         ++bundle_count;
         write_enum(bundles, view.kind);
@@ -458,6 +839,11 @@ inline SerializedConfiguredGraph serialize_binary_configured_graph(
             if (!view.node_storage || !*view.node_storage || !view.code_key || !view.ports)
                 throw std::runtime_error("concrete configured node has incomplete compiler storage");
             write_ports(bundles, *view.ports);
+            if (!view.port_constraints) {
+                throw std::runtime_error(
+                    "concrete configured node has no port constraints");
+            }
+            write_port_constraints(bundles, *view.port_constraints);
             write_code_key(bundles, *view.code_key);
             bundles.flag(view.registered_node_type_identity != nullptr);
             if (view.registered_node_type_identity) {
@@ -465,7 +851,7 @@ inline SerializedConfiguredGraph serialize_binary_configured_graph(
                 bundles.string(
                     view.registered_node_type_identity->provider_package_root);
             }
-            bundles.size(config_ordinal++);
+            bundles.size(config_index++);
             bundles.size(view.node_size);
             bundles.size(view.node_alignment);
             auto const has_ttl = view.lifetime && view.lifetime->ttl_samples;
@@ -479,22 +865,22 @@ inline SerializedConfiguredGraph serialize_binary_configured_graph(
             bundles.flag(has_default_ttl);
             if (has_default_ttl) bundles.size(**view.default_ttl_samples);
             bundles.flag(view.block_skippable);
+            bundles.flag(view.intrinsically_replayable);
             auto const has_static_value = view.static_sample_value && *view.static_sample_value;
             bundles.flag(has_static_value);
             if (has_static_value) bundles.pod((**view.static_sample_value).value);
-            auto const has_deferred = view.deferred_detach && *view.deferred_detach;
-            bundles.flag(has_deferred);
-            if (has_deferred) {
-                auto const& deferred = **view.deferred_detach;
-                write_enum(bundles, deferred.kind);
-                bundles.size(deferred.id);
-                bundles.size(deferred.loop_extra_latency);
+            auto const has_state_structures = view.state_structures_storage
+                && *view.state_structures_storage;
+            bundles.flag(has_state_structures);
+            if (has_state_structures) {
+                auto const& structures = **view.state_structures_storage;
+                bundles.flag(structures.state.has_value());
+                if (structures.state) write_state(bundles, *structures.state);
+                bundles.flag(structures.tock_state.has_value());
+                if (structures.tock_state) {
+                    write_state(bundles, *structures.tock_state);
+                }
             }
-            auto const state = std::find_if(state_structures.begin(), state_structures.end(), [&](auto const& item) {
-                return item.first == *view.code_key;
-            });
-            bundles.flag(state != state_structures.end());
-            if (state != state_structures.end()) write_state(bundles, state->second);
 
             ConfiguredNodeConfigBytes config;
             config.alignment = view.node_alignment;
@@ -547,14 +933,27 @@ inline SerializedConfiguredGraph serialize_binary_configured_graph(
     auto const samples = configured.connections.configured_sample_connections();
     writer.list(samples, [&](ConfiguredSampleConnection const& value) {
         write_enum(writer, value.source_type);
-        write_values<SampleOutputChannelId>(writer, value.source_channels, write_output_channel);
+        writer.list(value.source_channels, [&](auto const& source) {
+            write_output_channel(writer, source.channel);
+            writer.flag(source.detach.has_value());
+            if (!source.detach) return;
+            writer.size(source.detach->loop_extra_latency);
+            writer.flag(source.detach->initial_value_override.has_value());
+            if (source.detach->initial_value_override)
+                writer.pod(source.detach->initial_value_override->value);
+        });
         write_enum(writer, value.target_type);
         write_values<SampleInputChannelId>(writer, value.target_channels, write_input_channel);
     });
     auto const events = configured.connections.configured_event_connections();
     writer.list(events, [&](ConfiguredEventConnection const& value) {
         write_enum(writer, value.source_type);
-        write_values<EventOutputPortId>(writer, value.sources, write_event_output_port);
+        writer.list(value.sources, [&](auto const& source) {
+            write_event_output_port(writer, source.port);
+            writer.flag(source.detach.has_value());
+            if (source.detach)
+                writer.size(source.detach->loop_extra_latency);
+        });
         write_enum(writer, value.target_type);
         write_values<EventInputPortId>(writer, value.targets, write_event_input_port);
     });
@@ -563,7 +962,7 @@ inline SerializedConfiguredGraph serialize_binary_configured_graph(
     writer.size(public_ports.boundary);
     write_source_info_groups(writer, public_ports.sample_input_source_infos);
     write_source_info_groups(writer, public_ports.event_input_source_infos);
-    writer.list(public_ports.last_sample_output_port_ordinals, [&](std::size_t value) { writer.size(value); });
+    writer.list(public_ports.last_sample_output_port_indices, [&](std::size_t value) { writer.size(value); });
     write_source_info_groups(writer, public_ports.sample_output_source_infos);
     write_source_info_groups(writer, public_ports.event_output_source_infos);
     writer.flag(public_ports.sample_outputs_defined);
@@ -574,17 +973,6 @@ inline SerializedConfiguredGraph serialize_binary_configured_graph(
         writer.flag(value.whole_stream);
     });
 
-    writer.size(configured.detach.next_detach_id());
-    auto const detached = configured.detach.configured_infos();
-    writer.list(detached, [&](ConfiguredDetachedSamplePortInfo const& value) {
-        writer.size(value.detach_id);
-        write_enum(writer, value.source_type);
-        write_values<SampleOutputChannelId>(writer, value.source_channels, write_output_channel);
-        writer.size(value.writer_bundle);
-        writer.size(value.reader_bundle);
-        write_output_channel(writer, value.reader_channel);
-        writer.size(value.loop_extra_latency);
-    });
     auto const virtual_nodes = configured.virtual_nodes.records();
     writer.list(virtual_nodes, [&](VirtualNodeRecord const& value) { write_virtual_node(writer, value); });
     result.bytes = std::move(writer).take();
@@ -604,7 +992,8 @@ inline ConfiguredGraph deserialize_binary_configured_graph(
     Reader reader(bytes);
     if (reader.pod<std::uint32_t>() != archive_magic)
         throw std::runtime_error("unsupported configured graph archive magic");
-    if (reader.pod<std::uint32_t>() != archive_version)
+    auto const version = reader.pod<std::uint32_t>();
+    if (version != archive_version)
         throw std::runtime_error("unsupported configured graph archive version");
     auto make_owned_config_storage = [](ConfiguredNodeConfigBytes const& config) {
         if (config.alignment == 0 || !std::has_single_bit(config.alignment)) {
@@ -635,6 +1024,7 @@ inline ConfiguredGraph deserialize_binary_configured_graph(
         record.source_infos = read_source_infos(reader);
         if (record.kind == ConfiguredNodeBundleKind::concrete) {
             record.ports = read_ports(reader);
+            record.port_constraints = read_port_constraints(reader);
             record.code_key = read_code_key(reader);
             if (reader.flag()) {
                 record.registered_node_type_identity = RegisteredNodeTypeIdentity{
@@ -642,9 +1032,9 @@ inline ConfiguredGraph deserialize_binary_configured_graph(
                     .provider_package_root = reader.string(),
                 };
             }
-            auto const ordinal = reader.size();
-            if (ordinal >= node_configs.size()) throw std::runtime_error("configured graph config ordinal is out of range");
-            auto const& config = node_configs[ordinal];
+            auto const index = reader.size();
+            if (index >= node_configs.size()) throw std::runtime_error("configured graph config index is out of range");
+            auto const& config = node_configs[index];
             record.node_size = reader.size();
             record.node_alignment = reader.size();
             if (config.bytes.size() != record.node_size
@@ -654,7 +1044,7 @@ inline ConfiguredGraph deserialize_binary_configured_graph(
             }
             record.node_storage = node_config_storage.empty()
                 ? make_owned_config_storage(config)
-                : node_config_storage[ordinal];
+                : node_config_storage[index];
             if (!record.node_storage) {
                 throw std::runtime_error(
                     "configured graph has null node configuration storage");
@@ -668,12 +1058,23 @@ inline ConfiguredGraph deserialize_binary_configured_graph(
             record.maximum_block_size = reader.size();
             if (reader.flag()) record.default_ttl_samples = reader.size();
             record.block_skippable = reader.flag();
+            record.intrinsically_replayable = reader.flag();
+            if (record.intrinsically_replayable
+                != find_type(node_types, record.code_key).intrinsically_replayable
+                || (record.intrinsically_replayable
+                    && record.internal_latency_samples != 0)) {
+                throw std::runtime_error(
+                    "configured graph intrinsic replayability disagrees with compiler metadata");
+            }
             if (reader.flag()) record.static_sample_value = Sample{reader.pod<Sample::storage>()};
-            if (reader.flag()) record.deferred_detach = DeferredDetachNode{
-                .kind = read_enum<DeferredDetachNodeKind>(reader), .id = reader.size(), .loop_extra_latency = reader.size()};
             if (reader.flag()) {
-                record.state_structure_storage = std::make_shared<NodeStateStructure>(read_state(reader));
-                record.operations.runtime.state_structure = record.state_structure_storage.get();
+                NodeStateStructures structures;
+                if (reader.flag()) structures.state = read_state(reader);
+                if (reader.flag()) structures.tock_state = read_state(reader);
+                record.state_structures_storage =
+                    std::make_shared<NodeStateStructures const>(std::move(structures));
+                record.operations.runtime.state_structures =
+                    record.state_structures_storage.get();
             }
         } else if (record.kind == ConfiguredNodeBundleKind::tiled) {
             record.tiled_members = read_list<NodeBundleHandle>(reader, [&] { return reader.size(); });
@@ -697,21 +1098,52 @@ inline ConfiguredGraph deserialize_binary_configured_graph(
     }
 
     auto sample_connections = read_list<ConfiguredSampleConnection>(reader, [&] {
-        return ConfiguredSampleConnection{.source_type = read_enum<ChannelTypeId>(reader),
-            .source_channels = read_values<SampleOutputChannelId>(reader, read_output_channel),
-            .target_type = read_enum<ChannelTypeId>(reader),
-            .target_channels = read_values<SampleInputChannelId>(reader, read_input_channel)};
+        ConfiguredSampleConnection result{
+            .source_type = read_enum<ChannelTypeId>(reader),
+        };
+        result.source_channels = read_list<ConfiguredSampleConnectionSource>(
+            reader, [&] {
+                ConfiguredSampleConnectionSource source{
+                    .channel = read_output_channel(reader),
+                };
+                if (!reader.flag()) return source;
+                ConfiguredSampleConnectionDetach detach{
+                    .loop_extra_latency = reader.size(),
+                };
+                if (reader.flag())
+                    detach.initial_value_override =
+                        Sample{reader.pod<Sample::storage>()};
+                source.detach = detach;
+                return source;
+            });
+        result.target_type = read_enum<ChannelTypeId>(reader);
+        result.target_channels =
+            read_values<SampleInputChannelId>(reader, read_input_channel);
+        return result;
     });
     auto event_connections = read_list<ConfiguredEventConnection>(reader, [&] {
-        return ConfiguredEventConnection{.source_type = read_enum<EventTypeId>(reader),
-            .sources = read_values<EventOutputPortId>(reader, read_event_output_port),
+        ConfiguredEventConnection result{
+            .source_type = read_enum<EventTypeId>(reader),
+            .sources = read_list<ConfiguredEventConnectionSource>(reader, [&] {
+                ConfiguredEventConnectionSource source{
+                    .port = read_event_output_port(reader),
+                };
+                if (reader.flag()) {
+                    source.detach = ConfiguredEventConnectionDetach{
+                        .loop_extra_latency = reader.size(),
+                    };
+                }
+                return source;
+            }),
             .target_type = read_enum<EventTypeId>(reader),
-            .targets = read_values<EventInputPortId>(reader, read_event_input_port)};
+            .targets = read_values<EventInputPortId>(reader, read_event_input_port),
+        };
+        return result;
     });
     ConfiguredPublicPortsRecord public_ports{.boundary = reader.size(),
         .sample_input_source_infos = read_source_info_groups(reader),
         .event_input_source_infos = read_source_info_groups(reader),
-        .last_sample_output_port_ordinals = read_list<std::size_t>(reader, [&] { return reader.size(); }),
+        .last_sample_output_port_indices = read_list<std::size_t>(reader, [&] { return reader.size(); }),
         .sample_output_source_infos = read_source_info_groups(reader),
         .event_output_source_infos = read_source_info_groups(reader),
         .sample_outputs_defined = reader.flag()};
@@ -719,19 +1151,13 @@ inline ConfiguredGraph deserialize_binary_configured_graph(
         return PublicSamplePortMember{.family_name = reader.string(), .channel_type = read_enum<ChannelTypeId>(reader),
             .channel_index = reader.size(), .whole_stream = reader.flag()};
     });
-    auto const next_detach_id = reader.size();
-    auto detached = read_list<ConfiguredDetachedSamplePortInfo>(reader, [&] {
-        return ConfiguredDetachedSamplePortInfo{.detach_id = reader.size(), .source_type = read_enum<ChannelTypeId>(reader),
-            .source_channels = read_values<SampleOutputChannelId>(reader, read_output_channel), .writer_bundle = reader.size(),
-            .reader_bundle = reader.size(), .reader_channel = read_output_channel(reader), .loop_extra_latency = reader.size()};
-    });
     auto virtual_nodes = read_list<VirtualNodeRecord>(reader, [&] { return read_virtual_node(reader); });
     reader.finish();
     return {.identity = GraphBuilderIdentity{std::move(identity)},
         .node_bundles = GraphBuilderNodeBundles::from_configured_records(bundles),
         .connections = GraphBuilderConnections::from_configured_connections(sample_connections, event_connections),
         .public_ports = GraphBuilderPublicPorts::from_configured_record(public_ports),
-        .detach = GraphBuilderDetach::from_configured_infos(next_detach_id, detached), .annotations = {},
+        .annotations = {},
         .virtual_nodes = GraphBuilderVirtualNodes::from_configured_records(virtual_nodes)};
 }
 

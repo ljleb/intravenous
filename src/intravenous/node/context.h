@@ -1,7 +1,9 @@
 #pragma once
 
 #include <intravenous/compat.h>
+#include <intravenous/graph/reflected_node_operations.h>
 #include <intravenous/node/resources.h>
+#include <intravenous/node/static_port_access.h>
 #include <intravenous/node/traits.h>
 
 #include <concepts>
@@ -20,16 +22,24 @@
 namespace iv {
     struct NodeLayoutBuilder;
     struct NodeStorage;
-    struct NodeStateStructure;
+    struct TockStateStorage;
+    struct NodeStateStructures;
 
     struct NodeLifecycleCallbacks {
         void (*move_fn)(
-            void const*, size_t, size_t, NodeStorage&, NodeStorage const&) = nullptr;
-        void (*initialize_fn)(void const*, size_t, NodeStorage&) = nullptr;
-        void (*release_fn)(void const*, size_t, NodeStorage&) = nullptr;
+            void const*, size_t, size_t, NodeStorage&, NodeStorage const&) noexcept = nullptr;
+        void (*initialize_fn)(void const*, size_t, NodeStorage&) noexcept = nullptr;
+        void (*release_fn)(void const*, size_t, NodeStorage&) noexcept = nullptr;
         void (*default_construct_state_fn)(void*) = nullptr;
         void (*destroy_state_fn)(void*) = nullptr;
         std::string (*identity_fn)(void const*) = nullptr;
+    };
+
+    struct TockStateLifecycleCallbacks {
+        void (*initialize_fn)(void const*, size_t, TockStateStorage&) noexcept = nullptr;
+        void (*release_fn)(void const*, size_t, TockStateStorage&) noexcept = nullptr;
+        void (*default_construct_background_state_fn)(void*) = nullptr;
+        void (*destroy_background_state_fn)(void*) = nullptr;
     };
 
     namespace details {
@@ -40,6 +50,20 @@ namespace iv {
 #define IV_NODE_LAYOUT_TYPE_TOKEN_STORAGE
 #endif
 
+        template<typename Node, typename Callback>
+        void invoke_node_lifecycle(
+            char const* operation,
+            size_t node_index,
+            Callback&& callback) noexcept
+        {
+            try {
+                std::forward<Callback>(callback)();
+            } catch (...) {
+                terminate_node_lifecycle_exception(
+                    operation, typeid(Node).name(), node_index);
+            }
+        }
+
         struct NodeLayoutNodeRegistration {
             void const* node = nullptr;
             void const* node_type = nullptr;
@@ -47,7 +71,11 @@ namespace iv {
             size_t state_size = 0;
             size_t state_alignment = 1;
             bool has_state = false;
+            size_t background_state_size = 0;
+            size_t background_state_alignment = 1;
+            bool has_background_state = false;
             NodeLifecycleCallbacks lifecycle {};
+            TockStateLifecycleCallbacks tock_lifecycle {};
         };
 
         struct NodeLayoutArrayDeclaration {
@@ -88,6 +116,8 @@ namespace iv {
             NodeLayoutBuilder&, NodeLayoutNodeRegistration const&);
         void allocate_node_state(
             NodeLayoutBuilder&, size_t node_index, size_t size, size_t alignment);
+        void allocate_node_background_state(
+            NodeLayoutBuilder&, size_t node_index, size_t size, size_t alignment);
         void declare_local_array(
             NodeLayoutBuilder&, NodeLayoutArrayDeclaration const&);
         size_t declare_nested_node_states(
@@ -108,8 +138,8 @@ namespace iv {
             NodeLayoutBuilder const&, std::string const&, void const* element_type);
         bool has_export_array(
             NodeLayoutBuilder const&, std::string const&, void const* element_type);
-        void override_node_state_structure(
-            NodeLayoutBuilder&, size_t node_index, NodeStateStructure const&);
+        void override_node_state_structures(
+            NodeLayoutBuilder&, size_t node_index, NodeStateStructures const&);
         size_t node_layout_max_block_size(NodeLayoutBuilder const&);
         size_t node_layout_event_port_buffer_base_multiplier(
             NodeLayoutBuilder const&);
@@ -120,6 +150,10 @@ namespace iv {
         size_t node_storage_default_silence_ttl_samples(NodeStorage const&);
         NodeLayoutArrayStorage resolve_exported_array_storage(
             NodeStorage const&, std::string const&, void const* element_type);
+        void* tock_state_storage_state_ptr(
+            TockStateStorage const&, size_t node_index);
+        ResourceContext const& tock_state_storage_resources(
+            TockStateStorage const&);
 
     }
 
@@ -136,6 +170,12 @@ namespace iv {
 
     template<typename Node>
     struct MoveContext;
+
+    template<typename Node>
+    struct TockInitializationContext;
+
+    template<typename Node>
+    struct TockReleaseContext;
 
     namespace details {
         template <typename Node>
@@ -162,11 +202,31 @@ namespace iv {
             node.move(ctx);
         };
 
+        template <typename Node>
+        concept has_tock_initialize = requires(
+            Node node, TockInitializationContext<Node> ctx)
+        {
+            node.initialize(ctx);
+        };
+
+        template <typename Node>
+        concept has_tock_release = requires(
+            Node node, TockReleaseContext<Node> ctx)
+        {
+            node.release(ctx);
+        };
+
         template<typename Node>
         NodeLifecycleCallbacks make_lifecycle_callbacks();
 
+        template<typename Node>
+        TockStateLifecycleCallbacks make_tock_lifecycle_callbacks();
+
         template<auto NodeValue>
         NodeLifecycleCallbacks make_reflected_lifecycle_callbacks();
+
+        template<auto NodeValue>
+        TockStateLifecycleCallbacks make_reflected_tock_lifecycle_callbacks();
 
         template<typename Node>
         NodeLayoutNodeRegistration make_node_registration(Node const& node)
@@ -183,7 +243,15 @@ namespace iv {
                 registration.state_size = sizeof(State);
                 registration.state_alignment = alignof(State);
             }
+            registration.has_background_state =
+                !std::is_void_v<typename NodeBackgroundState<Node>::Type>;
+            if constexpr (!std::is_void_v<typename NodeBackgroundState<Node>::Type>) {
+                using TockState = typename NodeBackgroundState<Node>::Type;
+                registration.background_state_size = sizeof(TockState);
+                registration.background_state_alignment = alignof(TockState);
+            }
             registration.lifecycle = make_lifecycle_callbacks<Node>();
+            registration.tock_lifecycle = make_tock_lifecycle_callbacks<Node>();
             return registration;
         }
 
@@ -200,7 +268,16 @@ namespace iv {
                 registration.state_size = sizeof(State);
                 registration.state_alignment = alignof(State);
             }
+            registration.has_background_state =
+                !std::is_void_v<typename NodeBackgroundState<Node>::Type>;
+            if constexpr (!std::is_void_v<typename NodeBackgroundState<Node>::Type>) {
+                using TockState = typename NodeBackgroundState<Node>::Type;
+                registration.background_state_size = sizeof(TockState);
+                registration.background_state_alignment = alignof(TockState);
+            }
             registration.lifecycle = make_reflected_lifecycle_callbacks<NodeValue>();
+            registration.tock_lifecycle =
+                make_reflected_tock_lifecycle_callbacks<NodeValue>();
             return registration;
         }
 
@@ -220,24 +297,117 @@ namespace iv {
         friend struct DeclarationContext;
 
         using State = typename NodeState<Node>::Type;
+        using TockState = typename NodeBackgroundState<Node>::Type;
 
     private:
+        struct FieldLocation {
+            ptrdiff_t offset = 0;
+        };
+
         NodeLayoutBuilder* _builder = nullptr;
         size_t _node_index = 0;
         State const* _state_marker = nullptr;
+        ReflectedNodePortRealization _ports {};
         mutable std::vector<size_t> _direct_nested_node_indices;
         mutable std::optional<size_t> _nested_nodes_region_index;
 
+        FieldLocation field_location(void const* field) const
+        {
+            auto const address = reinterpret_cast<uintptr_t>(field);
+            if constexpr (!std::is_void_v<State>) {
+                auto const base = reinterpret_cast<uintptr_t>(_state_marker);
+                if (address >= base && address < base + sizeof(State)) {
+                    return {
+                        .offset = static_cast<ptrdiff_t>(address - base),
+                    };
+                }
+            }
+            IV_ASSERT(false, "declared storage field must belong to State");
+            return {};
+        }
+
     public:
-        explicit DeclarationContext(NodeLayoutBuilder& builder, Node const& node)
+        class ResolvedContinuousPort {
+            ReflectedContinuousPortRealization const* realization_ = nullptr;
+
+        public:
+            constexpr explicit ResolvedContinuousPort(
+                ReflectedContinuousPortRealization const& realization) noexcept
+                : realization_(&realization)
+            {}
+
+            [[nodiscard]] constexpr ContinuousValueTypeId value_type() const noexcept
+            {
+                return realization_->geometry.value_type;
+            }
+
+            template<RegisteredContinuousValue Value>
+            [[nodiscard]] constexpr bool is() const noexcept
+            {
+                return value_type() == continuous_value_type_id_v<Value>;
+            }
+
+            [[nodiscard]] constexpr std::size_t size() const noexcept
+            {
+                return realization_->geometry.elements_per_value;
+            }
+
+            [[nodiscard]] constexpr PortPace pace() const noexcept
+            {
+                return PortPace::from_exponent(
+                    realization_->absolute_pace_exponent);
+            }
+
+            [[nodiscard]] constexpr PortPace local_pace() const noexcept
+            {
+                return PortPace::from_exponent(
+                    realization_->local_pace_exponent);
+            }
+
+            [[nodiscard]] constexpr std::size_t history() const noexcept
+            {
+                return realization_->history;
+            }
+
+            [[nodiscard]] constexpr std::size_t latency() const noexcept
+            {
+                return realization_->latency;
+            }
+
+            [[nodiscard]] constexpr std::optional<std::size_t>
+            sample_support() const noexcept
+            {
+                return realization_->has_sample_support
+                    ? std::optional{realization_->sample_support}
+                    : std::nullopt;
+            }
+
+            [[nodiscard]] constexpr CoverageOrdering ordering() const noexcept
+            {
+                return realization_->ordering;
+            }
+        };
+
+        explicit DeclarationContext(
+            NodeLayoutBuilder& builder,
+            Node const& node,
+            ReflectedNodePortRealization ports)
             : _builder(&builder)
             , _node_index(details::register_node(
                 builder, details::make_node_registration(node)))
+            , _ports(ports)
         {
             if constexpr (!std::is_void_v<State>) {
                 details::allocate_node_state(
                     builder, _node_index, sizeof(State), alignof(State));
                 _state_marker = reinterpret_cast<State const*>(uintptr_t { 0x10000 });
+            }
+            if constexpr (!std::is_void_v<TockState>) {
+                details::allocate_node_background_state(
+                    builder,
+                    _node_index,
+                    sizeof(TockState),
+                    alignof(TockState));
             }
         }
 
@@ -247,15 +417,24 @@ namespace iv {
                 Node>
         explicit DeclarationContext(
             NodeLayoutBuilder& builder,
-            std::integral_constant<decltype(NodeValue), NodeValue>)
+            std::integral_constant<decltype(NodeValue), NodeValue>,
+            ReflectedNodePortRealization ports)
             : _builder(&builder)
             , _node_index(details::register_node(
                 builder, details::make_reflected_node_registration<NodeValue>()))
+            , _ports(ports)
         {
             if constexpr (!std::is_void_v<State>) {
                 details::allocate_node_state(
                     builder, _node_index, sizeof(State), alignof(State));
                 _state_marker = reinterpret_cast<State const*>(uintptr_t { 0x10000 });
+            }
+            if constexpr (!std::is_void_v<TockState>) {
+                details::allocate_node_background_state(
+                    builder,
+                    _node_index,
+                    sizeof(TockState),
+                    alignof(TockState));
             }
         }
 
@@ -265,16 +444,62 @@ namespace iv {
                 details::finalize_nested_node_states(
                     *_builder,
                     *_nested_nodes_region_index,
-                    std::move(_direct_nested_node_indices));
+                    _direct_nested_node_indices);
             }
         }
 
         template<typename Node2>
         DeclarationContext(
-            DeclarationContext<Node2> const& ctx, Node const& node)
-            : DeclarationContext<Node>(*ctx._builder, node)
+            DeclarationContext<Node2> const& ctx,
+            Node const& node,
+            ReflectedNodePortRealization ports)
+            : DeclarationContext<Node>(*ctx._builder, node, ports)
         {
             ctx._direct_nested_node_indices.push_back(_node_index);
+        }
+
+        template<std::size_t Index>
+        [[nodiscard]] ResolvedContinuousPort input() const
+        requires details::has_constexpr_port_configs<Node>
+        {
+            static_assert(
+                details::static_input_port_kind_at<Node, Index>()
+                    == PortKind::sample,
+                "declaration input is not a continuous port");
+            constexpr auto port =
+                details::static_sample_input_port_index_at<Node, Index>();
+            IV_ASSERT(port < _ports.inputs.size(),
+                "resolved declaration input is absent");
+            return ResolvedContinuousPort{_ports.inputs.pointer[port]};
+        }
+
+        template<fixed_string Name>
+        [[nodiscard]] ResolvedContinuousPort input() const
+        requires details::has_constexpr_port_configs<Node>
+        {
+            return input<details::static_input_declaration_index<Node, Name>()>();
+        }
+
+        template<std::size_t Index>
+        [[nodiscard]] ResolvedContinuousPort output() const
+        requires details::has_constexpr_port_configs<Node>
+        {
+            static_assert(
+                details::static_output_port_kind_at<Node, Index>()
+                    == PortKind::sample,
+                "declaration output is not a continuous port");
+            constexpr auto port =
+                details::static_sample_output_port_index_at<Node, Index>();
+            IV_ASSERT(port < _ports.outputs.size(),
+                "resolved declaration output is absent");
+            return ResolvedContinuousPort{_ports.outputs.pointer[port]};
+        }
+
+        template<fixed_string Name>
+        [[nodiscard]] ResolvedContinuousPort output() const
+        requires details::has_constexpr_port_configs<Node>
+        {
+            return output<details::static_output_declaration_index<Node, Name>()>();
         }
 
         NoCopy<State> const& state() const
@@ -286,10 +511,10 @@ namespace iv {
         template<typename A>
         void local_array(std::span<A> const& span, size_t count) const
         {
+            auto const location = field_location(&span);
             details::declare_local_array(*_builder, {
                 .owner_node = _node_index,
-                .state_field_offset =
-                    details::node_layout_field_offset(_state_marker, &span),
+                .state_field_offset = location.offset,
                 .element_type = details::node_layout_type_token<A>(),
                 .element_type_name = typeid(A).name(),
                 .element_size = sizeof(A),
@@ -307,10 +532,10 @@ namespace iv {
         template<typename A>
         void export_array(std::string id, std::span<A> const& span) const
         {
+            auto const location = field_location(&span);
             details::declare_export_array(*_builder, std::move(id), {
                 .owner_node = _node_index,
-                .state_field_offset = details::node_layout_field_offset(
-                    reinterpret_cast<void const*>(uintptr_t { 0x10000 }), &span),
+                .state_field_offset = location.offset,
                 .element_type = details::node_layout_type_token<A>(),
                 .element_type_name = typeid(A).name(),
                 .element_size = sizeof(A),
@@ -329,10 +554,10 @@ namespace iv {
         template<typename A>
         void import_array(std::string id, std::span<A> const& span) const
         {
+            auto const location = field_location(&span);
             details::declare_import_array(*_builder, std::move(id), {
                 .owner_node = _node_index,
-                .state_field_offset = details::node_layout_field_offset(
-                    reinterpret_cast<void const*>(uintptr_t { 0x10000 }), &span),
+                .state_field_offset = location.offset,
                 .element_type = details::node_layout_type_token<A>(),
                 .element_type_name = typeid(A).name(),
                 .element_size = sizeof(A),
@@ -385,15 +610,19 @@ namespace iv {
 
         void declare_reflected_child(
             void const* node_data,
-            NodeStateStructure const* state_structure,
+            NodeStateStructures const* state_structures,
             size_t (*declare)(
-                void const*, NodeStateStructure const*, NodeLayoutBuilder&)) const
+                void const*,
+                NodeStateStructures const*,
+                NodeLayoutBuilder&,
+                ReflectedNodePortRealization const&),
+            ReflectedNodePortRealization const& ports) const
         {
             IV_ASSERT(node_data, "reflected child node data cannot be null");
             IV_ASSERT(
                 declare, "reflected child declaration callback cannot be null");
             _direct_nested_node_indices.push_back(
-                declare(node_data, state_structure, *_builder));
+                declare(node_data, state_structures, *_builder, ports));
         }
 
         size_t max_block_size() const
@@ -433,7 +662,9 @@ namespace iv {
         ResourceContext const& resources;
 
         explicit InitializationContext(
-            NodeStorage& storage, void* state, ResourceContext const& resources_)
+            NodeStorage& storage,
+            void* state,
+            ResourceContext const& resources_)
             : _storage(&storage)
             , _state(state)
             , resources(resources_)
@@ -492,7 +723,9 @@ namespace iv {
         ResourceContext const& resources;
 
         explicit ReleaseContext(
-            NodeStorage& storage, void* state, ResourceContext const& resources_)
+            NodeStorage& storage,
+            void* state,
+            ResourceContext const& resources_)
             : _storage(&storage)
             , _state(state)
             , resources(resources_)
@@ -510,6 +743,7 @@ namespace iv {
         {
             return *static_cast<State*>(_state);
         }
+
     };
 
     template<typename Node>
@@ -561,6 +795,70 @@ namespace iv {
         {
             return *static_cast<State*>(_previous_state);
         }
+
+    };
+
+    template<typename Node>
+    struct TockInitializationContext {
+        template<typename>
+        friend struct TockInitializationContext;
+
+        using TockState = typename NodeBackgroundState<Node>::Type;
+
+    private:
+        void* _state = nullptr;
+
+    public:
+        ResourceContext const& resources;
+
+        explicit TockInitializationContext(
+            void* state,
+            ResourceContext const& resources_)
+            : _state(state), resources(resources_)
+        {}
+
+        template<typename Node2>
+        TockInitializationContext(
+            TockInitializationContext<Node2> const& ctx)
+            : _state(ctx._state), resources(ctx.resources)
+        {}
+
+        std::add_lvalue_reference_t<TockState> tock_state() const
+        requires(!std::is_void_v<TockState>)
+        {
+            return *static_cast<TockState*>(_state);
+        }
+    };
+
+    template<typename Node>
+    struct TockReleaseContext {
+        template<typename>
+        friend struct TockReleaseContext;
+
+        using TockState = typename NodeBackgroundState<Node>::Type;
+
+    private:
+        void* _state = nullptr;
+
+    public:
+        ResourceContext const& resources;
+
+        explicit TockReleaseContext(
+            void* state,
+            ResourceContext const& resources_)
+            : _state(state), resources(resources_)
+        {}
+
+        template<typename Node2>
+        TockReleaseContext(TockReleaseContext<Node2> const& ctx)
+            : _state(ctx._state), resources(ctx.resources)
+        {}
+
+        std::add_lvalue_reference_t<TockState> tock_state() const
+        requires(!std::is_void_v<TockState>)
+        {
+            return *static_cast<TockState*>(_state);
+        }
     };
 
     namespace details {
@@ -588,28 +886,30 @@ namespace iv {
                     size_t node_index,
                     size_t previous_node_index,
                     NodeStorage& storage,
-                    NodeStorage const& previous_storage) {
-                    void* state = node_storage_state_ptr(storage, node_index);
-                    void* previous_state =
-                        node_storage_state_ptr(previous_storage, previous_node_index);
-                    if constexpr (std::is_empty_v<Node>) {
-                        (void)node_ptr;
-                        Node node {};
-                        node.move(MoveContext<Node>(
-                            storage,
-                            state,
-                            previous_storage,
-                            previous_state,
-                            node_storage_resources(storage)));
-                    } else {
-                        auto const& node = *static_cast<Node const*>(node_ptr);
-                        node.move(MoveContext<Node>(
-                            storage,
-                            state,
-                            previous_storage,
-                            previous_state,
-                            node_storage_resources(storage)));
-                    }
+                    NodeStorage const& previous_storage) noexcept {
+                    invoke_node_lifecycle<Node>("move", node_index, [&] {
+                        void* state = node_storage_state_ptr(storage, node_index);
+                        void* previous_state = node_storage_state_ptr(
+                            previous_storage, previous_node_index);
+                        if constexpr (std::is_empty_v<Node>) {
+                            (void)node_ptr;
+                            Node node {};
+                            node.move(MoveContext<Node>(
+                                storage,
+                                state,
+                                previous_storage,
+                                previous_state,
+                                node_storage_resources(storage)));
+                        } else {
+                            auto const& node = *static_cast<Node const*>(node_ptr);
+                            node.move(MoveContext<Node>(
+                                storage,
+                                state,
+                                previous_storage,
+                                previous_state,
+                                node_storage_resources(storage)));
+                        }
+                    });
                 };
             }
 
@@ -630,38 +930,111 @@ namespace iv {
 
             if constexpr (has_initialize<Node>) {
                 callbacks.initialize_fn = [](
-                    void const* node_ptr, size_t node_index, NodeStorage& storage) {
-                    void* state = node_storage_state_ptr(storage, node_index);
-                    if constexpr (std::is_empty_v<Node>) {
-                        (void)node_ptr;
-                        Node node {};
-                        node.initialize(InitializationContext<Node>(
-                            storage, state, node_storage_resources(storage)));
-                    } else {
-                        static_cast<Node const*>(node_ptr)->initialize(
-                            InitializationContext<Node>(
-                                storage, state, node_storage_resources(storage)));
-                    }
+                    void const* node_ptr,
+                    size_t node_index,
+                    NodeStorage& storage) noexcept {
+                    invoke_node_lifecycle<Node>("initialize", node_index, [&] {
+                        void* state = node_storage_state_ptr(storage, node_index);
+                        if constexpr (std::is_empty_v<Node>) {
+                            (void)node_ptr;
+                            Node node {};
+                            node.initialize(InitializationContext<Node>(
+                                storage,
+                                state,
+                                node_storage_resources(storage)));
+                        } else {
+                            static_cast<Node const*>(node_ptr)->initialize(
+                                InitializationContext<Node>(
+                                    storage,
+                                    state,
+                                    node_storage_resources(storage)));
+                        }
+                    });
                 };
             }
 
             if constexpr (has_release<Node>) {
                 callbacks.release_fn = [](
-                    void const* node_ptr, size_t node_index, NodeStorage& storage) {
-                    void* state = node_storage_state_ptr(storage, node_index);
-                    if constexpr (std::is_empty_v<Node>) {
-                        (void)node_ptr;
-                        Node node {};
-                        node.release(ReleaseContext<Node>(
-                            storage, state, node_storage_resources(storage)));
-                    } else {
-                        static_cast<Node const*>(node_ptr)->release(
-                            ReleaseContext<Node>(
-                                storage, state, node_storage_resources(storage)));
-                    }
+                    void const* node_ptr,
+                    size_t node_index,
+                    NodeStorage& storage) noexcept {
+                    invoke_node_lifecycle<Node>("release", node_index, [&] {
+                        void* state = node_storage_state_ptr(storage, node_index);
+                        if constexpr (std::is_empty_v<Node>) {
+                            (void)node_ptr;
+                            Node node {};
+                            node.release(ReleaseContext<Node>(
+                                storage,
+                                state,
+                                node_storage_resources(storage)));
+                        } else {
+                            static_cast<Node const*>(node_ptr)->release(
+                                ReleaseContext<Node>(
+                                    storage,
+                                    state,
+                                    node_storage_resources(storage)));
+                        }
+                    });
                 };
             }
 
+            return callbacks;
+        }
+
+        template<typename Node>
+        TockStateLifecycleCallbacks make_tock_lifecycle_callbacks()
+        {
+            TockStateLifecycleCallbacks callbacks;
+            if constexpr (!std::is_void_v<typename NodeBackgroundState<Node>::Type>) {
+                using TockState = typename NodeBackgroundState<Node>::Type;
+                static_assert(
+                    std::is_default_constructible_v<TockState>,
+                    "Node::TockState must be default constructible");
+                callbacks.default_construct_background_state_fn = [](void* ptr) {
+                    new (ptr) TockState();
+                };
+                callbacks.destroy_background_state_fn = [](void* ptr) {
+                    std::destroy_at(static_cast<TockState*>(ptr));
+                };
+            }
+            if constexpr (has_tock_initialize<Node>) {
+                callbacks.initialize_fn = [](
+                    void const* node_ptr,
+                    size_t node_index,
+                    TockStateStorage& storage) noexcept {
+                    invoke_node_lifecycle<Node>("initialize TockState", node_index, [&] {
+                        TockInitializationContext<Node> context(
+                            tock_state_storage_state_ptr(storage, node_index),
+                            tock_state_storage_resources(storage));
+                        if constexpr (std::is_empty_v<Node>) {
+                            (void)node_ptr;
+                            Node node {};
+                            node.initialize(context);
+                        } else {
+                            static_cast<Node const*>(node_ptr)->initialize(context);
+                        }
+                    });
+                };
+            }
+            if constexpr (has_tock_release<Node>) {
+                callbacks.release_fn = [](
+                    void const* node_ptr,
+                    size_t node_index,
+                    TockStateStorage& storage) noexcept {
+                    invoke_node_lifecycle<Node>("release TockState", node_index, [&] {
+                        TockReleaseContext<Node> context(
+                            tock_state_storage_state_ptr(storage, node_index),
+                            tock_state_storage_resources(storage));
+                        if constexpr (std::is_empty_v<Node>) {
+                            (void)node_ptr;
+                            Node node {};
+                            node.release(context);
+                        } else {
+                            static_cast<Node const*>(node_ptr)->release(context);
+                        }
+                    });
+                };
+            }
             return callbacks;
         }
 
@@ -692,14 +1065,16 @@ namespace iv {
                     size_t node_index,
                     size_t previous_node_index,
                     NodeStorage& storage,
-                    NodeStorage const& previous_storage) {
-                    NodeValue.move(MoveContext<Node>(
-                        storage,
-                        node_storage_state_ptr(storage, node_index),
-                        previous_storage,
-                        node_storage_state_ptr(
-                            previous_storage, previous_node_index),
-                        node_storage_resources(storage)));
+                    NodeStorage const& previous_storage) noexcept {
+                    invoke_node_lifecycle<Node>("move", node_index, [&] {
+                        NodeValue.move(MoveContext<Node>(
+                            storage,
+                            node_storage_state_ptr(storage, node_index),
+                            previous_storage,
+                            node_storage_state_ptr(
+                                previous_storage, previous_node_index),
+                            node_storage_resources(storage)));
+                    });
                 };
             }
 
@@ -715,11 +1090,15 @@ namespace iv {
                 NodeValue.initialize(ctx);
             }) {
                 callbacks.initialize_fn = [](
-                    void const*, size_t node_index, NodeStorage& storage) {
-                    NodeValue.initialize(InitializationContext<Node>(
-                        storage,
-                        node_storage_state_ptr(storage, node_index),
-                        node_storage_resources(storage)));
+                    void const*,
+                    size_t node_index,
+                    NodeStorage& storage) noexcept {
+                    invoke_node_lifecycle<Node>("initialize", node_index, [&] {
+                        NodeValue.initialize(InitializationContext<Node>(
+                            storage,
+                            node_storage_state_ptr(storage, node_index),
+                            node_storage_resources(storage)));
+                    });
                 };
             }
 
@@ -727,14 +1106,66 @@ namespace iv {
                 NodeValue.release(ctx);
             }) {
                 callbacks.release_fn = [](
-                    void const*, size_t node_index, NodeStorage& storage) {
-                    NodeValue.release(ReleaseContext<Node>(
-                        storage,
-                        node_storage_state_ptr(storage, node_index),
-                        node_storage_resources(storage)));
+                    void const*,
+                    size_t node_index,
+                    NodeStorage& storage) noexcept {
+                    invoke_node_lifecycle<Node>("release", node_index, [&] {
+                        NodeValue.release(ReleaseContext<Node>(
+                            storage,
+                            node_storage_state_ptr(storage, node_index),
+                            node_storage_resources(storage)));
+                    });
                 };
             }
 
+            return callbacks;
+        }
+
+        template<auto NodeValue>
+        TockStateLifecycleCallbacks make_reflected_tock_lifecycle_callbacks()
+        {
+            using Node = std::remove_cvref_t<decltype(NodeValue)>;
+            TockStateLifecycleCallbacks callbacks;
+            if constexpr (!std::is_void_v<typename NodeBackgroundState<Node>::Type>) {
+                using TockState = typename NodeBackgroundState<Node>::Type;
+                static_assert(
+                    std::is_default_constructible_v<TockState>,
+                    "Node::TockState must be default constructible");
+                callbacks.default_construct_background_state_fn = [](void* ptr) {
+                    new (ptr) TockState();
+                };
+                callbacks.destroy_background_state_fn = [](void* ptr) {
+                    std::destroy_at(static_cast<TockState*>(ptr));
+                };
+            }
+            if constexpr (requires(TockInitializationContext<Node> ctx) {
+                NodeValue.initialize(ctx);
+            }) {
+                callbacks.initialize_fn = [](
+                    void const*,
+                    size_t node_index,
+                    TockStateStorage& storage) noexcept {
+                    invoke_node_lifecycle<Node>("initialize TockState", node_index, [&] {
+                        NodeValue.initialize(TockInitializationContext<Node>(
+                            tock_state_storage_state_ptr(storage, node_index),
+                            tock_state_storage_resources(storage)));
+                    });
+                };
+            }
+            if constexpr (requires(TockReleaseContext<Node> ctx) {
+                NodeValue.release(ctx);
+            }) {
+                callbacks.release_fn = [](
+                    void const*,
+                    size_t node_index,
+                    TockStateStorage& storage) noexcept {
+                    invoke_node_lifecycle<Node>("release TockState", node_index, [&] {
+                        NodeValue.release(TockReleaseContext<Node>(
+                            tock_state_storage_state_ptr(storage, node_index),
+                            tock_state_storage_resources(storage)));
+                    });
+                };
+            }
             return callbacks;
         }
     }

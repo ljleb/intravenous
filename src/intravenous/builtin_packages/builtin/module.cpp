@@ -34,8 +34,6 @@ IV_NODE("iv.builtin.uniform_to_power", iv::UniformToPower);
 IV_NODE("iv.builtin.uniform_to_gaussian", iv::UniformToGaussian);
 IV_NODE("iv.builtin.deterministic_gaussian_aes_noise", iv::DeterministicGaussianAESNoise);
 
-IV_NODE("iv.builtin.detach_writer", iv::DetachWriterNode);
-IV_NODE("iv.builtin.detach_reader", iv::DetachReaderNode);
 IV_NODE("iv.builtin.dummy_sink", iv::DummySink);
 IV_NODE("iv.builtin.dummy_event_sink", iv::DummyEventSink);
 
