@@ -70,6 +70,8 @@ struct SampleRealtimePortStateTransfer {
     // semantic state. Ignored when source_access is not materialized.
     std::size_t source_materialization_channel = 0;
     std::vector<float> source_composition_coefficients{};
+    std::optional<SampleRealtimePortStateInvocationCombination>
+        source_invocation_combination{};
     SampleRealtimePortStateStorageView target_storage{};
     // Complete successor interval. It is initialized to silence before the
     // inherited sub-interval is transferred from predecessor storage.
@@ -98,6 +100,9 @@ struct EventRealtimePortStateTransfer {
     std::optional<EventConversionPlan> source_conversion{};
     std::size_t source_history_samples = 0;
     bool source_selects_invocation_window = false;
+    std::optional<EventRealtimePortStateInvocationCombination>
+        source_invocation_combination{};
+    std::optional<EventConversionPlan> source_invocation_conversion{};
     EventRealtimePortStateStorageView target_storage{};
     // Populated when several semantic output states share one indexed target
     // aggregate. Every inserted event receives this stable producer index.

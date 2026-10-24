@@ -193,6 +193,11 @@ struct PrimitiveSampleInputBindingPlan {
     // predecessor history until it expires; the steady root then resumes the
     // ordinary invocation-supplied binding.
     bool stages_invocation_supplied = false;
+    // For a transition of a mixed realtime/background input, channels remain
+    // the ordinary realtime operand used by the combination step. These
+    // channels name the private transition ring that receives the combined
+    // callback-visible current block and then backs the callback binding.
+    std::vector<PrimitiveSampleInputChannelBindingPlan> staging_channels{};
     // Transition-only Sequential cursor owned by that private retained ring.
     // It is distinct from the generation cursor for the same pace because the
     // suffix begins at cutover-local ordinal zero.
@@ -318,6 +323,10 @@ struct PrimitiveEventInputBindingPlan {
     std::optional<std::size_t> realtime_semantic_source_index{};
     // See PrimitiveSampleInputBindingPlan::stages_invocation_supplied.
     bool stages_invocation_supplied = false;
+    // Mixed-input counterpart of staging_channels above. The ordinary
+    // storage and combined_storage keep their steady meanings; this names the
+    // private transition ring which receives the completed merged stream.
+    std::optional<std::size_t> staging_storage{};
     // History retained by the transition-only event ring. Generated staging
     // uses its beginning as the ordering origin when it inserts the current
     // invocation-supplied window.

@@ -166,6 +166,38 @@ select_sample_inherited_state_realization(
         }
         return InheritedRealtimePortStateRealization::transition_only_storage;
     }
+    auto recoverable_realtime_derivation = [](
+        SampleRealtimePortStateRealization const& realization,
+        SampleRealtimePortStateAccess access) {
+        switch (access) {
+        case SampleRealtimePortStateAccess::immutable_constant:
+            return realization.authored_storage.constant_value.has_value()
+                || (realization.retained_sources.size() == 1
+                    && realization.retained_sources.front().constant_value
+                        .has_value());
+        case SampleRealtimePortStateAccess::direct:
+            return realization.retained_sources.size() == 1
+                && sample_storage_source_is_recoverable(
+                    realization.retained_sources.front());
+        case SampleRealtimePortStateAccess::materialized:
+            return realization.materialization.has_value()
+                && !realization.retained_sources.empty()
+                && std::ranges::all_of(
+                    realization.retained_sources,
+                    sample_storage_source_is_recoverable);
+        case SampleRealtimePortStateAccess::composed:
+            return !realization.composition_sources.empty()
+                && std::ranges::all_of(
+                    realization.composition_sources,
+                    [](auto const& source) {
+                        return source.coefficient != 0.0f
+                            && sample_storage_source_is_recoverable(
+                                source.storage);
+                    });
+        default:
+            return false;
+        }
+    };
     bool predecessor_recoverable = false;
     switch (previous.retained_access) {
     case SampleRealtimePortStateAccess::immutable_constant:
@@ -201,6 +233,17 @@ select_sample_inherited_state_realization(
             && sample_storage_source_is_recoverable(
                 previous.retained_sources.front());
         break;
+    case SampleRealtimePortStateAccess::combined_invocation_supplied:
+        predecessor_recoverable = previous.invocation_combination.has_value()
+            && previous.invocation_combination->combine != nullptr
+            && previous.invocation_combination->invocation_storage.storage
+                == SampleRealtimePortStateStorage::invocation_playback
+            && sample_storage_source_is_recoverable(
+                previous.invocation_combination->invocation_storage)
+            && recoverable_realtime_derivation(
+                previous,
+                previous.invocation_combination->realtime_access);
+        break;
     case SampleRealtimePortStateAccess::callback_only:
         break;
     }
@@ -218,6 +261,8 @@ select_sample_inherited_state_realization(
         auto const& type = continuous_value_type_info(
             current_geometry.value_type);
         if (type.migrate_value_shape == nullptr
+            || previous.retained_access
+                == SampleRealtimePortStateAccess::combined_invocation_supplied
             || previous.retained_access
                 == SampleRealtimePortStateAccess::materialized
             || previous.retained_access
@@ -246,6 +291,15 @@ select_sample_inherited_state_realization(
         }
         return InheritedRealtimePortStateRealization::
             transition_only_storage;
+    }
+
+    if (current.retained_access
+        == SampleRealtimePortStateAccess::combined_invocation_supplied) {
+        if (!current.invocation_combination) {
+            return std::unexpected(
+                "successor mixed sample state lost its invocation combination");
+        }
+        return InheritedRealtimePortStateRealization::transition_only_storage;
     }
 
     if (current.retained_access == SampleRealtimePortStateAccess::direct) {
@@ -305,6 +359,31 @@ select_event_inherited_state_realization(
         }
         return InheritedRealtimePortStateRealization::transition_only_storage;
     }
+    auto recoverable_realtime_derivation = [](
+        EventRealtimePortStateRealization const& realization,
+        EventRealtimePortStateAccess access) {
+        switch (access) {
+        case EventRealtimePortStateAccess::immutable_empty:
+            return true;
+        case EventRealtimePortStateAccess::direct:
+            return realization.retained_storage.has_value()
+                && event_storage_is_persistent_sequence(
+                    *realization.retained_storage);
+        case EventRealtimePortStateAccess::materialized:
+            return realization.retained_storage.has_value()
+                && event_storage_is_persistent_sequence(
+                    *realization.retained_storage)
+                && realization.materialization_conversion.has_value();
+        case EventRealtimePortStateAccess::indexed_merged_source:
+            return realization.retained_storage.has_value()
+                && event_storage_is_persistent_sequence(
+                    *realization.retained_storage)
+                && realization.retained_storage->has_source_indices
+                && realization.retained_source_index.has_value();
+        default:
+            return false;
+        }
+    };
     bool predecessor_recoverable = false;
     switch (previous.retained_access) {
     case EventRealtimePortStateAccess::immutable_empty:
@@ -333,6 +412,14 @@ select_event_inherited_state_realization(
             && event_storage_is_invocation_playback(
                 *previous.retained_storage);
         break;
+    case EventRealtimePortStateAccess::combined_invocation_supplied:
+        predecessor_recoverable = previous.invocation_combination.has_value()
+            && event_storage_is_invocation_playback(
+                previous.invocation_combination->invocation_storage)
+            && recoverable_realtime_derivation(
+                previous,
+                previous.invocation_combination->realtime_access);
+        break;
     case EventRealtimePortStateAccess::shared_merged_source:
     case EventRealtimePortStateAccess::callback_only:
         break;
@@ -345,6 +432,18 @@ select_event_inherited_state_realization(
     if (previous.retained_access
         == EventRealtimePortStateAccess::immutable_empty) {
         return InheritedRealtimePortStateRealization::already_represented;
+    }
+    if (current.retained_access
+        == EventRealtimePortStateAccess::combined_invocation_supplied) {
+        if (!current.invocation_combination) {
+            return std::unexpected(
+                "successor mixed event state lost its invocation combination");
+        }
+        return InheritedRealtimePortStateRealization::transition_only_storage;
+    }
+    if (previous.retained_access
+        == EventRealtimePortStateAccess::combined_invocation_supplied) {
+        return InheritedRealtimePortStateRealization::transition_only_storage;
     }
     if (current.retained_access == EventRealtimePortStateAccess::direct
         || current.retained_access
@@ -359,11 +458,14 @@ select_event_inherited_state_realization(
             return std::unexpected(
                 "successor event state has no recoverable persistent view");
         }
-        if (previous.retained_storage->type
-            != current.retained_storage->type) {
+        auto const previous_type = previous.retained_access
+                == EventRealtimePortStateAccess::combined_invocation_supplied
+            ? previous.authored_storage.type
+            : previous.retained_storage->type;
+        if (previous_type != current.retained_storage->type) {
             try {
                 (void)EventConversionRegistry::plan(
-                    previous.retained_storage->type,
+                    previous_type,
                     current.retained_storage->type);
             } catch (std::exception const&) {
                 return InheritedRealtimePortStateRealization::fresh_state;
@@ -760,12 +862,16 @@ std::expected<void, std::string> build_steady_storage_transfers(
                 "sample state transfer lost its successor steady-storage view");
         }
 
+        auto const source_access = source.invocation_combination
+            ? source.invocation_combination->realtime_access
+            : source.retained_access;
         SampleRealtimePortStateTransfer transfer{
             .transition_index = index,
-            .source_access = source.retained_access,
+            .source_access = source_access,
             .source_materialization = source.materialization,
             .source_materialization_channel =
                 source.authored_storage.representation_channel,
+            .source_invocation_combination = source.invocation_combination,
             .target_storage = target.retained_sources.front(),
             .target_begin = transition.inherited_begin < 0
                 ? -static_cast<std::int64_t>(
@@ -780,14 +886,24 @@ std::expected<void, std::string> build_steady_storage_transfers(
             .inherited_begin = transition.inherited_begin,
             .inherited_end = transition.inherited_end,
         };
-        if (source.retained_access
+        if (source_access
             == SampleRealtimePortStateAccess::immutable_constant) {
-            if (!source.authored_storage.constant_value) {
+            auto const constant = std::ranges::find_if(
+                source.retained_sources,
+                [](auto const& candidate) {
+                    return candidate.constant_value.has_value();
+                });
+            auto const* view = source.authored_storage.constant_value
+                ? &source.authored_storage
+                : constant == source.retained_sources.end()
+                    ? nullptr
+                    : &*constant;
+            if (!view) {
                 return std::unexpected(
                     "sample state transfer lost its predecessor constant");
             }
-            transfer.source_storage.push_back(source.authored_storage);
-        } else if (source.retained_access
+            transfer.source_storage.push_back(*view);
+        } else if (source_access
                    == SampleRealtimePortStateAccess::composed) {
             transfer.source_storage.reserve(source.composition_sources.size());
             transfer.source_composition_coefficients.reserve(
@@ -822,10 +938,21 @@ std::expected<void, std::string> build_steady_storage_transfers(
             transition.previous_realization_index];
         auto const& target = current_realizations.event_states[
             transition.current_realization_index];
-        if (!source.retained_storage
-            || (!event_storage_is_invocation_playback(*source.retained_storage)
-                && (!source.retained_storage->node_storage_offset
-                    || source.retained_storage->callback_arena_offset))) {
+        auto const source_access = source.invocation_combination
+            ? source.invocation_combination->realtime_access
+            : source.retained_access;
+        auto const ordinary_is_empty = source_access
+            == EventRealtimePortStateAccess::immutable_empty;
+        auto const source_storage = ordinary_is_empty
+            ? source.invocation_combination
+                ? std::optional{source.invocation_combination
+                                    ->invocation_storage}
+                : std::nullopt
+            : source.retained_storage;
+        if (!source_storage
+            || (!event_storage_is_invocation_playback(*source_storage)
+                && (!source_storage->node_storage_offset
+                    || source_storage->callback_arena_offset))) {
             return std::unexpected(
                 "event state transfer lost its recoverable predecessor storage");
         }
@@ -844,27 +971,48 @@ std::expected<void, std::string> build_steady_storage_transfers(
                 "event state transfer lost its successor steady-storage view");
         }
         std::optional<EventConversionPlan> conversion;
-        if (source.retained_storage->type
+        if (source_storage->type
             != target.retained_storage->type) {
             try {
                 conversion = EventConversionRegistry::plan(
-                    source.retained_storage->type,
+                    source_storage->type,
                     target.retained_storage->type);
             } catch (std::exception const&) {
                 return std::unexpected(
                     "event state transfer lost its type conversion");
             }
         }
+        std::optional<EventConversionPlan> invocation_conversion;
+        if (source.invocation_combination
+            && !ordinary_is_empty
+            && source.invocation_combination->invocation_storage.type
+                != target.retained_storage->type) {
+            try {
+                invocation_conversion = EventConversionRegistry::plan(
+                    source.invocation_combination->invocation_storage.type,
+                    target.retained_storage->type);
+            } catch (std::exception const&) {
+                return std::unexpected(
+                    "event state transfer lost its invocation type conversion");
+            }
+        }
         plan.event_transfers.push_back(EventRealtimePortStateTransfer{
             .transition_index = index,
-            .source_access = source.retained_access,
-            .source_storage = *source.retained_storage,
+            .source_access = ordinary_is_empty
+                ? EventRealtimePortStateAccess::invocation_supplied
+                : source_access,
+            .source_storage = *source_storage,
             .source_index = source.retained_source_index,
             .source_conversion = std::move(conversion),
             .source_history_samples =
                 source.materialization_history_samples,
             .source_selects_invocation_window =
                 source.materialization_selects_invocation_window,
+            .source_invocation_combination = ordinary_is_empty
+                ? std::nullopt
+                : source.invocation_combination,
+            .source_invocation_conversion =
+                std::move(invocation_conversion),
             .target_storage = *target.retained_storage,
             .target_index = target.retained_source_index,
             .target_begin = transition.inherited_begin < 0
@@ -1323,6 +1471,33 @@ std::expected<void, std::string> validate_prepared_transitions(
                 validate_sample_playback_source(transfer, playback);
             if (!validated) return validated;
         }
+        if (transfer.source_invocation_combination) {
+            auto const& combination = *transfer.source_invocation_combination;
+            if (combination.realtime_access != transfer.source_access
+                || !combination.combine
+                || combination.invocation_storage.storage
+                    != SampleRealtimePortStateStorage::invocation_playback
+                || combination.invocation_storage.geometry
+                    != transfer.target_storage.geometry) {
+                return std::unexpected(
+                    "sample transition has an invalid invocation combination");
+            }
+            auto invocation_transfer = transfer;
+            invocation_transfer.source_access =
+                SampleRealtimePortStateAccess::invocation_supplied;
+            invocation_transfer.source_storage = {
+                combination.invocation_storage};
+            invocation_transfer.source_invocation_combination.reset();
+            auto invocation_validated = validate_sample_storage_view(
+                combination.invocation_storage,
+                previous_storage_size,
+                false,
+                "sample transition invocation source");
+            if (!invocation_validated) return invocation_validated;
+            invocation_validated = validate_sample_playback_source(
+                invocation_transfer, playback);
+            if (!invocation_validated) return invocation_validated;
+        }
         auto validated = validate_sample_storage_view(
             transfer.target_storage,
             current_storage_size,
@@ -1559,6 +1734,34 @@ std::expected<void, std::string> validate_prepared_transitions(
             validated = validate_event_playback_source(transfer, playback);
             if (!validated) return validated;
         }
+        if (transfer.source_invocation_combination) {
+            auto const& combination = *transfer.source_invocation_combination;
+            if (combination.realtime_access != transfer.source_access
+                || !event_storage_is_invocation_playback(
+                    combination.invocation_storage)) {
+                return std::unexpected(
+                    "event transition has an invalid invocation combination");
+            }
+            auto invocation_transfer = transfer;
+            invocation_transfer.source_access =
+                EventRealtimePortStateAccess::invocation_supplied;
+            invocation_transfer.source_storage =
+                combination.invocation_storage;
+            invocation_transfer.source_invocation_combination.reset();
+            invocation_transfer.source_invocation_conversion.reset();
+            validated = validate_event_storage_view(
+                combination.invocation_storage,
+                previous_storage_size,
+                true,
+                "event transition invocation source");
+            if (!validated) return validated;
+            validated = validate_event_playback_source(
+                invocation_transfer, playback);
+            if (!validated) return validated;
+        } else if (transfer.source_invocation_conversion) {
+            return std::unexpected(
+                "event transition has an invocation conversion without a source");
+        }
         validated = validate_event_storage_view(
             transfer.target_storage,
             current_storage_size,
@@ -1566,7 +1769,8 @@ std::expected<void, std::string> validate_prepared_transitions(
             "event transition target");
         if (!validated) return validated;
         if (transfer.target_storage.has_source_indices
-            != transfer.target_index.has_value()) {
+            != (transfer.target_index.has_value()
+                || transfer.source_invocation_combination.has_value())) {
             return std::unexpected(
                 "event transition target has inconsistent source identity");
         }
@@ -1594,6 +1798,8 @@ std::expected<void, std::string> validate_prepared_transitions(
             }
         }
         auto const converted = transfer.source_conversion.has_value();
+        auto const invocation_converted =
+            transfer.source_invocation_conversion.has_value();
         if ((!converted
                 && transfer.source_storage.type
                     != transfer.target_storage.type)
@@ -1613,6 +1819,22 @@ std::expected<void, std::string> validate_prepared_transitions(
                 && transfer.source_index)) {
             return std::unexpected(
                 "event transition has incompatible selection or conversion");
+        }
+        if (transfer.source_invocation_combination
+            && ((!invocation_converted
+                    && transfer.source_invocation_combination
+                           ->invocation_storage.type
+                        != transfer.target_storage.type)
+                || (invocation_converted
+                    && (transfer.source_invocation_conversion->source_type
+                            != transfer.source_invocation_combination
+                                   ->invocation_storage.type
+                        || transfer.source_invocation_conversion->target_type
+                            != transfer.target_storage.type
+                        || transfer.source_invocation_conversion->step_count
+                            > EventConversionPlan::max_steps)))) {
+            return std::unexpected(
+                "event transition has an incompatible invocation conversion");
         }
     }
     for (std::size_t index = 0; index < plan.event_states.size(); ++index) {
@@ -1823,26 +2045,29 @@ realize_realtime_port_state_transition_storage(
             transition.current_realization_index];
         auto const& requirement = current_requirements.states[
             transition.current_requirement_index];
-        if ((source.retained_access
+        auto const source_access = source.invocation_combination
+            ? source.invocation_combination->realtime_access
+            : source.retained_access;
+        if ((source_access
                  != SampleRealtimePortStateAccess::direct
-             && source.retained_access
+             && source_access
                  != SampleRealtimePortStateAccess::immutable_constant
-            && source.retained_access
+            && source_access
                  != SampleRealtimePortStateAccess::materialized
-             && source.retained_access
+             && source_access
                  != SampleRealtimePortStateAccess::composed
-             && source.retained_access
+             && source_access
                  != SampleRealtimePortStateAccess::invocation_supplied)
-            || ((source.retained_access
+            || ((source_access
                         == SampleRealtimePortStateAccess::direct
-                    || source.retained_access
+                    || source_access
                         == SampleRealtimePortStateAccess::invocation_supplied)
                 && source.retained_sources.size() != 1)
-            || (source.retained_access
+            || (source_access
                     == SampleRealtimePortStateAccess::materialized
                 && (!source.materialization
                     || source.retained_sources.empty()))
-            || (source.retained_access
+            || (source_access
                     == SampleRealtimePortStateAccess::composed
                 && source.composition_sources.empty())
             || (current.retained_access
@@ -1855,18 +2080,24 @@ realize_realtime_port_state_transition_storage(
                 && current.retained_access
                     != SampleRealtimePortStateAccess::composed
                 && current.retained_access
-                    != SampleRealtimePortStateAccess::invocation_supplied)) {
+                    != SampleRealtimePortStateAccess::invocation_supplied
+                && current.retained_access
+                    != SampleRealtimePortStateAccess::
+                        combined_invocation_supplied)) {
             return std::unexpected(
                 "transition suffix requires a recoverable predecessor and supported successor sample view");
         }
 
-        auto source_views = source.retained_access
+        auto source_views = source_access
                 == SampleRealtimePortStateAccess::immutable_constant
-            ? std::vector<SampleRealtimePortStateStorageView>{
-                source.authored_storage}
+            ? source.retained_sources.empty()
+                ? std::vector<SampleRealtimePortStateStorageView>{
+                    source.authored_storage}
+                : std::vector<SampleRealtimePortStateStorageView>{
+                    source.retained_sources.front()}
             : source.retained_sources;
         std::vector<float> source_composition_coefficients;
-        if (source.retained_access
+        if (source_access
             == SampleRealtimePortStateAccess::composed) {
             source_views.clear();
             source_views.reserve(source.composition_sources.size());
@@ -1890,7 +2121,10 @@ realize_realtime_port_state_transition_storage(
         auto const retained_timeline_offset = target.timeline_offset_frames;
         std::optional<NodeLayout::RegionHandle> suffix_cursor_region;
         if (current.retained_access
-            == SampleRealtimePortStateAccess::invocation_supplied) {
+                == SampleRealtimePortStateAccess::invocation_supplied
+            || current.retained_access
+                == SampleRealtimePortStateAccess::
+                    combined_invocation_supplied) {
             auto const channels = channel_count(target.channel_layout);
             if (target.working_frame_capacity == 0
                 || !std::has_single_bit(target.working_frame_capacity)
@@ -1976,7 +2210,7 @@ realize_realtime_port_state_transition_storage(
                 source_views,
                 [&](auto const& view) {
                     return view.geometry == target.geometry
-                        || (source.retained_access
+                        || (source_access
                                 != SampleRealtimePortStateAccess::materialized
                             && view.geometry.value_type
                                 == target.geometry.value_type
@@ -2059,13 +2293,15 @@ realize_realtime_port_state_transition_storage(
         plan.sample_transfers.push_back(SampleRealtimePortStateTransfer{
             .transition_index = index,
             .target_transition_only = true,
-            .source_access = source.retained_access,
+            .source_access = source_access,
             .source_storage = source_views,
             .source_materialization = source.materialization,
             .source_materialization_channel =
                 source.authored_storage.representation_channel,
             .source_composition_coefficients =
                 std::move(source_composition_coefficients),
+            .source_invocation_combination =
+                source.invocation_combination,
             .target_storage = std::move(target),
             .target_begin = target_begin,
             .target_end = target_end,
@@ -2101,19 +2337,31 @@ realize_realtime_port_state_transition_storage(
             transition.current_realization_index];
         auto const& requirement = current_requirements.states[
             transition.current_requirement_index];
-        auto const playback_source = source.retained_access
+        auto const source_access = source.invocation_combination
+            ? source.invocation_combination->realtime_access
+            : source.retained_access;
+        auto const ordinary_is_empty = source_access
+            == EventRealtimePortStateAccess::immutable_empty;
+        auto const source_storage = ordinary_is_empty
+            ? source.invocation_combination
+                ? std::optional{source.invocation_combination
+                                    ->invocation_storage}
+                : std::nullopt
+            : source.retained_storage;
+        auto const playback_source = ordinary_is_empty
+            || (source_access
                 == EventRealtimePortStateAccess::invocation_supplied
-            && source.retained_storage
-            && event_storage_is_invocation_playback(*source.retained_storage);
-        if (!source.retained_storage
+                && source_storage
+                && event_storage_is_invocation_playback(*source_storage));
+        if (!source_storage
             || (!playback_source
                 && (!event_storage_is_persistent_sequence(
-                        *source.retained_storage)
-                    || (source.retained_access
+                        *source_storage)
+                    || (source_access
                             != EventRealtimePortStateAccess::direct
-                        && source.retained_access
+                        && source_access
                             != EventRealtimePortStateAccess::materialized
-                        && source.retained_access
+                        && source_access
                             != EventRealtimePortStateAccess::
                                 indexed_merged_source)))
             || current.authored_storage.event_capacity == 0) {
@@ -2148,7 +2396,23 @@ realize_realtime_port_state_transition_storage(
             return std::unexpected(
                 "transition suffix event ring size overflows size_t");
         }
-        auto const size = *events_offset + capacity * sizeof(TimedEvent);
+        auto const events_end = *events_offset
+            + capacity * sizeof(TimedEvent);
+        auto const needs_source_indices = source.invocation_combination
+            && !ordinary_is_empty;
+        auto const source_indices_offset = needs_source_indices
+            ? checked_align_up(events_end, alignof(std::size_t))
+            : std::optional<std::size_t>{events_end};
+        if (!source_indices_offset
+            || (needs_source_indices
+                && capacity > (std::numeric_limits<std::size_t>::max()
+                        - *source_indices_offset) / sizeof(std::size_t))) {
+            return std::unexpected(
+                "transition suffix event source-index sidecar overflows size_t");
+        }
+        auto const size = needs_source_indices
+            ? *source_indices_offset + capacity * sizeof(std::size_t)
+            : events_end;
         auto const alignment = std::max(
             {alignof(std::size_t), alignof(GlobalIndex), alignof(TimedEvent)});
         auto target = EventRealtimePortStateStorageView{
@@ -2163,6 +2427,8 @@ realize_realtime_port_state_transition_storage(
             .timeline_initialized_relative_offset = 2 * sizeof(std::size_t),
             .expected_next_time_relative_offset = *expected_offset,
             .events_relative_offset = *events_offset,
+            .has_source_indices = needs_source_indices,
+            .source_indices_relative_offset = *source_indices_offset,
         };
         if (transition.inherited_extent_samples
                 > std::numeric_limits<std::size_t>::max()
@@ -2214,25 +2480,46 @@ realize_realtime_port_state_transition_storage(
             .end = target_end,
         });
         std::optional<EventConversionPlan> conversion;
-        if (source.retained_storage->type != target.type) {
+        if (source_storage->type != target.type) {
             try {
                 conversion = EventConversionRegistry::plan(
-                    source.retained_storage->type, target.type);
+                    source_storage->type, target.type);
             } catch (std::exception const&) {
                 return std::unexpected(
                     "transition suffix event type has no conversion");
             }
         }
+        std::optional<EventConversionPlan> invocation_conversion;
+        if (source.invocation_combination
+            && !ordinary_is_empty
+            && source.invocation_combination->invocation_storage.type
+                != target.type) {
+            try {
+                invocation_conversion = EventConversionRegistry::plan(
+                    source.invocation_combination->invocation_storage.type,
+                    target.type);
+            } catch (std::exception const&) {
+                return std::unexpected(
+                    "transition suffix invocation event type has no conversion");
+            }
+        }
         plan.event_transfers.push_back(EventRealtimePortStateTransfer{
             .transition_index = index,
             .target_transition_only = true,
-            .source_access = source.retained_access,
-            .source_storage = *source.retained_storage,
+            .source_access = playback_source
+                ? EventRealtimePortStateAccess::invocation_supplied
+                : source_access,
+            .source_storage = *source_storage,
             .source_index = source.retained_source_index,
             .source_conversion = std::move(conversion),
             .source_history_samples = source.materialization_history_samples,
             .source_selects_invocation_window =
                 source.materialization_selects_invocation_window,
+            .source_invocation_combination = ordinary_is_empty
+                ? std::nullopt
+                : source.invocation_combination,
+            .source_invocation_conversion =
+                std::move(invocation_conversion),
             .target_storage = std::move(target),
             .target_begin = target_begin,
             .target_end = target_end,
@@ -2478,6 +2765,8 @@ void execute_realtime_port_state_transfers(
             std::span<std::byte>{current_storage}, transfer.target_storage);
         auto const playback_source = transfer.source_access
             == SampleRealtimePortStateAccess::invocation_supplied;
+        auto const combined_playback =
+            transfer.source_invocation_combination.has_value();
         auto const source_root_ordinal =
             transfer.source_access
                     == SampleRealtimePortStateAccess::immutable_constant
@@ -2502,7 +2791,7 @@ void execute_realtime_port_state_transfers(
                 transfer.target_storage.geometry.value_size_bytes);
         }
         // A predecessor that never invoked observed no history.
-        if (playback_source && !playback_end) continue;
+        if ((playback_source || combined_playback) && !playback_end) continue;
         for (auto relative = transfer.inherited_begin;
              relative < transfer.inherited_end; ++relative) {
             auto* target = sample_at(
@@ -2629,6 +2918,23 @@ void execute_realtime_port_state_transfers(
                         sizeof(composed));
                 }
             }
+            if (combined_playback) {
+                auto const& combination =
+                    *transfer.source_invocation_combination;
+                auto const* invocation = playback_sample_at(
+                    combination.invocation_storage, relative);
+                IV_ASSERT(
+                    invocation != nullptr
+                        && combination.combine(
+                            combination.continuous_input,
+                            transfer.target_storage.geometry.value_type,
+                            target,
+                            invocation,
+                            transfer.target_storage.geometry.value_size_bytes,
+                            transfer.target_storage.geometry
+                                .elements_per_value),
+                    "prepared sample invocation combination failed");
+            }
         }
     }
 
@@ -2724,7 +3030,8 @@ void execute_realtime_port_state_transfers(
             .begin = relative_sample(sample_index, transfer.inherited_begin),
             .extent = inherited_extent,
         };
-        auto append = [&](TimedEvent const& event) noexcept {
+        auto append = [&](TimedEvent const& event,
+                          std::size_t event_source_index) noexcept {
             if (!inherited.contains(event.time)) return;
             if (target_write >= target.event_capacity) return;
             auto const target_slot = [&](std::size_t cursor) {
@@ -2754,8 +3061,7 @@ void execute_realtime_port_state_transfers(
                 auto const precedes = order(event.time, preceding.time)
                     || (target.has_source_indices
                         && event.time == preceding.time
-                        && *transfer.target_index
-                            < preceding_source_index);
+                        && event_source_index < preceding_source_index);
                 if (!precedes) break;
                 std::memcpy(
                     target_base + target.events_relative_offset
@@ -2780,12 +3086,32 @@ void execute_realtime_port_state_transfers(
                 std::memcpy(
                     target_base + target.source_indices_relative_offset
                         + target_slot(position) * sizeof(std::size_t),
-                    &*transfer.target_index,
+                    &event_source_index,
                     sizeof(std::size_t));
             }
             ++target_write;
         };
         for (auto cursor = read; cursor < write; ++cursor) {
+            auto event_source_index = transfer.target_index.value_or(
+                std::numeric_limits<std::size_t>::max());
+            if (target.has_source_indices
+                && transfer.source_invocation_combination) {
+                if (source.has_source_indices) {
+                    std::memcpy(
+                        &event_source_index,
+                        source_base + source.source_indices_relative_offset
+                            + (source_is_ring
+                                    ? cursor % source.event_capacity
+                                    : cursor)
+                                * sizeof(std::size_t),
+                        sizeof(event_source_index));
+                } else {
+                    event_source_index = transfer
+                        .source_invocation_combination
+                        ->realtime_fixed_source_index.value_or(
+                            std::numeric_limits<std::size_t>::max());
+                }
+            }
             if (transfer.source_access
                 == EventRealtimePortStateAccess::indexed_merged_source) {
                 std::size_t source_index = 0;
@@ -2813,9 +3139,51 @@ void execute_realtime_port_state_transfers(
                 EventConversionRegistry::instance().convert(
                     *transfer.source_conversion,
                     event,
-                    append);
+                    [&](TimedEvent const& converted) noexcept {
+                        append(converted, event_source_index);
+                    });
             } else {
-                append(event);
+                append(event, event_source_index);
+            }
+        }
+        if (transfer.source_invocation_combination && playback_end) {
+            auto const& invocation =
+                transfer.source_invocation_combination->invocation_storage;
+            auto const& binding =
+                playback.sequential_events[*invocation.invocation_slot];
+            auto const* invocation_base = binding.storage.storage;
+            auto const invocation_write = read_size(
+                invocation_base, binding.storage.count_offset);
+            auto const invocation_displacement =
+                playback_end->forward_distance_to(sample_index);
+            IV_ASSERT(
+                invocation_write <= binding.storage.event_capacity,
+                "prepared event invocation source has an invalid count");
+            for (std::size_t cursor = 0;
+                 cursor < invocation_write;
+                 ++cursor) {
+                TimedEvent event{};
+                std::memcpy(
+                    &event,
+                    invocation_base + binding.storage.events_offset
+                        + cursor * sizeof(TimedEvent),
+                    sizeof(event));
+                event.time = event.time.advanced_by(
+                    invocation_displacement);
+                auto const event_source_index =
+                    binding.semantic_source_indices
+                    ? binding.semantic_source_indices[cursor]
+                    : std::numeric_limits<std::size_t>::max();
+                if (transfer.source_invocation_conversion) {
+                    EventConversionRegistry::instance().convert(
+                        *transfer.source_invocation_conversion,
+                        event,
+                        [&](TimedEvent const& converted) noexcept {
+                            append(converted, event_source_index);
+                        });
+                } else {
+                    append(event, event_source_index);
+                }
             }
         }
         if (target_is_ring) {

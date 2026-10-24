@@ -1478,6 +1478,10 @@ plan_sample_realtime_port_state_realizations(
         std::size_t representation_index = no_sample_representation;
         std::size_t representation_channel = 0;
         std::int64_t timeline_offset = 0;
+        std::optional<SampleRealtimePortStateStorageView>
+            combined_authored_storage;
+        std::optional<SampleRealtimePortStateInvocationCombination>
+            invocation_combination;
         auto const port = requirement.configured_port.port_index;
         auto const& primitive_ports = sample_ports.primitives[*primitive];
         if (requirement.direction == PortDirection::input) {
@@ -1527,32 +1531,43 @@ plan_sample_realtime_port_state_realizations(
                         .storage_size_bytes = playback_capacity * channels
                             * binding.geometry.value_size_bytes,
                     },
-                    .retained_access = binding.combines_invocation_supplied
-                        ? SampleRealtimePortStateAccess::callback_only
-                        : SampleRealtimePortStateAccess::invocation_supplied,
+                    .retained_access =
+                        SampleRealtimePortStateAccess::invocation_supplied,
                 };
-                // A purely background-fed input observed exactly its playback
-                // window. A mixed input's slot holds only the background
-                // contribution, so it retains no recoverable source.
-                if (!binding.combines_invocation_supplied) {
-                    auto slot = external_tick_sequential_slot(
-                        connections,
-                        requirement.configured_port.node_bundle_handle,
-                        PortKind::sample,
-                        port);
-                    if (!slot) return std::unexpected(std::move(slot.error()));
-                    if (!*slot) {
-                        return std::unexpected(
-                            "GraphJit invocation-supplied sample input state has no playback slot");
-                    }
-                    auto playback = realization.authored_storage;
-                    playback.storage =
-                        SampleRealtimePortStateStorage::invocation_playback;
-                    playback.invocation_slot = **slot;
-                    realization.retained_sources.push_back(std::move(playback));
+                auto slot = external_tick_sequential_slot(
+                    connections,
+                    requirement.configured_port.node_bundle_handle,
+                    PortKind::sample,
+                    port);
+                if (!slot) return std::unexpected(std::move(slot.error()));
+                if (!*slot) {
+                    return std::unexpected(
+                        "GraphJit invocation-supplied sample input state has no playback slot");
                 }
-                result.sample_states.push_back(std::move(realization));
-                continue;
+                auto playback = realization.authored_storage;
+                playback.storage =
+                    SampleRealtimePortStateStorage::invocation_playback;
+                playback.invocation_slot = **slot;
+                if (!binding.combines_invocation_supplied) {
+                    realization.retained_sources.push_back(std::move(playback));
+                    result.sample_states.push_back(std::move(realization));
+                    continue;
+                }
+                auto const* implementation =
+                    analysis.primitives[*primitive].implementation;
+                if (!implementation
+                    || !implementation->host_combine_sequential_input_values) {
+                    return std::unexpected(
+                        "GraphJit mixed sample input has no host combination operation");
+                }
+                combined_authored_storage = realization.authored_storage;
+                invocation_combination =
+                    SampleRealtimePortStateInvocationCombination{
+                        .invocation_storage = std::move(playback),
+                        .continuous_input = port,
+                        .combine = implementation
+                            ->host_combine_sequential_input_values,
+                    };
             }
             if (*requirement.channel >= binding.channels.size()
                 || binding.history != requirement.extent_samples) {
@@ -1626,10 +1641,43 @@ plan_sample_realtime_port_state_realizations(
             .authored_storage = std::move(**authored),
         };
 
+        auto finalize_invocation_combination = [&]()
+            -> std::expected<void, std::string> {
+            if (!invocation_combination) return {};
+            auto const realtime_access = realization.retained_access;
+            if (realtime_access
+                    != SampleRealtimePortStateAccess::immutable_constant
+                && realtime_access != SampleRealtimePortStateAccess::direct
+                && realtime_access
+                    != SampleRealtimePortStateAccess::materialized
+                && realtime_access
+                    != SampleRealtimePortStateAccess::composed) {
+                return std::unexpected(
+                    "GraphJit mixed sample input has no recoverable realtime contribution");
+            }
+            if (realtime_access
+                    == SampleRealtimePortStateAccess::immutable_constant
+                && realization.retained_sources.empty()) {
+                realization.retained_sources.push_back(
+                    realization.authored_storage);
+            }
+            invocation_combination->realtime_access = realtime_access;
+            realization.authored_storage = *combined_authored_storage;
+            realization.retained_access =
+                SampleRealtimePortStateAccess::combined_invocation_supplied;
+            realization.invocation_combination =
+                std::move(invocation_combination);
+            return {};
+        };
+
         if (realization.authored_storage.storage
             == SampleRealtimePortStateStorage::immutable_constant) {
             realization.retained_access =
                 SampleRealtimePortStateAccess::immutable_constant;
+            auto finalized = finalize_invocation_combination();
+            if (!finalized) {
+                return std::unexpected(std::move(finalized.error()));
+            }
             result.sample_states.push_back(std::move(realization));
             continue;
         }
@@ -1652,6 +1700,10 @@ plan_sample_realtime_port_state_realizations(
             realization.retained_access =
                 SampleRealtimePortStateAccess::direct;
             realization.retained_sources.push_back(std::move(**retained));
+            auto finalized = finalize_invocation_combination();
+            if (!finalized) {
+                return std::unexpected(std::move(finalized.error()));
+            }
             result.sample_states.push_back(std::move(realization));
             continue;
         }
@@ -1781,6 +1833,10 @@ plan_sample_realtime_port_state_realizations(
                     }
                 }
             }
+        }
+        auto finalized = finalize_invocation_combination();
+        if (!finalized) {
+            return std::unexpected(std::move(finalized.error()));
         }
         result.sample_states.push_back(std::move(realization));
     }
@@ -1947,6 +2003,10 @@ plan_event_realtime_port_state_realizations(
         auto const port = requirement.configured_port.port_index;
 
         std::size_t authored_representation = 0;
+        std::optional<EventRealtimePortStateStorageView>
+            combined_authored_storage;
+        std::optional<EventRealtimePortStateInvocationCombination>
+            invocation_combination;
         if (requirement.direction == PortDirection::input) {
             if (requirement.role
                     != RealtimePortStateRole::sequential_input_history
@@ -1972,36 +2032,53 @@ plan_event_realtime_port_state_realizations(
                     return std::unexpected(
                         "GraphJit invocation-supplied event input state lost its playback port");
                 }
+                auto playback = EventRealtimePortStateStorageView{
+                    .storage =
+                        EventRealtimePortStateStorage::invocation_playback,
+                    .type = background.ports[slot_binding.port].event_type,
+                    .event_capacity = primitive_ports.inputs[port]
+                        .invocation_event_capacity,
+                    .invocation_slot = **slot,
+                };
                 EventRealtimePortStateRealization realization{
                     .requirement_index = requirement_index,
                     .authored_storage = EventRealtimePortStateStorageView{
-                        .type = background.ports[slot_binding.port].event_type,
+                        .type = playback.type,
                         .event_capacity = primitive_ports.inputs[port]
                             .invocation_event_capacity,
                     },
-                    .retained_access = primitive_ports.inputs[port]
-                            .combines_invocation_supplied
-                        ? EventRealtimePortStateAccess::callback_only
-                        : EventRealtimePortStateAccess::invocation_supplied,
+                    .retained_access =
+                        EventRealtimePortStateAccess::invocation_supplied,
                 };
-                // See the sample case above.
                 if (!primitive_ports.inputs[port].combines_invocation_supplied) {
-                    realization.retained_storage =
-                        EventRealtimePortStateStorageView{
-                            .storage =
-                                EventRealtimePortStateStorage::invocation_playback,
-                            .type = background.ports[slot_binding.port].event_type,
-                            .invocation_slot = **slot,
-                        };
+                    realization.retained_storage = std::move(playback);
+                    result.push_back(std::move(realization));
+                    continue;
                 }
-                result.push_back(std::move(realization));
-                continue;
+                auto const& input = primitive_ports.inputs[port];
+                if (!input.storage || !input.combined_storage) {
+                    return std::unexpected(
+                        "GraphJit mixed event input lost its realtime or combined representation");
+                }
+                auto combined = storage_view(*input.combined_storage);
+                if (!combined) {
+                    return std::unexpected(std::move(combined.error()));
+                }
+                combined_authored_storage = std::move(*combined);
+                invocation_combination =
+                    EventRealtimePortStateInvocationCombination{
+                        .invocation_storage = std::move(playback),
+                        .realtime_fixed_source_index =
+                            input.realtime_semantic_source_index,
+                    };
+                authored_representation = *input.storage;
+            } else {
+                if (!primitive_ports.inputs[port].storage) {
+                    return std::unexpected(
+                        "GraphJit event input state disagrees with its port binding");
+                }
+                authored_representation = *primitive_ports.inputs[port].storage;
             }
-            if (!primitive_ports.inputs[port].storage) {
-                return std::unexpected(
-                    "GraphJit event input state disagrees with its port binding");
-            }
-            authored_representation = *primitive_ports.inputs[port].storage;
         } else {
             if (port >= primitive_ports.outputs.size()) {
                 return std::unexpected(
@@ -2034,6 +2111,16 @@ plan_event_realtime_port_state_realizations(
         EventRealtimePortStateRealization realization{
             .requirement_index = requirement_index,
             .authored_storage = std::move(*authored),
+        };
+        auto finalize_invocation_combination = [&]() {
+            if (!invocation_combination) return;
+            invocation_combination->realtime_access =
+                realization.retained_access;
+            realization.authored_storage = *combined_authored_storage;
+            realization.retained_access =
+                EventRealtimePortStateAccess::combined_invocation_supplied;
+            realization.invocation_combination =
+                std::move(invocation_combination);
         };
 
         if (requirement.direction == PortDirection::input) {
@@ -2122,6 +2209,7 @@ plan_event_realtime_port_state_realizations(
                 realization.retained_access =
                     EventRealtimePortStateAccess::immutable_empty;
             }
+            finalize_invocation_combination();
             result.push_back(std::move(realization));
             continue;
         }

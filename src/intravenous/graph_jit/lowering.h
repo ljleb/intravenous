@@ -76,6 +76,13 @@ struct NodeImplementation {
         std::byte*,
         std::size_t,
         std::size_t) = nullptr;
+    bool (*host_combine_sequential_input_values)(
+        std::size_t,
+        ContinuousValueTypeId,
+        std::byte*,
+        std::byte const*,
+        std::size_t,
+        std::size_t) = nullptr;
 };
 
 struct ConfigRelocation {

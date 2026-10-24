@@ -1913,6 +1913,7 @@ void stage_tick_sequential_sample_bindings(
     std::size_t dynamic_count,
     BackgroundEvaluationPlan const& background,
     std::span<detail::PrimitiveSampleInputBindingPlan const> inputs,
+    detail::SampleStoragePlan const& sample_storage,
     EmittedRealtimeStorage const& realtime_storage,
     llvm::Value* root_index,
     llvm::Value* sample_index,
@@ -1970,8 +1971,12 @@ void stage_tick_sequential_sample_bindings(
             continue;
         }
         auto const& planned = inputs[input_index];
+        auto const mixed = planned.combines_invocation_supplied;
+        auto const& staging_channels = mixed
+            ? planned.staging_channels
+            : planned.channels;
         IV_ASSERT(planned.staging_cursor_storage_offset
-                && planned.channels.size()
+                && staging_channels.size()
                     == channel_count(planned.channel_layout)
                 && planned.geometry.value_size_bytes != 0,
             "GraphJit staged sample input lost its transition storage");
@@ -2029,29 +2034,51 @@ void stage_tick_sequential_sample_bindings(
              channel < channel_count(planned.channel_layout);
              ++channel) {
             auto const channel_offset = channel_storage_offset(channel);
-            auto* target_storage = load_pointer(
-                target,
-                channel_offset
-                    + offsetof(ReflectedContinuousChannelStorageBinding, storage),
-                "tick.staged.sample.target.storage");
-            auto* target_capacity = load_size(
-                target,
-                channel_offset
-                    + offsetof(ReflectedContinuousChannelStorageBinding,
-                               value_capacity),
-                "tick.staged.sample.target.capacity");
-            auto* target_stride = load_size(
-                target,
-                channel_offset
-                    + offsetof(ReflectedContinuousChannelStorageBinding,
-                               value_stride_bytes),
-                "tick.staged.sample.target.stride");
-            auto* target_delay = load_size(
-                target,
-                channel_offset
-                    + offsetof(ReflectedContinuousChannelStorageBinding,
-                               value_delay),
-                "tick.staged.sample.target.delay");
+            auto const& staging_channel = staging_channels[channel];
+            IV_ASSERT(staging_channel.storage
+                    < sample_storage.representations.size()
+                && staging_channel.storage
+                    < realtime_storage.sample_representations.size(),
+                "GraphJit staged sample channel names missing storage");
+            auto const& staging_representation = sample_storage
+                .representations[staging_channel.storage];
+            auto* target_storage = mixed
+                ? realtime_storage.sample_representations[
+                    staging_channel.storage]
+                : load_pointer(
+                    target,
+                    channel_offset
+                        + offsetof(
+                            ReflectedContinuousChannelStorageBinding,
+                            storage),
+                    "tick.staged.sample.target.storage");
+            auto* target_capacity = mixed
+                ? constant(staging_representation.frame_capacity)
+                : load_size(
+                    target,
+                    channel_offset
+                        + offsetof(
+                            ReflectedContinuousChannelStorageBinding,
+                            value_capacity),
+                    "tick.staged.sample.target.capacity");
+            auto* target_stride = mixed
+                ? constant(planned.geometry.value_size_bytes)
+                : load_size(
+                    target,
+                    channel_offset
+                        + offsetof(
+                            ReflectedContinuousChannelStorageBinding,
+                            value_stride_bytes),
+                    "tick.staged.sample.target.stride");
+            auto* target_delay = mixed
+                ? constant(staging_channel.frame_delay)
+                : load_size(
+                    target,
+                    channel_offset
+                        + offsetof(
+                            ReflectedContinuousChannelStorageBinding,
+                            value_delay),
+                    "tick.staged.sample.target.delay");
             auto* supplied_storage = load_pointer(
                 supplied,
                 channel_offset
@@ -2075,6 +2102,56 @@ void stage_tick_sequential_sample_bindings(
                     + offsetof(ReflectedContinuousChannelStorageBinding,
                                value_delay),
                 "tick.staged.sample.supplied.delay");
+            auto* mixed_source_storage = mixed
+                ? load_pointer(
+                    target,
+                    channel_offset
+                        + offsetof(
+                            ReflectedContinuousChannelStorageBinding,
+                            storage),
+                    "tick.staged.sample.combined.storage")
+                : nullptr;
+            auto* mixed_source_capacity = mixed
+                ? load_size(
+                    target,
+                    channel_offset
+                        + offsetof(
+                            ReflectedContinuousChannelStorageBinding,
+                            value_capacity),
+                    "tick.staged.sample.combined.capacity")
+                : nullptr;
+            auto* mixed_source_stride = mixed
+                ? load_size(
+                    target,
+                    channel_offset
+                        + offsetof(
+                            ReflectedContinuousChannelStorageBinding,
+                            value_stride_bytes),
+                    "tick.staged.sample.combined.stride")
+                : nullptr;
+            auto* mixed_source_begin = mixed
+                ? load_size(
+                    target,
+                    offsetof(ReflectedContinuousInputPortBinding,
+                             sequential_begin_ordinal),
+                    "tick.staged.sample.combined.ordinal")
+                : nullptr;
+            auto* mixed_source_latency = mixed
+                ? load_size(
+                    target,
+                    offsetof(ReflectedContinuousInputPortBinding,
+                             read_latency),
+                    "tick.staged.sample.combined.latency")
+                : nullptr;
+            auto* mixed_source_delay = mixed
+                ? load_size(
+                    target,
+                    channel_offset
+                        + offsetof(
+                            ReflectedContinuousChannelStorageBinding,
+                            value_delay),
+                    "tick.staged.sample.combined.delay")
+                : nullptr;
 
             auto* function = builder.GetInsertBlock()->getParent();
             auto* loop = llvm::BasicBlock::Create(
@@ -2115,14 +2192,23 @@ void stage_tick_sequential_sample_bindings(
                     builder.CreateMul(slot_index, stride),
                     name + ".value");
             };
-            auto* source = storage_pointer(
-                supplied_storage,
-                supplied_capacity,
-                supplied_stride,
-                supplied_begin,
-                supplied_latency,
-                supplied_delay,
-                "tick.staged.sample.source");
+            auto* source = mixed
+                ? storage_pointer(
+                    mixed_source_storage,
+                    mixed_source_capacity,
+                    mixed_source_stride,
+                    mixed_source_begin,
+                    mixed_source_latency,
+                    mixed_source_delay,
+                    "tick.staged.sample.source")
+                : storage_pointer(
+                    supplied_storage,
+                    supplied_capacity,
+                    supplied_stride,
+                    supplied_begin,
+                    supplied_latency,
+                    supplied_delay,
+                    "tick.staged.sample.source");
             auto* destination = storage_pointer(
                 target_storage,
                 target_capacity,
@@ -2142,6 +2228,46 @@ void stage_tick_sequential_sample_bindings(
             builder.CreateBr(loop);
             index->addIncoming(next, body_block);
             builder.SetInsertPoint(done);
+            if (mixed) {
+                store_runtime_pointer(
+                    builder,
+                    target,
+                    channel_offset
+                        + offsetof(
+                            ReflectedContinuousChannelStorageBinding,
+                            storage),
+                    target_storage);
+                builder.CreateStore(
+                    target_capacity,
+                    byte_offset_pointer(
+                        builder,
+                        target,
+                        channel_offset
+                            + offsetof(
+                                ReflectedContinuousChannelStorageBinding,
+                                value_capacity),
+                        "tick.staged.sample.bound.capacity"));
+                builder.CreateStore(
+                    target_stride,
+                    byte_offset_pointer(
+                        builder,
+                        target,
+                        channel_offset
+                            + offsetof(
+                                ReflectedContinuousChannelStorageBinding,
+                                value_stride_bytes),
+                        "tick.staged.sample.bound.stride"));
+                builder.CreateStore(
+                    target_delay,
+                    byte_offset_pointer(
+                        builder,
+                        target,
+                        channel_offset
+                            + offsetof(
+                                ReflectedContinuousChannelStorageBinding,
+                                value_delay),
+                        "tick.staged.sample.bound.delay"));
+            }
         }
         builder.CreateStore(
             target_begin,
@@ -2151,6 +2277,35 @@ void stage_tick_sequential_sample_bindings(
                 offsetof(ReflectedContinuousInputPortBinding,
                          sequential_begin_ordinal),
                 "tick.staged.sample.target.ordinal"));
+        if (mixed) {
+            builder.CreateStore(
+                constant(sample_storage.representations[
+                    staging_channels.front().storage].frame_capacity),
+                byte_offset_pointer(
+                    builder,
+                    target,
+                    offsetof(ReflectedContinuousInputPortBinding, storage)
+                        + offsetof(ReflectedContinuousPortStorageBinding,
+                                   value_capacity),
+                    "tick.staged.sample.bound.storage.capacity"));
+            builder.CreateStore(
+                constant(0),
+                byte_offset_pointer(
+                    builder,
+                    target,
+                    offsetof(ReflectedContinuousInputPortBinding, storage)
+                        + offsetof(ReflectedContinuousPortStorageBinding,
+                                   storage_latency),
+                    "tick.staged.sample.bound.storage.latency"));
+            builder.CreateStore(
+                constant(planned.read_latency),
+                byte_offset_pointer(
+                    builder,
+                    target,
+                    offsetof(ReflectedContinuousInputPortBinding,
+                             read_latency),
+                    "tick.staged.sample.bound.read.latency"));
+        }
     }
 }
 
@@ -2617,6 +2772,7 @@ EmittedPrimitiveTickContext emit_primitive_tick_context(
                 tick_invocation->sequential_sample_count,
                 *tick_background,
                 sample_plan.inputs,
+                sample_storage,
                 realtime_storage,
                 root_index,
                 sample_index,
@@ -8646,6 +8802,12 @@ specialize_transition_plan(
         auto const invocation_successor = input_history
             && current_realization.retained_access
                 == SampleRealtimePortStateAccess::invocation_supplied;
+        auto const mixed_invocation_successor = input_history
+            && current_realization.retained_access
+                == SampleRealtimePortStateAccess::
+                    combined_invocation_supplied;
+        auto const staged_invocation_successor = invocation_successor
+            || mixed_invocation_successor;
         if ((current_realization.retained_access
                     == SampleRealtimePortStateAccess::direct
                 && current_realization.retained_sources.size() != 1)
@@ -8655,7 +8817,7 @@ specialize_transition_plan(
                     != SampleRealtimePortStateAccess::materialized
                 && current_realization.retained_access
                     != SampleRealtimePortStateAccess::composed
-                && !invocation_successor)) {
+                && !staged_invocation_successor)) {
             return std::unexpected(
                 "GraphJit transition sample state has an unsupported steady realization");
         }
@@ -8686,6 +8848,16 @@ specialize_transition_plan(
                     return std::unexpected(
                         "GraphJit transition input state lost its invocation binding");
                 }
+            } else if (mixed_invocation_successor) {
+                if (!steady_input.invocation_supplied
+                    || !steady_input.combines_invocation_supplied
+                    || *requirement.channel
+                        >= steady_input.channels.size()) {
+                    return std::unexpected(
+                        "GraphJit transition input state lost its mixed invocation binding");
+                }
+                source_representation = steady_input.channels[
+                    *requirement.channel].storage;
             } else {
                 if (*requirement.channel >= steady_input.channels.size()) {
                     return std::unexpected(
@@ -8731,7 +8903,7 @@ specialize_transition_plan(
         std::optional<std::size_t> source_position;
         bool source_after_composition = false;
         bool source_before_consumer_materialization = false;
-        if (output_window || invocation_successor) {
+        if (output_window || staged_invocation_successor) {
             source_position = target_position;
         } else {
             auto const materialization = std::ranges::find_if(
@@ -8810,6 +8982,16 @@ specialize_transition_plan(
                     return std::unexpected(
                         "GraphJit transition sample state disagrees with its invocation input binding");
                 }
+            } else if (mixed_invocation_successor) {
+                if (!steady_binding.invocation_supplied
+                    || !steady_binding.combines_invocation_supplied
+                    || *requirement.channel
+                        >= steady_binding.channels.size()
+                    || steady_binding.channels[*requirement.channel].storage
+                        != *source_representation) {
+                    return std::unexpected(
+                        "GraphJit transition sample state disagrees with its mixed invocation input binding");
+                }
             } else {
                 if (*requirement.channel >= steady_binding.channels.size()
                     || steady_binding.channels[*requirement.channel].storage
@@ -8859,7 +9041,7 @@ specialize_transition_plan(
         if (new_suffix) {
             suffix_representation = sample_storage.representations.size();
             auto suffix = source.value_or(detail::SampleRepresentationPlan{});
-            if (invocation_successor) {
+            if (staged_invocation_successor) {
                 suffix.producer_group_index =
                     detail::no_sample_producer_group;
                 suffix.channel_layout =
@@ -8897,7 +9079,7 @@ specialize_transition_plan(
                         *transfer->target_storage.node_storage_offset,
                 });
 
-            if (!invocation_successor) {
+            if (!staged_invocation_successor) {
                 auto const materialization_index =
                     sample_storage.materializations.size();
                 auto mirror = detail::SampleMaterializationPlan{
@@ -8948,13 +9130,13 @@ specialize_transition_plan(
         if (input_history) {
             auto& input = target_ports.inputs[
                 requirement.configured_port.port_index];
-            if (invocation_successor) {
+            if (staged_invocation_successor) {
                 if (!transfer->target_storage
                          .sequential_cursor_node_storage_offset) {
                     return std::unexpected(
                         "GraphJit staged sample suffix lost its transition cursor");
                 }
-                if (input.channels.empty()) {
+                if (invocation_successor && input.channels.empty()) {
                     input.channels.resize(
                         channel_count(input.channel_layout));
                 }
@@ -8962,12 +9144,22 @@ specialize_transition_plan(
                 input.staging_cursor_storage_offset = transfer->target_storage
                     .sequential_cursor_node_storage_offset;
             }
-            input.channels[*requirement.channel] = {
-                .storage = *suffix_representation,
-                .representation_channel =
-                    current_realization.authored_storage
-                        .representation_channel,
-            };
+            auto const suffix_channel =
+                detail::PrimitiveSampleInputChannelBindingPlan{
+                    .storage = *suffix_representation,
+                    .representation_channel =
+                        current_realization.authored_storage
+                            .representation_channel,
+                };
+            if (mixed_invocation_successor) {
+                if (input.staging_channels.empty()) {
+                    input.staging_channels.resize(
+                        channel_count(input.channel_layout));
+                }
+                input.staging_channels[*requirement.channel] = suffix_channel;
+            } else {
+                input.channels[*requirement.channel] = suffix_channel;
+            }
         } else {
             target_ports.outputs[requirement.configured_port.port_index]
                 .storage = *suffix_representation;

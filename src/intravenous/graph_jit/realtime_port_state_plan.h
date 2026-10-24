@@ -94,6 +94,12 @@ enum class SampleRealtimePortStateAccess : std::uint8_t {
     // retained source is the invocation_playback window that the final
     // predecessor invocation observed.
     invocation_supplied,
+    // The callback observes the node-defined combination of one ordinary
+    // realtime derivation and one invocation_playback window. The ordinary
+    // derivation remains in retained_sources/materialization/
+    // composition_sources; invocation_combination records the other operand
+    // and the exact node-input operation.
+    combined_invocation_supplied,
 };
 
 struct SampleRealtimePortStateStorageView {
@@ -148,6 +154,22 @@ struct SampleRealtimePortStateCompositionSource {
     float coefficient = 0.0f;
 };
 
+using SampleRealtimePortStateCombineOperation = bool (*)(
+    std::size_t continuous_input,
+    ContinuousValueTypeId,
+    std::byte* destination,
+    std::byte const* source,
+    std::size_t byte_count,
+    std::size_t elements_per_value);
+
+struct SampleRealtimePortStateInvocationCombination {
+    SampleRealtimePortStateAccess realtime_access =
+        SampleRealtimePortStateAccess::callback_only;
+    SampleRealtimePortStateStorageView invocation_storage{};
+    std::size_t continuous_input = 0;
+    SampleRealtimePortStateCombineOperation combine = nullptr;
+};
+
 struct SampleRealtimePortStateRealization {
     // Index into RealtimePortStateRequirements::states. Only sample
     // requirements have entries here; event realizations are planned
@@ -166,6 +188,8 @@ struct SampleRealtimePortStateRealization {
     // Each view already includes its source read latency in timeline_offset.
     std::vector<SampleRealtimePortStateCompositionSource>
         composition_sources{};
+    std::optional<SampleRealtimePortStateInvocationCombination>
+        invocation_combination{};
 };
 
 enum class EventRealtimePortStateStorage : std::uint8_t {
@@ -205,6 +229,11 @@ enum class EventRealtimePortStateAccess : std::uint8_t {
     // retained storage is the invocation_playback window that the final
     // predecessor invocation observed.
     invocation_supplied,
+    // retained_storage and the materialization/source-selection fields name
+    // the realtime contribution. invocation_combination names the separately
+    // supplied background contribution and the realtime source's fixed
+    // semantic ordering index when it has no sidecar.
+    combined_invocation_supplied,
 };
 
 struct EventRealtimePortStateStorageView {
@@ -244,6 +273,13 @@ struct EventRealtimePortStateFutureSource {
     std::optional<std::size_t> target_source_index{};
 };
 
+struct EventRealtimePortStateInvocationCombination {
+    EventRealtimePortStateAccess realtime_access =
+        EventRealtimePortStateAccess::callback_only;
+    EventRealtimePortStateStorageView invocation_storage{};
+    std::optional<std::size_t> realtime_fixed_source_index{};
+};
+
 struct EventRealtimePortStateRealization {
     std::size_t requirement_index = 0;
     // Exact representation bound to the authored node callback.
@@ -269,6 +305,8 @@ struct EventRealtimePortStateRealization {
     // reconstruct its future interval from the independently owned output
     // latency states without changing steady execution.
     std::vector<EventRealtimePortStateFutureSource> retained_future_sources{};
+    std::optional<EventRealtimePortStateInvocationCombination>
+        invocation_combination{};
 };
 
 struct RealtimePortStateRealizations {
