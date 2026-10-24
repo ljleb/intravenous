@@ -63,16 +63,12 @@ struct RealtimePortStateRequirements {
 // valid only while the generated root owns its invocation arena, so a graph
 // transition cannot mistake them for cross-callback state. compact_carry and
 // ring name canonical NodeStorage representations; immutable_constant owns no
-// mutable bytes. invocation_playback names the predecessor
-// TickInvocationWorkspace window bound to one TickSequentialBindingPlan slot;
-// it is readable only at the cutover that follows that workspace's final
-// invocation.
+// mutable bytes.
 enum class SampleRealtimePortStateStorage : std::uint8_t {
     immutable_constant,
     callback_transient,
     compact_carry,
     ring,
-    invocation_playback,
 };
 
 enum class SampleRealtimePortStateAccess : std::uint8_t {
@@ -89,17 +85,6 @@ enum class SampleRealtimePortStateAccess : std::uint8_t {
     composed,
     // No recoverable cross-callback source is currently known.
     callback_only,
-    // Background evaluation supplies the complete window, including history,
-    // on every invocation. No realtime cross-callback state exists; the one
-    // retained source is the invocation_playback window that the final
-    // predecessor invocation observed.
-    invocation_supplied,
-    // The callback observes the node-defined combination of one ordinary
-    // realtime derivation and one invocation_playback window. The ordinary
-    // derivation remains in retained_sources/materialization/
-    // composition_sources; invocation_combination records the other operand
-    // and the exact node-input operation.
-    combined_invocation_supplied,
 };
 
 struct SampleRealtimePortStateStorageView {
@@ -132,12 +117,9 @@ struct SampleRealtimePortStateStorageView {
     // persistent rings.
     std::size_t carry_future_frames = 0;
 
-    // Exactly one location form is populated according to storage. An
-    // invocation_playback view populates invocation_slot, an index into
-    // TickRuntimePlan::sequential_sample_inputs.
+    // Exactly one location form is populated according to storage.
     std::optional<std::size_t> node_storage_offset{};
     std::optional<std::size_t> callback_arena_offset{};
-    std::optional<std::size_t> invocation_slot{};
     std::size_t storage_size_bytes = 0;
     std::optional<std::vector<std::byte>> constant_value{};
 };
@@ -152,22 +134,6 @@ struct SampleRealtimePortStateMaterialization {
 struct SampleRealtimePortStateCompositionSource {
     SampleRealtimePortStateStorageView storage{};
     float coefficient = 0.0f;
-};
-
-using SampleRealtimePortStateCombineOperation = bool (*)(
-    std::size_t continuous_input,
-    ContinuousValueTypeId,
-    std::byte* destination,
-    std::byte const* source,
-    std::size_t byte_count,
-    std::size_t elements_per_value);
-
-struct SampleRealtimePortStateInvocationCombination {
-    SampleRealtimePortStateAccess realtime_access =
-        SampleRealtimePortStateAccess::callback_only;
-    SampleRealtimePortStateStorageView invocation_storage{};
-    std::size_t continuous_input = 0;
-    SampleRealtimePortStateCombineOperation combine = nullptr;
 };
 
 struct SampleRealtimePortStateRealization {
@@ -188,8 +154,6 @@ struct SampleRealtimePortStateRealization {
     // Each view already includes its source read latency in timeline_offset.
     std::vector<SampleRealtimePortStateCompositionSource>
         composition_sources{};
-    std::optional<SampleRealtimePortStateInvocationCombination>
-        invocation_combination{};
 };
 
 enum class EventRealtimePortStateStorage : std::uint8_t {
@@ -199,9 +163,6 @@ enum class EventRealtimePortStateStorage : std::uint8_t {
     // Compiler-emitted read-only zero-count sequence. No location is
     // populated.
     immutable_empty,
-    // See SampleRealtimePortStateStorage::invocation_playback. Populates
-    // invocation_slot, an index into TickRuntimePlan::sequential_event_inputs.
-    invocation_playback,
 };
 
 // Describes how one semantic event-state requirement can be recovered after
@@ -224,16 +185,6 @@ enum class EventRealtimePortStateAccess : std::uint8_t {
     // Only callback-local bytes currently represent the state. Transition
     // planning must trace/add retention rather than reading expired arena data.
     callback_only,
-    // Background evaluation supplies the complete window, including history,
-    // on every invocation. No realtime cross-callback state exists; the
-    // retained storage is the invocation_playback window that the final
-    // predecessor invocation observed.
-    invocation_supplied,
-    // retained_storage and the materialization/source-selection fields name
-    // the realtime contribution. invocation_combination names the separately
-    // supplied background contribution and the realtime source's fixed
-    // semantic ordering index when it has no sidecar.
-    combined_invocation_supplied,
 };
 
 struct EventRealtimePortStateStorageView {
@@ -255,11 +206,9 @@ struct EventRealtimePortStateStorageView {
     std::size_t source_indices_relative_offset = 0;
 
     // Persistent storage populates node_storage_offset, callback_transient
-    // populates callback_arena_offset, invocation_playback populates
-    // invocation_slot, and immutable_empty populates none of them.
+    // populates callback_arena_offset, and immutable_empty populates neither.
     std::optional<std::size_t> node_storage_offset{};
     std::optional<std::size_t> callback_arena_offset{};
-    std::optional<std::size_t> invocation_slot{};
 };
 
 // One Tick output-latency state whose future interval is present in a retained
@@ -271,13 +220,6 @@ struct EventRealtimePortStateFutureSource {
     std::size_t requirement_index = 0;
     EventConversionPlan conversion{};
     std::optional<std::size_t> target_source_index{};
-};
-
-struct EventRealtimePortStateInvocationCombination {
-    EventRealtimePortStateAccess realtime_access =
-        EventRealtimePortStateAccess::callback_only;
-    EventRealtimePortStateStorageView invocation_storage{};
-    std::optional<std::size_t> realtime_fixed_source_index{};
 };
 
 struct EventRealtimePortStateRealization {
@@ -305,8 +247,6 @@ struct EventRealtimePortStateRealization {
     // reconstruct its future interval from the independently owned output
     // latency states without changing steady execution.
     std::vector<EventRealtimePortStateFutureSource> retained_future_sources{};
-    std::optional<EventRealtimePortStateInvocationCombination>
-        invocation_combination{};
 };
 
 struct RealtimePortStateRealizations {

@@ -425,13 +425,15 @@ iv::graph_jit::BackgroundEvaluationPlan sequential_tick_sample_plan()
     return plan;
 }
 
+// Reads frame offset of the current window exactly as generated execution
+// addresses a Sequential binding: from the binding's own ordinal.
 iv::Sample sequential_sample_at(
     iv::ReflectedContinuousInputPortBinding const& binding,
-    iv::GlobalIndex position,
+    std::size_t offset,
     std::size_t channel = 0)
 {
     auto const& selected = binding.storage.channels[channel];
-    auto const ordinal = position.bits()
+    auto const ordinal = binding.sequential_begin_ordinal + offset
         + binding.storage.storage_latency
         - selected.value_delay;
     auto const slot = static_cast<std::size_t>(
@@ -927,11 +929,13 @@ TEST(TickInvocationWorkspace,
         std::span<iv::ReflectedContinuousInputPortBinding const>>(
         frame.call().sequential_sample_inputs);
     ASSERT_EQ(inputs.size(), 1u);
-    EXPECT_FLOAT_EQ(sequential_sample_at(inputs[0], index(3)).value, -0.25f);
-    EXPECT_FLOAT_EQ(sequential_sample_at(inputs[0], index(4)).value, 40.0f);
-    EXPECT_FLOAT_EQ(sequential_sample_at(inputs[0], index(5)).value, 50.0f);
-    EXPECT_FLOAT_EQ(sequential_sample_at(inputs[0], index(6)).value, 60.0f);
-    EXPECT_FLOAT_EQ(sequential_sample_at(inputs[0], index(7)).value, -0.25f);
+    // The slot carries only the current window [5, 8); the consumer's two
+    // history values are its own realtime state.
+    EXPECT_EQ(inputs[0].history, 0u);
+    EXPECT_EQ(inputs[0].sequential_begin_ordinal, 0u);
+    EXPECT_FLOAT_EQ(sequential_sample_at(inputs[0], 0).value, 50.0f);
+    EXPECT_FLOAT_EQ(sequential_sample_at(inputs[0], 1).value, 60.0f);
+    EXPECT_FLOAT_EQ(sequential_sample_at(inputs[0], 2).value, -0.25f);
 }
 
 TEST(TickInvocationWorkspace,

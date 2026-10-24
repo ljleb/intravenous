@@ -79,10 +79,13 @@ iv_graph_jit_merge_ordered_event_sequence(
     GlobalIndex origin) noexcept;
 
 // Merge the realtime and invocation-supplied parts of one mixed Sequential
-// input. Each source is a bounded sequence or ring. A non-null source-index
-// pointer supplies per-event EventConnectionPlan::sources positions;
-// otherwise the corresponding fixed index is used. SIZE_MAX reports invalid
-// storage or insufficient target capacity.
+// input. Each source is a bounded sequence or ring in chronological order.
+// Both may hold history before position and events after it, and their
+// retained horizons differ, so events are ordered by signed displacement
+// from position rather than from a shared history origin. A non-null
+// source-index pointer supplies per-event EventConnectionPlan::sources
+// positions; otherwise the corresponding fixed index is used. SIZE_MAX
+// reports invalid storage or insufficient target capacity.
 extern "C" IV_GRAPH_JIT_RUNTIME_EXPORT std::size_t
 iv_graph_jit_merge_mixed_event_sequences(
     void* target_events,
@@ -99,7 +102,7 @@ iv_graph_jit_merge_mixed_event_sequences(
     std::size_t supplied_capacity,
     std::size_t supplied_read_index,
     std::size_t supplied_write_index,
-    GlobalIndex origin) noexcept;
+    GlobalIndex position) noexcept;
 
 // Insert only the current callback window from an invocation-supplied
 // sequence/ring into a transition-only persistent ring. SIZE_MAX reports

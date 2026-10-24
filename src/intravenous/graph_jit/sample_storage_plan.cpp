@@ -728,7 +728,8 @@ std::expected<SampleStoragePlan, std::string> build_sample_storage_plan(
     std::size_t kernel_block_size,
     std::span<SampleSinkStorageRequest const> sinks,
     std::span<SampleConstantInputRequest const> constant_inputs,
-    RealtimeStorageCostModel const& cost_model)
+    RealtimeStorageCostModel const& cost_model,
+    std::span<SampleInputTimelineRequest const> input_timelines)
 {
     if (kernel_block_size == 0 || !is_power_of_2(kernel_block_size)) {
         return std::unexpected(
@@ -2958,20 +2959,25 @@ std::expected<SampleStoragePlan, std::string> build_sample_storage_plan(
         plan.constant_input_representations.push_back(representation);
     }
 
-    plan.sink_representations.reserve(sinks.size());
-    for (auto const& sink : sinks) {
+    // A disconnected Tick output and a slot-fed input timeline are both
+    // retained windows written by their owning primitive's step: the output by
+    // its callback, the timeline by the generated root just before it.
+    auto plan_retained_window = [&](
+        SampleSinkStorageRequest const& sink,
+        std::optional<std::vector<std::byte>> initialize_value)
+        -> std::expected<std::size_t, std::string> {
         if (sink.execution_position >= connections.nodes.size()) {
             return std::unexpected(
-                "GraphJit disconnected sample output has no execution position");
+                "GraphJit retained sample window has no execution position");
         }
         if (sink.migration_identity.empty()) {
             return std::unexpected(
-                "GraphJit disconnected sample output requires a stable storage identity");
+                "GraphJit retained sample window requires a stable storage identity");
         }
         if (sink.history
             > std::numeric_limits<std::size_t>::max() - sink.latency) {
             return std::unexpected(
-                "GraphJit disconnected sample output retained extent overflows size_t");
+                "GraphJit retained sample window extent overflows size_t");
         }
         auto const retained_frames = sink.history + sink.latency;
         auto current_value_count = maximum_projected_value_count(
@@ -3034,7 +3040,7 @@ std::expected<SampleStoragePlan, std::string> build_sample_storage_plan(
                 *capacity,
                 persistent_identity(SamplePersistentStorageKind::ring),
                 sink.geometry,
-                std::nullopt);
+                initialize_value);
             if (!persistent) {
                 return std::unexpected(std::move(persistent.error()));
             }
@@ -3067,7 +3073,7 @@ std::expected<SampleStoragePlan, std::string> build_sample_storage_plan(
                     persistent_identity(
                         SamplePersistentStorageKind::compact_carry),
                     sink.geometry,
-                    std::nullopt);
+                    initialize_value);
                 if (!persistent) {
                     return std::unexpected(std::move(persistent.error()));
                 }
@@ -3084,10 +3090,43 @@ std::expected<SampleStoragePlan, std::string> build_sample_storage_plan(
             } else if (storage.kind
                        != RealtimeBufferStorageKind::transient_stack) {
                 return std::unexpected(
-                    "GraphJit disconnected sample output selected an invalid storage kind");
+                    "GraphJit retained sample window selected an invalid storage kind");
             }
         }
-        plan.sink_representations.push_back(representation);
+        return representation;
+    };
+
+    plan.sink_representations.reserve(sinks.size());
+    for (auto const& sink : sinks) {
+        auto representation = plan_retained_window(sink, std::nullopt);
+        if (!representation) {
+            return std::unexpected(std::move(representation.error()));
+        }
+        plan.sink_representations.push_back(*representation);
+    }
+
+    plan.input_timeline_representations.reserve(input_timelines.size());
+    for (auto const& timeline : input_timelines) {
+        if (timeline.neutral_value.size()
+            != timeline.geometry.value_size_bytes) {
+            return std::unexpected(
+                "GraphJit sample input timeline neutral value has the wrong size");
+        }
+        auto representation = plan_retained_window(
+            SampleSinkStorageRequest{
+                .channel_layout = timeline.channel_layout,
+                .geometry = timeline.geometry,
+                .absolute_pace_exponent = timeline.absolute_pace_exponent,
+                .history = timeline.history,
+                .latency = 0,
+                .execution_position = timeline.execution_position,
+                .migration_identity = timeline.migration_identity,
+            },
+            timeline.neutral_value);
+        if (!representation) {
+            return std::unexpected(std::move(representation.error()));
+        }
+        plan.input_timeline_representations.push_back(*representation);
     }
 
     auto arena = plan_transient_arena(transient_requests);

@@ -4,12 +4,16 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <array>
+#include <cstddef>
 #include <cstring>
 #include <cstdint>
+#include <limits>
 #include <optional>
 #include <string>
 #include <utility>
+#include <variant>
 #include <vector>
 
 namespace {
@@ -20,7 +24,7 @@ iv::GlobalIndex global_index(std::uint64_t bits)
 }
 
 TEST(RealtimePortStateTransition,
-     StagedEventWindowKeepsInheritedHistoryAndSelectsOnlyCurrentEvents)
+     StagedEventWindowKeepsRetainedHistoryAndSelectsOnlyCurrentEvents)
 {
     std::array<iv::TimedEvent, 8> target{};
     target[6].time = global_index(98);
@@ -53,101 +57,6 @@ TEST(RealtimePortStateTransition,
             target[(6 + offset) & (target.size() - 1)].time.bits(),
             expected[offset]);
     }
-}
-
-TEST(RealtimePortStateTransition,
-     InvocationPlaybackSampleTransferUsesBindingLatencyAndChannelDelay)
-{
-    std::array<iv::Sample, 8> playback_values{};
-    for (std::uint64_t ordinal = 93; ordinal <= 100; ++ordinal) {
-        playback_values[ordinal & 7] = static_cast<float>(ordinal);
-    }
-    iv::ReflectedContinuousInputPortBinding binding{
-        .storage = {
-            .geometry = {},
-            .value_capacity = playback_values.size(),
-            .channel_layout = iv::mono_planar_channel_layout,
-        },
-        .history = 4,
-        .read_latency = 2,
-        .sequential_begin_ordinal = 100,
-    };
-    binding.storage.channels[0] = {
-        .storage = reinterpret_cast<std::byte*>(playback_values.data()),
-        .value_capacity = playback_values.size(),
-        .value_stride_bytes = sizeof(iv::Sample),
-        .value_delay = 1,
-    };
-
-    constexpr auto cursor_offset = 8 * sizeof(iv::Sample);
-    std::vector<std::byte> current(cursor_offset + sizeof(std::uint64_t));
-    std::uint64_t const target_cursor = 20;
-    std::memcpy(
-        current.data() + cursor_offset,
-        &target_cursor,
-        sizeof(target_cursor));
-    auto source = iv::graph_jit::SampleRealtimePortStateStorageView{
-        .storage = iv::graph_jit::
-            SampleRealtimePortStateStorage::invocation_playback,
-        .channel_layout = iv::mono_planar_channel_layout,
-        .representation_channel = 0,
-        .working_frame_capacity = 8,
-        .storage_frame_count = 8,
-        .invocation_slot = 0,
-        .storage_size_bytes = 8 * sizeof(iv::Sample),
-    };
-    auto target = source;
-    target.storage = iv::graph_jit::SampleRealtimePortStateStorage::ring;
-    target.sequential_cursor_node_storage_offset = cursor_offset;
-    target.timeline_offset_frames = -3;
-    target.node_storage_offset = 0;
-    target.invocation_slot.reset();
-    iv::graph_jit::RealtimePortStateTransitionPlan plan{
-        .sample_states = {{
-            .inherited_state_realization = iv::graph_jit::
-                InheritedRealtimePortStateRealization::
-                    transfer_to_steady_storage,
-        }},
-        .sample_transfers = {{
-            .source_access = iv::graph_jit::
-                SampleRealtimePortStateAccess::invocation_supplied,
-            .source_storage = {source},
-            .target_storage = target,
-            .target_begin = -4,
-            .target_end = 0,
-            .inherited_begin = -2,
-            .inherited_end = 0,
-        }},
-    };
-    std::array bindings{binding};
-    auto const playback = iv::graph_jit::RealtimePortStatePlaybackSlots{
-        .sequential_samples = bindings,
-    };
-
-    auto prepared = iv::graph_jit::prepare_realtime_port_state_transfers(
-        plan, std::span<std::byte const>{}, current, playback);
-    ASSERT_TRUE(prepared.has_value())
-        << (prepared ? std::string{} : prepared.error());
-    iv::graph_jit::execute_realtime_port_state_transfers(
-        *prepared,
-        std::span<std::byte const>{},
-        current,
-        global_index(1'000),
-        playback,
-        global_index(1'000));
-
-    auto read = [&](std::uint64_t ordinal) {
-        iv::Sample value{};
-        std::memcpy(
-            &value,
-            current.data() + (ordinal & 7) * sizeof(value),
-            sizeof(value));
-        return value.value;
-    };
-    EXPECT_FLOAT_EQ(read(13), 0.0f);
-    EXPECT_FLOAT_EQ(read(14), 0.0f);
-    EXPECT_FLOAT_EQ(read(15), 95.0f);
-    EXPECT_FLOAT_EQ(read(16), 96.0f);
 }
 
 std::vector<std::byte> sample_value_bytes(iv::Sample value)
@@ -517,287 +426,6 @@ TEST(RealtimePortStateTransition, SelectsImmutableAndPrivateSampleRealizations)
     EXPECT_EQ(transfer.target_end, 0);
     EXPECT_EQ(transfer.inherited_begin, -8);
     EXPECT_EQ(transfer.inherited_end, 0);
-}
-
-TEST(RealtimePortStateTransition,
-     InvocationSuppliedStatePlansBothCrossKindTransitionDirections)
-{
-    auto sample_requirement = requirement(
-        1,
-        8,
-        iv::PortKind::sample,
-        iv::graph_jit::PortDirection::input,
-        iv::graph_jit::RealtimePortStateRole::sequential_input_history,
-        "sample-node",
-        "in",
-        0);
-    auto event_requirement = requirement(
-        1,
-        8,
-        iv::PortKind::event,
-        iv::graph_jit::PortDirection::input,
-        iv::graph_jit::RealtimePortStateRole::sequential_input_history,
-        "event-node",
-        "events",
-        std::nullopt);
-    iv::graph_jit::RealtimePortStateRequirements previous{
-        .states = {sample_requirement, event_requirement},
-    };
-    auto current = previous;
-    current.states[0].configured_port.node_bundle_handle = 2;
-    current.states[1].configured_port.node_bundle_handle = 2;
-    auto invocation_realizations = [] {
-        auto sample_view =
-            iv::graph_jit::SampleRealtimePortStateStorageView{
-                .storage = iv::graph_jit::
-                    SampleRealtimePortStateStorage::invocation_playback,
-                .channel_layout = {
-                    .channel_type = iv::ChannelTypeId::stereo,
-                    .sample_layout = iv::SampleStreamLayout::planar,
-                },
-                .representation_channel = 0,
-                .working_frame_capacity = 8,
-                .storage_frame_count = 8,
-                .invocation_slot = 0,
-                .storage_size_bytes = 2 * 8 * sizeof(iv::Sample),
-            };
-        return iv::graph_jit::RealtimePortStateRealizations{
-            .sample_states = {
-                iv::graph_jit::SampleRealtimePortStateRealization{
-                    .requirement_index = 0,
-                    .authored_storage = sample_view,
-                    .retained_access = iv::graph_jit::
-                        SampleRealtimePortStateAccess::invocation_supplied,
-                    .retained_sources = {sample_view},
-                },
-            },
-            .event_states = {
-                iv::graph_jit::EventRealtimePortStateRealization{
-                    .requirement_index = 1,
-                    .authored_storage = {
-                        .type = iv::EventTypeId::midi,
-                        .event_capacity = 8,
-                    },
-                    .retained_access = iv::graph_jit::
-                        EventRealtimePortStateAccess::invocation_supplied,
-                    .retained_storage = iv::graph_jit::
-                        EventRealtimePortStateStorageView{
-                            .storage = iv::graph_jit::
-                                EventRealtimePortStateStorage::
-                                    invocation_playback,
-                            .type = iv::EventTypeId::midi,
-                            .event_capacity = 8,
-                            .invocation_slot = 0,
-                        },
-                },
-            },
-        };
-    };
-
-    auto same_kind = iv::graph_jit::plan_realtime_port_state_transition(
-        previous,
-        invocation_realizations(),
-        current,
-        invocation_realizations());
-    ASSERT_TRUE(same_kind.has_value())
-        << (same_kind ? std::string{} : same_kind.error());
-    ASSERT_EQ(same_kind->sample_states.size(), 1u);
-    ASSERT_EQ(same_kind->event_states.size(), 1u);
-    EXPECT_EQ(
-        same_kind->sample_states.front().inherited_state_realization,
-        iv::graph_jit::InheritedRealtimePortStateRealization::
-            already_represented);
-    EXPECT_EQ(
-        same_kind->event_states.front().inherited_state_realization,
-        iv::graph_jit::InheritedRealtimePortStateRealization::
-            already_represented);
-
-    auto realtime_sample = invocation_realizations();
-    realtime_sample.sample_states[0] = direct_sample(0, 512);
-    auto background_to_realtime_sample =
-        iv::graph_jit::plan_realtime_port_state_transition(
-            previous,
-            invocation_realizations(),
-            current,
-            realtime_sample);
-    ASSERT_TRUE(background_to_realtime_sample.has_value())
-        << (background_to_realtime_sample
-                ? std::string{}
-                : background_to_realtime_sample.error());
-    ASSERT_EQ(background_to_realtime_sample->sample_states.size(), 1u);
-    EXPECT_EQ(
-        background_to_realtime_sample->sample_states.front()
-            .inherited_state_realization,
-        iv::graph_jit::InheritedRealtimePortStateRealization::
-            transfer_to_steady_storage);
-    ASSERT_EQ(background_to_realtime_sample->sample_transfers.size(), 1u);
-    EXPECT_EQ(
-        background_to_realtime_sample->sample_transfers.front().source_access,
-        iv::graph_jit::SampleRealtimePortStateAccess::invocation_supplied);
-
-    auto realtime_event = invocation_realizations();
-    realtime_event.event_states[0] = direct_event(1, 1024);
-    auto background_to_realtime_event =
-        iv::graph_jit::plan_realtime_port_state_transition(
-            previous,
-            invocation_realizations(),
-            current,
-            realtime_event);
-    ASSERT_TRUE(background_to_realtime_event.has_value())
-        << (background_to_realtime_event
-                ? std::string{}
-                : background_to_realtime_event.error());
-    ASSERT_EQ(background_to_realtime_event->event_states.size(), 1u);
-    EXPECT_EQ(
-        background_to_realtime_event->event_states.front()
-            .inherited_state_realization,
-        iv::graph_jit::InheritedRealtimePortStateRealization::
-            transfer_to_steady_storage);
-    ASSERT_EQ(background_to_realtime_event->event_transfers.size(), 1u);
-    EXPECT_EQ(
-        background_to_realtime_event->event_transfers.front().source_access,
-        iv::graph_jit::EventRealtimePortStateAccess::invocation_supplied);
-
-    auto realtime_to_background_sample =
-        iv::graph_jit::plan_realtime_port_state_transition(
-            previous,
-            realtime_sample,
-            current,
-            invocation_realizations());
-    ASSERT_TRUE(realtime_to_background_sample.has_value())
-        << (realtime_to_background_sample
-                ? std::string{}
-                : realtime_to_background_sample.error());
-    ASSERT_EQ(realtime_to_background_sample->sample_states.size(), 1u);
-    EXPECT_EQ(
-        realtime_to_background_sample->sample_states.front()
-            .inherited_state_realization,
-        iv::graph_jit::InheritedRealtimePortStateRealization::
-            transition_only_storage);
-    EXPECT_TRUE(realtime_to_background_sample->sample_transfers.empty());
-
-    auto realtime_to_background_event =
-        iv::graph_jit::plan_realtime_port_state_transition(
-            previous,
-            realtime_event,
-            current,
-            invocation_realizations());
-    ASSERT_TRUE(realtime_to_background_event.has_value())
-        << (realtime_to_background_event
-                ? std::string{}
-                : realtime_to_background_event.error());
-    ASSERT_EQ(realtime_to_background_event->event_states.size(), 1u);
-    EXPECT_EQ(
-        realtime_to_background_event->event_states.front()
-            .inherited_state_realization,
-        iv::graph_jit::InheritedRealtimePortStateRealization::
-            transition_only_storage);
-    EXPECT_TRUE(realtime_to_background_event->event_transfers.empty());
-}
-
-TEST(RealtimePortStateTransition,
-     RealtimeToInvocationSuppliedStateRealizesPrivateTransitionRings)
-{
-    iv::graph_jit::RealtimePortStateRequirements previous{
-        .states = {
-            requirement(
-                1,
-                8,
-                iv::PortKind::sample,
-                iv::graph_jit::PortDirection::input,
-                iv::graph_jit::RealtimePortStateRole::sequential_input_history,
-                "sample-node",
-                "in",
-                0),
-            requirement(
-                1,
-                8,
-                iv::PortKind::event,
-                iv::graph_jit::PortDirection::input,
-                iv::graph_jit::RealtimePortStateRole::sequential_input_history,
-                "event-node",
-                "events",
-                std::nullopt),
-        },
-    };
-    auto current = previous;
-    current.states[0].configured_port.node_bundle_handle = 2;
-    current.states[1].configured_port.node_bundle_handle = 2;
-    auto previous_realizations = iv::graph_jit::RealtimePortStateRealizations{
-        .sample_states = {direct_sample(0, 64, 0, 0)},
-        .event_states = {direct_event(1, 256)},
-    };
-    auto sample_authored =
-        iv::graph_jit::SampleRealtimePortStateStorageView{
-            .channel_layout = {
-                .channel_type = iv::ChannelTypeId::stereo,
-                .sample_layout = iv::SampleStreamLayout::planar,
-            },
-            .representation_channel = 0,
-            .working_frame_capacity = 16,
-            .storage_frame_count = 16,
-            .storage_size_bytes = 2 * 16 * sizeof(iv::Sample),
-        };
-    auto sample_playback = sample_authored;
-    sample_playback.storage = iv::graph_jit::
-        SampleRealtimePortStateStorage::invocation_playback;
-    sample_playback.invocation_slot = 0;
-    auto current_realizations = iv::graph_jit::RealtimePortStateRealizations{
-        .sample_states = {{
-            .requirement_index = 0,
-            .authored_storage = sample_authored,
-            .retained_access = iv::graph_jit::
-                SampleRealtimePortStateAccess::invocation_supplied,
-            .retained_sources = {sample_playback},
-        }},
-        .event_states = {{
-            .requirement_index = 1,
-            .authored_storage = {
-                .type = iv::EventTypeId::midi,
-                .event_capacity = 16,
-            },
-            .retained_access = iv::graph_jit::
-                EventRealtimePortStateAccess::invocation_supplied,
-            .retained_storage = iv::graph_jit::
-                EventRealtimePortStateStorageView{
-                    .storage = iv::graph_jit::
-                        EventRealtimePortStateStorage::invocation_playback,
-                    .type = iv::EventTypeId::midi,
-                    .event_capacity = 16,
-                    .invocation_slot = 0,
-                },
-        }},
-    };
-
-    auto planned = iv::graph_jit::plan_realtime_port_state_transition(
-        previous,
-        previous_realizations,
-        current,
-        current_realizations);
-    ASSERT_TRUE(planned.has_value())
-        << (planned ? std::string{} : planned.error());
-    auto realized =
-        iv::graph_jit::realize_realtime_port_state_transition_storage(
-            iv::NodeLayoutBuilder{8}.build(),
-            std::move(*planned),
-            previous_realizations,
-            current,
-            current_realizations);
-    ASSERT_TRUE(realized.has_value())
-        << (realized ? std::string{} : realized.error());
-    ASSERT_EQ(realized->plan.sample_transfers.size(), 1u);
-    EXPECT_TRUE(realized->plan.sample_transfers.front().target_transition_only);
-    EXPECT_TRUE(realized->plan.sample_transfers.front().target_storage
-                    .node_storage_offset);
-    EXPECT_TRUE(realized->plan.sample_transfers.front().target_storage
-                    .sequential_cursor_node_storage_offset);
-    ASSERT_EQ(realized->plan.sample_expiry_cursors.size(), 1u);
-    ASSERT_EQ(realized->plan.event_transfers.size(), 1u);
-    EXPECT_TRUE(realized->plan.event_transfers.front().target_transition_only);
-    EXPECT_TRUE(realized->plan.event_transfers.front().target_storage
-                    .node_storage_offset);
-    EXPECT_EQ(realized->plan.event_expiry_samples, 8u);
-    EXPECT_GT(realized->node_layout.storage_size, 0u);
 }
 
 TEST(RealtimePortStateTransition, NewStateSharingSampleTargetRequiresTransitionStorage)
@@ -1903,6 +1531,58 @@ TEST(RealtimePortStateTransition, RejectsStableIdentityRequirementMismatch)
     EXPECT_NE(
         planned.error().find("stable identity disagrees"),
         std::string::npos);
+}
+
+TEST(RealtimePortStateTransition,
+     MixedEventMergeOrdersHistoryBeforeCurrentAcrossSources)
+{
+    // Realtime events carry TriggerEvent so the merged order shows which
+    // source supplied each event. Both sources hold history before the
+    // callback position and events after it.
+    std::array<iv::TimedEvent, 4> realtime{};
+    realtime[0] = {.time = global_index(98), .value = iv::TriggerEvent{}};
+    realtime[1] = {.time = global_index(101), .value = iv::TriggerEvent{}};
+    std::array<iv::TimedEvent, 4> supplied{};
+    supplied[0].time = global_index(99);
+    supplied[1].time = global_index(100);
+    supplied[2].time = global_index(101);
+    std::array<std::size_t, 4> supplied_indices{0, 0, 0, 0};
+    std::array<iv::TimedEvent, 8> merged{};
+
+    auto const count =
+        iv::graph_jit::detail::iv_graph_jit_merge_mixed_event_sequences(
+            merged.data(),
+            merged.size(),
+            realtime.data(),
+            nullptr,
+            1,
+            realtime.size(),
+            0,
+            2,
+            supplied.data(),
+            supplied_indices.data(),
+            std::numeric_limits<std::size_t>::max(),
+            supplied.size(),
+            0,
+            3,
+            global_index(100));
+
+    ASSERT_EQ(count, 5u);
+    std::array<std::pair<std::uint64_t, bool>, 5> const expected{{
+        {98, true},
+        {99, false},
+        {100, false},
+        // Equal times order by semantic source index: supplied 0 before
+        // realtime 1.
+        {101, false},
+        {101, true},
+    }};
+    for (std::size_t index = 0; index < expected.size(); ++index) {
+        EXPECT_EQ(merged[index].time.bits(), expected[index].first);
+        EXPECT_EQ(
+            std::holds_alternative<iv::TriggerEvent>(merged[index].value),
+            expected[index].second);
+    }
 }
 
 } // namespace

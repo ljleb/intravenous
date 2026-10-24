@@ -179,29 +179,19 @@ struct PrimitiveSampleInputBindingPlan {
     std::size_t contiguous_value_capacity = 0;
     std::size_t contiguous_storage_capacity = 0;
     bool has_contiguous_scratch = false;
-    // Background evaluation supplies this Sequential input through its
-    // TickSequentialBindingPlan slot on every invocation. It has no channels
-    // and no realtime storage; the generated root binds it from the
-    // TickInvocationCall, keeping only this plan's scratch.
+    // Background evaluation supplies this Sequential input's current block
+    // through its TickSequentialBindingPlan slot on every invocation. Without
+    // history it has no channels and the generated root binds the slot
+    // directly. With history, channels name the input's node-owned timeline:
+    // the root writes each delivered block into it before the callback, so
+    // its history is the input's own record of earlier deliveries.
     bool invocation_supplied = false;
-    // The ordinary binding contains the Tick contribution and the invocation
-    // slot contains the independently materialized background contribution.
-    // Generated lowering combines both into this input's scratch window.
+    // The slot holds the background contribution and realtime_operand_channels
+    // the Tick contribution. The root combines both, one current block at a
+    // time, into the timeline that channels name.
     bool combines_invocation_supplied = false;
-    // A transition root copies the invocation-supplied current block into its
-    // private retained ring before invoking the consumer. The ring preserves
-    // predecessor history until it expires; the steady root then resumes the
-    // ordinary invocation-supplied binding.
-    bool stages_invocation_supplied = false;
-    // For a transition of a mixed realtime/background input, channels remain
-    // the ordinary realtime operand used by the combination step. These
-    // channels name the private transition ring that receives the combined
-    // callback-visible current block and then backs the callback binding.
-    std::vector<PrimitiveSampleInputChannelBindingPlan> staging_channels{};
-    // Transition-only Sequential cursor owned by that private retained ring.
-    // It is distinct from the generation cursor for the same pace because the
-    // suffix begins at cutover-local ordinal zero.
-    std::optional<std::size_t> staging_cursor_storage_offset{};
+    std::vector<PrimitiveSampleInputChannelBindingPlan>
+        realtime_operand_channels{};
     // A Random Access input reads only its TickInvocationCall Random Access
     // view. Its declared entry in the reflected Sequential binding array has
     // no storage and is never read by node code.
@@ -305,32 +295,30 @@ struct EventTransientAllocationPlan {
 };
 
 struct PrimitiveEventInputBindingPlan {
+    // Callback-visible sequence.
     std::optional<std::size_t> storage{};
-    // Background evaluation supplies this Sequential input through its
-    // TickSequentialBindingPlan slot on every invocation; storage is empty.
+    // Background evaluation supplies this Sequential input's current window
+    // through its TickSequentialBindingPlan slot on every invocation. Without
+    // history storage is empty and the generated root binds the slot
+    // directly. With history, storage is the input's node-owned persistent
+    // timeline ring: the root inserts each delivered window into it before
+    // the callback, so its history is the input's own record of earlier
+    // deliveries.
     bool invocation_supplied = false;
-    // Capacity of the corresponding TickInvocationCall event sequence. It is
-    // retained in the lowering plan so transition specialization can allocate
-    // an equivalent private ring without rediscovering runtime storage.
-    std::size_t invocation_event_capacity = 0;
-    // Mixed delivery keeps the realtime contribution in storage and receives
-    // the background contribution through TickInvocationCall. Generated code
-    // merges both into combined_storage before constructing EventInputPort.
+    // Mixed delivery keeps the realtime contribution in
+    // realtime_operand_storage and receives the background contribution
+    // through TickInvocationCall. Generated code merges both into
+    // combined_storage, then inserts that merge's current window into the
+    // timeline that storage names.
     bool combines_invocation_supplied = false;
+    std::optional<std::size_t> realtime_operand_storage{};
     std::optional<std::size_t> combined_storage{};
     // A single realtime source needs no compiler sidecar. This retains its
     // EventConnectionPlan::sources position for the final ordered merge.
     std::optional<std::size_t> realtime_semantic_source_index{};
-    // See PrimitiveSampleInputBindingPlan::stages_invocation_supplied.
-    bool stages_invocation_supplied = false;
-    // Mixed-input counterpart of staging_channels above. The ordinary
-    // storage and combined_storage keep their steady meanings; this names the
-    // private transition ring which receives the completed merged stream.
-    std::optional<std::size_t> staging_storage{};
-    // History retained by the transition-only event ring. Generated staging
-    // uses its beginning as the ordering origin when it inserts the current
-    // invocation-supplied window.
-    std::size_t staging_history_samples = 0;
+    // History retained by the timeline ring. Window insertion orders events
+    // from the beginning of that history.
+    std::size_t timeline_history_samples = 0;
     // See PrimitiveSampleInputBindingPlan::random_access.
     bool random_access = false;
 };

@@ -1307,9 +1307,6 @@ public:
                     .host_initialize_sequential_input =
                         captured_node.compiler_record.operations
                             .initialize_sequential_input,
-                    .host_combine_sequential_input_values =
-                        captured_node.compiler_record.operations
-                            .combine_sequential_input_values,
                 });
             }
         } catch (GraphJitCompileError const& error) {

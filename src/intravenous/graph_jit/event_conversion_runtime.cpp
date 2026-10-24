@@ -75,7 +75,7 @@ extern "C" std::size_t iv_graph_jit_merge_mixed_event_sequences(
     std::size_t supplied_capacity,
     std::size_t supplied_read_index,
     std::size_t supplied_write_index,
-    GlobalIndex origin) noexcept
+    GlobalIndex position) noexcept
 {
     auto constexpr failure = std::numeric_limits<std::size_t>::max();
     if (target_events == nullptr
@@ -120,9 +120,9 @@ extern "C" std::size_t iv_graph_jit_merge_mixed_event_sequences(
         auto const supplied_index =
             (supplied_read_index + supplied_offset) & supplied_mask;
         auto const realtime_distance =
-            origin.forward_distance_to(realtime[realtime_index].time);
+            position.signed_distance_to(realtime[realtime_index].time);
         auto const supplied_distance =
-            origin.forward_distance_to(supplied[supplied_index].time);
+            position.signed_distance_to(supplied[supplied_index].time);
         auto const realtime_semantic_index = source_index(
             realtime_source_indices,
             realtime_fixed_source_index,

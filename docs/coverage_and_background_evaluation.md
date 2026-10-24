@@ -2435,14 +2435,17 @@ recording merely because that planning metadata exists.
       non-audio executor operation. Each snapshot records its compiled generation and
       exact persisted-data version, and an incoherent pair is rejected before mailbox
       publication rather than repaired inside a callback. Sequential sample slots own
-      preallocated power-of-two rings
-      sized from the specialization's maximum block size plus authored history. The
-      callback fills only the bounded requested window from coherent materialization
-      or direct persisted-region data and leaves absent frames at that logical input's neutral
-      value, without allocation. Sequential event slots likewise own preallocated
-      power-of-two sequences sized from the selected storage's aggregate event rate
-      and maximum block size. Callback binding resets the count and copies only events
-      in the requested absolute-time window; missing data is the empty sequence.
+      preallocated buffers sized from the specialization's maximum block size. The
+      callback fills only the root invocation's current window from coherent
+      materialization or direct persisted-region data, and leaves absent frames at
+      that logical input's neutral value, without allocation. Sequential event slots
+      likewise own preallocated sequences sized from the selected storage's aggregate
+      event rate and maximum block size. Callback binding resets the count and copies
+      only events in that window; missing data is the empty sequence. A consumer with
+      history keeps it in its own node-owned timeline, which the generated root
+      extends by one window per callback (status 2026-10-23; the superseded slot
+      sizing is retained in [Background-fed input playback
+      history](./historical/background_fed_input_playback_history_2026-10-23.md)).
       Generated lowering now overlays each node's compact
       Sequential slots onto a stack copy of its complete ordinary input-binding array,
       preserving unaffected and mixed live inputs. Sequential sample and event spans

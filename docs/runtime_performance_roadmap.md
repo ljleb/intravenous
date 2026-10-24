@@ -494,6 +494,13 @@ The governing performance invariant is:
    block-replay dependency. The separate Front 6 follow-up for graph revisions that
    migrate a mixed `combines_invocation_supplied` input remains open.
 
+   **Front 4 reopening (2026-10-23; not yet compiled or tested):** that follow-up was
+   caused by Front 4 playback rebuilding background-fed Sequential history from the
+   current snapshot. Slot-fed inputs with history now own a retained timeline that
+   receives one block per callback, and a slot holds only the current window. The
+   per-callback copy shrinks from `history + block` frames to `block` frames.
+   Background transactions also stop materializing history ahead of playback.
+
    **Sequential cursor scope:** GraphJit continuous Tick storage already uses the
    proposed seek-independent scheme: one monotonic `uint64_t` cursor per distinct
    absolute pace, shared by every graph-owned continuous port at that pace. The

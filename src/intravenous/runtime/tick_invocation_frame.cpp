@@ -591,9 +591,11 @@ public:
         std::optional<PersistedOutputHandle> output{};
         bool accepts_materialization = false;
         ChannelLayout layout{};
-        std::size_t history = 0;
         std::size_t capacity = 0;
         Sample neutral{};
+        // Frame f holds the current window's position sample_index + f. The
+        // consumer's history is node-owned realtime state, so the window never
+        // reaches behind the current block and its ordinal stays zero.
         std::vector<Sample> values{};
         ReflectedContinuousInputPortBinding binding{};
 
@@ -618,7 +620,7 @@ public:
                     .storage_latency = 0,
                     .channel_layout = layout,
                 },
-                .history = history,
+                .history = 0,
                 .read_latency = 0,
             };
             for (std::size_t channel = 0; channel < channels; ++channel) {
@@ -635,65 +637,46 @@ public:
             }
         }
 
-        void clear(GlobalIndexRange requested) noexcept
+        void clear(std::size_t frames) noexcept
         {
-            auto remaining = static_cast<std::size_t>(requested.extent);
-            auto destination = static_cast<std::size_t>(
-                requested.begin.bits() & (capacity - 1));
             auto const channels = channel_count(layout);
-            while (remaining != 0) {
-                auto const frames = std::min(remaining, capacity - destination);
-                if (layout.sample_layout == SampleStreamLayout::planar) {
-                    for (std::size_t channel = 0; channel < channels; ++channel) {
-                        std::fill_n(
-                            values.begin() + channel * capacity + destination,
-                            frames,
-                            neutral);
-                    }
-                } else {
+            if (layout.sample_layout == SampleStreamLayout::planar) {
+                for (std::size_t channel = 0; channel < channels; ++channel) {
                     std::fill_n(
-                        values.begin() + destination * channels,
-                        frames * channels,
-                        neutral);
+                        values.begin() + channel * capacity, frames, neutral);
                 }
-                remaining -= frames;
-                destination = 0;
+            } else {
+                std::fill_n(values.begin(), frames * channels, neutral);
             }
         }
 
         void copy(
             PersistedSampleRegion const& region,
+            GlobalIndex window_begin,
             GlobalIndexRange intersection) noexcept
         {
             if (region.layout != layout) return;
-            auto remaining = static_cast<std::size_t>(intersection.extent);
-            auto source = static_cast<std::size_t>(
+            auto const frames = static_cast<std::size_t>(intersection.extent);
+            auto const source = static_cast<std::size_t>(
                 region.range.begin.forward_distance_to(intersection.begin));
-            auto destination = static_cast<std::size_t>(
-                intersection.begin.bits() & (capacity - 1));
+            auto const destination = static_cast<std::size_t>(
+                window_begin.forward_distance_to(intersection.begin));
             auto const region_frames = static_cast<std::size_t>(
                 region.range.extent);
             auto const channels = channel_count(layout);
-            while (remaining != 0) {
-                auto const frames = std::min(remaining, capacity - destination);
-                if (layout.sample_layout == SampleStreamLayout::planar) {
-                    for (std::size_t channel = 0; channel < channels; ++channel) {
-                        std::copy_n(
-                            region.values.begin()
-                                + channel * region_frames + source,
-                            frames,
-                            values.begin()
-                                + channel * capacity + destination);
-                    }
-                } else {
+            if (layout.sample_layout == SampleStreamLayout::planar) {
+                for (std::size_t channel = 0; channel < channels; ++channel) {
                     std::copy_n(
-                        region.values.begin() + source * channels,
-                        frames * channels,
-                        values.begin() + destination * channels);
+                        region.values.begin()
+                            + channel * region_frames + source,
+                        frames,
+                        values.begin() + channel * capacity + destination);
                 }
-                remaining -= frames;
-                source += frames;
-                destination = 0;
+            } else {
+                std::copy_n(
+                    region.values.begin() + source * channels,
+                    frames * channels,
+                    values.begin() + destination * channels);
             }
         }
 
@@ -703,25 +686,18 @@ public:
             GlobalIndex sample_index,
             std::size_t block_size) noexcept
         {
-            // External persisted/materialized playback is rebuilt for this
-            // exact global window, so its private ring deliberately remains
-            // globally addressed. Generated execution leaves this overlaid
-            // binding's ordinal intact.
-            binding.sequential_begin_ordinal = sample_index.bits();
-            auto const begin = sample_index.retreated_by(history);
-            auto const count = history + block_size;
             auto const requested = GlobalIndexRange{
-                .begin = begin,
-                .extent = count,
+                .begin = sample_index,
+                .extent = block_size,
             };
-            clear(requested);
+            clear(block_size);
             if (output) {
                 published.for_each_sample_region(
                     *output,
                     requested,
                     [&](PersistedSampleRegion const& region,
                         GlobalIndexRange intersection) {
-                        copy(region, intersection);
+                        copy(region, sample_index, intersection);
                     });
             }
 
@@ -730,7 +706,7 @@ public:
                 requested,
                 [&](TickMaterializedSampleRegion const& region,
                     GlobalIndexRange intersection) {
-                    copy(*materialized, region, intersection);
+                    copy(*materialized, region, sample_index, intersection);
                 });
         }
 
@@ -739,34 +715,29 @@ public:
         void copy(
             TickMaterializedSampleInput const& materialized,
             TickMaterializedSampleRegion const& region,
+            GlobalIndex window_begin,
             GlobalIndexRange intersection) noexcept
         {
-            auto remaining = static_cast<std::size_t>(intersection.extent);
-            auto source = static_cast<std::size_t>(
+            auto const frames = static_cast<std::size_t>(intersection.extent);
+            auto const source = static_cast<std::size_t>(
                 region.range.begin.forward_distance_to(intersection.begin));
-            auto destination = static_cast<std::size_t>(
-                intersection.begin.bits() & (capacity - 1));
+            auto const destination = static_cast<std::size_t>(
+                window_begin.forward_distance_to(intersection.begin));
             auto const channels = channel_count(layout);
-            while (remaining != 0) {
-                auto const frames = std::min(remaining, capacity - destination);
-                for (std::size_t channel = 0; channel < channels; ++channel) {
-                    auto const* frames_begin = region.channel_frames(
-                        materialized.channel_slot(channel)) + source;
-                    if (layout.sample_layout == SampleStreamLayout::planar) {
-                        std::copy_n(
-                            frames_begin,
-                            frames,
-                            values.begin() + channel * capacity + destination);
-                    } else {
-                        for (std::size_t frame = 0; frame < frames; ++frame) {
-                            values[(destination + frame) * channels + channel] =
-                                frames_begin[frame];
-                        }
+            for (std::size_t channel = 0; channel < channels; ++channel) {
+                auto const* frames_begin = region.channel_frames(
+                    materialized.channel_slot(channel)) + source;
+                if (layout.sample_layout == SampleStreamLayout::planar) {
+                    std::copy_n(
+                        frames_begin,
+                        frames,
+                        values.begin() + channel * capacity + destination);
+                } else {
+                    for (std::size_t frame = 0; frame < frames; ++frame) {
+                        values[(destination + frame) * channels + channel] =
+                            frames_begin[frame];
                     }
                 }
-                remaining -= frames;
-                source += frames;
-                destination = 0;
             }
         }
     };
@@ -776,7 +747,6 @@ public:
         std::optional<PersistedOutputHandle> output{};
         bool accepts_materialization = false;
         EventTypeId type = EventTypeId::empty;
-        std::size_t history = 0;
         std::size_t events_offset = 0;
         std::size_t capacity = 0;
         std::vector<std::max_align_t> words{};
@@ -858,11 +828,10 @@ public:
             std::size_t block_size) noexcept
         {
             count() = 0;
-            if (history > std::numeric_limits<std::size_t>::max() - block_size)
-                return;
+            // Only the current window: the consumer owns its event history.
             auto const range = GlobalIndexRange{
-                .begin = sample_index.retreated_by(history),
-                .extent = history + block_size,
+                .begin = sample_index,
+                .extent = block_size,
             };
 
             if (materialized) {
@@ -977,7 +946,6 @@ public:
     std::vector<std::uint8_t> producer_bounds_compatible{};
     std::uint64_t generation = 0;
     std::size_t maximum_block_size = 0;
-    std::optional<GlobalIndex> playback_end{};
 
     Impl(
         graph_jit::BackgroundEvaluationPlan const& plan,
@@ -1031,16 +999,9 @@ public:
                     "Tick Sequential sample binding references a non-sample "
                     "input port");
             }
-            if (port.sequential_history
-                > std::numeric_limits<std::size_t>::max()
-                    - maximum_block_size) {
-                throw std::length_error(
-                    "Tick Sequential sample playback window is too large");
-            }
-            auto const required = port.sequential_history + maximum_block_size;
             auto const largest_power_of_two = std::size_t{1}
                 << (std::numeric_limits<std::size_t>::digits - 1);
-            if (required > largest_power_of_two) {
+            if (maximum_block_size > largest_power_of_two) {
                 throw std::length_error(
                     "Tick Sequential sample playback capacity is too large");
             }
@@ -1048,8 +1009,7 @@ public:
             auto& selected = sequential_sample_slots[slot];
             selected.port = planned.port;
             selected.layout = port.sample_layout;
-            selected.history = port.sequential_history;
-            selected.capacity = std::bit_ceil(required);
+            selected.capacity = std::bit_ceil(maximum_block_size);
             selected.neutral = port.sample_neutral_value;
             selected.accepts_materialization = std::ranges::any_of(
                 planned.storage, [&](auto const storage) {
@@ -1096,16 +1056,9 @@ public:
                 maximum_rate = std::max(
                     maximum_rate, candidate.max_events_per_index);
             }
-            if (port.sequential_history
-                > std::numeric_limits<std::size_t>::max()
-                    - maximum_block_size) {
-                throw std::length_error(
-                    "Tick Sequential event playback window is too large");
-            }
             auto const selected_capacity =
                 event_sequence_capacity_for_sample_span(
-                    maximum_rate,
-                    maximum_block_size + port.sequential_history);
+                    maximum_rate, maximum_block_size);
             if (!selected_capacity) {
                 throw std::length_error(
                     "Tick Sequential event playback capacity is too large");
@@ -1114,7 +1067,6 @@ public:
             auto& selected = sequential_event_slots[slot];
             selected.port = planned.port;
             selected.type = port.event_type;
-            selected.history = port.sequential_history;
             selected.capacity = std::max<std::size_t>(*selected_capacity, 1);
             selected.accepts_materialization = std::ranges::any_of(
                 planned.storage, [&](auto const storage) {
@@ -1376,7 +1328,6 @@ public:
         auto const materialization_matches = materialized.generation() == generation
             && materialized.data_version() == published.version();
         auto const selected_block_size = std::min(block_size, maximum_block_size);
-        playback_end = sample_index.advanced_by(selected_block_size);
         for (auto& selected : sequential_sample_slots) {
             auto const* materialized_sample = materialization_matches
                     && selected.accepts_materialization
@@ -1528,20 +1479,6 @@ std::span<RealtimeProducerRequirement const>
 TickInvocationWorkspace::producer_requirements() const noexcept
 {
     return impl_->producer_requirements;
-}
-
-graph_jit::RealtimePortStatePlaybackSlots
-TickInvocationWorkspace::playback_slots() const noexcept
-{
-    return {
-        .sequential_samples = impl_->sequential_sample_views,
-        .sequential_events = impl_->sequential_event_views,
-    };
-}
-
-std::optional<GlobalIndex> TickInvocationWorkspace::playback_end() const noexcept
-{
-    return impl_->playback_end;
 }
 
 void TickInvocationWorkspace::bind_producer_endpoint(

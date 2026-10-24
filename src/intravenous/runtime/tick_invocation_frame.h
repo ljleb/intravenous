@@ -1,6 +1,5 @@
 #pragma once
 
-#include <intravenous/graph_jit/realtime_port_state_transition.h>
 #include <intravenous/graph_jit/tick_invocation_call.h>
 #include <intravenous/runtime/async_capacity_manager.h>
 #include <intravenous/runtime/persisted_data_store.h>
@@ -11,7 +10,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
-#include <optional>
 #include <span>
 
 namespace iv {
@@ -25,8 +23,9 @@ struct RealtimeProducerRequirement {
 
 // Control-path allocation and identity resolution for the fixed Tick binding
 // slots retained by one CompiledGraph generation. Its arrays and bounded
-// Sequential playback rings remain address-stable for the realization's
-// lifetime.
+// Sequential playback windows remain address-stable for the realization's
+// lifetime. A window holds only the current block; a consumer's Sequential
+// history is node-owned realtime state.
 class TickInvocationWorkspace {
     class Impl;
     class CaptureScope {
@@ -78,14 +77,6 @@ public:
     // bytes plus every planned SCC-slice invocation.
     [[nodiscard]] std::span<RealtimeProducerRequirement const>
     producer_requirements() const noexcept;
-
-    // Sequential playback bindings, fixed at construction. A successor
-    // generation reads them as its predecessor's invocation_playback state.
-    [[nodiscard]] graph_jit::RealtimePortStatePlaybackSlots
-    playback_slots() const noexcept;
-    // Exclusive end of the window filled by the most recent invocation, or
-    // empty before the first one. Only the thread that invokes may read it.
-    [[nodiscard]] std::optional<GlobalIndex> playback_end() const noexcept;
 
     // Control-path endpoint binding performed while constructing a complete
     // execution generation. No generated capture operation becomes callable

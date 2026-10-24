@@ -406,25 +406,10 @@ of future Tick positions; its caller chooses the extent.
   `TickMaterializationSnapshot::carry_forward()` then shares those retained records
   in the new snapshot. A transaction triggered by recorded data therefore
   recomputes only invalidated playback coverage.
-- *Done in source:* Front 4 now exposes the predecessor playback window needed by
-  Front 6. `TickInvocationWorkspace::playback_slots()` exposes its fixed Sequential
-  sample/event bindings, and `TickInvocationWorkspace::playback_end()` identifies the
-  exclusive end of the last populated window. For a pure `invocation_supplied` input,
-  background-to-realtime transition transfer reads the final predecessor playback
-  binding. Realtime-to-background transition specialization appends a private sample
-  or event ring, binds the transition root to it, copies inherited realtime history at
-  cutover, stages each current `TickInvocationCall` window into it, and returns to the
-  ordinary invocation-supplied binding after expiry. Background delivery on both sides
-  needs no realtime transfer. Focused transition tests cover sample binding latency and
-  channel delay, event-window selection, both direction choices, and suffix storage
-  realization.
-- *Cross-front limitation found:* a mixed input marked
-  `combines_invocation_supplied` has only its background contribution in the
-  `TickInvocationWorkspace` slot. Its combined callback-facing sample scratch or event
-  sequence is classified as `callback_only`, so a graph revision that must migrate
-  that input's history fails explicitly. Front 4's mixed callback execution is
-  implemented; resolving this case requires Front 6 to retain or reconstruct the exact
-  combined input state rather than treating the background slot as that state.
+- *Superseded:* the playback-slot cross-kind transition source and the mixed-input
+  limitation recorded at closure are retained in [Background-fed input playback
+  history](./historical/background_fed_input_playback_history_2026-10-23.md). The
+  reopened item below replaces them.
 - *Verification result:* the collaborator's complete 592-test suite passed. The two
   final failures were stale fixtures: the mixed Tick/Tock event-fan-in test still
   expected both sources to be materialized, and a manually constructed
@@ -434,6 +419,72 @@ of future Tick positions; its caller chooses the extent.
 
 **Status:** complete and verified. The separate mixed-input transition follow-up is
 owned by Front 6, not by this delivery front.
+
+**Post-closure review (2026-10-23; correction compiled, full suite passing):**
+- *Defect found and corrected in source:* the steady mixed event merge passed the
+  callback `sample_index` as the ordering origin to
+  `iv_graph_jit_merge_mixed_event_sequences`, which compared
+  `origin.forward_distance_to(time)`. Every history event of either source therefore
+  sorted after every current-block event of the other, so a mixed input with
+  history saw an out-of-order `EventInputPort` sequence. The realtime operand
+  (a producer-group canonical sequence or a derived materialization) and the
+  `TickInvocationCall` slot retain different horizons, and the derived
+  materialization's horizon can still grow after `configure_mixed_input` runs. The
+  helper now orders by `GlobalIndex::signed_distance_to` from the callback position,
+  which is exact for bounded Sequential horizons and needs no planned origin.
+- *Verification gap:* the 592-test run did not exercise generated execution of a
+  Tick primitive whose Sequential input is supplied through `TickInvocationCall`
+  slots. "Verified" above covers the planned shapes and runtime helpers only. The
+  original wording is retained in [Background-fed input playback
+  history](./historical/background_fed_input_playback_history_2026-10-23.md).
+- *Documentation retention:* the status text replaced at closure is retained in
+  [Front 4 status before closure](./historical/front_4_status_before_closure_2026-10-23.md).
+
+**Reopened and implemented in source: node-owned history for background-fed inputs
+(2026-10-23; not yet compiled or tested).** A Tick primitive's Sequential input fed
+through a `TickInvocationCall` slot now keeps the history it consumed, in Tick
+invocation order, with neutral history before its first invocation, as [GraphJit
+direction](./graph_jit_direction.md) requires for every Sequential input. The
+superseded representation and why it was wrong are retained in [Background-fed input
+playback history](./historical/background_fed_input_playback_history_2026-10-23.md).
+
+- *Timeline:* a slot-fed input with nonzero history, and every mixed input, binds
+  `PrimitiveSampleInputBindingPlan::channels` or `PrimitiveEventInputBindingPlan::storage`
+  to its own retained timeline in `NodeStorage`. The callback reads that timeline
+  like any other retained input.
+  - *Samples:* `SampleInputTimelineRequest` is planned by the same retained-window
+    path as a disconnected Tick output, as a ring or compact carry chosen by the cost
+    model. Its persistent frames are initialized to the input's neutral value, and it
+    is addressed by the generation pace cursor.
+  - *Events:* a persistent ring with the ordinary seek rebase and history pruning. A
+    primitive sliced in a cyclic region prunes once before the region.
+- *Per-callback write:* before the callback, the root writes only the current block
+  into the timeline (`stage_tick_sequential_sample_timelines`,
+  `stage_tick_sequential_event_timelines`).
+  - *Pure input:* the slot window.
+  - *Mixed sample input:* the node's `combine_sequential_input_values` applied to
+    the realtime operand (`realtime_operand_channels`) and the slot window, one
+    block at a time.
+  - *Mixed event input:* the current window of the existing deterministic merge of
+    `realtime_operand_storage` with the slot window. The merge orders by signed
+    displacement from the callback position, as recorded above.
+- *Zero history:* a slot-fed input without history still binds its slot directly.
+  The generated root stores the slice offset as its ordinal, so an SCC slice reads
+  its own part of the window.
+- *Workspace:* `TickInvocationWorkspace` slots hold only the root window
+  `[P, P + block)` at frames `[0, block)`, with ordinal zero. Tick materialization
+  demand (`set_tick_materialization_demand`) now covers playback positions only.
+- *Consequence for Front 6:* these inputs are ordinary `direct` retained state, so
+  graph revisions in both delivery directions use the existing ring/compact-carry
+  transfers and transition suffixes. The playback-slot transfer source and the
+  Tick-to-Tock staging transition root were removed with the superseded
+  representation.
+- *Remaining:*
+  - compilation and the collaborator's suite run;
+  - a compiled GraphJit fixture that drives real `TickInvocationCall` slots through
+    pure and mixed sample and event inputs with history, and through graph
+    revisions in both delivery directions. No existing test executes this
+    generated path.
 
 Detailed direction:
 [Coverage And Background Evaluation](./coverage_and_background_evaluation.md).
@@ -938,17 +989,17 @@ remains. Front 6 is closed and active implementation moves to Front 7. The possi
 per-node/per-pace grouping of callback ordinal stores remains measurement-driven
 cleanup, not transition correctness work and not a Front 6 completion condition.
 
-**Front 6 follow-up exposed by Front 4 (2026-10-23):** the completed Front 6 cases did
-not include a Sequential input whose `PrimitiveSampleInputBindingPlan` or
-`PrimitiveEventInputBindingPlan` has `combines_invocation_supplied`. The
-`TickInvocationWorkspace` slot retains only that input's background contribution; the
-generated sample scratch or merged event sequence that the callback observes is
-`callback_only` after the root returns. Pure `invocation_supplied` delivery-kind
-changes now have a complete transition path, but migration involving the mixed form
-still fails explicitly. Front 4 is now verified, so Front 6 is reopened for this
-bounded case: either retain the exact combined input state or preserve enough source
-and combination metadata to reconstruct it. The background contribution alone is not
-the node-owned input history and must not be substituted for it.
+**Front 6 follow-up exposed by Front 4 (2026-10-23; resolved by representation,
+not yet compiled or tested):** a Sequential input supplied through
+`TickInvocationCall`, alone or mixed with a realtime contribution, had no
+recoverable node-owned history, so a graph revision that changed its delivery kind
+could not preserve it. The reopened Front 4 item gives every such input with history
+a node-owned retained timeline. Its realization is ordinary `direct` retained state,
+so the completed Front 6 transfer and transition-suffix paths apply unchanged and
+this front needs no delivery-kind special case. The superseded cross-kind machinery
+and its friction record are retained in [Background-fed input playback
+history](./historical/background_fed_input_playback_history_2026-10-23.md). Front 6
+closes again once the end-to-end fixture recorded under Front 4 passes.
 
 ## Front 7: remaining GraphJit and node execution semantics
 
@@ -1530,6 +1581,12 @@ block-replay dependency is satisfied. Eleven numbered fronts remain outside thos
 closed fronts, plus the bounded reopened Front 6 mixed-input transition case described
 above. Complete that transition case before starting an unrelated front. Front 3 is
 then the next dependency-ready correctness front in the execution-path order.
+
+**Reopening update (2026-10-23):** the Front 6 case was traced to Front 4's playback
+representation, which rebuilt background-fed history from the snapshot instead of
+keeping the node-owned history. Front 4 is reopened for node-owned input timelines,
+implemented in source but not yet compiled or tested. Its end-to-end fixture closes
+both Front 4 and the Front 6 case. Front 3 remains the next front after that.
 
 The control-plane order remains Front 9 before complete Front 10 and Front 13, then
 Front 14 and Front 15 after their stated inputs exist. Front 10 may continue to use

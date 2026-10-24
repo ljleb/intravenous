@@ -162,9 +162,10 @@ class GraphExecutor {
         // unchanged until the one required successor reconciliation commits.
         CoveragePropagationRequest reconciliation_roots{};
         // Exact future Tick positions currently requested by the control path.
-        // Each transaction expands this common playback demand by the authored
-        // history of every BackgroundEvaluationPlan::tick_sequential_inputs
-        // port before reverse coverage propagation.
+        // Each transaction demands exactly these positions from every
+        // BackgroundEvaluationPlan::tick_sequential_inputs port: a consumer's
+        // Sequential history is the node-owned record of earlier deliveries,
+        // not a re-read of published data.
         IndexCoverage tick_materialization_demand{};
         // Playback positions represented by the currently published
         // generation-compatible materialization snapshot. This can remain a
@@ -240,9 +241,7 @@ class GraphExecutor {
         void prepare_background_migration_from(
             ExecutionGeneration& previous,
             PersistedDataStore& data);
-        void commit_realtime_migration(
-            GlobalIndex sample_index,
-            TickInvocationWorkspace const& previous_tick_invocation) noexcept;
+        void commit_realtime_migration(GlobalIndex sample_index) noexcept;
         void commit_background_migration();
         void update_realtime_phase(
             std::size_t event_samples_advanced = 0) noexcept;

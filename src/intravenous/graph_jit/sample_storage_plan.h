@@ -62,6 +62,22 @@ struct SampleSinkStorageRequest {
     std::string migration_identity{};
 };
 
+// The node-owned Sequential timeline of a realtime input whose current block is
+// supplied through a TickInvocationCall slot, alone or combined with a realtime
+// contribution. The generated root writes each current block into it before
+// the consumer executes, so its retained history is the input's own record of
+// earlier deliveries in Tick invocation order. Retained frames start at
+// neutral_value, the input's pre-start history.
+struct SampleInputTimelineRequest {
+    ChannelLayout channel_layout{};
+    ContinuousValueStorageGeometry geometry{};
+    std::int32_t absolute_pace_exponent = 0;
+    std::size_t history = 0;
+    std::vector<std::byte> neutral_value{};
+    std::size_t execution_position = 0;
+    std::string migration_identity{};
+};
+
 // A disconnected realtime input reads its declared default value at every
 // sample index. The generated module can therefore bind it to immutable data
 // instead of reserving stack or NodeStorage bytes.
@@ -315,6 +331,9 @@ struct SampleStoragePlan {
     // One entry per SampleConstantInputRequest supplied to
     // build_sample_storage_plan().
     std::vector<std::size_t> constant_input_representations{};
+    // One entry per SampleInputTimelineRequest supplied to
+    // build_sample_storage_plan().
+    std::vector<std::size_t> input_timeline_representations{};
 
     // Explicit conversion/materialization operations. These are scheduled after
     // the source producer and before every consumer bound to the target
@@ -362,7 +381,8 @@ std::expected<SampleStoragePlan, std::string> build_sample_storage_plan(
     std::size_t kernel_block_size,
     std::span<SampleSinkStorageRequest const> sinks = {},
     std::span<SampleConstantInputRequest const> constant_inputs = {},
-    RealtimeStorageCostModel const& cost_model = {});
+    RealtimeStorageCostModel const& cost_model = {},
+    std::span<SampleInputTimelineRequest const> input_timelines = {});
 
 // Reserve canonical NodeStorage for persistent connection state. Transient
 // backing belongs to the generated root stack. Retained feedback state with

@@ -92,26 +92,6 @@ std::vector<PersistedOutputHandle> retired_persisted_outputs(
     return result;
 }
 
-[[nodiscard]] IndexCoverage include_sequential_history(
-    IndexCoverage const& playback, std::size_t history)
-{
-    if (history == 0) return playback;
-    IndexCoverage result;
-    for (auto const range : playback) {
-        if (history
-            > std::numeric_limits<GlobalIndex::extent_type>::max()
-                - range.extent) {
-            throw std::length_error(
-                "Tick materialization playback history is too large");
-        }
-        result.include({
-            .begin = range.begin.retreated_by(history),
-            .extent = range.extent + history,
-        });
-    }
-    return result;
-}
-
 void append_tick_materialization_demands(
     graph_jit::BackgroundEvaluationPlan const& plan,
     IndexCoverage const& playback,
@@ -123,9 +103,9 @@ void append_tick_materialization_demands(
             throw std::invalid_argument(
                 "Tick materialization demand references a missing input port");
         }
-        auto const& port = plan.ports[port_index];
-        auto required = include_sequential_history(
-            playback, port.sequential_history);
+        // Playback delivers only each callback's current block. Earlier
+        // positions are the consumer's node-owned Sequential history.
+        auto required = playback;
         auto existing = std::ranges::find(
             roots.input_demands, port_index, &InputCoverageRequest::port);
         if (existing == roots.input_demands.end()) {
@@ -343,8 +323,7 @@ void GraphExecutor::ExecutionGeneration::prepare_realtime_migration_from(
         graph_jit::prepare_realtime_port_state_transfers(
             std::move(*transition),
             previous.realtime.storage.buffer(),
-            realtime.storage.buffer(),
-            previous.realtime.tick_invocation.playback_slots());
+            realtime.storage.buffer());
     if (!prepared_transition) {
         throw std::runtime_error(
             "GraphExecutor could not prepare realtime port-state cutover: "
@@ -376,8 +355,7 @@ void GraphExecutor::ExecutionGeneration::prepare_background_migration_from(
 }
 
 void GraphExecutor::ExecutionGeneration::commit_realtime_migration(
-    GlobalIndex sample_index,
-    TickInvocationWorkspace const& previous_tick_invocation) noexcept
+    GlobalIndex sample_index) noexcept
 {
     IV_ASSERT(
         !realtime_initialized && realtime_migration
@@ -388,9 +366,7 @@ void GraphExecutor::ExecutionGeneration::commit_realtime_migration(
         *realtime_port_state_transition,
         realtime_migration->previous->buffer(),
         realtime.storage.buffer(),
-        sample_index,
-        previous_tick_invocation.playback_slots(),
-        previous_tick_invocation.playback_end());
+        sample_index);
     realtime_migration.reset();
     if (!transition_cursor_progress.empty()
         || (graph->cutover
@@ -952,8 +928,7 @@ bool GraphExecutor::activate_pending(GlobalIndex sample_index)
         throw std::logic_error(
             "GraphExecutor initial persisted state was not prepared");
     }
-    pending_generation_->commit_realtime_migration(
-        sample_index, previous.realtime.tick_invocation);
+    pending_generation_->commit_realtime_migration(sample_index);
     previous.background.close_inputs();
     auto* next = pending_generation_.get();
     realtime_persisted_state_.activate_generation(

@@ -660,16 +660,19 @@ std::expected<DeclarationPlan, std::string> plan_declarations(
 
     for (auto const& primitive : sample_ports.primitives) {
         for (auto const& binding : primitive.inputs) {
+            // A slot-fed input without history binds only its slot.
             auto const valid_invocation_binding = binding.invocation_supplied
                 && !binding.combines_invocation_supplied
-                && (binding.stages_invocation_supplied
-                    ? binding.channels.size()
-                        == channel_count(binding.channel_layout)
-                    : binding.channels.empty())
+                && binding.history == 0
+                && binding.channels.empty()
                 && channel_count(binding.channel_layout) != 0;
             auto const valid_storage_binding = !binding.channels.empty()
                 && binding.channels.size()
-                    == channel_count(binding.channel_layout);
+                    == channel_count(binding.channel_layout)
+                && (!binding.combines_invocation_supplied
+                    || (binding.invocation_supplied
+                        && binding.realtime_operand_channels.size()
+                            == binding.channels.size()));
             auto const valid_random_access_binding = binding.random_access
                 && !binding.invocation_supplied
                 && binding.channels.empty();
@@ -691,13 +694,13 @@ std::expected<DeclarationPlan, std::string> plan_declarations(
         for (auto const& binding : primitive.inputs) {
             auto const valid_invocation_binding = binding.invocation_supplied
                 && !binding.combines_invocation_supplied
-                && (binding.stages_invocation_supplied
-                    ? binding.storage.has_value()
-                    : !binding.storage)
+                && !binding.storage
+                && !binding.realtime_operand_storage
                 && !binding.combined_storage;
             auto const valid_storage_binding = binding.storage
                 && (!binding.combines_invocation_supplied
                     || (binding.invocation_supplied
+                        && binding.realtime_operand_storage
                         && binding.combined_storage));
             auto const valid_random_access_binding = binding.random_access
                 && !binding.invocation_supplied
@@ -1478,10 +1481,6 @@ plan_sample_realtime_port_state_realizations(
         std::size_t representation_index = no_sample_representation;
         std::size_t representation_channel = 0;
         std::int64_t timeline_offset = 0;
-        std::optional<SampleRealtimePortStateStorageView>
-            combined_authored_storage;
-        std::optional<SampleRealtimePortStateInvocationCombination>
-            invocation_combination;
         auto const port = requirement.configured_port.port_index;
         auto const& primitive_ports = sample_ports.primitives[*primitive];
         if (requirement.direction == PortDirection::input) {
@@ -1491,84 +1490,9 @@ plan_sample_realtime_port_state_realizations(
                 return std::unexpected(
                     "GraphJit sample input state disagrees with its port binding");
             }
+            // A slot-fed or mixed input with history binds its node-owned
+            // timeline like any other retained input storage.
             auto const& binding = primitive_ports.inputs[port];
-            if (binding.invocation_supplied) {
-                if (*requirement.channel
-                        >= channel_count(binding.channel_layout)
-                    || binding.history != requirement.extent_samples) {
-                    return std::unexpected(
-                        "GraphJit invocation-supplied sample input state disagrees with its semantic extent");
-                }
-                if (binding.contiguous_value_capacity
-                    > std::bit_floor(
-                        std::numeric_limits<std::size_t>::max())) {
-                    return std::unexpected(
-                        "GraphJit invocation-supplied sample input capacity overflows size_t");
-                }
-                auto const playback_capacity = std::bit_ceil(std::max(
-                    std::size_t{1}, binding.contiguous_value_capacity));
-                auto const channels = channel_count(binding.channel_layout);
-                if (channels == 0
-                    || binding.geometry.value_size_bytes == 0
-                    || playback_capacity
-                        > std::numeric_limits<std::size_t>::max() / channels
-                    || playback_capacity * channels
-                        > std::numeric_limits<std::size_t>::max()
-                            / binding.geometry.value_size_bytes) {
-                    return std::unexpected(
-                        "GraphJit invocation-supplied sample input storage size overflows size_t");
-                }
-                SampleRealtimePortStateRealization realization{
-                    .requirement_index = requirement_index,
-                    .authored_storage = SampleRealtimePortStateStorageView{
-                        .channel_layout = binding.channel_layout,
-                        .geometry = binding.geometry,
-                        .absolute_pace_exponent =
-                            binding.absolute_pace_exponent,
-                        .representation_channel = *requirement.channel,
-                        .working_frame_capacity = playback_capacity,
-                        .storage_frame_count = playback_capacity,
-                        .storage_size_bytes = playback_capacity * channels
-                            * binding.geometry.value_size_bytes,
-                    },
-                    .retained_access =
-                        SampleRealtimePortStateAccess::invocation_supplied,
-                };
-                auto slot = external_tick_sequential_slot(
-                    connections,
-                    requirement.configured_port.node_bundle_handle,
-                    PortKind::sample,
-                    port);
-                if (!slot) return std::unexpected(std::move(slot.error()));
-                if (!*slot) {
-                    return std::unexpected(
-                        "GraphJit invocation-supplied sample input state has no playback slot");
-                }
-                auto playback = realization.authored_storage;
-                playback.storage =
-                    SampleRealtimePortStateStorage::invocation_playback;
-                playback.invocation_slot = **slot;
-                if (!binding.combines_invocation_supplied) {
-                    realization.retained_sources.push_back(std::move(playback));
-                    result.sample_states.push_back(std::move(realization));
-                    continue;
-                }
-                auto const* implementation =
-                    analysis.primitives[*primitive].implementation;
-                if (!implementation
-                    || !implementation->host_combine_sequential_input_values) {
-                    return std::unexpected(
-                        "GraphJit mixed sample input has no host combination operation");
-                }
-                combined_authored_storage = realization.authored_storage;
-                invocation_combination =
-                    SampleRealtimePortStateInvocationCombination{
-                        .invocation_storage = std::move(playback),
-                        .continuous_input = port,
-                        .combine = implementation
-                            ->host_combine_sequential_input_values,
-                    };
-            }
             if (*requirement.channel >= binding.channels.size()
                 || binding.history != requirement.extent_samples) {
                 return std::unexpected(
@@ -1641,43 +1565,10 @@ plan_sample_realtime_port_state_realizations(
             .authored_storage = std::move(**authored),
         };
 
-        auto finalize_invocation_combination = [&]()
-            -> std::expected<void, std::string> {
-            if (!invocation_combination) return {};
-            auto const realtime_access = realization.retained_access;
-            if (realtime_access
-                    != SampleRealtimePortStateAccess::immutable_constant
-                && realtime_access != SampleRealtimePortStateAccess::direct
-                && realtime_access
-                    != SampleRealtimePortStateAccess::materialized
-                && realtime_access
-                    != SampleRealtimePortStateAccess::composed) {
-                return std::unexpected(
-                    "GraphJit mixed sample input has no recoverable realtime contribution");
-            }
-            if (realtime_access
-                    == SampleRealtimePortStateAccess::immutable_constant
-                && realization.retained_sources.empty()) {
-                realization.retained_sources.push_back(
-                    realization.authored_storage);
-            }
-            invocation_combination->realtime_access = realtime_access;
-            realization.authored_storage = *combined_authored_storage;
-            realization.retained_access =
-                SampleRealtimePortStateAccess::combined_invocation_supplied;
-            realization.invocation_combination =
-                std::move(invocation_combination);
-            return {};
-        };
-
         if (realization.authored_storage.storage
             == SampleRealtimePortStateStorage::immutable_constant) {
             realization.retained_access =
                 SampleRealtimePortStateAccess::immutable_constant;
-            auto finalized = finalize_invocation_combination();
-            if (!finalized) {
-                return std::unexpected(std::move(finalized.error()));
-            }
             result.sample_states.push_back(std::move(realization));
             continue;
         }
@@ -1700,10 +1591,6 @@ plan_sample_realtime_port_state_realizations(
             realization.retained_access =
                 SampleRealtimePortStateAccess::direct;
             realization.retained_sources.push_back(std::move(**retained));
-            auto finalized = finalize_invocation_combination();
-            if (!finalized) {
-                return std::unexpected(std::move(finalized.error()));
-            }
             result.sample_states.push_back(std::move(realization));
             continue;
         }
@@ -1833,10 +1720,6 @@ plan_sample_realtime_port_state_realizations(
                     }
                 }
             }
-        }
-        auto finalized = finalize_invocation_combination();
-        if (!finalized) {
-            return std::unexpected(std::move(finalized.error()));
         }
         result.sample_states.push_back(std::move(realization));
     }
@@ -2003,10 +1886,6 @@ plan_event_realtime_port_state_realizations(
         auto const port = requirement.configured_port.port_index;
 
         std::size_t authored_representation = 0;
-        std::optional<EventRealtimePortStateStorageView>
-            combined_authored_storage;
-        std::optional<EventRealtimePortStateInvocationCombination>
-            invocation_combination;
         if (requirement.direction == PortDirection::input) {
             if (requirement.role
                     != RealtimePortStateRole::sequential_input_history
@@ -2014,71 +1893,13 @@ plan_event_realtime_port_state_realizations(
                 return std::unexpected(
                     "GraphJit event input state disagrees with its port binding");
             }
-            if (primitive_ports.inputs[port].invocation_supplied) {
-                auto slot = external_tick_sequential_slot(
-                    connections,
-                    requirement.configured_port.node_bundle_handle,
-                    PortKind::event,
-                    port);
-                if (!slot) return std::unexpected(std::move(slot.error()));
-                if (!*slot) {
-                    return std::unexpected(
-                        "GraphJit invocation-supplied event input state has no playback slot");
-                }
-                auto const& background = connections.background;
-                auto const& slot_binding =
-                    background.tick_runtime.sequential_event_inputs[**slot];
-                if (slot_binding.port >= background.ports.size()) {
-                    return std::unexpected(
-                        "GraphJit invocation-supplied event input state lost its playback port");
-                }
-                auto playback = EventRealtimePortStateStorageView{
-                    .storage =
-                        EventRealtimePortStateStorage::invocation_playback,
-                    .type = background.ports[slot_binding.port].event_type,
-                    .event_capacity = primitive_ports.inputs[port]
-                        .invocation_event_capacity,
-                    .invocation_slot = **slot,
-                };
-                EventRealtimePortStateRealization realization{
-                    .requirement_index = requirement_index,
-                    .authored_storage = EventRealtimePortStateStorageView{
-                        .type = playback.type,
-                        .event_capacity = primitive_ports.inputs[port]
-                            .invocation_event_capacity,
-                    },
-                    .retained_access =
-                        EventRealtimePortStateAccess::invocation_supplied,
-                };
-                if (!primitive_ports.inputs[port].combines_invocation_supplied) {
-                    realization.retained_storage = std::move(playback);
-                    result.push_back(std::move(realization));
-                    continue;
-                }
-                auto const& input = primitive_ports.inputs[port];
-                if (!input.storage || !input.combined_storage) {
-                    return std::unexpected(
-                        "GraphJit mixed event input lost its realtime or combined representation");
-                }
-                auto combined = storage_view(*input.combined_storage);
-                if (!combined) {
-                    return std::unexpected(std::move(combined.error()));
-                }
-                combined_authored_storage = std::move(*combined);
-                invocation_combination =
-                    EventRealtimePortStateInvocationCombination{
-                        .invocation_storage = std::move(playback),
-                        .realtime_fixed_source_index =
-                            input.realtime_semantic_source_index,
-                    };
-                authored_representation = *input.storage;
-            } else {
-                if (!primitive_ports.inputs[port].storage) {
-                    return std::unexpected(
-                        "GraphJit event input state disagrees with its port binding");
-                }
-                authored_representation = *primitive_ports.inputs[port].storage;
+            // A slot-fed or mixed input with history binds its node-owned
+            // timeline ring like any other retained input sequence.
+            if (!primitive_ports.inputs[port].storage) {
+                return std::unexpected(
+                    "GraphJit event input state disagrees with its port binding");
             }
+            authored_representation = *primitive_ports.inputs[port].storage;
         } else {
             if (port >= primitive_ports.outputs.size()) {
                 return std::unexpected(
@@ -2111,16 +1932,6 @@ plan_event_realtime_port_state_realizations(
         EventRealtimePortStateRealization realization{
             .requirement_index = requirement_index,
             .authored_storage = std::move(*authored),
-        };
-        auto finalize_invocation_combination = [&]() {
-            if (!invocation_combination) return;
-            invocation_combination->realtime_access =
-                realization.retained_access;
-            realization.authored_storage = *combined_authored_storage;
-            realization.retained_access =
-                EventRealtimePortStateAccess::combined_invocation_supplied;
-            realization.invocation_combination =
-                std::move(invocation_combination);
         };
 
         if (requirement.direction == PortDirection::input) {
@@ -2209,7 +2020,6 @@ plan_event_realtime_port_state_realizations(
                 realization.retained_access =
                     EventRealtimePortStateAccess::immutable_empty;
             }
-            finalize_invocation_combination();
             result.push_back(std::move(realization));
             continue;
         }
@@ -3034,10 +2844,82 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
         std::size_t port = 0;
         ContinuousOutputConfig config{};
     };
+    // A slot-fed input with history, or any mixed input, owns a retained
+    // timeline into which the root writes each delivered block.
+    struct TimelineSampleInput {
+        std::size_t primitive = 0;
+        std::size_t port = 0;
+    };
     std::vector<DisconnectedSampleInput> disconnected_inputs;
     std::vector<DisconnectedSampleOutput> disconnected_outputs;
     std::vector<SampleConstantInputRequest> constant_input_requests;
     std::vector<SampleSinkStorageRequest> sink_requests;
+    std::vector<TimelineSampleInput> timeline_inputs;
+    std::vector<SampleInputTimelineRequest> timeline_requests;
+
+    auto initialized_input_value = [&](
+        std::size_t primitive_index,
+        std::size_t port,
+        iv::details::SequentialInputInitialization initialization)
+        -> std::expected<std::vector<std::byte>, std::string> {
+        auto const& geometry =
+            plan.primitives[primitive_index].inputs[port].geometry;
+        auto const* implementation =
+            analysis.primitives[primitive_index].implementation;
+        if (!implementation
+            || !implementation->host_initialize_sequential_input) {
+            return std::unexpected(
+                "GraphJit continuous input has no type-owned initializer");
+        }
+        std::vector<std::byte> unaligned(
+            geometry.value_size_bytes + geometry.element_alignment - 1);
+        void* aligned = unaligned.data();
+        auto space = unaligned.size();
+        if (!std::align(
+                geometry.element_alignment,
+                geometry.value_size_bytes,
+                aligned,
+                space)
+            || !implementation->host_initialize_sequential_input(
+                port,
+                geometry.value_type,
+                initialization,
+                static_cast<std::byte*>(aligned),
+                geometry.value_size_bytes,
+                geometry.elements_per_value)) {
+            return std::unexpected(
+                "GraphJit continuous input initializer rejected its resolved geometry");
+        }
+        std::vector<std::byte> value(geometry.value_size_bytes);
+        std::memcpy(value.data(), aligned, geometry.value_size_bytes);
+        return value;
+    };
+    auto request_input_timeline = [&](
+        std::size_t primitive_index,
+        std::size_t port,
+        std::size_t execution_position)
+        -> std::expected<void, std::string> {
+        auto const& binding = plan.primitives[primitive_index].inputs[port];
+        auto neutral = initialized_input_value(
+            primitive_index,
+            port,
+            iv::details::SequentialInputInitialization::neutral);
+        if (!neutral) return std::unexpected(std::move(neutral.error()));
+        auto const bundle =
+            analysis.primitives[primitive_index].bundle.node_bundle;
+        timeline_inputs.push_back({.primitive = primitive_index, .port = port});
+        timeline_requests.push_back(SampleInputTimelineRequest{
+            .channel_layout = binding.channel_layout,
+            .geometry = binding.geometry,
+            .absolute_pace_exponent = binding.absolute_pace_exponent,
+            .history = binding.history,
+            .neutral_value = std::move(*neutral),
+            .execution_position = execution_position,
+            .migration_identity = "graphjit.sample.input_timeline:"
+                + std::to_string(bundle) + "." + std::to_string(port),
+        });
+        return {};
+    };
 
     auto execution_position_for_bundle = [&](NodeBundleHandle bundle)
         -> std::expected<std::size_t, std::string> {
@@ -3091,6 +2973,15 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
                 binding.channel_layout = config.channel_layout;
                 binding.history = realization.input(bundle, port).history;
                 binding.read_latency = 0;
+                // Without history the callback reads the slot's current
+                // window directly.
+                if (binding.history != 0) {
+                    auto requested = request_input_timeline(
+                        primitive_index, port, *execution_position);
+                    if (!requested) {
+                        return std::unexpected(std::move(requested.error()));
+                    }
+                }
                 continue;
             }
             // Tick-time Random Access reads only the callback-pinned view in
@@ -3109,41 +3000,18 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
             });
             auto const& input_plan =
                 plan.primitives[primitive_index].inputs[port];
-            auto const& geometry = input_plan.geometry;
-            auto const* implementation =
-                analysis.primitives[primitive_index].implementation;
-            if (!implementation
-                || !implementation->host_initialize_sequential_input) {
-                return std::unexpected(
-                    "GraphJit disconnected continuous input has no type-owned initializer");
+            auto default_value = initialized_input_value(
+                primitive_index,
+                port,
+                iv::details::SequentialInputInitialization::disconnected);
+            if (!default_value) {
+                return std::unexpected(std::move(default_value.error()));
             }
-            std::vector<std::byte> unaligned(
-                geometry.value_size_bytes + geometry.element_alignment - 1);
-            void* aligned = unaligned.data();
-            auto space = unaligned.size();
-            if (!std::align(
-                    geometry.element_alignment,
-                    geometry.value_size_bytes,
-                    aligned,
-                    space)
-                || !implementation->host_initialize_sequential_input(
-                    port,
-                    geometry.value_type,
-                    iv::details::SequentialInputInitialization::disconnected,
-                    static_cast<std::byte*>(aligned),
-                    geometry.value_size_bytes,
-                    geometry.elements_per_value)) {
-                return std::unexpected(
-                    "GraphJit disconnected continuous input initializer rejected its resolved geometry");
-            }
-            std::vector<std::byte> default_value(geometry.value_size_bytes);
-            std::memcpy(
-                default_value.data(), aligned, geometry.value_size_bytes);
             constant_input_requests.push_back(SampleConstantInputRequest{
                 .channel_layout = config.channel_layout,
-                .geometry = geometry,
+                .geometry = input_plan.geometry,
                 .absolute_pace_exponent = input_plan.absolute_pace_exponent,
-                .default_value = std::move(default_value),
+                .default_value = std::move(*default_value),
                 .execution_position = *execution_position,
             });
         }
@@ -3180,6 +3048,25 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
                     + std::to_string(bundle) + "." + std::to_string(port),
             });
         }
+    }
+
+    // A mixed input combines its realtime contribution with the slot's
+    // current block into its own timeline.
+    for (auto const& target : validated_targets) {
+        if (is_entirely_realtime_delivery(
+                connections.sample_connections[target.connection_index])) {
+            continue;
+        }
+        auto& binding =
+            plan.primitives[target.target_primitive].inputs[target.target_port];
+        binding.channel_layout = target.target_layout;
+        binding.history = target.target_history;
+        auto const position = execution_position_for_bundle(
+            analysis.primitives[target.target_primitive].bundle.node_bundle);
+        if (!position) return std::unexpected(std::move(position.error()));
+        auto requested = request_input_timeline(
+            target.target_primitive, target.target_port, *position);
+        if (!requested) return std::unexpected(std::move(requested.error()));
     }
 
     auto storage_connections = connections;
@@ -3264,7 +3151,8 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
         input.specialization.block_size,
         sink_requests,
         constant_input_requests,
-        cost_model);
+        cost_model,
+        timeline_requests);
     if (!storage) return std::unexpected(std::move(storage.error()));
     plan.storage = std::move(*storage);
 
@@ -3446,22 +3334,68 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
         binding.latency = resolved_output.latency;
     }
 
+    if (plan.storage.input_timeline_representations.size()
+        != timeline_inputs.size()) {
+        return std::unexpected(
+            "GraphJit sample input timeline planning lost a timeline");
+    }
+    for (std::size_t i = 0; i < timeline_inputs.size(); ++i) {
+        auto const& timeline_input = timeline_inputs[i];
+        auto const representation_index =
+            plan.storage.input_timeline_representations[i];
+        if (representation_index >= plan.storage.representations.size()
+            || plan.storage.representations[representation_index]
+                    .channel_layout
+                != plan.primitives[timeline_input.primitive]
+                    .inputs[timeline_input.port].channel_layout) {
+            return std::unexpected(
+                "GraphJit sample input timeline references an invalid buffer");
+        }
+        auto& binding = plan.primitives[timeline_input.primitive]
+            .inputs[timeline_input.port];
+        // The callback reads only the timeline; a mixed input's connection
+        // storage becomes the realtime operand of its per-block combination.
+        if (binding.combines_invocation_supplied) {
+            binding.realtime_operand_channels = std::move(binding.channels);
+        }
+        binding.channels.clear();
+        binding.read_latency = 0;
+        auto const channels = channel_count(binding.channel_layout);
+        binding.channels.reserve(channels);
+        for (std::size_t channel = 0; channel < channels; ++channel) {
+            binding.channels.push_back(PrimitiveSampleInputChannelBindingPlan{
+                .storage = representation_index,
+                .representation_channel = channel,
+                .frame_delay = 0,
+            });
+        }
+    }
+
     for (auto const& primitive : plan.primitives) {
         if (!std::ranges::all_of(
                 primitive.inputs,
                 [](auto const& binding) {
+                    auto const channels = channel_count(binding.channel_layout);
+                    auto const bound = !binding.channels.empty()
+                        && binding.channels.size() == channels;
                     if (binding.combines_invocation_supplied) {
-                        return binding.invocation_supplied
-                            && !binding.channels.empty()
-                            && binding.channels.size()
-                                == channel_count(binding.channel_layout);
+                        return binding.invocation_supplied && bound
+                            && binding.realtime_operand_channels.size()
+                                == channels;
                     }
-                    return binding.invocation_supplied || binding.random_access
-                        ? binding.channels.empty()
-                            && channel_count(binding.channel_layout) != 0
-                        : !binding.channels.empty()
-                            && binding.channels.size()
-                                == channel_count(binding.channel_layout);
+                    if (binding.random_access) {
+                        return binding.channels.empty() && channels != 0;
+                    }
+                    // A slot-fed input without history reads the slot
+                    // directly; with history it reads its timeline.
+                    if (binding.invocation_supplied) {
+                        return channels != 0
+                            && binding.realtime_operand_channels.empty()
+                            && (binding.history == 0
+                                    ? binding.channels.empty()
+                                    : bound);
+                    }
+                    return bound;
                 })
             || !std::ranges::all_of(
                 primitive.outputs,
@@ -3506,8 +3440,7 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
             auto const requires_contiguous_workspace =
                 analyzed.implementation->block_input_access
                 || (analyzed.implementation->pointwise_tick
-                    && input_binding.history != 0)
-                || input_binding.combines_invocation_supplied;
+                    && input_binding.history != 0);
             // The node limit bounds one invocation; it is not the size of an
             // invocation. Most nodes retain MAX_BLOCK_SIZE as their authored
             // limit, while the generated root can expose at most one kernel
@@ -3529,10 +3462,7 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
             auto const value_capacity =
                 input_binding.history + *current_values;
             input_binding.contiguous_value_capacity = value_capacity;
-            input_binding.contiguous_storage_capacity =
-                input_binding.combines_invocation_supplied
-                    ? std::bit_ceil(std::max(std::size_t{1}, value_capacity))
-                    : value_capacity;
+            input_binding.contiguous_storage_capacity = value_capacity;
             if (!requires_contiguous_workspace) continue;
 
             auto const channels = channel_count(input_binding.channel_layout);
@@ -4320,6 +4250,58 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
                     && !uses_realtime_storage(delivery.mechanism);
             });
     };
+    // A slot-fed input with history, and every mixed input, owns a
+    // persistent timeline ring. The root inserts each delivered window into
+    // it before the callback, so its history is the input's own record of
+    // earlier deliveries in Tick invocation order.
+    auto append_input_timeline = [&] (
+        PrimitiveEventInputBindingPlan& binding,
+        EventInputPortId target,
+        EventTypeId type,
+        std::size_t history,
+        std::size_t required_capacity)
+        -> std::expected<void, std::string> {
+        auto const position = target.bundle
+                < connections.schedule.bundle_execution_position.size()
+            ? connections.schedule.bundle_execution_position[target.bundle]
+            : std::nullopt;
+        if (!position) {
+            return std::unexpected(
+                "GraphJit event input timeline has no execution position");
+        }
+        auto const capacity = rounded_event_capacity(
+            std::max<std::size_t>(required_capacity, 1));
+        if (!capacity) return std::unexpected(std::move(capacity.error()));
+        auto timeline = append_representation(
+            connections.event_producer_groups.size(),
+            type,
+            *capacity,
+            false,
+            true,
+            "graphjit.event.input_timeline:"
+                + std::to_string(static_cast<unsigned>(type)) + ":"
+                + std::to_string(target.bundle) + "."
+                + std::to_string(target.port) + ":capacity="
+                + std::to_string(*capacity),
+            true);
+        if (!timeline) return std::unexpected(std::move(timeline.error()));
+        // Like a raw Tick output, a primitive sliced inside a cyclic region
+        // prunes once before the region rather than before every slice.
+        auto const region = region_index_for_bundle(target.bundle);
+        auto const cyclic = region
+            && *region < connections.schedule.regions.size()
+            && connections.schedule.regions[*region].cyclic;
+        plan.persistent_rings.push_back(EventPersistentRingPlan{
+            .storage = *timeline,
+            .prune_scope = cyclic
+                ? region_scope(*region, EventOperationPhase::before)
+                : primitive_scope(*position, EventOperationPhase::before),
+            .retained_history_samples = history,
+        });
+        binding.storage = *timeline;
+        binding.timeline_history_samples = history;
+        return {};
+    };
     auto configure_mixed_input = [&] (
         PrimitiveEventInputBindingPlan& binding,
         EventConnectionPlan const& connection,
@@ -4346,18 +4328,25 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
             return std::unexpected(
                 "GraphJit mixed event input window is not representable");
         }
-        auto const external_capacity = event_sequence_capacity_for_sample_span(
+        // The slot carries only the current window; the timeline also
+        // retains the background contribution's history.
+        auto const window_capacity = event_sequence_capacity_for_sample_span(
+            connection.max_events_per_index,
+            input.specialization.block_size);
+        auto const retained_capacity = event_sequence_capacity_for_sample_span(
             connection.max_events_per_index,
             input.specialization.block_size + target_plan->history);
-        if (!external_capacity
-            || plan.ports[*binding.storage].event_capacity
+        auto const operand_capacity =
+            plan.ports[*binding.storage].event_capacity;
+        if (!window_capacity || !retained_capacity
+            || operand_capacity
                 > std::numeric_limits<std::size_t>::max()
-                    - *external_capacity) {
+                    - *retained_capacity) {
             return std::unexpected(
                 "GraphJit mixed event input capacity is not representable");
         }
         auto const capacity = rounded_event_capacity(
-            plan.ports[*binding.storage].event_capacity + *external_capacity);
+            operand_capacity + *window_capacity);
         if (!capacity) return std::unexpected(std::move(capacity.error()));
         auto combined = append_representation(
             group_index, connection.target_type, *capacity);
@@ -4365,12 +4354,16 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
             return std::unexpected(std::move(combined.error()));
         }
         binding.invocation_supplied = true;
-        binding.invocation_event_capacity =
-            std::max<std::size_t>(*external_capacity, 1);
         binding.combines_invocation_supplied = true;
+        binding.realtime_operand_storage = binding.storage;
         binding.combined_storage = *combined;
         binding.realtime_semantic_source_index = fixed_realtime_source_index;
-        return {};
+        return append_input_timeline(
+            binding,
+            target,
+            connection.target_type,
+            target_plan->history,
+            operand_capacity + *retained_capacity);
     };
 
     for (std::size_t group_index = 0;
@@ -7100,6 +7093,9 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
                         connections.background.storage.ports[storage]
                             .max_events_per_index);
                 }
+                // Without history the callback reads the slot's current
+                // window directly.
+                if (logical.sequential_history == 0) continue;
                 auto const capacity = event_sequence_capacity_for_sample_span(
                     maximum_rate,
                     input.specialization.block_size
@@ -7108,8 +7104,15 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
                     return std::unexpected(
                         "GraphJit invocation-supplied event capacity is not representable");
                 }
-                binding.invocation_event_capacity =
-                    std::max<std::size_t>(*capacity, 1);
+                auto timeline = append_input_timeline(
+                    binding,
+                    EventInputPortId{.bundle = bundle, .port = port},
+                    logical.event_type,
+                    logical.sequential_history,
+                    *capacity);
+                if (!timeline) {
+                    return std::unexpected(std::move(timeline.error()));
+                }
                 continue;
             }
             NodeBundlePortId const port_id{bundle, PortKind::event, port};
@@ -7290,10 +7293,11 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
                     return std::unexpected(std::move(touched.error()));
                 }
             }
-            if (input_binding.combined_storage) {
-                if (auto touched = touch_at(
-                        *input_binding.combined_storage, position);
-                    !touched) {
+            for (auto const operand :
+                 {input_binding.realtime_operand_storage,
+                  input_binding.combined_storage}) {
+                if (!operand) continue;
+                if (auto touched = touch_at(*operand, position); !touched) {
                     return std::unexpected(std::move(touched.error()));
                 }
             }
@@ -8231,7 +8235,15 @@ std::expected<bool, std::string> realtime_ready_group_batches(
         auto const& lane_sample_ports = sample_ports.primitives[primitive];
         for (auto const& input : lane_sample_ports.inputs) {
             if (input.has_contiguous_scratch) return false;
+            // The root writes a slot-fed input's timeline for this lane.
             for (auto const& channel : input.channels) {
+                auto appended = append_sample_representation(
+                    channel.storage, lane_index, input.invocation_supplied);
+                if (!appended) {
+                    return std::unexpected(std::move(appended.error()));
+                }
+            }
+            for (auto const& channel : input.realtime_operand_channels) {
                 auto appended = append_sample_representation(
                     channel.storage, lane_index, false);
                 if (!appended) {
@@ -8251,8 +8263,16 @@ std::expected<bool, std::string> realtime_ready_group_batches(
         auto const& lane_event_ports = event_ports.primitives[primitive];
         for (auto const& input : lane_event_ports.inputs) {
             if (input.storage) {
+                // The root writes a slot-fed input's timeline for this lane.
                 auto appended = append_event_representation(
-                    *input.storage, lane_index, false);
+                    *input.storage, lane_index, input.invocation_supplied);
+                if (!appended) {
+                    return std::unexpected(std::move(appended.error()));
+                }
+            }
+            if (input.realtime_operand_storage) {
+                auto appended = append_event_representation(
+                    *input.realtime_operand_storage, lane_index, false);
                 if (!appended) {
                     return std::unexpected(std::move(appended.error()));
                 }
