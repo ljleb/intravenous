@@ -79,15 +79,17 @@ struct TockContinuousOutputPort {
     }
 };
 
-// Event inputs may be physically split across any number of retained chunks. The
-// provider invokes the visitor synchronously in global timestamp order without
-// requiring a contiguous query-sized buffer.
+// Each entry is one logical Region. Entries may overlap or have identical
+// ranges; their event storage remains independent. The provider invokes the
+// visitor synchronously in timestamp order within the selected Region.
 struct RandomAccessEventInputPort {
     using VisitEvent = void (*)(void*, TimedEvent const&);
     using ForEachEvent = void (*)(
-        void const*, GlobalIndexRange, void*, VisitEvent);
+        void const*, std::size_t, GlobalIndexRange, void*, VisitEvent);
 
     void const* data = nullptr;
+    GlobalIndexRange const* region_ranges = nullptr;
+    std::size_t region_count = 0;
     IndexCoverage const* coverage_value = nullptr;
     ForEachEvent for_each_event = nullptr;
 
@@ -96,18 +98,27 @@ struct RandomAccessEventInputPort {
         return background_port_details::bound_coverage(coverage_value);
     }
 
-    template<typename Fn>
-    void for_each(GlobalIndexRange region, Fn&& fn) const
+    [[nodiscard]] std::span<GlobalIndexRange const> regions() const noexcept
     {
-        IV_ASSERT(coverage().contains(region),
-            "background event input read lies outside published coverage");
-        if (region.empty()) return;
+        return {region_ranges, region_count};
+    }
+
+    template<typename Fn>
+    void for_each(
+        std::size_t region_index, GlobalIndexRange requested, Fn&& fn) const
+    {
+        IV_ASSERT(region_index < region_count,
+            "background event input Region is out of bounds");
+        IV_ASSERT(region_ranges[region_index].contains(requested),
+            "background event input read lies outside its Region");
+        if (requested.empty()) return;
         IV_ASSERT(for_each_event != nullptr,
-            "background event input has no readable segmented storage");
+            "background event input Region has no readable storage");
         using Visitor = std::remove_reference_t<Fn>;
         for_each_event(
             data,
-            region,
+            region_index,
+            requested,
             std::addressof(fn),
             +[](void* opaque, TimedEvent const& event) {
                 (*static_cast<Visitor*>(opaque))(event);
@@ -118,24 +129,33 @@ struct RandomAccessEventInputPort {
 
 struct TockEventOutputPort {
     void* data = nullptr;
+    GlobalIndexRange const* region_ranges = nullptr;
+    std::size_t region_count = 0;
     IndexCoverage const* requested_coverage_value = nullptr;
-    void (*write_event)(void*, TimedEvent const&) = nullptr;
+    void (*write_event)(void*, std::size_t, TimedEvent const&) = nullptr;
 
     [[nodiscard]] IndexCoverage const& requested_coverage() const noexcept
     {
         return background_port_details::bound_coverage(requested_coverage_value);
     }
 
-    void write(TimedEvent const& event) const noexcept
+    [[nodiscard]] std::span<GlobalIndexRange const> regions() const noexcept
     {
-        IV_ASSERT(requested_coverage().contains(event.time),
-            "background event output write lies outside requested coverage");
+        return {region_ranges, region_count};
+    }
+
+    void write(std::size_t region_index, TimedEvent const& event) const noexcept
+    {
+        IV_ASSERT(region_index < region_count,
+            "background event output Region is out of bounds");
+        IV_ASSERT(region_ranges[region_index].contains(event.time),
+            "background event output write lies outside its Region");
         IV_ASSERT(write_event != nullptr,
-            "background event output has no writable storage");
+            "background event output Region has no writable storage");
         // The callback contract requires nondecreasing timestamps for each
         // output invocation. The concrete sink may validate that in debug
         // builds without imposing a release-time sorting pass here.
-        write_event(data, event);
+        write_event(data, region_index, event);
     }
 };
 
@@ -211,8 +231,8 @@ struct OutputCoverageChange {
         publish_regions(std::span{&region, std::size_t{1}});
     }
 
-    // Event outputs have no data-bearing Region decomposition and publish
-    // their positional coverage directly.
+    // Internal positional publication for Tick-produced outputs. Authored
+    // Region and Coverage outputs publish their Region list instead.
     void publish_coverage(IndexCoverage const& coverage) const
     {
         IV_ASSERT(publish_coverage_value != nullptr,
@@ -271,11 +291,151 @@ struct InputCoverageRequirement {
 
 namespace details {
 
-class StaticContinuousInputCoverageChange {
+class EventRegion {
+    RandomAccessEventInputPort const* port_ = nullptr;
+    std::size_t index_ = 0;
+
+public:
+    EventRegion() = default;
+    EventRegion(
+        RandomAccessEventInputPort const& port, std::size_t index) noexcept
+        : port_(std::addressof(port)), index_(index)
+    {
+        IV_ASSERT(index < port.region_count,
+            "event Region is out of bounds");
+    }
+
+    [[nodiscard]] GlobalIndexRange range() const noexcept
+    {
+        return port_->region_ranges[index_];
+    }
+
+    template<typename Fn>
+    void for_each(Fn&& fn) const
+    {
+        port_->for_each(index_, range(), std::forward<Fn>(fn));
+    }
+
+    template<typename Fn>
+    void for_each(GlobalIndexRange requested, Fn&& fn) const
+    {
+        port_->for_each(index_, requested, std::forward<Fn>(fn));
+    }
+};
+
+class WritableEventRegion {
+    TockEventOutputPort* port_ = nullptr;
+    std::size_t index_ = 0;
+
+public:
+    WritableEventRegion() = default;
+    WritableEventRegion(TockEventOutputPort& port, std::size_t index) noexcept
+        : port_(std::addressof(port)), index_(index)
+    {
+        IV_ASSERT(index < port.region_count,
+            "writable event Region is out of bounds");
+    }
+
+    [[nodiscard]] GlobalIndexRange range() const noexcept
+    {
+        return port_->region_ranges[index_];
+    }
+
+    void write(TimedEvent const& event) const noexcept
+    {
+        port_->write(index_, event);
+    }
+};
+
+template<bool Mutable>
+class EventCoverageView {
+    using Port = std::conditional_t<
+        Mutable, TockEventOutputPort, RandomAccessEventInputPort const>;
+    Port* port_ = nullptr;
+
+public:
+    using region_type = std::conditional_t<
+        Mutable, WritableEventRegion, EventRegion>;
+
+    class iterator {
+        Port* port_ = nullptr;
+        std::size_t index_ = 0;
+
+    public:
+        using value_type = region_type;
+        using difference_type = std::ptrdiff_t;
+        using iterator_category = std::forward_iterator_tag;
+        using iterator_concept = std::forward_iterator_tag;
+
+        iterator() = default;
+        iterator(Port* port, std::size_t index) noexcept
+            : port_(port), index_(index)
+        {}
+
+        [[nodiscard]] region_type operator*() const noexcept
+        {
+            return region_type{*port_, index_};
+        }
+
+        iterator& operator++() noexcept
+        {
+            ++index_;
+            return *this;
+        }
+
+        iterator operator++(int) noexcept
+        {
+            auto previous = *this;
+            ++*this;
+            return previous;
+        }
+
+        [[nodiscard]] friend bool operator==(
+            iterator const&, iterator const&) = default;
+    };
+
+    EventCoverageView() = default;
+    explicit EventCoverageView(Port& port) noexcept : port_(&port) {}
+
+    [[nodiscard]] std::size_t size() const noexcept
+    {
+        return port_ ? port_->region_count : 0;
+    }
+
+    [[nodiscard]] bool empty() const noexcept { return size() == 0; }
+
+    [[nodiscard]] region_type operator[](std::size_t index) const noexcept
+    {
+        IV_ASSERT(index < size(), "event Coverage Region is out of bounds");
+        return region_type{*port_, index};
+    }
+
+    [[nodiscard]] iterator begin() const noexcept
+    {
+        return iterator{port_, 0};
+    }
+
+    [[nodiscard]] iterator end() const noexcept
+    {
+        return iterator{port_, size()};
+    }
+
+    [[nodiscard]] IndexCoverage const& coverage() const noexcept
+    {
+        IV_ASSERT(port_ != nullptr, "event Coverage has no positional union");
+        if constexpr (Mutable) {
+            return port_->requested_coverage();
+        } else {
+            return port_->coverage();
+        }
+    }
+};
+
+class StaticInputCoverageChange {
     InputCoverageChange const& change_;
 
 public:
-    explicit StaticContinuousInputCoverageChange(
+    explicit StaticInputCoverageChange(
         InputCoverageChange const& change) noexcept
         : change_(change)
     {}
@@ -296,31 +456,12 @@ public:
     }
 };
 
-class StaticEventInputCoverageChange {
-    InputCoverageChange const& change_;
-
-public:
-    explicit StaticEventInputCoverageChange(
-        InputCoverageChange const& change) noexcept
-        : change_(change)
-    {}
-
-    [[nodiscard]] IndexCoverage const& coverage() const noexcept
-    {
-        return change_.coverage();
-    }
-
-    [[nodiscard]] IndexCoverage const& changed() const noexcept
-    {
-        return change_.changed();
-    }
-};
-
-class StaticContinuousOutputCoverageChange {
+template<OutputProductionKind Production>
+class StaticOutputCoverageChange {
     OutputCoverageChange const& change_;
 
 public:
-    explicit StaticContinuousOutputCoverageChange(
+    explicit StaticOutputCoverageChange(
         OutputCoverageChange const& change) noexcept
         : change_(change)
     {}
@@ -336,45 +477,16 @@ public:
         return change_.previous_regions();
     }
 
-    void publish_regions(
-        std::span<GlobalIndexRange const> regions) const
+    void publish(std::span<GlobalIndexRange const> regions) const
+    requires (Production == OutputProductionKind::coverage)
     {
         change_.publish_regions(regions);
     }
 
-    void publish_region(GlobalIndexRange region) const
+    void publish(GlobalIndexRange region) const
+    requires (Production == OutputProductionKind::region)
     {
         change_.publish_region(region);
-    }
-
-    void change(IndexCoverage const& changed) const
-    {
-        change_.change(changed);
-    }
-
-    void change(GlobalIndexRange changed) const
-    {
-        change_.change(changed);
-    }
-};
-
-class StaticEventOutputCoverageChange {
-    OutputCoverageChange const& change_;
-
-public:
-    explicit StaticEventOutputCoverageChange(
-        OutputCoverageChange const& change) noexcept
-        : change_(change)
-    {}
-
-    [[nodiscard]] IndexCoverage const& previous_coverage() const noexcept
-    {
-        return change_.previous_coverage();
-    }
-
-    void publish_coverage(IndexCoverage const& coverage) const
-    {
-        change_.publish_coverage(coverage);
     }
 
     void change(IndexCoverage const& changed) const
@@ -513,41 +625,62 @@ public:
     }
 };
 
+template<InputAccessKind Access>
 class StaticBackgroundEventInputAccess {
-    RandomAccessEventInputPort const& port_;
+    RandomAccessEventInputPort const* port_ = nullptr;
 
 public:
     explicit StaticBackgroundEventInputAccess(RandomAccessEventInputPort const& port)
-        : port_(port)
+        : port_(std::addressof(port))
     {}
 
     [[nodiscard]] IndexCoverage const& coverage() const noexcept
     {
-        return port_.coverage();
+        return port_->coverage();
     }
 
-    template<typename Fn>
-    void for_each(GlobalIndexRange region, Fn&& fn) const
+    [[nodiscard]] EventRegion region() const noexcept
+    requires (Access == InputAccessKind::region)
     {
-        port_.for_each(region, std::forward<Fn>(fn));
+        IV_ASSERT(port_->region_count == 1,
+            "event Region input does not contain exactly one Region");
+        return EventRegion{*port_, 0};
     }
 
+    [[nodiscard]] EventCoverageView<false> regions() const noexcept
+    requires (Access == InputAccessKind::coverage)
+    {
+        return EventCoverageView<false>{*port_};
+    }
 };
 
+template<OutputProductionKind Production>
 class StaticBackgroundEventOutputAccess {
-    TockEventOutputPort& port_;
+    TockEventOutputPort* port_ = nullptr;
 
 public:
     explicit StaticBackgroundEventOutputAccess(TockEventOutputPort& port)
-        : port_(port)
+        : port_(std::addressof(port))
     {}
 
     [[nodiscard]] IndexCoverage const& requested_coverage() const noexcept
     {
-        return port_.requested_coverage();
+        return port_->requested_coverage();
     }
 
-    void write(TimedEvent const& event) const noexcept { port_.write(event); }
+    [[nodiscard]] WritableEventRegion region() const noexcept
+    requires (Production == OutputProductionKind::region)
+    {
+        IV_ASSERT(port_->region_count == 1,
+            "event Region output does not contain exactly one Region");
+        return WritableEventRegion{*port_, 0};
+    }
+
+    [[nodiscard]] EventCoverageView<true> regions() const noexcept
+    requires (Production == OutputProductionKind::coverage)
+    {
+        return EventCoverageView<true>{*port_};
+    }
 };
 
 template<typename Node, fixed_string Name>
@@ -561,6 +694,11 @@ constexpr std::size_t background_input_index()
 }
 
 } // namespace details
+
+using EventRegion = details::EventRegion;
+using WritableEventRegion = details::WritableEventRegion;
+using EventCoverage = details::EventCoverageView<false>;
+using WritableEventCoverage = details::EventCoverageView<true>;
 
 template<typename Node>
 struct TockCoverageContext {
@@ -601,11 +739,14 @@ struct TockCoverageContext {
                     Values, access>{inputs[port_index]};
             }
         } else {
+            constexpr auto access =
+                details::static_input_port_access<Node, Name>();
             constexpr auto port_index =
                 details::static_random_access_event_input_port_index<Node, Name>();
             IV_ASSERT(port_index < event_inputs.size(),
                 "background event input is absent from tock context");
-            return details::StaticBackgroundEventInputAccess(event_inputs[port_index]);
+            return details::StaticBackgroundEventInputAccess<access>{
+                event_inputs[port_index]};
         }
     }
 
@@ -638,11 +779,14 @@ struct TockCoverageContext {
                     Values, production>{outputs[port_index]};
             }
         } else {
+            constexpr auto production =
+                details::static_output_port_production<Node, Name>();
             constexpr auto port_index =
                 details::static_tock_event_output_port_index<Node, Name>();
             IV_ASSERT(port_index < event_outputs.size(),
                 "background event output is absent from tock context");
-            return details::StaticBackgroundEventOutputAccess(event_outputs[port_index]);
+            return details::StaticBackgroundEventOutputAccess<production>{
+                event_outputs[port_index]};
         }
     }
 
@@ -673,14 +817,13 @@ struct PropagateForwardCoverageContext {
             constexpr auto index = details::static_random_access_input_port_index<Node, Name>();
             IV_ASSERT(index < inputs.size(),
                 "background sample input is absent from forward context");
-            return details::StaticContinuousInputCoverageChange{inputs[index]};
+            return details::StaticInputCoverageChange{inputs[index]};
         } else {
             constexpr auto index =
                 details::static_random_access_event_input_port_index<Node, Name>();
             IV_ASSERT(index < event_inputs.size(),
                 "background event input is absent from forward context");
-            return details::StaticEventInputCoverageChange{
-                event_inputs[index]};
+            return details::StaticInputCoverageChange{event_inputs[index]};
         }
     }
 
@@ -691,19 +834,21 @@ struct PropagateForwardCoverageContext {
         static_assert(
             details::static_output_port_is_tock<Node, Name>(),
             "forward coverage can only publish background outputs");
+        constexpr auto production =
+            details::static_output_port_production<Node, Name>();
         if constexpr (details::static_output_port_kind<Node, Name>()
             == PortKind::sample) {
             constexpr auto index = details::static_tock_output_port_index<Node, Name>();
             IV_ASSERT(index < outputs.size(),
                 "background sample output is absent from forward context");
-            return details::StaticContinuousOutputCoverageChange{
+            return details::StaticOutputCoverageChange<production>{
                 outputs[index]};
         } else {
             constexpr auto index =
                 details::static_tock_event_output_port_index<Node, Name>();
             IV_ASSERT(index < event_outputs.size(),
                 "background event output is absent from forward context");
-            return details::StaticEventOutputCoverageChange{
+            return details::StaticOutputCoverageChange<production>{
                 event_outputs[index]};
         }
     }

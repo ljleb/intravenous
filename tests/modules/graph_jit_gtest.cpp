@@ -11,6 +11,7 @@
 #include <intravenous/module/builder_session.h>
 #include <intravenous/module/package_definitions.h>
 #include <intravenous/runtime/background_coverage_propagation.h>
+#include <intravenous/runtime/background_evaluation_transaction.h>
 #include <intravenous/runtime/graph_connections.h>
 #include <intravenous/runtime/graph_jit.h>
 #include <intravenous/runtime/node_definitions_events.h>
@@ -130,6 +131,8 @@ constexpr char graph_jit_stateful_module_id[] = "iv.test.graph_jit.state_context
 constexpr char graph_jit_state_only_module_id[] = "iv.test.graph_jit.state_context.state_only_module";
 constexpr char graph_jit_background_only_module_id[] = "iv.test.graph_jit.state_context.background_only_module";
 constexpr char graph_jit_background_execution_module_id[] = "iv.test.graph_jit.state_context.background_execution_module";
+constexpr char graph_jit_multi_region_module_id[] =
+    "iv.test.graph_jit.state_context.multi_region_module";
 constexpr char graph_jit_native_batch_tick_module_id[] =
     "iv.test.graph_jit.state_context.native_batch_tick_module";
 constexpr char graph_jit_native_batch_aliasing_module_id[] =
@@ -263,6 +266,36 @@ struct SingleSpanProbeMirror {
 struct BackgroundExecutionProbeStateMirror {
     std::uint64_t calls = 0;
     std::uint64_t sample_rate = 0;
+};
+
+struct alignas(64) MultiRegionCoverageStateMirror {
+    std::uint64_t calls = 0;
+    std::uint64_t region_count = 0;
+    std::uint64_t first_begin = 0;
+    std::uint64_t second_begin = 0;
+    float first_overlap_value = 0.0f;
+    float second_overlap_value = 0.0f;
+};
+
+struct alignas(64) MultiRegionSequentialStateMirror {
+    std::uint64_t calls = 0;
+    std::uint64_t sample_count = 0;
+    std::array<float, 6> values{};
+};
+
+struct alignas(64) MultiRegionEventCoverageStateMirror {
+    std::uint64_t calls = 0;
+    std::uint64_t region_count = 0;
+    std::uint64_t first_event_count = 0;
+    std::uint64_t second_event_count = 0;
+    std::uint64_t first_last_time = 0;
+    std::uint64_t second_first_time = 0;
+};
+
+struct alignas(128) MultiRegionSequentialEventStateMirror {
+    std::uint64_t calls = 0;
+    std::uint64_t event_count = 0;
+    std::array<std::uint64_t, 5> times{};
 };
 
 struct NativeBatchTickProbeStateMirror {
@@ -3151,11 +3184,11 @@ struct BackgroundExecutionProbe {
             .begin = iv::GlobalIndex::from_bits(10),
             .extent = 3,
         }};
-        context.template output<"out">().publish_region(
-            iv::GlobalIndexRange{
+        std::array const regions{iv::GlobalIndexRange{
                 .begin = iv::GlobalIndex::from_bits(10),
                 .extent = 3,
-            });
+            }};
+        context.template output<"out">().publish(regions);
         context.template output<"out">().change(selected);
     }
 
@@ -5875,6 +5908,7 @@ IV_MODULE("iv.test.graph_jit.state_context.ported_module", ported_module);
     static constexpr std::string_view part_3 = R"cpp(
 #include <intravenous/dsl.h>
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <optional>
@@ -6018,11 +6052,11 @@ struct NativeBatchBackgroundProbe {
                 .begin = iv::GlobalIndex::from_bits(lane.node().id),
                 .extent = context.size(),
             }};
-            lane.template output<"out">().publish_region(
-                iv::GlobalIndexRange{
+            std::array const regions{iv::GlobalIndexRange{
                     .begin = iv::GlobalIndex::from_bits(lane.node().id),
                     .extent = context.size(),
-                });
+                }};
+            lane.template output<"out">().publish(regions);
             lane.template output<"out">().change(selected);
         }
     }
@@ -6079,11 +6113,11 @@ struct NativeBatchTockProbe {
                 .begin = iv::GlobalIndex::from_bits(lane.node().id),
                 .extent = context.size(),
             }};
-            lane.template output<"out">().publish_region(
-                iv::GlobalIndexRange{
+            std::array const regions{iv::GlobalIndexRange{
                     .begin = iv::GlobalIndex::from_bits(lane.node().id),
                     .extent = context.size(),
-                });
+                }};
+            lane.template output<"out">().publish(regions);
             lane.template output<"out">().change(selected);
         }
     }
@@ -6740,6 +6774,347 @@ void persisted_non_project_rate_sample_module(iv::GraphBuilder& graph)
     graph.outputs();
 }
 
+struct MultiRegionCoverageSource {
+    static constexpr auto inputs() { return std::tuple{}; }
+
+    static constexpr auto outputs()
+    {
+        return std::array{iv::output<iv::Sample>(
+            "multi-region-source-output",
+            iv::OutputProduction::coverage)};
+    }
+
+    static constexpr auto regions()
+    {
+        return std::array{
+            iv::GlobalIndexRange::from_begin_and_end(
+                iv::GlobalIndex::from_signed(10),
+                iv::GlobalIndex::from_signed(14)),
+            iv::GlobalIndexRange::from_begin_and_end(
+                iv::GlobalIndex::from_signed(12),
+                iv::GlobalIndex::from_signed(16)),
+        };
+    }
+
+    void propagate_forward_coverage(
+        iv::PropagateForwardCoverageContext<MultiRegionCoverageSource>& ctx) const
+    {
+        auto const published = regions();
+        auto output = ctx.output<"multi-region-source-output">();
+        output.publish(published);
+        for (auto const region : published) output.change(region);
+    }
+
+    void tock_coverage(
+        iv::TockCoverageContext<MultiRegionCoverageSource>& ctx) const
+    {
+        auto output = ctx.output<"multi-region-source-output">().regions();
+        IV_ASSERT(output.size() == 2,
+            "multi-Region source did not receive two output Regions");
+        for (std::size_t region = 0; region < output.size(); ++region) {
+            for (std::size_t frame = 0;
+                 frame < output[region].frame_count(); ++frame) {
+                output[region].value(frame) =
+                    iv::Sample{static_cast<float>(region + 1)};
+            }
+        }
+    }
+};
+
+struct MultiRegionCoverageConsumer {
+    struct alignas(64) TockState {
+        std::uint64_t calls = 0;
+        std::uint64_t region_count = 0;
+        std::uint64_t first_begin = 0;
+        std::uint64_t second_begin = 0;
+        float first_overlap_value = 0.0f;
+        float second_overlap_value = 0.0f;
+    };
+
+    static constexpr auto inputs()
+    {
+        return std::array{iv::input<iv::Sample>(
+            "multi-region-coverage-input",
+            iv::InputAccess::coverage)};
+    }
+
+    static constexpr auto outputs()
+    {
+        return std::array{iv::output<iv::Sample>(
+            "multi-region-consumer-output",
+            iv::OutputProduction::coverage)};
+    }
+
+    void propagate_forward_coverage(
+        iv::PropagateForwardCoverageContext<MultiRegionCoverageConsumer>& ctx) const
+    {
+        auto input = ctx.input<"multi-region-coverage-input">();
+        auto output = ctx.output<"multi-region-consumer-output">();
+        output.publish(input.regions());
+        output.change(input.changed());
+    }
+
+    void propagate_reverse_coverage(
+        iv::PropagateReverseCoverageContext<MultiRegionCoverageConsumer>& ctx) const
+    {
+        ctx.input<"multi-region-coverage-input">().require(
+            ctx.output<"multi-region-consumer-output">().required());
+    }
+
+    void tock_coverage(
+        iv::TockCoverageContext<MultiRegionCoverageConsumer>& ctx) const
+    {
+        auto input = ctx.input<"multi-region-coverage-input">().regions();
+        auto output = ctx.output<"multi-region-consumer-output">().regions();
+        IV_ASSERT(input.size() == 2 && output.size() == input.size(),
+            "multi-Region consumer did not receive two matching Region lists");
+
+        auto& state = ctx.tock_state();
+        ++state.calls;
+        state.region_count = input.size();
+        state.first_begin = input[0].range().begin.bits();
+        state.second_begin = input[1].range().begin.bits();
+        auto const overlap = iv::GlobalIndex::from_signed(12);
+        state.first_overlap_value = static_cast<float>(input[0].at(overlap));
+        state.second_overlap_value = static_cast<float>(input[1].at(overlap));
+
+        for (std::size_t region = 0; region < input.size(); ++region) {
+            IV_ASSERT(input[region].range() == output[region].range(),
+                "multi-Region consumer input and output ranges differ");
+            for (std::size_t frame = 0;
+                 frame < input[region].frame_count(); ++frame) {
+                output[region].value(frame) = input[region].value(frame);
+            }
+        }
+    }
+};
+
+struct MultiRegionSequentialConsumer {
+    std::uint8_t configuration_marker = 0;
+
+    struct alignas(64) State {
+        std::uint64_t calls = 0;
+        std::uint64_t sample_count = 0;
+        std::array<float, 6> values{};
+    };
+
+    static constexpr auto inputs()
+    {
+        return std::array{iv::input<iv::Sample>(
+            "multi-region-sequential-input",
+            iv::InputAccess::sequential)};
+    }
+
+    static constexpr auto outputs() { return std::tuple{}; }
+
+    void tick_block(
+        iv::TickBlockContext<MultiRegionSequentialConsumer> const& ctx) const
+    {
+        auto const input = ctx.input<"multi-region-sequential-input">().block();
+        auto& state = ctx.state();
+        ++state.calls;
+        state.sample_count = input.size();
+        auto const count = std::min(input.size(), state.values.size());
+        for (std::size_t i = 0; i < count; ++i) {
+            state.values[i] = static_cast<float>(input[i]);
+        }
+    }
+};
+
+struct MultiRegionEventCoverageSource {
+    static constexpr auto inputs() { return std::tuple{}; }
+
+    static constexpr auto outputs()
+    {
+        return std::array{iv::event_output(
+            "multi-region-event-source-output",
+            iv::EventTypeId::trigger,
+            iv::OutputProduction::coverage,
+            iv::EventOutputOptions{.max_events_per_index = 1.0})};
+    }
+
+    static constexpr auto regions()
+    {
+        return std::array{
+            iv::GlobalIndexRange::from_begin_and_end(
+                iv::GlobalIndex::from_signed(10),
+                iv::GlobalIndex::from_signed(14)),
+            iv::GlobalIndexRange::from_begin_and_end(
+                iv::GlobalIndex::from_signed(12),
+                iv::GlobalIndex::from_signed(16)),
+        };
+    }
+
+    void propagate_forward_coverage(
+        iv::PropagateForwardCoverageContext<
+            MultiRegionEventCoverageSource>& ctx) const
+    {
+        auto const published = regions();
+        auto output = ctx.output<"multi-region-event-source-output">();
+        output.publish(published);
+        for (auto const region : published) output.change(region);
+    }
+
+    void tock_coverage(
+        iv::TockCoverageContext<MultiRegionEventCoverageSource>& ctx) const
+    {
+        auto output =
+            ctx.output<"multi-region-event-source-output">().regions();
+        IV_ASSERT(output.size() == 2,
+            "multi-Region event source did not receive two output Regions");
+        output[0].write({
+            .time = iv::GlobalIndex::from_signed(10),
+            .value = iv::TriggerEvent{},
+        });
+        output[0].write({
+            .time = iv::GlobalIndex::from_signed(12),
+            .value = iv::TriggerEvent{},
+        });
+        output[1].write({
+            .time = iv::GlobalIndex::from_signed(12),
+            .value = iv::TriggerEvent{},
+        });
+        output[1].write({
+            .time = iv::GlobalIndex::from_signed(15),
+            .value = iv::TriggerEvent{},
+        });
+    }
+};
+
+struct MultiRegionEventCoverageConsumer {
+    struct alignas(64) TockState {
+        std::uint64_t calls = 0;
+        std::uint64_t region_count = 0;
+        std::uint64_t first_event_count = 0;
+        std::uint64_t second_event_count = 0;
+        std::uint64_t first_last_time = 0;
+        std::uint64_t second_first_time = 0;
+    };
+
+    static constexpr auto inputs()
+    {
+        return std::array{iv::event_input(
+            "multi-region-event-coverage-input",
+            iv::EventTypeId::trigger,
+            iv::InputAccess::coverage)};
+    }
+
+    static constexpr auto outputs()
+    {
+        return std::array{iv::event_output(
+            "multi-region-event-consumer-output",
+            iv::EventTypeId::trigger,
+            iv::OutputProduction::coverage,
+            iv::EventOutputOptions{.max_events_per_index = 1.0})};
+    }
+
+    void propagate_forward_coverage(
+        iv::PropagateForwardCoverageContext<
+            MultiRegionEventCoverageConsumer>& ctx) const
+    {
+        auto input = ctx.input<"multi-region-event-coverage-input">();
+        auto output = ctx.output<"multi-region-event-consumer-output">();
+        output.publish(input.regions());
+        output.change(input.changed());
+    }
+
+    void propagate_reverse_coverage(
+        iv::PropagateReverseCoverageContext<
+            MultiRegionEventCoverageConsumer>& ctx) const
+    {
+        ctx.input<"multi-region-event-coverage-input">().require(
+            ctx.output<"multi-region-event-consumer-output">().required());
+    }
+
+    void tock_coverage(
+        iv::TockCoverageContext<MultiRegionEventCoverageConsumer>& ctx) const
+    {
+        auto input =
+            ctx.input<"multi-region-event-coverage-input">().regions();
+        auto output =
+            ctx.output<"multi-region-event-consumer-output">().regions();
+        IV_ASSERT(input.size() == 2 && output.size() == input.size(),
+            "multi-Region event consumer did not receive matching Region lists");
+
+        auto& state = ctx.tock_state();
+        ++state.calls;
+        state.region_count = input.size();
+        for (std::size_t region = 0; region < input.size(); ++region) {
+            IV_ASSERT(input[region].range() == output[region].range(),
+                "multi-Region event input and output ranges differ");
+            input[region].for_each([&](iv::TimedEvent const& event) {
+                if (region == 0) {
+                    ++state.first_event_count;
+                    state.first_last_time = event.time.bits();
+                } else {
+                    if (state.second_event_count == 0) {
+                        state.second_first_time = event.time.bits();
+                    }
+                    ++state.second_event_count;
+                }
+                output[region].write(event);
+            });
+        }
+    }
+};
+
+struct MultiRegionSequentialEventConsumer {
+    std::uint8_t configuration_marker = 0;
+
+    struct alignas(128) State {
+        std::uint64_t calls = 0;
+        std::uint64_t event_count = 0;
+        std::array<std::uint64_t, 5> times{};
+    };
+
+    static constexpr auto inputs()
+    {
+        return std::array{iv::event_input(
+            "multi-region-sequential-event-input",
+            iv::EventTypeId::trigger,
+            iv::InputAccess::sequential)};
+    }
+
+    static constexpr auto outputs() { return std::tuple{}; }
+
+    void tick_block(
+        iv::TickBlockContext<MultiRegionSequentialEventConsumer> const& ctx)
+        const
+    {
+        auto const events =
+            ctx.input<"multi-region-sequential-event-input">().events();
+        auto& state = ctx.state();
+        ++state.calls;
+        state.event_count = events.size();
+        auto const count = std::min(events.size(), state.times.size());
+        for (std::size_t event = 0; event < count; ++event) {
+            state.times[event] = events[event].time.bits();
+        }
+    }
+};
+
+void multi_region_module(iv::GraphBuilder& graph)
+{
+    auto source = graph.node<
+        "iv.test.graph_jit.state_context.multi_region_source">();
+    auto coverage_consumer = graph.node<
+        "iv.test.graph_jit.state_context.multi_region_coverage_consumer">();
+    auto sequential_consumer = graph.node<
+        "iv.test.graph_jit.state_context.multi_region_sequential_consumer">();
+    coverage_consumer(source);
+    sequential_consumer(source);
+    auto event_source = graph.node<
+        "iv.test.graph_jit.state_context.multi_region_event_source">();
+    auto event_coverage_consumer = graph.node<
+        "iv.test.graph_jit.state_context.multi_region_event_coverage_consumer">();
+    auto sequential_event_consumer = graph.node<
+        "iv.test.graph_jit.state_context.multi_region_sequential_event_consumer">();
+    event_coverage_consumer.connect_event_input(0, event_source.event_port());
+    sequential_event_consumer.connect_event_input(
+        0, event_source.event_port());
+    graph.outputs();
+}
+
 void native_batch_tick_module(iv::GraphBuilder& graph)
 {
     (void)graph.node<"iv.test.graph_jit.state_context.native_batch_tick">(
@@ -6851,6 +7226,24 @@ IV_NODE("iv.test.graph_jit.state_context.fractional_index_producer", FractionalI
 IV_NODE("iv.test.graph_jit.state_context.fractional_index_consumer", FractionalIndexConsumer);
 IV_NODE("iv.test.graph_jit.state_context.persisted_fft_value_producer", PersistedFFTValueProducer);
 IV_NODE("iv.test.graph_jit.state_context.persisted_non_project_rate_sample_producer", PersistedNonProjectRateSampleProducer);
+IV_NODE(
+    "iv.test.graph_jit.state_context.multi_region_source",
+    MultiRegionCoverageSource);
+IV_NODE(
+    "iv.test.graph_jit.state_context.multi_region_coverage_consumer",
+    MultiRegionCoverageConsumer);
+IV_NODE(
+    "iv.test.graph_jit.state_context.multi_region_sequential_consumer",
+    MultiRegionSequentialConsumer);
+IV_NODE(
+    "iv.test.graph_jit.state_context.multi_region_event_source",
+    MultiRegionEventCoverageSource);
+IV_NODE(
+    "iv.test.graph_jit.state_context.multi_region_event_coverage_consumer",
+    MultiRegionEventCoverageConsumer);
+IV_NODE(
+    "iv.test.graph_jit.state_context.multi_region_sequential_event_consumer",
+    MultiRegionSequentialEventConsumer);
 IV_MODULE("iv.test.graph_jit.state_context.activity_module", activity_module);
 IV_MODULE("iv.test.graph_jit.state_context.activity_disabled_module", activity_disabled_module);
 IV_MODULE("iv.test.graph_jit.state_context.activity_type_default_module", activity_type_default_module);
@@ -6878,6 +7271,9 @@ IV_MODULE(
 IV_MODULE(
     "iv.test.graph_jit.state_context.native_batch_reverse_module",
     native_batch_reverse_module);
+IV_MODULE(
+    "iv.test.graph_jit.state_context.multi_region_module",
+    multi_region_module);
 )cpp";
     static constexpr std::string_view part_4 = R"cpp(
 namespace {
@@ -8585,6 +8981,7 @@ TEST(GraphJitSharedRuntimeFixture, BuildPackage)
     EXPECT_TRUE(has_leaf_definition(
         "iv.test.graph_jit.state_context.background_evaluation_call"));
     EXPECT_TRUE(has_module_definition(graph_jit_background_execution_module_id));
+    EXPECT_TRUE(has_module_definition(graph_jit_multi_region_module_id));
     EXPECT_TRUE(has_module_definition(graph_jit_native_batch_tick_module_id));
     EXPECT_TRUE(has_module_definition(
         graph_jit_native_batch_aliasing_module_id));
@@ -8984,6 +9381,280 @@ TEST_F(GraphJitRuntimeFixture, GeneratedBackgroundRootsUseSuppliedBatchBindings)
     EXPECT_EQ(propagated.output_requirements[0].port, 0u);
     EXPECT_EQ(propagated.output_requirements[0].required, requested);
     workspace.discard(std::move(prepared));
+}
+
+TEST_F(GraphJitRuntimeFixture,
+     GeneratedCoverageCallbacksKeepOverlappingRegionsIndependent)
+{
+    auto compiled = compile(graph_jit_multi_region_module_id, 304);
+    ASSERT_TRUE(compiled.succeeded())
+        << (compiled.diagnostics.empty()
+                ? ""
+                : compiled.diagnostics.front().message);
+    auto& graph = *compiled.compiled_graph;
+    auto const& plan = graph.background_evaluation_plan;
+
+    auto const find_port = [&](std::string_view name,
+                               iv::graph_jit::PortDirection direction)
+        -> std::optional<iv::graph_jit::BackgroundPortIndex> {
+        for (iv::graph_jit::BackgroundPortIndex port = 0;
+             port < plan.ports.size(); ++port) {
+            if (plan.ports[port].name == name
+                && plan.ports[port].direction == direction) {
+                return port;
+            }
+        }
+        return std::nullopt;
+    };
+
+    auto const source_output = find_port(
+        "multi-region-source-output",
+        iv::graph_jit::PortDirection::output);
+    auto const coverage_consumer_output = find_port(
+        "multi-region-consumer-output",
+        iv::graph_jit::PortDirection::output);
+    auto const sequential_consumer_input = find_port(
+        "multi-region-sequential-input",
+        iv::graph_jit::PortDirection::input);
+    auto const event_source_output = find_port(
+        "multi-region-event-source-output",
+        iv::graph_jit::PortDirection::output);
+    auto const event_coverage_consumer_output = find_port(
+        "multi-region-event-consumer-output",
+        iv::graph_jit::PortDirection::output);
+    auto const sequential_event_consumer_input = find_port(
+        "multi-region-sequential-event-input",
+        iv::graph_jit::PortDirection::input);
+    ASSERT_TRUE(source_output.has_value());
+    ASSERT_TRUE(coverage_consumer_output.has_value());
+    ASSERT_TRUE(sequential_consumer_input.has_value());
+    ASSERT_TRUE(event_source_output.has_value());
+    ASSERT_TRUE(event_coverage_consumer_output.has_value());
+    ASSERT_TRUE(sequential_event_consumer_input.has_value());
+
+    auto tock_states = graph.tock_state_layout.create_storage(resources);
+    tock_states.initialize();
+    iv::BackgroundCoverageState coverage(
+        plan.accumulators.output_change_count);
+    iv::BackgroundPropagationWorkspace propagation(
+        plan, graph.specialization.sample_rate);
+    iv::PersistedDataStore data;
+    auto data_reader = data.register_reader();
+    iv::TickMaterializationStore materializations;
+    auto materialization_reader = materializations.register_reader();
+
+    auto const requested = index_coverage({{10, 16}});
+    iv::BackgroundEvaluationTransaction transaction{
+        graph,
+        tock_states,
+        coverage,
+        propagation,
+        data,
+        materializations,
+        {
+            .semantic_version = 1,
+            .roots = {
+                .locally_changed_nodes = {
+                    plan.ports[*source_output].node,
+                    plan.ports[*event_source_output].node,
+                },
+                .input_demands = {
+                    {
+                        .port = *sequential_consumer_input,
+                        .required = requested,
+                    },
+                    {
+                        .port = *sequential_event_consumer_input,
+                        .required = requested,
+                    },
+                },
+                .output_demands = {
+                    {
+                        .port = *coverage_consumer_output,
+                        .required = requested,
+                    },
+                    {
+                        .port = *event_coverage_consumer_output,
+                        .required = requested,
+                    },
+                },
+            },
+        }};
+    auto result = transaction.execute();
+    ASSERT_TRUE(result.has_value()) << result.error();
+    ASSERT_EQ(result->status, iv::BackgroundEvaluationStatus::committed);
+    ASSERT_TRUE(result->promoted_tick_materialization.has_value());
+
+    auto const coverage_node = plan.ports[*coverage_consumer_output].node;
+    ASSERT_LT(coverage_node, plan.nodes.size());
+    ASSERT_TRUE(plan.nodes[coverage_node].tock_state_node.has_value());
+    auto const* coverage_state =
+        static_cast<MultiRegionCoverageStateMirror const*>(
+            tock_states.state_ptr(
+                *plan.nodes[coverage_node].tock_state_node));
+    ASSERT_NE(coverage_state, nullptr);
+    EXPECT_EQ(coverage_state->calls, 1u);
+    EXPECT_EQ(coverage_state->region_count, 2u);
+    EXPECT_EQ(coverage_state->first_begin, index(10).bits());
+    EXPECT_EQ(coverage_state->second_begin, index(12).bits());
+    EXPECT_FLOAT_EQ(coverage_state->first_overlap_value, 1.0f);
+    EXPECT_FLOAT_EQ(coverage_state->second_overlap_value, 2.0f);
+
+    auto const event_coverage_node =
+        plan.ports[*event_coverage_consumer_output].node;
+    ASSERT_LT(event_coverage_node, plan.nodes.size());
+    ASSERT_TRUE(plan.nodes[event_coverage_node].tock_state_node.has_value());
+    auto const* event_coverage_state =
+        static_cast<MultiRegionEventCoverageStateMirror const*>(
+            tock_states.state_ptr(
+                *plan.nodes[event_coverage_node].tock_state_node));
+    ASSERT_NE(event_coverage_state, nullptr);
+    EXPECT_EQ(event_coverage_state->calls, 1u);
+    EXPECT_EQ(event_coverage_state->region_count, 2u);
+    EXPECT_EQ(event_coverage_state->first_event_count, 2u);
+    EXPECT_EQ(event_coverage_state->second_event_count, 2u);
+    EXPECT_EQ(event_coverage_state->first_last_time, index(12).bits());
+    EXPECT_EQ(event_coverage_state->second_first_time, index(12).bits());
+
+    auto node_storage = graph.node_layout.create_storage(resources);
+    node_storage.initialize();
+    auto const layout_node_for_port = [&](iv::graph_jit::BackgroundPortIndex port)
+        -> std::optional<std::size_t> {
+        auto const background_node = plan.ports.at(port).node;
+        auto const bundle = plan.nodes.at(background_node).bundle;
+        auto const configured = graph.configured_graph->node_bundles
+            .materialize_concrete_description(bundle);
+        auto const layout_node = std::ranges::find(
+            graph.node_layout.nodes,
+            configured.node_storage.get(),
+            &iv::NodeLayout::NodeRecord::node);
+        if (layout_node == graph.node_layout.nodes.end()) return std::nullopt;
+        return static_cast<std::size_t>(
+            std::distance(graph.node_layout.nodes.begin(), layout_node));
+    };
+    auto const sequential_layout_node =
+        layout_node_for_port(*sequential_consumer_input);
+    auto const sequential_event_layout_node =
+        layout_node_for_port(*sequential_event_consumer_input);
+    ASSERT_TRUE(sequential_layout_node.has_value());
+    ASSERT_TRUE(sequential_event_layout_node.has_value());
+    auto* sequential_state = static_cast<MultiRegionSequentialStateMirror*>(
+        node_storage.state_ptr(*sequential_layout_node));
+    auto* sequential_event_state =
+        static_cast<MultiRegionSequentialEventStateMirror*>(
+            node_storage.state_ptr(*sequential_event_layout_node));
+    ASSERT_NE(sequential_state, nullptr);
+    ASSERT_NE(sequential_event_state, nullptr);
+
+    iv::TickInvocationWorkspace tick_workspace(
+        plan,
+        graph.project_generation,
+        data,
+        graph.specialization.block_size);
+    iv::TickInvocationFrame frame{
+        data_reader,
+        materialization_reader,
+        tick_workspace,
+        index(10),
+        6};
+    ASSERT_NE(graph.root_operations.tick_block, nullptr);
+    graph.root_operations.tick_block(
+        node_storage.buffer().data(), &frame.call(), index(10), 6);
+
+    EXPECT_EQ(sequential_state->calls, 1u);
+    EXPECT_EQ(sequential_state->sample_count, 6u);
+    EXPECT_EQ(
+        sequential_state->values,
+        (std::array<float, 6>{1.0f, 1.0f, 3.0f, 3.0f, 2.0f, 2.0f}));
+    EXPECT_EQ(sequential_event_state->calls, 1u);
+    EXPECT_EQ(sequential_event_state->event_count, 4u);
+    EXPECT_EQ(
+        sequential_event_state->times,
+        (std::array<std::uint64_t, 5>{
+            index(10).bits(),
+            index(12).bits(),
+            index(12).bits(),
+            index(15).bits(),
+            0,
+        }));
+
+    // The narrow demand intersects only the first published Region directly.
+    // Replacing that complete Region also intersects the second Region, so the
+    // producer must receive both pre-allocated output Regions. Consumers remain
+    // absent from this transaction because neither consumer output is demanded.
+    iv::BackgroundEvaluationTransaction narrow_transaction{
+        graph,
+        tock_states,
+        coverage,
+        propagation,
+        data,
+        materializations,
+        {
+            .semantic_version = 2,
+            .roots = {
+                .locally_changed_nodes = {
+                    plan.ports[*source_output].node,
+                    plan.ports[*event_source_output].node,
+                },
+                .output_demands = {
+                    {
+                        .port = *source_output,
+                        .required = index_coverage({{10, 11}}),
+                    },
+                    {
+                        .port = *event_source_output,
+                        .required = index_coverage({{10, 11}}),
+                    },
+                },
+            },
+        }};
+    auto narrow_result = narrow_transaction.execute();
+    ASSERT_TRUE(narrow_result.has_value()) << narrow_result.error();
+    EXPECT_EQ(
+        narrow_result->status, iv::BackgroundEvaluationStatus::committed);
+    EXPECT_EQ(coverage_state->calls, 1u);
+    EXPECT_EQ(event_coverage_state->calls, 1u);
+
+    // Reverse propagation must widen the narrow output demand before the
+    // Coverage transforms require their inputs. In particular, the event
+    // transform cannot receive one partial input Region and two complete
+    // pre-allocated output Regions.
+    iv::BackgroundEvaluationTransaction narrow_transform_transaction{
+        graph,
+        tock_states,
+        coverage,
+        propagation,
+        data,
+        materializations,
+        {
+            .semantic_version = 3,
+            .roots = {
+                .locally_changed_nodes = {
+                    coverage_node,
+                    event_coverage_node,
+                },
+                .output_demands = {
+                    {
+                        .port = *coverage_consumer_output,
+                        .required = index_coverage({{10, 11}}),
+                    },
+                    {
+                        .port = *event_coverage_consumer_output,
+                        .required = index_coverage({{10, 11}}),
+                    },
+                },
+            },
+        }};
+    auto narrow_transform_result = narrow_transform_transaction.execute();
+    ASSERT_TRUE(narrow_transform_result.has_value())
+        << narrow_transform_result.error();
+    EXPECT_EQ(
+        narrow_transform_result->status,
+        iv::BackgroundEvaluationStatus::committed);
+    EXPECT_EQ(coverage_state->calls, 2u);
+    EXPECT_EQ(coverage_state->region_count, 2u);
+    EXPECT_EQ(event_coverage_state->calls, 2u);
+    EXPECT_EQ(event_coverage_state->region_count, 2u);
 }
 
 TEST_F(GraphJitRuntimeFixture, NativeBackgroundCallbacksReceiveReadyFrontierBatch)

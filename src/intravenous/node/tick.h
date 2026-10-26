@@ -341,29 +341,6 @@ namespace iv {
 
         };
 
-        // Event storage remains segmented because event sequences do not have
-        // the contiguous continuous-value Region contract.
-        class StaticRandomAccessEventInputTickAccess {
-            RandomAccessEventInputPort const* _port = nullptr;
-
-        public:
-            explicit StaticRandomAccessEventInputTickAccess(
-                RandomAccessEventInputPort const& port) noexcept
-                : _port(std::addressof(port))
-            {}
-
-            [[nodiscard]] IndexCoverage const& coverage() const noexcept
-            {
-                return _port->coverage();
-            }
-
-            template<typename Fn>
-            void for_each(GlobalIndexRange region, Fn&& fn) const
-            {
-                _port->for_each(region, std::forward<Fn>(fn));
-            }
-        };
-
         template<TickPortAccessKind Access, bool Recording>
         class StaticEventOutputTickAccess
             : private StaticOutputDispositionObserver<Recording> {
@@ -511,7 +488,9 @@ namespace iv {
                     IV_ASSERT(
                         background_index < ports.random_access_event_inputs.size(),
                         "static Random Access event input port is absent from execution context");
-                    return details::StaticRandomAccessEventInputTickAccess{
+                    constexpr auto access =
+                        details::static_input_port_access_at<Node, Index>();
+                    return details::StaticBackgroundEventInputAccess<access>{
                         ports.random_access_event_inputs[background_index]};
                 } else {
                     constexpr auto port_index =
@@ -677,7 +656,9 @@ namespace iv {
                     IV_ASSERT(
                         background_index < ports.random_access_event_inputs.size(),
                         "static Random Access event input port is absent from execution context");
-                    return details::StaticRandomAccessEventInputTickAccess{
+                    constexpr auto access =
+                        details::static_input_port_access_at<Node, Index>();
+                    return details::StaticBackgroundEventInputAccess<access>{
                         ports.random_access_event_inputs[background_index]};
                 } else {
                     constexpr auto port_index =

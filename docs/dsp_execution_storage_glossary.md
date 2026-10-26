@@ -488,6 +488,11 @@ immutable explicit range plus its complete ordered event set, which may be empty
 Neither record is a fixed-width page, and neither record boundary is determined by the
 realtime root block size.
 
+For a Tock Region or Coverage output, the persisted store also keeps the ordered
+logical list of these records. That list preserves overlap and exact duplicates.
+Physical range-index records and signed-seam slices do not define the list exposed to
+node callbacks.
+
 Validity is version-specific. An older readable root may remain pinned while a
 successor candidate is incomplete or stale. Backing storage may be RAM,
 mmap/file-backed storage, immutable chunks, compression, or another retained-data

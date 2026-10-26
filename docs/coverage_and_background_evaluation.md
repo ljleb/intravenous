@@ -12,10 +12,11 @@
 
 > **Random-access continuous representation boundary:**
 > [Random-Access Port Data, Audio Value Types, And Input Contract Direction](./random_access_port_data_direction.md)
-> defines the node-facing `ContinuousRegion<Value>` and
-> `ContinuousCoverage<Value>` contracts. Their Regions can overlap. Canonical
-> persisted storage uses owning `PersistedSampleRegion` and `PersistedEventChunk`
-> records. `ContinuousRegionStorageView` binds continuous records to node callbacks.
+> defines the node-facing continuous and event Region/Coverage contracts. Their
+> Regions can overlap or have exact duplicate ranges, and each Region retains
+> independent value/event storage. Canonical persisted storage uses owning
+> `PersistedSampleRegion` and `PersistedEventChunk` records.
+> `ContinuousRegionStorageView` binds continuous records to node callbacks.
 
 This document is the normative design for **coverage and random-access DSP semantics**,
 their incremental background-evaluation model, and the executor-side
@@ -96,14 +97,22 @@ The central rules are:
 > random-access connection requires every selected source channel to satisfy the
 > requested random-access contract; channel projection retains its own capabilities.
 
-> Computed tock continuous outputs publish an exact finite logical Region-range list.
-> The runtime derives its exact positional `IndexCoverage` union. Forward propagation
+> Computed Tock continuous and event outputs publish an exact finite logical
+> Region-range list. A Region output publishes exactly one range; a Coverage output
+> publishes zero or more ordered ranges. The runtime derives the exact positional
+> `IndexCoverage` union. Forward propagation
 > may conservatively over-report positions whose values could have changed; reverse
 > propagation may likewise conservatively over-request input positions. Under-reporting
 > either dependency direction is a correctness error, while over-reporting is a
 > performance cost. Physical record boundaries never widen the logical Region list or
 > the already-reported forward may-change positions. Mechanically pointwise replayable
 > Tick dependencies may still use compiler-generated propagation.
+
+> Event Region lists are anonymous in the initial contract. A callback can use list
+> position to keep Regions separate during that evaluation, but no stable Region ID is
+> promised across evaluations. A Sequential event consumer receives a merged
+> timeline-ordered stream in which overlapping Regions and equal-time duplicates are
+> preserved.
 
 > Invalidation and requested coverage are processed as batched background
 > evaluation transactions: all roots accumulate
@@ -1013,11 +1022,17 @@ Circular input ranges are split only at the signed-order seam internal to the st
 Readers never perform raw page-number arithmetic or treat signed order as universal
 timeline order.
 
-A candidate overwrite or void removes only its intersecting range. Records crossing
-the boundary are split, unaffected records and output subtrees remain shared, and the
-candidate's `IndexCoverage` changes by the exact overwritten or erased range. One
-transaction publishes the sample/event successor root atomically. Older roots remain
-readable while pinned and are reclaimed only off realtime.
+The store keeps logical Region lists separately from its physical range index. A
+`replace_sample_regions()` or `replace_event_regions()` batch preserves logical order,
+overlap, and exact duplicates. Its replacement domain cannot clip an old logical
+Region. The physical range index may contain signed-seam slices and may select one
+record for point lookup; it is not the node-facing Region list.
+
+An ordinary Tick-recording overwrite or explicit void remains positional. It removes
+only its intersecting range, can split a crossing physical record, and changes the
+candidate's `IndexCoverage` by the exact overwritten or erased range. One transaction
+publishes the sample/event successor root atomically. Older roots remain readable
+while pinned and are reclaimed only off realtime.
 
 Tick/persisted retention begins when a completed Tick invocation leaves its output
 `written` or `voided`. Its addressed callback range enters this store through the
@@ -1070,12 +1085,16 @@ explicit origin. Fan-in uses a stable tie break:
 Chunk evaluation order, worker scheduling, cache/store layout, and request order
 must never change equal-timestamp ordering.
 
-Because one logical random-access event read can span multiple stored chunks, node-facing
-reads expose a segmented ordered range/iterator rather than promise one contiguous
-`std::span<TimedEvent>`. Iteration preserves the ordering above and never exposes
-events outside input coverage. The store clips each visited chunk to the requested
-range; readers can binary-search the first event in that intersection rather than scan
-all earlier events in the chunk.
+An Event Region input exposes one `EventRegion`. An Event Coverage input exposes an
+ordered `EventCoverage` list. Each entry keeps its own event sequence; overlapping or
+identical Region ranges do not merge their payloads. A Region iterator clips reads to
+that Region and never exposes events outside the requested subrange.
+
+A Sequential event consumer receives one premerged immutable timeline. Background
+publication or materialization builds that timeline in advance. Tick playback only
+binary-searches and visits the selected window; it does not allocate or sort. Events
+from every logical Region remain present. Equal-time ordering uses semantic source
+order for fan-in, then Region order and producer-local order.
 
 ## 16. Persisted output storage, stable output identity, and `NodeStorage`
 
@@ -1206,7 +1225,7 @@ own:
 - the prepared activity/request selection used by the one-call-per-node Tock pass;
 - selected exact persisted-data completion plans;
 - background-produced `tock/ephemeral` result/intermediate sample/event values;
-- temporary event data and segmented views; and
+- temporary event data and event Region views; and
 - temporary references to immutable stored snapshots and records.
 
 The propagation workspace is reset once per prepared background operation. All

@@ -533,13 +533,30 @@ The governing performance invariant is:
    fixture. The bounded Front 6 correction is complete, and Front 3 is the next
    dependency-ready correctness front.
 
-   Front 3 source is now a completion candidate. It carries logical continuous Region
-   lists through propagation, transaction storage, persisted publication, and Tick
-   materialization. `BackgroundStorageRealization` pre-allocates one independent
+   Front 3 source is now a completion candidate. It carries logical continuous and
+   event Region lists through propagation, transaction storage, persisted publication,
+   and Tick materialization. `BackgroundStorageRealization` pre-allocates one independent
    buffer per selected Region and shares one producer-home allocation between the
    output's physical storage roles. Coverage-to-Sequential reduction and Tick
-   playback use the target input's generated initializer and combiner. The source and
-   adversarial tests await the collaborator's compile and complete test run.
+   playback use the target input's generated initializer and combiner. The
+   collaborator's 2026-10-25 build and full run passed all 625 tests. Follow-up review
+   added the missing postfix increment required by the declared forward iterator and
+   a compiled authored-node multi-Region integration test. The event extension gives
+   every event Region independent storage, preserves overlaps and duplicates, and
+   prebuilds the merged event timeline used by Sequential Tick consumers. The public
+   propagation operation is now `publish(...)` for both port kinds, with its argument
+   selected statically from Region versus Coverage production. These corrections and
+   the new event adversarial tests await the next collaborator run. Final static
+   review also closed event output demands over complete logical Regions before
+   reverse propagation, preserved current logical order when Tick materialization
+   mixes recomputed and retained records, rejected event coverage
+   migration across different production kinds, and required nonempty external event
+   views to carry Region descriptors and per-Region callbacks. Contextual replayed
+   Tick outputs continue to use positional publication internally; narrow replay
+   demand is no longer expanded to the complete canonical output coverage, and
+   persisted replay records use positional overwrite instead of authored logical
+   Region-batch replacement. These final corrections also await the next collaborator
+   run.
 
 3. Complete realtime persisted playback and recording span operations. Persisted
    playback now clears only requested sample windows, traverses relevant sample

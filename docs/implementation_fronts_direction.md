@@ -352,18 +352,19 @@ Detailed direction:
 ### Front 3 entry friction: logical Region replacement (2026-10-24)
 
 The planned data-bearing `Coverage` preserves overlapping Regions, duplicate Regions,
-and Region decomposition. The current runtime cannot preserve those facts. It reduces
+and Region decomposition. At Front 3 entry, the runtime could not preserve those
+facts. It reduced
 `RegionInputConfig` and `CoverageInputConfig` to
-`BackgroundPortPlan::random_access_input`. It also reduces `RegionOutputConfig` and
+`BackgroundPortPlan::random_access_input`. It also reduced `RegionOutputConfig` and
 `CoverageOutputConfig` to `BackgroundPortPlan::authored_tock_output`.
 
-`TockSampleOutputPort` then writes one `Sample` for each global index and channel into
+`TockSampleOutputPort` then wrote one `Sample` for each global index and channel into
 storage selected by one positional `IndexCoverage`. `TickMaterializedSampleInput`
-explicitly stores disjoint records. `PersistedDataStore::Candidate::overwrite()`
-removes every sample record that intersects the new range before it inserts one
+explicitly stored disjoint records. `PersistedDataStore::Candidate::overwrite()`
+removed every sample record that intersected the new range before it inserted one
 replacement `PersistedSampleRegion`. `BackgroundStorageRealization::stage_persisted_data()`
-also rejects overlapping storage slots for one persisted output. These paths flatten
-all Region decomposition and multiplicity.
+also rejected overlapping storage slots for one persisted output. These paths
+flattened all Region decomposition and multiplicity.
 
 Changing the range tree to permit overlaps is not sufficient. A partial recomputation
 can replace the middle of one logical Region. Splitting that Region into physical
@@ -373,7 +374,7 @@ when the values do not change. Conversely, preserving one logical Region require
 rule that identifies which old Region each new Region replaces, or requires the
 runtime to recompute and publish a complete logical Region set.
 
-Front 3 must settle one of these contracts before source implementation continues:
+Front 3 had to settle one of these contracts before source implementation continued:
 
 1. Region decomposition is semantic. Add logical Region identity and publish a batch
    replacement operation that preserves overlaps and duplicates independently of the
@@ -385,7 +386,7 @@ Front 3 must settle one of these contracts before source implementation continue
    This weakens the current statement that a consumer receives and can process each
    Region independently. It is a normative design change, not an implementation fact.
 
-The recommended direction combines the first two contracts without adding authored
+The selected direction combines the first two contracts without adding authored
 stable Region IDs. Keep `IndexCoverage` as the positional set used by propagation.
 Store each logical Region as one immutable object, and make physical index entries
 refer to that object. Before reverse planning, expand a replacement domain to contain
@@ -419,9 +420,9 @@ the same bytes for their overlapping logical positions.
 
 For a `RegionOutputConfig` continuous output, the same representation has exactly one
 Region. For a `CoverageOutputConfig` continuous output, the list can contain zero or
-more Regions. The propagation result must retain the list shape because
-`OutputCoverageChange::publish_coverage()` currently retains only `IndexCoverage`,
-which normalizes away overlap, duplicates, ordering, and Region count.
+more Regions. The propagation result must retain the list shape because the former
+`OutputCoverageChange::publish_coverage()` path retained only `IndexCoverage`, which
+normalized away overlap, duplicates, ordering, and Region count.
 
 This contract also means that output Region boundaries cannot first be discovered by
 examining sample values during `tock_coverage()`. A node whose Region list depends on
@@ -431,10 +432,15 @@ node-owned output buffers are rejected: both move output ownership and allocatio
 the evaluation callback even though the propagation phase already exists to describe
 the output shape.
 
-### Front 3 source status (2026-10-25)
+### Front 3 source status (2026-10-26)
 
-The active source is a Front 3 completion candidate. Collaborator compilation and a
-complete test run remain pending.
+The collaborator compiled the earlier Front 3 continuous completion candidate and
+reported that all 625 tests passed. Follow-up review added the missing postfix
+increment on the public forward iterator and a compiled authored-node test that
+carries two overlapping continuous Regions through the generated callback ABI. The
+current change extends the same representation to event ports and settles the public
+callback facade described below. These corrections and the event adversarial tests
+await the next collaborator run.
 
 `ContinuousRegionStorageView` is the non-owning callback ABI. Node code receives it
 through `ContinuousRegion<Value>`, `WritableContinuousRegion<Value>`,
@@ -453,19 +459,28 @@ tuple needed to construct one value. Separate
 turn disjoint contributions into an empty intersection or merge overlapping
 contributions into one Region.
 
-The authored `PropagateForwardCoverageContext` facade exposes Region-list publication
-only for continuous outputs and positional `IndexCoverage` publication only for event
-outputs. The reflected `OutputCoverageChange` record retains both operations because
-generated replay uses the same ABI, but an authored continuous callback cannot compile
-a call to `publish_coverage()`.
+The typed `PropagateForwardCoverageContext` facade now exposes one public operation:
+`publish(GlobalIndexRange)` for a Region output and
+`publish(span<GlobalIndexRange const>)` for a Coverage output. The static output
+configuration selects the valid overload. The rule is identical for continuous and
+event outputs. The superseded event-only positional-publication design is retained in
+[historical documentation](./historical/front_3_event_coverage_before_anonymous_region_lists_2026-10-26.md).
+
+Event Region/Coverage ports now preserve the same anonymous ordered Region list as
+continuous ports. `EventRegion` and `WritableEventRegion` expose one independent event
+sequence. `EventCoverage` and `WritableEventCoverage` expose an iterable list of those
+Regions. Overlapping and duplicate ranges do not share event storage. Event fan-in
+clips each source Region to the common available positional coverage, then retains one
+Region contribution per source. Sequential consumers receive a premerged immutable
+timeline; the audio thread does not allocate or sort while reading it.
 
 `BackgroundStorageRealization` allocates one independent contiguous buffer for each
 selected logical Region before `tock_coverage()` runs. All produced
 `PortStoragePlan` roles for one `BackgroundPortIndex` output share the same
-`TransactionSampleStorage` owner. This gives the node callback one writable Region
-list even when planning retains both `background` and `persisted_data` roles. It also
-prevents a callback from writing duplicate logical Regions merely because the output
-has several physical consumers.
+`TransactionSampleStorage` or `TransactionEventStorage` owner. This gives the node
+callback one writable Region list even when planning retains both `background` and
+`persisted_data` roles. It also prevents a callback from writing duplicate logical
+Regions merely because the output has several physical consumers.
 
 An externally bound `BackgroundSampleReadView` or `BackgroundSampleWriteView` must
 match the planned `ContinuousValueStorageGeometry` and the complete `ChannelLayout`.
@@ -486,27 +501,65 @@ continuous connection contains more than one `SampleProjectionPlan`. Each projec
 is one logical contribution, so such a connection can supply Coverage but cannot
 supply the input's required single Region.
 
-`PersistedDataStore::Candidate::replace_sample_regions()` replaces complete logical
-Region batches. `PersistedSampleRegion` owns registered continuous-value bytes, while
+`PersistedDataStore::Candidate::replace_sample_regions()` and
+`replace_event_regions()` replace complete logical Region batches produced by
+authored Region/Coverage callbacks.
+`PersistedSampleRegion` owns registered continuous-value bytes, while
 `PersistedDataStore::Snapshot::sample_region_views()` exposes matching
-`ContinuousRegionStorageView` records. Overlapping Regions, exact duplicate Regions,
-and producer order remain visible after publication. A replacement domain cannot
-clip an old logical Region.
+`ContinuousRegionStorageView` records. `PersistedEventChunk` owns one event Region.
+Overlapping Regions, exact duplicate Regions, and producer order remain visible after
+publication for both port kinds. A replacement domain cannot clip an old logical
+Region.
 
 `TickMaterializedSampleInput` retains the logical Region list and resolved geometry.
-Tick Random Access views bind those Regions directly. Coverage-to-Sequential
+`TickMaterializedEventInput` retains the event Region list and a background-built
+merged timeline for Sequential playback. Tick Random Access views bind the Regions
+directly. Coverage-to-Sequential
 materialization and `TickInvocationWorkspace::SequentialSampleSlot` use the target
 input's generated neutral initializer and combiner. This applies to resolved
 `FFTBlock` values as well as `Sample` values.
+
+Reverse propagation closes a required authored Region/Coverage output over complete
+logical Regions before it calls the node's reverse callback. This rule applies to
+event outputs as well as continuous outputs. A narrow request that intersects one
+event Region therefore cannot ask the node to compute part of that Region while
+storage selection prepares the complete Region list. Replayed Tick outputs are not
+included: their `IndexCoverage` is positional and their invocation schedule remains
+bounded by the requested positions.
+
+Tick-materialization carry-forward uses an explicit current materialized-record order.
+For the current Sequential Tick-input path, the transaction builds that order from
+the newly produced positional request windows and the wholly retained previous
+windows, then applies signed-canonical ordering. `carry_forward()` no longer infers a
+replacement position from the previous snapshot alone. Its lower-level merge also
+preserves an explicitly supplied nonadjacent order such as `[A, C, B]`. The same rule
+applies to `TickMaterializedSampleRegion` and `TickMaterializedEventChunk`.
+
+Coverage-state migration now requires matching `OutputProductionKind` for both event
+and continuous outputs. A stable event port that changes from Coverage production to
+Region production does not inherit a predecessor Region list that violates its new
+shape contract. External `BackgroundEventReadView` and `BackgroundEventWriteView`
+bindings must also supply Region descriptors and the matching Region callback when
+their coverage is nonempty.
+
+Compiler-generated contextual replay remains positional. Its output ports have
+`OutputProductionKind::tick`, so `replay_forward_coverage()` calls the internal
+`OutputCoverageChange::publish_coverage()` operation. Only authored Region and
+Coverage propagation uses the Region-list operation exposed through the typed
+`publish(...)` facade. Persisted replay results use
+`PersistedDataStore::Candidate::overwrite()` for each selected positional record;
+they do not use `replace_sample_regions()` or `replace_event_regions()`, which enforce
+the authored logical Region-list replacement contract.
 
 Generation reconciliation uses the same `BackgroundConnectionPlan` route and
 `SampleProjectionPlan` logic as ordinary propagation. An
 `InputCoverageChangeRequest` created by `BackgroundCoverageState::Migration::commit()`
 therefore carries both the current positional coverage and the current logical Region
-list. Rewiring a stable continuous input does not reduce its Region shape to
+list. Rewiring a stable continuous or event input does not reduce its Region shape to
 `IndexCoverage` during migration.
 
-Reuse of `TickMaterializedSampleInput` also follows whole-Region ownership.
+Reuse of `TickMaterializedSampleInput` and `TickMaterializedEventInput` also follows
+whole-Region ownership.
 `BackgroundEvaluationTransaction::restrict_input_demand()` retains a previous
 `TickMaterializedSampleRegion` only when changed coverage does not intersect it. Any
 current demand that intersects such an unchanged Region retains the complete Region.
@@ -527,7 +580,28 @@ exact duplicate Regions, rejection of external continuous views whose full layou
 Region descriptors disagree with the plan, stable-input migration with a logical
 Region list, whole-Region Tick materialization carry-forward, resolved `FFTBlock` Region callbacks,
 persisted `FFTBlock` Regions, Tick Random Access materialization, and overlapping
-`FFTBlock` reduction into a Sequential Tick input.
+`FFTBlock` reduction into a Sequential Tick input, event Coverage propagation through
+the generated callback ABI, independent overlapping event Regions, persisted event
+Region replacement, and deterministic Coverage-to-Sequential event merging with
+equal-time duplicates preserved. The generated callback test also applies a narrow
+demand to the first of two overlapping Regions and verifies that the producer still
+receives both complete output Regions required by the positional replacement domain.
+Light storage and Tick-materialization tests also cross the signed-order seam and
+verify forward order relative to the event Region's own `begin`. Additional tests
+keep a narrow Tick replay request bounded inside a much larger available coverage,
+partially overwrite persisted Tick sample and event records without erasing their
+unselected prefix or suffix, preserve an explicitly supplied
+`[recomputed A, retained C, recomputed B]` carry-forward order, reject event coverage
+migration across production kinds, and reject nonempty external event views without
+a matching Region list and Region reader. Event fan-in coverage also verifies that
+each source Region is clipped to the common complete range without merging exact
+duplicate contributions, and that Random Access event materialization maps those
+duplicate clipped ranges back to the correct source Regions.
+
+The event Regions are intentionally anonymous. Their list positions are meaningful
+within the current publication and callback but are not stable identities. Optional
+explicit identifiers, dynamic identifier creation, UI enumeration, and selection by
+identifier remain future work rather than Front 3 completion requirements.
 
 One limitation remains outside Front 3. Background contextual replay of a Sequential
 continuous input still accepts only `Sample` at project rate. The validation is in

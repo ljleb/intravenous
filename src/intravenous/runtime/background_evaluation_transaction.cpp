@@ -526,22 +526,27 @@ class BackgroundEvaluationTransaction::Impl {
         auto& self = *static_cast<Impl*>(opaque);
         auto const& plan = self.graph_->background_evaluation_plan;
         auto const& snapshot = *self.working_data_;
-        IndexCoverage affected = required | changed;
-        if (affected.empty()) return;
+        auto const authored_regions = plan.ports[port].output_production
+            != OutputProductionKind::tick;
+        auto affected = required;
+        if (authored_regions) affected.include(changed);
+        if (affected.empty() && changed.empty()) return;
 
-        // Demand selects complete logical Regions. This closure deliberately
-        // uses the ordered Region list rather than the normalized positional
-        // union, so overlaps and duplicates do not change callback shape.
-        bool widened = true;
-        while (widened) {
-            widened = false;
-            for (auto const region : regions) {
-                if ((IndexCoverage{region} & affected).empty()
-                    || affected.contains(region)) {
-                    continue;
+        // Authored Region/Coverage production selects complete logical
+        // Regions. Tick production is positional; its replay schedule must
+        // remain bounded by the requested coverage.
+        if (authored_regions) {
+            bool widened = true;
+            while (widened) {
+                widened = false;
+                for (auto const region : regions) {
+                    if ((IndexCoverage{region} & affected).empty()
+                        || affected.contains(region)) {
+                        continue;
+                    }
+                    affected.include(region);
+                    widened = true;
                 }
-                affected.include(region);
-                widened = true;
             }
         }
 
@@ -569,7 +574,9 @@ class BackgroundEvaluationTransaction::Impl {
 
             auto desired = available & affected;
             additional.include(desired - existing);
-            additional.include(available & changed);
+            if (authored_regions) {
+                additional.include(available & changed);
+            }
 
             auto invalidated = existing & changed;
             if (!invalidated.empty()) {
@@ -646,7 +653,12 @@ class BackgroundEvaluationTransaction::Impl {
             }
         } else if (auto const* event =
                        self.previous_materialization_->find_event(port)) {
-            retained = (event->coverage - changed) & required;
+            for (auto const& region : event->chunks) {
+                if (!(IndexCoverage{region.range} & required).empty()
+                    && (IndexCoverage{region.range} & changed).empty()) {
+                    retained.include(region.range);
+                }
+            }
         }
         if (retained.empty()) return;
         required = required - retained;
@@ -670,7 +682,21 @@ class BackgroundEvaluationTransaction::Impl {
         BackgroundEvaluationCallFrameSelection selection{
             .binding_coverage =
                 std::vector<IndexCoverage>(plan.runtime.bindings.size()),
+            .binding_regions =
+                std::vector<std::vector<GlobalIndexRange>>(
+                    plan.runtime.bindings.size()),
             .sample_rate = graph_->specialization.sample_rate,
+        };
+        auto assign_intersecting_regions = [](
+            std::vector<GlobalIndexRange>& target,
+            std::span<GlobalIndexRange const> regions,
+            IndexCoverage const& required) {
+            target.clear();
+            for (auto const region : regions) {
+                if (!(IndexCoverage{region} & required).empty()) {
+                    target.push_back(region);
+                }
+            }
         };
         for (auto const& required : prepared_->result().input_requirements) {
             // A disconnected Random Access input has empty coverage, so its
@@ -680,13 +706,40 @@ class BackgroundEvaluationTransaction::Impl {
                 continue;
             }
             auto const slot = plan.runtime.port_bindings[required.port];
-            if (slot)
+            if (slot) {
                 selection.binding_coverage[*slot].include(required.required);
+                auto const& port = plan.ports[required.port];
+                if (port.input_access == InputAccessKind::sequential) {
+                    auto const& coverage = selection.binding_coverage[*slot];
+                    selection.binding_regions[*slot].assign(
+                        coverage.begin(), coverage.end());
+                } else {
+                    auto const regions =
+                        prepared_->input_regions(required.port);
+                    assign_intersecting_regions(
+                        selection.binding_regions[*slot],
+                        regions,
+                        selection.binding_coverage[*slot]);
+                }
+            }
         }
         for (auto const& required : prepared_->result().output_requirements) {
             auto const slot = plan.runtime.port_bindings[required.port];
             if (slot && node_evaluates(plan.ports[required.port].node)) {
                 selection.binding_coverage[*slot].include(required.required);
+                auto const& port = plan.ports[required.port];
+                if (port.output_production == OutputProductionKind::tick) {
+                    auto const& coverage = selection.binding_coverage[*slot];
+                    selection.binding_regions[*slot].assign(
+                        coverage.begin(), coverage.end());
+                } else {
+                    auto const regions =
+                        prepared_->output_regions(required.port);
+                    assign_intersecting_regions(
+                        selection.binding_regions[*slot],
+                        regions,
+                        selection.binding_coverage[*slot]);
+                }
             }
         }
         return selection;
@@ -716,7 +769,11 @@ class BackgroundEvaluationTransaction::Impl {
         for (graph_jit::PortStorageIndex index = 0;
              index < plan.storage.ports.size(); ++index) {
             auto const& storage = plan.storage.ports[index];
-            if (storage.kind != PortKind::sample || !storage.output_port) {
+            if (!storage.output_port) {
+                continue;
+            }
+            if (plan.ports[*storage.output_port].output_production
+                == OutputProductionKind::tick) {
                 continue;
             }
             auto const regions = prepared_->output_regions(
@@ -830,10 +887,9 @@ class BackgroundEvaluationTransaction::Impl {
             }
         }
 
-        auto select_complete_sample_regions =
+        auto select_complete_regions =
             [&](graph_jit::PortStorageIndex index) {
             auto const& storage = plan.storage.ports[index];
-            if (storage.kind != PortKind::sample) return false;
 
             std::vector<GlobalIndexRange> selected_regions;
             auto append_intersecting = [&](std::span<GlobalIndexRange const> regions) {
@@ -855,7 +911,20 @@ class BackgroundEvaluationTransaction::Impl {
                     append_intersecting(prepared_->input_regions(
                         materialization.target_port));
                 }
-            } else if (storage.output_port) {
+            } else if (storage.event_materialization) {
+                auto const& materialization = plan.storage
+                    .event_materializations[*storage.event_materialization];
+                auto const sequential = materialization.target_port
+                    && *materialization.target_port < plan.ports.size()
+                    && plan.ports[*materialization.target_port].input_access
+                        == InputAccessKind::sequential;
+                if (materialization.target_port && !sequential) {
+                    append_intersecting(prepared_->input_regions(
+                        *materialization.target_port));
+                }
+            } else if (storage.output_port
+                && plan.ports[*storage.output_port].output_production
+                    != OutputProductionKind::tick) {
                 append_intersecting(
                     prepared_->output_regions(*storage.output_port));
             } else {
@@ -864,15 +933,26 @@ class BackgroundEvaluationTransaction::Impl {
                 // one complete logical target port, not one copy per channel
                 // subset or per consumer.
                 for (auto const subset : storage.target_subsets) {
-                    if (subset >= plan.sample_target_subsets.size()) continue;
-                    auto const& target = plan.sample_target_subsets[subset];
                     auto const found = std::ranges::find_if(
                         plan.ports,
                         [&](graph_jit::BackgroundPortPlan const& port) {
-                            return port.direction
-                                    == graph_jit::PortDirection::input
-                                && port.kind == PortKind::sample
-                                && port.configured_port == target.port;
+                            if (port.direction
+                                    != graph_jit::PortDirection::input
+                                || port.kind != storage.kind) {
+                                return false;
+                            }
+                            if (storage.kind == PortKind::sample) {
+                                return subset < plan.sample_target_subsets.size()
+                                    && port.configured_port
+                                        == plan.sample_target_subsets[subset].port;
+                            }
+                            return subset < plan.event_target_subsets.size()
+                                && port.configured_port.node_bundle_handle
+                                    == plan.event_target_subsets[subset]
+                                        .port.bundle
+                                && port.configured_port.port_index
+                                    == plan.event_target_subsets[subset]
+                                        .port.port;
                         });
                     if (found == plan.ports.end()) continue;
                     auto const port_index = static_cast<
@@ -903,7 +983,7 @@ class BackgroundEvaluationTransaction::Impl {
             changed = false;
             for (graph_jit::PortStorageIndex index = 0;
                  index < plan.storage.ports.size(); ++index) {
-                changed = select_complete_sample_regions(index) || changed;
+                changed = select_complete_regions(index) || changed;
             }
             for (auto const& materialization :
                  plan.storage.sample_materializations) {
@@ -959,7 +1039,6 @@ class BackgroundEvaluationTransaction::Impl {
             auto const& storage = plan.storage.ports[index];
             if (storage.storage !=
                     graph_jit::PortStorageKind::persisted_data
-                || storage.kind != PortKind::sample
                 || !storage.output_port) {
                 continue;
             }
@@ -977,6 +1056,43 @@ class BackgroundEvaluationTransaction::Impl {
             }
         }
         return selection;
+    }
+
+    void expand_output_binding_selection(
+        BackgroundEvaluationCallFrameSelection& bindings,
+        BackgroundStorageSelection const& storage) const
+    {
+        auto const& plan = graph_->background_evaluation_plan;
+        for (graph_jit::BackgroundBindingSlot slot = 0;
+             slot < plan.runtime.bindings.size(); ++slot) {
+            auto const& binding = plan.runtime.bindings[slot];
+            if (binding.direction != graph_jit::PortDirection::output
+                || binding.port >= plan.ports.size()
+                || !node_evaluates(plan.ports[binding.port].node)) {
+                continue;
+            }
+            auto selected = bindings.binding_coverage[slot];
+            for (auto const storage_index : binding.storage) {
+                if (storage_index < storage.storage_coverage.size()) {
+                    selected.include(
+                        storage.storage_coverage[storage_index]);
+                }
+            }
+            bindings.binding_coverage[slot] = selected;
+            auto& regions = bindings.binding_regions[slot];
+            regions.clear();
+            if (plan.ports[binding.port].output_production
+                == OutputProductionKind::tick) {
+                regions.assign(selected.begin(), selected.end());
+                continue;
+            }
+            auto const published = prepared_->output_regions(binding.port);
+            for (auto const region : published) {
+                if (!(IndexCoverage{region} & selected).empty()) {
+                    regions.push_back(region);
+                }
+            }
+        }
     }
 
     [[nodiscard]] std::expected<BackgroundEvaluationResult, std::string> run()
@@ -1076,6 +1192,7 @@ class BackgroundEvaluationTransaction::Impl {
 
         auto binding = binding_selection();
         auto storage = storage_selection(binding, *working_data_);
+        expand_output_binding_selection(binding, storage);
         auto realization = std::make_unique<BackgroundStorageRealization>(
             graph_->background_evaluation_plan,
             *data_,
@@ -1166,6 +1283,55 @@ class BackgroundEvaluationTransaction::Impl {
             tick_materialization = std::move(*frozen);
             if (previous_materialization_
                 && !materialization_retention_.empty()) {
+                auto const append_ranges = [](
+                    std::vector<GlobalIndexRange>& target,
+                    auto const& regions) {
+                    for (auto const& region : regions) {
+                        target.push_back(region.range);
+                    }
+                };
+                for (auto& retention : materialization_retention_) {
+                    retention.logical_regions.clear();
+                    if (auto const* produced =
+                            tick_materialization->find_sample(retention.port)) {
+                        append_ranges(
+                            retention.logical_regions, produced->regions);
+                    } else if (auto const* produced =
+                                   tick_materialization->find_event(
+                                       retention.port)) {
+                        append_ranges(
+                            retention.logical_regions, produced->chunks);
+                    }
+                    if (auto const* previous =
+                            previous_materialization_->find_sample(
+                                retention.port)) {
+                        for (auto const& region : previous->regions) {
+                            if (retention.retained.contains(region.range)) {
+                                retention.logical_regions.push_back(
+                                    region.range);
+                            }
+                        }
+                    } else if (auto const* previous =
+                                   previous_materialization_->find_event(
+                                       retention.port)) {
+                        for (auto const& region : previous->chunks) {
+                            if (retention.retained.contains(region.range)) {
+                                retention.logical_regions.push_back(
+                                    region.range);
+                            }
+                        }
+                    }
+                    std::stable_sort(
+                        retention.logical_regions.begin(),
+                        retention.logical_regions.end(),
+                        [](GlobalIndexRange left, GlobalIndexRange right) {
+                            if (left.begin == right.begin) {
+                                return left.extent > right.extent;
+                            }
+                            return SignedGlobalIndexOrder{}(
+                                left.begin, right.begin);
+                        });
+                }
                 tick_materialization->carry_forward(
                     *previous_materialization_, materialization_retention_);
             }

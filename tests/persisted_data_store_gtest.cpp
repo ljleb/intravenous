@@ -142,12 +142,15 @@ TEST(TickMaterializationSnapshot,
     auto previous_event = iv::make_tick_materialized_event_input(
         2,
         iv::EventTypeId::trigger,
-        iv::IndexCoverage{range(0, 8)},
+        std::vector<iv::GlobalIndexRange>{
+            range(0, 3), range(3, 2), range(5, 3)},
         {
-            {.time = index(1), .value = iv::TriggerEvent{}},
-            {.time = index(3), .value = iv::TriggerEvent{}},
-            {.time = index(5), .value = iv::TriggerEvent{}},
-            {.time = index(7), .value = iv::TriggerEvent{}},
+            {{.time = index(1), .value = iv::TriggerEvent{}}},
+            {{.time = index(3), .value = iv::TriggerEvent{}}},
+            {
+                {.time = index(5), .value = iv::TriggerEvent{}},
+                {.time = index(7), .value = iv::TriggerEvent{}},
+            },
         },
         {});
     iv::TickMaterializationSnapshot previous{
@@ -167,8 +170,8 @@ TEST(TickMaterializationSnapshot,
     auto replacement_event = iv::make_tick_materialized_event_input(
         2,
         iv::EventTypeId::trigger,
-        iv::IndexCoverage{range(3, 2)},
-        {{.time = index(4), .value = iv::TriggerEvent{}}},
+        std::vector<iv::GlobalIndexRange>{range(3, 2)},
+        {{{.time = index(4), .value = iv::TriggerEvent{}}}},
         {});
     iv::TickMaterializationSnapshot current{
         4,
@@ -177,14 +180,18 @@ TEST(TickMaterializationSnapshot,
         {std::move(replacement_sample)},
         {std::move(replacement_event)},
     };
+    iv::IndexCoverage retained_coverage{range(0, 3)};
+    retained_coverage.include(range(5, 3));
     std::array retention{
         iv::TickMaterializationRetention{
             .port = 1,
-            .retained = iv::IndexCoverage{range(0, 8)},
+            .retained = retained_coverage,
+            .logical_regions = {range(0, 3), range(3, 2), range(5, 3)},
         },
         iv::TickMaterializationRetention{
             .port = 2,
-            .retained = iv::IndexCoverage{range(0, 8)},
+            .retained = retained_coverage,
+            .logical_regions = {range(0, 3), range(3, 2), range(5, 3)},
         },
     };
 
@@ -207,6 +214,95 @@ TEST(TickMaterializationSnapshot,
                 value.time.signed_value());
         });
     EXPECT_EQ(times, (std::vector<std::int64_t>{1, 4, 5, 7}));
+}
+
+TEST(TickMaterializationSnapshot,
+     CarryForwardUsesCurrentLogicalOrderForNonAdjacentReplacements)
+{
+    auto const first = range(0, 2);
+    auto const retained_middle = range(10, 2);
+    auto previous_sample = iv::make_tick_materialized_sample_input(
+        1,
+        iv::mono_planar_channel_layout,
+        {0},
+        std::vector<iv::GlobalIndexRange>{
+            first, retained_middle, first},
+        {1.0f, 1.0f, 3.0f, 3.0f, 2.0f, 2.0f});
+    auto previous_event = iv::make_tick_materialized_event_input(
+        2,
+        iv::EventTypeId::trigger,
+        std::vector<iv::GlobalIndexRange>{
+            first, retained_middle, first},
+        {
+            {{.time = index(0), .value = iv::TriggerEvent{}}},
+            {{.time = index(10), .value = iv::TriggerEvent{}}},
+            {{.time = index(1), .value = iv::TriggerEvent{}}},
+        },
+        {});
+    iv::TickMaterializationSnapshot previous{
+        4,
+        1,
+        {},
+        {std::move(previous_sample)},
+        {std::move(previous_event)},
+    };
+
+    auto replacement_sample = iv::make_tick_materialized_sample_input(
+        1,
+        iv::mono_planar_channel_layout,
+        {0},
+        std::vector<iv::GlobalIndexRange>{first, first},
+        {10.0f, 10.0f, 20.0f, 20.0f});
+    auto replacement_event = iv::make_tick_materialized_event_input(
+        2,
+        iv::EventTypeId::trigger,
+        std::vector<iv::GlobalIndexRange>{first, first},
+        {
+            {{.time = index(0), .value = iv::TriggerEvent{}}},
+            {{.time = index(1), .value = iv::TriggerEvent{}}},
+        },
+        {});
+    iv::TickMaterializationSnapshot current{
+        4,
+        2,
+        {},
+        {std::move(replacement_sample)},
+        {std::move(replacement_event)},
+    };
+    std::array retention{
+        iv::TickMaterializationRetention{
+            .port = 1,
+            .retained = iv::IndexCoverage{retained_middle},
+            .logical_regions = {first, retained_middle, first},
+        },
+        iv::TickMaterializationRetention{
+            .port = 2,
+            .retained = iv::IndexCoverage{retained_middle},
+            .logical_regions = {first, retained_middle, first},
+        },
+    };
+
+    current.carry_forward(previous, retention);
+
+    auto const* sample = current.find_sample(1);
+    ASSERT_NE(sample, nullptr);
+    ASSERT_EQ(sample->regions.size(), 3u);
+    EXPECT_EQ(sample->regions[0].range, first);
+    EXPECT_EQ(sample->regions[1].range, retained_middle);
+    EXPECT_EQ(sample->regions[2].range, first);
+    EXPECT_FLOAT_EQ(sample->regions[0].values->front().value, 10.0f);
+    EXPECT_FLOAT_EQ(sample->regions[1].values->front().value, 3.0f);
+    EXPECT_FLOAT_EQ(sample->regions[2].values->front().value, 20.0f);
+
+    auto const* event = current.find_event(2);
+    ASSERT_NE(event, nullptr);
+    ASSERT_EQ(event->chunks.size(), 3u);
+    EXPECT_EQ(event->chunks[0].range, first);
+    EXPECT_EQ(event->chunks[1].range, retained_middle);
+    EXPECT_EQ(event->chunks[2].range, first);
+    EXPECT_EQ(event->chunks[0].events->front().time, index(0));
+    EXPECT_EQ(event->chunks[1].events->front().time, index(10));
+    EXPECT_EQ(event->chunks[2].events->front().time, index(1));
 }
 
 TEST(TickMaterializationSnapshot,
@@ -242,6 +338,7 @@ TEST(TickMaterializationSnapshot,
     std::array retention{iv::TickMaterializationRetention{
         .port = 1,
         .retained = iv::IndexCoverage{range(0, 8)},
+        .logical_regions = {range(3, 2)},
     }};
 
     EXPECT_THROW(
@@ -269,6 +366,7 @@ TEST(TickMaterializationSnapshot,
     std::array retention{iv::TickMaterializationRetention{
         .port = 1,
         .retained = iv::IndexCoverage{range(0, 8)},
+        .logical_regions = {range(0, 8)},
     }};
 
     current.carry_forward(previous, retention);
@@ -724,6 +822,163 @@ TEST(PersistedDataStore,
     EXPECT_FLOAT_EQ(regions[1].at(index(0), 0).value, 1.0f);
 }
 
+TEST(PersistedDataStore,
+     EventRegionBatchPreservesOrderOverlapExactDuplicatesAndMergedTimeline)
+{
+    iv::PersistedDataStore store;
+    auto const output = store.resolve_output(
+        stable_output(iv::PortKind::event, "event-regions"));
+    auto const first = range(10, 3);
+    auto const overlap = range(11, 3);
+    auto candidate = store.begin_candidate(1);
+    candidate.replace_event_regions(
+        output,
+        iv::EventTypeId::trigger,
+        iv::IndexCoverage{range(10, 4)},
+        std::array{first, overlap, first},
+        {
+            event_chunk(output, first, {10, 12}),
+            event_chunk(output, overlap, {11}),
+            event_chunk(output, first, {11, 12}),
+        });
+    ASSERT_EQ(store.publish(std::move(candidate)),
+        iv::PersistedDataPublishResult::published);
+
+    auto reader = store.register_reader();
+    auto pinned = reader.pin();
+    auto const regions = pinned->event_regions(
+        output, iv::EventTypeId::trigger);
+    auto const ranges = pinned->event_region_ranges(
+        output, iv::EventTypeId::trigger);
+    ASSERT_EQ(regions.size(), 3u);
+    ASSERT_EQ(ranges.size(), 3u);
+    EXPECT_EQ(ranges[0], first);
+    EXPECT_EQ(ranges[1], overlap);
+    EXPECT_EQ(ranges[2], first);
+    EXPECT_EQ(regions[0].events.size(), 2u);
+    EXPECT_EQ(regions[1].events.size(), 1u);
+    EXPECT_EQ(regions[2].events.size(), 2u);
+
+    std::vector<std::int64_t> timeline;
+    for (auto const& event : pinned->event_timeline(
+             output, iv::EventTypeId::trigger)) {
+        timeline.push_back(event.time.signed_value());
+    }
+    EXPECT_EQ(timeline,
+        (std::vector<std::int64_t>{10, 11, 11, 12, 12}));
+
+    auto clipped = store.begin_candidate(2);
+    EXPECT_THROW(
+        clipped.replace_event_regions(
+            output,
+            iv::EventTypeId::trigger,
+            iv::IndexCoverage{range(11, 1)},
+            std::array{first, overlap, first},
+            {}),
+        std::invalid_argument);
+}
+
+TEST(TickMaterializationSnapshot,
+     EventRegionsRemainIndependentAndFlatVisitUsesMergedTimeline)
+{
+    auto const first = range(10, 3);
+    auto const overlap = range(11, 3);
+    auto event = [](std::int64_t time) {
+        return iv::TimedEvent{
+            .time = index(time),
+            .value = iv::TriggerEvent{},
+        };
+    };
+    auto input = iv::make_tick_materialized_event_input(
+        7,
+        iv::EventTypeId::trigger,
+        std::vector<iv::GlobalIndexRange>{first, overlap, first},
+        std::vector<std::vector<iv::TimedEvent>>{
+            {event(10), event(12)},
+            {event(11)},
+            {event(11), event(12)},
+        },
+        {});
+
+    std::array<std::vector<iv::GlobalIndex>, 3> region_times;
+    for (std::size_t region = 0; region < region_times.size(); ++region) {
+        input.for_each_region(
+            region,
+            input.region_ranges[region],
+            &region_times[region],
+            +[](void* opaque, iv::TimedEvent const& selected) {
+                static_cast<std::vector<iv::GlobalIndex>*>(opaque)
+                    ->push_back(selected.time);
+            });
+    }
+    EXPECT_EQ(region_times[0],
+        (std::vector<iv::GlobalIndex>{index(10), index(12)}));
+    EXPECT_EQ(region_times[1],
+        (std::vector<iv::GlobalIndex>{index(11)}));
+    EXPECT_EQ(region_times[2],
+        (std::vector<iv::GlobalIndex>{index(11), index(12)}));
+
+    std::vector<iv::GlobalIndex> merged_times;
+    input.for_each(
+        range(10, 4),
+        &merged_times,
+        +[](void* opaque, iv::TimedEvent const& selected) {
+            static_cast<std::vector<iv::GlobalIndex>*>(opaque)
+                ->push_back(selected.time);
+        });
+    EXPECT_EQ(merged_times,
+        (std::vector<iv::GlobalIndex>{
+            index(10), index(11), index(11), index(12), index(12)}));
+}
+
+TEST(TickMaterializationSnapshot,
+     EventRegionUsesForwardOrderAcrossTheSignedOrderingSeam)
+{
+    auto const begin = iv::GlobalIndex::from_signed(
+        std::numeric_limits<std::int64_t>::max() - 1);
+    auto const region = iv::GlobalIndexRange{.begin = begin, .extent = 4};
+    std::vector<iv::TimedEvent> events;
+    for (std::uint64_t offset = 0; offset < region.extent; ++offset) {
+        events.push_back({
+            .time = begin.advanced_by(offset),
+            .value = iv::TriggerEvent{},
+        });
+    }
+    auto input = iv::make_tick_materialized_event_input(
+        8,
+        iv::EventTypeId::trigger,
+        std::vector<iv::GlobalIndexRange>{region},
+        std::vector<std::vector<iv::TimedEvent>>{std::move(events)},
+        {});
+
+    std::vector<iv::GlobalIndex> times;
+    input.for_each_region(
+        0,
+        region,
+        &times,
+        +[](void* opaque, iv::TimedEvent const& selected) {
+            static_cast<std::vector<iv::GlobalIndex>*>(opaque)
+                ->push_back(selected.time);
+        });
+    ASSERT_EQ(times.size(), 4u);
+    for (std::uint64_t offset = 0; offset < region.extent; ++offset) {
+        EXPECT_EQ(times[offset], begin.advanced_by(offset));
+    }
+
+    times.clear();
+    input.for_each(
+        region,
+        &times,
+        +[](void* opaque, iv::TimedEvent const& selected) {
+            static_cast<std::vector<iv::GlobalIndex>*>(opaque)
+                ->push_back(selected.time);
+        });
+    ASSERT_EQ(times.size(), 4u);
+    for (std::uint64_t offset = 0; offset < region.extent; ++offset) {
+        EXPECT_EQ(times[offset], begin.advanced_by(offset));
+    }
+}
+
 TEST(PersistedDataStore, PublishesSamplesAndAuthoritativeEmptyEventsTogether)
 {
     iv::PersistedDataStore store;
@@ -1127,7 +1382,10 @@ TEST(TickInvocationWorkspace,
         frame.call().random_access_event_inputs);
     ASSERT_EQ(inputs.size(), 1u);
     std::vector<iv::GlobalIndex> times;
-    inputs[0].for_each(range(1, 7), [&](iv::TimedEvent const& event) {
+    inputs[0].for_each(0, range(1, 3), [&](iv::TimedEvent const& event) {
+        times.push_back(event.time);
+    });
+    inputs[0].for_each(1, range(4, 4), [&](iv::TimedEvent const& event) {
         times.push_back(event.time);
     });
     EXPECT_EQ(times, (std::vector<iv::GlobalIndex>{

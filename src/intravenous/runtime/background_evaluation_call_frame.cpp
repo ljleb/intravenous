@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <bit>
 #include <limits>
+#include <numeric>
 #include <ranges>
 #include <stdexcept>
 #include <utility>
@@ -170,6 +171,13 @@ struct BackgroundEvaluationCallFrame::BindingAdapter {
     std::vector<ContinuousRegionStorageView> sample_output_regions{};
     std::vector<BackgroundEventReadView> event_reads{};
     std::vector<BackgroundEventWriteView> event_writes{};
+    struct EventReadRegion {
+        std::size_t view = 0;
+        std::size_t region = 0;
+    };
+    std::vector<EventReadRegion> event_input_regions{};
+    std::vector<GlobalIndexRange> event_input_ranges{};
+    std::vector<GlobalIndexRange> event_output_ranges{};
     bool rejected_write = false;
 
     static Sample read_sample(void const* opaque, GlobalIndex index,
@@ -243,6 +251,30 @@ struct BackgroundEvaluationCallFrame::BindingAdapter {
         }
     }
 
+    static void for_each_event_region(
+        void const* opaque,
+        std::size_t region_index,
+        GlobalIndexRange requested,
+        void* visitor_data,
+        RandomAccessEventInputPort::VisitEvent visitor)
+    {
+        auto const& self = *static_cast<BindingAdapter const*>(opaque);
+        IV_ASSERT(region_index < self.event_input_regions.size(),
+            "background event input Region route is out of bounds");
+        if (region_index >= self.event_input_regions.size()) return;
+        auto const route = self.event_input_regions[region_index];
+        IV_ASSERT(route.view < self.event_reads.size(),
+            "background event input Region has no readable route");
+        if (route.view >= self.event_reads.size()) return;
+        auto const& view = self.event_reads[route.view];
+        view.for_each_region_event(
+            view.data,
+            route.region,
+            requested,
+            visitor_data,
+            visitor);
+    }
+
     static void write_event(void* opaque, TimedEvent const& event) noexcept
     {
         auto& self = *static_cast<BindingAdapter*>(opaque);
@@ -257,6 +289,27 @@ struct BackgroundEvaluationCallFrame::BindingAdapter {
         self.rejected_write = self.rejected_write || !routed || rejected;
         IV_ASSERT(routed && !rejected,
                   "background event binding has no selected writable route");
+    }
+
+    static void write_event_region(
+        void* opaque,
+        std::size_t region,
+        TimedEvent const& event) noexcept
+    {
+        auto& self = *static_cast<BindingAdapter*>(opaque);
+        bool routed = false;
+        bool rejected = false;
+        for (auto const& view : self.event_writes) {
+            if (region >= view.regions.size()
+                || !view.regions[region].contains(event.time)) {
+                continue;
+            }
+            routed = true;
+            rejected = !view.write(region, event) || rejected;
+        }
+        self.rejected_write = self.rejected_write || !routed || rejected;
+        IV_ASSERT(routed && !rejected,
+            "background event Region has no selected writable route");
     }
 };
 
@@ -650,6 +703,11 @@ std::expected<void, std::string> BackgroundEvaluationCallFrame::seal()
         return std::unexpected(
             "background binding coverage is not aligned with the runtime plan");
     }
+    if (!selection_.binding_regions.empty()
+        && selection_.binding_regions.size() != runtime.bindings.size()) {
+        return std::unexpected(
+            "background binding Regions are not aligned with the runtime plan");
+    }
     if (runtime.port_bindings.size() != plan.ports.size() ||
         runtime.node_operations.size() != plan.nodes.size() ||
         runtime.node_replay_invocations.size() != plan.nodes.size() ||
@@ -782,7 +840,35 @@ std::expected<void, std::string> BackgroundEvaluationCallFrame::seal()
                     }
                 }
             }
-            if (port.ordering == CoverageOrdering::sorted) {
+            auto const expected_regions = selection_.binding_regions.empty()
+                ? std::span<GlobalIndexRange const>{}
+                : std::span<GlobalIndexRange const>{
+                    selection_.binding_regions[slot]};
+            if (!expected_regions.empty()) {
+                auto regions = adapter->sample_input_regions;
+                std::vector<bool> used(regions.size(), false);
+                adapter->sample_input_regions.clear();
+                for (auto const expected : expected_regions) {
+                    auto found = regions.size();
+                    for (std::size_t index = 0; index < regions.size(); ++index) {
+                        if (!used[index]
+                            && regions[index].range == expected) {
+                            found = index;
+                            break;
+                        }
+                    }
+                    if (found == regions.size()) {
+                        return std::unexpected(
+                            "background continuous input lost a propagated Region");
+                    }
+                    used[found] = true;
+                    adapter->sample_input_regions.push_back(regions[found]);
+                }
+                if (std::ranges::contains(used, false)) {
+                    return std::unexpected(
+                        "background continuous input has storage outside its propagated Region list");
+                }
+            } else if (port.ordering == CoverageOrdering::sorted) {
                 std::stable_sort(
                     adapter->sample_input_regions.begin(),
                     adapter->sample_input_regions.end(),
@@ -896,6 +982,81 @@ std::expected<void, std::string> BackgroundEvaluationCallFrame::seal()
                 return std::unexpected(
                     "background event input coverage has no complete route");
             }
+            for (std::size_t view_index = 0;
+                 view_index < adapter->event_reads.size(); ++view_index) {
+                auto const& view = adapter->event_reads[view_index];
+                if (view.for_each_region_event == nullptr) {
+                    return std::unexpected(
+                        "background event input storage has no Region reader");
+                }
+                for (std::size_t region = 0;
+                     region < view.regions.size(); ++region) {
+                    if ((IndexCoverage{view.regions[region]}
+                            & *adapter->coverage).empty()) {
+                        continue;
+                    }
+                    adapter->event_input_regions.push_back({
+                        .view = view_index,
+                        .region = region,
+                    });
+                    adapter->event_input_ranges.push_back(
+                        view.regions[region]);
+                }
+            }
+            auto const expected_regions = selection_.binding_regions.empty()
+                ? std::span<GlobalIndexRange const>{}
+                : std::span<GlobalIndexRange const>{
+                    selection_.binding_regions[slot]};
+            if (!expected_regions.empty()) {
+                auto routes = adapter->event_input_regions;
+                auto ranges = adapter->event_input_ranges;
+                std::vector<bool> used(ranges.size(), false);
+                adapter->event_input_regions.clear();
+                adapter->event_input_ranges.clear();
+                for (auto const expected : expected_regions) {
+                    auto found = ranges.size();
+                    for (std::size_t index = 0; index < ranges.size(); ++index) {
+                        if (!used[index] && ranges[index] == expected) {
+                            found = index;
+                            break;
+                        }
+                    }
+                    if (found == ranges.size()) {
+                        return std::unexpected(
+                            "background event input lost a propagated Region");
+                    }
+                    used[found] = true;
+                    adapter->event_input_regions.push_back(routes[found]);
+                    adapter->event_input_ranges.push_back(ranges[found]);
+                }
+                if (std::ranges::contains(used, false)) {
+                    return std::unexpected(
+                        "background event input has storage outside its propagated Region list");
+                }
+            } else if (port.ordering == CoverageOrdering::sorted) {
+                std::vector<std::size_t> order(
+                    adapter->event_input_ranges.size());
+                std::iota(order.begin(), order.end(), 0);
+                std::stable_sort(order.begin(), order.end(),
+                    [&](std::size_t left, std::size_t right) {
+                        auto const a = adapter->event_input_ranges[left];
+                        auto const b = adapter->event_input_ranges[right];
+                        if (a.begin == b.begin) return a.extent > b.extent;
+                        return SignedGlobalIndexOrder{}(a.begin, b.begin);
+                    });
+                auto routes = adapter->event_input_regions;
+                auto ranges = adapter->event_input_ranges;
+                for (std::size_t index = 0; index < order.size(); ++index) {
+                    adapter->event_input_regions[index] = routes[order[index]];
+                    adapter->event_input_ranges[index] = ranges[order[index]];
+                }
+            }
+            if (!adapter->coverage->empty()
+                && port.input_access == InputAccessKind::region
+                && adapter->event_input_ranges.size() != 1) {
+                return std::unexpected(
+                    "background event Region input does not resolve to one Region");
+            }
         } else {
             for (auto const storage_index : binding.storage) {
                 if (storage_index >= plan.storage.ports.size()) {
@@ -907,7 +1068,7 @@ std::expected<void, std::string> BackgroundEvaluationCallFrame::seal()
                     return std::unexpected(
                         "background event output has no writable storage");
                 }
-                adapter->event_writes.push_back(*view);
+                append_unique_view(adapter->event_writes, *view);
             }
             IndexCoverage available;
             for (auto const& view : adapter->event_writes) {
@@ -916,6 +1077,33 @@ std::expected<void, std::string> BackgroundEvaluationCallFrame::seal()
             if (!contains_coverage(available, *adapter->coverage)) {
                 return std::unexpected(
                     "background event output coverage has no complete route");
+            }
+            for (auto const& view : adapter->event_writes) {
+                if (view.write_region_event == nullptr) {
+                    return std::unexpected(
+                        "background event output storage has no Region writer");
+                }
+                if (adapter->event_output_ranges.empty()) {
+                    adapter->event_output_ranges.assign(
+                        view.regions.begin(), view.regions.end());
+                } else if (!std::ranges::equal(
+                        adapter->event_output_ranges, view.regions)) {
+                    return std::unexpected(
+                        "background event output storage roles disagree on their Region list");
+                }
+            }
+            if (!selection_.binding_regions.empty()
+                && !selection_.binding_regions[slot].empty()
+                && adapter->event_output_ranges
+                    != selection_.binding_regions[slot]) {
+                return std::unexpected(
+                    "background event output storage disagrees with its propagated Region list");
+            }
+            if (!adapter->coverage->empty()
+                && port.output_production == OutputProductionKind::region
+                && adapter->event_output_ranges.size() != 1) {
+                return std::unexpected(
+                    "background event Region output does not resolve to one writable Region");
             }
         }
         adapters.push_back(std::move(adapter));
@@ -976,8 +1164,10 @@ std::expected<void, std::string> BackgroundEvaluationCallFrame::seal()
             } else {
                 storage->event_inputs.push_back({
                     .data = adapter,
+                    .region_ranges = adapter->event_input_ranges.data(),
+                    .region_count = adapter->event_input_ranges.size(),
                     .coverage_value = adapter->coverage,
-                    .for_each_event = &BindingAdapter::for_each_event,
+                    .for_each_event = &BindingAdapter::for_each_event_region,
                 });
             }
         }
@@ -1006,8 +1196,10 @@ std::expected<void, std::string> BackgroundEvaluationCallFrame::seal()
             } else {
                 storage->event_outputs.push_back({
                     .data = adapter,
+                    .region_ranges = adapter->event_output_ranges.data(),
+                    .region_count = adapter->event_output_ranges.size(),
                     .requested_coverage_value = adapter->coverage,
-                    .write_event = &BindingAdapter::write_event,
+                    .write_event = &BindingAdapter::write_event_region,
                 });
             }
         }

@@ -82,6 +82,7 @@ std::size_t persisted_probe_evaluate_calls = 0;
 bool throw_persisted_probe_evaluate = false;
 bool omit_last_persisted_probe_sample = false;
 std::size_t replay_probe_evaluate_calls = 0;
+std::vector<iv::GlobalIndexRange> replay_probe_regions{};
 iv::PersistedDataStore* competing_persisted_store = nullptr;
 bool publish_competing_persisted_snapshot = false;
 std::vector<iv::GlobalIndexRange> propagated_region_shape{};
@@ -288,6 +289,26 @@ void propagate_sorted_source_regions(
     }
 }
 
+void propagate_sorted_source_event_regions(
+    iv::graph_jit::BackgroundEvaluationCall* batch)
+{
+    auto nodes = static_cast<
+        std::span<iv::graph_jit::BackgroundNodeCall>>(batch->nodes);
+    for (std::size_t node = 0; node < nodes.size(); ++node) {
+        if (!iv::graph_jit::has_activity(
+                nodes[node].activity,
+                iv::graph_jit::BackgroundNodeActivity::forward)) {
+            continue;
+        }
+        auto outputs = static_cast<std::span<iv::OutputCoverageChange>>(
+            nodes[node].forward.event_outputs);
+        if (node < sorted_source_region_shapes.size()) {
+            ASSERT_EQ(outputs.size(), 1u);
+            outputs[0].publish_regions(sorted_source_region_shapes[node]);
+        }
+    }
+}
+
 void propagate_persisted_probe_forward(
     iv::graph_jit::BackgroundEvaluationCall* batch)
 {
@@ -483,6 +504,10 @@ void evaluate_replay_probe(
             continue;
         }
         ++replay_probe_evaluate_calls;
+        auto const replay_regions = static_cast<
+            std::span<iv::GlobalIndexRange const>>(node.replay_regions);
+        replay_probe_regions.assign(
+            replay_regions.begin(), replay_regions.end());
         node.prepare_operations(node.operation_frame);
         auto outputs = static_cast<
             std::span<iv::ReflectedContinuousOutputPortBinding const>>(
@@ -901,6 +926,7 @@ protected:
         throw_persisted_probe_evaluate = false;
         omit_last_persisted_probe_sample = false;
         replay_probe_evaluate_calls = 0;
+        replay_probe_regions.clear();
         competing_persisted_store = nullptr;
         publish_competing_persisted_snapshot = false;
     }
@@ -1488,6 +1514,125 @@ TEST_F(
     EXPECT_EQ(result->status, iv::BackgroundEvaluationStatus::committed);
     EXPECT_FALSE(result->published_data.has_value());
     EXPECT_EQ(replay_probe_evaluate_calls, 1u);
+    EXPECT_EQ(
+        replay_probe_regions,
+        (std::vector<iv::GlobalIndexRange>{range(0, 4), range(4, 8)}));
+}
+
+TEST_F(
+    GraphExecutorFixture,
+    BackgroundTransactionKeepsTickReplayBoundedToPositionalDemand)
+{
+    auto graph = replay_probe_graph();
+    auto tock_states = initialize_tock_states(graph);
+    iv::BackgroundCoverageState coverage(
+        graph.background_evaluation_plan.accumulators.output_change_count);
+    iv::BackgroundPropagationWorkspace propagation{
+        graph.background_evaluation_plan, graph.specialization.sample_rate};
+    iv::PersistedDataStore data;
+
+    iv::BackgroundEvaluationTransaction transaction{
+        graph,
+        tock_states,
+        coverage,
+        propagation,
+        data,
+        {
+            .semantic_version = 1,
+            .roots = {
+                .output_changes = {
+                    {
+                        .port = 0,
+                        .coverage = index_coverage({{0, 1000}}),
+                    },
+                    {
+                        .port = 1,
+                        .coverage = index_coverage({{0, 1000}}),
+                    },
+                },
+                .output_demands = {{
+                    .port = 0,
+                    .required = index_coverage({{123, 125}}),
+                }},
+            },
+        }};
+    auto result = transaction.execute();
+    ASSERT_TRUE(result.has_value()) << result.error();
+    EXPECT_EQ(result->status, iv::BackgroundEvaluationStatus::committed);
+    EXPECT_EQ(replay_probe_evaluate_calls, 1u);
+    EXPECT_EQ(
+        replay_probe_regions,
+        (std::vector<iv::GlobalIndexRange>{range(123, 125)}));
+}
+
+TEST_F(
+    GraphExecutorFixture,
+    PersistedTickReplayPublishesOnlyTheDemandedPositionalRange)
+{
+    auto graph = replay_probe_graph();
+    auto const output_id = iv::graph_jit::StableOutputPortId{
+        .node = {
+            .graph = "persisted-replay-probe",
+            .virtual_node = "source",
+        },
+        .kind = iv::PortKind::sample,
+        .port_name = "output",
+        .port_index = 0,
+    };
+    auto& output = graph.background_evaluation_plan.ports[0];
+    output.persisted_tick_output = true;
+    output.retention = iv::OutputRetention::persisted;
+    output.stable_identity = output_id;
+    graph.background_evaluation_plan.storage.ports[0].storage =
+        iv::graph_jit::PortStorageKind::persisted_data;
+
+    auto tock_states = initialize_tock_states(graph);
+    iv::BackgroundCoverageState coverage(
+        graph.background_evaluation_plan.accumulators.output_change_count);
+    iv::BackgroundPropagationWorkspace propagation{
+        graph.background_evaluation_plan, graph.specialization.sample_rate};
+    iv::PersistedDataStore data;
+
+    iv::BackgroundEvaluationTransaction transaction{
+        graph,
+        tock_states,
+        coverage,
+        propagation,
+        data,
+        {
+            .semantic_version = 1,
+            .roots = {
+                .output_changes = {
+                    {
+                        .port = 0,
+                        .coverage = index_coverage({{0, 1000}}),
+                    },
+                    {
+                        .port = 1,
+                        .coverage = index_coverage({{0, 1000}}),
+                    },
+                },
+                .output_demands = {{
+                    .port = 0,
+                    .required = index_coverage({{123, 125}}),
+                }},
+            },
+        }};
+    auto result = transaction.execute();
+    ASSERT_TRUE(result.has_value()) << result.error();
+    ASSERT_EQ(result->status, iv::BackgroundEvaluationStatus::committed);
+    ASSERT_TRUE(result->published_data.has_value());
+    EXPECT_EQ(
+        replay_probe_regions,
+        (std::vector<iv::GlobalIndexRange>{range(123, 125)}));
+
+    auto reader = data.register_reader();
+    auto pin = reader.pin();
+    auto const output_handle = data.resolve_output(output_id);
+    auto const* published = pin->find_sample_coverage(
+        output_handle, iv::mono_planar_channel_layout);
+    ASSERT_NE(published, nullptr);
+    EXPECT_EQ(*published, index_coverage({{123, 125}}));
 }
 
 TEST_F(
@@ -1995,6 +2140,44 @@ TEST_F(
         background_observation.sink_input_coverage,
         index_coverage({{10, 13}, {20, 22}}));
     current_workspace.discard(std::move(reconciled));
+}
+
+TEST_F(
+    BackgroundCoveragePropagationFixture,
+    CoverageMigrationDoesNotTransferEventRegionsAcrossProductionKinds)
+{
+    auto previous_plan = probe_tock_plan(
+        iv::OutputRetention::ephemeral,
+        iv::graph_jit::PortStorageKind::background);
+    auto current_plan = previous_plan;
+    auto const stable_output = iv::graph_jit::StableOutputPortId{
+        .node = {
+            .graph = "event-production-migration",
+            .virtual_node = "source",
+        },
+        .kind = iv::PortKind::event,
+        .port_name = "output",
+        .port_index = 0,
+    };
+    for (auto* plan : {&previous_plan, &current_plan}) {
+        plan->ports[0].configured_port.port_kind = iv::PortKind::event;
+        plan->ports[0].kind = iv::PortKind::event;
+        plan->ports[0].event_type = iv::EventTypeId::trigger;
+        plan->ports[0].stable_identity = stable_output;
+    }
+    previous_plan.ports[0].output_production =
+        iv::OutputProductionKind::coverage;
+    current_plan.ports[0].output_production =
+        iv::OutputProductionKind::region;
+
+    iv::BackgroundCoverageState previous(
+        previous_plan.accumulators.output_change_count);
+    iv::BackgroundCoverageState current(
+        current_plan.accumulators.output_change_count);
+    auto migration = current.prepare_migration_from(
+        previous, current_plan, previous_plan);
+
+    EXPECT_TRUE(migration.outputs.empty());
 }
 
 TEST_F(
@@ -2588,6 +2771,85 @@ TEST_F(BackgroundCoveragePropagationFixture,
             range(0, 8),
             range(5, 7),
             range(6, 9),
+        }));
+    workspace.discard(std::move(prepared));
+}
+
+TEST_F(BackgroundCoveragePropagationFixture,
+       SortedEventFanInPreservesEachRegionInsideCommonCompleteness)
+{
+    using namespace iv::graph_jit;
+    auto plan = background_fanin_plan();
+
+    plan.nodes[2].outputs.clear();
+    plan.nodes[2].accumulators.output_change_count = 0;
+    plan.nodes[2].accumulators.output_requirement_count = 0;
+    plan.ports.resize(3);
+    plan.accumulators.output_change_count = 2;
+    plan.accumulators.output_requirement_count = 2;
+
+    for (auto& port : plan.ports) {
+        port.configured_port.port_kind = iv::PortKind::event;
+        port.kind = iv::PortKind::event;
+        port.event_type = iv::EventTypeId::trigger;
+        port.ordering = iv::CoverageOrdering::sorted;
+    }
+    plan.ports[0].outgoing_connections = {0};
+    plan.ports[1].outgoing_connections = {0};
+    plan.ports[2].incoming_connections = {0};
+    plan.connections = {{
+        .kind = iv::PortKind::event,
+        .source_coverage_ports = {0, 1},
+        .target_coverage_ports = {2},
+        .event_source_type = iv::EventTypeId::trigger,
+        .event_target_type = iv::EventTypeId::trigger,
+        .event_deliveries = {
+            {
+                .source_type = iv::EventTypeId::trigger,
+                .source_port = BackgroundPortIndex{0},
+                .target_port = BackgroundPortIndex{2},
+                .semantic_source_index = 0,
+                .mechanism = PlannedDeliveryMechanism::tock_to_random_access,
+            },
+            {
+                .source_type = iv::EventTypeId::trigger,
+                .source_port = BackgroundPortIndex{1},
+                .target_port = BackgroundPortIndex{2},
+                .semantic_source_index = 1,
+                .mechanism = PlannedDeliveryMechanism::tock_to_random_access,
+            },
+        },
+    }};
+    sorted_source_region_shapes = {{
+        {range(0, 10), range(2, 6)},
+        {range(4, 12), range(4, 8)},
+    }};
+
+    iv::BackgroundCoverageState coverage(
+        plan.accumulators.output_change_count);
+    iv::BackgroundPropagationWorkspace workspace(plan, 48000);
+    auto prepared = workspace.prepare(
+        {
+            .propagate_forward = &propagate_sorted_source_event_regions,
+            .propagate_reverse = &no_op_background_evaluate,
+            .evaluate = &no_op_background_evaluate,
+        },
+        coverage,
+        {.locally_changed_nodes = {0, 1}});
+
+    // The merged event stream is authoritative only on [4, 10), where both
+    // sources are complete. Each source Region remains an independent Region
+    // after clipping to that common completeness, including the duplicate
+    // [4, 10) contribution.
+    EXPECT_EQ(
+        std::vector<iv::GlobalIndexRange>(
+            prepared.input_regions(2).begin(),
+            prepared.input_regions(2).end()),
+        (std::vector<iv::GlobalIndexRange>{
+            range(4, 10),
+            range(4, 10),
+            range(4, 8),
+            range(4, 6),
         }));
     workspace.discard(std::move(prepared));
 }

@@ -6,11 +6,13 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <optional>
 #include <span>
 #include <stdexcept>
 #include <string>
 #include <utility>
+#include <variant>
 #include <vector>
 
 namespace {
@@ -219,6 +221,144 @@ TEST(BackgroundStorageRealization,
         iv::ContinuousRegion<iv::Sample>{readable->regions[2]}
             .at(index(11)).value,
         201.0f);
+}
+
+TEST(BackgroundStorageRealization,
+     KeepsOverlappingAndDuplicateEventRegionsIndependent)
+{
+    iv::graph_jit::BackgroundEvaluationPlan plan;
+    plan.ports = {{
+        .kind = iv::PortKind::event,
+        .direction = iv::graph_jit::PortDirection::output,
+        .output_production = iv::OutputProductionKind::coverage,
+        .authored_tock_output = true,
+        .event_type = iv::EventTypeId::trigger,
+        .max_events_per_index = 1.0,
+    }};
+    plan.storage.ports = {{
+        .kind = iv::PortKind::event,
+        .storage = iv::graph_jit::PortStorageKind::background,
+        .output_port = 0,
+        .event_type = iv::EventTypeId::trigger,
+        .max_events_per_index = 1.0,
+    }};
+
+    auto const first = range(10, 13);
+    auto const overlap = range(11, 14);
+    iv::PersistedDataStore data;
+    iv::BackgroundStorageRealization realization{
+        plan,
+        data,
+        {
+            .storage_coverage = {index_coverage({{10, 14}})},
+            .storage_regions = {{first, overlap, first}},
+        }};
+
+    auto const* writable = realization.event_write(0);
+    auto const* readable = realization.event_read(0);
+    ASSERT_NE(writable, nullptr);
+    ASSERT_NE(readable, nullptr);
+    ASSERT_EQ(writable->regions.size(), 3u);
+    ASSERT_TRUE(writable->write(
+        0, {.time = index(10), .value = iv::TriggerEvent{}}));
+    ASSERT_TRUE(writable->write(
+        0, {.time = index(12), .value = iv::TriggerEvent{}}));
+    ASSERT_TRUE(writable->write(
+        1, {.time = index(11), .value = iv::TriggerEvent{}}));
+    ASSERT_TRUE(writable->write(
+        2, {.time = index(11), .value = iv::TriggerEvent{}}));
+    ASSERT_TRUE(writable->write(
+        2, {.time = index(12), .value = iv::TriggerEvent{}}));
+    ASSERT_TRUE(realization.seal().has_value());
+
+    std::array<std::vector<iv::GlobalIndex>, 3> region_times;
+    for (std::size_t region = 0; region < region_times.size(); ++region) {
+        readable->for_each_region(
+            region,
+            readable->regions[region],
+            [&](iv::TimedEvent const& event) {
+                region_times[region].push_back(event.time);
+            });
+    }
+    EXPECT_EQ(region_times[0],
+        (std::vector<iv::GlobalIndex>{index(10), index(12)}));
+    EXPECT_EQ(region_times[1],
+        (std::vector<iv::GlobalIndex>{index(11)}));
+    EXPECT_EQ(region_times[2],
+        (std::vector<iv::GlobalIndex>{index(11), index(12)}));
+
+    std::vector<iv::GlobalIndex> merged_times;
+    readable->for_each(range(10, 14), [&](iv::TimedEvent const& event) {
+        merged_times.push_back(event.time);
+    });
+    EXPECT_EQ(merged_times,
+        (std::vector<iv::GlobalIndex>{
+            index(10), index(11), index(11), index(12), index(12)}));
+}
+
+TEST(BackgroundStorageRealization,
+     EventRegionUsesForwardOrderAcrossTheSignedOrderingSeam)
+{
+    iv::graph_jit::BackgroundEvaluationPlan plan;
+    plan.ports = {{
+        .kind = iv::PortKind::event,
+        .direction = iv::graph_jit::PortDirection::output,
+        .output_production = iv::OutputProductionKind::region,
+        .authored_tock_output = true,
+        .event_type = iv::EventTypeId::trigger,
+        .max_events_per_index = 1.0,
+    }};
+    plan.storage.ports = {{
+        .kind = iv::PortKind::event,
+        .storage = iv::graph_jit::PortStorageKind::background,
+        .output_port = 0,
+        .event_type = iv::EventTypeId::trigger,
+        .max_events_per_index = 1.0,
+    }};
+
+    auto const begin = iv::GlobalIndex::from_signed(
+        std::numeric_limits<std::int64_t>::max() - 1);
+    auto const region = iv::GlobalIndexRange{.begin = begin, .extent = 4};
+    iv::PersistedDataStore data;
+    iv::BackgroundStorageRealization realization{
+        plan,
+        data,
+        {
+            .storage_coverage = {iv::IndexCoverage{region}},
+            .storage_regions = {{region}},
+        }};
+
+    auto const* writable = realization.event_write(0);
+    auto const* readable = realization.event_read(0);
+    ASSERT_NE(writable, nullptr);
+    ASSERT_NE(readable, nullptr);
+    for (std::uint64_t offset = 0; offset < region.extent; ++offset) {
+        ASSERT_TRUE(writable->write(
+            0,
+            {
+                .time = begin.advanced_by(offset),
+                .value = iv::TriggerEvent{},
+            }));
+    }
+    ASSERT_TRUE(realization.seal().has_value());
+
+    std::vector<iv::GlobalIndex> times;
+    readable->for_each_region(
+        0, region, [&](iv::TimedEvent const& event) {
+            times.push_back(event.time);
+        });
+    ASSERT_EQ(times.size(), 4u);
+    for (std::uint64_t offset = 0; offset < region.extent; ++offset) {
+        EXPECT_EQ(times[offset], begin.advanced_by(offset));
+    }
+    times.clear();
+    readable->for_each(region, [&](iv::TimedEvent const& event) {
+        times.push_back(event.time);
+    });
+    ASSERT_EQ(times.size(), 4u);
+    for (std::uint64_t offset = 0; offset < region.extent; ++offset) {
+        EXPECT_EQ(times[offset], begin.advanced_by(offset));
+    }
 }
 
 TEST(BackgroundStorageRealization,
@@ -780,6 +920,134 @@ TEST(BackgroundStorageRealization, GivesProducedPersistedStoragePrivateOwners)
 }
 
 TEST(BackgroundStorageRealization,
+     TickProducedPersistenceOverwritesOnlyTheSelectedPositionalRange)
+{
+    auto const sample_id = stable_output(iv::PortKind::sample, "samples");
+    auto const event_id = stable_output(iv::PortKind::event, "events");
+    iv::graph_jit::BackgroundEvaluationPlan plan;
+    plan.ports = {
+        {
+            .kind = iv::PortKind::sample,
+            .direction = iv::graph_jit::PortDirection::output,
+            .output_production = iv::OutputProductionKind::tick,
+            .replayed_tick_output = true,
+            .retention = iv::OutputRetention::persisted,
+            .stable_identity = sample_id,
+        },
+        {
+            .kind = iv::PortKind::event,
+            .direction = iv::graph_jit::PortDirection::output,
+            .output_production = iv::OutputProductionKind::tick,
+            .replayed_tick_output = true,
+            .retention = iv::OutputRetention::persisted,
+            .stable_identity = event_id,
+            .event_type = iv::EventTypeId::trigger,
+            .max_events_per_index = 1.0,
+        },
+    };
+    plan.storage.ports = {
+        {
+            .kind = iv::PortKind::sample,
+            .storage = iv::graph_jit::PortStorageKind::persisted_data,
+            .output_port = 0,
+            .sample_layout = iv::mono_planar_channel_layout,
+            .sample_channels = {0},
+        },
+        {
+            .kind = iv::PortKind::event,
+            .storage = iv::graph_jit::PortStorageKind::persisted_data,
+            .output_port = 1,
+            .event_type = iv::EventTypeId::trigger,
+            .max_events_per_index = 1.0,
+        },
+    };
+    plan.runtime.bindings = {
+        {
+            .port = 0,
+            .kind = iv::PortKind::sample,
+            .direction = iv::graph_jit::PortDirection::output,
+            .storage = {0},
+        },
+        {
+            .port = 1,
+            .kind = iv::PortKind::event,
+            .direction = iv::graph_jit::PortDirection::output,
+            .storage = {1},
+        },
+    };
+
+    iv::PersistedDataStore store;
+    auto const sample_output = store.resolve_output(sample_id);
+    auto const event_output = store.resolve_output(event_id);
+    auto seed = store.begin_candidate(1);
+    seed.overwrite(iv::PersistedSampleRegion{
+        .output = sample_output,
+        .range = range(0, 8),
+        .layout = iv::mono_planar_channel_layout,
+        .values = std::vector<iv::Sample>(8, iv::Sample{1.0f}),
+    });
+    seed.overwrite(iv::PersistedEventChunk{
+        .output = event_output,
+        .range = range(0, 8),
+        .type = iv::EventTypeId::trigger,
+        .events = {
+            {.time = index(1), .value = iv::TriggerEvent{}},
+            {.time = index(5), .value = iv::TriggerEvent{}},
+        },
+    });
+    ASSERT_EQ(
+        store.publish(std::move(seed)),
+        iv::PersistedDataPublishResult::published);
+
+    auto const selected = index_coverage({{2, 4}});
+    iv::BackgroundStorageRealization realization{
+        plan,
+        store,
+        {
+            .generation = 4,
+            .storage_coverage = {selected, selected},
+            .storage_regions = {{range(2, 4)}, {range(2, 4)}},
+            // A transaction always supplies this outer vector. Tick outputs
+            // intentionally have no authored logical Region list.
+            .published_output_regions = {{}, {}},
+            .persisted_replacement_coverage = {selected, selected},
+            .produce_storage = {true, true},
+        }};
+    ASSERT_TRUE(realization.sample_write(0)->write(index(2), 0, 9.0f));
+    ASSERT_TRUE(realization.sample_write(0)->write(index(3), 0, 10.0f));
+    ASSERT_TRUE(realization.event_write(1)->write(
+        0,
+        {.time = index(3), .value = iv::TriggerEvent{}}));
+    ASSERT_TRUE(realization.seal().has_value());
+
+    auto candidate = store.begin_candidate(2);
+    ASSERT_TRUE(realization.stage_persisted_data(candidate).has_value());
+    ASSERT_EQ(
+        store.publish(std::move(candidate)),
+        iv::PersistedDataPublishResult::published);
+
+    auto reader = store.register_reader();
+    auto pin = reader.pin();
+    auto const* before = pin->find_sample_region(sample_output, index(1));
+    auto const* replaced = pin->find_sample_region(sample_output, index(2));
+    auto const* after = pin->find_sample_region(sample_output, index(5));
+    ASSERT_NE(before, nullptr);
+    ASSERT_NE(replaced, nullptr);
+    ASSERT_NE(after, nullptr);
+    EXPECT_FLOAT_EQ(before->at(index(1), 0).value, 1.0f);
+    EXPECT_FLOAT_EQ(replaced->at(index(2), 0).value, 9.0f);
+    EXPECT_FLOAT_EQ(after->at(index(5), 0).value, 1.0f);
+    std::vector<iv::GlobalIndex> event_times;
+    for (auto const& event : pin->event_timeline(
+             event_output, iv::EventTypeId::trigger)) {
+        event_times.push_back(event.time);
+    }
+    EXPECT_EQ(
+        event_times,
+        (std::vector<iv::GlobalIndex>{index(1), index(3), index(5)}));
+}
+
+TEST(BackgroundStorageRealization,
      PublishesPersistedFFTBlockRegionsWithResolvedGeometry)
 {
     auto const output = stable_output(iv::PortKind::sample, "spectra");
@@ -954,6 +1222,69 @@ TEST(BackgroundStorageRealization, SealingRejectsMissingExternalDirectViews)
     EXPECT_THROW(
         realization.bind_sample(0, *realization.sample_read(0)),
         std::logic_error);
+}
+
+TEST(BackgroundStorageRealization,
+     SealingRequiresExternalEventRegionDescriptorsAndReader)
+{
+    iv::graph_jit::BackgroundEvaluationPlan plan;
+    plan.storage.ports = {{
+        .kind = iv::PortKind::event,
+        .storage = iv::graph_jit::PortStorageKind::current_tick,
+        .event_type = iv::EventTypeId::trigger,
+    }};
+    plan.storage.direct_events = {{.storage = 0}};
+
+    struct External {
+        iv::IndexCoverage coverage = index_coverage({{0, 1}});
+        std::array<iv::GlobalIndexRange, 1> regions{range(0, 1)};
+    } external;
+    auto const visit = +[](
+        void const*,
+        iv::GlobalIndexRange,
+        void*,
+        iv::BackgroundEventReadView::VisitEvent) {};
+    auto const visit_region = +[](
+        void const*,
+        std::size_t,
+        iv::GlobalIndexRange,
+        void*,
+        iv::BackgroundEventReadView::VisitEvent) {};
+
+    iv::PersistedDataStore data;
+    iv::BackgroundStorageRealization realization{
+        plan,
+        data,
+        {
+            .storage_coverage = {external.coverage},
+        }};
+    realization.bind_event(0, {
+        .data = &external,
+        .coverage_value = &external.coverage,
+        .regions = external.regions,
+        .type = iv::EventTypeId::trigger,
+        .for_each_event = visit,
+    });
+    EXPECT_FALSE(realization.seal().has_value());
+
+    realization.bind_event(0, {
+        .data = &external,
+        .coverage_value = &external.coverage,
+        .type = iv::EventTypeId::trigger,
+        .for_each_event = visit,
+        .for_each_region_event = visit_region,
+    });
+    EXPECT_FALSE(realization.seal().has_value());
+
+    realization.bind_event(0, {
+        .data = &external,
+        .coverage_value = &external.coverage,
+        .regions = external.regions,
+        .type = iv::EventTypeId::trigger,
+        .for_each_event = visit,
+        .for_each_region_event = visit_region,
+    });
+    EXPECT_TRUE(realization.seal().has_value());
 }
 
 TEST(BackgroundStorageRealization, ExecutesHeterogeneousSampleProjectionPlan)
@@ -1563,6 +1894,135 @@ TEST(BackgroundStorageRealization,
         (std::vector<iv::GlobalIndex>{index(1), index(1)}));
 }
 
+TEST(BackgroundStorageRealization,
+     EventCoverageFanInKeepsDuplicateClippedRegionsAtTheirSources)
+{
+    iv::graph_jit::BackgroundEvaluationPlan plan;
+    plan.ports = {
+        {
+            .kind = iv::PortKind::event,
+            .direction = iv::graph_jit::PortDirection::output,
+            .output_production = iv::OutputProductionKind::coverage,
+            .authored_tock_output = true,
+            .event_type = iv::EventTypeId::midi,
+        },
+        {
+            .kind = iv::PortKind::event,
+            .direction = iv::graph_jit::PortDirection::output,
+            .output_production = iv::OutputProductionKind::coverage,
+            .authored_tock_output = true,
+            .event_type = iv::EventTypeId::midi,
+        },
+        {
+            .kind = iv::PortKind::event,
+            .direction = iv::graph_jit::PortDirection::input,
+            .input_access = iv::InputAccessKind::coverage,
+            .random_access_input = true,
+            .event_type = iv::EventTypeId::midi,
+        },
+    };
+    plan.storage.ports = {
+        {
+            .kind = iv::PortKind::event,
+            .storage = iv::graph_jit::PortStorageKind::background,
+            .output_port = 0,
+            .event_type = iv::EventTypeId::midi,
+            .max_events_per_index = 1.0,
+        },
+        {
+            .kind = iv::PortKind::event,
+            .storage = iv::graph_jit::PortStorageKind::background,
+            .output_port = 1,
+            .event_type = iv::EventTypeId::midi,
+            .max_events_per_index = 1.0,
+        },
+        {
+            .kind = iv::PortKind::event,
+            .storage = iv::graph_jit::PortStorageKind::background,
+            .event_type = iv::EventTypeId::midi,
+            .max_events_per_index = 2.0,
+            .event_materialization = 0,
+        },
+    };
+    auto const identity = iv::EventConversionRegistry::instance().plan(
+        iv::EventTypeId::midi, iv::EventTypeId::midi);
+    plan.storage.event_materializations = {{
+        .storage = iv::graph_jit::PortStorageKind::background,
+        .target_port = 2,
+        .inputs = {0, 1},
+        .semantic_source_indices = {0, 1},
+        .source_conversions = {identity, identity},
+        .source_type = iv::EventTypeId::midi,
+        .target_type = iv::EventTypeId::midi,
+        .conversion = identity,
+        .output = 2,
+    }};
+    plan.runtime.operations = {{
+        .kind = iv::graph_jit::BackgroundRuntimeOperationKind::
+            event_materialization,
+        .operation = 0,
+    }};
+
+    iv::PersistedDataStore data;
+    iv::BackgroundStorageRealization realization{
+        plan,
+        data,
+        {
+            .storage_coverage = {
+                index_coverage({{0, 10}}),
+                index_coverage({{4, 12}}),
+                index_coverage({{4, 10}}),
+            },
+            .storage_regions = {
+                {range(0, 10), range(2, 6)},
+                {range(4, 12), range(4, 8)},
+                {
+                    range(4, 10),
+                    range(4, 10),
+                    range(4, 8),
+                    range(4, 6),
+                },
+            },
+        }};
+    auto event = [](std::int64_t time, std::uint8_t note) {
+        return iv::TimedEvent{
+            .time = index(time),
+            .value = iv::MidiEvent{
+                .bytes = {0x90, note, 100},
+                .size = 3,
+            },
+        };
+    };
+    ASSERT_TRUE(realization.event_write(0)->write(0, event(9, 60)));
+    ASSERT_TRUE(realization.event_write(0)->write(1, event(5, 61)));
+    ASSERT_TRUE(realization.event_write(1)->write(0, event(9, 62)));
+    ASSERT_TRUE(realization.event_write(1)->write(1, event(7, 63)));
+
+    ASSERT_TRUE(realization.seal().has_value());
+    auto materialized = realization.execute_operation(0);
+    ASSERT_TRUE(materialized.has_value())
+        << (materialized ? std::string{} : materialized.error());
+
+    auto const* output = realization.event_read(2);
+    ASSERT_NE(output, nullptr);
+    ASSERT_EQ(output->regions.size(), 4u);
+    std::array<std::uint8_t, 4> const expected_notes{60, 62, 63, 61};
+    for (std::size_t region = 0; region < output->regions.size(); ++region) {
+        std::vector<std::uint8_t> notes;
+        output->for_each_region(
+            region,
+            output->regions[region],
+            [&](iv::TimedEvent const& value) {
+                auto const* midi = std::get_if<iv::MidiEvent>(&value.value);
+                ASSERT_NE(midi, nullptr);
+                notes.push_back(midi->bytes[1]);
+            });
+        EXPECT_EQ(
+            notes,
+            (std::vector<std::uint8_t>{expected_notes[region]}));
+    }
+}
+
 TEST(BackgroundStorageRealization, ResolvesAnonymousGenerationLocalOutputHandle)
 {
     iv::graph_jit::BackgroundEvaluationPlan plan;
@@ -1795,7 +2255,7 @@ TEST(BackgroundEvaluationCallFrame, OwnsOperationFramesAndTockBindings)
         node.tock.outputs.data()[0].region_views()[0]};
     output_region.at(index(11)) = iv::Sample{8.0f};
     EXPECT_FLOAT_EQ(realization.sample_read(1)->at(index(11), 0).value, 8.0f);
-    node.tock.event_outputs.data()[0].write({
+    node.tock.event_outputs.data()[0].write(0, {
         .time = index(10),
         .value = iv::TriggerEvent{},
     });

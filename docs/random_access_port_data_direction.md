@@ -1,10 +1,13 @@
 # Random-Access Port Data, Audio Value Types, And Input Contract Direction
 
 _Status: normative port and storage direction. The active Front 3 source implements
-the node-facing contract through `ContinuousRegion<Value>`,
+the continuous node-facing contract through `ContinuousRegion<Value>`,
 `WritableContinuousRegion<Value>`, `ContinuousCoverage<Value>`, and
-`WritableContinuousCoverage<Value>`. Collaborator build and test verification is
-pending._
+`WritableContinuousCoverage<Value>`. It now implements the corresponding event
+contract through `EventRegion`, `WritableEventRegion`, `EventCoverage`, and
+`WritableEventCoverage`. The collaborator's last completed build and full run passed
+all 625 tests before the event Region-list extension. The current extension and its
+new adversarial tests await collaborator compilation and test execution._
 
 Related documents:
 
@@ -87,6 +90,38 @@ callback fills the supplied buffers. It cannot append a Region, change a Region 
 or allocate output backing. A Region continuous output uses the same representation
 with exactly one Region.
 
+Event Region and Coverage outputs use the same logical shape. Forward propagation
+publishes one range for a Region output and an ordered range list for a Coverage
+output. `tock_coverage()` receives one `WritableEventRegion` or an iterable
+`WritableEventCoverage`. Each event Region has independent event storage even when
+two ranges overlap or are identical. A Coverage input receives the matching iterable
+`EventCoverage`; a Region input receives exactly one `EventRegion`.
+
+For example, a node can preserve two anonymous event groups without encoding a group
+identifier into the event value:
+
+```cpp
+void propagate_forward_coverage(
+    PropagateForwardCoverageContext<MyNode>& ctx) const
+{
+    std::array const ranges{clip_a_range, clip_b_range};
+    ctx.output<"events">().publish(ranges);
+}
+
+void tock_coverage(TockCoverageContext<MyNode>& ctx) const
+{
+    auto output = ctx.output<"events">().regions();
+    output[0].write(first_clip_event);
+    output[1].write(second_clip_event);
+}
+```
+
+The two Regions may use the same `GlobalIndexRange`. Their event sequences still do
+not alias or merge in the Coverage callback. A Sequential consumer of that output
+receives one timeline-ordered stream. Events from all Regions remain present;
+equal-time events from one authored Coverage output retain Region order. Event fan-in
+retains the existing semantic source order before Region order.
+
 Each Region has an independent writable storage range. Two Regions whose logical
 ranges overlap must not alias the same value storage for their overlapping positions;
 the two values are separate contributions. The runtime may place several Regions in
@@ -95,7 +130,11 @@ does not make their value storage shared.
 
 If any demand intersects a logical Region, the runtime retains that Region's complete
 range. It must not expose a clipped intersection as a new logical Region. This keeps
-the node-facing Region list independent of transaction request boundaries. A node
+the node-facing Region list independent of transaction request boundaries. If that
+complete range makes the positional replacement domain intersect another Region, the
+producer receives that second complete Region too. This continues until the
+replacement domain stops growing. A consuming callback still receives only the
+Regions that intersect its own input requirement. A node
 whose Region ranges depend on data values must determine and retain those ranges
 before forward propagation; it cannot discover the output shape while writing the
 output values.
@@ -966,15 +1005,18 @@ When a consumer requests sorted Coverage, the runtime uses stable sorting. The
 canonical key orders Region begins in signed order and orders equal begins by larger
 extent first. Exact duplicate ranges retain their producer order.
 
-The authored forward-propagation facade also separates continuous and event
-publication. A continuous output exposes `publish_region()` and `publish_regions()`.
-An event output exposes `publish_coverage()`. The shared reflected record retains both
-function pointers for generated execution, but the typed node API cannot select the
-wrong representation.
+The authored forward-propagation facade uses one typed name. A Region output accepts
+`output.publish(GlobalIndexRange)`. A Coverage output accepts
+`output.publish(span<GlobalIndexRange const>)`. The overload is selected statically by
+the output's `OutputProduction`. This API is the same for continuous and event ports.
+The reflected `OutputCoverageChange` record retains separate internal function
+pointers for generated execution, but node code cannot select positional publication
+for an authored Region or Coverage output.
 
 `IndexCoverage` remains the positional union for demand and invalidation. It does not
-replace the logical Region list. `PersistedSampleRegion` remains an owning runtime
-record and does not become a node-facing port type.
+replace either continuous or event logical Region lists. `PersistedSampleRegion` and
+`PersistedEventChunk` remain owning runtime records and do not become node-facing port
+types.
 
 `BackgroundStorageRealization::seal()` validates externally supplied continuous
 storage against the full planned `ChannelLayout` and `ContinuousValueStorageGeometry`.
@@ -988,10 +1030,45 @@ input with the same route and projection rules as
 current logical Region list as well as the positional union. A stable-input rewire
 therefore cannot erase Region decomposition before the reconciliation callback.
 
-`TickMaterializedSampleInput` carry-forward also retains complete logical Regions.
+`TickMaterializedSampleInput` and `TickMaterializedEventInput` carry-forward also
+retain complete logical Regions.
 For a previous `TickMaterializedSampleRegion`, any intersecting demand retains the
 whole Region only when changed coverage does not touch it. A touched Region is
 recomputed. The runtime does not keep a positional prefix or suffix of that Region.
+Produced and retained records are placed by an explicit current materialized-record
+order. The current Sequential Tick-input path builds it from its positional produced
+and retained request windows in signed-canonical order. The lower-level carry-forward
+operation can also preserve an explicitly supplied nonadjacent order such as
+`[recomputed A, retained C, recomputed B]` for continuous and event records.
+
+Before reverse propagation, `BackgroundPropagationWorkspace::require_output()`
+widens a requirement on an authored Region/Coverage output to every complete logical
+Region it intersects. The closure applies to continuous and event ports. This makes
+the Region list received by the reverse callback agree with the complete Region
+buffers later selected for the evaluation callback. It does not widen a replayed
+Tick output: Tick coverage is positional rather than a logical Region list.
+
+`BackgroundCoverageState::prepare_migration_from()` transfers an output Region list
+only when the stable port retains the same `OutputProductionKind`. This check applies
+to event outputs as well as continuous outputs. A `BackgroundEventReadView` or
+`BackgroundEventWriteView` with nonempty coverage must describe that coverage with
+its Region list and provide the corresponding per-Region callback.
+
+Contextual replay is deliberately different at this internal boundary. A replayed
+Tick output still publishes positional `IndexCoverage` through
+`OutputCoverageChange::publish_coverage()`. The typed authored facade does not expose
+that operation to a Region or Coverage output. Its storage selection uses only the
+requested replay ranges. If the Tick output is persisted, staging applies each
+selected record through `PersistedDataStore::Candidate::overwrite()` so a partial
+replay can split an older positional record without changing the authored
+Region/Coverage replacement rules.
+
+Event Regions are anonymous and interchangeable unless their position in the current
+list matters to the node. List position is preserved through one propagation,
+evaluation, persistence, and Tick-materialization path, but it is not a stable
+cross-evaluation identifier. Explicit optional identifiers, dynamically created
+identifiers, UI discovery, and selection by identifier are deferred. They can be
+added as metadata without weakening the anonymous case.
 
 The source also retains one explicit limitation. Background contextual replay of a
 Sequential continuous input still supports only `Sample` at project rate. This is a

@@ -257,6 +257,21 @@ public:
             void* visitor_data,
             VisitEventChunk visitor) const;
 
+        // Authoritative logical event Region order. Records may overlap or
+        // have identical ranges; each record owns its event sequence.
+        [[nodiscard]] std::span<PersistedEventChunk const> event_regions(
+            PersistedOutputHandle output,
+            EventTypeId type) const noexcept;
+        [[nodiscard]] std::span<GlobalIndexRange const> event_region_ranges(
+            PersistedOutputHandle output,
+            EventTypeId type) const noexcept;
+        // Timeline-ordered concatenation of all logical Regions. Events from
+        // overlapping or duplicate Regions remain duplicated. Equal-time
+        // events retain Region order.
+        [[nodiscard]] std::span<TimedEvent const> event_timeline(
+            PersistedOutputHandle output,
+            EventTypeId type) const noexcept;
+
         template<typename Fn>
         void for_each_sample_region(
             PersistedOutputHandle output,
@@ -363,6 +378,12 @@ public:
             IndexCoverage const& domain,
             std::span<GlobalIndexRange const> logical_order,
             std::vector<PersistedSampleRegion> regions);
+        void replace_event_regions(
+            PersistedOutputHandle output,
+            EventTypeId type,
+            IndexCoverage const& domain,
+            std::span<GlobalIndexRange const> logical_order,
+            std::vector<PersistedEventChunk> regions);
         void overwrite(PersistedEventChunk record);
 
         void erase_sample(

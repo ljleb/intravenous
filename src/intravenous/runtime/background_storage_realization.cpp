@@ -57,16 +57,11 @@ public:
     [[nodiscard]] std::size_t size() const noexcept { return size_; }
 };
 
-[[nodiscard]] std::size_t coverage_sample_count(IndexCoverage const& coverage)
+[[nodiscard]] IndexCoverage region_coverage(
+    std::span<GlobalIndexRange const> regions)
 {
-    std::size_t result = 0;
-    for (auto const region : coverage) {
-        auto const size = region.extent;
-        if (size > std::numeric_limits<std::size_t>::max() - result) {
-            throw std::length_error("background storage coverage is too large");
-        }
-        result += static_cast<std::size_t>(size);
-    }
+    IndexCoverage result;
+    for (auto const region : regions) result.include(region);
     return result;
 }
 
@@ -328,15 +323,84 @@ public:
 };
 
 class TransactionEventStorage {
+    struct Region {
+        GlobalIndexRange range{};
+        std::size_t capacity = 0;
+        std::vector<TimedEvent> events{};
+        std::vector<std::size_t> source_indices{};
+    };
+
     IndexCoverage const* coverage_ = nullptr;
     EventTypeId type_ = EventTypeId::empty;
-    std::size_t capacity_ = 0;
-    std::vector<TimedEvent> events_{};
-    std::vector<std::size_t> source_indices_{};
+    std::vector<GlobalIndexRange> region_ranges_{};
+    std::vector<Region> regions_{};
+
+    [[nodiscard]] bool write_to_region(
+        std::size_t region_index,
+        TimedEvent const& event,
+        std::size_t source_index) noexcept
+    {
+        if (region_index >= regions_.size()) return false;
+        auto& region = regions_[region_index];
+        if (!region.range.contains(event.time)
+            || !event_matches_type(type_, event.value)
+            || region.events.size() == region.capacity
+            || (!region.events.empty()
+                && RangeRelativeIndexOrder{region.range.begin}(
+                    event.time, region.events.back().time))) {
+            return false;
+        }
+        region.events.push_back(event);
+        region.source_indices.push_back(source_index);
+        return true;
+    }
+
+    template<typename Visit>
+    void visit_merged(GlobalIndexRange requested, Visit&& visit) const
+    {
+        struct Entry {
+            TimedEvent const* event = nullptr;
+            std::size_t source_index = 0;
+            std::size_t region = 0;
+            std::size_t ordinal = 0;
+        };
+        std::vector<Entry> entries;
+        for (std::size_t region_index = 0;
+             region_index < regions_.size(); ++region_index) {
+            auto const& region = regions_[region_index];
+            for (std::size_t event = 0; event < region.events.size(); ++event) {
+                if (!requested.contains(region.events[event].time)) continue;
+                entries.push_back({
+                    .event = std::addressof(region.events[event]),
+                    .source_index = region.source_indices[event],
+                    .region = region_index,
+                    .ordinal = event,
+                });
+            }
+        }
+        std::stable_sort(entries.begin(), entries.end(),
+            [&](Entry const& left, Entry const& right) {
+                if (left.event->time != right.event->time) {
+                    return RangeRelativeIndexOrder{requested.begin}(
+                        left.event->time, right.event->time);
+                }
+                if (left.source_index != right.source_index) {
+                    return left.source_index < right.source_index;
+                }
+                if (left.region != right.region) {
+                    return left.region < right.region;
+                }
+                return left.ordinal < right.ordinal;
+            });
+        for (auto const& entry : entries) {
+            visit(*entry.event, entry.source_index);
+        }
+    }
 
 public:
     TransactionEventStorage(
         IndexCoverage const& coverage,
+        std::span<GlobalIndexRange const> regions,
         EventTypeId type,
         double max_events_per_index)
         : coverage_(&coverage)
@@ -346,15 +410,36 @@ public:
             throw std::invalid_argument(
                 "background event storage has an invalid type");
         }
-        auto const capacity = event_count_for_sample_span(
-            max_events_per_index, coverage_sample_count(coverage));
-        if (!capacity) {
-            throw std::length_error(
-                "background event storage capacity is not representable");
+        if (regions.empty() && !coverage.empty()) {
+            region_ranges_.assign(coverage.begin(), coverage.end());
+        } else {
+            region_ranges_.assign(regions.begin(), regions.end());
         }
-        capacity_ = *capacity;
-        events_.reserve(capacity_);
-        source_indices_.reserve(capacity_);
+        if (region_coverage(region_ranges_) != coverage) {
+            throw std::invalid_argument(
+                "background event Regions do not match selected coverage");
+        }
+        regions_.reserve(region_ranges_.size());
+        for (auto const range : region_ranges_) {
+            if (range.empty()
+                || range.extent > std::numeric_limits<std::size_t>::max()) {
+                throw std::invalid_argument(
+                    "background event storage has an invalid Region");
+            }
+            auto const capacity = event_count_for_sample_span(
+                max_events_per_index, static_cast<std::size_t>(range.extent));
+            if (!capacity) {
+                throw std::length_error(
+                    "background event Region capacity is not representable");
+            }
+            Region region{
+                .range = range,
+                .capacity = *capacity,
+            };
+            region.events.reserve(region.capacity);
+            region.source_indices.reserve(region.capacity);
+            regions_.push_back(std::move(region));
+        }
     }
 
     [[nodiscard]] bool write(TimedEvent const& event) noexcept
@@ -365,17 +450,41 @@ public:
     [[nodiscard]] bool write(
         TimedEvent const& event, std::size_t source_index) noexcept
     {
-        if (!coverage_->contains(event.time)
-            || !event_matches_type(type_, event.value)
-            || events_.size() == capacity_
-            || (!events_.empty()
-                && SignedGlobalIndexOrder{}(
-                    event.time, events_.back().time))) {
-            return false;
+        for (std::size_t index = 0; index < regions_.size(); ++index) {
+            if (regions_[index].range.contains(event.time)) {
+                return write_to_region(index, event, source_index);
+            }
         }
-        events_.push_back(event);
-        source_indices_.push_back(source_index);
-        return true;
+        return false;
+    }
+
+    [[nodiscard]] bool write_region(
+        std::size_t region,
+        TimedEvent const& event) noexcept
+    {
+        return write_to_region(
+            region, event, std::numeric_limits<std::size_t>::max());
+    }
+
+    [[nodiscard]] bool write_region(
+        std::size_t region,
+        TimedEvent const& event,
+        std::size_t source_index) noexcept
+    {
+        return write_to_region(region, event, source_index);
+    }
+
+    void for_each_region(
+        std::size_t region_index,
+        GlobalIndexRange requested,
+        void* visitor_data,
+        BackgroundEventReadView::VisitEvent visitor) const
+    {
+        if (region_index >= regions_.size()) return;
+        auto const& region = regions_[region_index];
+        for (auto const& event : region.events) {
+            if (requested.contains(event.time)) visitor(visitor_data, event);
+        }
     }
 
     void for_each_indexed(
@@ -383,16 +492,8 @@ public:
         void* visitor_data,
         BackgroundEventReadView::VisitIndexedEvent visitor) const
     {
-        region.for_each_signed_order_segment([&](GlobalIndexRange segment) {
-            auto event = std::ranges::lower_bound(
-                events_, segment.begin, SignedGlobalIndexOrder{},
-                [](TimedEvent const& value) { return value.time; });
-            for (; event != events_.end() && segment.contains(event->time);
-                 ++event) {
-                auto const offset = static_cast<std::size_t>(
-                    std::distance(events_.cbegin(), event));
-                visitor(visitor_data, *event, source_indices_[offset]);
-            }
+        visit_merged(region, [&](TimedEvent const& event, std::size_t source) {
+            visitor(visitor_data, event, source);
         });
     }
 
@@ -401,16 +502,8 @@ public:
         void* visitor_data,
         BackgroundEventReadView::VisitEvent visitor) const
     {
-        region.for_each_signed_order_segment([&](GlobalIndexRange segment) {
-            auto event = std::ranges::lower_bound(
-                events_, segment.begin, SignedGlobalIndexOrder{},
-                [](TimedEvent const& value) {
-                    return value.time;
-                });
-            for (; event != events_.end() && segment.contains(event->time);
-                 ++event) {
-                visitor(visitor_data, *event);
-            }
+        visit_merged(region, [&](TimedEvent const& event, std::size_t) {
+            visitor(visitor_data, event);
         });
     }
 
@@ -419,6 +512,7 @@ public:
         return {
             .data = this,
             .coverage_value = coverage_,
+            .regions = region_ranges_,
             .type = type_,
             .for_each_event = +[](void const* opaque,
                                   GlobalIndexRange region,
@@ -426,6 +520,16 @@ public:
                                   BackgroundEventReadView::VisitEvent visitor) {
                 static_cast<TransactionEventStorage const*>(opaque)->for_each(
                     region, visitor_data, visitor);
+            },
+            .for_each_region_event = +[](
+                void const* opaque,
+                std::size_t region_index,
+                GlobalIndexRange region,
+                void* visitor_data,
+                BackgroundEventReadView::VisitEvent visitor) {
+                static_cast<TransactionEventStorage const*>(opaque)
+                    ->for_each_region(
+                        region_index, region, visitor_data, visitor);
             },
             .for_each_indexed_event = +[](
                 void const* opaque,
@@ -443,9 +547,25 @@ public:
         return {
             .data = this,
             .coverage_value = coverage_,
+            .regions = region_ranges_,
             .type = type_,
             .write_event = +[](void* opaque, TimedEvent const& event) noexcept {
                 return static_cast<TransactionEventStorage*>(opaque)->write(event);
+            },
+            .write_region_event = +[](
+                void* opaque,
+                std::size_t region,
+                TimedEvent const& event) noexcept {
+                return static_cast<TransactionEventStorage*>(opaque)
+                    ->write_region(region, event);
+            },
+            .write_indexed_region_event = +[](
+                void* opaque,
+                std::size_t region,
+                TimedEvent const& event,
+                std::size_t source_index) noexcept {
+                return static_cast<TransactionEventStorage*>(opaque)
+                    ->write_region(region, event, source_index);
             },
             .write_indexed_event = +[](
                 void* opaque,
@@ -554,21 +674,45 @@ class PersistedEventReader {
     PersistedOutputHandle output_{};
     IndexCoverage const* coverage_ = nullptr;
     EventTypeId type_ = EventTypeId::empty;
+    std::vector<PersistedEventChunk const*> regions_{};
+    std::vector<GlobalIndexRange> region_ranges_{};
+    bool selected_regions_complete_ = false;
 
 public:
     PersistedEventReader(
         PersistedDataStore::Snapshot const& snapshot,
         PersistedOutputHandle output,
         IndexCoverage const& coverage,
-        EventTypeId type) noexcept
+        std::span<GlobalIndexRange const> selected_regions,
+        EventTypeId type)
         : snapshot_(&snapshot)
         , output_(std::move(output))
         , coverage_(&coverage)
         , type_(type)
-    {}
+    {
+        auto retained = snapshot_->event_regions(output_, type_);
+        std::vector<bool> used(retained.size(), false);
+        for (auto const selected : selected_regions) {
+            for (std::size_t index = 0; index < retained.size(); ++index) {
+                if (used[index] || retained[index].range != selected) continue;
+                used[index] = true;
+                regions_.push_back(std::addressof(retained[index]));
+                region_ranges_.push_back(selected);
+                break;
+            }
+        }
+        selected_regions_complete_ =
+            regions_.size() == selected_regions.size();
+    }
 
     [[nodiscard]] bool complete() const noexcept
     {
+        if (!selected_regions_complete_) return false;
+        IndexCoverage descriptor_coverage;
+        for (auto const region : region_ranges_) {
+            descriptor_coverage.include(region);
+        }
+        if (!contains_coverage(descriptor_coverage, *coverage_)) return false;
         if (coverage_->empty()) return true;
         auto const* retained = snapshot_->find_event_coverage(output_, type_);
         return retained && contains_coverage(*retained, *coverage_);
@@ -580,22 +724,38 @@ public:
         BackgroundEventReadView::VisitEvent visitor) const
     {
         if (region.empty()) return;
-        snapshot_->for_each_event_chunk(
-            output_, region, [&](PersistedEventChunk const& chunk,
-                                 GlobalIndexRange intersection) {
-                IV_ASSERT(chunk.type == type_,
-                    "persisted event chunk type does not match its runtime view");
-                if (chunk.type != type_) return;
-                auto event = std::ranges::lower_bound(
-                    chunk.events,
-                    intersection.begin,
-                    SignedGlobalIndexOrder{},
-                    &TimedEvent::time);
-                for (; event != chunk.events.end()
-                       && intersection.contains(event->time); ++event) {
-                    visitor(visitor_data, *event);
+        std::vector<std::pair<TimedEvent const*, std::size_t>> events;
+        for (std::size_t region_index = 0;
+             region_index < regions_.size(); ++region_index) {
+            for (auto const& event : regions_[region_index]->events) {
+                if (region.contains(event.time)) {
+                    events.emplace_back(std::addressof(event), region_index);
                 }
-            });
+            }
+        }
+        std::stable_sort(events.begin(), events.end(), [&](auto left, auto right) {
+            if (left.first->time != right.first->time) {
+                return RangeRelativeIndexOrder{region.begin}(
+                    left.first->time, right.first->time);
+            }
+            return left.second < right.second;
+        });
+        for (auto const [event, unused] : events) {
+            static_cast<void>(unused);
+            visitor(visitor_data, *event);
+        }
+    }
+
+    void for_each_region(
+        std::size_t region_index,
+        GlobalIndexRange requested,
+        void* visitor_data,
+        BackgroundEventReadView::VisitEvent visitor) const
+    {
+        if (region_index >= regions_.size()) return;
+        for (auto const& event : regions_[region_index]->events) {
+            if (requested.contains(event.time)) visitor(visitor_data, event);
+        }
     }
 
     [[nodiscard]] BackgroundEventReadView view() const noexcept
@@ -603,6 +763,7 @@ public:
         return {
             .data = this,
             .coverage_value = coverage_,
+            .regions = region_ranges_,
             .type = type_,
             .for_each_event = +[](void const* opaque,
                                   GlobalIndexRange region,
@@ -610,6 +771,16 @@ public:
                                   BackgroundEventReadView::VisitEvent visitor) {
                 static_cast<PersistedEventReader const*>(opaque)->for_each(
                     region, visitor_data, visitor);
+            },
+            .for_each_region_event = +[](
+                void const* opaque,
+                std::size_t region_index,
+                GlobalIndexRange region,
+                void* visitor_data,
+                BackgroundEventReadView::VisitEvent visitor) {
+                static_cast<PersistedEventReader const*>(opaque)
+                    ->for_each_region(
+                        region_index, region, visitor_data, visitor);
             },
         };
     }
@@ -745,12 +916,33 @@ bool BackgroundEventWriteView::write(
         && write_indexed_event(data, event, source_index);
 }
 
+bool BackgroundEventWriteView::write(
+    std::size_t region,
+    TimedEvent const& event) const noexcept
+{
+    return *this && region < regions.size()
+        && regions[region].contains(event.time)
+        && write_region_event
+        && write_region_event(data, region, event);
+}
+
+bool BackgroundEventWriteView::write(
+    std::size_t region,
+    TimedEvent const& event,
+    std::size_t source_index) const noexcept
+{
+    return *this && region < regions.size()
+        && regions[region].contains(event.time)
+        && write_indexed_region_event
+        && write_indexed_region_event(data, region, event, source_index);
+}
+
 struct BackgroundStorageRealization::Slot {
     graph_jit::PortStoragePlan const* plan = nullptr;
     IndexCoverage const* coverage = nullptr;
     std::optional<PersistedOutputHandle> persisted_output{};
     std::shared_ptr<TransactionSampleStorage> owned_sample{};
-    std::unique_ptr<TransactionEventStorage> owned_event{};
+    std::shared_ptr<TransactionEventStorage> owned_event{};
     std::unique_ptr<PersistedSampleReader> persisted_sample{};
     std::unique_ptr<PersistedEventReader> persisted_event{};
     std::optional<BackgroundSampleReadView> sample_read{};
@@ -779,11 +971,9 @@ BackgroundStorageRealization::BackgroundStorageRealization(
         selection_.storage_regions.resize(plan.storage.ports.size());
         for (graph_jit::PortStorageIndex index = 0;
              index < plan.storage.ports.size(); ++index) {
-            if (plan.storage.ports[index].kind == PortKind::sample) {
-                selection_.storage_regions[index].assign(
-                    selection_.storage_coverage[index].begin(),
-                    selection_.storage_coverage[index].end());
-            }
+            selection_.storage_regions[index].assign(
+                selection_.storage_coverage[index].begin(),
+                selection_.storage_coverage[index].end());
         }
     } else if (selection_.storage_regions.size()
                != plan.storage.ports.size()) {
@@ -819,7 +1009,7 @@ BackgroundStorageRealization::BackgroundStorageRealization(
             : selection_.produce_storage[index];
     };
 
-    // One authored continuous output has one writable Region list even when
+    // One authored output has one writable Region list even when
     // planning retained several physical storage roles for it. The former
     // scalar writer broadcast every value to those roles. Region views cannot
     // express such a broadcast while retaining contiguous storage, so all
@@ -830,7 +1020,7 @@ BackgroundStorageRealization::BackgroundStorageRealization(
     for (graph_jit::PortStorageIndex index = 0;
          index < plan.storage.ports.size(); ++index) {
         auto const& storage = plan.storage.ports[index];
-        if (storage.kind != PortKind::sample || !storage.output_port
+        if (!storage.output_port
             || *storage.output_port >= plan.ports.size()
             || storage.storage == graph_jit::PortStorageKind::current_tick
             || !storage_is_produced(index)) {
@@ -841,17 +1031,19 @@ BackgroundStorageRealization::BackgroundStorageRealization(
     for (auto const& group : output_storage) {
         if (group.empty()) continue;
         auto const& first_storage = plan.storage.ports[group.front()];
-        if (std::ranges::any_of(
-                group,
-                [&](graph_jit::PortStorageIndex index) {
-                    auto const& candidate = plan.storage.ports[index];
-                    return candidate.sample_layout
-                            != first_storage.sample_layout
+        if (std::ranges::any_of(group, [&](graph_jit::PortStorageIndex index) {
+                auto const& candidate = plan.storage.ports[index];
+                if (candidate.kind != first_storage.kind) return true;
+                return candidate.kind == PortKind::sample
+                    ? candidate.sample_layout != first_storage.sample_layout
                         || candidate.continuous_geometry
-                            != first_storage.continuous_geometry;
-                })) {
+                            != first_storage.continuous_geometry
+                    : candidate.event_type != first_storage.event_type
+                        || candidate.max_events_per_index
+                            != first_storage.max_events_per_index;
+            })) {
             throw std::invalid_argument(
-                "background output storage roles disagree on continuous geometry or layout");
+                "background output storage roles disagree on value representation");
         }
         IndexCoverage selected;
         for (auto const index : group) {
@@ -901,6 +1093,8 @@ BackgroundStorageRealization::BackgroundStorageRealization(
 
     std::vector<std::shared_ptr<TransactionSampleStorage>> output_samples(
         plan.ports.size());
+    std::vector<std::shared_ptr<TransactionEventStorage>> output_events(
+        plan.ports.size());
     slots_.reserve(plan.storage.ports.size());
     for (graph_jit::PortStorageIndex index = 0;
          index < plan.storage.ports.size(); ++index) {
@@ -944,10 +1138,25 @@ BackgroundStorageRealization::BackgroundStorageRealization(
                 created->sample_read = created->owned_sample->read_view();
                 created->sample_write = created->owned_sample->write_view();
             } else {
-                created->owned_event = std::make_unique<TransactionEventStorage>(
-                    *created->coverage,
-                    planned.event_type,
-                    planned.max_events_per_index);
+                if (planned.output_port
+                    && *planned.output_port < output_events.size()) {
+                    auto& shared = output_events[*planned.output_port];
+                    if (!shared) {
+                        shared = std::make_shared<TransactionEventStorage>(
+                            *created->coverage,
+                            selection_.storage_regions[index],
+                            planned.event_type,
+                            planned.max_events_per_index);
+                    }
+                    created->owned_event = shared;
+                } else {
+                    created->owned_event =
+                        std::make_shared<TransactionEventStorage>(
+                            *created->coverage,
+                            selection_.storage_regions[index],
+                            planned.event_type,
+                            planned.max_events_per_index);
+                }
                 created->event_read = created->owned_event->read_view();
                 created->event_write = created->owned_event->write_view();
             }
@@ -971,6 +1180,7 @@ BackgroundStorageRealization::BackgroundStorageRealization(
                         *selection_.published,
                         *created->persisted_output,
                         *created->coverage,
+                        selection_.storage_regions[index],
                         planned.event_type);
                 created->event_read = created->persisted_event->view();
             }
@@ -1129,12 +1339,20 @@ std::expected<void, std::string> BackgroundStorageRealization::seal()
     auto const valid_event_read = [&](Slot const& selected) {
         return selected.event_read
             && selected.event_read->type == selected.plan->event_type
+            && (selected.event_read->coverage().empty()
+                || selected.event_read->for_each_region_event != nullptr)
+            && region_coverage(selected.event_read->regions)
+                == selected.event_read->coverage()
             && contains_coverage(
                 selected.event_read->coverage(), *selected.coverage);
     };
     auto const valid_event_write = [&](Slot const& selected) {
         return selected.event_write
             && selected.event_write->type == selected.plan->event_type
+            && (selected.event_write->coverage().empty()
+                || selected.event_write->write_region_event != nullptr)
+            && region_coverage(selected.event_write->regions)
+                == selected.event_write->coverage()
             && contains_coverage(
                 selected.event_write->coverage(), *selected.coverage);
     };
@@ -1853,6 +2071,114 @@ BackgroundStorageRealization::execute_operation(
                 "background event materialization has an invalid conversion");
             break;
         }
+        if (materialization.target_port
+            && *materialization.target_port >= plan_->ports.size()) {
+            result = std::unexpected(
+                "background event materialization has no logical target port");
+            break;
+        }
+
+        if (materialization.target_port
+            && *materialization.target_port < plan_->ports.size()
+            && plan_->ports[*materialization.target_port].input_access
+                != InputAccessKind::sequential) {
+            struct Contribution {
+                std::size_t source = 0;
+                std::size_t region = 0;
+                GlobalIndexRange range{};
+            };
+            std::vector<Contribution> contributions;
+            for (std::size_t source_index = 0;
+                 source_index < materialization.inputs.size(); ++source_index) {
+                auto const* source = event_read(
+                    materialization.inputs[source_index]);
+                auto const& conversion =
+                    materialization.source_conversions[source_index];
+                if (!source || source->type != conversion.source_type
+                    || conversion.target_type != materialization.source_type
+                    || conversion.step_count > EventConversionPlan::max_steps
+                    || !EventConversionRegistry::is_nonexpanding(conversion)
+                    || source->for_each_region_event == nullptr) {
+                    result = std::unexpected(
+                        "background event Region materialization has no compatible source");
+                    break;
+                }
+                for (std::size_t region = 0;
+                     region < source->regions.size(); ++region) {
+                    for (auto const available : target_coverage) {
+                        for_each_range_intersection(
+                            source->regions[region],
+                            available,
+                            [&](GlobalIndexRange part) {
+                                contributions.push_back({
+                                    .source = source_index,
+                                    .region = region,
+                                    .range = part,
+                                });
+                            });
+                    }
+                }
+            }
+            if (!result) break;
+            std::vector<bool> used(contributions.size(), false);
+            for (std::size_t target_region = 0;
+                 target_region < target->regions.size(); ++target_region) {
+                auto const found = [&]() -> std::optional<std::size_t> {
+                    for (std::size_t index = 0;
+                         index < contributions.size(); ++index) {
+                        if (!used[index]
+                            && contributions[index].range
+                                == target->regions[target_region]) {
+                            return index;
+                        }
+                    }
+                    return std::nullopt;
+                }();
+                if (!found) {
+                    result = std::unexpected(
+                        "background event Coverage materialization lost a logical Region contribution");
+                    break;
+                }
+                used[*found] = true;
+                auto const contribution = contributions[*found];
+                auto const* source = event_read(
+                    materialization.inputs[contribution.source]);
+                auto const source_index =
+                    materialization.semantic_source_indices[
+                        contribution.source];
+                bool written = true;
+                source->for_each_region(
+                    contribution.region,
+                    contribution.range,
+                    [&](TimedEvent const& event) {
+                        EventConversionRegistry::instance().convert(
+                            materialization.source_conversions[
+                                contribution.source],
+                            event,
+                            [&](TimedEvent const& source_converted) {
+                                EventConversionRegistry::instance().convert(
+                                    materialization.conversion,
+                                    source_converted,
+                                    [&](TimedEvent const& target_converted) {
+                                        written = written && target->write(
+                                            target_region,
+                                            target_converted,
+                                            source_index);
+                                    });
+                            });
+                    });
+                if (!written) {
+                    result = std::unexpected(
+                        "background event Region materialization write failed");
+                    break;
+                }
+            }
+            if (result && std::ranges::contains(used, false)) {
+                result = std::unexpected(
+                    "background event Coverage materialization has an unused logical Region contribution");
+            }
+            break;
+        }
 
         std::vector<std::vector<TimedEvent>> converted(
             materialization.inputs.size());
@@ -2454,6 +2780,69 @@ BackgroundStorageRealization::make_tick_materialization_snapshot(
             available.include(route.view->coverage());
         }
         if (available.empty()) continue;
+        if (port.input_access != InputAccessKind::sequential) {
+            struct FrozenRegion {
+                GlobalIndexRange range{};
+                std::vector<TimedEvent> events{};
+                std::vector<std::size_t> source_indices{};
+            };
+            std::vector<FrozenRegion> frozen_regions;
+            for (auto const& route : routes) {
+                if (route.view->for_each_region_event == nullptr) {
+                    return std::unexpected(
+                        "Tick event materialization source has no Region reader");
+                }
+                for (std::size_t region = 0;
+                     region < route.view->regions.size(); ++region) {
+                    auto const range = route.view->regions[region];
+                    if ((IndexCoverage{range} & available).empty()) continue;
+                    FrozenRegion frozen{.range = range};
+                    route.view->for_each_region(
+                        region, range, [&](TimedEvent const& event) {
+                        frozen.events.push_back(event);
+                        frozen.source_indices.push_back(
+                            route.fixed_source_index.value_or(
+                                std::numeric_limits<std::size_t>::max()));
+                    });
+                    frozen_regions.push_back(std::move(frozen));
+                }
+            }
+            if (port.ordering == CoverageOrdering::sorted) {
+                std::stable_sort(
+                    frozen_regions.begin(),
+                    frozen_regions.end(),
+                    [](FrozenRegion const& left, FrozenRegion const& right) {
+                        if (left.range.begin == right.range.begin) {
+                            return left.range.extent > right.range.extent;
+                        }
+                        return SignedGlobalIndexOrder{}(
+                            left.range.begin, right.range.begin);
+                    });
+            }
+            if (port.input_access == InputAccessKind::region
+                && frozen_regions.size() != 1) {
+                return std::unexpected(
+                    "Tick event Region input does not resolve to one Region");
+            }
+            std::vector<GlobalIndexRange> ranges;
+            std::vector<std::vector<TimedEvent>> region_events;
+            std::vector<std::vector<std::size_t>> region_indices;
+            ranges.reserve(frozen_regions.size());
+            region_events.reserve(frozen_regions.size());
+            region_indices.reserve(frozen_regions.size());
+            for (auto& region : frozen_regions) {
+                ranges.push_back(region.range);
+                region_events.push_back(std::move(region.events));
+                region_indices.push_back(std::move(region.source_indices));
+            }
+            events.push_back(make_tick_materialized_event_input(
+                binding.port,
+                port.event_type,
+                std::move(ranges),
+                std::move(region_events),
+                std::move(region_indices)));
+            continue;
+        }
         std::vector<TimedEvent> frozen_events;
         std::vector<std::size_t> frozen_indices;
         for (auto const region : available) {
@@ -2533,7 +2922,7 @@ BackgroundStorageRealization::stage_persisted_data(
             selection_.persisted_replacement_coverage[index];
         if (planned.kind == PortKind::sample) {
             if (replacement.empty()) continue;
-        } else if (selected.coverage->empty() || !produced) {
+        } else if (replacement.empty()) {
             continue;
         }
         if (!selected.persisted_output) {
@@ -2611,6 +3000,16 @@ BackgroundStorageRealization::stage_persisted_data(
                     .range = descriptor.range,
                 });
             }
+            auto const positional_tick_output = planned.output_port
+                && *planned.output_port < plan_->ports.size()
+                && plan_->ports[*planned.output_port].output_production
+                    == OutputProductionKind::tick;
+            if (positional_tick_output) {
+                for (auto& region : retained_regions) {
+                    candidate.overwrite(std::move(region));
+                }
+                continue;
+            }
             candidate.replace_sample_regions(
                 *selected.persisted_output,
                 planned.sample_layout,
@@ -2621,7 +3020,17 @@ BackgroundStorageRealization::stage_persisted_data(
             continue;
         }
 
-        for (auto const region : *selected.coverage) {
+        auto const* view = produced ? event_read(index) : nullptr;
+        if (produced && (!view || view->type != planned.event_type)) {
+            return std::unexpected(
+                "persisted event Regions have incompatible storage");
+        }
+        std::vector<PersistedEventChunk> retained_regions;
+        if (view) retained_regions.reserve(view->regions.size());
+        for (std::size_t region_index = 0;
+             view && region_index < view->regions.size(); ++region_index) {
+            auto const region = view->regions[region_index];
+            if ((IndexCoverage{region} & *selected.coverage).empty()) continue;
             if (std::ranges::any_of(staged, [&](StagedRange const& previous) {
                     return previous.output == *selected.persisted_output
                         && previous.storage != index
@@ -2630,26 +3039,38 @@ BackgroundStorageRealization::stage_persisted_data(
                 return std::unexpected(
                     "persisted output range is produced by multiple storage slots");
             }
-            auto const* view = event_read(index);
-            if (!view) {
-                return std::unexpected(
-                    "persisted event chunk has no readable storage");
-            }
             PersistedEventChunk retained{
                 .output = *selected.persisted_output,
                 .range = region,
                 .type = planned.event_type,
             };
-            view->for_each(region, [&](TimedEvent const& event) {
+            view->for_each_region(
+                region_index, region, [&](TimedEvent const& event) {
                 retained.events.push_back(event);
             });
-            candidate.overwrite(std::move(retained));
+            retained_regions.push_back(std::move(retained));
             staged.push_back({
                 .output = *selected.persisted_output,
                 .storage = index,
                 .range = region,
             });
         }
+        auto const positional_tick_output = planned.output_port
+            && *planned.output_port < plan_->ports.size()
+            && plan_->ports[*planned.output_port].output_production
+                == OutputProductionKind::tick;
+        if (positional_tick_output) {
+            for (auto& region : retained_regions) {
+                candidate.overwrite(std::move(region));
+            }
+            continue;
+        }
+        candidate.replace_event_regions(
+            *selected.persisted_output,
+            planned.event_type,
+            replacement,
+            selection_.published_output_regions[index],
+            std::move(retained_regions));
     }
     return {};
 }

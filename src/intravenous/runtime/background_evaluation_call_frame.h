@@ -21,6 +21,7 @@ namespace iv {
 // planned read latency, and one logical output may fan out to several stores.
 struct BackgroundEvaluationCallFrameSelection {
     std::vector<IndexCoverage> binding_coverage{};
+    std::vector<std::vector<GlobalIndexRange>> binding_regions{};
     std::size_t sample_rate = 48000;
 };
 

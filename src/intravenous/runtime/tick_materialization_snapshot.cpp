@@ -79,33 +79,166 @@ Sample TickMaterializedSampleInput::at(
 
 namespace {
 
+void rebuild_merged_event_storage(TickMaterializedEventInput& input)
+{
+    struct Entry {
+        TimedEvent event{};
+        std::size_t semantic_source_index = 0;
+        std::size_t region = 0;
+        std::size_t position = 0;
+    };
+    std::vector<Entry> entries;
+    auto event_count = std::size_t{};
+    for (auto const& region : input.chunks) {
+        if (region.end - region.begin
+            > std::numeric_limits<std::size_t>::max() - event_count) {
+            throw std::length_error(
+                "Tick event materialization is too large");
+        }
+        event_count += region.end - region.begin;
+    }
+    entries.reserve(event_count);
+    for (std::size_t region_index = 0;
+         region_index < input.chunks.size(); ++region_index) {
+        auto const& region = input.chunks[region_index];
+        for (auto offset = region.begin; offset < region.end; ++offset) {
+            entries.push_back(Entry{
+                .event = (*region.events)[offset],
+                .semantic_source_index =
+                    (*region.semantic_source_indices)[offset],
+                .region = region_index,
+                .position = offset - region.begin,
+            });
+        }
+    }
+    std::stable_sort(entries.begin(), entries.end(), [](auto const& left,
+                                                         auto const& right) {
+        if (left.event.time != right.event.time) {
+            return SignedGlobalIndexOrder{}(
+                left.event.time, right.event.time);
+        }
+        if (left.semantic_source_index != right.semantic_source_index) {
+            return left.semantic_source_index < right.semantic_source_index;
+        }
+        if (left.region != right.region) return left.region < right.region;
+        return left.position < right.position;
+    });
+    auto events = std::make_shared<std::vector<TimedEvent>>();
+    auto source_indices = std::make_shared<std::vector<std::size_t>>();
+    events->reserve(entries.size());
+    source_indices->reserve(entries.size());
+    for (auto& entry : entries) {
+        events->push_back(std::move(entry.event));
+        source_indices->push_back(entry.semantic_source_index);
+    }
+    input.merged_events = std::move(events);
+    input.merged_semantic_source_indices = std::move(source_indices);
+}
+
 template<typename Visit>
-void for_each_chunk_event(
-    std::vector<TickMaterializedEventChunk> const& chunks,
+void for_each_merged_event(
+    TickMaterializedEventInput const& input,
     GlobalIndexRange range,
     Visit&& visit)
 {
-    for (auto const& chunk : chunks) {
-        for_each_range_intersection(chunk.range, range,
-            [&](GlobalIndexRange part) {
-            part.for_each_signed_order_segment([&](GlobalIndexRange segment) {
-                auto const first = chunk.events->begin()
-                    + static_cast<std::ptrdiff_t>(chunk.begin);
-                auto const last = chunk.events->begin()
-                    + static_cast<std::ptrdiff_t>(chunk.end);
-                auto event = std::lower_bound(
-                    first, last, segment.begin,
-                    [](TimedEvent const& value, GlobalIndex begin) {
-                        return SignedGlobalIndexOrder{}(value.time, begin);
-                    });
-                for (; event != last && segment.contains(event->time);
-                     ++event) {
-                    visit(chunk, *event, static_cast<std::size_t>(
-                        std::distance(chunk.events->begin(), event)));
-                }
+    if (!input.merged_events || !input.merged_semantic_source_indices) return;
+    range.for_each_signed_order_segment([&](GlobalIndexRange segment) {
+        auto event = std::lower_bound(
+            input.merged_events->begin(), input.merged_events->end(),
+            segment.begin,
+            [](TimedEvent const& value, GlobalIndex begin) {
+                return SignedGlobalIndexOrder{}(value.time, begin);
             });
-        });
+        for (; event != input.merged_events->end()
+             && segment.contains(event->time); ++event) {
+            auto const offset = static_cast<std::size_t>(
+                std::distance(input.merged_events->begin(), event));
+            visit(*event, (*input.merged_semantic_source_indices)[offset]);
+        }
+    });
+}
+
+template<typename Region>
+std::vector<Region> merge_tick_materialization_regions(
+    std::span<GlobalIndexRange const> logical_order,
+    std::vector<Region> produced_regions,
+    std::span<Region const> previous_regions,
+    IndexCoverage const& produced,
+    IndexCoverage const& retained)
+{
+    auto selected = produced | retained;
+    if (!selected.empty() && logical_order.empty()) {
+        throw std::invalid_argument(
+            "Tick materialization retention lost the current logical Region order");
     }
+    for (auto const& region : previous_regions) {
+        auto const retained_part = IndexCoverage{region.range} & retained;
+        auto const replaced_part = IndexCoverage{region.range} & produced;
+        if (!retained_part.empty() && !retained.contains(region.range)) {
+            throw std::invalid_argument(
+                "Tick materialization retention clips a logical Region");
+        }
+        if (!replaced_part.empty() && !produced.contains(region.range)) {
+            throw std::invalid_argument(
+                "Tick materialization replacement clips a logical Region");
+        }
+    }
+
+    std::vector<bool> used_produced(produced_regions.size(), false);
+    std::vector<bool> used_previous(previous_regions.size(), false);
+    std::vector<Region> result;
+    result.reserve(produced_regions.size() + previous_regions.size());
+    for (auto const expected : logical_order) {
+        auto const relevant = IndexCoverage{expected} & selected;
+        if (relevant.empty()) continue;
+        if (!selected.contains(expected)) {
+            throw std::invalid_argument(
+                "Tick materialization selection clips a current logical Region");
+        }
+
+        auto replacement = produced_regions.size();
+        for (std::size_t index = 0; index < produced_regions.size(); ++index) {
+            if (!used_produced[index]
+                && produced_regions[index].range == expected) {
+                replacement = index;
+                break;
+            }
+        }
+        if (replacement != produced_regions.size()) {
+            used_produced[replacement] = true;
+            result.push_back(std::move(produced_regions[replacement]));
+            continue;
+        }
+
+        auto previous = previous_regions.size();
+        for (std::size_t index = 0; index < previous_regions.size(); ++index) {
+            if (!used_previous[index]
+                && previous_regions[index].range == expected
+                && retained.contains(expected)) {
+                previous = index;
+                break;
+            }
+        }
+        if (previous == previous_regions.size()) {
+            throw std::invalid_argument(
+                "Tick materialization cannot realize the current logical Region order");
+        }
+        used_previous[previous] = true;
+        result.push_back(previous_regions[previous]);
+    }
+
+    if (std::ranges::contains(used_produced, false)) {
+        throw std::invalid_argument(
+            "Tick materialization produced a Region absent from the current logical order");
+    }
+    for (std::size_t index = 0; index < previous_regions.size(); ++index) {
+        if (retained.contains(previous_regions[index].range)
+            && !used_previous[index]) {
+            throw std::invalid_argument(
+                "Tick materialization retained a Region absent from the current logical order");
+        }
+    }
+    return result;
 }
 
 } // namespace
@@ -116,11 +249,10 @@ void TickMaterializedEventInput::for_each(
     RandomAccessEventInputPort::VisitEvent visitor) const
 {
     if (visitor == nullptr) return;
-    for_each_chunk_event(chunks, range,
-        [&](TickMaterializedEventChunk const&, TimedEvent const& event,
-            std::size_t) {
-            visitor(visitor_data, event);
-        });
+    for_each_merged_event(*this, range,
+        [&](TimedEvent const& event, std::size_t) {
+        visitor(visitor_data, event);
+    });
 }
 
 void TickMaterializedEventInput::for_each_indexed(
@@ -129,14 +261,30 @@ void TickMaterializedEventInput::for_each_indexed(
     VisitIndexedEvent visitor) const
 {
     if (visitor == nullptr) return;
-    for_each_chunk_event(chunks, range,
-        [&](TickMaterializedEventChunk const& chunk, TimedEvent const& event,
-            std::size_t offset) {
-            visitor(
-                visitor_data,
-                event,
-                (*chunk.semantic_source_indices)[offset]);
-        });
+    for_each_merged_event(*this, range,
+        [&](TimedEvent const& event, std::size_t source_index) {
+        visitor(visitor_data, event, source_index);
+    });
+}
+
+void TickMaterializedEventInput::for_each_region(
+    std::size_t region,
+    GlobalIndexRange range,
+    void* visitor_data,
+    RandomAccessEventInputPort::VisitEvent visitor) const
+{
+    if (visitor == nullptr || region >= chunks.size()
+        || !chunks[region].range.contains(range)) {
+        return;
+    }
+    auto const& chunk = chunks[region];
+    auto const first = chunk.events->begin()
+        + static_cast<std::ptrdiff_t>(chunk.begin);
+    auto const last = chunk.events->begin()
+        + static_cast<std::ptrdiff_t>(chunk.end);
+    for (auto event = first; event != last; ++event) {
+        if (range.contains(event->time)) visitor(visitor_data, *event);
+    }
 }
 
 TickMaterializedSampleInput make_tick_materialized_sample_input(
@@ -342,6 +490,8 @@ TickMaterializedEventInput make_tick_materialized_event_input(
     TickMaterializedEventInput result{
         .port = port,
         .type = type,
+        .merged_events = shared_events,
+        .merged_semantic_source_indices = shared_indices,
     };
     std::size_t cursor = 0;
     for (auto const region : coverage) {
@@ -357,12 +507,76 @@ TickMaterializedEventInput make_tick_materialized_event_input(
             .begin = begin,
             .end = cursor,
         });
+        result.region_ranges.push_back(region);
     }
     if (cursor != shared_events->size()) {
         throw std::invalid_argument(
             "Tick event materialization events lie outside their coverage");
     }
     result.coverage = std::move(coverage);
+    return result;
+}
+
+TickMaterializedEventInput make_tick_materialized_event_input(
+    graph_jit::BackgroundPortIndex port,
+    EventTypeId type,
+    std::vector<GlobalIndexRange> regions,
+    std::vector<std::vector<TimedEvent>> events,
+    std::vector<std::vector<std::size_t>> semantic_source_indices)
+{
+    if (events.size() != regions.size()
+        || (!semantic_source_indices.empty()
+            && semantic_source_indices.size() != regions.size())) {
+        throw std::invalid_argument(
+            "Tick event materialization Region payloads disagree with their Region list");
+    }
+    if (semantic_source_indices.empty()) {
+        semantic_source_indices.resize(regions.size());
+    }
+    TickMaterializedEventInput result{
+        .port = port,
+        .type = type,
+        .region_ranges = regions,
+    };
+    for (std::size_t region = 0; region < regions.size(); ++region) {
+        if (regions[region].empty()) {
+            throw std::invalid_argument(
+                "Tick event materialization contains an empty Region");
+        }
+        auto& indices = semantic_source_indices[region];
+        if (indices.empty()) {
+            indices.resize(
+                events[region].size(),
+                std::numeric_limits<std::size_t>::max());
+        }
+        if (indices.size() != events[region].size()
+            || std::ranges::any_of(events[region], [&](TimedEvent const& event) {
+                return !regions[region].contains(event.time);
+            })
+            || !std::ranges::is_sorted(
+                events[region],
+                RangeRelativeIndexOrder{regions[region].begin},
+                &TimedEvent::time)) {
+            throw std::invalid_argument(
+                "Tick event materialization has an invalid Region payload");
+        }
+        auto shared_events =
+            std::make_shared<std::vector<TimedEvent> const>(
+                std::move(events[region]));
+        auto shared_indices =
+            std::make_shared<std::vector<std::size_t> const>(
+                std::move(indices));
+        result.chunks.push_back(TickMaterializedEventChunk{
+            .range = regions[region],
+            .events = std::move(shared_events),
+            .semantic_source_indices = std::move(shared_indices),
+            .begin = 0,
+            .end = 0,
+        });
+        result.chunks.back().end = result.chunks.back().events->size();
+        result.coverage.include(regions[region]);
+    }
+    rebuild_merged_event_storage(result);
     return result;
 }
 
@@ -383,10 +597,6 @@ TickMaterializationSnapshot::TickMaterializationSnapshot(
 
 void TickMaterializationSnapshot::validate() const
 {
-    auto ordered = [](GlobalIndexRange const& left,
-                      GlobalIndexRange const& right) {
-        return SignedGlobalIndexOrder{}(left.begin, right.begin);
-    };
     std::vector<graph_jit::BackgroundPortIndex> ports;
     ports.reserve(samples_.size() + events_.size());
     for (auto const& sample : samples_) {
@@ -448,7 +658,13 @@ void TickMaterializationSnapshot::validate() const
     }
     for (auto const& event : events_) {
         IndexCoverage covered;
-        bool valid = !event.chunks.empty() && event.type < EventTypeId::count;
+        bool valid = event.chunks.size() == event.region_ranges.size()
+            && event.type < EventTypeId::count
+            && event.merged_events != nullptr
+            && event.merged_semantic_source_indices != nullptr
+            && event.merged_events->size()
+                == event.merged_semantic_source_indices->size();
+        auto event_count = std::size_t{};
         for (std::size_t index = 0;
              valid && index < event.chunks.size(); ++index) {
             auto const& chunk = event.chunks[index];
@@ -458,21 +674,37 @@ void TickMaterializationSnapshot::validate() const
                     == chunk.events->size()
                 && chunk.begin <= chunk.end
                 && chunk.end <= chunk.events->size()
-                && (index == 0
-                    || ordered(event.chunks[index - 1].range, chunk.range))
-                && !covered.intersects(chunk.range);
+                && chunk.range == event.region_ranges[index];
+            if (!valid
+                || chunk.end - chunk.begin
+                    > std::numeric_limits<std::size_t>::max()
+                        - event_count) {
+                valid = false;
+                break;
+            }
+            event_count += chunk.end - chunk.begin;
             for (auto offset = chunk.begin; valid && offset < chunk.end;
                  ++offset) {
                 auto const& value = (*chunk.events)[offset];
                 valid = chunk.range.contains(value.time)
                     && event_matches_type(event.type, value.value)
                     && (offset == chunk.begin
-                        || !SignedGlobalIndexOrder{}(
+                        || !RangeRelativeIndexOrder{chunk.range.begin}(
                             value.time, (*chunk.events)[offset - 1].time));
             }
             covered.include(chunk.range);
         }
-        if (!valid || covered != event.coverage) {
+        for (std::size_t index = 0;
+             valid && index < event.merged_events->size(); ++index) {
+            auto const& value = (*event.merged_events)[index];
+            valid = event.coverage.contains(value.time)
+                && event_matches_type(event.type, value.value)
+                && (index == 0
+                    || !SignedGlobalIndexOrder{}(
+                        value.time, (*event.merged_events)[index - 1].time));
+        }
+        if (!valid || event_count != event.merged_events->size()
+            || covered != event.coverage) {
             throw std::invalid_argument(
                 "Tick event materialization is inconsistent");
         }
@@ -518,43 +750,12 @@ void TickMaterializationSnapshot::carry_forward(
                     "carried Tick sample materialization changed its layout");
             }
 
-            auto produced_regions = std::move(target->regions);
-            std::vector<TickMaterializedSampleRegion> next;
-            next.reserve(source->regions.size() + produced_regions.size());
-            bool inserted_produced = false;
-            for (auto const& region : source->regions) {
-                auto const retained_part =
-                    IndexCoverage{region.range} & retained.retained;
-                auto const replaced_part = IndexCoverage{region.range} & produced;
-                if (!retained_part.empty()
-                    && !retained.retained.contains(region.range)) {
-                    throw std::invalid_argument(
-                        "Tick sample retention clips a logical Region");
-                }
-                if (!replaced_part.empty()
-                    && !produced.contains(region.range)) {
-                    throw std::invalid_argument(
-                        "Tick sample replacement clips a logical Region");
-                }
-                if (!replaced_part.empty() && !inserted_produced) {
-                    next.insert(
-                        next.end(),
-                        std::make_move_iterator(produced_regions.begin()),
-                        std::make_move_iterator(produced_regions.end()));
-                    inserted_produced = true;
-                }
-                if (replaced_part.empty()
-                    && retained.retained.contains(region.range)) {
-                    next.push_back(region);
-                }
-            }
-            if (!inserted_produced) {
-                next.insert(
-                    next.end(),
-                    std::make_move_iterator(produced_regions.begin()),
-                    std::make_move_iterator(produced_regions.end()));
-            }
-            target->regions = std::move(next);
+            target->regions = merge_tick_materialization_regions(
+                std::span<GlobalIndexRange const>{retained.logical_regions},
+                std::move(target->regions),
+                std::span<TickMaterializedSampleRegion const>{source->regions},
+                produced,
+                retained.retained);
             target->region_views.clear();
             target->coverage = {};
             target->region_views.reserve(target->regions.size());
@@ -573,55 +774,33 @@ void TickMaterializationSnapshot::carry_forward(
             if (auto const* own = find_event(retained.port)) {
                 produced = own->coverage;
             }
-            std::vector<TickMaterializedEventChunk> carried;
-            for (auto const& chunk : source->chunks) {
-                auto const kept = (IndexCoverage{chunk.range}
-                    & retained.retained) - produced;
-                for (auto const part : kept) {
-                    auto begin = chunk.begin;
-                    while (begin < chunk.end
-                        && !part.contains((*chunk.events)[begin].time)) {
-                        ++begin;
-                    }
-                    auto end = begin;
-                    while (end < chunk.end
-                        && part.contains((*chunk.events)[end].time)) {
-                        ++end;
-                    }
-                    carried.push_back(TickMaterializedEventChunk{
-                        .range = part,
-                        .events = chunk.events,
-                        .semantic_source_indices =
-                            chunk.semantic_source_indices,
-                        .begin = begin,
-                        .end = end,
-                    });
-                }
+            auto target = std::ranges::find(
+                events_, retained.port, &TickMaterializedEventInput::port);
+            if (target == events_.end()) {
+                events_.push_back(TickMaterializedEventInput{
+                    .port = source->port,
+                    .type = source->type,
+                });
+                target = std::prev(events_.end());
+            } else if (target->type != source->type) {
+                throw std::invalid_argument(
+                    "carried Tick event materialization changed its type");
             }
-            if (!carried.empty()) {
-                auto target = std::ranges::find(
-                    events_, retained.port, &TickMaterializedEventInput::port);
-                if (target == events_.end()) {
-                    events_.push_back(TickMaterializedEventInput{
-                        .port = source->port,
-                        .type = source->type,
-                    });
-                    target = std::prev(events_.end());
-                } else if (target->type != source->type) {
-                    throw std::invalid_argument(
-                        "carried Tick event materialization changed its type");
-                }
-                for (auto& chunk : carried) {
-                    target->coverage.include(chunk.range);
-                    target->chunks.push_back(std::move(chunk));
-                }
-                std::ranges::sort(
-                    target->chunks,
-                    [](auto const& left, auto const& right) {
-                        return SignedGlobalIndexOrder{}(
-                            left.range.begin, right.range.begin);
-                    });
+
+            target->chunks = merge_tick_materialization_regions(
+                std::span<GlobalIndexRange const>{retained.logical_regions},
+                std::move(target->chunks),
+                std::span<TickMaterializedEventChunk const>{source->chunks},
+                produced,
+                retained.retained);
+            target->region_ranges.clear();
+            target->coverage = {};
+            target->region_ranges.reserve(target->chunks.size());
+            for (auto const& region : target->chunks) {
+                target->region_ranges.push_back(region.range);
+                target->coverage.include(region.range);
             }
+            rebuild_merged_event_storage(*target);
         }
     }
     validate();

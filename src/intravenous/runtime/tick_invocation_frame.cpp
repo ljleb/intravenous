@@ -948,22 +948,19 @@ public:
                 return;
             }
             if (!output) return;
-            published.for_each_event_chunk(
-                *output,
-                range,
-                [&](PersistedEventChunk const& chunk,
-                    GlobalIndexRange intersection) {
-                    if (chunk.type != type) return;
-                    auto event = std::ranges::lower_bound(
-                        chunk.events,
-                        intersection.begin,
-                        SignedGlobalIndexOrder{},
-                        &TimedEvent::time);
-                    for (; event != chunk.events.end()
-                           && intersection.contains(event->time); ++event) {
-                        append(*event);
-                    }
-                });
+            auto const timeline = published.event_timeline(*output, type);
+            range.for_each_signed_order_segment(
+                [&](GlobalIndexRange segment) {
+                auto event = std::ranges::lower_bound(
+                    timeline,
+                    segment.begin,
+                    SignedGlobalIndexOrder{},
+                    &TimedEvent::time);
+                for (; event != timeline.end()
+                       && segment.contains(event->time); ++event) {
+                    append(*event);
+                }
+            });
         }
     };
 
@@ -986,6 +983,7 @@ public:
         bool accepts_materialization = false;
         EventTypeId type = EventTypeId::empty;
         IndexCoverage const* coverage = &empty_tick_coverage;
+        std::span<GlobalIndexRange const> regions{};
 
         void for_each(
             GlobalIndexRange range,
@@ -998,22 +996,41 @@ public:
                 return;
             }
             if (!snapshot || !output || range.empty()) return;
-            snapshot->for_each_event_chunk(
-                *output,
-                range,
-                [&](PersistedEventChunk const& chunk,
-                    GlobalIndexRange intersection) {
-                    if (chunk.type != type) return;
-                    auto event = std::ranges::lower_bound(
-                        chunk.events,
-                        intersection.begin,
-                        SignedGlobalIndexOrder{},
-                        &TimedEvent::time);
-                    for (; event != chunk.events.end()
-                           && intersection.contains(event->time); ++event) {
-                        visitor(visitor_data, *event);
-                    }
-                });
+            auto const timeline = snapshot->event_timeline(*output, type);
+            range.for_each_signed_order_segment(
+                [&](GlobalIndexRange segment) {
+                auto event = std::ranges::lower_bound(
+                    timeline,
+                    segment.begin,
+                    SignedGlobalIndexOrder{},
+                    &TimedEvent::time);
+                for (; event != timeline.end()
+                       && segment.contains(event->time); ++event) {
+                    visitor(visitor_data, *event);
+                }
+            });
+        }
+
+        void for_each_region(
+            std::size_t region,
+            GlobalIndexRange range,
+            void* visitor_data,
+            RandomAccessEventInputPort::VisitEvent visitor) const
+        {
+            if (materialized) {
+                materialized->for_each_region(
+                    region, range, visitor_data, visitor);
+                return;
+            }
+            if (!snapshot || !output || region >= regions.size()
+                || !regions[region].contains(range)) {
+                return;
+            }
+            auto const retained = snapshot->event_regions(*output, type);
+            if (region >= retained.size()) return;
+            for (auto const& event : retained[region].events) {
+                if (range.contains(event.time)) visitor(visitor_data, event);
+            }
         }
     };
 
@@ -1234,14 +1251,17 @@ public:
                 plan, binding, port, selected_generation, data);
             event_views[slot] = RandomAccessEventInputPort{
                 .data = &selected,
+                .region_ranges = nullptr,
+                .region_count = 0,
                 .coverage_value = &empty_tick_coverage,
                 .for_each_event = +[](
                     void const* opaque,
+                    std::size_t region,
                     GlobalIndexRange range,
                     void* visitor_data,
                     RandomAccessEventInputPort::VisitEvent visitor) {
-                    static_cast<EventSlot const*>(opaque)->for_each(
-                        range, visitor_data, visitor);
+                    static_cast<EventSlot const*>(opaque)->for_each_region(
+                        region, range, visitor_data, visitor);
                 },
             };
         }
@@ -1526,6 +1546,15 @@ public:
                 selected.materialized = nullptr;
             }
             if (!selected.coverage) selected.coverage = &empty_tick_coverage;
+            selected.regions = selected.materialized
+                ? std::span<GlobalIndexRange const>{
+                    selected.materialized->region_ranges}
+                : selected.output
+                    ? published.event_region_ranges(
+                        *selected.output, selected.type)
+                    : std::span<GlobalIndexRange const>{};
+            event_views[slot].region_ranges = selected.regions.data();
+            event_views[slot].region_count = selected.regions.size();
             event_views[slot].coverage_value = selected.coverage;
         }
         return {

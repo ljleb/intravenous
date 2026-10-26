@@ -3376,10 +3376,36 @@ std::expected<void, std::string> populate_background_topology(
     for (BackgroundPortIndex index = 0; index < plan.ports.size(); ++index) {
         auto const& input = plan.ports[index];
         if (input.direction != PortDirection::input
-            || input.kind != PortKind::sample
             || input.input_access != InputAccessKind::region) {
             continue;
         }
+        if (input.kind == PortKind::event) {
+            std::vector<BackgroundPortIndex> sources;
+            for (auto const connection_index : input.incoming_connections) {
+                auto const& connection = plan.connections[connection_index];
+                for (auto const& delivery : connection.event_deliveries) {
+                    if (delivery.target_port == index
+                        && delivery.source_port) {
+                        sources.push_back(*delivery.source_port);
+                    }
+                }
+            }
+            if (sources.size() != 1) {
+                return std::unexpected(
+                    "GraphJit event Region input must have exactly one incoming event contribution");
+            }
+            auto const source = sources.front();
+            if (source >= plan.ports.size()
+                || plan.ports[source].kind != PortKind::event
+                || plan.ports[source].direction != PortDirection::output
+                || plan.ports[source].output_production
+                    == OutputProductionKind::coverage) {
+                return std::unexpected(
+                    "GraphJit event Coverage output cannot satisfy an event Region input");
+            }
+            continue;
+        }
+        if (input.kind != PortKind::sample) continue;
         if (input.incoming_connections.size() != 1) {
             return std::unexpected(
                 "GraphJit Region input must have exactly one incoming continuous connection");

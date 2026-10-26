@@ -594,6 +594,12 @@ std::expected<BackgroundStoragePlan, std::string> build_background_storage_plan(
         if (found != result.sample_materializations.end()) {
             auto const index = static_cast<SampleMaterializationIndex>(
                 std::distance(result.sample_materializations.begin(), found));
+            if (background.ports[found->target_port].input_access
+                    == InputAccessKind::sequential
+                && background.ports[planned.target_port].input_access
+                    != InputAccessKind::sequential) {
+                found->target_port = planned.target_port;
+            }
             append_unique(found->connections, connection);
             auto& storage =
                 result.ports[found->output];
@@ -674,6 +680,14 @@ std::expected<BackgroundStoragePlan, std::string> build_background_storage_plan(
         if (found != result.event_materializations.end()) {
             auto const index = static_cast<EventMaterializationIndex>(
                 std::distance(result.event_materializations.begin(), found));
+            if (planned.target_port
+                && (!found->target_port
+                    || background.ports[*found->target_port].input_access
+                        == InputAccessKind::sequential)
+                && background.ports[*planned.target_port].input_access
+                    != InputAccessKind::sequential) {
+                found->target_port = planned.target_port;
+            }
             append_unique(found->target_subsets, target_subset);
             append_unique(found->connections, connection);
             auto& storage =
@@ -1325,6 +1339,26 @@ std::expected<BackgroundStoragePlan, std::string> build_background_storage_plan(
                 continue;
             }
 
+            auto const configured_target = NodeBundlePortId{
+                target_subset.port.bundle,
+                PortKind::event,
+                target_subset.port.port,
+            };
+            auto const target_port = std::ranges::find_if(
+                background.ports,
+                [&](BackgroundPortPlan const& port) {
+                    return port.direction == PortDirection::input
+                        && port.kind == PortKind::event
+                        && port.configured_port == configured_target;
+                });
+            if (target_port == background.ports.end()) {
+                return std::unexpected(
+                    "GraphJit background event target subset has no logical input port");
+            }
+            auto const target_port_index =
+                static_cast<BackgroundPortIndex>(std::distance(
+                    background.ports.begin(), target_port));
+
             std::vector<PortStorageKind> storage_kinds;
             bool mixed_sequential_delivery = false;
             if (target_subset.access == PlannedDestinationAccess::random_access) {
@@ -1367,6 +1401,7 @@ std::expected<BackgroundStoragePlan, std::string> build_background_storage_plan(
             for (auto const storage_kind : storage_kinds) {
                 EventMaterializationPlan materialization{
                     .storage = storage_kind,
+                    .target_port = target_port_index,
                     .source_type = background_connection.event_source_type,
                     .target_type = background_connection.event_target_type,
                     .conversion = background_connection.event_conversion,

@@ -39,6 +39,9 @@ struct EventOutputState {
     IndexCoverage coverage{};
     EventTypeId type = EventTypeId::empty;
     std::shared_ptr<RangeNode<PersistedEventChunk> const> chunks{};
+    std::shared_ptr<std::vector<PersistedEventChunk> const> logical_regions{};
+    std::shared_ptr<std::vector<GlobalIndexRange> const> region_ranges{};
+    std::shared_ptr<std::vector<TimedEvent> const> timeline{};
     std::size_t chunk_count = 0;
 };
 
@@ -60,6 +63,49 @@ using persisted_data_store_detail::EventOutputState;
 using persisted_data_store_detail::RangeNode;
 using persisted_data_store_detail::SampleOutputNode;
 using persisted_data_store_detail::SampleOutputState;
+
+[[nodiscard]] std::shared_ptr<std::vector<GlobalIndexRange> const>
+make_event_region_ranges(
+    std::shared_ptr<std::vector<PersistedEventChunk> const> const& regions)
+{
+    auto ranges = std::make_shared<std::vector<GlobalIndexRange>>();
+    if (regions) {
+        ranges->reserve(regions->size());
+        for (auto const& region : *regions) ranges->push_back(region.range);
+    }
+    return std::shared_ptr<std::vector<GlobalIndexRange> const>{
+        std::move(ranges)};
+}
+
+[[nodiscard]] std::shared_ptr<std::vector<TimedEvent> const>
+make_event_timeline(
+    std::shared_ptr<std::vector<PersistedEventChunk> const> const& regions)
+{
+    auto timeline = std::make_shared<std::vector<TimedEvent>>();
+    if (regions) {
+        auto count = std::size_t{};
+        for (auto const& region : *regions) {
+            if (region.events.size()
+                > std::numeric_limits<std::size_t>::max() - count) {
+                throw std::length_error(
+                    "persisted event timeline is too large");
+            }
+            count += region.events.size();
+        }
+        timeline->reserve(count);
+        for (auto const& region : *regions) {
+            timeline->insert(
+                timeline->end(), region.events.begin(), region.events.end());
+        }
+        std::stable_sort(
+            timeline->begin(), timeline->end(),
+            [](TimedEvent const& left, TimedEvent const& right) {
+                return SignedGlobalIndexOrder{}(left.time, right.time);
+            });
+    }
+    return std::shared_ptr<std::vector<TimedEvent> const>{
+        std::move(timeline)};
+}
 
 std::atomic<std::uint32_t> next_persisted_output_owner{0};
 
@@ -950,7 +996,18 @@ PersistedEventChunk const* PersistedDataStore::Snapshot::find_event_chunk(
         event_outputs_,
         event_output_levels_,
         PersistedDataStore::output_directory_index(output));
-    return selected ? find_record(selected->chunks, index) : nullptr;
+    if (!selected) return nullptr;
+    if (selected->logical_regions) {
+        auto const found = std::ranges::find_if(
+            *selected->logical_regions,
+            [&](PersistedEventChunk const& region) {
+                return region.range.contains(index);
+            });
+        return found == selected->logical_regions->end()
+            ? nullptr
+            : std::addressof(*found);
+    }
+    return find_record(selected->chunks, index);
 }
 
 void PersistedDataStore::Snapshot::for_each_sample_region(
@@ -1038,11 +1095,83 @@ void PersistedDataStore::Snapshot::for_each_event_chunk(
         event_output_levels_,
         PersistedDataStore::output_directory_index(output));
     if (!selected) return;
+    if (selected->logical_regions) {
+        for (auto const& record : *selected->logical_regions) {
+            range.for_each_signed_order_segment(
+                [&](GlobalIndexRange requested) {
+                record.range.for_each_signed_order_segment(
+                    [&](GlobalIndexRange stored) {
+                    auto const part = intersection(stored, requested);
+                    if (!part.empty()) {
+                        visitor(visitor_data, record, part);
+                    }
+                });
+            });
+        }
+        return;
+    }
     range.for_each_signed_order_segment([&](GlobalIndexRange segment) {
         for_each_intersecting(selected->chunks, segment, [&](auto const& record) {
             visitor(visitor_data, *record, intersection(record->range, segment));
         });
     });
+}
+
+std::span<PersistedEventChunk const>
+PersistedDataStore::Snapshot::event_regions(
+    PersistedOutputHandle output,
+    EventTypeId type) const noexcept
+{
+    if (!output.valid() || output.kind() != PortKind::event
+        || PersistedDataStore::output_owner_token(output)
+            != output_owner_token_) {
+        return {};
+    }
+    auto const* selected = find_output<EventOutputNode, EventOutputState>(
+        event_outputs_,
+        event_output_levels_,
+        PersistedDataStore::output_directory_index(output));
+    return selected && selected->type == type && selected->logical_regions
+        ? std::span<PersistedEventChunk const>{*selected->logical_regions}
+        : std::span<PersistedEventChunk const>{};
+}
+
+std::span<GlobalIndexRange const>
+PersistedDataStore::Snapshot::event_region_ranges(
+    PersistedOutputHandle output,
+    EventTypeId type) const noexcept
+{
+    if (!output.valid() || output.kind() != PortKind::event
+        || PersistedDataStore::output_owner_token(output)
+            != output_owner_token_) {
+        return {};
+    }
+    auto const* selected = find_output<EventOutputNode, EventOutputState>(
+        event_outputs_,
+        event_output_levels_,
+        PersistedDataStore::output_directory_index(output));
+    return selected && selected->type == type && selected->region_ranges
+        ? std::span<GlobalIndexRange const>{*selected->region_ranges}
+        : std::span<GlobalIndexRange const>{};
+}
+
+std::span<TimedEvent const>
+PersistedDataStore::Snapshot::event_timeline(
+    PersistedOutputHandle output,
+    EventTypeId type) const noexcept
+{
+    if (!output.valid() || output.kind() != PortKind::event
+        || PersistedDataStore::output_owner_token(output)
+            != output_owner_token_) {
+        return {};
+    }
+    auto const* selected = find_output<EventOutputNode, EventOutputState>(
+        event_outputs_,
+        event_output_levels_,
+        PersistedDataStore::output_directory_index(output));
+    return selected && selected->type == type && selected->timeline
+        ? std::span<TimedEvent const>{*selected->timeline}
+        : std::span<TimedEvent const>{};
 }
 
 IndexCoverage const* PersistedDataStore::Snapshot::find_sample_coverage(
@@ -1232,6 +1361,7 @@ void PersistedDataStore::Candidate::overwrite(PersistedEventChunk record)
             "persisted event output chunks disagree on event type");
     }
 
+    auto original_record = record;
     auto root = current ? current->chunks
                         : std::shared_ptr<RangeNode<PersistedEventChunk> const>{};
     auto count = current ? current->chunk_count : 0;
@@ -1248,6 +1378,32 @@ void PersistedDataStore::Candidate::overwrite(PersistedEventChunk record)
     });
     coverage.include(original_range);
 
+    auto logical = std::make_shared<std::vector<PersistedEventChunk>>();
+    if (current && current->logical_regions) {
+        for (auto const& existing : *current->logical_regions) {
+            auto remaining = IndexCoverage{existing.range};
+            remaining.exclude(original_range);
+            for (auto const retained : remaining) {
+                logical->push_back(slice(existing, retained));
+            }
+        }
+    }
+    logical->push_back(std::move(original_record));
+    std::ranges::stable_sort(
+        *logical,
+        [](PersistedEventChunk const& left,
+            PersistedEventChunk const& right) {
+            if (left.range.begin == right.range.begin) {
+                return left.range.extent > right.range.extent;
+            }
+            return SignedGlobalIndexOrder{}(
+                left.range.begin, right.range.begin);
+        });
+    auto logical_const = std::shared_ptr<
+        std::vector<PersistedEventChunk> const>{std::move(logical)};
+    auto region_ranges = make_event_region_ranges(logical_const);
+    auto timeline = make_event_timeline(logical_const);
+
     auto const previous_count = current ? current->chunk_count : 0;
     successor_->event_chunk_count_ =
         successor_->event_chunk_count_ - previous_count + count;
@@ -1256,6 +1412,9 @@ void PersistedDataStore::Candidate::overwrite(PersistedEventChunk record)
         .coverage = std::move(coverage),
         .type = record.type,
         .chunks = std::move(root),
+        .logical_regions = std::move(logical_const),
+        .region_ranges = std::move(region_ranges),
+        .timeline = std::move(timeline),
         .chunk_count = count,
     });
     successor_->event_outputs_ = put_output<EventOutputNode, EventOutputState>(
@@ -1414,6 +1573,145 @@ void PersistedDataStore::Candidate::replace_sample_regions(
             std::move(state));
 }
 
+void PersistedDataStore::Candidate::replace_event_regions(
+    PersistedOutputHandle output,
+    EventTypeId type,
+    IndexCoverage const& domain,
+    std::span<GlobalIndexRange const> logical_order,
+    std::vector<PersistedEventChunk> regions)
+{
+    if (!successor_) throw std::logic_error("persisted data candidate is empty");
+    if (!store_->owns_output(output) || output.kind() != PortKind::event) {
+        throw std::invalid_argument(
+            "event Region batch requires an output handle from its data store");
+    }
+    for (auto const& region : regions) {
+        validate(region);
+        if (region.output != output || region.type != type
+            || !domain.contains(region.range)) {
+            throw std::invalid_argument(
+                "event Region batch lies outside its replacement domain");
+        }
+    }
+    if (std::ranges::any_of(
+            logical_order,
+            [](GlobalIndexRange region) { return region.empty(); })) {
+        throw std::invalid_argument(
+            "event Region logical order contains an empty Region");
+    }
+
+    auto const output_index =
+        PersistedDataStore::output_directory_index(output);
+    auto const* current = find_output<EventOutputNode, EventOutputState>(
+        successor_->event_outputs_,
+        successor_->event_output_levels_,
+        output_index);
+    if (current && current->type != type) {
+        throw std::invalid_argument(
+            "persisted event output Regions disagree on event type");
+    }
+
+    std::vector<PersistedEventChunk> retained;
+    if (current && current->logical_regions) {
+        retained.reserve(current->logical_regions->size());
+        for (auto const& existing : *current->logical_regions) {
+            auto const intersects = domain.intersects(existing.range);
+            if (intersects && !domain.contains(existing.range)) {
+                throw std::invalid_argument(
+                    "event Region replacement domain clips an old logical Region");
+            }
+            if (!intersects) retained.push_back(existing);
+        }
+    }
+
+    std::vector<bool> used_replacements(regions.size(), false);
+    std::vector<bool> used_retained(retained.size(), false);
+    std::vector<PersistedEventChunk> next;
+    next.reserve(logical_order.size());
+    for (auto const expected : logical_order) {
+        auto replacement = std::optional<std::size_t>{};
+        for (std::size_t index = 0; index < regions.size(); ++index) {
+            if (!used_replacements[index]
+                && regions[index].range == expected) {
+                replacement = index;
+                break;
+            }
+        }
+        if (replacement) {
+            used_replacements[*replacement] = true;
+            next.push_back(std::move(regions[*replacement]));
+            continue;
+        }
+        auto previous = std::optional<std::size_t>{};
+        for (std::size_t index = 0; index < retained.size(); ++index) {
+            if (!used_retained[index]
+                && retained[index].range == expected) {
+                previous = index;
+                break;
+            }
+        }
+        if (!previous && domain.intersects(expected)) {
+            throw std::invalid_argument(
+                "event Region replacement cannot realize the published logical order");
+        }
+        if (!previous) continue;
+        used_retained[*previous] = true;
+        next.push_back(std::move(retained[*previous]));
+    }
+    if (std::ranges::contains(used_replacements, false)
+        || std::ranges::contains(used_retained, false)) {
+        throw std::invalid_argument(
+            "event Region replacement has records outside the published logical order");
+    }
+
+    auto const previous_count = current ? current->chunk_count : 0;
+    if (next.empty()) {
+        successor_->event_chunk_count_ -= previous_count;
+        successor_->event_outputs_ = erase_output_node<EventOutputNode>(
+            successor_->event_outputs_,
+            successor_->event_output_levels_,
+            output_index);
+        return;
+    }
+
+    std::shared_ptr<RangeNode<PersistedEventChunk> const> root{};
+    IndexCoverage coverage;
+    std::size_t physical_count = 0;
+    for (auto const& region : next) {
+        coverage.include(region.range);
+        region.range.for_each_signed_order_segment(
+            [&](GlobalIndexRange segment) {
+                remove_range(root, physical_count, segment);
+                root = put_record(
+                    root,
+                    std::make_shared<PersistedEventChunk const>(
+                        slice(region, segment)));
+                ++physical_count;
+            });
+    }
+    auto logical = std::make_shared<std::vector<PersistedEventChunk> const>(
+        std::move(next));
+    auto region_ranges = make_event_region_ranges(logical);
+    auto timeline = make_event_timeline(logical);
+    successor_->event_chunk_count_ =
+        successor_->event_chunk_count_ - previous_count + physical_count;
+    auto state = std::make_shared<EventOutputState const>(EventOutputState{
+        .output = output,
+        .coverage = std::move(coverage),
+        .type = type,
+        .chunks = std::move(root),
+        .logical_regions = std::move(logical),
+        .region_ranges = std::move(region_ranges),
+        .timeline = std::move(timeline),
+        .chunk_count = physical_count,
+    });
+    successor_->event_outputs_ = put_output<EventOutputNode, EventOutputState>(
+        successor_->event_outputs_,
+        successor_->event_output_levels_,
+        output_index,
+        std::move(state));
+}
+
 void PersistedDataStore::Candidate::erase_sample(
     PersistedOutputHandle output,
     GlobalIndexRange range,
@@ -1522,11 +1820,32 @@ void PersistedDataStore::Candidate::erase_events(
     }
     auto coverage = current->coverage;
     coverage.exclude(range);
+    auto logical = std::make_shared<std::vector<PersistedEventChunk>>();
+    if (current->logical_regions) {
+        for (auto const& existing : *current->logical_regions) {
+            auto remaining = IndexCoverage{existing.range};
+            remaining.exclude(range);
+            for (auto const retained : remaining) {
+                logical->push_back(slice(existing, retained));
+            }
+        }
+    } else {
+        for_each_record(root, [&](PersistedEventChunk const& retained) {
+            logical->push_back(retained);
+        });
+    }
+    auto logical_const = std::shared_ptr<
+        std::vector<PersistedEventChunk> const>{std::move(logical)};
+    auto region_ranges = make_event_region_ranges(logical_const);
+    auto timeline = make_event_timeline(logical_const);
     auto state = std::make_shared<EventOutputState const>(EventOutputState{
         .output = output,
         .coverage = std::move(coverage),
         .type = type,
         .chunks = std::move(root),
+        .logical_regions = std::move(logical_const),
+        .region_ranges = std::move(region_ranges),
+        .timeline = std::move(timeline),
         .chunk_count = count,
     });
     successor_->event_outputs_ = put_output<EventOutputNode, EventOutputState>(

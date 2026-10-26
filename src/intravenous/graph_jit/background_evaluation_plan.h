@@ -405,6 +405,10 @@ struct SampleMaterializationPlan {
 // when otherwise-equivalent consumers share the result.
 struct EventMaterializationPlan {
     PortStorageKind storage = PortStorageKind::background;
+    // One logical consumer used to select Region-preserving versus
+    // Sequential materialization. Equivalent consumers may share the result;
+    // a Random Access consumer is preferred when one exists.
+    std::optional<BackgroundPortIndex> target_port{};
     std::vector<PortSubsetIndex> source_subsets{};
     std::vector<PortStorageIndex> inputs{};
     // Aligned with inputs. Values are positions in the normalized

@@ -78,8 +78,11 @@ struct BackgroundEventReadView {
 
     void const* data = nullptr;
     IndexCoverage const* coverage_value = nullptr;
+    std::span<GlobalIndexRange const> regions{};
     EventTypeId type = EventTypeId::empty;
     ForEachEvent for_each_event = nullptr;
+    void (*for_each_region_event)(
+        void const*, std::size_t, GlobalIndexRange, void*, VisitEvent) = nullptr;
     void (*for_each_indexed_event)(
         void const*, GlobalIndexRange, void*, VisitIndexedEvent) = nullptr;
 
@@ -90,6 +93,29 @@ struct BackgroundEventReadView {
     }
 
     [[nodiscard]] IndexCoverage const& coverage() const noexcept;
+
+    template<typename Fn>
+    void for_each_region(
+        std::size_t region_index, GlobalIndexRange requested, Fn&& fn) const
+    {
+        IV_ASSERT(*this, "background event storage has no readable view");
+        IV_ASSERT(region_index < regions.size(),
+            "background event storage Region is out of bounds");
+        IV_ASSERT(regions[region_index].contains(requested),
+            "background event storage read lies outside its Region");
+        if (requested.empty()) return;
+        IV_ASSERT(for_each_region_event != nullptr,
+            "background event storage has no Region reader");
+        using Visitor = std::remove_reference_t<Fn>;
+        for_each_region_event(
+            data,
+            region_index,
+            requested,
+            std::addressof(fn),
+            +[](void* opaque, TimedEvent const& event) {
+                (*static_cast<Visitor*>(opaque))(event);
+            });
+    }
 
     template<typename Fn>
     void for_each(GlobalIndexRange region, Fn&& fn) const
@@ -137,8 +163,13 @@ struct BackgroundEventReadView {
 struct BackgroundEventWriteView {
     void* data = nullptr;
     IndexCoverage const* coverage_value = nullptr;
+    std::span<GlobalIndexRange const> regions{};
     EventTypeId type = EventTypeId::empty;
     bool (*write_event)(void*, TimedEvent const&) noexcept = nullptr;
+    bool (*write_region_event)(
+        void*, std::size_t, TimedEvent const&) noexcept = nullptr;
+    bool (*write_indexed_region_event)(
+        void*, std::size_t, TimedEvent const&, std::size_t) noexcept = nullptr;
     bool (*write_indexed_event)(
         void*, TimedEvent const&, std::size_t) noexcept = nullptr;
 
@@ -152,6 +183,13 @@ struct BackgroundEventWriteView {
     [[nodiscard]] bool write(TimedEvent const& event) const noexcept;
     [[nodiscard]] bool write(
         TimedEvent const& event, std::size_t source_index) const noexcept;
+    [[nodiscard]] bool write(
+        std::size_t region,
+        TimedEvent const& event) const noexcept;
+    [[nodiscard]] bool write(
+        std::size_t region,
+        TimedEvent const& event,
+        std::size_t source_index) const noexcept;
 };
 
 // Exact storage domains selected by the transaction coordinator. The vector is
@@ -160,18 +198,22 @@ struct BackgroundEventWriteView {
 struct BackgroundStorageSelection {
     std::uint64_t generation = 0;
     std::vector<IndexCoverage> storage_coverage{};
-    // Logical Region descriptors for continuous storage. Unlike
+    // Logical Region descriptors for continuous and event storage. Unlike
     // storage_coverage, these lists preserve ordering, overlap, duplicates,
     // and Region count.
     std::vector<std::vector<GlobalIndexRange>> storage_regions{};
     // Complete producer-published logical order for each storage slot that
-    // represents a continuous output. storage_regions is the transaction's
-    // selected subset; this list is the authoritative shape used to place
-    // selected and previously retained Regions during persisted publication.
+    // represents an authored Region/Coverage output. storage_regions is the
+    // transaction's selected subset; this list is the authoritative shape
+    // used to place selected and previously retained Regions during persisted
+    // publication. Tick outputs leave this empty because their ranges are
+    // positional replay/recording windows.
     std::vector<std::vector<GlobalIndexRange>> published_output_regions{};
-    // Domain atomically replaced in PersistedDataStore. This includes selected
-    // produced Regions and old positions removed by a Region-shape change;
-    // removed positions do not allocate transaction storage.
+    // Domain changed in PersistedDataStore. For authored Region/Coverage
+    // production, the complete logical batch replaces this domain. For Tick
+    // production, selected positional records overwrite only their own ranges.
+    // Old positions removed by a coverage change do not allocate transaction
+    // storage.
     std::vector<IndexCoverage> persisted_replacement_coverage{};
     // Empty preserves the plan-derived default used by direct component tests.
     // A complete transaction supplies one flag per storage slot so a persisted

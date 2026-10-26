@@ -2,7 +2,7 @@
 
 _Status: historical. This note preserves implementation-status text superseded on
 2026-10-25 by the active Front 3 source and the status recorded in
-[Implementation Fronts Direction](../implementation_fronts_direction.md#front-3-source-status-2026-10-25)._
+[Implementation Fronts Direction](../implementation_fronts_direction.md#front-3-source-status-2026-10-26)._
 
 Before Front 3 implementation, `global_index_migration_status.md` stated that the
 future node-facing `SampleRegion` and `SampleCoverage` port algebra remained separate

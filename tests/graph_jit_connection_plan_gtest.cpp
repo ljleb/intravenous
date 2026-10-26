@@ -277,7 +277,7 @@ struct BackgroundSource {
     void propagate_forward_coverage(
         iv::PropagateForwardCoverageContext<BackgroundSource>& context) const
     {
-        context.template output<"out">().publish_regions(
+        context.template output<"out">().publish(
             std::span<iv::GlobalIndexRange const>{});
     }
 };
@@ -301,7 +301,7 @@ struct BackgroundRegionSource {
         iv::PropagateForwardCoverageContext<BackgroundRegionSource>& context)
         const
     {
-        context.template output<"out">().publish_region({
+        context.template output<"out">().publish({
             .begin = iv::GlobalIndex::from_signed(0),
             .extent = 1,
         });
@@ -329,7 +329,7 @@ struct BackgroundStereoSource {
     void propagate_forward_coverage(
         iv::PropagateForwardCoverageContext<BackgroundStereoSource>& context) const
     {
-        context.template output<"out">().publish_regions(
+        context.template output<"out">().publish(
             std::span<iv::GlobalIndexRange const>{});
     }
 };
@@ -349,7 +349,7 @@ struct BackgroundSamplePass {
     void propagate_forward_coverage(
         iv::PropagateForwardCoverageContext<BackgroundSamplePass>& context) const
     {
-        context.template output<"out">().publish_regions(
+        context.template output<"out">().publish(
             context.template input<"in">().regions());
     }
 };
@@ -373,9 +373,47 @@ struct BackgroundEventPass {
     void propagate_forward_coverage(
         iv::PropagateForwardCoverageContext<BackgroundEventPass>& context) const
     {
-        context.template output<"out">().publish_coverage(
-            context.template input<"in">().coverage());
+        context.template output<"out">().publish(
+            context.template input<"in">().regions());
     }
+};
+
+struct BackgroundEventRegionSource {
+    static constexpr auto inputs() { return std::tuple{}; }
+
+    static constexpr auto outputs()
+    {
+        return std::array{iv::event_output(
+            "out",
+            iv::EventTypeId::trigger,
+            iv::OutputProduction::region)};
+    }
+
+    void tock_coverage(
+        iv::TockCoverageContext<BackgroundEventRegionSource>&) const {}
+
+    void propagate_forward_coverage(
+        iv::PropagateForwardCoverageContext<
+            BackgroundEventRegionSource>& context) const
+    {
+        context.template output<"out">().publish({
+            .begin = iv::GlobalIndex::from_signed(0),
+            .extent = 1,
+        });
+    }
+};
+
+struct BackgroundEventRegionSink {
+    static constexpr auto inputs()
+    {
+        return std::array{iv::event_input(
+            "in", iv::EventTypeId::trigger, iv::InputAccess::region)};
+    }
+
+    static constexpr auto outputs() { return std::tuple{}; }
+
+    void tick_block(
+        iv::TickBlockContext<BackgroundEventRegionSink> const&) const {}
 };
 
 struct BackgroundMidiSource {
@@ -2709,6 +2747,7 @@ TEST(GraphJitConnectionPlan, AddressableEventMaterializationSubsumesSequential)
     auto sequential = details::configure_concrete_node<PlainEventPass>(graph);
     auto random_access = details::configure_concrete_node<BackgroundEventPass>(graph);
     auto const sequential_handle = sequential.node_bundle_handle();
+    auto const random_access_handle = random_access.node_bundle_handle();
     sequential.connect_event_input(0, source.event_port());
     random_access.connect_event_input(0, source.event_port());
     graph.outputs();
@@ -2728,6 +2767,13 @@ TEST(GraphJitConnectionPlan, AddressableEventMaterializationSubsumesSequential)
     EXPECT_EQ(
         storage.event_materializations[materialization].storage,
         graph_jit::PortStorageKind::tick_random_access);
+    ASSERT_TRUE(
+        storage.event_materializations[materialization].target_port.has_value());
+    EXPECT_EQ(
+        plan->background.ports[
+            *storage.event_materializations[materialization].target_port]
+            .configured_port,
+        (NodeBundlePortId{random_access_handle, PortKind::event, 0}));
 
     auto const& tick_runtime = plan->background.tick_runtime;
     ASSERT_EQ(tick_runtime.sequential_event_inputs.size(), 1u);
@@ -3888,6 +3934,62 @@ TEST(GraphJitConnectionPlan, RegionInputAcceptsOnlyRegionOutput)
     EXPECT_NE(
         rejected.error().find(
             "GraphJit Coverage output cannot satisfy a Region input"),
+        std::string::npos);
+}
+
+TEST(GraphJitConnectionPlan, EventRegionInputAcceptsOneEventRegionOutput)
+{
+    using namespace iv;
+
+    GraphBuilder accepted_graph;
+    auto region_source = details::configure_concrete_node<
+        BackgroundEventRegionSource>(accepted_graph);
+    auto region_sink = details::configure_concrete_node<
+        BackgroundEventRegionSink>(accepted_graph);
+    region_sink.connect_event_input(0, region_source.event_port());
+    accepted_graph.outputs();
+    auto accepted = build_connection_analysis_plan(
+        std::move(accepted_graph).finish(), 64);
+    ASSERT_TRUE(accepted.has_value())
+        << (accepted ? std::string{} : accepted.error());
+
+    GraphBuilder coverage_graph;
+    auto coverage_source =
+        details::configure_concrete_node<TockTriggerSource>(coverage_graph);
+    auto rejected_sink = details::configure_concrete_node<
+        BackgroundEventRegionSink>(coverage_graph);
+    rejected_sink.connect_event_input(0, coverage_source.event_port());
+    coverage_graph.outputs();
+    auto rejected = build_connection_analysis_plan(
+        std::move(coverage_graph).finish(), 64);
+    ASSERT_FALSE(rejected.has_value());
+    EXPECT_NE(
+        rejected.error().find(
+            "GraphJit event Coverage output cannot satisfy an event Region input"),
+        std::string::npos);
+}
+
+TEST(GraphJitConnectionPlan, EventRegionInputRejectsEventFanIn)
+{
+    using namespace iv;
+
+    GraphBuilder graph;
+    auto first = details::configure_concrete_node<
+        BackgroundEventRegionSource>(graph);
+    auto second = details::configure_concrete_node<
+        BackgroundEventRegionSource>(graph);
+    auto sink = details::configure_concrete_node<
+        BackgroundEventRegionSink>(graph);
+    std::array sources{first.event_port(), second.event_port()};
+    sink.connect_event_input(0, graph.make_event_port(sources));
+    graph.outputs();
+
+    auto rejected = build_connection_analysis_plan(
+        std::move(graph).finish(), 64);
+    ASSERT_FALSE(rejected.has_value());
+    EXPECT_NE(
+        rejected.error().find(
+            "GraphJit event Region input must have exactly one incoming event contribution"),
         std::string::npos);
 }
 

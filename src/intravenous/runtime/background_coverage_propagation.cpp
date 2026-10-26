@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <map>
+#include <memory>
 #include <numeric>
 #include <queue>
 #include <span>
@@ -313,7 +314,6 @@ std::vector<GlobalIndexRange> derive_input_regions(
     std::vector<GlobalIndexRange> result;
     std::vector<std::vector<GlobalIndexRange>> sorted_runs;
     auto const& planned_input = plan.ports[input];
-    if (planned_input.kind != PortKind::sample) return result;
     auto const source_regions = [&](graph_jit::BackgroundPortIndex output)
         -> std::vector<GlobalIndexRange> const& {
         return output_regions[*plan.ports[output].accumulators.output_change];
@@ -321,9 +321,60 @@ std::vector<GlobalIndexRange> derive_input_regions(
 
     for (auto const connection_index : planned_input.incoming_connections) {
         auto const& connection = plan.connections[connection_index];
-        if (connection.kind != PortKind::sample) continue;
 
         std::vector<GlobalIndexRange> connection_regions;
+        if (connection.kind == PortKind::event) {
+            IndexCoverage complete;
+            bool first_source = true;
+            std::vector<std::vector<GlobalIndexRange> const*> source_runs;
+            for (auto const& delivery : connection.event_deliveries) {
+                if (delivery.target_port != input || !delivery.source_port) {
+                    continue;
+                }
+                auto const& regions = source_regions(*delivery.source_port);
+                auto const& available = output_regions[
+                    *plan.ports[*delivery.source_port]
+                         .accumulators.output_change];
+                auto available_coverage = region_coverage(available);
+                complete = first_source
+                    ? std::move(available_coverage)
+                    : complete & available_coverage;
+                first_source = false;
+                source_runs.push_back(std::addressof(regions));
+            }
+            for (auto const* source_run : source_runs) {
+                for (auto const source_region : *source_run) {
+                    for (auto const available : complete) {
+                        for_each_range_intersection_preserving_shape(
+                            source_region,
+                            available,
+                            [&](GlobalIndexRange part) {
+                                if (!part.empty()) {
+                                    connection_regions.push_back(part);
+                                }
+                            });
+                    }
+                }
+            }
+            if (planned_input.ordering == CoverageOrdering::sorted) {
+                if (!std::ranges::is_sorted(
+                        connection_regions, canonical_region_less)) {
+                    std::stable_sort(
+                        connection_regions.begin(),
+                        connection_regions.end(),
+                        canonical_region_less);
+                }
+                sorted_runs.push_back(std::move(connection_regions));
+            } else {
+                result.insert(
+                    result.end(),
+                    connection_regions.begin(),
+                    connection_regions.end());
+            }
+            continue;
+        }
+        if (connection.kind != PortKind::sample) continue;
+
         auto append_contribution = [&] (
             std::span<std::size_t const> source_indices) {
             std::vector<std::pair<
@@ -690,14 +741,14 @@ void BackgroundPropagationWorkspace::set_input_change(
     IndexCoverage const& changed)
 {
     auto const& planned = port(input);
-    if (planned.kind == PortKind::sample
-        && region_coverage(regions) != coverage) {
-        throw std::invalid_argument(
-            "continuous input change Region ranges do not match coverage");
+    auto canonical_regions = std::vector<GlobalIndexRange>{};
+    if (regions.empty() && !coverage.empty()) {
+        canonical_regions = coverage_regions(coverage);
+        regions = canonical_regions;
     }
-    if (planned.kind == PortKind::event && !regions.empty()) {
+    if (region_coverage(regions) != coverage) {
         throw std::invalid_argument(
-            "event input change cannot carry continuous Region ranges");
+            "input change Region ranges do not match coverage");
     }
     auto const index = input_index(input);
     auto& accumulator = input_changes_[index];
@@ -718,15 +769,12 @@ void BackgroundPropagationWorkspace::publish_output_coverage(
     graph_jit::BackgroundPortIndex output, IndexCoverage const& coverage)
 {
     auto const& planned = port(output);
-    if (planned.kind == PortKind::sample
-        && planned.output_production != OutputProductionKind::tick) {
+    if (planned.output_production != OutputProductionKind::tick) {
         throw std::invalid_argument(
-            "continuous Region or Coverage output must publish Region ranges");
+            "Region or Coverage output must publish Region ranges");
     }
     auto const index = output_index(output);
-    if (planned.kind == PortKind::sample) {
-        candidate_output_region_ranges_[index] = coverage_regions(coverage);
-    }
+    candidate_output_region_ranges_[index] = coverage_regions(coverage);
     auto& accumulator = output_changes_[index];
     auto const changed =
         coverage_difference(candidate_output_coverages_[index], coverage);
@@ -741,9 +789,9 @@ void BackgroundPropagationWorkspace::publish_output_regions(
     std::span<GlobalIndexRange const> regions)
 {
     auto const& planned = port(output);
-    if (planned.kind != PortKind::sample) {
+    if (planned.output_production == OutputProductionKind::tick) {
         throw std::invalid_argument(
-            "event output cannot publish continuous Region ranges");
+            "Tick output must publish positional coverage");
     }
     if (planned.output_production == OutputProductionKind::region
         && regions.size() != 1) {
@@ -753,7 +801,7 @@ void BackgroundPropagationWorkspace::publish_output_regions(
     if (std::ranges::any_of(
             regions, [](GlobalIndexRange region) { return region.empty(); })) {
         throw std::invalid_argument(
-            "continuous output cannot publish an empty Region range");
+            "output cannot publish an empty Region range");
     }
     if (planned.ordering == CoverageOrdering::sorted) {
         auto const canonical_less = [](
@@ -830,7 +878,7 @@ void BackgroundPropagationWorkspace::require_output(
     auto const change_index = output_index(output);
     auto const requirement_index = *planned.accumulators.output_requirement;
     auto required = requested & candidate_output_coverages_[change_index];
-    if (planned.kind == PortKind::sample) {
+    if (planned.output_production != OutputProductionKind::tick) {
         bool widened = true;
         while (widened) {
             widened = false;
@@ -941,8 +989,7 @@ void BackgroundPropagationWorkspace::replay_forward_coverage(
     }
     for (auto const& output :
          static_cast<std::span<OutputCoverageChange>>(context.outputs)) {
-        auto const regions = coverage_regions(coverage);
-        output.publish_regions(regions);
+        output.publish_coverage(coverage);
         output.change(changed);
     }
     for (auto const& output :
@@ -1140,7 +1187,8 @@ BackgroundCoverageState::prepare_migration_from(
             ? current.sample_layout == prior.sample_layout
                 && current.continuous_geometry == prior.continuous_geometry
                 && current.output_production == prior.output_production
-            : current.event_type == prior.event_type;
+            : current.event_type == prior.event_type
+                && current.output_production == prior.output_production;
     };
 
     Migration migration;
@@ -1539,8 +1587,7 @@ BackgroundPropagationWorkspace::prepare(
     for (graph_jit::BackgroundPortIndex index = 0;
          index < plan_->ports.size(); ++index) {
         auto const& planned = plan_->ports[index];
-        if (planned.direction == graph_jit::PortDirection::input
-            && planned.kind == PortKind::sample) {
+        if (planned.direction == graph_jit::PortDirection::input) {
             prepared.input_regions_by_port_[index] = input_regions(index);
         }
     }
@@ -1552,7 +1599,6 @@ BackgroundPropagationWorkspace::prepare(
          index < plan_->ports.size(); ++index) {
         auto const& planned = plan_->ports[index];
         if (planned.direction == graph_jit::PortDirection::output
-            && planned.kind == PortKind::sample
             && planned.accumulators.output_change) {
             prepared.output_regions_by_port_[index] =
                 prepared.output_region_ranges_[output_index(index)];

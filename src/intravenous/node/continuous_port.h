@@ -279,6 +279,7 @@ public:
         using value_type = region_type;
         using difference_type = std::ptrdiff_t;
         using iterator_category = std::forward_iterator_tag;
+        using iterator_concept = std::forward_iterator_tag;
 
         constexpr iterator() noexcept = default;
         explicit constexpr iterator(
@@ -295,6 +296,13 @@ public:
         {
             ++current_;
             return *this;
+        }
+
+        constexpr iterator operator++(int) noexcept
+        {
+            auto previous = *this;
+            ++*this;
+            return previous;
         }
 
         [[nodiscard]] friend constexpr bool operator==(

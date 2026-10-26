@@ -114,8 +114,16 @@ struct TickMaterializedEventInput {
         void*, TimedEvent const&, std::size_t);
     graph_jit::BackgroundPortIndex port = 0;
     EventTypeId type = EventTypeId::empty;
-    // Disjoint chunks in signed-canonical order. coverage is their union.
+    // Logical producer order. Chunks may overlap or have identical ranges;
+    // each chunk owns an independent event sequence.
     std::vector<TickMaterializedEventChunk> chunks{};
+    std::vector<GlobalIndexRange> region_ranges{};
+    // Timeline-ordered view used by sequential consumers. Region/Coverage
+    // materialization builds this before publication, so Tick never merges
+    // Region payloads or allocates while it visits events.
+    std::shared_ptr<std::vector<TimedEvent> const> merged_events{};
+    std::shared_ptr<std::vector<std::size_t> const>
+        merged_semantic_source_indices{};
     IndexCoverage coverage{};
 
     void for_each(
@@ -126,6 +134,11 @@ struct TickMaterializedEventInput {
         GlobalIndexRange range,
         void* visitor_data,
         VisitIndexedEvent visitor) const;
+    void for_each_region(
+        std::size_t region,
+        GlobalIndexRange range,
+        void* visitor_data,
+        RandomAccessEventInputPort::VisitEvent visitor) const;
 };
 
 // Builds one input from Region-major native-layout values. Each Region owns
@@ -146,8 +159,8 @@ make_tick_materialized_continuous_input(
     std::vector<GlobalIndexRange> regions,
     std::vector<std::byte> values);
 
-// Compatibility helper for callers whose source is positional coverage and
-// therefore has no overlapping or duplicate Region decomposition.
+// Positional helper for sources that have no overlapping or duplicate Region
+// decomposition.
 [[nodiscard]] TickMaterializedSampleInput make_tick_materialized_sample_input(
     graph_jit::BackgroundPortIndex port,
     ChannelLayout layout,
@@ -164,11 +177,22 @@ make_tick_materialized_continuous_input(
     std::vector<TimedEvent> events,
     std::vector<std::size_t> semantic_source_indices);
 
+[[nodiscard]] TickMaterializedEventInput make_tick_materialized_event_input(
+    graph_jit::BackgroundPortIndex port,
+    EventTypeId type,
+    std::vector<GlobalIndexRange> regions,
+    std::vector<std::vector<TimedEvent>> events,
+    std::vector<std::vector<std::size_t>> semantic_source_indices);
+
 // The part of a previous snapshot's input that is still valid and still
 // demanded. Ports are BackgroundEvaluationPlan ports of one generation.
 struct TickMaterializationRetention {
     graph_jit::BackgroundPortIndex port = 0;
     IndexCoverage retained{};
+    // Complete current materialized record order. carry_forward() uses this
+    // list to place produced and retained records without inferring where a
+    // replacement belongs from the previous snapshot alone.
+    std::vector<GlobalIndexRange> logical_regions{};
 };
 
 // One immutable set of transaction-produced Tick-visible storage. It is not a
