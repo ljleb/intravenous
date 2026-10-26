@@ -362,7 +362,7 @@ std::vector<std::pair<std::string, std::int64_t>> finalizer_timings(
 {
     std::istringstream lines(read(path));
     std::string line;
-    if (!std::getline(lines, line) || line != "version=1") {
+    if (!std::getline(lines, line) || line != "version=0") {
         throw std::runtime_error("invalid finalizer timing report '" + path.string() + "'");
     }
 

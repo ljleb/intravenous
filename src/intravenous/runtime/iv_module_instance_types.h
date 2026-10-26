@@ -10,7 +10,6 @@ struct IvModuleInstanceInfo {
     std::string definition_id{};
     std::string display_name{};
     std::filesystem::path package_root{};
-    std::optional<size_t> default_silence_ttl_samples{};
     bool realized = false;
     std::string module_id{};
 };

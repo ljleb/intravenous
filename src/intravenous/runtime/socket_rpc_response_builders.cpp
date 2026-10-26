@@ -209,24 +209,24 @@ void SocketRpcCreateIvModuleInstanceResultBuilder::fail(int code, std::string me
     error_message = std::move(message);
 }
 
-void SocketRpcIvPackagesResultBuilder::succeed(std::vector<IvPackageInfo> value) {
+void SocketRpcIvPackageDefinitionsResultBuilder::succeed(std::vector<IvPackageInfo> value) {
     result = std::move(value);
 }
 
-void SocketRpcIvPackagesResultBuilder::fail(std::string message) {
+void SocketRpcIvPackageDefinitionsResultBuilder::fail(std::string message) {
     error_code = -32000;
     error_message = std::move(message);
 }
 
-void SocketRpcIvPackagesResultBuilder::fail(int code, std::string message) {
+void SocketRpcIvPackageDefinitionsResultBuilder::fail(int code, std::string message) {
     error_code = code;
     error_message = std::move(message);
 }
 
-std::string SocketRpcIvPackagesResultBuilder::build(int request_id) const {
+std::string SocketRpcIvPackageDefinitionsResultBuilder::build(int request_id) const {
     if (!error_message.empty()) return jsonrpc_error(request_id, error_code, error_message);
-    if (!result.has_value()) throw_unbuilt_response("SocketRpcIvPackagesResultBuilder");
-    return jsonrpc_result(request_id, Json{{"packages", iv_packages_json(*result)}});
+    if (!result.has_value()) throw_unbuilt_response("SocketRpcIvPackageDefinitionsResultBuilder");
+    return jsonrpc_result(request_id, Json{{"packages", iv_package_definitions_json(*result)}});
 }
 
 void SocketRpcIvPackageResultBuilder::succeed(IvPackageInfo value) {
@@ -311,97 +311,4 @@ std::string SocketRpcAudioDevicesResultBuilder::build(int request_id) const
     return jsonrpc_result(request_id, audio_devices_snapshot_json(*result));
 }
 
-void SocketRpcLaneViewResultBuilder::succeed(LaneViewResult value) {
-    result = std::move(value);
-}
-
-void SocketRpcLaneViewResultBuilder::fail(std::string message) {
-    error_code = -32000;
-    error_message = std::move(message);
-}
-
-void SocketRpcLaneViewResultBuilder::fail(int code, std::string message) {
-    error_code = code;
-    error_message = std::move(message);
-}
-
-std::string SocketRpcLaneViewResultBuilder::build(int request_id) const {
-    if (!error_message.empty()) {
-        return jsonrpc_error(request_id, error_code, error_message);
-    }
-    if (!result.has_value()) {
-        throw_unbuilt_response("SocketRpcLaneViewResultBuilder");
-    }
-    return jsonrpc_result(request_id, lane_view_result_json(*result));
-}
-
-void SocketRpcLaneQuerySchemaResultBuilder::succeed(query::LaneQuerySchema value)
-{
-    result = std::move(value);
-}
-
-void SocketRpcLaneQuerySchemaResultBuilder::fail(std::string message)
-{
-    error_code = -32000;
-    error_message = std::move(message);
-}
-
-void SocketRpcLaneQuerySchemaResultBuilder::fail(int code, std::string message)
-{
-    error_code = code;
-    error_message = std::move(message);
-}
-
-std::string SocketRpcLaneQuerySchemaResultBuilder::build(int request_id) const
-{
-    if (!error_message.empty()) {
-        return jsonrpc_error(request_id, error_code, error_message);
-    }
-    if (!result.has_value()) {
-        throw_unbuilt_response("SocketRpcLaneQuerySchemaResultBuilder");
-    }
-    return jsonrpc_result(request_id, lane_query_schema_json(*result));
-}
-
-void SocketRpcLaneQueryCompletionResultBuilder::succeed(
-    query::LaneQueryCompletionResult value,
-    std::uint64_t revision)
-{
-    result = std::move(value);
-    schema_revision = revision;
-}
-
-void SocketRpcLaneQueryCompletionResultBuilder::fail(std::string message)
-{
-    error_code = -32000;
-    error_message = std::move(message);
-}
-
-void SocketRpcLaneQueryCompletionResultBuilder::fail(int code, std::string message)
-{
-    error_code = code;
-    error_message = std::move(message);
-}
-
-std::string SocketRpcLaneQueryCompletionResultBuilder::build(int request_id) const
-{
-    if (!error_message.empty()) {
-        return jsonrpc_error(request_id, error_code, error_message);
-    }
-    if (!result.has_value()) {
-        throw_unbuilt_response("SocketRpcLaneQueryCompletionResultBuilder");
-    }
-    return jsonrpc_result(
-        request_id,
-        lane_query_completion_json(*result, schema_revision));
-}
-
-std::string SocketRpcLaneTypesResultBuilder::build(int request_id) const {
-    if (!error_message.empty()) return jsonrpc_error(request_id, error_code, error_message);
-    if (!result.has_value()) throw_unbuilt_response("SocketRpcLaneTypesResultBuilder");
-    Json types = Json::array();
-    for (auto const& type : *result) types.push_back(Json{{"typeId", type.type_id},
-        {"category", type.category}, {"label", type.label}, {"description", type.description}});
-    return jsonrpc_result(request_id, Json{{"laneTypes", std::move(types)}});
-}
 } // namespace iv

@@ -7,156 +7,182 @@ import {
 } from "../src/liveGraphModel";
 import { VirtualNode } from "../src/graphModel";
 
-function sampleNode(): VirtualNode {
+function continuousNode(): VirtualNode {
     return {
         id: "node-1",
         kind: "Oscillator",
         packageIdentity: "module@Oscillator",
         memberCount: 2,
-        sampleInputs: [{
-            ordinal: 1,
+        continuousInputs: [{
+            index: 1,
             name: "frequency",
             connectivity: "disconnected",
-            defaultValue: 0.5,
-            currentValue: 0.25,
-            stateValue: "overridden",
+            binding: "interface",
+            valueTypes: [{
+                type: "Sample",
+                rank: 0,
+                channelCapability: "audio",
+                defaultValue: 0.5,
+                minValue: 0,
+                maxValue: 1,
+            }],
+            channelType: "mono",
         }],
-        sampleOutputs: [{
-            ordinal: 2,
+        continuousOutputs: [{
+            index: 2,
             name: "out",
             connectivity: "connected",
-            stateValue: "disconnected",
+            binding: "interface",
+            valueTypes: [{
+                type: "Sample",
+                rank: 0,
+                channelCapability: "audio",
+            }],
+            channelType: "mono",
         }],
         eventInputs: [{
-            ordinal: 3,
+            index: 3,
             name: "gate",
             connectivity: "mixed",
-            stateValue: "default",
+            binding: "interface",
+            eventType: "trigger",
         }],
         eventOutputs: [{
-            ordinal: 4,
+            index: 4,
             name: "trig",
             connectivity: "connected",
-            stateValue: "disconnected",
+            binding: "interface",
+            eventType: "trigger",
         }],
         members: [{
-            ordinal: 7,
+            index: 7,
             backingNodeId: "backing-1",
             kind: "Oscillator",
-            sampleInputs: [{
-                ordinal: 1,
+            continuousInputs: [{
+                index: 1,
                 name: "frequency",
                 connectivity: "disconnected",
-                defaultValue: 0.5,
-                currentValue: 0.25,
-                hasConcreteOverride: false,
-                stateValue: "virtualFollow",
+                binding: "virtualInput",
+                valueTypes: [{
+                    type: "Sample",
+                    rank: 0,
+                    channelCapability: "audio",
+                    defaultValue: 0.5,
+                    minValue: 0,
+                    maxValue: 1,
+                }],
+                channelType: "mono",
             }],
-            sampleOutputs: [{
-                ordinal: 2,
+            continuousOutputs: [{
+                index: 2,
                 name: "out",
                 connectivity: "connected",
-                stateValue: "disconnected",
+                binding: "virtualOutput",
+                valueTypes: [{
+                    type: "Sample",
+                    rank: 0,
+                    channelCapability: "audio",
+                }],
+                channelType: "mono",
             }],
             eventInputs: [{
-                ordinal: 3,
+                index: 3,
                 name: "gate",
                 connectivity: "mixed",
-                stateValue: "virtualFollow",
+                binding: "mixed",
+                eventType: "trigger",
             }],
             eventOutputs: [{
-                ordinal: 4,
+                index: 4,
                 name: "trig",
                 connectivity: "connected",
-                stateValue: "disconnected",
+                binding: "virtualOutput",
+                eventType: "trigger",
             }],
         }],
     };
 }
 
-test("serializeLiveGraphNodes exposes all supported port state families", () => {
-    const serialized = serializeLiveGraphNodes([sampleNode()]);
+test("serializeLiveGraphNodes exposes declared types and static bindings", () => {
+    const serialized = serializeLiveGraphNodes([continuousNode()]);
     assert.equal(serialized.length, 1);
 
     const node = serialized[0];
-    const virtualSampleInput = node.groups[0].ports[0];
-    const virtualSampleOutput = node.groups[1].ports[0];
+    const virtualContinuousInput = node.groups[0].ports[0];
+    const virtualContinuousOutput = node.groups[1].ports[0];
     const virtualEventInput = node.groups[2].ports[0];
     const virtualEventOutput = node.groups[3].ports[0];
-    const memberSampleInput = node.members[0].groups[0].ports[0];
+    const memberContinuousInput = node.members[0].groups[0].ports[0];
 
-    assert.equal(virtualSampleInput.stateFamily, "sampleInput");
-    assert.equal(virtualSampleInput.stateSummary, "knob value");
-    assert.deepEqual(virtualSampleInput.stateActions.map((action) => action.state), ["timelineLane"]);
+    assert.equal(virtualContinuousInput.index, 1);
+    assert.equal(virtualContinuousOutput.index, 2);
+    assert.equal(virtualEventInput.index, 3);
+    assert.equal(virtualEventOutput.index, 4);
+    assert.equal(node.members[0].index, 7);
+    assert.equal(memberContinuousInput.index, 1);
 
-    assert.equal(virtualEventInput.stateFamily, "eventInput");
-    assert.equal(virtualEventInput.stateSummary, "default");
-    assert.deepEqual(virtualEventInput.stateActions.map((action) => action.state), ["timelineLane"]);
-
-    assert.equal(virtualSampleOutput.stateFamily, "sampleOutput");
-    assert.equal(virtualSampleOutput.stateSummary, "disconnected");
-    assert.deepEqual(virtualSampleOutput.stateActions.map((action) => action.state), ["timelineLane"]);
-
-    assert.equal(virtualEventOutput.stateFamily, "eventOutput");
-    assert.equal(virtualEventOutput.stateSummary, "disconnected");
-    assert.deepEqual(virtualEventOutput.stateActions.map((action) => action.state), ["timelineLane"]);
-
-    assert.equal(memberSampleInput.stateSummary, "follow virtual value");
-    assert.equal(memberSampleInput.resetState, null);
-    assert.deepEqual(memberSampleInput.stateActions.map((action) => action.state), [
-        "overridden",
-        "timelineLane",
-        "disconnected",
-    ]);
+    assert.equal(virtualContinuousInput.typeSummary, "Sample • mono");
+    assert.equal(virtualContinuousInput.bindingSummary, "graph interface");
+    assert.equal(virtualContinuousOutput.typeSummary, "Sample • mono");
+    assert.equal(virtualEventInput.typeSummary, "trigger");
+    assert.equal(virtualEventInput.bindingSummary, "graph interface");
+    assert.equal(virtualEventOutput.typeSummary, "trigger");
+    assert.equal(memberContinuousInput.bindingSummary, "follow virtual input");
+    assert.equal(
+        node.members[0].groups[2].ports[0].bindingSummary,
+        "mixed built-in and virtual input");
 });
 
-test("serializeLiveGraphNodes treats default-connected concrete ports as connected", () => {
+test("serializeLiveGraphNodes reports concrete and virtual bindings", () => {
     const node: VirtualNode = {
         id: "node-1",
         kind: "Module",
-        sampleOutputs: [{
-            ordinal: 2,
+        continuousOutputs: [{
+            index: 2,
             name: "mix",
             connectivity: "connected",
-            stateValue: "timelineLane",
+            binding: "interface",
+            valueTypes: [{
+                type: "Sample",
+                rank: 0,
+                channelCapability: "audio",
+            }],
         }],
         members: [{
-            ordinal: 1,
+            index: 1,
             backingNodeId: "backing-1",
             kind: "Member",
-            sampleInputs: [{
-                ordinal: 3,
+            continuousInputs: [{
+                index: 3,
                 name: "in",
                 connectivity: "connected",
-                stateValue: "disconnected",
+                binding: "none",
+                valueTypes: [{
+                    type: "Sample",
+                    rank: 0,
+                    channelCapability: "audio",
+                }],
             }],
-            sampleOutputs: [{
-                ordinal: 2,
+            continuousOutputs: [{
+                index: 2,
                 name: "mix",
                 connectivity: "connected",
-                stateValue: "virtual",
+                binding: "virtualOutput",
+                valueTypes: [{
+                    type: "Sample",
+                    rank: 0,
+                    channelCapability: "audio",
+                }],
             }],
         }],
     };
 
     const serialized = serializeLiveGraphNodes([node]);
-    const memberSampleInput = serialized[0].members[0].groups[0].ports[0];
-    const memberSampleOutput = serialized[0].members[0].groups[1].ports[0];
+    const memberContinuousInput = serialized[0].members[0].groups[0].ports[0];
+    const memberContinuousOutput = serialized[0].members[0].groups[1].ports[0];
 
-    assert.equal(memberSampleInput.stateSummary, "built-in connection");
-    assert.equal(memberSampleInput.resetState, null);
-    assert.deepEqual(memberSampleInput.stateActions.map((action) => action.state), [
-        "overridden",
-        "virtualFollow",
-        "timelineLane",
-    ]);
-
-    assert.equal(memberSampleOutput.stateSummary, "virtual output");
-    assert.equal(memberSampleOutput.resetState, null);
-    assert.deepEqual(memberSampleOutput.stateActions.map((action) => action.state), [
-        "timelineLane",
-        "disconnected",
-    ]);
+    assert.equal(memberContinuousInput.bindingSummary, "built-in connection");
+    assert.equal(memberContinuousOutput.bindingSummary, "virtual output");
 });
 
 test("serializeLiveGraphInstances builds stable dropdown labels", () => {

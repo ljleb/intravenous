@@ -14,21 +14,58 @@
 #include <vector>
 
 namespace iv {
+    // Selects which immutable NodeLayout extent one mutable realtime storage
+    // instance owns. A steady-only instance omits transition suffix bytes.
+    enum class NodeStorageExtent : std::uint8_t {
+        full,
+        steady_prefix,
+    };
+
     struct NodeLayout {
+        static constexpr size_t no_owner_node = std::numeric_limits<size_t>::max();
+
+        struct RegionHandle {
+            size_t index = std::numeric_limits<size_t>::max();
+
+            constexpr bool valid() const noexcept
+            {
+                return index != std::numeric_limits<size_t>::max();
+            }
+
+            constexpr bool operator==(RegionHandle const&) const = default;
+        };
+
         struct Region {
             enum class Kind {
                 state,
                 local_array,
                 nested_node_states,
+                raw,
             };
 
             Kind kind = Kind::state;
-            size_t owner_node = 0;
+            size_t owner_node = no_owner_node;
             ptrdiff_t state_field_offset = 0;
             size_t storage_offset = 0;
             size_t size = 0;
             size_t alignment = 1;
             size_t element_count = 0;
+            // Transition-only regions are a contiguous suffix of NodeStorage.
+            // They are addressed by prepared transition roots, never treated as
+            // authored/nested steady state, and never migrated by raw identity.
+            bool transition_only = false;
+            // Optional stable identity for compiler-owned raw regions whose
+            // bytes are semantic persistent state rather than scratch. Exact-
+            // shape matches are copied during NodeStorage migration; transient
+            // arenas leave this empty and are always freshly zeroed. A raw
+            // initializer runs during storage initialization only when this
+            // region was not restored by exact-shape migration.
+            std::string migration_identity{};
+            using RawInitializeFn = void (*)(
+                std::span<std::byte> storage,
+                std::span<std::byte const> data);
+            RawInitializeFn raw_initialize_fn = nullptr;
+            std::vector<std::byte> raw_initialize_data{};
             void const* element_type = nullptr;
             char const* element_type_name = nullptr;
             void (*assign_span_fn)(
@@ -55,7 +92,7 @@ namespace iv {
             void const* node = nullptr;
             void const* node_type = nullptr;
             char const* node_type_name = nullptr;
-            std::optional<NodeStateStructure> node_state_structure {};
+            std::optional<NodeStateStructure> state_structure {};
             ptrdiff_t state_offset = 0;
             size_t state_size = 0;
             size_t state_alignment = 1;
@@ -64,6 +101,9 @@ namespace iv {
         };
 
         size_t storage_size = 0;
+        // End of the ordinary long-lived prefix. storage_size may additionally
+        // include a bounded transition-only suffix.
+        size_t steady_storage_size = 0;
         size_t storage_alignment = 1;
         size_t max_block_size = 1;
         size_t default_silence_ttl_samples = std::numeric_limits<size_t>::max();
@@ -73,7 +113,29 @@ namespace iv {
         std::vector<ArrayBinding> exported_arrays;
         std::vector<size_t> initialize_order;
 
-        NodeStorage create_storage(ResourceContext const& resources) const;
+        NodeStorage create_storage(
+            ResourceContext const& resources,
+            NodeStorageExtent extent = NodeStorageExtent::full) const;
+    };
+
+    struct TockStateLayout {
+        struct NodeRecord {
+            void const* node = nullptr;
+            void const* node_type = nullptr;
+            char const* node_type_name = nullptr;
+            std::optional<NodeStateStructure> state_structure {};
+            size_t state_offset = 0;
+            size_t state_size = 0;
+            size_t state_alignment = 1;
+            TockStateLifecycleCallbacks lifecycle {};
+        };
+
+        size_t storage_size = 0;
+        size_t storage_alignment = 1;
+        std::vector<NodeRecord> nodes{};
+
+        TockStateStorage create_storage(
+            ResourceContext const& resources) const;
     };
 
     struct NodeLayoutBuilder {
@@ -89,6 +151,19 @@ namespace iv {
         size_t default_silence_ttl_samples() const;
         size_t event_port_buffer_base_multiplier() const;
 
+        NodeLayout::RegionHandle declare_raw_region(
+            size_t size,
+            size_t alignment = 1,
+            std::string migration_identity = {},
+            NodeLayout::Region::RawInitializeFn initialize_fn = nullptr,
+            std::vector<std::byte> initialize_data = {});
+
+        NodeLayout::RegionHandle declare_transition_raw_region(
+            size_t size,
+            size_t alignment = 1,
+            NodeLayout::Region::RawInitializeFn initialize_fn = nullptr,
+            std::vector<std::byte> initialize_data = {});
+
         template<typename A>
         static void const* array_type_token()
         {
@@ -100,8 +175,8 @@ namespace iv {
             NodeLayout::NodeRecord const& record,
             size_t node_index);
 
-        void override_node_state_structure(
-            size_t node_index, NodeStateStructure structure);
+        void override_node_state_structures(
+            size_t node_index, NodeStateStructures const& structures);
 
         template<typename A>
         bool has_import_array(std::string const& id) const
@@ -118,6 +193,7 @@ namespace iv {
         }
 
         NodeLayout build() &&;
+        [[nodiscard]] TockStateLayout build_tock_state_layout() const;
 
     private:
         size_t _max_block_size = 1;
@@ -125,7 +201,9 @@ namespace iv {
         size_t _event_port_buffer_base_multiplier =
             DEFAULT_EVENT_PORT_BUFFER_BASE_MULTIPLIER;
         size_t _storage_alignment = 1;
+        bool _transition_suffix_started = false;
         std::vector<NodeLayout::NodeRecord> _nodes;
+        std::vector<TockStateLayout::NodeRecord> _tock_states;
         std::vector<NodeLayout::Region> _regions;
         std::vector<NodeLayout::ArrayBinding> _imports;
         std::vector<NodeLayout::ArrayBinding> _exports;
@@ -135,6 +213,8 @@ namespace iv {
         friend size_t details::register_node(
             NodeLayoutBuilder&, details::NodeLayoutNodeRegistration const&);
         friend void details::allocate_node_state(
+            NodeLayoutBuilder&, size_t, size_t, size_t);
+        friend void details::allocate_node_background_state(
             NodeLayoutBuilder&, size_t, size_t, size_t);
         friend void details::declare_local_array(
             NodeLayoutBuilder&, details::NodeLayoutArrayDeclaration const&);
@@ -160,8 +240,28 @@ namespace iv {
             NodeLayoutBuilder const&);
     };
 
+    // Extends an already-finalized steady layout without reopening ordinary
+    // node/storage declaration. Existing offsets remain byte-for-byte stable;
+    // only compiler-owned transition regions may be appended.
+    class NodeLayoutTransitionBuilder {
+        NodeLayout layout_{};
+
+        static size_t align_up(size_t value, size_t alignment);
+
+    public:
+        explicit NodeLayoutTransitionBuilder(NodeLayout steady_layout);
+
+        NodeLayout::RegionHandle declare_raw_region(
+            size_t size,
+            size_t alignment = 1,
+            NodeLayout::Region::RawInitializeFn initialize_fn = nullptr,
+            std::vector<std::byte> initialize_data = {});
+
+        NodeLayout build() &&;
+    };
+
     struct NodeStorage {
-        struct PreparedMigration;
+        struct Migration;
 
         struct StorageDeleter {
             size_t alignment = alignof(std::max_align_t);
@@ -176,12 +276,19 @@ namespace iv {
 
         NodeLayout const* layout = nullptr;
         ResourceContext const* resources = nullptr;
+        NodeStorageExtent extent = NodeStorageExtent::full;
+        // Physical bytes owned by this instance; either storage_size or the
+        // smaller steady_storage_size from the same canonical layout.
+        size_t allocation_size = 0;
         std::unique_ptr<std::byte[], StorageDeleter> storage;
         std::vector<size_t> constructed_nodes;
         std::vector<size_t> initialized_nodes;
 
         NodeStorage();
-        NodeStorage(NodeLayout const& layout, ResourceContext const& resources);
+        NodeStorage(
+            NodeLayout const& layout,
+            ResourceContext const& resources,
+            NodeStorageExtent extent_ = NodeStorageExtent::full);
         NodeStorage(NodeStorage&& other) noexcept;
         NodeStorage& operator=(NodeStorage&& other) noexcept;
         NodeStorage(NodeStorage const&) = delete;
@@ -191,6 +298,7 @@ namespace iv {
         std::span<std::byte> buffer() const;
         size_t max_block_size() const;
         void* state_ptr(size_t node_index) const;
+        std::span<std::byte> region_bytes(NodeLayout::RegionHandle region) const;
 
         template<typename A>
         std::span<A const> resolve_exported_array_storage(
@@ -205,29 +313,72 @@ namespace iv {
             NodeStorage const& previous,
             size_t node_index,
             size_t previous_node_index) const;
-        PreparedMigration prepare_migration_from(NodeStorage& previous);
+        Migration prepare_migration_from(NodeStorage& previous);
         void initialize(NodeStorage const* previous = nullptr);
         void release();
         void destroy_constructed_states();
     };
 
-    struct NodeStorage::PreparedMigration {
+    struct TockStateStorage {
+        struct StorageDeleter {
+            size_t alignment = alignof(std::max_align_t);
+
+            constexpr StorageDeleter() noexcept = default;
+            constexpr explicit StorageDeleter(size_t alignment_) noexcept
+                : alignment(alignment_)
+            {}
+
+            void operator()(std::byte* p) const noexcept;
+        };
+
+        TockStateLayout const* layout = nullptr;
+        ResourceContext const* resources = nullptr;
+        std::unique_ptr<std::byte[], StorageDeleter> storage;
+        std::vector<size_t> constructed_nodes{};
+        std::vector<size_t> initialized_nodes{};
+
+        TockStateStorage();
+        TockStateStorage(
+            TockStateLayout const& layout,
+            ResourceContext const& resources);
+        TockStateStorage(TockStateStorage&&) noexcept;
+        TockStateStorage& operator=(TockStateStorage&&) noexcept;
+        TockStateStorage(TockStateStorage const&) = delete;
+        TockStateStorage& operator=(TockStateStorage const&) = delete;
+        ~TockStateStorage();
+
+        void* state_ptr(size_t node_index) const;
+        void initialize();
+        void release() noexcept;
+        void destroy_constructed_states() noexcept;
+    };
+
+    struct NodeStorage::Migration {
         static constexpr size_t no_node = std::numeric_limits<size_t>::max();
+
+        struct RawRegionTransfer {
+            size_t current_offset = 0;
+            size_t previous_offset = 0;
+            size_t size = 0;
+        };
 
         NodeStorage* current = nullptr;
         NodeStorage* previous = nullptr;
         std::vector<size_t> previous_node_for_current;
         std::vector<bool> previous_nodes_consumed;
         std::vector<size_t> deferred_initialize_nodes;
-        std::vector<size_t> previous_release_nodes;
+        std::vector<RawRegionTransfer> raw_region_transfers;
         bool committed = false;
 
-        PreparedMigration() = default;
-        PreparedMigration(PreparedMigration&&) noexcept = default;
-        PreparedMigration& operator=(PreparedMigration&&) noexcept = default;
-        PreparedMigration(PreparedMigration const&) = delete;
-        PreparedMigration& operator=(PreparedMigration const&) = delete;
+        Migration() = default;
+        Migration(Migration&&) noexcept = default;
+        Migration& operator=(Migration&&) noexcept = default;
+        Migration(Migration const&) = delete;
+        Migration& operator=(Migration const&) = delete;
 
-        void commit();
+        // This is the irreversible generation handoff. Authored lifecycle
+        // exceptions terminate the process at their erased callback boundary;
+        // no partial migration result is returned to a caller.
+        void commit() noexcept;
     };
 }
