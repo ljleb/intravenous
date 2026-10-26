@@ -70,13 +70,21 @@ using CompiledGraphBlockFunction = void (*)(
     GlobalIndex sample_index,
     std::size_t block_size);
 
+using CompiledGraphSequentialInputCombineFunction =
+    graph_jit::SequentialInputCombineFunction;
+using CompiledGraphSequentialInputInitializeFunction =
+    graph_jit::SequentialInputInitializeFunction;
+
 struct CompiledGraphRootOperations {
     CompiledGraphBlockFunction tick_block = nullptr;
     CompiledGraphBlockFunction transition_tick_block = nullptr;
+    CompiledGraphSequentialInputCombineFunction combine_sequential_input = nullptr;
+    CompiledGraphSequentialInputInitializeFunction initialize_sequential_input =
+        nullptr;
 
     [[nodiscard]] bool valid() const noexcept
     {
-        return tick_block != nullptr;
+        return tick_block != nullptr && combine_sequential_input != nullptr;
     }
 };
 

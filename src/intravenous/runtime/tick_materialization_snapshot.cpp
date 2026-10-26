@@ -1,7 +1,9 @@
 #include <intravenous/runtime/tick_materialization_snapshot.h>
 
 #include <algorithm>
+#include <bit>
 #include <cassert>
+#include <cstring>
 #include <limits>
 #include <ranges>
 #include <stdexcept>
@@ -9,20 +11,6 @@
 
 namespace iv {
 namespace {
-
-[[nodiscard]] std::size_t coverage_sample_count(IndexCoverage const& coverage)
-{
-    std::size_t result = 0;
-    for (auto const region : coverage) {
-        auto const length = region.extent;
-        if (length > std::numeric_limits<std::size_t>::max() - result) {
-            throw std::length_error(
-                "Tick materialization coverage is too large");
-        }
-        result += static_cast<std::size_t>(length);
-    }
-    return result;
-}
 
 [[nodiscard]] std::size_t checked_product(
     std::size_t left, std::size_t right)
@@ -72,19 +60,21 @@ std::size_t TickMaterializedSampleInput::channel_slot(
 Sample TickMaterializedSampleInput::at(
     GlobalIndex index, std::size_t channel) const noexcept
 {
+    if (geometry.value_type != continuous_value_type_id_v<Sample>) return {};
     auto const slot = channel_slot(channel);
     if (slot == channels.size() || regions.empty()) return {};
-    auto found = std::ranges::upper_bound(
-        regions, index, SignedGlobalIndexOrder{},
-        [](TickMaterializedSampleRegion const& region) {
-            return region.range.begin;
+    auto const found = std::ranges::find_if(
+        regions, [&](TickMaterializedSampleRegion const& region) {
+            return region.range.contains(index);
         });
-    auto const* region = found == regions.begin()
-        ? &regions.back()
-        : &*std::prev(found);
-    if (!region->range.contains(index)) return {};
-    return region->channel_frames(slot)[static_cast<std::size_t>(
-        region->range.begin.forward_distance_to(index))];
+    if (found == regions.end()) return {};
+    auto const frame = found->first_frame + static_cast<std::size_t>(
+        found->range.begin.forward_distance_to(index));
+    auto const offset = layout.sample_layout == SampleStreamLayout::planar
+        ? slot * found->storage_frames + frame
+        : frame * channels.size() + slot;
+    auto const* storage = reinterpret_cast<Sample const*>(found->storage_data());
+    return storage ? storage[offset] : Sample{};
 }
 
 namespace {
@@ -153,33 +143,181 @@ TickMaterializedSampleInput make_tick_materialized_sample_input(
     graph_jit::BackgroundPortIndex port,
     ChannelLayout layout,
     std::vector<std::size_t> channels,
-    IndexCoverage coverage,
+    std::vector<GlobalIndexRange> region_ranges,
     std::vector<Sample> values)
 {
-    auto const frames = coverage_sample_count(coverage);
+    IndexCoverage coverage;
+    std::size_t frames = 0;
+    for (auto const region : region_ranges) {
+        if (region.empty()
+            || region.extent > std::numeric_limits<std::size_t>::max()
+            || static_cast<std::size_t>(region.extent)
+                > std::numeric_limits<std::size_t>::max() - frames) {
+            throw std::invalid_argument(
+                "Tick sample materialization has an invalid Region");
+        }
+        frames += static_cast<std::size_t>(region.extent);
+        coverage.include(region);
+    }
     if (values.size() != checked_product(frames, channels.size())) {
         throw std::invalid_argument(
             "Tick sample materialization values disagree with their coverage");
     }
-    auto storage = std::make_shared<std::vector<Sample> const>(
-        std::move(values));
     TickMaterializedSampleInput result{
         .port = port,
         .layout = layout,
+        .geometry = *continuous_value_storage_geometry(
+            continuous_value_type_id_v<Sample>, std::nullopt),
         .channels = std::move(channels),
     };
-    std::size_t first_frame = 0;
-    for (auto const region : coverage) {
+    std::size_t value_cursor = 0;
+    for (auto const region : region_ranges) {
+        auto const region_frames = static_cast<std::size_t>(region.extent);
+        auto const value_count =
+            checked_product(region_frames, result.channels.size());
+        auto storage = std::make_shared<std::vector<Sample> const>(
+            values.begin() + static_cast<std::ptrdiff_t>(value_cursor),
+            values.begin() + static_cast<std::ptrdiff_t>(
+                value_cursor + value_count));
         result.regions.push_back(TickMaterializedSampleRegion{
             .range = region,
             .values = storage,
-            .storage_frames = frames,
-            .first_frame = first_frame,
+            .storage_frames = region_frames,
+            .first_frame = 0,
         });
-        first_frame += static_cast<std::size_t>(region.extent);
+        result.region_views.push_back(ContinuousRegionStorageView{
+            .storage = reinterpret_cast<std::byte*>(
+                const_cast<Sample*>(storage->data())),
+            .range = region,
+            .geometry = *continuous_value_storage_geometry(
+                continuous_value_type_id_v<Sample>, std::nullopt),
+            .channel_layout = layout,
+        });
+        value_cursor += value_count;
     }
     result.coverage = std::move(coverage);
     return result;
+}
+
+TickMaterializedSampleInput make_tick_materialized_continuous_input(
+    graph_jit::BackgroundPortIndex port,
+    ChannelLayout layout,
+    ContinuousValueStorageGeometry geometry,
+    std::vector<std::size_t> channels,
+    std::vector<GlobalIndexRange> region_ranges,
+    std::vector<std::byte> values)
+{
+    if (geometry.value_size_bytes == 0
+        || geometry.element_alignment == 0
+        || !std::has_single_bit(geometry.element_alignment)) {
+        throw std::invalid_argument(
+            "Tick continuous materialization has invalid geometry");
+    }
+    IndexCoverage coverage;
+    std::size_t value_count = 0;
+    for (auto const region : region_ranges) {
+        if (region.empty()
+            || region.extent > std::numeric_limits<std::size_t>::max()
+            || static_cast<std::size_t>(region.extent)
+                > std::numeric_limits<std::size_t>::max() - value_count) {
+            throw std::invalid_argument(
+                "Tick continuous materialization has an invalid Region");
+        }
+        value_count += static_cast<std::size_t>(region.extent);
+        coverage.include(region);
+    }
+    auto const expected = checked_product(
+        checked_product(value_count, channels.size()),
+        geometry.value_size_bytes);
+    if (values.size() != expected) {
+        throw std::invalid_argument(
+            "Tick continuous materialization values disagree with their Regions");
+    }
+    TickMaterializedSampleInput result{
+        .port = port,
+        .layout = layout,
+        .geometry = geometry,
+        .channels = std::move(channels),
+    };
+    std::size_t byte_cursor = 0;
+    for (auto const region : region_ranges) {
+        auto const region_frames = static_cast<std::size_t>(region.extent);
+        auto const byte_count = checked_product(
+            checked_product(region_frames, result.channels.size()),
+            geometry.value_size_bytes);
+        auto storage = std::make_shared<PersistedContinuousStorage>(
+            byte_count, geometry.element_alignment);
+        std::memcpy(
+            storage->data(), values.data() + byte_cursor, byte_count);
+        result.regions.push_back(TickMaterializedSampleRegion{
+            .range = region,
+            .continuous_values = storage,
+            .storage_frames = region_frames,
+            .first_frame = 0,
+        });
+        result.region_views.push_back(ContinuousRegionStorageView{
+            .storage = storage->data(),
+            .range = region,
+            .geometry = geometry,
+            .channel_layout = layout,
+        });
+        byte_cursor += byte_count;
+    }
+    result.coverage = std::move(coverage);
+    return result;
+}
+
+TickMaterializedSampleInput make_tick_materialized_sample_input(
+    graph_jit::BackgroundPortIndex port,
+    ChannelLayout layout,
+    std::vector<std::size_t> channels,
+    IndexCoverage coverage,
+    std::vector<Sample> values)
+{
+    std::size_t total_frames = 0;
+    for (auto const region : coverage) {
+        if (region.extent > std::numeric_limits<std::size_t>::max()
+            || static_cast<std::size_t>(region.extent)
+                > std::numeric_limits<std::size_t>::max() - total_frames) {
+            throw std::invalid_argument(
+                "Tick sample materialization has an invalid coverage");
+        }
+        total_frames += static_cast<std::size_t>(region.extent);
+    }
+    if (values.size() != checked_product(total_frames, channels.size())) {
+        throw std::invalid_argument(
+            "Tick sample materialization values disagree with their coverage");
+    }
+    std::vector<Sample> region_major;
+    region_major.reserve(values.size());
+    std::size_t frame_offset = 0;
+    for (auto const region : coverage) {
+        auto const frames = static_cast<std::size_t>(region.extent);
+        if (layout.sample_layout == SampleStreamLayout::planar) {
+            for (std::size_t channel = 0; channel < channels.size(); ++channel) {
+                auto const begin = values.begin()
+                    + static_cast<std::ptrdiff_t>(
+                        channel * total_frames + frame_offset);
+                region_major.insert(
+                    region_major.end(), begin,
+                    begin + static_cast<std::ptrdiff_t>(frames));
+            }
+        } else {
+            for (std::size_t frame = 0; frame < frames; ++frame) {
+                for (std::size_t channel = 0; channel < channels.size(); ++channel) {
+                    region_major.push_back(
+                        values[channel * total_frames + frame_offset + frame]);
+                }
+            }
+        }
+        frame_offset += frames;
+    }
+    return make_tick_materialized_sample_input(
+        port,
+        layout,
+        std::move(channels),
+        std::vector<GlobalIndexRange>{coverage.begin(), coverage.end()},
+        std::move(region_major));
 }
 
 TickMaterializedEventInput make_tick_materialized_event_input(
@@ -253,10 +391,12 @@ void TickMaterializationSnapshot::validate() const
     ports.reserve(samples_.size() + events_.size());
     for (auto const& sample : samples_) {
         IndexCoverage covered;
-        bool valid = !sample.regions.empty()
+        bool valid = sample.region_views.size() == sample.regions.size()
+            && is_registered_continuous_value_type(sample.geometry.value_type)
+            && sample.geometry.value_size_bytes != 0
             && is_valid_channel_type(sample.layout.channel_type)
             && is_valid_sample_stream_layout(sample.layout.sample_layout)
-            && !sample.channels.empty()
+            && sample.channels.size() == channel_count(sample.layout)
             && std::ranges::is_sorted(sample.channels)
             && std::ranges::adjacent_find(sample.channels)
                 == sample.channels.end()
@@ -268,16 +408,36 @@ void TickMaterializationSnapshot::validate() const
         for (std::size_t index = 0;
              valid && index < sample.regions.size(); ++index) {
             auto const& region = sample.regions[index];
+            if (region.range.extent
+                > std::numeric_limits<std::size_t>::max()) {
+                valid = false;
+                break;
+            }
             auto const extent = static_cast<std::size_t>(region.range.extent);
-            valid = !region.range.empty() && region.values != nullptr
+            auto const stored_values = checked_product(
+                region.storage_frames, sample.channels.size());
+            auto const sample_owner = region.values != nullptr
+                && region.continuous_values == nullptr
+                && sample.geometry.value_type
+                    == continuous_value_type_id_v<Sample>
+                && region.values->size() == stored_values;
+            auto const continuous_owner = region.values == nullptr
+                && region.continuous_values != nullptr
+                && region.continuous_values->size()
+                    == checked_product(
+                        stored_values, sample.geometry.value_size_bytes)
+                && region.continuous_values->alignment()
+                    == sample.geometry.element_alignment;
+            valid = !region.range.empty()
+                && (sample_owner || continuous_owner)
                 && region.first_frame <= region.storage_frames
                 && extent <= region.storage_frames - region.first_frame
-                && region.values->size()
-                    == checked_product(
-                        region.storage_frames, sample.channels.size())
-                && (index == 0
-                    || ordered(sample.regions[index - 1].range, region.range))
-                && !covered.intersects(region.range);
+                && index < sample.region_views.size()
+                && sample.region_views[index].range == region.range
+                && sample.region_views[index].channel_layout == sample.layout
+                && sample.region_views[index].geometry == sample.geometry
+                && sample.region_views[index].storage
+                    == const_cast<std::byte*>(region.storage_data());
             covered.include(region.range);
         }
         if (!valid || covered != sample.coverage) {
@@ -333,9 +493,6 @@ void TickMaterializationSnapshot::carry_forward(
         throw std::invalid_argument(
             "Tick materialization can only carry forward within one generation");
     }
-    auto by_begin = [](auto const& left, auto const& right) {
-        return SignedGlobalIndexOrder{}(left.range.begin, right.range.begin);
-    };
     for (auto const& retained : retention) {
         if (retained.retained.empty()) continue;
         if (auto const* source = previous.find_sample(retained.port)) {
@@ -344,42 +501,71 @@ void TickMaterializationSnapshot::carry_forward(
             if (auto const* own = find_sample(retained.port)) {
                 produced = own->coverage;
             }
-            std::vector<TickMaterializedSampleRegion> carried;
+            auto target = std::ranges::find(
+                samples_, retained.port, &TickMaterializedSampleInput::port);
+            if (target == samples_.end()) {
+                samples_.push_back(TickMaterializedSampleInput{
+                    .port = source->port,
+                    .layout = source->layout,
+                    .geometry = source->geometry,
+                    .channels = source->channels,
+                });
+                target = std::prev(samples_.end());
+            } else if (target->layout != source->layout
+                || target->geometry != source->geometry
+                || target->channels != source->channels) {
+                throw std::invalid_argument(
+                    "carried Tick sample materialization changed its layout");
+            }
+
+            auto produced_regions = std::move(target->regions);
+            std::vector<TickMaterializedSampleRegion> next;
+            next.reserve(source->regions.size() + produced_regions.size());
+            bool inserted_produced = false;
             for (auto const& region : source->regions) {
-                auto const kept = (IndexCoverage{region.range}
-                    & retained.retained) - produced;
-                for (auto const part : kept) {
-                    carried.push_back(TickMaterializedSampleRegion{
-                        .range = part,
-                        .values = region.values,
-                        .storage_frames = region.storage_frames,
-                        .first_frame = region.first_frame
-                            + static_cast<std::size_t>(
-                                region.range.begin.forward_distance_to(
-                                    part.begin)),
-                    });
+                auto const retained_part =
+                    IndexCoverage{region.range} & retained.retained;
+                auto const replaced_part = IndexCoverage{region.range} & produced;
+                if (!retained_part.empty()
+                    && !retained.retained.contains(region.range)) {
+                    throw std::invalid_argument(
+                        "Tick sample retention clips a logical Region");
+                }
+                if (!replaced_part.empty()
+                    && !produced.contains(region.range)) {
+                    throw std::invalid_argument(
+                        "Tick sample replacement clips a logical Region");
+                }
+                if (!replaced_part.empty() && !inserted_produced) {
+                    next.insert(
+                        next.end(),
+                        std::make_move_iterator(produced_regions.begin()),
+                        std::make_move_iterator(produced_regions.end()));
+                    inserted_produced = true;
+                }
+                if (replaced_part.empty()
+                    && retained.retained.contains(region.range)) {
+                    next.push_back(region);
                 }
             }
-            if (!carried.empty()) {
-                auto target = std::ranges::find(
-                    samples_, retained.port, &TickMaterializedSampleInput::port);
-                if (target == samples_.end()) {
-                    samples_.push_back(TickMaterializedSampleInput{
-                        .port = source->port,
-                        .layout = source->layout,
-                        .channels = source->channels,
-                    });
-                    target = std::prev(samples_.end());
-                } else if (target->layout != source->layout
-                    || target->channels != source->channels) {
-                    throw std::invalid_argument(
-                        "carried Tick sample materialization changed its layout");
-                }
-                for (auto& region : carried) {
-                    target->coverage.include(region.range);
-                    target->regions.push_back(std::move(region));
-                }
-                std::ranges::sort(target->regions, by_begin);
+            if (!inserted_produced) {
+                next.insert(
+                    next.end(),
+                    std::make_move_iterator(produced_regions.begin()),
+                    std::make_move_iterator(produced_regions.end()));
+            }
+            target->regions = std::move(next);
+            target->region_views.clear();
+            target->coverage = {};
+            target->region_views.reserve(target->regions.size());
+            for (auto const& region : target->regions) {
+                target->coverage.include(region.range);
+                target->region_views.push_back(ContinuousRegionStorageView{
+                    .storage = const_cast<std::byte*>(region.storage_data()),
+                    .range = region.range,
+                    .geometry = target->geometry,
+                    .channel_layout = target->layout,
+                });
             }
         }
         if (auto const* source = previous.find_event(retained.port)) {
@@ -429,7 +615,12 @@ void TickMaterializationSnapshot::carry_forward(
                     target->coverage.include(chunk.range);
                     target->chunks.push_back(std::move(chunk));
                 }
-                std::ranges::sort(target->chunks, by_begin);
+                std::ranges::sort(
+                    target->chunks,
+                    [](auto const& left, auto const& right) {
+                        return SignedGlobalIndexOrder{}(
+                            left.range.begin, right.range.begin);
+                    });
             }
         }
     }

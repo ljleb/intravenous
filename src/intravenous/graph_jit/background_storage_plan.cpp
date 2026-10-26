@@ -347,6 +347,8 @@ bool equal_sample_materialization_operation(
         && left.source_read_latencies == right.source_read_latencies
         && left.source_type == right.source_type
         && left.target_layout == right.target_layout
+        && left.target_geometry == right.target_geometry
+        && left.target_ordering == right.target_ordering
         && left.target_channels == right.target_channels
         && left.projections == right.projections
         && left.target_history == right.target_history;
@@ -411,6 +413,7 @@ std::expected<BackgroundStoragePlan, std::string> build_background_storage_plan(
         NodeBundlePortId port,
         PortStorageKind storage_kind,
         ChannelLayout sample_layout,
+        ContinuousValueStorageGeometry continuous_geometry,
         std::span<std::size_t const> sample_channels,
         EventTypeId event_type,
         double max_events_per_index,
@@ -436,6 +439,7 @@ std::expected<BackgroundStoragePlan, std::string> build_background_storage_plan(
                 .source_port = port,
                 .output_port = output_port_for(background, port),
                 .sample_layout = sample_layout,
+                .continuous_geometry = continuous_geometry,
                 .sample_channels = {
                     sample_channels.begin(), sample_channels.end()},
                 .event_type = event_type,
@@ -479,6 +483,7 @@ std::expected<BackgroundStoragePlan, std::string> build_background_storage_plan(
                 source.port,
                 storage,
                 source.source_layout,
+                source.geometry,
                 channels,
                 EventTypeId::empty,
                 0.0,
@@ -493,13 +498,13 @@ std::expected<BackgroundStoragePlan, std::string> build_background_storage_plan(
                 true);
         }
         if (source.storage.tick_random_access) {
-            append(PortStorageKind::tick_random_access);
+            append(PortStorageKind::tick_random_access, true);
         } else if (source.storage.tick_sequential) {
-            append(PortStorageKind::tick_sequential);
+            append(PortStorageKind::tick_sequential, true);
         }
         if (source.storage.background_random_access) {
             append(
-                PortStorageKind::background);
+                PortStorageKind::background, true);
         }
     }
 
@@ -521,6 +526,7 @@ std::expected<BackgroundStoragePlan, std::string> build_background_storage_plan(
                 subset,
                 port,
                 storage,
+                {},
                 {},
                 {},
                 source.type,
@@ -548,7 +554,7 @@ std::expected<BackgroundStoragePlan, std::string> build_background_storage_plan(
 
     auto append_sample_materialization = [&] (
         SampleMaterializationPlan planned,
-        PortSubsetIndex target_subset,
+        std::span<PortSubsetIndex const> target_subsets,
         BackgroundConnectionIndex connection)
         -> SampleMaterializationIndex {
         auto found = std::ranges::find_if(
@@ -580,6 +586,7 @@ std::expected<BackgroundStoragePlan, std::string> build_background_storage_plan(
                 // independent of configured connection order.
                 found->storage =
                     PortStorageKind::tick_random_access;
+                found->target_port = planned.target_port;
                 result.ports[found->output].storage =
                     PortStorageKind::tick_random_access;
             }
@@ -587,36 +594,45 @@ std::expected<BackgroundStoragePlan, std::string> build_background_storage_plan(
         if (found != result.sample_materializations.end()) {
             auto const index = static_cast<SampleMaterializationIndex>(
                 std::distance(result.sample_materializations.begin(), found));
-            append_unique(found->target_subsets, target_subset);
             append_unique(found->connections, connection);
             auto& storage =
                 result.ports[found->output];
-            append_unique(storage.target_subsets, target_subset);
             append_unique(storage.connections, connection);
-            append_unique(
-                result.sample_target_storage[target_subset],
-                found->output);
+            for (auto const target_subset : target_subsets) {
+                append_unique(found->target_subsets, target_subset);
+                append_unique(storage.target_subsets, target_subset);
+                append_unique(
+                    result.sample_target_storage[target_subset],
+                    found->output);
+            }
             return index;
         }
 
+        auto const first_target_subset = target_subsets.front();
         auto const output = append_storage(PortStoragePlan{
             .kind = PortKind::sample,
             .storage = planned.storage,
             .source_subsets = planned.source_subsets,
-            .target_subsets = {target_subset},
+            .target_subsets = std::vector<PortSubsetIndex>(
+                target_subsets.begin(), target_subsets.end()),
             .connections = {connection},
             .inputs = planned.inputs,
             .sample_layout = planned.target_layout,
+            .continuous_geometry =
+                background.sample_target_subsets[first_target_subset].geometry,
             .sample_channels = planned.target_channels,
         });
         planned.output = output;
-        planned.target_subsets.push_back(target_subset);
+        planned.target_subsets.assign(
+            target_subsets.begin(), target_subsets.end());
         planned.connections.push_back(connection);
         auto const index = static_cast<SampleMaterializationIndex>(
             result.sample_materializations.size());
         result.sample_materializations.push_back(std::move(planned));
         result.ports[output].sample_materialization = index;
-        append_unique(result.sample_target_storage[target_subset], output);
+        for (auto const target_subset : target_subsets) {
+            append_unique(result.sample_target_storage[target_subset], output);
+        }
         return index;
     };
 
@@ -712,6 +728,64 @@ std::expected<BackgroundStoragePlan, std::string> build_background_storage_plan(
                 }
                 auto const& target_subset =
                     background.sample_target_subsets[target_subset_index];
+                std::vector<PortSubsetIndex> materialization_target_subsets{
+                    target_subset_index};
+                if (target_subset.access
+                        == PlannedDestinationAccess::random_access
+                    && connection->requires_conversion) {
+                    materialization_target_subsets.clear();
+                    for (auto const candidate_index :
+                         background_connection.target_subsets) {
+                        if (candidate_index
+                            >= background.sample_target_subsets.size()) {
+                            return std::unexpected(
+                                "GraphJit background sample storage planning has an invalid target subset");
+                        }
+                        auto const& candidate =
+                            background.sample_target_subsets[candidate_index];
+                        if (candidate.port == target_subset.port
+                            && candidate.access
+                                == PlannedDestinationAccess::random_access) {
+                            materialization_target_subsets.push_back(
+                                candidate_index);
+                        }
+                    }
+                    if (materialization_target_subsets.empty()) {
+                        return std::unexpected(
+                            "GraphJit random-access sample materialization has no target subsets");
+                    }
+                    if (materialization_target_subsets.front()
+                        != target_subset_index) {
+                        continue;
+                    }
+                }
+                std::vector<std::size_t> materialization_target_channels;
+                for (auto const subset_index :
+                     materialization_target_subsets) {
+                    for (auto const channel :
+                         background.sample_target_subsets[subset_index]
+                             .channels) {
+                        append_unique(
+                            materialization_target_channels,
+                            channel.channel);
+                    }
+                }
+                std::ranges::sort(materialization_target_channels);
+                if (target_subset.access
+                        == PlannedDestinationAccess::random_access
+                    && connection->requires_conversion) {
+                    auto const target_channel_count =
+                        channel_count(target_subset.target_layout);
+                    if (materialization_target_channels.size()
+                            != target_channel_count
+                        || !std::ranges::equal(
+                            materialization_target_channels,
+                            std::views::iota(std::size_t{0},
+                                target_channel_count))) {
+                        return std::unexpected(
+                            "GraphJit random-access sample materialization does not cover its complete target layout");
+                    }
+                }
                 struct DirectChannel {
                     std::size_t target_channel = 0;
                     std::size_t source_index = 0;
@@ -741,6 +815,16 @@ std::expected<BackgroundStoragePlan, std::string> build_background_storage_plan(
                         .source_index = *source_index,
                         .source_subset = *source_subset,
                     });
+                }
+
+                // A random-access input receives one Region list whose buffers
+                // use the input port's complete channel layout. Per-channel
+                // direct routes cannot provide that view when the normalized
+                // connection still requires channel assembly or conversion.
+                if (target_subset.access
+                        == PlannedDestinationAccess::random_access
+                    && connection->requires_conversion) {
+                    direct = false;
                 }
 
                 if (direct) {
@@ -842,11 +926,20 @@ std::expected<BackgroundStoragePlan, std::string> build_background_storage_plan(
                 } else {
                     auto const target_atom_has_channel =
                         [&](std::size_t target_channel) {
-                            return target_channel
-                                    < connection->target_channels.size()
-                                && std::ranges::contains(
-                                target_subset.channels,
-                                connection->target_channels[target_channel]);
+                            if (target_channel
+                                >= connection->target_channels.size()) {
+                                return false;
+                            }
+                            auto const target =
+                                connection->target_channels[target_channel];
+                            return std::ranges::any_of(
+                                materialization_target_subsets,
+                                [&](PortSubsetIndex subset_index) {
+                                    return std::ranges::contains(
+                                        background.sample_target_subsets[
+                                            subset_index].channels,
+                                        target);
+                                });
                         };
                     for (auto const& projection :
                          connection->projection_contributions) {
@@ -877,6 +970,21 @@ std::expected<BackgroundStoragePlan, std::string> build_background_storage_plan(
                             "GraphJit background sample target subset has no projection contribution");
                     }
                 }
+
+                auto const target_port = std::ranges::find_if(
+                    background.ports,
+                    [&](BackgroundPortPlan const& port) {
+                        return port.direction == PortDirection::input
+                            && port.kind == PortKind::sample
+                            && port.configured_port == target_subset.port;
+                    });
+                if (target_port == background.ports.end()) {
+                    return std::unexpected(
+                        "GraphJit background sample target subset has no logical input port");
+                }
+                auto const target_port_index =
+                    static_cast<BackgroundPortIndex>(std::distance(
+                        background.ports.begin(), target_port));
 
                 std::vector<PortStorageKind> storage_kinds;
                 bool mixed_sequential_delivery = false;
@@ -919,13 +1027,15 @@ std::expected<BackgroundStoragePlan, std::string> build_background_storage_plan(
                 for (auto const storage_kind : storage_kinds) {
                     SampleMaterializationPlan materialization{
                         .storage = storage_kind,
+                        .target_port = target_port_index,
                         .source_type = connection->source_type,
                         .target_layout = connection->target_layout,
+                        .target_geometry = target_subset.geometry,
+                        .target_ordering = target_port->ordering,
                         .target_history = connection->target_history,
                     };
-                    for (auto const channel : target_subset.channels) {
-                        materialization.target_channels.push_back(channel.channel);
-                    }
+                    materialization.target_channels =
+                        materialization_target_channels;
                     std::vector<std::optional<std::size_t>> local_source_index(
                         connection->source_channel_timings.size());
                     for (auto const source_index : source_indices) {
@@ -1087,7 +1197,7 @@ std::expected<BackgroundStoragePlan, std::string> build_background_storage_plan(
                     auto const materialization_index =
                         append_sample_materialization(
                             std::move(materialization),
-                            target_subset_index,
+                            materialization_target_subsets,
                             connection_index);
                     append_unique(
                         storage_connection.sample_materializations,

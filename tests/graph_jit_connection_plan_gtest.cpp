@@ -277,7 +277,34 @@ struct BackgroundSource {
     void propagate_forward_coverage(
         iv::PropagateForwardCoverageContext<BackgroundSource>& context) const
     {
-        context.template output<"out">().publish_coverage({});
+        context.template output<"out">().publish_regions(
+            std::span<iv::GlobalIndexRange const>{});
+    }
+};
+
+struct BackgroundRegionSource {
+    static constexpr auto inputs()
+    {
+        return std::tuple{};
+    }
+
+    static constexpr auto outputs()
+    {
+        return std::array{
+            iv::output<iv::Sample>("out", iv::OutputProduction::region),
+        };
+    }
+
+    void tock_coverage(
+        iv::TockCoverageContext<BackgroundRegionSource>&) const {}
+    void propagate_forward_coverage(
+        iv::PropagateForwardCoverageContext<BackgroundRegionSource>& context)
+        const
+    {
+        context.template output<"out">().publish_region({
+            .begin = iv::GlobalIndex::from_signed(0),
+            .extent = 1,
+        });
     }
 };
 
@@ -302,7 +329,8 @@ struct BackgroundStereoSource {
     void propagate_forward_coverage(
         iv::PropagateForwardCoverageContext<BackgroundStereoSource>& context) const
     {
-        context.template output<"out">().publish_coverage({});
+        context.template output<"out">().publish_regions(
+            std::span<iv::GlobalIndexRange const>{});
     }
 };
 
@@ -321,8 +349,8 @@ struct BackgroundSamplePass {
     void propagate_forward_coverage(
         iv::PropagateForwardCoverageContext<BackgroundSamplePass>& context) const
     {
-        context.template output<"out">().publish_coverage(
-            context.template input<"in">().coverage());
+        context.template output<"out">().publish_regions(
+            context.template input<"in">().regions());
     }
 };
 
@@ -396,6 +424,68 @@ struct BackgroundSink {
     }
 
     void tick_block(iv::TickBlockContext<BackgroundSink> const&) const {}
+};
+
+struct BackgroundStereoSink {
+    static constexpr auto inputs()
+    {
+        return std::array{iv::input<iv::Sample>(
+            "in",
+            iv::InputAccess::coverage,
+            {
+                .channel_layout = iv::ChannelLayout{
+                    .channel_type = iv::ChannelTypeId::stereo,
+                    .sample_layout = iv::SampleStreamLayout::planar,
+                },
+            })};
+    }
+
+    static constexpr auto outputs()
+    {
+        return std::tuple{};
+    }
+
+    void tick_block(iv::TickBlockContext<BackgroundStereoSink> const&) const {}
+};
+
+struct BackgroundRegionSink {
+    static constexpr auto inputs()
+    {
+        return std::array{
+            iv::input<iv::Sample>("in", iv::InputAccess::region),
+        };
+    }
+
+    static constexpr auto outputs()
+    {
+        return std::tuple{};
+    }
+
+    void tick_block(iv::TickBlockContext<BackgroundRegionSink> const&) const {}
+};
+
+struct BackgroundStereoRegionSink {
+    static constexpr auto inputs()
+    {
+        return std::array{iv::input<iv::Sample>(
+            "in",
+            iv::InputAccess::region,
+            {
+                .channel_layout = iv::ChannelLayout{
+                    .channel_type = iv::ChannelTypeId::stereo,
+                    .sample_layout = iv::SampleStreamLayout::planar,
+                },
+            })};
+    }
+
+    static constexpr auto outputs()
+    {
+        return std::tuple{};
+    }
+
+    void tick_block(iv::TickBlockContext<BackgroundStereoRegionSink> const&)
+        const
+    {}
 };
 
 struct BackgroundTwoInputPass {
@@ -2813,6 +2903,92 @@ TEST(GraphJitConnectionPlan, AddressableAtomSubsumesSequentialWindow)
         }));
 }
 
+TEST(GraphJitConnectionPlan,
+     RandomAccessSampleTileMaterializesOneCompleteTargetLayout)
+{
+    using namespace iv;
+
+    GraphBuilder graph;
+    auto left = details::configure_concrete_node<BackgroundSource>(graph);
+    auto right = details::configure_concrete_node<BackgroundSource>(graph);
+    auto sink =
+        details::configure_concrete_node<BackgroundStereoSink>(graph);
+    auto const sink_handle = sink.node_bundle_handle();
+    sink(graph.tile<stereo>(left, right));
+    graph.outputs();
+
+    auto configured = std::move(graph).finish();
+    auto plan = build_connection_analysis_plan(configured, 64);
+    ASSERT_TRUE(plan.has_value()) << (plan ? std::string{} : plan.error());
+    ASSERT_EQ(plan->sample_connections.size(), 1u);
+    EXPECT_TRUE(plan->sample_connections.front().requires_conversion);
+    std::vector<graph_jit::PortSubsetIndex> target_subsets;
+    for (graph_jit::PortSubsetIndex index = 0;
+         index < plan->background.sample_target_subsets.size(); ++index) {
+        auto const& subset = plan->background.sample_target_subsets[index];
+        if (subset.port.node_bundle_handle == sink_handle) {
+            target_subsets.push_back(index);
+        }
+    }
+    ASSERT_EQ(target_subsets.size(), 2u);
+
+    auto const& storage = plan->background.storage;
+    ASSERT_EQ(storage.connections.size(), 1u);
+    EXPECT_TRUE(storage.connections.front().direct_samples.empty());
+    ASSERT_FALSE(
+        storage.connections.front().sample_materializations.empty());
+    for (auto const materialization_index :
+         storage.connections.front().sample_materializations) {
+        ASSERT_LT(materialization_index, storage.sample_materializations.size());
+        auto const& materialization =
+            storage.sample_materializations[materialization_index];
+        EXPECT_EQ(
+            materialization.target_layout.channel_type,
+            ChannelTypeId::stereo);
+        EXPECT_EQ(
+            materialization.target_channels,
+            (std::vector<std::size_t>{0u, 1u}));
+        EXPECT_EQ(materialization.source_channels.size(), 2u);
+        EXPECT_EQ(materialization.target_subsets, target_subsets);
+        ASSERT_LT(materialization.output, storage.ports.size());
+        EXPECT_EQ(
+            storage.ports[materialization.output].sample_channels,
+            (std::vector<std::size_t>{0u, 1u}));
+        for (auto const target_subset : target_subsets) {
+            ASSERT_LT(target_subset, storage.sample_target_storage.size());
+            EXPECT_TRUE(std::ranges::contains(
+                storage.sample_target_storage[target_subset],
+                materialization.output));
+        }
+    }
+}
+
+TEST(GraphJitConnectionPlan,
+     ExactRandomAccessStereoSourceKeepsDirectTargetLayoutView)
+{
+    using namespace iv;
+
+    GraphBuilder graph;
+    auto source =
+        details::configure_concrete_node<BackgroundStereoSource>(graph);
+    auto sink =
+        details::configure_concrete_node<BackgroundStereoSink>(graph);
+    sink(source);
+    graph.outputs();
+
+    auto configured = std::move(graph).finish();
+    auto plan = build_connection_analysis_plan(configured, 64);
+    ASSERT_TRUE(plan.has_value()) << (plan ? std::string{} : plan.error());
+    ASSERT_EQ(plan->sample_connections.size(), 1u);
+    EXPECT_FALSE(plan->sample_connections.front().requires_conversion);
+
+    auto const& storage = plan->background.storage;
+    ASSERT_EQ(storage.connections.size(), 1u);
+    EXPECT_FALSE(storage.connections.front().direct_samples.empty());
+    EXPECT_TRUE(
+        storage.connections.front().sample_materializations.empty());
+}
+
 TEST(GraphJitConnectionPlan, SharesEquivalentBackgroundSampleMaterializations)
 {
     using namespace iv;
@@ -3681,6 +3857,64 @@ TEST(GraphJitConnectionPlan, RejectsUnreproducibleTickEphemeralRandomAccess)
     EXPECT_NE(event_plan.error().find("unreproducible Tick/ephemeral"),
         std::string::npos);
     EXPECT_NE(event_plan.error().find("explicit recorder"), std::string::npos);
+}
+
+TEST(GraphJitConnectionPlan, RegionInputAcceptsOnlyRegionOutput)
+{
+    using namespace iv;
+
+    GraphBuilder accepted_graph;
+    auto region_source =
+        details::configure_concrete_node<BackgroundRegionSource>(accepted_graph);
+    auto region_sink =
+        details::configure_concrete_node<BackgroundRegionSink>(accepted_graph);
+    region_sink(region_source);
+    accepted_graph.outputs();
+    auto accepted_configured = std::move(accepted_graph).finish();
+    auto accepted = build_connection_analysis_plan(accepted_configured, 64);
+    ASSERT_TRUE(accepted.has_value())
+        << (accepted ? std::string{} : accepted.error());
+
+    GraphBuilder rejected_graph;
+    auto coverage_source =
+        details::configure_concrete_node<BackgroundSource>(rejected_graph);
+    auto rejected_sink =
+        details::configure_concrete_node<BackgroundRegionSink>(rejected_graph);
+    rejected_sink(coverage_source);
+    rejected_graph.outputs();
+    auto rejected_configured = std::move(rejected_graph).finish();
+    auto rejected = build_connection_analysis_plan(rejected_configured, 64);
+    ASSERT_FALSE(rejected.has_value());
+    EXPECT_NE(
+        rejected.error().find(
+            "GraphJit Coverage output cannot satisfy a Region input"),
+        std::string::npos);
+}
+
+TEST(GraphJitConnectionPlan,
+     RegionInputAcceptsOneChannelCompleteProjectionFromSeveralSources)
+{
+    using namespace iv;
+
+    GraphBuilder graph;
+    auto left = details::configure_concrete_node<BackgroundRegionSource>(graph);
+    auto right = details::configure_concrete_node<BackgroundRegionSource>(graph);
+    auto sink =
+        details::configure_concrete_node<BackgroundStereoRegionSink>(graph);
+    sink(graph.tile<stereo>(left, right));
+    graph.outputs();
+
+    auto configured = std::move(graph).finish();
+    auto plan = build_connection_analysis_plan(configured, 64);
+    ASSERT_TRUE(plan.has_value()) << (plan ? std::string{} : plan.error());
+    ASSERT_EQ(plan->sample_connections.size(), 1u);
+    ASSERT_EQ(
+        plan->sample_connections.front().projection_contributions.size(),
+        1u);
+    EXPECT_EQ(
+        plan->sample_connections.front().projection_contributions.front()
+            .source_channel_indices,
+        (std::vector<std::size_t>{0u, 1u}));
 }
 
 TEST(GraphJitConnectionPlan, RejectsUnreproducibleUpstreamDuringTransitiveReplay)

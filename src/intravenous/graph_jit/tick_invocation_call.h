@@ -52,7 +52,7 @@ struct TickInvocationCall {
         sequential_sample_inputs{};
     ReflectedSpan<ReflectedEventInputPortBinding const>
         sequential_event_inputs{};
-    ReflectedSpan<RandomAccessSampleInputPort const>
+    ReflectedSpan<RandomAccessContinuousInputPort const>
         random_access_sample_inputs{};
     ReflectedSpan<RandomAccessEventInputPort const>
         random_access_event_inputs{};

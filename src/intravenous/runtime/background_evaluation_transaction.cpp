@@ -9,6 +9,7 @@
 #include <cstring>
 #include <limits>
 #include <ranges>
+#include <span>
 #include <stdexcept>
 #include <type_traits>
 #include <utility>
@@ -517,7 +518,9 @@ class BackgroundEvaluationTransaction::Impl {
 
     static void
     expand_output_demand(void* opaque, graph_jit::BackgroundPortIndex port,
-                         IndexCoverage const& available, IndexCoverage const& changed,
+                         IndexCoverage const& available,
+                         std::span<GlobalIndexRange const> regions,
+                         IndexCoverage const& changed,
                          IndexCoverage const& required, IndexCoverage& additional)
     {
         auto& self = *static_cast<Impl*>(opaque);
@@ -525,6 +528,22 @@ class BackgroundEvaluationTransaction::Impl {
         auto const& snapshot = *self.working_data_;
         IndexCoverage affected = required | changed;
         if (affected.empty()) return;
+
+        // Demand selects complete logical Regions. This closure deliberately
+        // uses the ordered Region list rather than the normalized positional
+        // union, so overlaps and duplicates do not change callback shape.
+        bool widened = true;
+        while (widened) {
+            widened = false;
+            for (auto const region : regions) {
+                if ((IndexCoverage{region} & affected).empty()
+                    || affected.contains(region)) {
+                    continue;
+                }
+                affected.include(region);
+                widened = true;
+            }
+        }
 
         for (graph_jit::PortStorageIndex index = 0;
              index < plan.storage.ports.size(); ++index) {
@@ -616,16 +635,19 @@ class BackgroundEvaluationTransaction::Impl {
             || !std::ranges::contains(plan.tick_sequential_inputs, port)) {
             return;
         }
-        IndexCoverage materialized;
+        auto const changed = self.changed_tick_input_coverage(port, forward);
+        IndexCoverage retained;
         if (auto const* sample = self.previous_materialization_->find_sample(port)) {
-            materialized = sample->coverage;
+            for (auto const& region : sample->regions) {
+                if (!(IndexCoverage{region.range} & required).empty()
+                    && (IndexCoverage{region.range} & changed).empty()) {
+                    retained.include(region.range);
+                }
+            }
         } else if (auto const* event =
                        self.previous_materialization_->find_event(port)) {
-            materialized = event->coverage;
+            retained = (event->coverage - changed) & required;
         }
-        if (materialized.empty()) return;
-        auto retained = (materialized
-            - self.changed_tick_input_coverage(port, forward)) & required;
         if (retained.empty()) return;
         required = required - retained;
         auto existing = std::ranges::find(
@@ -679,10 +701,29 @@ class BackgroundEvaluationTransaction::Impl {
             .generation = graph_->project_generation,
             .storage_coverage =
                 std::vector<IndexCoverage>(plan.storage.ports.size()),
+            .storage_regions = std::vector<std::vector<GlobalIndexRange>>(
+                plan.storage.ports.size()),
+            .published_output_regions =
+                std::vector<std::vector<GlobalIndexRange>>(
+                    plan.storage.ports.size()),
+            .persisted_replacement_coverage =
+                std::vector<IndexCoverage>(plan.storage.ports.size()),
             .produce_storage =
                 std::vector<bool>(plan.storage.ports.size(), false),
             .published = &published,
         };
+
+        for (graph_jit::PortStorageIndex index = 0;
+             index < plan.storage.ports.size(); ++index) {
+            auto const& storage = plan.storage.ports[index];
+            if (storage.kind != PortKind::sample || !storage.output_port) {
+                continue;
+            }
+            auto const regions = prepared_->output_regions(
+                *storage.output_port);
+            selection.published_output_regions[index].assign(
+                regions.begin(), regions.end());
+        }
 
         for (graph_jit::BackgroundBindingSlot slot = 0;
              slot < plan.runtime.bindings.size(); ++slot) {
@@ -789,9 +830,81 @@ class BackgroundEvaluationTransaction::Impl {
             }
         }
 
+        auto select_complete_sample_regions =
+            [&](graph_jit::PortStorageIndex index) {
+            auto const& storage = plan.storage.ports[index];
+            if (storage.kind != PortKind::sample) return false;
+
+            std::vector<GlobalIndexRange> selected_regions;
+            auto append_intersecting = [&](std::span<GlobalIndexRange const> regions) {
+                for (auto const region : regions) {
+                    if (!(IndexCoverage{region}
+                            & selection.storage_coverage[index]).empty()) {
+                        selected_regions.push_back(region);
+                    }
+                }
+            };
+            if (storage.sample_materialization) {
+                auto const& materialization = plan.storage
+                    .sample_materializations[*storage.sample_materialization];
+                auto const sequential = materialization.target_port
+                        < plan.ports.size()
+                    && plan.ports[materialization.target_port].input_access
+                        == InputAccessKind::sequential;
+                if (!sequential) {
+                    append_intersecting(prepared_->input_regions(
+                        materialization.target_port));
+                }
+            } else if (storage.output_port) {
+                append_intersecting(
+                    prepared_->output_regions(*storage.output_port));
+            } else {
+                // A shared materialization can serve several equivalent target
+                // subsets. Its Region decomposition is the decomposition of
+                // one complete logical target port, not one copy per channel
+                // subset or per consumer.
+                for (auto const subset : storage.target_subsets) {
+                    if (subset >= plan.sample_target_subsets.size()) continue;
+                    auto const& target = plan.sample_target_subsets[subset];
+                    auto const found = std::ranges::find_if(
+                        plan.ports,
+                        [&](graph_jit::BackgroundPortPlan const& port) {
+                            return port.direction
+                                    == graph_jit::PortDirection::input
+                                && port.kind == PortKind::sample
+                                && port.configured_port == target.port;
+                        });
+                    if (found == plan.ports.end()) continue;
+                    auto const port_index = static_cast<
+                        graph_jit::BackgroundPortIndex>(std::distance(
+                            plan.ports.begin(), found));
+                    append_intersecting(
+                        prepared_->input_regions(port_index));
+                    if (!selected_regions.empty()) break;
+                }
+            }
+            if (selected_regions.empty()) {
+                selected_regions.assign(
+                    selection.storage_coverage[index].begin(),
+                    selection.storage_coverage[index].end());
+            }
+
+            auto expanded = selection.storage_coverage[index];
+            for (auto const region : selected_regions) expanded.include(region);
+            auto const changed = expanded != selection.storage_coverage[index]
+                || selected_regions != selection.storage_regions[index];
+            selection.storage_coverage[index] = std::move(expanded);
+            selection.storage_regions[index] = std::move(selected_regions);
+            return changed;
+        };
+
         bool changed = true;
         while (changed) {
             changed = false;
+            for (graph_jit::PortStorageIndex index = 0;
+                 index < plan.storage.ports.size(); ++index) {
+                changed = select_complete_sample_regions(index) || changed;
+            }
             for (auto const& materialization :
                  plan.storage.sample_materializations) {
                 auto const target =
@@ -839,6 +952,28 @@ class BackgroundEvaluationTransaction::Impl {
             } else if (storage.output_port) {
                 selection.produce_storage[index] =
                     node_evaluates(plan.ports[*storage.output_port].node);
+            }
+        }
+        for (graph_jit::PortStorageIndex index = 0;
+             index < plan.storage.ports.size(); ++index) {
+            auto const& storage = plan.storage.ports[index];
+            if (storage.storage !=
+                    graph_jit::PortStorageKind::persisted_data
+                || storage.kind != PortKind::sample
+                || !storage.output_port) {
+                continue;
+            }
+            if (selection.produce_storage[index]) {
+                selection.persisted_replacement_coverage[index].include(
+                    selection.storage_coverage[index]);
+            }
+            auto const output = data_->resolve_output(persisted_output_id(
+                plan, index, graph_->project_generation));
+            auto const mutation = std::ranges::find(
+                data_mutations_, output, &DataMutation::output);
+            if (mutation != data_mutations_.end()) {
+                selection.persisted_replacement_coverage[index].include(
+                    mutation->coverage);
             }
         }
         return selection;
@@ -942,7 +1077,11 @@ class BackgroundEvaluationTransaction::Impl {
         auto binding = binding_selection();
         auto storage = storage_selection(binding, *working_data_);
         auto realization = std::make_unique<BackgroundStorageRealization>(
-            graph_->background_evaluation_plan, *data_, std::move(storage));
+            graph_->background_evaluation_plan,
+            *data_,
+            std::move(storage),
+            graph_->root_operations.combine_sequential_input,
+            graph_->root_operations.initialize_sequential_input);
         if (auto sealed = realization->seal(); !sealed) {
             return std::unexpected(std::move(sealed.error()));
         }
@@ -1001,10 +1140,7 @@ class BackgroundEvaluationTransaction::Impl {
             }
             for (auto const& mutation : data_mutations_) {
                 for (auto const range : mutation.coverage) {
-                    if (mutation.kind == PortKind::sample) {
-                        candidate->erase_sample(
-                            mutation.output, range, mutation.sample_layout);
-                    } else {
+                    if (mutation.kind == PortKind::event) {
                         candidate->erase_events(
                             mutation.output, range, mutation.event_type);
                     }

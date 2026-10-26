@@ -5,10 +5,9 @@ _Status: current design direction for whole-project Tick execution and sequentia
 
 > **Random-access representation boundary:**
 > [Random-Access Port Data, Audio Value Types, And Input Contract Direction](./random_access_port_data_direction.md)
-> defines the future node-facing `SampleRegion`/`SampleCoverage` representation.
-> Canonical persisted storage already uses contiguous sample-region records and
-> explicit-range event chunks; those store-internal records do not prematurely become
-> the node-facing API.
+> defines `ContinuousRegion<Value>` and `ContinuousCoverage<Value>` as the node-facing
+> continuous representation. Sequential materialization reduces their logical Region
+> contributions with the target input's initializer and combiner.
 
 Related documents:
 

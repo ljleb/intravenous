@@ -17,6 +17,22 @@
 namespace iv {
 namespace {
 
+bool combine_default_samples(
+    graph_jit::BackgroundPortIndex,
+    std::byte* destination,
+    std::byte const* source,
+    std::size_t byte_count)
+{
+    if (byte_count % sizeof(Sample) != 0) return false;
+    auto* destination_values = reinterpret_cast<Sample*>(destination);
+    auto const* source_values = reinterpret_cast<Sample const*>(source);
+    auto const count = byte_count / sizeof(Sample);
+    for (std::size_t index = 0; index < count; ++index) {
+        destination_values[index] += source_values[index];
+    }
+    return true;
+}
+
 static_assert(std::atomic<bool>::is_always_lock_free);
 
 IndexCoverage const empty_tick_coverage{};
@@ -591,13 +607,28 @@ public:
         std::optional<PersistedOutputHandle> output{};
         bool accepts_materialization = false;
         ChannelLayout layout{};
+        ContinuousValueStorageGeometry geometry{};
         std::size_t capacity = 0;
         Sample neutral{};
+        graph_jit::SequentialInputCombineFunction combine =
+            &combine_default_samples;
+        graph_jit::SequentialInputInitializeFunction initialize = nullptr;
         // Frame f holds the current window's position sample_index + f. The
         // consumer's history is node-owned realtime state, so the window never
         // reaches behind the current block and its ordinal stays zero.
-        std::vector<Sample> values{};
+        PersistedContinuousStorage values{};
         ReflectedContinuousInputPortBinding binding{};
+
+        [[nodiscard]] std::byte* value_storage(
+            std::size_t frame, std::size_t channel) noexcept
+        {
+            auto const channels = channel_count(layout);
+            auto const value = layout.sample_layout
+                    == SampleStreamLayout::planar
+                ? channel * capacity + frame
+                : frame * channels + channel;
+            return values.data() + value * geometry.value_size_bytes;
+        }
 
         void initialize_storage()
         {
@@ -611,11 +642,19 @@ public:
                 throw std::length_error(
                     "Tick Sequential sample playback storage is too large");
             }
-            values.assign(capacity * channels, neutral);
+            auto const value_count = capacity * channels;
+            if (geometry.value_size_bytes == 0
+                || value_count > std::numeric_limits<std::size_t>::max()
+                    / geometry.value_size_bytes) {
+                throw std::length_error(
+                    "Tick Sequential continuous playback storage is too large");
+            }
+            values = PersistedContinuousStorage{
+                value_count * geometry.value_size_bytes,
+                geometry.element_alignment};
             binding = {
                 .storage = {
-                    .geometry = *continuous_value_storage_geometry(
-                        ContinuousValueTypeId::sample, std::nullopt),
+                    .geometry = geometry,
                     .value_capacity = capacity,
                     .storage_latency = 0,
                     .channel_layout = layout,
@@ -627,26 +666,46 @@ public:
                 auto const planar = layout.sample_layout
                     == SampleStreamLayout::planar;
                 binding.storage.channels[channel] = {
-                    .storage = reinterpret_cast<std::byte*>(
-                        values.data() + (planar ? channel * capacity : channel)),
+                    .storage = value_storage(0, channel),
                     .value_capacity = capacity,
                     .value_stride_bytes =
-                        (planar ? 1 : channels) * sizeof(Sample),
+                        (planar ? 1 : channels) * geometry.value_size_bytes,
                     .value_delay = 0,
                 };
             }
+            clear(capacity);
         }
 
         void clear(std::size_t frames) noexcept
         {
             auto const channels = channel_count(layout);
+            auto initialize_range = [&](std::byte* destination,
+                                        std::size_t byte_count) noexcept {
+                auto accepted = initialize
+                    && initialize(port, destination, byte_count);
+                if (!accepted
+                    && geometry.value_type
+                        == continuous_value_type_id_v<Sample>
+                    && geometry.value_size_bytes == sizeof(Sample)) {
+                    auto output = std::span{
+                        reinterpret_cast<Sample*>(destination),
+                        byte_count / sizeof(Sample)};
+                    std::ranges::fill(output, neutral);
+                    accepted = true;
+                }
+                IV_ASSERT(accepted,
+                    "Tick Sequential continuous initialization was rejected");
+            };
             if (layout.sample_layout == SampleStreamLayout::planar) {
                 for (std::size_t channel = 0; channel < channels; ++channel) {
-                    std::fill_n(
-                        values.begin() + channel * capacity, frames, neutral);
+                    initialize_range(
+                        value_storage(0, channel),
+                        frames * geometry.value_size_bytes);
                 }
             } else {
-                std::fill_n(values.begin(), frames * channels, neutral);
+                initialize_range(
+                    values.data(),
+                    frames * channels * geometry.value_size_bytes);
             }
         }
 
@@ -655,7 +714,11 @@ public:
             GlobalIndex window_begin,
             GlobalIndexRange intersection) noexcept
         {
-            if (region.layout != layout) return;
+            if (region.layout != layout
+                || region.geometry != geometry
+                || region.storage_data() == nullptr) {
+                return;
+            }
             auto const frames = static_cast<std::size_t>(intersection.extent);
             auto const source = static_cast<std::size_t>(
                 region.range.begin.forward_distance_to(intersection.begin));
@@ -664,19 +727,33 @@ public:
             auto const region_frames = static_cast<std::size_t>(
                 region.range.extent);
             auto const channels = channel_count(layout);
+            auto combine_range = [&](std::byte* destination_values,
+                                     std::byte const* source_values,
+                                     std::size_t byte_count) noexcept {
+                auto const accepted = combine(
+                    port,
+                    destination_values,
+                    source_values,
+                    byte_count);
+                IV_ASSERT(accepted,
+                    "Tick Sequential continuous combination was rejected");
+            };
+            auto const* source_storage = region.storage_data();
             if (layout.sample_layout == SampleStreamLayout::planar) {
                 for (std::size_t channel = 0; channel < channels; ++channel) {
-                    std::copy_n(
-                        region.values.begin()
-                            + channel * region_frames + source,
-                        frames,
-                        values.begin() + channel * capacity + destination);
+                    combine_range(
+                        value_storage(destination, channel),
+                        source_storage
+                            + (channel * region_frames + source)
+                                * geometry.value_size_bytes,
+                        frames * geometry.value_size_bytes);
                 }
             } else {
-                std::copy_n(
-                    region.values.begin() + source * channels,
-                    frames * channels,
-                    values.begin() + destination * channels);
+                combine_range(
+                    value_storage(destination, 0),
+                    source_storage
+                        + source * channels * geometry.value_size_bytes,
+                    frames * channels * geometry.value_size_bytes);
             }
         }
 
@@ -692,13 +769,17 @@ public:
             };
             clear(block_size);
             if (output) {
-                published.for_each_sample_region(
-                    *output,
-                    requested,
-                    [&](PersistedSampleRegion const& region,
-                        GlobalIndexRange intersection) {
-                        copy(region, sample_index, intersection);
-                    });
+                auto retained = IndexCoverage{requested};
+                if (materialized) retained.exclude(materialized->coverage);
+                for (auto const region : retained) {
+                    published.for_each_sample_region(
+                        *output,
+                        region,
+                        [&](PersistedSampleRegion const& stored,
+                            GlobalIndexRange intersection) {
+                            copy(stored, sample_index, intersection);
+                        });
+                }
             }
 
             if (!materialized) return;
@@ -718,26 +799,46 @@ public:
             GlobalIndex window_begin,
             GlobalIndexRange intersection) noexcept
         {
+            if (materialized.geometry != geometry
+                || region.storage_data() == nullptr) {
+                return;
+            }
             auto const frames = static_cast<std::size_t>(intersection.extent);
             auto const source = static_cast<std::size_t>(
                 region.range.begin.forward_distance_to(intersection.begin));
             auto const destination = static_cast<std::size_t>(
                 window_begin.forward_distance_to(intersection.begin));
             auto const channels = channel_count(layout);
-            for (std::size_t channel = 0; channel < channels; ++channel) {
-                auto const* frames_begin = region.channel_frames(
-                    materialized.channel_slot(channel)) + source;
-                if (layout.sample_layout == SampleStreamLayout::planar) {
-                    std::copy_n(
-                        frames_begin,
-                        frames,
-                        values.begin() + channel * capacity + destination);
-                } else {
-                    for (std::size_t frame = 0; frame < frames; ++frame) {
-                        values[(destination + frame) * channels + channel] =
-                            frames_begin[frame];
-                    }
+            auto combine_range = [&](std::byte* destination_values,
+                                     std::byte const* source_values,
+                                     std::size_t byte_count) noexcept {
+                auto const accepted = combine(
+                    port,
+                    destination_values,
+                    source_values,
+                    byte_count);
+                IV_ASSERT(accepted,
+                    "Tick Sequential continuous combination was rejected");
+            };
+            auto const* source_storage = region.storage_data();
+            if (layout.sample_layout == SampleStreamLayout::planar) {
+                for (std::size_t channel = 0; channel < channels; ++channel) {
+                    auto const slot = materialized.channel_slot(channel);
+                    combine_range(
+                        value_storage(destination, channel),
+                        source_storage
+                            + (slot * region.storage_frames
+                                + region.first_frame + source)
+                                * geometry.value_size_bytes,
+                        frames * geometry.value_size_bytes);
                 }
+            } else {
+                combine_range(
+                    value_storage(destination, 0),
+                    source_storage
+                        + (region.first_frame + source) * channels
+                            * geometry.value_size_bytes,
+                    frames * channels * geometry.value_size_bytes);
             }
         }
     };
@@ -867,28 +968,14 @@ public:
     };
 
     struct SampleSlot {
-        PersistedDataStore::Snapshot const* snapshot = nullptr;
         TickMaterializedSampleInput const* materialized = nullptr;
         std::optional<PersistedOutputHandle> output{};
         graph_jit::BackgroundPortIndex port = 0;
         bool accepts_materialization = false;
         ChannelLayout layout{};
+        ContinuousValueStorageGeometry geometry{};
         IndexCoverage const* coverage = &empty_tick_coverage;
-
-        [[nodiscard]] Sample read(
-            GlobalIndex index, std::size_t channel) const noexcept
-        {
-            if (materialized && materialized->coverage.contains(index)
-                && materialized->has_channel(channel)) {
-                return materialized->at(index, channel);
-            }
-            if (!snapshot || !output) return {};
-            auto const* region = snapshot->find_sample_region(*output, index);
-            if (!region || region->layout != layout) {
-                return {};
-            }
-            return region->at(index, channel);
-        }
+        std::span<ContinuousRegionStorageView const> regions{};
     };
 
     struct EventSlot {
@@ -936,7 +1023,7 @@ public:
     std::vector<ReflectedEventInputPortBinding> sequential_event_views{};
     std::vector<SampleSlot> sample_slots{};
     std::vector<EventSlot> event_slots{};
-    std::vector<RandomAccessSampleInputPort> sample_views{};
+    std::vector<RandomAccessContinuousInputPort> sample_views{};
     std::vector<RandomAccessEventInputPort> event_views{};
     std::vector<SampleCaptureSlot> sample_capture_slots{};
     std::vector<EventCaptureSlot> event_capture_slots{};
@@ -951,7 +1038,9 @@ public:
         graph_jit::BackgroundEvaluationPlan const& plan,
         std::uint64_t selected_generation,
         PersistedDataStore& data,
-        std::size_t selected_maximum_block_size)
+        std::size_t selected_maximum_block_size,
+        graph_jit::SequentialInputCombineFunction combine_sequential_input,
+        graph_jit::SequentialInputInitializeFunction initialize_sequential_input)
         : generation(selected_generation)
         , maximum_block_size(selected_maximum_block_size)
     {
@@ -1009,8 +1098,22 @@ public:
             auto& selected = sequential_sample_slots[slot];
             selected.port = planned.port;
             selected.layout = port.sample_layout;
+            selected.geometry = port.continuous_geometry;
             selected.capacity = std::bit_ceil(maximum_block_size);
             selected.neutral = port.sample_neutral_value;
+            selected.combine = combine_sequential_input
+                ? combine_sequential_input
+                : selected.geometry.value_type
+                        == continuous_value_type_id_v<Sample>
+                    ? &combine_default_samples
+                    : nullptr;
+            selected.initialize = initialize_sequential_input;
+            if (selected.geometry.value_type
+                    != continuous_value_type_id_v<Sample>
+                && (!selected.combine || !selected.initialize)) {
+                throw std::invalid_argument(
+                    "Tick Sequential continuous binding has no value-type algebra");
+            }
             selected.accepts_materialization = std::ranges::any_of(
                 planned.storage, [&](auto const storage) {
                     return storage < plan.storage.ports.size()
@@ -1092,6 +1195,7 @@ public:
             auto& selected = sample_slots[slot];
             selected.port = binding.port;
             selected.layout = port.sample_layout;
+            selected.geometry = port.continuous_geometry;
             selected.accepts_materialization = std::ranges::any_of(
                 binding.storage, [&](auto const storage) {
                     return storage < plan.storage.ports.size()
@@ -1101,15 +1205,11 @@ public:
 
             selected.output = direct_persisted_sample_output(
                 plan, binding, port, selected_generation, data);
-            sample_views[slot] = RandomAccessSampleInputPort{
-                .data = &selected,
+            sample_views[slot] = RandomAccessContinuousInputPort{
+                .regions = nullptr,
+                .region_count = 0,
                 .coverage_value = &empty_tick_coverage,
-                .read_sample = +[](void const* opaque,
-                                   GlobalIndex index,
-                                   std::size_t channel) noexcept {
-                    return static_cast<SampleSlot const*>(opaque)->read(
-                        index, channel);
-                },
+                .geometry = port.continuous_geometry,
             };
         }
 
@@ -1335,6 +1435,7 @@ public:
                 : nullptr;
             auto const materialized_sample_is_complete = materialized_sample
                 && materialized_sample->layout == selected.layout
+                && materialized_sample->geometry == selected.geometry
                 && [&] {
                     for (std::size_t channel = 0;
                          channel < channel_count(selected.layout); ++channel) {
@@ -1365,13 +1466,13 @@ public:
         }
         for (std::size_t slot = 0; slot < sample_slots.size(); ++slot) {
             auto& selected = sample_slots[slot];
-            selected.snapshot = &published;
             selected.materialized = materialization_matches
                     && selected.accepts_materialization
                 ? materialized.find_sample(selected.port)
                 : nullptr;
             auto const materialized_sample_is_complete = selected.materialized
                 && selected.materialized->layout == selected.layout
+                && selected.materialized->geometry == selected.geometry
                 && [&] {
                     for (std::size_t channel = 0;
                          channel < channel_count(selected.layout); ++channel) {
@@ -1385,12 +1486,25 @@ public:
                 ? &selected.materialized->coverage
                 : selected.output
                     ? published.find_sample_coverage(
-                        *selected.output, selected.layout)
+                        *selected.output,
+                        selected.layout,
+                        selected.geometry)
                     : nullptr;
             if (!materialized_sample_is_complete) {
                 selected.materialized = nullptr;
             }
             if (!selected.coverage) selected.coverage = &empty_tick_coverage;
+            selected.regions = selected.materialized
+                ? std::span<ContinuousRegionStorageView const>{
+                    selected.materialized->region_views}
+                : selected.output
+                    ? published.sample_region_views(
+                        *selected.output,
+                        selected.layout,
+                        selected.geometry)
+                    : std::span<ContinuousRegionStorageView const>{};
+            sample_views[slot].regions = selected.regions.data();
+            sample_views[slot].region_count = selected.regions.size();
             sample_views[slot].coverage_value = selected.coverage;
         }
         for (std::size_t slot = 0; slot < event_slots.size(); ++slot) {
@@ -1429,9 +1543,16 @@ TickInvocationWorkspace::TickInvocationWorkspace(
     graph_jit::BackgroundEvaluationPlan const& plan,
     std::uint64_t generation,
     PersistedDataStore& data,
-    std::size_t maximum_block_size)
+    std::size_t maximum_block_size,
+    graph_jit::SequentialInputCombineFunction combine_sequential_input,
+    graph_jit::SequentialInputInitializeFunction initialize_sequential_input)
     : impl_(std::make_unique<Impl>(
-        plan, generation, data, maximum_block_size))
+        plan,
+        generation,
+        data,
+        maximum_block_size,
+        combine_sequential_input,
+        initialize_sequential_input))
 {}
 
 TickInvocationWorkspace::~TickInvocationWorkspace() = default;

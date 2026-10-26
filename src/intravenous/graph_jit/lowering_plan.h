@@ -82,6 +82,7 @@ enum class CallbackImportAbi : std::uint8_t {
     block,
     background,
     batch,
+    sequential_initialize,
     sequential_combine,
 };
 
@@ -116,6 +117,7 @@ struct PrimitiveCallbackPlan {
     std::string propagate_forward_coverage_batch{};
     std::string propagate_reverse_coverage{};
     std::string propagate_reverse_coverage_batch{};
+    std::string initialize_sequential_input{};
     std::string combine_sequential_input_values{};
 };
 

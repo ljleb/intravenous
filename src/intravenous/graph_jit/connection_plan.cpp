@@ -2879,7 +2879,11 @@ std::expected<void, std::string> populate_background_topology(
 
         std::string name;
         std::optional<OutputRetention> retention;
+        InputAccessKind configured_input_access = InputAccessKind::sequential;
+        OutputProductionKind configured_output_production =
+            OutputProductionKind::tick;
         ChannelLayout sample_layout{};
+        ContinuousValueStorageGeometry continuous_geometry{};
         EventTypeId event_type = EventTypeId::empty;
         double max_events_per_index = 0.0;
         Sample neutral{};
@@ -2891,6 +2895,11 @@ std::expected<void, std::string> populate_background_topology(
                 auto const config = graph.node_bundles.resolve_sample_input(port).config;
                 name = config.name;
                 sample_layout = config.channel_layout;
+                configured_input_access = input_access(config);
+                auto const& resolved = realization.input(
+                    port.node_bundle_handle, port.port_index);
+                continuous_geometry = *continuous_value_storage_geometry(
+                    resolved.value_type, resolved.size);
                 if (is_sequential(config)) {
                     neutral = sequential_input_metadata<Sample>(
                         sequential_input_properties(config)).neutral_value;
@@ -2902,6 +2911,7 @@ std::expected<void, std::string> populate_background_topology(
                 auto const config = graph.node_bundles.resolve_event_input(port).config;
                 name = config.name;
                 event_type = config.type;
+                configured_input_access = input_access(config);
                 sequential_history =
                     realization.event_input(
                         port.node_bundle_handle, port.port_index).history;
@@ -2912,8 +2922,11 @@ std::expected<void, std::string> populate_background_topology(
                 name = config.name;
                 retention = config.retention;
                 sample_layout = config.channel_layout;
+                configured_output_production = output_production(config);
                 auto const& resolved = realization.output(
                     port.node_bundle_handle, port.port_index);
+                continuous_geometry = *continuous_value_storage_geometry(
+                    resolved.value_type, resolved.size);
                 output_history = resolved.history;
                 output_latency = resolved.latency;
             } else {
@@ -2921,6 +2934,7 @@ std::expected<void, std::string> populate_background_topology(
                 name = config.name;
                 retention = config.retention;
                 event_type = config.type;
+                configured_output_production = output_production(config);
                 max_events_per_index = config.max_events_per_index;
                 auto const& resolved = realization.event_output(
                     port.node_bundle_handle, port.port_index);
@@ -2963,6 +2977,8 @@ std::expected<void, std::string> populate_background_topology(
             .kind = port.port_kind,
             .direction = direction,
             .name = std::move(name),
+            .input_access = configured_input_access,
+            .output_production = configured_output_production,
             .random_access_input = roles.random_access_input,
             .tick_sequential_input = roles.tick_sequential_input,
             .replay_sequential_input = roles.replay_sequential_input,
@@ -2977,6 +2993,18 @@ std::expected<void, std::string> populate_background_topology(
             .stable_identity = std::move(stable_output),
             .stable_input_identity = std::move(stable_input),
             .sample_layout = sample_layout,
+            .continuous_geometry = continuous_geometry,
+            .ordering = port.port_kind == PortKind::sample
+                ? (direction == PortDirection::input
+                    ? realization.input(
+                        port.node_bundle_handle, port.port_index).ordering
+                    : realization.output(
+                        port.node_bundle_handle, port.port_index).ordering)
+                : (direction == PortDirection::input
+                    ? realization.event_input(
+                        port.node_bundle_handle, port.port_index).ordering
+                    : realization.event_output(
+                        port.node_bundle_handle, port.port_index).ordering),
             .event_type = event_type,
             .max_events_per_index = max_events_per_index,
             .accumulators = indices,
@@ -3343,6 +3371,36 @@ std::expected<void, std::string> populate_background_topology(
             });
         }
         append_connection(std::move(background));
+    }
+
+    for (BackgroundPortIndex index = 0; index < plan.ports.size(); ++index) {
+        auto const& input = plan.ports[index];
+        if (input.direction != PortDirection::input
+            || input.kind != PortKind::sample
+            || input.input_access != InputAccessKind::region) {
+            continue;
+        }
+        if (input.incoming_connections.size() != 1) {
+            return std::unexpected(
+                "GraphJit Region input must have exactly one incoming continuous connection");
+        }
+        auto const& connection =
+            plan.connections[input.incoming_connections.front()];
+        if (connection.sample_projections.size() > 1) {
+            return std::unexpected(
+                "GraphJit Region input cannot receive multiple continuous "
+                "projection contributions");
+        }
+        for (auto const source : connection.source_coverage_ports) {
+            if (source >= plan.ports.size()
+                || plan.ports[source].kind != PortKind::sample
+                || plan.ports[source].direction != PortDirection::output
+                || plan.ports[source].output_production
+                    == OutputProductionKind::coverage) {
+                return std::unexpected(
+                    "GraphJit Coverage output cannot satisfy a Region input");
+            }
+        }
     }
 
     std::vector<std::vector<BackgroundNodeIndex>> background_outgoing(
@@ -4423,6 +4481,7 @@ struct SampleTargetAtomUse {
 struct SampleSourceAtomCandidate {
     SampleOutputChannelId channel{};
     ChannelLayout layout{};
+    ContinuousValueStorageGeometry geometry{};
     PlannedSourceProduction production = PlannedSourceProduction::tick;
     OutputRetention retention = OutputRetention::ephemeral;
     std::vector<SampleSourceAtomUse> uses{};
@@ -4432,6 +4491,7 @@ struct SampleSourceAtomCandidate {
 struct SampleTargetAtomCandidate {
     SampleInputChannelId channel{};
     ChannelLayout layout{};
+    ContinuousValueStorageGeometry geometry{};
     PlannedDestinationAccess access = PlannedDestinationAccess::sequential;
     std::vector<SampleTargetAtomUse> uses{};
     PortStorageRequirements capabilities{};
@@ -4439,6 +4499,7 @@ struct SampleTargetAtomCandidate {
 
 void plan_port_atoms(
     ConfiguredGraph const& graph,
+    ResolvedPortRealization const& realization,
     ConnectionAnalysisPlan& plan)
 {
     auto& background = plan.background;
@@ -4454,6 +4515,7 @@ void plan_port_atoms(
 
     auto source_candidate = [&](SampleOutputChannelId channel,
                                 ChannelLayout layout,
+                                ContinuousValueStorageGeometry geometry,
                                 PlannedSourceProduction production,
                                 OutputRetention retention)
         -> SampleSourceAtomCandidate& {
@@ -4468,6 +4530,7 @@ void plan_port_atoms(
         sample_sources.push_back(SampleSourceAtomCandidate{
             .channel = channel,
             .layout = layout,
+            .geometry = geometry,
             .production = production,
             .retention = retention,
         });
@@ -4475,6 +4538,7 @@ void plan_port_atoms(
     };
     auto target_candidate = [&](SampleInputChannelId channel,
                                 ChannelLayout layout,
+                                ContinuousValueStorageGeometry geometry,
                                 PlannedDestinationAccess access)
         -> SampleTargetAtomCandidate& {
         auto const found = std::ranges::find_if(
@@ -4488,6 +4552,7 @@ void plan_port_atoms(
         sample_targets.push_back(SampleTargetAtomCandidate{
             .channel = channel,
             .layout = layout,
+            .geometry = geometry,
             .access = access,
         });
         return sample_targets.back();
@@ -4500,6 +4565,11 @@ void plan_port_atoms(
         for (std::size_t port = 0; port < node.sample_input_count; ++port) {
             NodeBundlePortId const id{node.bundle, PortKind::sample, port};
             auto const config = graph.node_bundles.resolve_sample_input(id).config;
+            auto const& resolved = realization.input(node.bundle, port);
+            auto const geometry = continuous_value_storage_geometry(
+                resolved.value_type, resolved.size);
+            IV_ASSERT(geometry.has_value(),
+                "resolved continuous input has invalid geometry");
             auto const count = channel_count(config.channel_layout);
             for (std::size_t channel = 0; channel < count; ++channel) {
                 target_candidate(
@@ -4509,12 +4579,18 @@ void plan_port_atoms(
                         .channel = channel,
                     },
                     config.channel_layout,
+                    *geometry,
                     destination_access(input_access(config)));
             }
         }
         for (std::size_t port = 0; port < node.sample_output_count; ++port) {
             NodeBundlePortId const id{node.bundle, PortKind::sample, port};
             auto const config = graph.node_bundles.resolve_sample_output(id).config;
+            auto const& resolved = realization.output(node.bundle, port);
+            auto const geometry = continuous_value_storage_geometry(
+                resolved.value_type, resolved.size);
+            IV_ASSERT(geometry.has_value(),
+                "resolved continuous output has invalid geometry");
             auto const production = source_production(output_production(config));
             PortStorageRequirements intrinsic;
             if (config.retention == OutputRetention::persisted) {
@@ -4535,6 +4611,7 @@ void plan_port_atoms(
                         .channel = channel,
                     },
                     config.channel_layout,
+                    *geometry,
                     production,
                     config.retention);
                 join_capabilities(candidate.capabilities, intrinsic);
@@ -4553,6 +4630,7 @@ void plan_port_atoms(
             auto& candidate = source_candidate(
                 timing.source,
                 timing.source_layout,
+                connection.geometry,
                 timing.production,
                 timing.retention);
             std::vector<std::size_t> contributions;
@@ -4602,6 +4680,7 @@ void plan_port_atoms(
             auto& candidate = target_candidate(
                 connection.target_channels[target_channel],
                 connection.target_layout,
+                connection.geometry,
                 connection.destination_access);
             bool saw_contribution = false;
             for (std::size_t contribution = 0;
@@ -4686,6 +4765,7 @@ void plan_port_atoms(
             [&](SampleSourcePortSubsetPlan const& existing) {
                 if (existing.port != source_port(candidate.channel)
                     || existing.source_layout != candidate.layout
+                    || existing.geometry != candidate.geometry
                     || existing.production != candidate.production
                     || existing.retention != candidate.retention
                     || existing.storage != candidate.capabilities
@@ -4708,6 +4788,7 @@ void plan_port_atoms(
                 SampleSourcePortSubsetPlan{
                     .port = source_port(candidate.channel),
                     .source_layout = candidate.layout,
+                    .geometry = candidate.geometry,
                     .production = candidate.production,
                     .retention = candidate.retention,
                     .channels = {candidate.channel},
@@ -4761,6 +4842,7 @@ void plan_port_atoms(
             [&](SampleTargetPortSubsetPlan const& existing) {
                 if (existing.port != target_port(candidate.channel)
                     || existing.target_layout != candidate.layout
+                    || existing.geometry != candidate.geometry
                     || existing.access != candidate.access
                     || existing.storage != candidate.capabilities
                     || existing.source_subsets != source_subsets
@@ -4783,6 +4865,7 @@ void plan_port_atoms(
                 SampleTargetPortSubsetPlan{
                     .port = target_port(candidate.channel),
                     .target_layout = candidate.layout,
+                    .geometry = candidate.geometry,
                     .access = candidate.access,
                     .channels = {candidate.channel},
                     .source_subsets = std::move(source_subsets),
@@ -5624,7 +5707,7 @@ std::expected<ConnectionAnalysisPlan, std::string> build_connection_analysis_pla
     if (auto latency = plan_sample_latency_compensation(plan); !latency) {
         return std::unexpected(std::move(latency.error()));
     }
-    plan_port_atoms(graph, plan);
+    plan_port_atoms(graph, port_realization, plan);
     if (auto samples = plan_sample_groups(
             plan, kernel_block_size, cost_model); !samples) {
         return std::unexpected(std::move(samples.error()));

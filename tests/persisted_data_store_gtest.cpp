@@ -136,7 +136,8 @@ TEST(TickMaterializationSnapshot,
         1,
         iv::mono_planar_channel_layout,
         {0},
-        iv::IndexCoverage{range(0, 8)},
+        std::vector<iv::GlobalIndexRange>{
+            range(0, 3), range(3, 2), range(5, 3)},
         {0.0f, 1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f, 7.0f});
     auto previous_event = iv::make_tick_materialized_event_input(
         2,
@@ -161,7 +162,7 @@ TEST(TickMaterializationSnapshot,
         1,
         iv::mono_planar_channel_layout,
         {0},
-        iv::IndexCoverage{range(3, 2)},
+        std::vector<iv::GlobalIndexRange>{range(3, 2)},
         {30.0f, 40.0f});
     auto replacement_event = iv::make_tick_materialized_event_input(
         2,
@@ -206,6 +207,77 @@ TEST(TickMaterializationSnapshot,
                 value.time.signed_value());
         });
     EXPECT_EQ(times, (std::vector<std::int64_t>{1, 4, 5, 7}));
+}
+
+TEST(TickMaterializationSnapshot,
+     CarryForwardRejectsReplacementThatClipsALogicalRegion)
+{
+    auto previous_sample = iv::make_tick_materialized_sample_input(
+        1,
+        iv::mono_planar_channel_layout,
+        {0},
+        std::vector<iv::GlobalIndexRange>{range(0, 8)},
+        {0.0f, 1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f, 7.0f});
+    iv::TickMaterializationSnapshot previous{
+        4,
+        1,
+        {},
+        {std::move(previous_sample)},
+        {},
+    };
+
+    auto replacement_sample = iv::make_tick_materialized_sample_input(
+        1,
+        iv::mono_planar_channel_layout,
+        {0},
+        std::vector<iv::GlobalIndexRange>{range(3, 2)},
+        {30.0f, 40.0f});
+    iv::TickMaterializationSnapshot current{
+        4,
+        2,
+        {},
+        {std::move(replacement_sample)},
+        {},
+    };
+    std::array retention{iv::TickMaterializationRetention{
+        .port = 1,
+        .retained = iv::IndexCoverage{range(0, 8)},
+    }};
+
+    EXPECT_THROW(
+        current.carry_forward(previous, retention),
+        std::invalid_argument);
+}
+
+TEST(TickMaterializationSnapshot,
+     CarryForwardRetainsACompleteOverlappingLogicalRegion)
+{
+    auto previous_sample = iv::make_tick_materialized_sample_input(
+        1,
+        iv::mono_planar_channel_layout,
+        {0},
+        std::vector<iv::GlobalIndexRange>{range(0, 8)},
+        {0.0f, 1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f, 7.0f});
+    iv::TickMaterializationSnapshot previous{
+        4,
+        1,
+        {},
+        {std::move(previous_sample)},
+        {},
+    };
+    iv::TickMaterializationSnapshot current{4, 2, {}, {}, {}};
+    std::array retention{iv::TickMaterializationRetention{
+        .port = 1,
+        .retained = iv::IndexCoverage{range(0, 8)},
+    }};
+
+    current.carry_forward(previous, retention);
+
+    auto const* sample = current.find_sample(1);
+    ASSERT_NE(sample, nullptr);
+    ASSERT_EQ(sample->regions.size(), 1u);
+    EXPECT_EQ(sample->regions.front().range, range(0, 8));
+    EXPECT_FLOAT_EQ(sample->at(index(6), 0).value, 6.0f);
 }
 
 std::vector<std::byte> queued_bytes(iv::PinnedBlockPrefix const& prefix)
@@ -308,6 +380,7 @@ iv::graph_jit::BackgroundEvaluationPlan direct_tick_plan(iv::PortKind kind)
             .configured_port = {1, kind, 0},
             .kind = kind,
             .direction = PortDirection::input,
+            .input_access = iv::InputAccessKind::coverage,
             .random_access_input = true,
             .sample_layout = iv::mono_planar_channel_layout,
             .event_type = iv::EventTypeId::trigger,
@@ -425,6 +498,49 @@ iv::graph_jit::BackgroundEvaluationPlan sequential_tick_sample_plan()
     return plan;
 }
 
+iv::graph_jit::BackgroundEvaluationPlan sequential_tick_fft_plan()
+{
+    auto plan = sequential_tick_sample_plan();
+    auto const geometry = *iv::continuous_value_storage_geometry(
+        iv::ContinuousValueTypeId::fft_block, std::size_t{2});
+    plan.ports[0].continuous_geometry = geometry;
+    plan.ports[1].continuous_geometry = geometry;
+    plan.storage.ports[0].continuous_geometry = geometry;
+    plan.sample_target_subsets[0].geometry = geometry;
+    return plan;
+}
+
+bool initialize_fft_sequential_values(
+    iv::graph_jit::BackgroundPortIndex port,
+    std::byte* destination,
+    std::size_t byte_count)
+{
+    if (port != 1 || byte_count % sizeof(iv::FFTBin) != 0) return false;
+    auto values = std::span{
+        reinterpret_cast<iv::FFTBin*>(destination),
+        byte_count / sizeof(iv::FFTBin)};
+    std::ranges::fill(values, iv::FFTBin{1.0f, 2.0f});
+    return true;
+}
+
+bool combine_fft_sequential_values(
+    iv::graph_jit::BackgroundPortIndex port,
+    std::byte* destination,
+    std::byte const* source,
+    std::size_t byte_count)
+{
+    if (port != 1 || byte_count % sizeof(iv::FFTBin) != 0) return false;
+    auto output = std::span{
+        reinterpret_cast<iv::FFTBin*>(destination),
+        byte_count / sizeof(iv::FFTBin)};
+    auto input = std::span{
+        reinterpret_cast<iv::FFTBin const*>(source), output.size()};
+    for (std::size_t index = 0; index < output.size(); ++index) {
+        output[index] += input[index];
+    }
+    return true;
+}
+
 // Reads frame offset of the current window exactly as generated execution
 // addresses a Sequential binding: from the binding's own ordinal.
 iv::Sample sequential_sample_at(
@@ -441,6 +557,22 @@ iv::Sample sequential_sample_at(
     auto const* value = reinterpret_cast<iv::Sample const*>(
         selected.storage + slot * selected.value_stride_bytes);
     return *value;
+}
+
+std::span<iv::FFTBin const> sequential_fft_at(
+    iv::ReflectedContinuousInputPortBinding const& binding,
+    std::size_t offset,
+    std::size_t channel = 0)
+{
+    auto const& selected = binding.storage.channels[channel];
+    auto const ordinal = binding.sequential_begin_ordinal + offset
+        + binding.storage.storage_latency
+        - selected.value_delay;
+    auto const slot = static_cast<std::size_t>(
+        ordinal & (selected.value_capacity - 1));
+    auto const* value = reinterpret_cast<iv::FFTBin const*>(
+        selected.storage + slot * selected.value_stride_bytes);
+    return {value, binding.storage.geometry.elements_per_value};
 }
 
 void publish_record(
@@ -486,6 +618,110 @@ TEST(PersistedDataStore, ResolvesStableTypedStoreLocalHandles)
 
     iv::PersistedDataStore second;
     EXPECT_NE(second.resolve_output(sample_id), sample);
+}
+
+TEST(PersistedDataStore,
+     SampleRegionBatchPreservesOrderOverlapAndExactDuplicates)
+{
+    iv::PersistedDataStore store;
+    auto const output = store.resolve_output(
+        stable_output(iv::PortKind::sample, "regions"));
+    auto const first = range(10, 3);
+    auto const overlap = range(11, 3);
+    auto candidate = store.begin_candidate(1);
+    candidate.replace_sample_regions(
+        output,
+        iv::mono_planar_channel_layout,
+        *iv::continuous_value_storage_geometry(
+            iv::continuous_value_type_id_v<iv::Sample>, std::nullopt),
+        iv::IndexCoverage{range(10, 4)},
+        std::array{first, overlap, first},
+        {
+            sample_region(output, first, 1.0f),
+            sample_region(output, overlap, 10.0f),
+            sample_region(output, first, 100.0f),
+        });
+    ASSERT_EQ(store.publish(std::move(candidate)),
+        iv::PersistedDataPublishResult::published);
+
+    auto reader = store.register_reader();
+    auto pinned = reader.pin();
+    auto const regions = pinned->sample_regions(
+        output, iv::mono_planar_channel_layout);
+    auto const views = pinned->sample_region_views(
+        output,
+        iv::mono_planar_channel_layout,
+        *iv::continuous_value_storage_geometry(
+            iv::continuous_value_type_id_v<iv::Sample>, std::nullopt));
+    ASSERT_EQ(regions.size(), 3u);
+    ASSERT_EQ(views.size(), 3u);
+    EXPECT_EQ(regions[0].range, first);
+    EXPECT_EQ(regions[1].range, overlap);
+    EXPECT_EQ(regions[2].range, first);
+    EXPECT_FLOAT_EQ(regions[0].at(index(11), 0).value, 2.0f);
+    EXPECT_FLOAT_EQ(regions[1].at(index(11), 0).value, 10.0f);
+    EXPECT_FLOAT_EQ(regions[2].at(index(11), 0).value, 101.0f);
+    EXPECT_NE(views[0].storage, views[1].storage);
+    EXPECT_NE(views[0].storage, views[2].storage);
+    EXPECT_NE(views[1].storage, views[2].storage);
+    EXPECT_EQ(pinned->sample_region_count(), 3u);
+
+    auto clipped = store.begin_candidate(2);
+    EXPECT_THROW(
+        clipped.replace_sample_regions(
+            output,
+            iv::mono_planar_channel_layout,
+            *iv::continuous_value_storage_geometry(
+                iv::continuous_value_type_id_v<iv::Sample>, std::nullopt),
+            iv::IndexCoverage{range(11, 1)},
+            std::array{first, overlap, first},
+            {}),
+        std::invalid_argument);
+}
+
+TEST(PersistedDataStore,
+     DisjointPartialRegionBatchesConvergeToPublishedLogicalOrder)
+{
+    iv::PersistedDataStore store;
+    auto const output = store.resolve_output(
+        stable_output(iv::PortKind::sample, "partially-published-regions"));
+    auto const late = range(20, 22);
+    auto const early = range(0, 2);
+    std::array const logical_order{late, early};
+
+    auto first = store.begin_candidate(1);
+    first.replace_sample_regions(
+        output,
+        iv::mono_planar_channel_layout,
+        *iv::continuous_value_storage_geometry(
+            iv::continuous_value_type_id_v<iv::Sample>, std::nullopt),
+        iv::IndexCoverage{early},
+        logical_order,
+        {sample_region(output, early, 1.0f)});
+    ASSERT_EQ(store.publish(std::move(first)),
+        iv::PersistedDataPublishResult::published);
+
+    auto second = store.begin_candidate(1);
+    second.replace_sample_regions(
+        output,
+        iv::mono_planar_channel_layout,
+        *iv::continuous_value_storage_geometry(
+            iv::continuous_value_type_id_v<iv::Sample>, std::nullopt),
+        iv::IndexCoverage{late},
+        logical_order,
+        {sample_region(output, late, 20.0f)});
+    ASSERT_EQ(store.publish(std::move(second)),
+        iv::PersistedDataPublishResult::published);
+
+    auto reader = store.register_reader();
+    auto pinned = reader.pin();
+    auto const regions = pinned->sample_regions(
+        output, iv::mono_planar_channel_layout);
+    ASSERT_EQ(regions.size(), 2u);
+    EXPECT_EQ(regions[0].range, late);
+    EXPECT_EQ(regions[1].range, early);
+    EXPECT_FLOAT_EQ(regions[0].at(index(20), 0).value, 20.0f);
+    EXPECT_FLOAT_EQ(regions[1].at(index(0), 0).value, 1.0f);
 }
 
 TEST(PersistedDataStore, PublishesSamplesAndAuthoritativeEmptyEventsTogether)
@@ -606,7 +842,7 @@ TEST(PersistedDataStore, CircularOverwriteSplitsAtSignedOrderingSeam)
 
     auto reader = store.register_reader();
     auto snapshot = reader.pin();
-    EXPECT_EQ(snapshot->sample_region_count(), 2u);
+    EXPECT_EQ(snapshot->sample_region_count(), 1u);
     for (std::uint64_t offset = 0; offset < 4; ++offset) {
         auto const position = begin.advanced_by(offset);
         auto const* selected = snapshot->find_sample_region(output, position);
@@ -852,14 +1088,17 @@ TEST(TickInvocationWorkspace,
     iv::TickInvocationFrame frame{
         reader, materialization_reader, workspace};
     auto const inputs = static_cast<
-        std::span<iv::RandomAccessSampleInputPort const>>(
+        std::span<iv::RandomAccessContinuousInputPort const>>(
         frame.call().random_access_sample_inputs);
     ASSERT_EQ(inputs.size(), 1u);
     EXPECT_TRUE(inputs[0].coverage().contains(
         iv::GlobalIndexRange{begin, 4}));
+    ASSERT_EQ(inputs[0].region_views().size(), 1u);
+    auto const region = iv::ContinuousRegion<iv::Sample>{
+        inputs[0].region_views()[0]};
     for (std::uint64_t offset = 0; offset < 4; ++offset) {
         EXPECT_FLOAT_EQ(
-            inputs[0].at(begin.advanced_by(offset), 0).value,
+            region.at(begin.advanced_by(offset), 0).value,
             10.0f + static_cast<float>(offset));
     }
 }
@@ -930,12 +1169,83 @@ TEST(TickInvocationWorkspace,
         frame.call().sequential_sample_inputs);
     ASSERT_EQ(inputs.size(), 1u);
     // The slot carries only the current window [5, 8); the consumer's two
-    // history values are its own realtime state.
+    // history values are its own realtime state. Covered values start at the
+    // configured neutral value and then receive the selected materialization
+    // through the configured additive combiner.
     EXPECT_EQ(inputs[0].history, 0u);
     EXPECT_EQ(inputs[0].sequential_begin_ordinal, 0u);
-    EXPECT_FLOAT_EQ(sequential_sample_at(inputs[0], 0).value, 50.0f);
-    EXPECT_FLOAT_EQ(sequential_sample_at(inputs[0], 1).value, 60.0f);
+    EXPECT_FLOAT_EQ(sequential_sample_at(inputs[0], 0).value, 49.75f);
+    EXPECT_FLOAT_EQ(sequential_sample_at(inputs[0], 1).value, 59.75f);
     EXPECT_FLOAT_EQ(sequential_sample_at(inputs[0], 2).value, -0.25f);
+}
+
+TEST(TickInvocationWorkspace,
+     SequentialFFTBlockViewCombinesOverlappingRegionsAndFillsNeutral)
+{
+    auto plan = sequential_tick_fft_plan();
+    auto const geometry = plan.ports[1].continuous_geometry;
+    iv::PersistedDataStore data;
+    auto reader = data.register_reader();
+    iv::TickMaterializationStore materializations;
+    auto materialization_reader = materializations.register_reader();
+
+    std::vector<iv::FFTBin> values{
+        {3.0f, 5.0f}, {7.0f, 11.0f},
+        {13.0f, 17.0f}, {19.0f, 23.0f},
+        {29.0f, 31.0f}, {37.0f, 41.0f},
+        {43.0f, 47.0f}, {53.0f, 59.0f},
+    };
+    std::vector<std::byte> bytes(values.size() * sizeof(iv::FFTBin));
+    std::memcpy(bytes.data(), values.data(), bytes.size());
+    (void)materializations.promote(
+        std::make_unique<iv::TickMaterializationSnapshot>(
+            1,
+            1,
+            iv::PersistedDataVersion{},
+            std::vector<iv::TickMaterializedSampleInput>{
+                iv::make_tick_materialized_continuous_input(
+                    1,
+                    plan.ports[1].sample_layout,
+                    geometry,
+                    {0},
+                    {range(4, 2), range(5, 2)},
+                    std::move(bytes)),
+            },
+            std::vector<iv::TickMaterializedEventInput>{}));
+
+    iv::TickInvocationWorkspace workspace{
+        plan,
+        1,
+        data,
+        4,
+        &combine_fft_sequential_values,
+        &initialize_fft_sequential_values};
+    iv::TickInvocationFrame frame{
+        reader,
+        materialization_reader,
+        workspace,
+        index(4),
+        3};
+    auto const inputs = static_cast<
+        std::span<iv::ReflectedContinuousInputPortBinding const>>(
+        frame.call().sequential_sample_inputs);
+    ASSERT_EQ(inputs.size(), 1u);
+    EXPECT_EQ(inputs[0].storage.geometry, geometry);
+
+    auto const first = sequential_fft_at(inputs[0], 0);
+    ASSERT_EQ(first.size(), 2u);
+    EXPECT_EQ(first[0], iv::FFTBin(4.0f, 7.0f));
+    EXPECT_EQ(first[1], iv::FFTBin(8.0f, 13.0f));
+
+    auto const overlap = sequential_fft_at(inputs[0], 1);
+    ASSERT_EQ(overlap.size(), 2u);
+    EXPECT_EQ(overlap[0], iv::FFTBin(43.0f, 50.0f));
+    EXPECT_EQ(overlap[1], iv::FFTBin(57.0f, 66.0f));
+
+    auto const last = sequential_fft_at(inputs[0], 2);
+    ASSERT_EQ(last.size(), 2u);
+    EXPECT_EQ(last[0], iv::FFTBin(44.0f, 49.0f));
+    EXPECT_EQ(last[1], iv::FFTBin(54.0f, 61.0f));
 }
 
 TEST(TickInvocationWorkspace,

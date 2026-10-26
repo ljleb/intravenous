@@ -41,7 +41,7 @@ namespace iv {
                 continuous_outputs {};
             std::span<EventInputPort> event_inputs {};
             std::span<EventOutputPort> event_outputs {};
-            std::span<RandomAccessSampleInputPort const> random_access_inputs {};
+            std::span<RandomAccessContinuousInputPort const> random_access_inputs {};
             std::span<RandomAccessEventInputPort const>
                 random_access_event_inputs {};
             [[no_unique_address]] TickRecordingBindings<Node> recording {};
@@ -283,34 +283,24 @@ namespace iv {
         // A Random Access input exposes only the published-snapshot view
         // selected for this callback. Current Tick buffers never extend its
         // coverage, so it has no Sequential current-block access.
-        template<ChannelTypeId Type>
-        class StaticRandomAccessSampleInputTickAccess {
-            RandomAccessSampleInputPort const* _port = nullptr;
-
-        public:
-            explicit StaticRandomAccessSampleInputTickAccess(
-                RandomAccessSampleInputPort const& port) noexcept
-                : _port(std::addressof(port))
-            {}
-
-            [[nodiscard]] IndexCoverage const& coverage() const noexcept
-            {
-                return _port->coverage();
+        template<typename Node, std::size_t DeclarationIndex>
+        [[nodiscard]] constexpr auto make_random_access_continuous_input(
+            RandomAccessContinuousInputPort const& port) noexcept
+        {
+            constexpr auto access =
+                static_input_port_access_at<Node, DeclarationIndex>();
+            using Config = std::remove_cvref_t<decltype(port_config_at<
+                DeclarationIndex>(
+                    std::declval<decltype(Node::inputs()) const&>()))>;
+            using Values = typename Config::value_types;
+            if constexpr (std::tuple_size_v<Values> == 1) {
+                using Value = std::tuple_element_t<0, Values>;
+                return StaticBackgroundContinuousInputAccess<Value, access>{port};
+            } else {
+                return StaticVariantBackgroundContinuousInputAccess<
+                    Values, access>{port};
             }
-
-            [[nodiscard]] Sample at(GlobalIndex index) const noexcept
-            requires (Type == ChannelTypeId::mono)
-            {
-                return _port->at(index);
-            }
-
-            template<class Channel>
-            [[nodiscard]] Sample at(Channel, GlobalIndex index) const noexcept
-            requires (Type != ChannelTypeId::mono)
-            {
-                return _port->at(index, static_channel_index<Type, Channel>());
-            }
-        };
+        }
 
         template<TickPortAccessKind Access>
         class StaticEventInputTickAccess {
@@ -351,7 +341,8 @@ namespace iv {
 
         };
 
-        // See StaticRandomAccessSampleInputTickAccess.
+        // Event storage remains segmented because event sequences do not have
+        // the contiguous continuous-value Region contract.
         class StaticRandomAccessEventInputTickAccess {
             RandomAccessEventInputPort const* _port = nullptr;
 
@@ -492,13 +483,10 @@ namespace iv {
                     constexpr auto background_index =
                         details::static_random_access_input_port_index_at<
                             Node, Index>();
-                    constexpr auto layout =
-                        details::static_input_port_layout_at<Node, Index>();
                     IV_ASSERT(background_index < ports.random_access_inputs.size(),
                         "static Random Access input port is absent from execution context");
-                    return details::StaticRandomAccessSampleInputTickAccess<
-                        layout.channel_type>{
-                            ports.random_access_inputs[background_index]};
+                    return details::make_random_access_continuous_input<
+                        Node, Index>(ports.random_access_inputs[background_index]);
                 } else {
                     constexpr auto port_index =
                         details::static_sample_input_port_index_at<Node, Index>();
@@ -658,13 +646,10 @@ namespace iv {
                     constexpr auto background_index =
                         details::static_random_access_input_port_index_at<
                             Node, Index>();
-                    constexpr auto layout =
-                        details::static_input_port_layout_at<Node, Index>();
                     IV_ASSERT(background_index < ports.random_access_inputs.size(),
                         "static Random Access input port is absent from execution context");
-                    return details::StaticRandomAccessSampleInputTickAccess<
-                        layout.channel_type>{
-                            ports.random_access_inputs[background_index]};
+                    return details::make_random_access_continuous_input<
+                        Node, Index>(ports.random_access_inputs[background_index]);
                 } else {
                     constexpr auto port_index =
                         details::static_sample_input_port_index_at<Node, Index>();

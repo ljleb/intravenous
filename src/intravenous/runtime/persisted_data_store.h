@@ -4,6 +4,7 @@
 #include <intravenous/coverage.h>
 #include <intravenous/graph_jit/background_evaluation_plan.h>
 #include <intravenous/graph_jit/stable_graph_identity.h>
+#include <intravenous/node/continuous_port.h>
 #include <intravenous/ports.h>
 
 #include <atomic>
@@ -13,6 +14,8 @@
 #include <limits>
 #include <memory>
 #include <mutex>
+#include <new>
+#include <optional>
 #include <span>
 #include <type_traits>
 #include <utility>
@@ -94,6 +97,41 @@ struct PersistedDataVersion {
     auto operator<=>(PersistedDataVersion const&) const = default;
 };
 
+class PersistedContinuousStorage {
+    struct Delete {
+        std::size_t alignment = alignof(std::max_align_t);
+
+        void operator()(std::byte* storage) const noexcept
+        {
+            if (storage) {
+                ::operator delete(storage, std::align_val_t{alignment});
+            }
+        }
+    };
+
+    std::unique_ptr<std::byte, Delete> storage_{nullptr, Delete{}};
+    std::size_t size_ = 0;
+    std::size_t alignment_ = alignof(std::max_align_t);
+
+public:
+    PersistedContinuousStorage() = default;
+    PersistedContinuousStorage(std::size_t size, std::size_t alignment);
+    PersistedContinuousStorage(PersistedContinuousStorage const&);
+    PersistedContinuousStorage& operator=(PersistedContinuousStorage const&);
+    PersistedContinuousStorage(PersistedContinuousStorage&&) noexcept;
+    PersistedContinuousStorage& operator=(
+        PersistedContinuousStorage&&) noexcept;
+
+    [[nodiscard]] std::byte* data() noexcept { return storage_.get(); }
+    [[nodiscard]] std::byte const* data() const noexcept
+    {
+        return storage_.get();
+    }
+    [[nodiscard]] std::size_t size() const noexcept { return size_; }
+    [[nodiscard]] std::size_t alignment() const noexcept { return alignment_; }
+    [[nodiscard]] bool empty() const noexcept { return size_ == 0; }
+};
+
 // One immutable, contiguous sample contribution. Values use layout and contain
 // exactly range.extent frames. A stored record never crosses the signed-order
 // seam; Candidate accepts circular input ranges and splits them before storage.
@@ -102,6 +140,14 @@ struct PersistedSampleRegion {
     GlobalIndexRange range{};
     ChannelLayout layout{};
     std::vector<Sample> values{};
+    ContinuousValueStorageGeometry geometry =
+        *continuous_value_storage_geometry(
+            continuous_value_type_id_v<Sample>, std::nullopt);
+    PersistedContinuousStorage continuous_values{};
+
+    [[nodiscard]] std::byte* storage_data() noexcept;
+    [[nodiscard]] std::byte const* storage_data() const noexcept;
+    [[nodiscard]] std::size_t storage_size_bytes() const noexcept;
 
     [[nodiscard]] Sample at(
         GlobalIndex index,
@@ -194,6 +240,17 @@ public:
             void* visitor_data,
             VisitSampleRegion visitor) const;
 
+        // Authoritative logical Region order. Unlike the range-tree point
+        // lookup, these spans preserve overlap and exact duplicates.
+        [[nodiscard]] std::span<PersistedSampleRegion const> sample_regions(
+            PersistedOutputHandle output,
+            ChannelLayout layout) const noexcept;
+        [[nodiscard]] std::span<ContinuousRegionStorageView const>
+        sample_region_views(
+            PersistedOutputHandle output,
+            ChannelLayout layout,
+            ContinuousValueStorageGeometry geometry) const noexcept;
+
         void for_each_event_chunk(
             PersistedOutputHandle output,
             GlobalIndexRange range,
@@ -239,6 +296,10 @@ public:
         [[nodiscard]] IndexCoverage const* find_sample_coverage(
             PersistedOutputHandle output,
             ChannelLayout layout) const noexcept;
+        [[nodiscard]] IndexCoverage const* find_sample_coverage(
+            PersistedOutputHandle output,
+            ChannelLayout layout,
+            ContinuousValueStorageGeometry geometry) const noexcept;
         [[nodiscard]] IndexCoverage const* find_event_coverage(
             PersistedOutputHandle output,
             EventTypeId type) const noexcept;
@@ -292,6 +353,16 @@ public:
         // circular range is split at the signed-order seam without exposing
         // that storage detail to the caller.
         void overwrite(PersistedSampleRegion record);
+        // Replaces every complete old logical Region that intersects domain
+        // with one ordered batch. Every replacement Region must be contained
+        // by domain; overlap and duplicates inside the batch are retained.
+        void replace_sample_regions(
+            PersistedOutputHandle output,
+            ChannelLayout layout,
+            ContinuousValueStorageGeometry geometry,
+            IndexCoverage const& domain,
+            std::span<GlobalIndexRange const> logical_order,
+            std::vector<PersistedSampleRegion> regions);
         void overwrite(PersistedEventChunk record);
 
         void erase_sample(

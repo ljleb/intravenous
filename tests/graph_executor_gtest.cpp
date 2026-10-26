@@ -16,6 +16,7 @@
 #include <string>
 #include <thread>
 #include <utility>
+#include <vector>
 
 namespace {
 
@@ -35,6 +36,32 @@ iv::IndexCoverage index_coverage(
     iv::IndexCoverage result;
     for (auto const [begin, end] : ranges) result.include(range(begin, end));
     return result;
+}
+
+std::vector<iv::GlobalIndexRange> coverage_regions(
+    iv::IndexCoverage const& coverage)
+{
+    return {coverage.begin(), coverage.end()};
+}
+
+bool combine_sample_values(
+    iv::graph_jit::BackgroundPortIndex,
+    std::byte* destination,
+    std::byte const* source,
+    std::size_t byte_count)
+{
+    if (byte_count % sizeof(iv::Sample) != 0) return false;
+    auto destination_values = std::span{
+        reinterpret_cast<iv::Sample*>(destination),
+        byte_count / sizeof(iv::Sample)};
+    auto source_values = std::span{
+        reinterpret_cast<iv::Sample const*>(source),
+        byte_count / sizeof(iv::Sample)};
+    for (std::size_t index = 0; index < destination_values.size(); ++index) {
+        destination_values[index] = iv::Sample{
+            destination_values[index].value + source_values[index].value};
+    }
+    return true;
 }
 
 struct TickObservation {
@@ -57,6 +84,8 @@ bool omit_last_persisted_probe_sample = false;
 std::size_t replay_probe_evaluate_calls = 0;
 iv::PersistedDataStore* competing_persisted_store = nullptr;
 bool publish_competing_persisted_snapshot = false;
+std::vector<iv::GlobalIndexRange> propagated_region_shape{};
+std::array<std::vector<iv::GlobalIndexRange>, 2> sorted_source_region_shapes{};
 
 struct BackgroundPropagationObservation {
     std::size_t source_forward_calls[2]{};
@@ -158,7 +187,8 @@ void propagate_background_forward(
             auto const coverage = node == 0
                 ? index_coverage({{10, 13}})
                 : index_coverage({{20, 22}});
-            outputs[0].publish_coverage(coverage);
+            auto const regions = coverage_regions(coverage);
+            outputs[0].publish_regions(regions);
             outputs[0].change(coverage);
             continue;
         }
@@ -171,7 +201,7 @@ void propagate_background_forward(
             std::span<iv::InputCoverageChange const>>(frame.forward.inputs);
         background_observation.sink_input_coverage = inputs[0].coverage();
         background_observation.sink_input_changed = inputs[0].changed();
-        outputs[0].publish_coverage(inputs[0].coverage());
+        outputs[0].publish_regions(inputs[0].regions());
         outputs[0].change(inputs[0].changed());
     }
 }
@@ -203,6 +233,61 @@ void no_op_background_evaluate(
     iv::graph_jit::BackgroundEvaluationCall*)
 {}
 
+void propagate_region_shape(
+    iv::graph_jit::BackgroundEvaluationCall* batch)
+{
+    for (auto& node :
+         static_cast<std::span<iv::graph_jit::BackgroundNodeCall>>(batch->nodes)) {
+        if (!iv::graph_jit::has_activity(
+                node.activity,
+                iv::graph_jit::BackgroundNodeActivity::forward)) {
+            continue;
+        }
+        auto outputs = static_cast<std::span<iv::OutputCoverageChange>>(
+            node.forward.outputs);
+        ASSERT_EQ(outputs.size(), 1u);
+        outputs[0].publish_regions(propagated_region_shape);
+    }
+}
+
+void propagate_positional_continuous_shape(
+    iv::graph_jit::BackgroundEvaluationCall* batch)
+{
+    for (auto& node :
+         static_cast<std::span<iv::graph_jit::BackgroundNodeCall>>(
+             batch->nodes)) {
+        if (!iv::graph_jit::has_activity(
+                node.activity,
+                iv::graph_jit::BackgroundNodeActivity::forward)) {
+            continue;
+        }
+        auto outputs = static_cast<std::span<iv::OutputCoverageChange>>(
+            node.forward.outputs);
+        ASSERT_EQ(outputs.size(), 1u);
+        outputs[0].publish_coverage(index_coverage({{10, 12}}));
+    }
+}
+
+void propagate_sorted_source_regions(
+    iv::graph_jit::BackgroundEvaluationCall* batch)
+{
+    auto nodes = static_cast<
+        std::span<iv::graph_jit::BackgroundNodeCall>>(batch->nodes);
+    for (std::size_t node = 0; node < nodes.size(); ++node) {
+        if (!iv::graph_jit::has_activity(
+                nodes[node].activity,
+                iv::graph_jit::BackgroundNodeActivity::forward)) {
+            continue;
+        }
+        auto outputs = static_cast<std::span<iv::OutputCoverageChange>>(
+            nodes[node].forward.outputs);
+        if (node < sorted_source_region_shapes.size()) {
+            ASSERT_EQ(outputs.size(), 1u);
+            outputs[0].publish_regions(sorted_source_region_shapes[node]);
+        }
+    }
+}
+
 void propagate_persisted_probe_forward(
     iv::graph_jit::BackgroundEvaluationCall* batch)
 {
@@ -217,7 +302,8 @@ void propagate_persisted_probe_forward(
         auto outputs = static_cast<std::span<iv::OutputCoverageChange>>(
             node.forward.outputs);
         ASSERT_EQ(outputs.size(), 1u);
-        outputs[0].publish_coverage(persisted_probe_coverage);
+        auto const regions = coverage_regions(persisted_probe_coverage);
+        outputs[0].publish_regions(regions);
     }
 }
 
@@ -237,20 +323,21 @@ void evaluate_persisted_probe(
         ASSERT_NE(node.finalize_operations, nullptr);
         node.prepare_operations(node.operation_frame);
 
-        auto outputs = static_cast<std::span<iv::TockSampleOutputPort>>(
+        auto outputs = static_cast<std::span<iv::TockContinuousOutputPort>>(
             node.tock.outputs);
         ASSERT_EQ(outputs.size(), 1u);
-        for (auto const region : outputs[0].requested_coverage()) {
-            for (std::uint64_t offset = 0; offset < region.extent; ++offset) {
-                auto const position = region.begin.advanced_by(offset);
+        for (auto const& descriptor : outputs[0].region_views()) {
+            auto region = iv::WritableContinuousRegion<iv::Sample>{descriptor};
+            for (std::uint64_t offset = 0;
+                 offset < region.range().extent;
+                 ++offset) {
+                auto const position = region.range().begin.advanced_by(offset);
                 if (omit_last_persisted_probe_sample
-                    && offset + 1 == region.extent) {
+                    && offset + 1 == region.range().extent) {
                     continue;
                 }
-                outputs[0].write(
-                    position, 0,
-                    iv::Sample{100.0f
-                        + static_cast<float>(position.signed_value())});
+                region.at(position) = iv::Sample{
+                    100.0f + static_cast<float>(position.signed_value())};
             }
         }
         if (throw_persisted_probe_evaluate) {
@@ -292,6 +379,7 @@ iv::graph_jit::BackgroundEvaluationPlan probe_tock_plan(
         .configured_port = {0, iv::PortKind::sample, 0},
         .kind = iv::PortKind::sample,
         .direction = PortDirection::output,
+        .output_production = iv::OutputProductionKind::coverage,
         .authored_tock_output = true,
         .retention = retention,
         .sample_layout = {
@@ -584,6 +672,7 @@ iv::graph_jit::BackgroundEvaluationPlan background_fanin_plan()
             .configured_port = {0, iv::PortKind::sample, 0},
             .kind = iv::PortKind::sample,
             .direction = PortDirection::output,
+            .output_production = iv::OutputProductionKind::coverage,
             .authored_tock_output = true,
             .retention = iv::OutputRetention::ephemeral,
             .outgoing_connections = {0},
@@ -597,6 +686,7 @@ iv::graph_jit::BackgroundEvaluationPlan background_fanin_plan()
             .configured_port = {1, iv::PortKind::sample, 0},
             .kind = iv::PortKind::sample,
             .direction = PortDirection::output,
+            .output_production = iv::OutputProductionKind::coverage,
             .authored_tock_output = true,
             .retention = iv::OutputRetention::ephemeral,
             .outgoing_connections = {1},
@@ -610,6 +700,7 @@ iv::graph_jit::BackgroundEvaluationPlan background_fanin_plan()
             .configured_port = {2, iv::PortKind::sample, 0},
             .kind = iv::PortKind::sample,
             .direction = PortDirection::input,
+            .input_access = iv::InputAccessKind::coverage,
             .random_access_input = true,
             .incoming_connections = {0, 1},
             .accumulators = PortAccumulatorIndices{
@@ -622,6 +713,7 @@ iv::graph_jit::BackgroundEvaluationPlan background_fanin_plan()
             .configured_port = {2, iv::PortKind::sample, 0},
             .kind = iv::PortKind::sample,
             .direction = PortDirection::output,
+            .output_production = iv::OutputProductionKind::coverage,
             .authored_tock_output = true,
             .retention = iv::OutputRetention::ephemeral,
             .accumulators = PortAccumulatorIndices{
@@ -686,6 +778,7 @@ iv::graph_jit::BackgroundEvaluationPlan background_mixed_output_plan()
             .configured_port = {0, iv::PortKind::sample, 1},
             .kind = iv::PortKind::sample,
             .direction = PortDirection::output,
+            .output_production = iv::OutputProductionKind::coverage,
             .authored_tock_output = true,
             .retention = iv::OutputRetention::ephemeral,
             .accumulators = PortAccumulatorIndices{
@@ -713,6 +806,7 @@ std::shared_ptr<iv::CompiledGraph const> compiled_graph(
     graph->specialization.block_size = 64;
     graph->node_layout = std::move(layout);
     graph->root_operations.tick_block = tick;
+    graph->root_operations.combine_sequential_input = &combine_sample_values;
     if (background) {
         graph->background_operations = {
             .propagate_forward = &no_op_background_evaluate,
@@ -746,6 +840,7 @@ std::shared_ptr<iv::CompiledGraph const> transition_graph(
     graph->root_operations = {
         .tick_block = steady_tick,
         .transition_tick_block = transition_tick,
+        .combine_sequential_input = &combine_sample_values,
     };
     graph->cutover.emplace(iv::CompiledGraphCutover{
         .predecessor = predecessor,
@@ -1226,7 +1321,7 @@ TEST_F(
     EXPECT_EQ(
         *shrink_result->published_data,
         (iv::PersistedDataVersion{.semantic = 8, .revision = 2}));
-    EXPECT_EQ(persisted_probe_evaluate_calls, 1u);
+    EXPECT_EQ(persisted_probe_evaluate_calls, 2u);
     {
         auto pin = reader.pin();
         EXPECT_NE(pin->find_sample_region(output, index(0)), nullptr);
@@ -1720,7 +1815,7 @@ TEST_F(
     EXPECT_EQ(background_observation.sink_reverse_calls, 1u);
     EXPECT_EQ(
         background_observation.sink_output_required,
-        index_coverage({{11, 13}, {20, 21}}));
+        index_coverage({{10, 13}, {20, 22}}));
 
     ASSERT_EQ(result.output_changes.size(), 3u);
     EXPECT_EQ(
@@ -1730,20 +1825,20 @@ TEST_F(
     EXPECT_EQ(result.input_requirements[0].port, 2u);
     EXPECT_EQ(
         result.input_requirements[0].required,
-        index_coverage({{11, 13}, {20, 21}}));
+        index_coverage({{10, 13}, {20, 22}}));
     ASSERT_EQ(result.output_requirements.size(), 3u);
     EXPECT_EQ(result.output_requirements[0].port, 0u);
     EXPECT_EQ(
         result.output_requirements[0].required,
-        index_coverage({{11, 13}}));
+        index_coverage({{10, 13}}));
     EXPECT_EQ(result.output_requirements[1].port, 1u);
     EXPECT_EQ(
         result.output_requirements[1].required,
-        index_coverage({{20, 21}}));
+        index_coverage({{20, 22}}));
     EXPECT_EQ(result.output_requirements[2].port, 3u);
     EXPECT_EQ(
         result.output_requirements[2].required,
-        index_coverage({{11, 13}, {20, 21}}));
+        index_coverage({{10, 13}, {20, 22}}));
 
     background_observation = {};
     prepared = workspace.prepare(
@@ -1783,6 +1878,61 @@ TEST_F(
     ASSERT_EQ(propagation_result.output_requirements.size(), 2u);
     EXPECT_EQ(propagation_result.output_requirements[0].port, 0u);
     EXPECT_EQ(propagation_result.output_requirements[1].port, 1u);
+}
+
+TEST_F(BackgroundCoveragePropagationFixture,
+       NormalizedSampleProjectionsPreserveSeparateRegionContributions)
+{
+    auto plan = background_fanin_plan();
+    plan.ports[0].outgoing_connections = {0};
+    plan.ports[1].outgoing_connections = {0};
+    plan.ports[2].incoming_connections = {0};
+    plan.connections = {{
+        .kind = iv::PortKind::sample,
+        .source_coverage_ports = {0, 1},
+        .target_coverage_ports = {2},
+        .sample_source_port_by_channel = {
+            iv::graph_jit::BackgroundPortIndex{0},
+            iv::graph_jit::BackgroundPortIndex{1},
+        },
+        .sample_read_latencies = {0, 0},
+        .sample_target_port = 2,
+        .sample_projections = {
+            {
+                .source_channel_indices = {0},
+                .target_channels = {0},
+            },
+            {
+                .source_channel_indices = {1},
+                .target_channels = {0},
+            },
+        },
+    }};
+
+    iv::BackgroundCoverageState coverage(
+        plan.accumulators.output_change_count);
+    iv::BackgroundPropagationWorkspace workspace(plan, 48000);
+    auto prepared = workspace.prepare(
+        {
+            .propagate_forward = &propagate_background_forward,
+            .propagate_reverse = &propagate_background_reverse,
+            .evaluate = &no_op_background_evaluate,
+        },
+        coverage,
+        {.locally_changed_nodes = {0, 1}});
+
+    EXPECT_EQ(
+        std::vector<iv::GlobalIndexRange>(
+            prepared.input_regions(2).begin(),
+            prepared.input_regions(2).end()),
+        (std::vector<iv::GlobalIndexRange>{
+            range(10, 13),
+            range(20, 22),
+        }));
+    EXPECT_EQ(
+        background_observation.sink_input_coverage,
+        index_coverage({{10, 13}, {20, 22}}));
+    workspace.discard(std::move(prepared));
 }
 
 TEST_F(
@@ -2070,6 +2220,9 @@ TEST_F(
         roots.input_changes.front().coverage,
         index_coverage({{20, 22}}));
     EXPECT_EQ(
+        roots.input_changes.front().regions,
+        (std::vector<iv::GlobalIndexRange>{range(20, 22)}));
+    EXPECT_EQ(
         roots.input_changes.front().changed,
         index_coverage({{10, 13}, {20, 22}}));
 
@@ -2124,6 +2277,318 @@ TEST_F(
     auto const& result = prepared.result();
     EXPECT_TRUE(result.output_requirements.empty());
     EXPECT_EQ(background_observation.sink_reverse_calls, 0u);
+    workspace.discard(std::move(prepared));
+}
+
+TEST_F(BackgroundCoveragePropagationFixture,
+       ContinuousOutputPreservesOverlappingAndDuplicateRegionShape)
+{
+    auto plan = probe_tock_plan(
+        iv::OutputRetention::ephemeral,
+        iv::graph_jit::PortStorageKind::background);
+    iv::BackgroundCoverageState coverage(
+        plan.accumulators.output_change_count);
+    iv::BackgroundPropagationWorkspace workspace(plan, 48000);
+    auto const operations = iv::CompiledGraphBackgroundOperations{
+        .propagate_forward = &propagate_region_shape,
+        .propagate_reverse = &no_op_background_evaluate,
+        .evaluate = &no_op_background_evaluate,
+    };
+    propagated_region_shape = {
+        range(10, 13),
+        range(11, 14),
+        range(10, 13),
+    };
+
+    auto prepared = workspace.prepare(
+        operations,
+        coverage,
+        iv::CoveragePropagationRequest{
+            .locally_changed_nodes = {0},
+        });
+    EXPECT_EQ(
+        std::vector<iv::GlobalIndexRange>(
+            prepared.output_regions(0).begin(),
+            prepared.output_regions(0).end()),
+        propagated_region_shape);
+    ASSERT_EQ(prepared.result().output_changes.size(), 1u);
+    EXPECT_EQ(
+        prepared.result().output_changes[0].coverage,
+        index_coverage({{10, 14}}));
+    EXPECT_EQ(
+        prepared.result().output_changes[0].changed,
+        index_coverage({{10, 14}}));
+    (void)workspace.commit(coverage, std::move(prepared));
+
+    propagated_region_shape = {range(10, 14)};
+    auto reshaped = workspace.prepare(
+        operations,
+        coverage,
+        iv::CoveragePropagationRequest{
+            .locally_changed_nodes = {0},
+        });
+    ASSERT_EQ(reshaped.result().output_changes.size(), 1u);
+    EXPECT_EQ(
+        reshaped.result().output_changes[0].coverage,
+        index_coverage({{10, 14}}));
+    EXPECT_EQ(
+        reshaped.result().output_changes[0].changed,
+        index_coverage({{10, 14}}));
+    workspace.discard(std::move(reshaped));
+}
+
+TEST_F(BackgroundCoveragePropagationFixture,
+       RegionOutputRequiresExactlyOnePublishedRegion)
+{
+    auto plan = probe_tock_plan(
+        iv::OutputRetention::ephemeral,
+        iv::graph_jit::PortStorageKind::background);
+    plan.ports[0].output_production = iv::OutputProductionKind::region;
+    auto const operations = iv::CompiledGraphBackgroundOperations{
+        .propagate_forward = &propagate_region_shape,
+        .propagate_reverse = &no_op_background_evaluate,
+        .evaluate = &no_op_background_evaluate,
+    };
+    auto rejects = [&](std::vector<iv::GlobalIndexRange> regions) {
+        propagated_region_shape = std::move(regions);
+        iv::BackgroundCoverageState coverage(
+            plan.accumulators.output_change_count);
+        iv::BackgroundPropagationWorkspace workspace(plan, 48000);
+        EXPECT_THROW(
+            (void)workspace.prepare(
+                operations,
+                coverage,
+                {.locally_changed_nodes = {0}}),
+            std::invalid_argument);
+    };
+
+    rejects({});
+    rejects({range(0, 1), range(2, 3)});
+
+    propagated_region_shape = {range(0, 1)};
+    iv::BackgroundCoverageState coverage(
+        plan.accumulators.output_change_count);
+    iv::BackgroundPropagationWorkspace workspace(plan, 48000);
+    auto prepared = workspace.prepare(
+        operations,
+        coverage,
+        {.locally_changed_nodes = {0}});
+    ASSERT_EQ(prepared.output_regions(0).size(), 1u);
+    EXPECT_EQ(prepared.output_regions(0).front(), range(0, 1));
+    workspace.discard(std::move(prepared));
+}
+
+TEST_F(BackgroundCoveragePropagationFixture,
+       CoverageOutputMayPublishAnEmptyRegionList)
+{
+    auto const plan = probe_tock_plan(
+        iv::OutputRetention::ephemeral,
+        iv::graph_jit::PortStorageKind::background);
+    propagated_region_shape.clear();
+    iv::BackgroundCoverageState coverage(
+        plan.accumulators.output_change_count);
+    iv::BackgroundPropagationWorkspace workspace(plan, 48000);
+    auto prepared = workspace.prepare(
+        {
+            .propagate_forward = &propagate_region_shape,
+            .propagate_reverse = &no_op_background_evaluate,
+            .evaluate = &no_op_background_evaluate,
+        },
+        coverage,
+        {.locally_changed_nodes = {0}});
+    EXPECT_TRUE(prepared.output_regions(0).empty());
+    workspace.discard(std::move(prepared));
+}
+
+TEST_F(BackgroundCoveragePropagationFixture,
+       ContinuousOutputRejectsPositionalCoveragePublication)
+{
+    auto const plan = probe_tock_plan(
+        iv::OutputRetention::ephemeral,
+        iv::graph_jit::PortStorageKind::background);
+    iv::BackgroundCoverageState coverage(
+        plan.accumulators.output_change_count);
+    iv::BackgroundPropagationWorkspace workspace(plan, 48000);
+    EXPECT_THROW(
+        (void)workspace.prepare(
+            {
+                .propagate_forward = &propagate_positional_continuous_shape,
+                .propagate_reverse = &no_op_background_evaluate,
+                .evaluate = &no_op_background_evaluate,
+            },
+            coverage,
+            {.locally_changed_nodes = {0}}),
+        std::invalid_argument);
+}
+
+TEST_F(BackgroundCoveragePropagationFixture,
+       SortedContinuousOutputRejectsNoncanonicalEqualBeginOrder)
+{
+    auto plan = probe_tock_plan(
+        iv::OutputRetention::ephemeral,
+        iv::graph_jit::PortStorageKind::background);
+    plan.ports[0].ordering = iv::CoverageOrdering::sorted;
+    iv::BackgroundCoverageState coverage(
+        plan.accumulators.output_change_count);
+    iv::BackgroundPropagationWorkspace workspace(plan, 48000);
+    auto const operations = iv::CompiledGraphBackgroundOperations{
+        .propagate_forward = &propagate_region_shape,
+        .propagate_reverse = &no_op_background_evaluate,
+        .evaluate = &no_op_background_evaluate,
+    };
+    propagated_region_shape = {
+        range(10, 12),
+        range(10, 14),
+    };
+
+    EXPECT_THROW(
+        (void)workspace.prepare(
+            operations,
+            coverage,
+            iv::CoveragePropagationRequest{
+                .locally_changed_nodes = {0},
+            }),
+        std::invalid_argument);
+}
+
+TEST_F(BackgroundCoveragePropagationFixture,
+       SortedCoverageInputKWayMergesProducerRegionLists)
+{
+    using namespace iv::graph_jit;
+    BackgroundEvaluationPlan plan;
+    plan.nodes = {
+        {
+            .bundle = 0,
+            .authored_tock_execution = true,
+            .outputs = {0},
+            .accumulators = {
+                .output_change_begin = 0,
+                .output_change_count = 1,
+                .output_requirement_begin = 0,
+                .output_requirement_count = 1,
+            },
+        },
+        {
+            .bundle = 1,
+            .authored_tock_execution = true,
+            .outputs = {1},
+            .accumulators = {
+                .output_change_begin = 1,
+                .output_change_count = 1,
+                .output_requirement_begin = 1,
+                .output_requirement_count = 1,
+            },
+        },
+        {
+            .bundle = 2,
+            .authored_tock_execution = true,
+            .inputs = {2},
+            .accumulators = {
+                .input_change_begin = 0,
+                .input_change_count = 1,
+                .input_requirement_begin = 0,
+                .input_requirement_count = 1,
+            },
+        },
+    };
+    plan.ports = {
+        {
+            .node = 0,
+            .configured_port = {0, iv::PortKind::sample, 0},
+            .kind = iv::PortKind::sample,
+            .direction = PortDirection::output,
+            .output_production = iv::OutputProductionKind::coverage,
+            .authored_tock_output = true,
+            .ordering = iv::CoverageOrdering::sorted,
+            .outgoing_connections = {0},
+            .accumulators = {
+                .output_change = 0,
+                .output_requirement = 0,
+            },
+        },
+        {
+            .node = 1,
+            .configured_port = {1, iv::PortKind::sample, 0},
+            .kind = iv::PortKind::sample,
+            .direction = PortDirection::output,
+            .output_production = iv::OutputProductionKind::coverage,
+            .authored_tock_output = true,
+            .ordering = iv::CoverageOrdering::sorted,
+            .outgoing_connections = {1},
+            .accumulators = {
+                .output_change = 1,
+                .output_requirement = 1,
+            },
+        },
+        {
+            .node = 2,
+            .configured_port = {2, iv::PortKind::sample, 0},
+            .kind = iv::PortKind::sample,
+            .direction = PortDirection::input,
+            .input_access = iv::InputAccessKind::coverage,
+            .random_access_input = true,
+            .ordering = iv::CoverageOrdering::sorted,
+            .incoming_connections = {0, 1},
+            .accumulators = {
+                .input_change = 0,
+                .input_requirement = 0,
+            },
+        },
+    };
+    plan.connections = {
+        {
+            .kind = iv::PortKind::sample,
+            .source_coverage_ports = {0},
+            .target_coverage_ports = {2},
+            .sample_source_port_by_channel = {BackgroundPortIndex{0}},
+            .sample_read_latencies = {0},
+            .sample_target_port = 2,
+        },
+        {
+            .kind = iv::PortKind::sample,
+            .source_coverage_ports = {1},
+            .target_coverage_ports = {2},
+            .sample_source_port_by_channel = {BackgroundPortIndex{1}},
+            .sample_read_latencies = {0},
+            .sample_target_port = 2,
+        },
+    };
+    plan.accumulators = {
+        .input_change_count = 1,
+        .output_change_count = 2,
+        .output_requirement_count = 2,
+        .input_requirement_count = 1,
+    };
+    sorted_source_region_shapes = {{
+        {range(-5, -3), range(0, 10), range(5, 7)},
+        {range(-4, -2), range(0, 12), range(0, 8), range(6, 9)},
+    }};
+
+    iv::BackgroundCoverageState coverage(
+        plan.accumulators.output_change_count);
+    iv::BackgroundPropagationWorkspace workspace(plan, 48000);
+    auto prepared = workspace.prepare(
+        {
+            .propagate_forward = &propagate_sorted_source_regions,
+            .propagate_reverse = &no_op_background_evaluate,
+            .evaluate = &no_op_background_evaluate,
+        },
+        coverage,
+        {.locally_changed_nodes = {0, 1}});
+
+    EXPECT_EQ(
+        std::vector<iv::GlobalIndexRange>(
+            prepared.input_regions(2).begin(),
+            prepared.input_regions(2).end()),
+        (std::vector<iv::GlobalIndexRange>{
+            range(-5, -3),
+            range(-4, -2),
+            range(0, 12),
+            range(0, 10),
+            range(0, 8),
+            range(5, 7),
+            range(6, 9),
+        }));
     workspace.discard(std::move(prepared));
 }
 
@@ -2196,6 +2661,7 @@ TEST_F(
             .input_changes = {
                 iv::InputCoverageChangeRequest{
                     .port = 2,
+                    .regions = coverage_regions(selected_coverage),
                     .coverage = selected_coverage,
                     .changed = selected_coverage,
                 },

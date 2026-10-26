@@ -132,7 +132,9 @@ GraphExecutor::RealtimeGeneration::RealtimeGeneration(
         graph.background_evaluation_plan,
         graph.project_generation,
         data,
-        graph.specialization.block_size)
+        graph.specialization.block_size,
+        graph.root_operations.combine_sequential_input,
+        graph.root_operations.initialize_sequential_input)
 {
     auto const requirements = tick_invocation.producer_requirements();
     producer_reserves.reserve(requirements.size());

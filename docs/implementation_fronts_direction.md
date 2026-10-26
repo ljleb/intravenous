@@ -349,6 +349,192 @@ Detailed direction:
 [Random-Access Port Data Direction](./random_access_port_data_direction.md) and
 [Coverage And Background Evaluation](./coverage_and_background_evaluation.md).
 
+### Front 3 entry friction: logical Region replacement (2026-10-24)
+
+The planned data-bearing `Coverage` preserves overlapping Regions, duplicate Regions,
+and Region decomposition. The current runtime cannot preserve those facts. It reduces
+`RegionInputConfig` and `CoverageInputConfig` to
+`BackgroundPortPlan::random_access_input`. It also reduces `RegionOutputConfig` and
+`CoverageOutputConfig` to `BackgroundPortPlan::authored_tock_output`.
+
+`TockSampleOutputPort` then writes one `Sample` for each global index and channel into
+storage selected by one positional `IndexCoverage`. `TickMaterializedSampleInput`
+explicitly stores disjoint records. `PersistedDataStore::Candidate::overwrite()`
+removes every sample record that intersects the new range before it inserts one
+replacement `PersistedSampleRegion`. `BackgroundStorageRealization::stage_persisted_data()`
+also rejects overlapping storage slots for one persisted output. These paths flatten
+all Region decomposition and multiplicity.
+
+Changing the range tree to permit overlaps is not sufficient. A partial recomputation
+can replace the middle of one logical Region. Splitting that Region into physical
+prefix, replacement, and suffix records changes the Region sequence observed by a
+Coverage callback. The result can then depend on transaction request boundaries even
+when the values do not change. Conversely, preserving one logical Region requires a
+rule that identifies which old Region each new Region replaces, or requires the
+runtime to recompute and publish a complete logical Region set.
+
+Front 3 must settle one of these contracts before source implementation continues:
+
+1. Region decomposition is semantic. Add logical Region identity and publish a batch
+   replacement operation that preserves overlaps and duplicates independently of the
+   store's physical range-tree entries.
+2. Region decomposition is semantic, but any intersecting change recomputes and
+   replaces a complete logical Region set. This needs a rule that widens positional
+   demand and invalidation to those complete Regions.
+3. Lossless splitting of one Region into adjacent Regions is semantically equivalent.
+   This weakens the current statement that a consumer receives and can process each
+   Region independently. It is a normative design change, not an implementation fact.
+
+The recommended direction combines the first two contracts without adding authored
+stable Region IDs. Keep `IndexCoverage` as the positional set used by propagation.
+Store each logical Region as one immutable object, and make physical index entries
+refer to that object. Before reverse planning, expand a replacement domain to contain
+every old logical Region that it intersects. The callback then publishes the complete
+replacement Region batch for that domain. Every new Region must fit inside the domain,
+or the node underreported its changed coverage. The node-facing callback ABI must
+publish Region descriptors and contiguous backing as a batch instead of writing one
+sample at a time.
+
+### Front 3 Region-output allocation decision (2026-10-25)
+
+A `CoverageOutputConfig` continuous output exposes a pre-allocated list of writable
+Region outputs to its `tock_coverage()` callback. Forward propagation determines the
+complete ordered list of logical `GlobalIndexRange` values, including overlaps and
+duplicates. The positional union remains available as `IndexCoverage` for change and
+demand propagation, but it is derived information and cannot replace the Region list.
+
+The existing transaction order supplies the allocation boundary. First,
+`BackgroundPropagationWorkspace::prepare()` completes forward propagation and reverse
+propagation. Next, `BackgroundEvaluationTransaction` selects the required storage and
+constructs `BackgroundStorageRealization`. Generated background evaluation runs only
+after that construction. `BackgroundStorageRealization` can therefore allocate the
+selected Region descriptors and their contiguous backing before `tock_coverage()` is
+called. The callback fills those fixed buffers; it does not append Regions, resize a
+Region, or allocate output backing.
+
+Every selected Region receives an independent writable storage range. Logical overlap
+between two Regions never aliases their values. An implementation can suballocate
+several Regions into disjoint byte ranges of one owner allocation, but it cannot reuse
+the same bytes for their overlapping logical positions.
+
+For a `RegionOutputConfig` continuous output, the same representation has exactly one
+Region. For a `CoverageOutputConfig` continuous output, the list can contain zero or
+more Regions. The propagation result must retain the list shape because
+`OutputCoverageChange::publish_coverage()` currently retains only `IndexCoverage`,
+which normalizes away overlap, duplicates, ordering, and Region count.
+
+This contract also means that output Region boundaries cannot first be discovered by
+examining sample values during `tock_coverage()`. A node whose Region list depends on
+data values must determine and retain that list before forward propagation, or use a
+different authored representation. An allocator callback inside `tock_coverage()` and
+node-owned output buffers are rejected: both move output ownership and allocation into
+the evaluation callback even though the propagation phase already exists to describe
+the output shape.
+
+### Front 3 source status (2026-10-25)
+
+The active source is a Front 3 completion candidate. Collaborator compilation and a
+complete test run remain pending.
+
+`ContinuousRegionStorageView` is the non-owning callback ABI. Node code receives it
+through `ContinuousRegion<Value>`, `WritableContinuousRegion<Value>`,
+`ContinuousCoverage<Value>`, and `WritableContinuousCoverage<Value>`. The resolved
+`ContinuousValueStorageGeometry` supports `Sample`, `FractionalGlobalIndex`, and
+`FFTBlock`; the Region contract is not limited to scalar samples.
+
+`OutputCoverageChange::publish_regions()` now publishes the complete logical Region
+list. `BackgroundCoverageState` and `PreparedCoveragePropagation` preserve that list.
+They derive `IndexCoverage` for positional change and demand algebra. Sorted Coverage
+uses the canonical begin-ascending, equal-begin extent-descending order. Fan-in merges
+sorted Region runs with a k-way merge. Stable sorting preserves producer order for
+exact duplicate Regions. Channel assembly forms one intersection for each Region
+tuple needed to construct one value. Separate
+`SampleProjectionPlan` contributions retain separate Region lists, so fan-in does not
+turn disjoint contributions into an empty intersection or merge overlapping
+contributions into one Region.
+
+The authored `PropagateForwardCoverageContext` facade exposes Region-list publication
+only for continuous outputs and positional `IndexCoverage` publication only for event
+outputs. The reflected `OutputCoverageChange` record retains both operations because
+generated replay uses the same ABI, but an authored continuous callback cannot compile
+a call to `publish_coverage()`.
+
+`BackgroundStorageRealization` allocates one independent contiguous buffer for each
+selected logical Region before `tock_coverage()` runs. All produced
+`PortStoragePlan` roles for one `BackgroundPortIndex` output share the same
+`TransactionSampleStorage` owner. This gives the node callback one writable Region
+list even when planning retains both `background` and `persisted_data` roles. It also
+prevents a callback from writing duplicate logical Regions merely because the output
+has several physical consumers.
+
+An externally bound `BackgroundSampleReadView` or `BackgroundSampleWriteView` must
+match the planned `ContinuousValueStorageGeometry` and the complete `ChannelLayout`.
+Every selected position must also have a matching `ContinuousRegionStorageView`.
+`BackgroundStorageRealization::seal()` rejects a view whose summary metadata or Region
+descriptors disagree with the plan.
+
+`build_background_storage_plan()` keeps a direct sample route for a Random Access
+input only when the source already supplies the input port's complete channel layout.
+If `SampleConnectionPlan::requires_conversion` is true, the plan creates a
+`SampleMaterializationPlan` whose output uses the target layout. This includes channel
+tiling, channel permutation, and channel conversion. It prevents a Coverage callback
+from receiving complete per-channel coverage facts with no complete target-layout
+Region view.
+
+`populate_background_topology()` also rejects a `RegionInputConfig` when its normalized
+continuous connection contains more than one `SampleProjectionPlan`. Each projection
+is one logical contribution, so such a connection can supply Coverage but cannot
+supply the input's required single Region.
+
+`PersistedDataStore::Candidate::replace_sample_regions()` replaces complete logical
+Region batches. `PersistedSampleRegion` owns registered continuous-value bytes, while
+`PersistedDataStore::Snapshot::sample_region_views()` exposes matching
+`ContinuousRegionStorageView` records. Overlapping Regions, exact duplicate Regions,
+and producer order remain visible after publication. A replacement domain cannot
+clip an old logical Region.
+
+`TickMaterializedSampleInput` retains the logical Region list and resolved geometry.
+Tick Random Access views bind those Regions directly. Coverage-to-Sequential
+materialization and `TickInvocationWorkspace::SequentialSampleSlot` use the target
+input's generated neutral initializer and combiner. This applies to resolved
+`FFTBlock` values as well as `Sample` values.
+
+Generation reconciliation uses the same `BackgroundConnectionPlan` route and
+`SampleProjectionPlan` logic as ordinary propagation. An
+`InputCoverageChangeRequest` created by `BackgroundCoverageState::Migration::commit()`
+therefore carries both the current positional coverage and the current logical Region
+list. Rewiring a stable continuous input does not reduce its Region shape to
+`IndexCoverage` during migration.
+
+Reuse of `TickMaterializedSampleInput` also follows whole-Region ownership.
+`BackgroundEvaluationTransaction::restrict_input_demand()` retains a previous
+`TickMaterializedSampleRegion` only when changed coverage does not intersect it. Any
+current demand that intersects such an unchanged Region retains the complete Region.
+If changed coverage intersects it, storage planning recomputes the Region instead of
+clipping and carrying a positional remainder.
+
+The added adversarial tests cover empty Coverage output and empty Coverage view
+iteration, invalid Region cardinality,
+rejection of positional publication for a continuous Tock output, Region-input source
+validation, overlap and exact-duplicate preservation, independent overlapping
+storage, signed-order sorted fan-in, complete logical replacement, producer-home
+storage sharing,
+target-layout materialization for a stereo tile, preservation of a direct route for
+an exact stereo source, separate normalized projection contributions, partial-channel
+materialization completeness, static continuous/event publication separation,
+rejection of multiple projection contributions at a Region input, stable ordering of
+exact duplicate Regions, rejection of external continuous views whose full layout or
+Region descriptors disagree with the plan, stable-input migration with a logical
+Region list, whole-Region Tick materialization carry-forward, resolved `FFTBlock` Region callbacks,
+persisted `FFTBlock` Regions, Tick Random Access materialization, and overlapping
+`FFTBlock` reduction into a Sequential Tick input.
+
+One limitation remains outside Front 3. Background contextual replay of a Sequential
+continuous input still accepts only `Sample` at project rate. The validation is in
+`connection_plan.cpp` and belongs to Front 7 replay generalization. It does not limit
+authored Tock Region/Coverage production, persistence, Tick Random Access, or ordinary
+background-to-Sequential delivery.
+
 ## Front 4: complete background-to-Tick delivery
 
 **Primary ownership:** execute every already-planned ordinary background delivery at
@@ -1043,6 +1229,13 @@ the original virtual-node IDs instead but initially rebuilt only the forward
 shifting the records, so the changed-bundle graph retains the intended stable concrete
 node identities. No production migration behavior changed in this follow-up; another
 collaborator verification run remains pending.
+
+### Front 6 raw-migration correction verification (2026-10-24)
+
+The collaborator's next full run passed all 598 tests. This run verifies the stable
+input-port migration identities and the corrected bundle-handle-shift fixture. No
+known Front 6 correctness work or implementation friction remains, so Front 6 is
+closed. Front 3 is the next dependency-ready correctness front.
 
 ## Front 7: remaining GraphJit and node execution semantics
 

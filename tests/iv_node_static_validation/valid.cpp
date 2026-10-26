@@ -1,6 +1,7 @@
 #include <intravenous/dsl.h>
 
 #include <array>
+#include <span>
 
 struct ValidBackgroundNode {
     static constexpr auto inputs()
@@ -26,8 +27,8 @@ struct ValidBackgroundNode {
     void propagate_forward_coverage(
         iv::PropagateForwardCoverageContext<ValidBackgroundNode>& context) const
     {
-        context.template output<"output">().publish_coverage(
-            context.template input<"input">().coverage());
+        context.template output<"output">().publish_regions(
+            context.template input<"input">().regions());
     }
 };
 
@@ -165,8 +166,8 @@ struct ValidBatchBackgroundNode {
             ValidBatchBackgroundNode>& context)
     {
         for (auto lane : context) {
-            lane.template output<"output">().publish_coverage(
-                iv::IndexCoverage{});
+            lane.template output<"output">().publish_regions(
+                std::span<iv::GlobalIndexRange const>{});
         }
     }
 

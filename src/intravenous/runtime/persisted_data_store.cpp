@@ -2,7 +2,9 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cassert>
+#include <cstring>
 #include <limits>
 #include <iterator>
 #include <ranges>
@@ -24,7 +26,11 @@ struct SampleOutputState {
     PersistedOutputHandle output{};
     IndexCoverage coverage{};
     ChannelLayout layout{};
+    ContinuousValueStorageGeometry geometry{};
     std::shared_ptr<RangeNode<PersistedSampleRegion> const> regions{};
+    std::shared_ptr<std::vector<PersistedSampleRegion> const> logical_regions{};
+    std::shared_ptr<std::vector<ContinuousRegionStorageView> const> region_views{};
+    std::size_t physical_region_count = 0;
     std::size_t region_count = 0;
 };
 
@@ -202,9 +208,27 @@ void validate(PersistedSampleRegion const& region)
         throw std::invalid_argument(
             "sample region has an invalid channel layout");
     }
+    if (!is_registered_continuous_value_type(region.geometry.value_type)
+        || region.geometry.value_size_bytes == 0
+        || region.geometry.element_alignment == 0
+        || !std::has_single_bit(region.geometry.element_alignment)) {
+        throw std::invalid_argument(
+            "sample region has invalid continuous-value geometry");
+    }
     auto const frames = checked_frame_count(region.range);
-    auto const expected = checked_product(frames, channel_count(region.layout));
-    if (region.values.size() != expected) {
+    auto const values = checked_product(frames, channel_count(region.layout));
+    auto const expected_bytes = checked_product(
+        values, region.geometry.value_size_bytes);
+    auto const sample_geometry = *continuous_value_storage_geometry(
+        continuous_value_type_id_v<Sample>, std::nullopt);
+    auto const valid_sample_payload = region.geometry == sample_geometry
+        && region.continuous_values.empty()
+        && region.values.size() == values;
+    auto const valid_continuous_payload = region.values.empty()
+        && region.continuous_values.size() == expected_bytes
+        && region.continuous_values.alignment()
+            == region.geometry.element_alignment;
+    if (!valid_sample_payload && !valid_continuous_payload) {
         throw std::invalid_argument(
             "sample region payload does not match its range and layout");
     }
@@ -251,25 +275,36 @@ void validate(PersistedEventChunk const& chunk)
         .output = source.output,
         .range = range,
         .layout = source.layout,
-        .values = std::vector<Sample>(checked_product(frames, channels)),
+        .geometry = source.geometry,
+    };
+    auto const value_count = checked_product(frames, channels);
+    if (!source.values.empty()) {
+        result.values.resize(value_count);
+    } else {
+        result.continuous_values = PersistedContinuousStorage{
+            checked_product(value_count, source.geometry.value_size_bytes),
+            source.geometry.element_alignment};
+    }
+    auto copy_values = [&](std::size_t source_value,
+                           std::size_t target_value,
+                           std::size_t count) {
+        std::memcpy(
+            result.storage_data()
+                + target_value * source.geometry.value_size_bytes,
+            source.storage_data()
+                + source_value * source.geometry.value_size_bytes,
+            count * source.geometry.value_size_bytes);
     };
     if (source.layout.sample_layout == SampleStreamLayout::planar) {
         for (std::size_t channel = 0; channel < channels; ++channel) {
-            std::copy_n(
-                source.values.begin()
-                    + static_cast<std::ptrdiff_t>(
-                        channel * source_frames + frame_offset),
-                frames,
-                result.values.begin()
-                    + static_cast<std::ptrdiff_t>(channel * frames));
+            copy_values(
+                channel * source_frames + frame_offset,
+                channel * frames,
+                frames);
         }
     } else {
         auto const value_offset = checked_product(frame_offset, channels);
-        auto const value_count = checked_product(frames, channels);
-        std::copy_n(
-            source.values.begin() + static_cast<std::ptrdiff_t>(value_offset),
-            value_count,
-            result.values.begin());
+        copy_values(value_offset, 0, value_count);
     }
     return result;
 }
@@ -458,6 +493,37 @@ void for_each_intersecting(
     for_each_intersecting(root->left, query, fn);
     fn(root->record);
     for_each_intersecting(root->right, query, fn);
+}
+
+template<typename Record, typename Fn>
+void for_each_record(
+    std::shared_ptr<RangeNode<Record> const> const& root,
+    Fn&& fn)
+{
+    if (!root) return;
+    for_each_record(root->left, fn);
+    fn(*root->record);
+    for_each_record(root->right, fn);
+}
+
+[[nodiscard]] std::shared_ptr<
+    std::vector<ContinuousRegionStorageView> const>
+make_sample_region_views(
+    std::shared_ptr<std::vector<PersistedSampleRegion> const> const& regions)
+{
+    auto views = std::make_shared<std::vector<ContinuousRegionStorageView>>();
+    views->reserve(regions ? regions->size() : 0);
+    if (regions) {
+        for (auto const& region : *regions) {
+            views->push_back(ContinuousRegionStorageView{
+                .storage = const_cast<std::byte*>(region.storage_data()),
+                .range = region.range,
+                .geometry = region.geometry,
+                .channel_layout = region.layout,
+            });
+        }
+    }
+    return views;
 }
 
 template<typename Record>
@@ -667,13 +733,99 @@ template<typename Node>
 
 } // namespace
 
+PersistedContinuousStorage::PersistedContinuousStorage(
+    std::size_t size,
+    std::size_t alignment)
+    : alignment_(alignment)
+{
+    if (size == 0 || alignment == 0 || !std::has_single_bit(alignment)) {
+        throw std::invalid_argument(
+            "persisted continuous storage has invalid geometry");
+    }
+    storage_ = {
+        static_cast<std::byte*>(
+            ::operator new(size, std::align_val_t{alignment})),
+        Delete{alignment}};
+    size_ = size;
+    std::fill_n(storage_.get(), size_, std::byte{});
+}
+
+PersistedContinuousStorage::PersistedContinuousStorage(
+    PersistedContinuousStorage const& source)
+    : alignment_(source.alignment_)
+{
+    if (source.empty()) return;
+    storage_ = {
+        static_cast<std::byte*>(
+            ::operator new(source.size_, std::align_val_t{source.alignment_})),
+        Delete{source.alignment_}};
+    size_ = source.size_;
+    std::memcpy(storage_.get(), source.storage_.get(), size_);
+}
+
+PersistedContinuousStorage& PersistedContinuousStorage::operator=(
+    PersistedContinuousStorage const& source)
+{
+    if (this == &source) return *this;
+    if (source.empty()) {
+        storage_.reset();
+        size_ = 0;
+        alignment_ = alignof(std::max_align_t);
+        return *this;
+    }
+    PersistedContinuousStorage copy{source};
+    *this = std::move(copy);
+    return *this;
+}
+
+PersistedContinuousStorage::PersistedContinuousStorage(
+    PersistedContinuousStorage&& source) noexcept
+    : storage_(std::move(source.storage_))
+    , size_(std::exchange(source.size_, 0))
+    , alignment_(std::exchange(
+          source.alignment_, alignof(std::max_align_t)))
+{}
+
+PersistedContinuousStorage& PersistedContinuousStorage::operator=(
+    PersistedContinuousStorage&& source) noexcept
+{
+    if (this == &source) return *this;
+    storage_ = std::move(source.storage_);
+    size_ = std::exchange(source.size_, 0);
+    alignment_ = std::exchange(
+        source.alignment_, alignof(std::max_align_t));
+    return *this;
+}
+
+std::byte* PersistedSampleRegion::storage_data() noexcept
+{
+    return values.empty()
+        ? continuous_values.data()
+        : reinterpret_cast<std::byte*>(values.data());
+}
+
+std::byte const* PersistedSampleRegion::storage_data() const noexcept
+{
+    return values.empty()
+        ? continuous_values.data()
+        : reinterpret_cast<std::byte const*>(values.data());
+}
+
+std::size_t PersistedSampleRegion::storage_size_bytes() const noexcept
+{
+    return values.empty()
+        ? continuous_values.size()
+        : values.size() * sizeof(Sample);
+}
+
 Sample PersistedSampleRegion::at(
     GlobalIndex index,
     std::size_t channel) const noexcept
 {
     auto const frame = range.offset_of(index);
     auto const channels = channel_count(layout);
-    if (!frame || channel >= channels
+    if (geometry.value_type != continuous_value_type_id_v<Sample>
+        || !frame || channel >= channels
         || range.extent > std::numeric_limits<std::size_t>::max()) {
         return {};
     }
@@ -771,7 +923,18 @@ PersistedDataStore::Snapshot::find_sample_region(
         sample_outputs_,
         sample_output_levels_,
         PersistedDataStore::output_directory_index(output));
-    return selected ? find_record(selected->regions, index) : nullptr;
+    if (!selected) return nullptr;
+    if (selected->logical_regions) {
+        auto const found = std::ranges::find_if(
+            *selected->logical_regions,
+            [&](PersistedSampleRegion const& region) {
+                return region.range.contains(index);
+            });
+        return found == selected->logical_regions->end()
+            ? nullptr
+            : std::addressof(*found);
+    }
+    return find_record(selected->regions, index);
 }
 
 PersistedEventChunk const* PersistedDataStore::Snapshot::find_event_chunk(
@@ -806,12 +969,56 @@ void PersistedDataStore::Snapshot::for_each_sample_region(
         sample_outputs_,
         sample_output_levels_,
         PersistedDataStore::output_directory_index(output));
-    if (!selected) return;
-    range.for_each_signed_order_segment([&](GlobalIndexRange segment) {
-        for_each_intersecting(selected->regions, segment, [&](auto const& record) {
-            visitor(visitor_data, *record, intersection(record->range, segment));
+    if (!selected || !selected->logical_regions) return;
+    for (auto const& record : *selected->logical_regions) {
+        range.for_each_signed_order_segment([&](GlobalIndexRange requested) {
+            record.range.for_each_signed_order_segment(
+                [&](GlobalIndexRange stored) {
+                    auto const part = intersection(stored, requested);
+                    if (!part.empty()) visitor(visitor_data, record, part);
+                });
         });
-    });
+    }
+}
+
+std::span<PersistedSampleRegion const>
+PersistedDataStore::Snapshot::sample_regions(
+    PersistedOutputHandle output,
+    ChannelLayout layout) const noexcept
+{
+    if (!output.valid() || output.kind() != PortKind::sample
+        || PersistedDataStore::output_owner_token(output)
+            != output_owner_token_) {
+        return {};
+    }
+    auto const* selected = find_output<SampleOutputNode, SampleOutputState>(
+        sample_outputs_,
+        sample_output_levels_,
+        PersistedDataStore::output_directory_index(output));
+    return selected && selected->layout == layout && selected->logical_regions
+        ? std::span<PersistedSampleRegion const>{*selected->logical_regions}
+        : std::span<PersistedSampleRegion const>{};
+}
+
+std::span<ContinuousRegionStorageView const>
+PersistedDataStore::Snapshot::sample_region_views(
+    PersistedOutputHandle output,
+    ChannelLayout layout,
+    ContinuousValueStorageGeometry geometry) const noexcept
+{
+    if (!output.valid() || output.kind() != PortKind::sample
+        || PersistedDataStore::output_owner_token(output)
+            != output_owner_token_) {
+        return {};
+    }
+    auto const* selected = find_output<SampleOutputNode, SampleOutputState>(
+        sample_outputs_,
+        sample_output_levels_,
+        PersistedDataStore::output_directory_index(output));
+    return selected && selected->layout == layout
+            && selected->geometry == geometry && selected->region_views
+        ? std::span<ContinuousRegionStorageView const>{*selected->region_views}
+        : std::span<ContinuousRegionStorageView const>{};
 }
 
 void PersistedDataStore::Snapshot::for_each_event_chunk(
@@ -852,6 +1059,26 @@ IndexCoverage const* PersistedDataStore::Snapshot::find_sample_coverage(
         sample_output_levels_,
         PersistedDataStore::output_directory_index(output));
     return selected && selected->layout == layout
+        ? &selected->coverage
+        : nullptr;
+}
+
+IndexCoverage const* PersistedDataStore::Snapshot::find_sample_coverage(
+    PersistedOutputHandle output,
+    ChannelLayout layout,
+    ContinuousValueStorageGeometry geometry) const noexcept
+{
+    if (!output.valid() || output.kind() != PortKind::sample
+        || PersistedDataStore::output_owner_token(output)
+            != output_owner_token_) {
+        return nullptr;
+    }
+    auto const* selected = find_output<SampleOutputNode, SampleOutputState>(
+        sample_outputs_,
+        sample_output_levels_,
+        PersistedDataStore::output_directory_index(output));
+    return selected && selected->layout == layout
+            && selected->geometry == geometry
         ? &selected->coverage
         : nullptr;
 }
@@ -912,16 +1139,18 @@ void PersistedDataStore::Candidate::overwrite(PersistedSampleRegion record)
         successor_->sample_outputs_,
         successor_->sample_output_levels_,
         output_index);
-    if (current && current->layout != record.layout) {
+    if (current && (current->layout != record.layout
+            || current->geometry != record.geometry)) {
         throw std::invalid_argument(
-            "persisted sample output regions disagree on channel layout");
+            "persisted sample output regions disagree on layout or geometry");
     }
 
     auto root = current ? current->regions
                         : std::shared_ptr<RangeNode<PersistedSampleRegion> const>{};
-    auto count = current ? current->region_count : 0;
+    auto count = current ? current->physical_region_count : 0;
     auto coverage = current ? current->coverage : IndexCoverage{};
     auto const original_range = record.range;
+    auto original_record = record;
     original_range.for_each_signed_order_segment([&](GlobalIndexRange segment) {
         remove_range(root, count, segment);
         auto replacement = slice(record, segment);
@@ -933,15 +1162,47 @@ void PersistedDataStore::Candidate::overwrite(PersistedSampleRegion record)
     });
     coverage.include(original_range);
 
+    auto logical = std::make_shared<std::vector<PersistedSampleRegion>>();
+    logical->reserve(count);
+    if (current && current->logical_regions) {
+        for (auto const& existing : *current->logical_regions) {
+            auto remaining = IndexCoverage{existing.range};
+            remaining.exclude(original_range);
+            for (auto const retained : remaining) {
+                logical->push_back(slice(existing, retained));
+            }
+        }
+    }
+    logical->push_back(std::move(original_record));
+    std::ranges::stable_sort(
+        *logical,
+        [](PersistedSampleRegion const& left,
+            PersistedSampleRegion const& right) {
+            auto const left_begin =
+                SignedGlobalIndexOrder::key(left.range.begin);
+            auto const right_begin =
+                SignedGlobalIndexOrder::key(right.range.begin);
+            if (left_begin != right_begin) return left_begin < right_begin;
+            return left.range.extent > right.range.extent;
+        });
+    auto logical_const = std::shared_ptr<
+        std::vector<PersistedSampleRegion> const>{std::move(logical)};
+    auto region_views = make_sample_region_views(logical_const);
+
     auto const previous_count = current ? current->region_count : 0;
+    auto const logical_count = logical_const->size();
     successor_->sample_region_count_ =
-        successor_->sample_region_count_ - previous_count + count;
+        successor_->sample_region_count_ - previous_count + logical_count;
     auto state = std::make_shared<SampleOutputState const>(SampleOutputState{
         .output = record.output,
         .coverage = std::move(coverage),
         .layout = record.layout,
+        .geometry = record.geometry,
         .regions = std::move(root),
-        .region_count = count,
+        .logical_regions = std::move(logical_const),
+        .region_views = std::move(region_views),
+        .physical_region_count = count,
+        .region_count = logical_count,
     });
     successor_->sample_outputs_ = put_output<
         SampleOutputNode, SampleOutputState>(
@@ -1004,6 +1265,155 @@ void PersistedDataStore::Candidate::overwrite(PersistedEventChunk record)
         std::move(state));
 }
 
+void PersistedDataStore::Candidate::replace_sample_regions(
+    PersistedOutputHandle output,
+    ChannelLayout layout,
+    ContinuousValueStorageGeometry geometry,
+    IndexCoverage const& domain,
+    std::span<GlobalIndexRange const> logical_order,
+    std::vector<PersistedSampleRegion> regions)
+{
+    if (!successor_) throw std::logic_error("persisted data candidate is empty");
+    if (!store_->owns_output(output) || output.kind() != PortKind::sample) {
+        throw std::invalid_argument(
+            "sample Region batch requires an output handle from its data store");
+    }
+    for (auto const& region : regions) {
+        validate(region);
+        if (region.output != output || region.layout != layout
+            || region.geometry != geometry
+            || !domain.contains(region.range)) {
+            throw std::invalid_argument(
+                "sample Region batch lies outside its replacement domain");
+        }
+    }
+    if (std::ranges::any_of(
+            logical_order,
+            [](GlobalIndexRange region) { return region.empty(); })) {
+        throw std::invalid_argument(
+            "sample Region logical order contains an empty Region");
+    }
+
+    auto const output_index =
+        PersistedDataStore::output_directory_index(output);
+    auto const* current = find_output<SampleOutputNode, SampleOutputState>(
+        successor_->sample_outputs_,
+        successor_->sample_output_levels_,
+        output_index);
+    if (current && (current->layout != layout
+            || current->geometry != geometry)) {
+        throw std::invalid_argument(
+            "persisted sample output Regions disagree on layout or geometry");
+    }
+
+    auto const previous_size = current && current->logical_regions
+        ? current->logical_regions->size()
+        : 0;
+    std::vector<PersistedSampleRegion> retained;
+    retained.reserve(previous_size);
+    if (current && current->logical_regions) {
+        for (auto const& existing : *current->logical_regions) {
+            auto const intersects = domain.intersects(existing.range);
+            if (intersects && !domain.contains(existing.range)) {
+                throw std::invalid_argument(
+                    "sample Region replacement domain clips an old logical Region");
+            }
+            if (!intersects) retained.push_back(existing);
+        }
+    }
+
+    std::vector<bool> used_replacements(regions.size(), false);
+    std::vector<bool> used_retained(retained.size(), false);
+    std::vector<PersistedSampleRegion> next;
+    next.reserve(logical_order.size());
+    for (auto const expected : logical_order) {
+        auto const replacement = [&]() -> std::optional<std::size_t> {
+            for (std::size_t index = 0; index < regions.size(); ++index) {
+                if (!used_replacements[index]
+                    && regions[index].range == expected) {
+                    return index;
+                }
+            }
+            return std::nullopt;
+        }();
+        if (replacement) {
+            used_replacements[*replacement] = true;
+            next.push_back(std::move(regions[*replacement]));
+            continue;
+        }
+        auto const previous = [&]() -> std::optional<std::size_t> {
+            for (std::size_t index = 0; index < retained.size(); ++index) {
+                if (!used_retained[index]
+                    && retained[index].range == expected) {
+                    return index;
+                }
+            }
+            return std::nullopt;
+        }();
+        if (!previous && domain.intersects(expected)) {
+            throw std::invalid_argument(
+                "sample Region replacement cannot realize the published logical order");
+        }
+        if (!previous) continue;
+        used_retained[*previous] = true;
+        next.push_back(std::move(retained[*previous]));
+    }
+    if (std::ranges::contains(used_replacements, false)
+        || std::ranges::contains(used_retained, false)) {
+        throw std::invalid_argument(
+            "sample Region replacement has records outside the published logical order");
+    }
+
+    if (next.empty()) {
+        successor_->sample_region_count_ -= previous_size;
+        successor_->sample_outputs_ = erase_output_node<SampleOutputNode>(
+            successor_->sample_outputs_,
+            successor_->sample_output_levels_,
+            output_index);
+        return;
+    }
+
+    std::shared_ptr<RangeNode<PersistedSampleRegion> const> root{};
+    IndexCoverage coverage;
+    for (auto const& region : next) {
+        coverage.include(region.range);
+        region.range.for_each_signed_order_segment(
+            [&](GlobalIndexRange segment) {
+                root = put_record(
+                    root,
+                    std::make_shared<PersistedSampleRegion const>(
+                        slice(region, segment)));
+            });
+    }
+    auto logical = std::make_shared<std::vector<PersistedSampleRegion> const>(
+        std::move(next));
+    auto const logical_count = logical->size();
+    std::size_t physical_count = 0;
+    for_each_record(root, [&](PersistedSampleRegion const&) {
+        ++physical_count;
+    });
+    auto region_views = make_sample_region_views(logical);
+    successor_->sample_region_count_ =
+        successor_->sample_region_count_ - previous_size + logical_count;
+    auto state = std::make_shared<SampleOutputState const>(SampleOutputState{
+        .output = output,
+        .coverage = std::move(coverage),
+        .layout = layout,
+        .geometry = geometry,
+        .regions = std::move(root),
+        .logical_regions = std::move(logical),
+        .region_views = std::move(region_views),
+        .physical_region_count = physical_count,
+        .region_count = logical_count,
+    });
+    successor_->sample_outputs_ = put_output<
+        SampleOutputNode, SampleOutputState>(
+            successor_->sample_outputs_,
+            successor_->sample_output_levels_,
+            output_index,
+            std::move(state));
+}
+
 void PersistedDataStore::Candidate::erase_sample(
     PersistedOutputHandle output,
     GlobalIndexRange range,
@@ -1028,13 +1438,12 @@ void PersistedDataStore::Candidate::erase_sample(
     }
 
     auto root = current->regions;
-    auto count = current->region_count;
+    auto count = current->physical_region_count;
     range.for_each_signed_order_segment([&](GlobalIndexRange segment) {
         remove_range(root, count, segment);
     });
-    successor_->sample_region_count_ =
-        successor_->sample_region_count_ - current->region_count + count;
     if (count == 0) {
+        successor_->sample_region_count_ -= current->region_count;
         successor_->sample_outputs_ = erase_output_node<SampleOutputNode>(
             successor_->sample_outputs_,
             successor_->sample_output_levels_,
@@ -1043,12 +1452,28 @@ void PersistedDataStore::Candidate::erase_sample(
     }
     auto coverage = current->coverage;
     coverage.exclude(range);
+    auto logical = std::make_shared<std::vector<PersistedSampleRegion>>();
+    logical->reserve(count);
+    for_each_record(root, [&](PersistedSampleRegion const& retained) {
+        logical->push_back(retained);
+    });
+    auto logical_const = std::shared_ptr<
+        std::vector<PersistedSampleRegion> const>{std::move(logical)};
+    auto region_views = make_sample_region_views(logical_const);
+    auto const logical_count = logical_const->size();
+    successor_->sample_region_count_ =
+        successor_->sample_region_count_ - current->region_count
+        + logical_count;
     auto state = std::make_shared<SampleOutputState const>(SampleOutputState{
         .output = output,
         .coverage = std::move(coverage),
         .layout = layout,
+        .geometry = current->geometry,
         .regions = std::move(root),
-        .region_count = count,
+        .logical_regions = std::move(logical_const),
+        .region_views = std::move(region_views),
+        .physical_region_count = count,
+        .region_count = logical_count,
     });
     successor_->sample_outputs_ = put_output<
         SampleOutputNode, SampleOutputState>(

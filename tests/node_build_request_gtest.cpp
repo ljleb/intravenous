@@ -978,7 +978,7 @@ struct BackgroundSource {
     void propagate_forward_coverage(
         iv::PropagateForwardCoverageContext<BackgroundSource>& ctx) const
     {
-        ctx.output<"signal">().publish_coverage(index_coverage({{10, 20}}));
+        ctx.output<"signal">().publish_region(range(10, 20));
     }
 };
 
@@ -1014,8 +1014,8 @@ struct BackgroundTransform {
         iv::PropagateForwardCoverageContext<BackgroundTransform>& ctx) const
     {
         forward_sample_rate = ctx.sample_rate;
-        ctx.output<"samples-out">().publish_coverage(
-            ctx.input<"samples">().coverage());
+        ctx.output<"samples-out">().publish_regions(
+            ctx.input<"samples">().regions());
         ctx.output<"samples-out">().change(ctx.input<"samples">().changed());
         ctx.output<"events-out">().publish_coverage(
             ctx.input<"events">().coverage());
@@ -1030,6 +1030,43 @@ struct BackgroundTransform {
     }
 };
 
+template<class Context>
+concept ContinuousForwardOutputPublishesPositionalCoverage = requires(
+    Context const& context,
+    iv::IndexCoverage const& coverage) {
+    context.template output<"samples-out">().publish_coverage(coverage);
+};
+
+template<class Context>
+concept EventForwardOutputPublishesRegionList = requires(
+    Context const& context,
+    std::span<iv::GlobalIndexRange const> regions) {
+    context.template output<"events-out">().publish_regions(regions);
+};
+
+template<class Context>
+concept ContinuousForwardInputExposesRegions = requires(
+    Context const& context) {
+    context.template input<"samples">().regions();
+};
+
+template<class Context>
+concept EventForwardInputExposesRegions = requires(Context const& context) {
+    context.template input<"events">().regions();
+};
+
+using BackgroundTransformForwardContext =
+    iv::PropagateForwardCoverageContext<BackgroundTransform>;
+
+static_assert(!ContinuousForwardOutputPublishesPositionalCoverage<
+    BackgroundTransformForwardContext>);
+static_assert(!EventForwardOutputPublishesRegionList<
+    BackgroundTransformForwardContext>);
+static_assert(ContinuousForwardInputExposesRegions<
+    BackgroundTransformForwardContext>);
+static_assert(!EventForwardInputExposesRegions<
+    BackgroundTransformForwardContext>);
+
 struct BackgroundInputOnly {
     static constexpr auto inputs()
     {
@@ -1039,6 +1076,60 @@ struct BackgroundInputOnly {
         };
     }
     void tick_block(iv::TickBlockContext<BackgroundInputOnly> const&) const {}
+};
+
+struct BackgroundFFTRegionTransform {
+    static constexpr auto inputs()
+    {
+        return std::array{
+            iv::input<iv::FFTBlock>("in", iv::InputAccess::region),
+        };
+    }
+
+    static constexpr auto outputs()
+    {
+        return std::array{
+            iv::output<iv::FFTBlock>("out", iv::OutputProduction::region),
+        };
+    }
+
+    void constrain_ports(
+        iv::ConstrainPortsContext<BackgroundFFTRegionTransform>& context) const
+    {
+        context.input<"in">().size() = 2;
+        context.output<"out">().size() = 2;
+    }
+
+    void tock_coverage(
+        iv::TockCoverageContext<BackgroundFFTRegionTransform>& context) const
+    {
+        auto input = context.input<"in">().region();
+        auto output = context.output<"out">().region();
+        IV_ASSERT(input.range() == output.range(),
+            "FFT Region test received mismatched ranges");
+        for (std::size_t frame = 0; frame < input.frame_count(); ++frame) {
+            auto source = input.value(frame);
+            auto destination = output.value(frame);
+            std::ranges::copy(source, destination.begin());
+        }
+    }
+
+    void propagate_forward_coverage(
+        iv::PropagateForwardCoverageContext<
+            BackgroundFFTRegionTransform>& context) const
+    {
+        auto const regions = context.input<"in">().regions();
+        IV_ASSERT(regions.size() == 1,
+            "FFT Region input propagation lost its Region");
+        context.output<"out">().publish_region(regions.front());
+    }
+
+    void propagate_reverse_coverage(
+        iv::PropagateReverseCoverageContext<
+            BackgroundFFTRegionTransform>& context) const
+    {
+        context.input<"in">().require(context.output<"out">().required());
+    }
 };
 
 struct MissingBackgroundTock {
@@ -1351,18 +1442,7 @@ struct SampleData {
     };
 };
 
-iv::Sample read_sample(void const* data, iv::GlobalIndex index, std::size_t)
-{
-    return static_cast<SampleData const*>(data)->values[
-        static_cast<std::size_t>(index.bits())];
-}
-
 struct SampleWrites { std::array<iv::Sample, 8> values {}; };
-void write_sample(void* data, iv::GlobalIndex index, std::size_t, iv::Sample value)
-{
-    static_cast<SampleWrites*>(data)->values[
-        static_cast<std::size_t>(index.bits())] = value;
-}
 
 struct EventData {
     std::array<iv::TimedEvent, 4> events {{
@@ -1614,10 +1694,19 @@ TEST(BackgroundDspPorts, RandomAccessInputsExposeOnlyTheirPinnedViewsFromTickBlo
     auto const event_coverage = index_coverage({{0, 4}, {10, 14}});
     SampleData sample_data;
     EventData event_data;
-    std::array random_access_inputs {iv::RandomAccessSampleInputPort{
-        .data = &sample_data,
+    auto const sample_geometry = *iv::continuous_value_storage_geometry(
+        iv::continuous_value_type_id_v<iv::Sample>, std::nullopt);
+    std::array sample_regions {iv::ContinuousRegionStorageView{
+        .storage = reinterpret_cast<std::byte*>(sample_data.values.data()),
+        .range = range(0, 8),
+        .geometry = sample_geometry,
+        .channel_layout = iv::mono_planar_channel_layout,
+    }};
+    std::array random_access_inputs {iv::RandomAccessContinuousInputPort{
+        .regions = sample_regions.data(),
+        .region_count = sample_regions.size(),
         .coverage_value = &sample_coverage,
-        .read_sample = &read_sample,
+        .geometry = sample_geometry,
     }};
     std::array random_access_event_inputs {iv::RandomAccessEventInputPort{
         .data = &event_data,
@@ -1640,7 +1729,9 @@ TEST(BackgroundDspPorts, RandomAccessInputsExposeOnlyTheirPinnedViewsFromTickBlo
     static_assert(!HasCurrentBlockIndex<decltype(samples)>);
     static_assert(!HasBlock<decltype(samples)>);
     EXPECT_EQ(samples.coverage(), sample_coverage);
-    EXPECT_FLOAT_EQ(static_cast<float>(samples.at(index(2))), 2.0f);
+    ASSERT_EQ(samples.regions().size(), 1u);
+    EXPECT_FLOAT_EQ(
+        static_cast<float>(samples.regions()[0].at(index(2))), 2.0f);
 
     auto events = context.input<1>();
     static_assert(!HasCurrentEvents<decltype(events)>);
@@ -1664,15 +1755,31 @@ TEST(BackgroundDspPorts, TockContextExposesCoverageAndSampleEventBindings)
     EventData event_data;
     EventWrites event_writes;
 
-    std::array sample_inputs {iv::RandomAccessSampleInputPort{
-        .data = &sample_data,
-        .coverage_value = &input_coverage,
-        .read_sample = &read_sample,
+    auto const sample_geometry = *iv::continuous_value_storage_geometry(
+        iv::continuous_value_type_id_v<iv::Sample>, std::nullopt);
+    std::array sample_input_regions {iv::ContinuousRegionStorageView{
+        .storage = reinterpret_cast<std::byte*>(sample_data.values.data()),
+        .range = range(0, 8),
+        .geometry = sample_geometry,
+        .channel_layout = iv::mono_planar_channel_layout,
     }};
-    std::array sample_outputs {iv::TockSampleOutputPort{
-        .data = &sample_writes,
+    std::array sample_output_regions {iv::ContinuousRegionStorageView{
+        .storage = reinterpret_cast<std::byte*>(sample_writes.values.data()),
+        .range = range(2, 5),
+        .geometry = sample_geometry,
+        .channel_layout = iv::mono_planar_channel_layout,
+    }};
+    std::array sample_inputs {iv::RandomAccessContinuousInputPort{
+        .regions = sample_input_regions.data(),
+        .region_count = sample_input_regions.size(),
+        .coverage_value = &input_coverage,
+        .geometry = sample_geometry,
+    }};
+    std::array sample_outputs {iv::TockContinuousOutputPort{
+        .regions = sample_output_regions.data(),
+        .region_count = sample_output_regions.size(),
         .requested_coverage_value = &sample_request,
-        .write_sample = &write_sample,
+        .geometry = sample_geometry,
     }};
     std::array event_inputs {iv::RandomAccessEventInputPort{
         .data = &event_data,
@@ -1696,10 +1803,14 @@ TEST(BackgroundDspPorts, TockContextExposesCoverageAndSampleEventBindings)
     EXPECT_EQ(node.tock_sample_rate, 88200u);
 
     EXPECT_EQ(context.input<"samples">().coverage(), input_coverage);
+    auto const input_regions = context.input<"samples">().regions();
+    ASSERT_EQ(input_regions.size(), 1u);
     EXPECT_FLOAT_EQ(
-        static_cast<float>(context.input<"samples">().at(index(3))), 3.0f);
-    context.output<"samples-out">().write(index(3), 0.75f);
-    EXPECT_FLOAT_EQ(static_cast<float>(sample_writes.values[3]), 0.75f);
+        static_cast<float>(input_regions[0].at(index(3))), 3.0f);
+    auto output_regions = context.output<"samples-out">().regions();
+    ASSERT_EQ(output_regions.size(), 1u);
+    output_regions[0].at(index(3)) = 0.75f;
+    EXPECT_FLOAT_EQ(static_cast<float>(sample_writes.values[1]), 0.75f);
 
     std::vector<iv::GlobalIndex> visited;
     context.input<"events">().for_each(
@@ -1714,10 +1825,85 @@ TEST(BackgroundDspPorts, TockContextExposesCoverageAndSampleEventBindings)
     EXPECT_EQ(event_writes.events.front().time, index(12));
 }
 
+TEST(BackgroundDspPorts, RegionAccessUsesResolvedFFTBlockGeometry)
+{
+    auto const geometry = *iv::continuous_value_storage_geometry(
+        iv::ContinuousValueTypeId::fft_block, std::size_t{2});
+    auto const selected = range(40, 42);
+    iv::IndexCoverage const coverage{selected};
+    std::array input_values{
+        iv::FFTBin{1.0f, 2.0f},
+        iv::FFTBin{3.0f, 4.0f},
+        iv::FFTBin{5.0f, 6.0f},
+        iv::FFTBin{7.0f, 8.0f},
+    };
+    std::array<iv::FFTBin, 4> output_values{};
+    std::array input_regions{iv::ContinuousRegionStorageView{
+        .storage = reinterpret_cast<std::byte*>(input_values.data()),
+        .range = selected,
+        .geometry = geometry,
+        .channel_layout = iv::mono_planar_channel_layout,
+    }};
+    std::array output_regions{iv::ContinuousRegionStorageView{
+        .storage = reinterpret_cast<std::byte*>(output_values.data()),
+        .range = selected,
+        .geometry = geometry,
+        .channel_layout = iv::mono_planar_channel_layout,
+    }};
+    std::array inputs{iv::RandomAccessContinuousInputPort{
+        .regions = input_regions.data(),
+        .region_count = input_regions.size(),
+        .coverage_value = &coverage,
+        .geometry = geometry,
+    }};
+    std::array outputs{iv::TockContinuousOutputPort{
+        .regions = output_regions.data(),
+        .region_count = output_regions.size(),
+        .requested_coverage_value = &coverage,
+        .geometry = geometry,
+    }};
+    iv::TockCoverageContext<BackgroundFFTRegionTransform> context{
+        .inputs = inputs,
+        .outputs = outputs,
+    };
+
+    BackgroundFFTRegionTransform node;
+    iv::do_tock_coverage(node, context);
+    EXPECT_EQ(output_values, input_values);
+}
+
+TEST(BackgroundDspPorts, EmptyContinuousCoverageHasAnEmptyIteratorRange)
+{
+    iv::IndexCoverage const coverage;
+    iv::ContinuousCoverage<iv::Sample> const regions{
+        std::span<iv::ContinuousRegionStorageView const>{}, coverage};
+
+    EXPECT_TRUE(regions.empty());
+    EXPECT_EQ(regions.size(), 0u);
+    EXPECT_EQ(regions.begin(), regions.end());
+    EXPECT_EQ(regions.coverage(), coverage);
+}
+
 struct PublishedCoverage {
+    std::vector<iv::GlobalIndexRange> regions;
     iv::IndexCoverage coverage;
     iv::IndexCoverage changed;
 };
+void publish_regions(
+    void* data,
+    iv::GlobalIndexRange const* regions,
+    std::size_t region_count)
+{
+    auto& published = *static_cast<PublishedCoverage*>(data);
+    published.regions.clear();
+    if (region_count != 0) {
+        published.regions.assign(regions, regions + region_count);
+    }
+    published.coverage = {};
+    for (auto const region : published.regions) {
+        published.coverage.include(region);
+    }
+}
 void publish_coverage(void* data, iv::IndexCoverage const& coverage)
 {
     static_cast<PublishedCoverage*>(data)->coverage = coverage;
@@ -1739,10 +1925,13 @@ TEST(BackgroundDspPorts, ForwardAndReverseContextsKeepExactDisjointCoverage)
     auto const sample_changed = index_coverage({{12, 14}, {45, 47}});
     auto const event_coverage = index_coverage({{100, 120}});
     auto const event_changed = index_coverage({{108, 109}});
+    std::array sample_regions {range(10, 20), range(40, 50)};
     PublishedCoverage sample_output;
     PublishedCoverage event_output;
     iv::IndexCoverage const empty_output_coverage;
     std::array input_changes {iv::InputCoverageChange{
+        .region_ranges_value = sample_regions.data(),
+        .region_range_count = sample_regions.size(),
         .coverage_value = &sample_coverage, .changed_value = &sample_changed,
     }};
     std::array event_input_changes {iv::InputCoverageChange{
@@ -1751,7 +1940,7 @@ TEST(BackgroundDspPorts, ForwardAndReverseContextsKeepExactDisjointCoverage)
     std::array output_changes {iv::OutputCoverageChange{
         .data = &sample_output,
         .previous_coverage_value = &empty_output_coverage,
-        .publish_coverage_value = &publish_coverage,
+        .publish_regions_value = &publish_regions,
         .publish_changed_value = &publish_changed,
     }};
     std::array event_output_changes {iv::OutputCoverageChange{
@@ -1824,7 +2013,7 @@ struct DefaultPropagationNode {
         iv::PropagateForwardCoverageContext<DefaultPropagationNode>& context) const
     {
         auto output = context.output<"output">();
-        output.publish_coverage(output.previous_coverage());
+        output.publish_regions(output.previous_regions());
         if (context.local_state_changed
             || !context.input<"input">().changed().empty()) {
             output.change(output.previous_coverage());
@@ -1837,6 +2026,7 @@ TEST(BackgroundDspPorts, ExactForwardPropagationRetainsCoverageAndInvalidatesIt)
     auto const input_coverage = index_coverage({{10, 20}, {50, 60}});
     auto const input_changed = index_coverage({{12, 13}});
     auto const previous_output = index_coverage({{100, 120}, {200, 220}});
+    std::array previous_regions {range(100, 120), range(200, 220)};
     PublishedCoverage captured;
     std::array inputs {iv::InputCoverageChange{
         .coverage_value = &input_coverage,
@@ -1844,8 +2034,10 @@ TEST(BackgroundDspPorts, ExactForwardPropagationRetainsCoverageAndInvalidatesIt)
     }};
     std::array outputs {iv::OutputCoverageChange{
         .data = &captured,
+        .previous_region_ranges_value = previous_regions.data(),
+        .previous_region_range_count = previous_regions.size(),
         .previous_coverage_value = &previous_output,
-        .publish_coverage_value = &publish_coverage,
+        .publish_regions_value = &publish_regions,
         .publish_changed_value = &publish_changed,
     }};
     DefaultPropagationNode node;
@@ -1857,6 +2049,9 @@ TEST(BackgroundDspPorts, ExactForwardPropagationRetainsCoverageAndInvalidatesIt)
     iv::do_propagate_forward_coverage(node, context);
 
     EXPECT_EQ(captured.coverage, previous_output);
+    EXPECT_EQ(captured.regions,
+        (std::vector<iv::GlobalIndexRange>{
+            range(100, 120), range(200, 220)}));
     EXPECT_EQ(captured.changed, previous_output);
 }
 

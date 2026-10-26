@@ -157,11 +157,11 @@ bounded non-allocating iterator. Persisted roots, background transactions, and n
 coverage views therefore use the same positional algebra without flattening a
 persistent store-specific representation into a vector.
 
-Data-bearing random-access samples use the distinct `SampleCoverage` algebra described
-by [Random-Access Port Data Direction](./random_access_port_data_direction.md).
-`SampleCoverage` preserves its `SampleRegion` objects, their contiguous backing,
-overlap, multiplicity, and optional ordering contract. It must not be normalized as a
-positional set merely because both concepts use the word coverage.
+Data-bearing random-access continuous values use `ContinuousCoverage<Value>`, as
+described by [Random-Access Port Data Direction](./random_access_port_data_direction.md).
+The view preserves its `ContinuousRegion<Value>` objects, contiguous backing,
+overlap, multiplicity, and ordering contract. The runtime must not normalize this
+list as a positional set.
 
 The integer indexing vocabulary is therefore:
 
@@ -171,8 +171,8 @@ GlobalIndexRange
 FractionalGlobalIndex
 FractionalGlobalIndexRange
 IndexCoverage
-SampleRegion
-SampleCoverage
+ContinuousRegion<Value>
+ContinuousCoverage<Value>
 ```
 
 `FractionalGlobalIndex` may itself locate execution or be transported as a continuous
@@ -187,9 +187,9 @@ wrapping operations and must not carry LLVM `nuw` or `nsw` promises. Generated a
 runtime ABIs preserve the exact bits.
 
 Event chunks are indexed and ordered relative to an explicit chunk/query origin.
-Fixed-width sample pages are not part of the target sample representation; sample
-persistence migrates directly to `SampleRegion`/`SampleCoverage` rather than inventing
-wrap-aware page-number arithmetic.
+Fixed-width sample pages are not part of the continuous representation.
+`PersistedSampleRegion` owns retained bytes. `ContinuousRegionStorageView` binds those
+bytes to `ContinuousRegion<Value>` and `ContinuousCoverage<Value>`.
 
 Generation cutover and state migration describe surviving timeline data relative to a
 cutover origin or by modular ranges. Reload logic must not classify inherited data by

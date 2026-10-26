@@ -7,10 +7,9 @@ _Status: current design direction for synchronous whole-project graph compilatio
 
 > **Random-access representation boundary:**
 > [Random-Access Port Data, Audio Value Types, And Input Contract Direction](./random_access_port_data_direction.md)
-> defines the future node-facing contiguous `SampleRegion`/`SampleCoverage` API.
-> Canonical persisted storage already uses contiguous sample-region records and
-> explicit-range event chunks; those store-internal records do not prematurely become
-> the node-facing API.
+> defines `ContinuousRegion<Value>` and `ContinuousCoverage<Value>` as the node-facing
+> continuous views. `PersistedSampleRegion` and `PersistedEventChunk` remain owning
+> runtime records. `ContinuousRegionStorageView` is their non-owning callback ABI.
 
 Related documents:
 

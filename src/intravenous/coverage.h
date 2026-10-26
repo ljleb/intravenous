@@ -17,7 +17,8 @@ namespace iv {
 
 // Exact positional coverage in the circular GlobalIndex domain. This is set
 // algebra: overlap and multiplicity are intentionally discarded. Data-bearing
-// random-access sample regions use the distinct SampleCoverage algebra.
+// random-access continuous values use the distinct ContinuousCoverage<Value>
+// view, which preserves its logical Region list.
 //
 // The canonical ranges form an immutable path-copied AVL tree in signed global
 // index order. IndexCoverage copies therefore share their complete history,

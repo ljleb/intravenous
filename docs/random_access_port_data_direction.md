@@ -1,10 +1,10 @@
 # Random-Access Port Data, Audio Value Types, And Input Contract Direction
 
-_Status: planned port-contract and storage direction. This document supersedes the
-page-based random-access sample representation and the requirement that data-bearing
-sample coverage regions be disjoint in the older coverage/storage notes. The
-canonical persisted store has moved to explicit sample regions/event chunks; the
-node-facing `SampleRegion`/`SampleCoverage` API remains to be implemented._
+_Status: normative port and storage direction. The active Front 3 source implements
+the node-facing contract through `ContinuousRegion<Value>`,
+`WritableContinuousRegion<Value>`, `ContinuousCoverage<Value>`, and
+`WritableContinuousCoverage<Value>`. Collaborator build and test verification is
+pending._
 
 Related documents:
 
@@ -71,6 +71,34 @@ Within both `tick*()` and `tock*()` contexts:
 
 The runtime/compiler may still use whatever ownership/indexing structures are useful
 internally, but those structures are below the authored random-access contract.
+
+### Coverage outputs receive pre-allocated Regions
+
+A Coverage continuous output exposes a fixed, pre-allocated list of writable Region
+views to its `tock_coverage()` callback. The output's forward propagation callback
+publishes the complete ordered list of logical Region ranges, including overlapping
+and duplicate ranges. The runtime derives the positional `IndexCoverage` union used
+for change and demand propagation from that list. The union does not replace the list.
+
+After forward and reverse propagation have completed, the runtime selects the Regions
+required by the transaction and allocates their descriptors and contiguous backing.
+This happens before generated background evaluation calls `tock_coverage()`. The
+callback fills the supplied buffers. It cannot append a Region, change a Region range,
+or allocate output backing. A Region continuous output uses the same representation
+with exactly one Region.
+
+Each Region has an independent writable storage range. Two Regions whose logical
+ranges overlap must not alias the same value storage for their overlapping positions;
+the two values are separate contributions. The runtime may place several Regions in
+disjoint byte ranges of one larger allocation, but this physical allocation choice
+does not make their value storage shared.
+
+If any demand intersects a logical Region, the runtime retains that Region's complete
+range. It must not expose a clipped intersection as a new logical Region. This keeps
+the node-facing Region list independent of transaction request boundaries. A node
+whose Region ranges depend on data values must determine and retain those ranges
+before forward propagation; it cannot discover the output shape while writing the
+output values.
 
 ## 2. Coverage regions may overlap
 
@@ -881,13 +909,11 @@ Consequences include:
 - FFT/convolution and similar consumers can require Region input and pass its
   contiguous storage directly to libraries that require it.
 
-The executor-owned `PersistedDataStore` provides the accepted retained
-owner/versioning/publication boundary. It publishes one coherent immutable root whose
-sample outputs are indexed contiguous `PersistedSampleRegion` records and whose event
-outputs are indexed explicit-range `PersistedEventChunk` records. That internal
-retained representation does not preempt the node-facing `SampleRegion` and
-`SampleCoverage` API defined here: the store converts/binds retained sample regions to
-that port shape at the runtime boundary.
+The executor-owned `PersistedDataStore` provides the retained ownership, version, and
+publication boundary. It publishes one coherent immutable root. Continuous outputs
+use contiguous `PersistedSampleRegion` records. Event outputs use explicit-range
+`PersistedEventChunk` records. `PersistedDataStore::Snapshot` binds the continuous
+records to `ContinuousRegionStorageView` at the runtime boundary.
 
 ## 10. Region count is evaluation data, not realtime layout data
 
@@ -910,14 +936,66 @@ coverage/content changes
 
 This does not change `NodeLayout` or force `NodeStorage` replacement.
 
-## 11. Migration boundary from the current implementation
+## 11. Current source boundary
 
-The current repository's canonical persisted store now uses contiguous
-`PersistedSampleRegion` records and explicit-range `PersistedEventChunk` records.
-Node-facing random-access sample APIs still use positional `IndexCoverage` plus
-per-value access rather than the `SampleRegion`/`SampleCoverage` contract described
-here. That remaining boundary is the next representation migration; the
-store-internal record type is not a substitute for the authored port API.
+The active Front 3 source carries logical Region lists through propagation, storage
+selection, background evaluation, persisted publication, and Tick random-access
+materialization. `ContinuousRegionStorageView` is the reflected non-owning record.
+The four typed facades named in the status expose that record to node code.
+
+For a Random Access continuous input, `build_background_storage_plan()` keeps direct
+sample routes only when one source view already has the input port's complete channel
+layout. A connection that needs channel tiling, permutation, or conversion uses a
+`SampleMaterializationPlan` with the target layout. The callback therefore receives a
+complete Region buffer, not unrelated mono buffers that only cover the same logical
+positions.
+
+`BackgroundConnectionPlan::sample_projections` retains the semantic contribution
+boundaries created when configured sample connections normalize into one target-port
+connection. Source channels inside one `SampleProjectionPlan` form one complete value,
+so their Region ranges intersect. Different `SampleProjectionPlan` records remain
+different Region contributions. Their ranges do not intersect with each other merely
+because storage planning normalized them into one connection.
+
+A `RegionInputConfig` accepts at most one such `SampleProjectionPlan`. More than one
+projection creates more than one logical contribution, even if every source output is
+a Region output or the ranges are equal. `populate_background_topology()` rejects that
+connection before runtime storage planning.
+
+When a consumer requests sorted Coverage, the runtime uses stable sorting. The
+canonical key orders Region begins in signed order and orders equal begins by larger
+extent first. Exact duplicate ranges retain their producer order.
+
+The authored forward-propagation facade also separates continuous and event
+publication. A continuous output exposes `publish_region()` and `publish_regions()`.
+An event output exposes `publish_coverage()`. The shared reflected record retains both
+function pointers for generated execution, but the typed node API cannot select the
+wrong representation.
+
+`IndexCoverage` remains the positional union for demand and invalidation. It does not
+replace the logical Region list. `PersistedSampleRegion` remains an owning runtime
+record and does not become a node-facing port type.
+
+`BackgroundStorageRealization::seal()` validates externally supplied continuous
+storage against the full planned `ChannelLayout` and `ContinuousValueStorageGeometry`.
+It also derives coverage from the supplied `ContinuousRegionStorageView` list and
+requires that list to cover every selected position. A summary `IndexCoverage` cannot
+claim positions that have no matching Region buffer.
+
+`BackgroundCoverageState::Migration::commit()` reconstructs a changed continuous
+input with the same route and projection rules as
+`BackgroundPropagationWorkspace`. Its `InputCoverageChangeRequest` carries the
+current logical Region list as well as the positional union. A stable-input rewire
+therefore cannot erase Region decomposition before the reconciliation callback.
+
+`TickMaterializedSampleInput` carry-forward also retains complete logical Regions.
+For a previous `TickMaterializedSampleRegion`, any intersecting demand retains the
+whole Region only when changed coverage does not touch it. A touched Region is
+recomputed. The runtime does not keep a positional prefix or suffix of that Region.
+
+The source also retains one explicit limitation. Background contextual replay of a
+Sequential continuous input still supports only `Sample` at project rate. This is a
+Front 7 replay boundary, not a Region or Coverage representation rule.
 
 Migration should preserve the broader architectural invariants already established:
 
@@ -929,6 +1007,6 @@ Migration should preserve the broader architectural invariants already establish
 - connection validation rejects requirements the producer cannot satisfy directly
   unless an explicit adaptation/recording/materialization policy exists.
 
-Persisted-data ownership/version publication remains an executor concern. Binding it
-to the future node-facing views must not reintroduce storage record boundaries into
-the authored port contract.
+Persisted-data ownership and version publication remain executor concerns. The
+runtime binding must not expose physical storage-tree boundaries as authored Region
+boundaries.

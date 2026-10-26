@@ -367,6 +367,7 @@ void finalize_background_operations(void* opaque)
 }
 
 struct BackgroundExecutionCapture {
+    std::vector<iv::GlobalIndexRange> regions{};
     iv::IndexCoverage coverage{};
     iv::IndexCoverage changed{};
     std::vector<std::pair<iv::GlobalIndex, float>> samples{};
@@ -461,26 +462,26 @@ void capture_generated_tick_events(
         read & (storage.event_capacity - 1)].time;
 }
 
-void capture_background_coverage(
-    void* opaque, iv::IndexCoverage const& coverage)
+void capture_background_regions(
+    void* opaque,
+    iv::GlobalIndexRange const* regions,
+    std::size_t region_count)
 {
-    static_cast<BackgroundExecutionCapture*>(opaque)->coverage = coverage;
+    auto& capture = *static_cast<BackgroundExecutionCapture*>(opaque);
+    capture.regions.clear();
+    if (region_count != 0) {
+        capture.regions.assign(regions, regions + region_count);
+    }
+    capture.coverage = {};
+    for (auto const region : capture.regions) {
+        capture.coverage.include(region);
+    }
 }
 
 void capture_background_change(
     void* opaque, iv::IndexCoverage const& changed)
 {
     static_cast<BackgroundExecutionCapture*>(opaque)->changed = changed;
-}
-
-void capture_background_sample(
-    void* opaque,
-    iv::GlobalIndex index,
-    std::size_t,
-    iv::Sample sample)
-{
-    static_cast<BackgroundExecutionCapture*>(opaque)->samples.emplace_back(
-        index, static_cast<float>(sample));
 }
 
 struct ConfiguredProbeStateMirror {
@@ -3150,7 +3151,11 @@ struct BackgroundExecutionProbe {
             .begin = iv::GlobalIndex::from_bits(10),
             .extent = 3,
         }};
-        context.template output<"out">().publish_coverage(selected);
+        context.template output<"out">().publish_region(
+            iv::GlobalIndexRange{
+                .begin = iv::GlobalIndex::from_bits(10),
+                .extent = 3,
+            });
         context.template output<"out">().change(selected);
     }
 
@@ -3160,12 +3165,14 @@ struct BackgroundExecutionProbe {
         auto& state = context.tock_state();
         ++state.calls;
         state.sample_rate = context.sample_rate;
-        auto output = context.template output<"out">();
-        for (auto const region : output.requested_coverage()) {
-            for (std::uint64_t offset = 0; offset < region.extent; ++offset) {
-                auto const position = region.begin.advanced_by(offset);
-                output.write(position,
-                    iv::Sample{static_cast<float>(position.signed_value())});
+        auto output = context.template output<"out">().regions();
+        for (auto region : output) {
+            for (std::uint64_t offset = 0;
+                 offset < region.range().extent;
+                 ++offset) {
+                auto const position = region.range().begin.advanced_by(offset);
+                region.at(position) =
+                    iv::Sample{static_cast<float>(position.signed_value())};
             }
         }
     }
@@ -6011,7 +6018,11 @@ struct NativeBatchBackgroundProbe {
                 .begin = iv::GlobalIndex::from_bits(lane.node().id),
                 .extent = context.size(),
             }};
-            lane.template output<"out">().publish_coverage(selected);
+            lane.template output<"out">().publish_region(
+                iv::GlobalIndexRange{
+                    .begin = iv::GlobalIndex::from_bits(lane.node().id),
+                    .extent = context.size(),
+                });
             lane.template output<"out">().change(selected);
         }
     }
@@ -6068,7 +6079,11 @@ struct NativeBatchTockProbe {
                 .begin = iv::GlobalIndex::from_bits(lane.node().id),
                 .extent = context.size(),
             }};
-            lane.template output<"out">().publish_coverage(selected);
+            lane.template output<"out">().publish_region(
+                iv::GlobalIndexRange{
+                    .begin = iv::GlobalIndex::from_bits(lane.node().id),
+                    .extent = context.size(),
+                });
             lane.template output<"out">().change(selected);
         }
     }
@@ -8879,7 +8894,7 @@ TEST_F(GraphJitRuntimeFixture, GeneratedBackgroundRootsUseSuppliedBatchBindings)
     std::array output_changes{iv::OutputCoverageChange{
         .data = &capture,
         .previous_coverage_value = &empty,
-        .publish_coverage_value = &capture_background_coverage,
+        .publish_regions_value = &capture_background_regions,
         .publish_changed_value = &capture_background_change,
     }};
     std::array node_frames{iv::graph_jit::BackgroundNodeCall{
@@ -8903,10 +8918,23 @@ TEST_F(GraphJitRuntimeFixture, GeneratedBackgroundRootsUseSuppliedBatchBindings)
     EXPECT_EQ(operation_hooks.finalize_calls, 0u);
 
     auto const requested = index_coverage({{10, 13}});
-    std::array outputs{iv::TockSampleOutputPort{
-        .data = &capture,
+    auto const sample_geometry = *iv::continuous_value_storage_geometry(
+        iv::continuous_value_type_id_v<iv::Sample>, std::nullopt);
+    std::array<iv::Sample, 3> output_values{};
+    std::array output_regions{iv::ContinuousRegionStorageView{
+        .storage = reinterpret_cast<std::byte*>(output_values.data()),
+        .range = iv::GlobalIndexRange{
+            .begin = iv::GlobalIndex::from_bits(10),
+            .extent = output_values.size(),
+        },
+        .geometry = sample_geometry,
+        .channel_layout = iv::mono_planar_channel_layout,
+    }};
+    std::array outputs{iv::TockContinuousOutputPort{
+        .regions = output_regions.data(),
+        .region_count = output_regions.size(),
         .requested_coverage_value = &requested,
-        .write_sample = &capture_background_sample,
+        .geometry = sample_geometry,
     }};
     node_frames[0].activity = iv::graph_jit::BackgroundNodeActivity::evaluate;
     node_frames[0].tock = iv::ReflectedNodeTockCoverageContext{
@@ -8926,13 +8954,9 @@ TEST_F(GraphJitRuntimeFixture, GeneratedBackgroundRootsUseSuppliedBatchBindings)
     EXPECT_EQ(operation_hooks.calls_seen_by_finalize, 1u);
     EXPECT_EQ(state->calls, 1u);
     EXPECT_EQ(state->sample_rate, 88200u);
-    ASSERT_EQ(capture.samples.size(), 3u);
-    EXPECT_EQ(capture.samples[0],
-        (std::pair<iv::GlobalIndex, float>{index(10), 10.0f}));
-    EXPECT_EQ(capture.samples[1],
-        (std::pair<iv::GlobalIndex, float>{index(11), 11.0f}));
-    EXPECT_EQ(capture.samples[2],
-        (std::pair<iv::GlobalIndex, float>{index(12), 12.0f}));
+    EXPECT_FLOAT_EQ(output_values[0].value, 10.0f);
+    EXPECT_FLOAT_EQ(output_values[1].value, 11.0f);
+    EXPECT_FLOAT_EQ(output_values[2].value, 12.0f);
 
     auto const& plan = compiled.compiled_graph->background_evaluation_plan;
     iv::BackgroundCoverageState coverage(
@@ -9005,13 +9029,13 @@ TEST_F(GraphJitRuntimeFixture, NativeBackgroundCallbacksReceiveReadyFrontierBatc
     std::array first_changes{iv::OutputCoverageChange{
         .data = &first_capture,
         .previous_coverage_value = &empty,
-        .publish_coverage_value = &capture_background_coverage,
+        .publish_regions_value = &capture_background_regions,
         .publish_changed_value = &capture_background_change,
     }};
     std::array second_changes{iv::OutputCoverageChange{
         .data = &second_capture,
         .previous_coverage_value = &empty,
-        .publish_coverage_value = &capture_background_coverage,
+        .publish_regions_value = &capture_background_regions,
         .publish_changed_value = &capture_background_change,
     }};
     std::array node_frames{

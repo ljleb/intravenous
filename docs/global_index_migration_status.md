@@ -51,8 +51,9 @@ Completed internal milestones:
 
 Work outside this completed feature boundary:
 
-- the future node-facing `SampleRegion`/`SampleCoverage` port algebra remains a
-  separate front from the store-internal `PersistedSampleRegion` representation; and
+- Front 3 now supplies the separate node-facing `ContinuousRegion<Value>` and
+  `ContinuousCoverage<Value>` views over `ContinuousRegionStorageView`; the owning
+  `PersistedSampleRegion` record remains a runtime storage type; and
 - compiler and test-suite verification of the coherent source, test, and normative
   documentation migration remains pending the co-author's requested build/test pass.
 
@@ -64,7 +65,8 @@ rejecting or historically describing that superseded representation.
 ## Friction discovered at persisted storage
 
 Planned assumption: the strong-index migration could pass through the existing
-persisted store before the sample Region/SampleCoverage front replaced sample pages.
+persisted store before Front 3 replaced sample pages with the continuous
+Region/Coverage representation.
 
 Observed constraint: `PersistedPageStore` gives samples and events the same
 `uint64 index / page_width` directory and page key. That calculation is neither a
@@ -78,13 +80,13 @@ seam-splitting logic would spread through transaction ingestion, playback, stora
 realization, page validation, and tests, only to be deleted from the sample half in the
 next front.
 
-Accepted dependency change: the persisted-store replacement is now part of this
+Accepted dependency change: the persisted-store replacement became part of this
 feature rather than a later prerequisite. The canonical store has one coherent
-sample/event publication root, but samples and events have distinct record types and
-range trees. Store-internal contiguous sample records deliberately do not introduce
-the future node-facing `SampleCoverage` API early. Background transaction and
-persisted-playback migration proceed against the new records rather than repairing the
-shared page quotient.
+sample/event publication root, but continuous values and events have distinct record
+types and range trees. Front 3 now binds retained `PersistedSampleRegion` storage to
+the node-facing `ContinuousCoverage<Value>` view. Background transaction and
+persisted-playback migration use these records rather than the deleted shared page
+quotient.
 
 ## Friction discovered in persisted coverage metadata
 
@@ -106,9 +108,9 @@ at every publication or introduce a second positional-coverage interface.
 Accepted dependency change: keep the one `IndexCoverage` algebra and represent it as
 an immutable persistent interval tree with a bounded non-allocating ordered iterator.
 Copies share a root; include, exclude, union, intersection, and difference path-copy
-or merge tree nodes; store snapshots, background callback views, and Tick callback
-views continue to expose the same `IndexCoverage` base interface. `SampleCoverage`
-remains the separate future data-bearing sample algebra. No store-only compatibility
+or merge tree nodes. Store snapshots, background callback views, and Tick callback
+views continue to expose the same `IndexCoverage` positional interface. The distinct
+data-bearing interface is `ContinuousCoverage<Value>`. No store-only compatibility
 coverage type or publication-time vector flattening is introduced.
 
 Implementation status: the active working tree now contains that representation and

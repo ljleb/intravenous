@@ -433,6 +433,13 @@ namespace iv::details {
             Node, static_input_declaration_index<Node, Name>()>();
     }
 
+    template<typename Node, fixed_string Name>
+    consteval InputAccessKind static_input_port_access()
+    {
+        return static_input_port_access_at<
+            Node, static_input_declaration_index<Node, Name>()>();
+    }
+
     // Background callback contexts contain only background ports. Convert a declaration's
     // storage sample-port index to its compact background-port index so
     // access callbacks never receive fake realtime placeholders.
@@ -473,6 +480,13 @@ namespace iv::details {
     consteval bool static_output_port_is_tock()
     {
         return static_output_port_is_tock_at<
+            Node, static_output_declaration_index<Node, Name>()>();
+    }
+
+    template<typename Node, fixed_string Name>
+    consteval OutputProductionKind static_output_port_production()
+    {
+        return static_output_port_production_at<
             Node, static_output_declaration_index<Node, Name>()>();
     }
 

@@ -41,30 +41,40 @@ constexpr void for_each_range_intersection(
     }
 }
 
-// One immutable contiguous materialized range. Successive snapshots share
-// these records: a record carried into a later snapshot may expose a narrower
-// range of the same storage, so carrying it forward copies no samples.
+// One immutable contiguous logical Region. Successive snapshots share whole
+// records. Carry-forward never clips one Region into transaction-sized pieces.
 struct TickMaterializedSampleRegion {
     GlobalIndexRange range{};
-    // Channel-major values with storage_frames frames per materialized
-    // channel. range.begin is frame first_frame of that storage.
+    // Native-layout values with storage_frames frames. range.begin is frame
+    // first_frame of that storage when an owner is shared across snapshots.
     std::shared_ptr<std::vector<Sample> const> values{};
+    std::shared_ptr<PersistedContinuousStorage const> continuous_values{};
     std::size_t storage_frames = 0;
     std::size_t first_frame = 0;
 
-    [[nodiscard]] Sample const* channel_frames(
-        std::size_t channel_slot) const noexcept
+    [[nodiscard]] std::byte const* storage_data() const noexcept
     {
-        return values->data() + channel_slot * storage_frames + first_frame;
+        return values
+            ? reinterpret_cast<std::byte const*>(values->data())
+            : continuous_values ? continuous_values->data() : nullptr;
     }
+
 };
 
 struct TickMaterializedSampleInput {
     graph_jit::BackgroundPortIndex port = 0;
     ChannelLayout layout{};
+    ContinuousValueStorageGeometry geometry =
+        *continuous_value_storage_geometry(
+            continuous_value_type_id_v<Sample>, std::nullopt);
     std::vector<std::size_t> channels{};
-    // Disjoint records in signed-canonical order. coverage is their union.
+    // Logical producer order. Records may overlap or be exact duplicates;
+    // coverage is their positional union.
     std::vector<TickMaterializedSampleRegion> regions{};
+    // Node-facing descriptors in the same logical order as regions. They
+    // point into the shared immutable owners above and preserve overlapping
+    // or duplicate logical Regions.
+    std::vector<ContinuousRegionStorageView> region_views{};
     IndexCoverage coverage{};
 
     [[nodiscard]] bool has_channel(std::size_t channel) const noexcept;
@@ -118,8 +128,26 @@ struct TickMaterializedEventInput {
         VisitIndexedEvent visitor) const;
 };
 
-// Builds one input from a channel-major value vector over coverage's
-// signed-canonical iteration order, as a background transaction produces it.
+// Builds one input from Region-major native-layout values. Each Region owns
+// one independent contiguous payload even when logical ranges overlap.
+[[nodiscard]] TickMaterializedSampleInput make_tick_materialized_sample_input(
+    graph_jit::BackgroundPortIndex port,
+    ChannelLayout layout,
+    std::vector<std::size_t> channels,
+    std::vector<GlobalIndexRange> regions,
+    std::vector<Sample> values);
+
+[[nodiscard]] TickMaterializedSampleInput
+make_tick_materialized_continuous_input(
+    graph_jit::BackgroundPortIndex port,
+    ChannelLayout layout,
+    ContinuousValueStorageGeometry geometry,
+    std::vector<std::size_t> channels,
+    std::vector<GlobalIndexRange> regions,
+    std::vector<std::byte> values);
+
+// Compatibility helper for callers whose source is positional coverage and
+// therefore has no overlapping or duplicate Region decomposition.
 [[nodiscard]] TickMaterializedSampleInput make_tick_materialized_sample_input(
     graph_jit::BackgroundPortIndex port,
     ChannelLayout layout,

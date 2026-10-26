@@ -2229,15 +2229,24 @@ std::expected<PackageImportPlan, std::string> plan_package_imports(
                     "skip_block_batch",
                     CallbackImportAbi::batch);
             }
-            if (implementation.combine_sequential_input_values) {
-                callbacks.combine_sequential_input_values = add_callback(
-                    package,
-                    implementation.combine_sequential_input_values->getName().str(),
-                    primitive_callback_import_symbol(
-                        i, "combine_sequential_input_values"),
-                    "combine_sequential_input_values",
-                    CallbackImportAbi::sequential_combine);
-            }
+        }
+        if (implementation.initialize_sequential_input) {
+            callbacks.initialize_sequential_input = add_callback(
+                package,
+                implementation.initialize_sequential_input->getName().str(),
+                primitive_callback_import_symbol(
+                    i, "initialize_sequential_input"),
+                "initialize_sequential_input",
+                CallbackImportAbi::sequential_initialize);
+        }
+        if (implementation.combine_sequential_input_values) {
+            callbacks.combine_sequential_input_values = add_callback(
+                package,
+                implementation.combine_sequential_input_values->getName().str(),
+                primitive_callback_import_symbol(
+                    i, "combine_sequential_input_values"),
+                "combine_sequential_input_values",
+                CallbackImportAbi::sequential_combine);
         }
 
         auto const bundle = primitive.bundle.node_bundle;

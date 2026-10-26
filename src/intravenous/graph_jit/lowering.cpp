@@ -42,6 +42,10 @@ constexpr std::string_view root_background_reverse_symbol =
     "__iv_graph_root_background_reverse";
 constexpr std::string_view root_background_evaluate_symbol =
     "__iv_graph_root_background_evaluate";
+constexpr std::string_view root_combine_sequential_input_symbol =
+    "__iv_graph_root_combine_sequential_input";
+constexpr std::string_view root_initialize_sequential_input_symbol =
+    "__iv_graph_root_initialize_sequential_input";
 
 struct ReflectedContextByteOffsets {
     std::size_t continuous_input_bindings_data = 0;
@@ -186,10 +190,10 @@ constexpr ReflectedContextByteOffsets reflected_context_byte_offsets() noexcept
             + offsetof(ReflectedSpan<ReflectedEventOutputPortBinding const>, extent),
         .random_access_inputs_data =
             offsetof(ReflectedNodeTickContext, random_access_inputs)
-            + offsetof(ReflectedSpan<RandomAccessSampleInputPort const>, pointer),
+            + offsetof(ReflectedSpan<RandomAccessContinuousInputPort const>, pointer),
         .random_access_inputs_size =
             offsetof(ReflectedNodeTickContext, random_access_inputs)
-            + offsetof(ReflectedSpan<RandomAccessSampleInputPort const>, extent),
+            + offsetof(ReflectedSpan<RandomAccessContinuousInputPort const>, extent),
         .random_access_event_inputs_data =
             offsetof(ReflectedNodeTickContext, random_access_event_inputs)
             + offsetof(ReflectedSpan<RandomAccessEventInputPort const>, pointer),
@@ -224,10 +228,10 @@ constexpr TickInvocationByteOffsets tick_invocation_byte_offsets() noexcept
                 ReflectedSpan<ReflectedEventInputPortBinding const>, extent),
         .random_access_sample_inputs_data =
             offsetof(TickInvocationCall, random_access_sample_inputs)
-            + offsetof(ReflectedSpan<RandomAccessSampleInputPort const>, pointer),
+            + offsetof(ReflectedSpan<RandomAccessContinuousInputPort const>, pointer),
         .random_access_sample_inputs_size =
             offsetof(TickInvocationCall, random_access_sample_inputs)
-            + offsetof(ReflectedSpan<RandomAccessSampleInputPort const>, extent),
+            + offsetof(ReflectedSpan<RandomAccessContinuousInputPort const>, extent),
         .random_access_event_inputs_data =
             offsetof(TickInvocationCall, random_access_event_inputs)
             + offsetof(ReflectedSpan<RandomAccessEventInputPort const>, pointer),
@@ -484,6 +488,15 @@ std::expected<void, std::string> emit_package_imports(
          size_type,
          size_type},
         false);
+    auto* sequential_initialize_type = llvm::FunctionType::get(
+        llvm::Type::getInt1Ty(output_module.getContext()),
+        {size_type,
+         llvm::Type::getInt8Ty(output_module.getContext()),
+         llvm::Type::getInt8Ty(output_module.getContext()),
+         llvm::PointerType::getUnqual(output_module.getContext()),
+         size_type,
+         size_type},
+        false);
     for (auto const& package_plan : plan.packages) {
         if (package_plan.package_index >= input.packages.size()
             || !input.packages[package_plan.package_index].module) {
@@ -508,6 +521,9 @@ std::expected<void, std::string> emit_package_imports(
                 break;
             case detail::CallbackImportAbi::batch:
                 callback_type = batch_type;
+                break;
+            case detail::CallbackImportAbi::sequential_initialize:
+                callback_type = sequential_initialize_type;
                 break;
             case detail::CallbackImportAbi::sequential_combine:
                 callback_type = sequential_combine_type;
@@ -2384,7 +2400,7 @@ EmittedPrimitiveTickContext emit_primitive_tick_context(
                 call_offsets.random_access_sample_inputs_size,
                 tick_invocation->random_access_sample_begin,
                 tick_invocation->random_access_sample_count,
-                sizeof(RandomAccessSampleInputPort),
+                sizeof(RandomAccessContinuousInputPort),
                 "tick.random_access.sample");
         }
         if (tick_invocation->random_access_event_count != 0) {
@@ -8032,6 +8048,208 @@ std::expected<llvm::Function*, std::string> define_background_root_operation(
     return function;
 }
 
+std::expected<llvm::Function*, std::string>
+define_sequential_input_combiner(
+    llvm::Module& module,
+    detail::LoweringPlan const& plan)
+{
+    auto& context = module.getContext();
+    auto* size_type = llvm::IntegerType::get(
+        context, static_cast<unsigned>(sizeof(std::size_t) * 8));
+    auto* pointer_type = llvm::PointerType::getUnqual(context);
+    auto* function_type = llvm::FunctionType::get(
+        llvm::Type::getInt1Ty(context),
+        {size_type, pointer_type, pointer_type, size_type},
+        false);
+    auto* function = llvm::Function::Create(
+        function_type,
+        llvm::GlobalValue::ExternalLinkage,
+        llvm::StringRef(
+            root_combine_sequential_input_symbol.data(),
+            root_combine_sequential_input_symbol.size()),
+        module);
+    function->setCallingConv(llvm::CallingConv::C);
+
+    auto argument = function->arg_begin();
+    llvm::Value* port_index = &*argument++;
+    llvm::Value* destination = &*argument++;
+    llvm::Value* source = &*argument++;
+    llvm::Value* byte_count = &*argument;
+    port_index->setName("port");
+    destination->setName("destination");
+    source->setName("source");
+    byte_count->setName("byte_count");
+
+    auto* entry = llvm::BasicBlock::Create(context, "entry", function);
+    auto* rejected = llvm::BasicBlock::Create(context, "rejected", function);
+    llvm::IRBuilder<> builder(entry);
+    auto* select = builder.CreateSwitch(
+        port_index,
+        rejected,
+        plan.connections.background.ports.size());
+    auto constant = [&](std::size_t value) {
+        return llvm::ConstantInt::get(size_type, value);
+    };
+
+    for (BackgroundPortIndex port = 0;
+         port < plan.connections.background.ports.size(); ++port) {
+        auto const& background_port =
+            plan.connections.background.ports[port];
+        if (background_port.kind != PortKind::sample
+            || background_port.direction != PortDirection::input
+            || background_port.input_access != InputAccessKind::sequential) {
+            continue;
+        }
+        if (background_port.node
+            >= plan.connections.background.nodes.size()) {
+            return std::unexpected(
+                "GraphJit sequential input combiner references a missing node");
+        }
+        auto const bundle = plan.connections.background
+            .nodes[background_port.node].bundle;
+        auto const primitive = std::ranges::find(
+            plan.imports.primitive_callbacks,
+            bundle,
+            &detail::PrimitiveCallbackPlan::bundle);
+        if (primitive == plan.imports.primitive_callbacks.end()
+            || primitive->combine_sequential_input_values.empty()) {
+            return std::unexpected(
+                "GraphJit sequential input has no imported combination callback");
+        }
+        auto* callback = module.getFunction(primitive->combine_sequential_input_values);
+        if (!callback || callback->isDeclaration()) {
+            return std::unexpected(
+                "GraphJit sequential input combination callback is not materialized");
+        }
+
+        auto* selected = llvm::BasicBlock::Create(
+            context,
+            "combine.port." + std::to_string(port),
+            function);
+        select->addCase(constant(port), selected);
+        builder.SetInsertPoint(selected);
+        auto* accepted = builder.CreateCall(
+            callback,
+            {constant(background_port.configured_port.port_index),
+             llvm::ConstantInt::get(
+                 llvm::Type::getInt8Ty(context),
+                 static_cast<std::uint8_t>(
+                     background_port.continuous_geometry.value_type)),
+             destination,
+             source,
+             byte_count,
+             constant(background_port.continuous_geometry.elements_per_value)});
+        accepted->setCallingConv(callback->getCallingConv());
+        builder.CreateRet(accepted);
+    }
+
+    builder.SetInsertPoint(rejected);
+    builder.CreateRet(llvm::ConstantInt::getFalse(context));
+    return function;
+}
+
+std::expected<llvm::Function*, std::string>
+define_sequential_input_initializer(
+    llvm::Module& module,
+    detail::LoweringPlan const& plan)
+{
+    auto& context = module.getContext();
+    auto* size_type = llvm::IntegerType::get(
+        context, static_cast<unsigned>(sizeof(std::size_t) * 8));
+    auto* pointer_type = llvm::PointerType::getUnqual(context);
+    auto* function_type = llvm::FunctionType::get(
+        llvm::Type::getInt1Ty(context),
+        {size_type, pointer_type, size_type},
+        false);
+    auto* function = llvm::Function::Create(
+        function_type,
+        llvm::GlobalValue::ExternalLinkage,
+        llvm::StringRef(
+            root_initialize_sequential_input_symbol.data(),
+            root_initialize_sequential_input_symbol.size()),
+        module);
+    function->setCallingConv(llvm::CallingConv::C);
+
+    auto argument = function->arg_begin();
+    llvm::Value* port_index = &*argument++;
+    llvm::Value* destination = &*argument++;
+    llvm::Value* byte_count = &*argument;
+    port_index->setName("port");
+    destination->setName("destination");
+    byte_count->setName("byte_count");
+
+    auto* entry = llvm::BasicBlock::Create(context, "entry", function);
+    auto* rejected = llvm::BasicBlock::Create(context, "rejected", function);
+    llvm::IRBuilder<> builder(entry);
+    auto* select = builder.CreateSwitch(
+        port_index,
+        rejected,
+        plan.connections.background.ports.size());
+    auto constant = [&](std::size_t value) {
+        return llvm::ConstantInt::get(size_type, value);
+    };
+
+    for (BackgroundPortIndex port = 0;
+         port < plan.connections.background.ports.size(); ++port) {
+        auto const& background_port =
+            plan.connections.background.ports[port];
+        if (background_port.kind != PortKind::sample
+            || background_port.direction != PortDirection::input
+            || background_port.input_access != InputAccessKind::sequential) {
+            continue;
+        }
+        if (background_port.node
+            >= plan.connections.background.nodes.size()) {
+            return std::unexpected(
+                "GraphJit sequential input initializer references a missing node");
+        }
+        auto const bundle = plan.connections.background
+            .nodes[background_port.node].bundle;
+        auto const primitive = std::ranges::find(
+            plan.imports.primitive_callbacks,
+            bundle,
+            &detail::PrimitiveCallbackPlan::bundle);
+        if (primitive == plan.imports.primitive_callbacks.end()
+            || primitive->initialize_sequential_input.empty()) {
+            return std::unexpected(
+                "GraphJit sequential input has no imported neutral initializer");
+        }
+        auto* callback = module.getFunction(
+            primitive->initialize_sequential_input);
+        if (!callback || callback->isDeclaration()) {
+            return std::unexpected(
+                "GraphJit sequential input neutral initializer is not materialized");
+        }
+
+        auto* selected = llvm::BasicBlock::Create(
+            context,
+            "initialize.port." + std::to_string(port),
+            function);
+        select->addCase(constant(port), selected);
+        builder.SetInsertPoint(selected);
+        auto* accepted = builder.CreateCall(
+            callback,
+            {constant(background_port.configured_port.port_index),
+             llvm::ConstantInt::get(
+                 llvm::Type::getInt8Ty(context),
+                 static_cast<std::uint8_t>(
+                     background_port.continuous_geometry.value_type)),
+             llvm::ConstantInt::get(
+                 llvm::Type::getInt8Ty(context),
+                 static_cast<std::uint8_t>(
+                     iv::details::SequentialInputInitialization::neutral)),
+             destination,
+             byte_count,
+             constant(background_port.continuous_geometry.elements_per_value)});
+        accepted->setCallingConv(callback->getCallingConv());
+        builder.CreateRet(accepted);
+    }
+
+    builder.SetInsertPoint(rejected);
+    builder.CreateRet(llvm::ConstantInt::getFalse(context));
+    return function;
+}
+
 struct TransitionLoweringPlan {
     detail::LoweringPlan root_plan{};
     LoweredGraphTransition output{};
@@ -8893,6 +9111,15 @@ std::expected<LoweringOutput, std::string> emit_lowering_plan(
         false);
     if (!tick) return std::unexpected(std::move(tick.error()));
 
+    auto combiner = define_sequential_input_combiner(output_module, plan);
+    if (!combiner) {
+        return std::unexpected(std::move(combiner.error()));
+    }
+    auto initializer = define_sequential_input_initializer(output_module, plan);
+    if (!initializer) {
+        return std::unexpected(std::move(initializer.error()));
+    }
+
     auto const has_background_program = !plan.connections.background.empty();
     if (has_background_program) {
         auto forward = define_background_root_operation(
@@ -8948,6 +9175,10 @@ std::expected<LoweringOutput, std::string> emit_lowering_plan(
             .evaluate_background = has_background_program
                 ? std::string(root_background_evaluate_symbol)
                 : std::string{},
+            .combine_sequential_input =
+                std::string(root_combine_sequential_input_symbol),
+            .initialize_sequential_input =
+                std::string(root_initialize_sequential_input_symbol),
         },
     };
 }
@@ -8961,7 +9192,9 @@ std::expected<LoweringOutput, std::string> lower_configured_graph_to_llvm(
         || output_module.getNamedValue(root_transition_tick_block_symbol)
         || output_module.getNamedValue(root_background_forward_symbol)
         || output_module.getNamedValue(root_background_reverse_symbol)
-        || output_module.getNamedValue(root_background_evaluate_symbol)) {
+        || output_module.getNamedValue(root_background_evaluate_symbol)
+        || output_module.getNamedValue(root_combine_sequential_input_symbol)
+        || output_module.getNamedValue(root_initialize_sequential_input_symbol)) {
         return std::unexpected(
             "ConfiguredGraph -> LLVM IR lowering output module already contains reserved root symbols");
     }

@@ -1093,6 +1093,14 @@ MaterializedProjectCode materialize_project_module(
                 : symbol.template operator()<CompiledGraphBlockFunction>(
                     root_symbols.transition_tick_block,
                     "transition root tick_block"),
+            .combine_sequential_input = symbol.template operator()<
+                CompiledGraphSequentialInputCombineFunction>(
+                    root_symbols.combine_sequential_input,
+                    "sequential input combiner"),
+            .initialize_sequential_input = symbol.template operator()<
+                CompiledGraphSequentialInputInitializeFunction>(
+                    root_symbols.initialize_sequential_input,
+                    "sequential input neutral initializer"),
         };
         if (!root_operations.valid()) {
             fail(

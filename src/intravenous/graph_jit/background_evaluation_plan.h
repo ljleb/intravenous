@@ -1,8 +1,10 @@
 #pragma once
 
 #include <intravenous/channel_layout.h>
+#include <intravenous/continuous_value.h>
 #include <intravenous/graph/port_ids.h>
 #include <intravenous/graph_jit/stable_graph_identity.h>
+#include <intravenous/node/port_constraints.h>
 #include <intravenous/node/registered_type_identity.h>
 #include <intravenous/ports.h>
 
@@ -30,6 +32,17 @@ using BackgroundReplayInvocationSlot = std::size_t;
 using TickSequentialBindingSlot = std::size_t;
 using TickRandomAccessBindingSlot = std::size_t;
 using TickCaptureSlot = std::size_t;
+
+using SequentialInputCombineFunction = bool (*)(
+    BackgroundPortIndex,
+    std::byte*,
+    std::byte const*,
+    std::size_t);
+
+using SequentialInputInitializeFunction = bool (*)(
+    BackgroundPortIndex,
+    std::byte*,
+    std::size_t);
 
 enum class PlannedSourceProduction : std::uint8_t {
     tick,
@@ -85,6 +98,7 @@ struct PortStorageRequirements {
 struct SampleSourcePortSubsetPlan {
     NodeBundlePortId port{};
     ChannelLayout source_layout{};
+    ContinuousValueStorageGeometry geometry{};
     PlannedSourceProduction production = PlannedSourceProduction::tick;
     OutputRetention retention = OutputRetention::ephemeral;
     std::vector<SampleOutputChannelId> channels{};
@@ -99,6 +113,7 @@ struct SampleSourcePortSubsetPlan {
 struct SampleTargetPortSubsetPlan {
     NodeBundlePortId port{};
     ChannelLayout target_layout{};
+    ContinuousValueStorageGeometry geometry{};
     PlannedDestinationAccess access = PlannedDestinationAccess::sequential;
     std::vector<SampleInputChannelId> channels{};
     std::vector<std::size_t> connection_indices{};
@@ -168,6 +183,8 @@ struct BackgroundPortPlan {
     PortKind kind = PortKind::sample;
     PortDirection direction = PortDirection::input;
     std::string name{};
+    InputAccessKind input_access = InputAccessKind::sequential;
+    OutputProductionKind output_production = OutputProductionKind::tick;
 
     // Input roles are independent because a Sequential input can require
     // Tock data made available before Tick playback and also participate in a
@@ -207,6 +224,8 @@ struct BackgroundPortPlan {
     std::optional<StableInputPortId> stable_input_identity{};
 
     ChannelLayout sample_layout{};
+    ContinuousValueStorageGeometry continuous_geometry{};
+    CoverageOrdering ordering = CoverageOrdering::unspecified;
     EventTypeId event_type = EventTypeId::empty;
     double max_events_per_index = 0.0;
 
@@ -340,6 +359,7 @@ struct PortStoragePlan {
     std::optional<BackgroundPortIndex> output_port{};
 
     ChannelLayout sample_layout{};
+    ContinuousValueStorageGeometry continuous_geometry{};
     std::vector<std::size_t> sample_channels{};
     EventTypeId event_type = EventTypeId::empty;
     double max_events_per_index = 0.0;
@@ -355,12 +375,19 @@ struct PortStoragePlan {
 // sequential use because the former capability subsumes the latter.
 struct SampleMaterializationPlan {
     PortStorageKind storage = PortStorageKind::background;
+    // One logical consumer used to dispatch the value-type operation. It is
+    // not part of the sharing key: equivalent consumers share one
+    // materialization. A random-access consumer is preferred when its storage
+    // also supplies sequential slices.
+    BackgroundPortIndex target_port = 0;
     std::vector<PortSubsetIndex> source_subsets{};
     std::vector<PortStorageIndex> inputs{};
     std::vector<SampleOutputChannelId> source_channels{};
     std::vector<std::size_t> source_read_latencies{};
     ChannelTypeId source_type = ChannelTypeId::mono;
     ChannelLayout target_layout{};
+    ContinuousValueStorageGeometry target_geometry{};
+    CoverageOrdering target_ordering = CoverageOrdering::unspecified;
     std::vector<std::size_t> target_channels{};
     // Only projection contributions belonging to this exact target subset are
     // retained. Their source_channel_indices index this materialization's

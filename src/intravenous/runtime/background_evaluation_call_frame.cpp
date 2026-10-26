@@ -155,7 +155,8 @@ struct BackgroundEvaluationCallFrame::BindingAdapter {
 
         bool operator==(SampleReadRoute const& other) const noexcept
         {
-            return view.data == other.view.data &&
+            return view.coverage_value == other.view.coverage_value &&
+                   view.regions.data() == other.view.regions.data() &&
                    logical_channel == other.logical_channel &&
                    storage_channel == other.storage_channel &&
                    read_latency == other.read_latency;
@@ -165,6 +166,8 @@ struct BackgroundEvaluationCallFrame::BindingAdapter {
     IndexCoverage const* coverage = nullptr;
     std::vector<SampleReadRoute> sample_reads{};
     std::vector<BackgroundSampleWriteView> sample_writes{};
+    std::vector<ContinuousRegionStorageView> sample_input_regions{};
+    std::vector<ContinuousRegionStorageView> sample_output_regions{};
     std::vector<BackgroundEventReadView> event_reads{};
     std::vector<BackgroundEventWriteView> event_writes{};
     bool rejected_write = false;
@@ -258,8 +261,8 @@ struct BackgroundEvaluationCallFrame::BindingAdapter {
 };
 
 struct BackgroundEvaluationCallFrame::NodeFrameStorage {
-    std::vector<RandomAccessSampleInputPort> sample_inputs{};
-    std::vector<TockSampleOutputPort> sample_outputs{};
+    std::vector<RandomAccessContinuousInputPort> sample_inputs{};
+    std::vector<TockContinuousOutputPort> sample_outputs{};
     std::vector<RandomAccessEventInputPort> event_inputs{};
     std::vector<TockEventOutputPort> event_outputs{};
 };
@@ -757,6 +760,47 @@ std::expected<void, std::string> BackgroundEvaluationCallFrame::seal()
                                            "has no complete route");
                 }
             }
+            for (auto const& route : adapter->sample_reads) {
+                if (route.view.geometry != port.continuous_geometry
+                    || route.view.layout != port.sample_layout) {
+                    continue;
+                }
+                for (auto const& source : route.view.regions) {
+                    auto region = source;
+                    region.range.begin =
+                        region.range.begin.advanced_by(route.read_latency);
+                    if ((IndexCoverage{region.range} & *adapter->coverage).empty())
+                        continue;
+                    auto const duplicate = std::ranges::any_of(
+                        adapter->sample_input_regions,
+                        [&](ContinuousRegionStorageView const& existing) {
+                            return existing.storage == region.storage
+                                && existing.range == region.range;
+                        });
+                    if (!duplicate) {
+                        adapter->sample_input_regions.push_back(region);
+                    }
+                }
+            }
+            if (port.ordering == CoverageOrdering::sorted) {
+                std::stable_sort(
+                    adapter->sample_input_regions.begin(),
+                    adapter->sample_input_regions.end(),
+                    [](ContinuousRegionStorageView const& left,
+                       ContinuousRegionStorageView const& right) {
+                        if (left.range.begin == right.range.begin) {
+                            return left.range.extent > right.range.extent;
+                        }
+                        return SignedGlobalIndexOrder{}(
+                            left.range.begin, right.range.begin);
+                    });
+            }
+            if (!adapter->coverage->empty()
+                && port.input_access == InputAccessKind::region
+                && adapter->sample_input_regions.size() != 1) {
+                return std::unexpected(
+                    "background Region input does not resolve to one contiguous Region");
+            }
         } else if (binding.kind == PortKind::sample) {
             for (auto const storage_index : binding.storage) {
                 if (storage_index >= plan.storage.ports.size()) {
@@ -769,6 +813,23 @@ std::expected<void, std::string> BackgroundEvaluationCallFrame::seal()
                         "background sample output has no writable storage");
                 }
                 adapter->sample_writes.push_back(*view);
+                for (auto const& region : view->regions) {
+                    auto const duplicate = std::ranges::any_of(
+                        adapter->sample_output_regions,
+                        [&](ContinuousRegionStorageView const& existing) {
+                            return existing.storage == region.storage
+                                && existing.range == region.range;
+                        });
+                    if (!duplicate) {
+                        adapter->sample_output_regions.push_back(region);
+                    }
+                }
+            }
+            if (!adapter->coverage->empty()
+                && port.output_production == OutputProductionKind::region
+                && adapter->sample_output_regions.size() != 1) {
+                return std::unexpected(
+                    "background Region output does not resolve to one writable Region");
             }
             for (std::size_t channel = 0;
                  channel < channel_count(port.sample_layout); ++channel) {
@@ -907,9 +968,10 @@ std::expected<void, std::string> BackgroundEvaluationCallFrame::seal()
             auto* adapter = adapters[*slot].get();
             if (port.kind == PortKind::sample) {
                 storage->sample_inputs.push_back({
-                    .data = adapter,
+                    .regions = adapter->sample_input_regions.data(),
+                    .region_count = adapter->sample_input_regions.size(),
                     .coverage_value = adapter->coverage,
-                    .read_sample = &BindingAdapter::read_sample,
+                    .geometry = port.continuous_geometry,
                 });
             } else {
                 storage->event_inputs.push_back({
@@ -936,9 +998,10 @@ std::expected<void, std::string> BackgroundEvaluationCallFrame::seal()
             auto* adapter = adapters[*slot].get();
             if (port.kind == PortKind::sample) {
                 storage->sample_outputs.push_back({
-                    .data = adapter,
+                    .regions = adapter->sample_output_regions.data(),
+                    .region_count = adapter->sample_output_regions.size(),
                     .requested_coverage_value = adapter->coverage,
-                    .write_sample = &BindingAdapter::write_sample,
+                    .geometry = port.continuous_geometry,
                 });
             } else {
                 storage->event_outputs.push_back({

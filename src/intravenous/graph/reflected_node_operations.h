@@ -181,7 +181,7 @@ struct ReflectedNodeTickContext {
     ReflectedSpan<ReflectedEventInputPortBinding const> event_input_bindings {};
     // Like sample outputs, this span contains realtime outputs only.
     ReflectedSpan<ReflectedEventOutputPortBinding const> event_output_bindings {};
-    ReflectedSpan<RandomAccessSampleInputPort const> random_access_inputs {};
+    ReflectedSpan<RandomAccessContinuousInputPort const> random_access_inputs {};
     ReflectedSpan<RandomAccessEventInputPort const> random_access_event_inputs {};
     std::size_t sample_rate = 48000;
     std::size_t scc_feedback_latency = 0;
@@ -195,8 +195,8 @@ static_assert(std::is_trivially_copyable_v<ReflectedNodeTickContext>);
 // Node-specialized contexts without exposing std::span's implementation-defined
 // representation to package LLVM or whole-graph lowering.
 struct ReflectedNodeTockCoverageContext {
-    ReflectedSpan<RandomAccessSampleInputPort const> inputs {};
-    ReflectedSpan<TockSampleOutputPort> outputs {};
+    ReflectedSpan<RandomAccessContinuousInputPort const> inputs {};
+    ReflectedSpan<TockContinuousOutputPort> outputs {};
     ReflectedSpan<RandomAccessEventInputPort const> event_inputs {};
     ReflectedSpan<TockEventOutputPort> event_outputs {};
     ReflectedSpan<std::byte> background_state_storage {};

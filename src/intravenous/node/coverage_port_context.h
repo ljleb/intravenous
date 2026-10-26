@@ -13,6 +13,7 @@
 #include <iterator>
 #include <memory>
 #include <span>
+#include <tuple>
 #include <type_traits>
 #include <utility>
 
@@ -42,45 +43,39 @@ namespace background_port_details {
     }
 }
 
-struct RandomAccessSampleInputPort {
-    void const* data = nullptr;
+struct RandomAccessContinuousInputPort {
+    ContinuousRegionStorageView const* regions = nullptr;
+    std::size_t region_count = 0;
     IndexCoverage const* coverage_value = nullptr;
-    Sample (*read_sample)(void const*, GlobalIndex, std::size_t) = nullptr;
+    ContinuousValueStorageGeometry geometry{};
 
     [[nodiscard]] IndexCoverage const& coverage() const noexcept
     {
         return background_port_details::bound_coverage(coverage_value);
     }
 
-    [[nodiscard]] Sample at(
-        GlobalIndex index, std::size_t channel = 0) const noexcept
+    [[nodiscard]] std::span<ContinuousRegionStorageView const>
+    region_views() const noexcept
     {
-        IV_ASSERT(coverage().contains(index),
-            "background sample input read lies outside published coverage");
-        IV_ASSERT(read_sample != nullptr,
-            "background sample input has no readable storage");
-        return read_sample(data, index, channel);
+        return {regions, region_count};
     }
 };
 
-struct TockSampleOutputPort {
-    void* data = nullptr;
+struct TockContinuousOutputPort {
+    ContinuousRegionStorageView const* regions = nullptr;
+    std::size_t region_count = 0;
     IndexCoverage const* requested_coverage_value = nullptr;
-    void (*write_sample)(void*, GlobalIndex, std::size_t, Sample) = nullptr;
+    ContinuousValueStorageGeometry geometry{};
 
     [[nodiscard]] IndexCoverage const& requested_coverage() const noexcept
     {
         return background_port_details::bound_coverage(requested_coverage_value);
     }
 
-    void write(
-        GlobalIndex index, std::size_t channel, Sample value) const noexcept
+    [[nodiscard]] std::span<ContinuousRegionStorageView const>
+    region_views() const noexcept
     {
-        IV_ASSERT(requested_coverage().contains(index),
-            "background sample output write lies outside requested coverage");
-        IV_ASSERT(write_sample != nullptr,
-            "background sample output has no writable storage");
-        write_sample(data, index, channel, value);
+        return {regions, region_count};
     }
 };
 
@@ -145,8 +140,19 @@ struct TockEventOutputPort {
 };
 
 struct InputCoverageChange {
+    std::span<GlobalIndexRange const> const* region_ranges_view_value = nullptr;
+    GlobalIndexRange const* region_ranges_value = nullptr;
+    std::size_t region_range_count = 0;
     IndexCoverage const* coverage_value = nullptr;
     IndexCoverage const* changed_value = nullptr;
+
+    [[nodiscard]] std::span<GlobalIndexRange const> regions() const noexcept
+    {
+        if (region_ranges_view_value != nullptr) {
+            return *region_ranges_view_value;
+        }
+        return {region_ranges_value, region_range_count};
+    }
 
     [[nodiscard]] IndexCoverage const& coverage() const noexcept
     {
@@ -160,11 +166,18 @@ struct InputCoverageChange {
 };
 
 struct OutputCoverageChange {
+    using PublishRegions = void (*)(
+        void*, GlobalIndexRange const*, std::size_t);
     using PublishCoverage = void (*)(void*, IndexCoverage const&);
     using PublishChange = void (*)(void*, IndexCoverage const&);
 
     void* data = nullptr;
+    std::span<GlobalIndexRange const> const*
+        previous_region_ranges_view_value = nullptr;
+    GlobalIndexRange const* previous_region_ranges_value = nullptr;
+    std::size_t previous_region_range_count = 0;
     IndexCoverage const* previous_coverage_value = nullptr;
+    PublishRegions publish_regions_value = nullptr;
     PublishCoverage publish_coverage_value = nullptr;
     PublishChange publish_changed_value = nullptr;
 
@@ -173,6 +186,33 @@ struct OutputCoverageChange {
         return background_port_details::bound_coverage(previous_coverage_value);
     }
 
+    [[nodiscard]] std::span<GlobalIndexRange const> previous_regions()
+        const noexcept
+    {
+        if (previous_region_ranges_view_value != nullptr) {
+            return *previous_region_ranges_view_value;
+        }
+        return {
+            previous_region_ranges_value,
+            previous_region_range_count,
+        };
+    }
+
+    void publish_regions(
+        std::span<GlobalIndexRange const> regions) const
+    {
+        IV_ASSERT(publish_regions_value != nullptr,
+            "background forward context has no output-Region sink");
+        publish_regions_value(data, regions.data(), regions.size());
+    }
+
+    void publish_region(GlobalIndexRange region) const
+    {
+        publish_regions(std::span{&region, std::size_t{1}});
+    }
+
+    // Event outputs have no data-bearing Region decomposition and publish
+    // their positional coverage directly.
     void publish_coverage(IndexCoverage const& coverage) const
     {
         IV_ASSERT(publish_coverage_value != nullptr,
@@ -231,59 +271,245 @@ struct InputCoverageRequirement {
 
 namespace details {
 
-template<ChannelTypeId Type>
-class StaticBackgroundSampleInputAccess {
-    RandomAccessSampleInputPort const& port_;
+class StaticContinuousInputCoverageChange {
+    InputCoverageChange const& change_;
 
 public:
-    explicit StaticBackgroundSampleInputAccess(RandomAccessSampleInputPort const& port)
-        : port_(port)
+    explicit StaticContinuousInputCoverageChange(
+        InputCoverageChange const& change) noexcept
+        : change_(change)
+    {}
+
+    [[nodiscard]] std::span<GlobalIndexRange const> regions() const noexcept
+    {
+        return change_.regions();
+    }
+
+    [[nodiscard]] IndexCoverage const& coverage() const noexcept
+    {
+        return change_.coverage();
+    }
+
+    [[nodiscard]] IndexCoverage const& changed() const noexcept
+    {
+        return change_.changed();
+    }
+};
+
+class StaticEventInputCoverageChange {
+    InputCoverageChange const& change_;
+
+public:
+    explicit StaticEventInputCoverageChange(
+        InputCoverageChange const& change) noexcept
+        : change_(change)
     {}
 
     [[nodiscard]] IndexCoverage const& coverage() const noexcept
     {
-        return port_.coverage();
+        return change_.coverage();
     }
 
-    [[nodiscard]] Sample at(GlobalIndex index) const noexcept
-    requires (Type == ChannelTypeId::mono)
+    [[nodiscard]] IndexCoverage const& changed() const noexcept
     {
-        return port_.at(index);
-    }
-
-    template<class Channel>
-    [[nodiscard]] Sample at(Channel, GlobalIndex index) const noexcept
-    requires (Type != ChannelTypeId::mono)
-    {
-        return port_.at(index, static_channel_index<Type, Channel>());
+        return change_.changed();
     }
 };
 
-template<ChannelTypeId Type>
-class StaticBackgroundSampleOutputAccess {
-    TockSampleOutputPort& port_;
+class StaticContinuousOutputCoverageChange {
+    OutputCoverageChange const& change_;
 
 public:
-    explicit StaticBackgroundSampleOutputAccess(TockSampleOutputPort& port)
-        : port_(port)
+    explicit StaticContinuousOutputCoverageChange(
+        OutputCoverageChange const& change) noexcept
+        : change_(change)
     {}
 
-    [[nodiscard]] IndexCoverage const& requested_coverage() const noexcept
+    [[nodiscard]] IndexCoverage const& previous_coverage() const noexcept
     {
-        return port_.requested_coverage();
+        return change_.previous_coverage();
     }
 
-    void write(GlobalIndex index, Sample value) const noexcept
-    requires (Type == ChannelTypeId::mono)
+    [[nodiscard]] std::span<GlobalIndexRange const> previous_regions()
+        const noexcept
     {
-        port_.write(index, 0, value);
+        return change_.previous_regions();
     }
 
-    template<class Channel>
-    void write(Channel, GlobalIndex index, Sample value) const noexcept
-    requires (Type != ChannelTypeId::mono)
+    void publish_regions(
+        std::span<GlobalIndexRange const> regions) const
     {
-        port_.write(index, static_channel_index<Type, Channel>(), value);
+        change_.publish_regions(regions);
+    }
+
+    void publish_region(GlobalIndexRange region) const
+    {
+        change_.publish_region(region);
+    }
+
+    void change(IndexCoverage const& changed) const
+    {
+        change_.change(changed);
+    }
+
+    void change(GlobalIndexRange changed) const
+    {
+        change_.change(changed);
+    }
+};
+
+class StaticEventOutputCoverageChange {
+    OutputCoverageChange const& change_;
+
+public:
+    explicit StaticEventOutputCoverageChange(
+        OutputCoverageChange const& change) noexcept
+        : change_(change)
+    {}
+
+    [[nodiscard]] IndexCoverage const& previous_coverage() const noexcept
+    {
+        return change_.previous_coverage();
+    }
+
+    void publish_coverage(IndexCoverage const& coverage) const
+    {
+        change_.publish_coverage(coverage);
+    }
+
+    void change(IndexCoverage const& changed) const
+    {
+        change_.change(changed);
+    }
+
+    void change(GlobalIndexRange changed) const
+    {
+        change_.change(changed);
+    }
+};
+
+template<RegisteredContinuousValue Value, InputAccessKind Access>
+class StaticBackgroundContinuousInputAccess {
+    RandomAccessContinuousInputPort const* port_ = nullptr;
+
+public:
+    explicit constexpr StaticBackgroundContinuousInputAccess(
+        RandomAccessContinuousInputPort const& port) noexcept
+        : port_(&port)
+    {}
+
+    [[nodiscard]] constexpr IndexCoverage const& coverage() const noexcept
+    {
+        return port_->coverage();
+    }
+
+    [[nodiscard]] constexpr auto region() const noexcept
+    requires (Access == InputAccessKind::region)
+    {
+        IV_ASSERT(port_->region_count == 1,
+            "Region input does not contain exactly one Region");
+        return ContinuousRegion<Value>{port_->regions[0]};
+    }
+
+    [[nodiscard]] constexpr auto regions() const noexcept
+    requires (Access == InputAccessKind::coverage)
+    {
+        return ContinuousCoverage<Value>{
+            port_->region_views(), port_->coverage()};
+    }
+};
+
+template<class Tuple, InputAccessKind Access>
+class StaticVariantBackgroundContinuousInputAccess;
+
+template<class... Values, InputAccessKind Access>
+class StaticVariantBackgroundContinuousInputAccess<
+    std::tuple<Values...>, Access> {
+    RandomAccessContinuousInputPort const* port_ = nullptr;
+
+public:
+    explicit constexpr StaticVariantBackgroundContinuousInputAccess(
+        RandomAccessContinuousInputPort const& port) noexcept
+        : port_(&port)
+    {}
+
+    template<RegisteredContinuousValue Value>
+    [[nodiscard]] constexpr bool is() const noexcept
+    requires ((std::same_as<Value, Values> || ...))
+    {
+        return port_->geometry.value_type == continuous_value_type_id_v<Value>;
+    }
+
+    template<RegisteredContinuousValue Value>
+    [[nodiscard]] constexpr auto as() const noexcept
+    requires ((std::same_as<Value, Values> || ...))
+    {
+        IV_ASSERT(is<Value>(),
+            "continuous input alternative does not match its resolved type");
+        return StaticBackgroundContinuousInputAccess<Value, Access>{*port_};
+    }
+};
+
+template<RegisteredContinuousValue Value, OutputProductionKind Production>
+class StaticBackgroundContinuousOutputAccess {
+    TockContinuousOutputPort* port_ = nullptr;
+
+public:
+    explicit constexpr StaticBackgroundContinuousOutputAccess(
+        TockContinuousOutputPort& port) noexcept
+        : port_(&port)
+    {}
+
+    [[nodiscard]] constexpr IndexCoverage const& requested_coverage()
+        const noexcept
+    {
+        return port_->requested_coverage();
+    }
+
+    [[nodiscard]] constexpr auto region() const noexcept
+    requires (Production == OutputProductionKind::region)
+    {
+        IV_ASSERT(port_->region_count == 1,
+            "Region output does not contain exactly one Region");
+        return WritableContinuousRegion<Value>{port_->regions[0]};
+    }
+
+    [[nodiscard]] constexpr auto regions() const noexcept
+    requires (Production == OutputProductionKind::coverage)
+    {
+        return WritableContinuousCoverage<Value>{
+            port_->region_views(), port_->requested_coverage()};
+    }
+};
+
+template<class Tuple, OutputProductionKind Production>
+class StaticVariantBackgroundContinuousOutputAccess;
+
+template<class... Values, OutputProductionKind Production>
+class StaticVariantBackgroundContinuousOutputAccess<
+    std::tuple<Values...>, Production> {
+    TockContinuousOutputPort* port_ = nullptr;
+
+public:
+    explicit constexpr StaticVariantBackgroundContinuousOutputAccess(
+        TockContinuousOutputPort& port) noexcept
+        : port_(&port)
+    {}
+
+    template<RegisteredContinuousValue Value>
+    [[nodiscard]] constexpr bool is() const noexcept
+    requires ((std::same_as<Value, Values> || ...))
+    {
+        return port_->geometry.value_type == continuous_value_type_id_v<Value>;
+    }
+
+    template<RegisteredContinuousValue Value>
+    [[nodiscard]] constexpr auto as() const noexcept
+    requires ((std::same_as<Value, Values> || ...))
+    {
+        IV_ASSERT(is<Value>(),
+            "continuous output alternative does not match its resolved type");
+        return StaticBackgroundContinuousOutputAccess<Value, Production>{*port_};
     }
 };
 
@@ -338,8 +564,8 @@ constexpr std::size_t background_input_index()
 
 template<typename Node>
 struct TockCoverageContext {
-    std::span<RandomAccessSampleInputPort const> inputs {};
-    std::span<TockSampleOutputPort> outputs {};
+    std::span<RandomAccessContinuousInputPort const> inputs {};
+    std::span<TockContinuousOutputPort> outputs {};
     std::span<RandomAccessEventInputPort const> event_inputs {};
     std::span<TockEventOutputPort> event_outputs {};
     std::span<std::byte> background_state_storage {};
@@ -355,13 +581,25 @@ struct TockCoverageContext {
             "TockCoverageContext can only access inputs declared background");
         if constexpr (details::static_input_port_kind<Node, Name>()
             == PortKind::sample) {
-            constexpr auto layout = details::static_input_port_layout<Node, Name>();
+            constexpr auto access =
+                details::static_input_port_access<Node, Name>();
+            constexpr auto declaration =
+                details::static_input_declaration_index<Node, Name>();
+            using Config = std::remove_cvref_t<decltype(port_config_at<
+                declaration>(std::declval<decltype(Node::inputs()) const&>()))>;
+            using Values = typename Config::value_types;
             constexpr auto port_index =
                 details::static_random_access_input_port_index<Node, Name>();
             IV_ASSERT(port_index < inputs.size(),
-                "background sample input is absent from tock context");
-            return details::StaticBackgroundSampleInputAccess<layout.channel_type>(
-                inputs[port_index]);
+                "background continuous input is absent from tock context");
+            if constexpr (std::tuple_size_v<Values> == 1) {
+                using Value = std::tuple_element_t<0, Values>;
+                return details::StaticBackgroundContinuousInputAccess<
+                    Value, access>{inputs[port_index]};
+            } else {
+                return details::StaticVariantBackgroundContinuousInputAccess<
+                    Values, access>{inputs[port_index]};
+            }
         } else {
             constexpr auto port_index =
                 details::static_random_access_event_input_port_index<Node, Name>();
@@ -380,13 +618,25 @@ struct TockCoverageContext {
             "TockCoverageContext can only write background outputs");
         if constexpr (details::static_output_port_kind<Node, Name>()
             == PortKind::sample) {
-            constexpr auto layout = details::static_output_port_layout<Node, Name>();
+            constexpr auto production =
+                details::static_output_port_production<Node, Name>();
+            constexpr auto declaration =
+                details::static_output_declaration_index<Node, Name>();
+            using Config = std::remove_cvref_t<decltype(port_config_at<
+                declaration>(std::declval<decltype(Node::outputs()) const&>()))>;
+            using Values = typename Config::value_types;
             constexpr auto port_index =
                 details::static_tock_output_port_index<Node, Name>();
             IV_ASSERT(port_index < outputs.size(),
-                "background sample output is absent from tock context");
-            return details::StaticBackgroundSampleOutputAccess<layout.channel_type>(
-                outputs[port_index]);
+                "background continuous output is absent from tock context");
+            if constexpr (std::tuple_size_v<Values> == 1) {
+                using Value = std::tuple_element_t<0, Values>;
+                return details::StaticBackgroundContinuousOutputAccess<
+                    Value, production>{outputs[port_index]};
+            } else {
+                return details::StaticVariantBackgroundContinuousOutputAccess<
+                    Values, production>{outputs[port_index]};
+            }
         } else {
             constexpr auto port_index =
                 details::static_tock_event_output_port_index<Node, Name>();
@@ -413,7 +663,7 @@ struct PropagateForwardCoverageContext {
     std::size_t sample_rate = 48000;
 
     template<fixed_string Name>
-    [[nodiscard]] InputCoverageChange const& input() const
+    [[nodiscard]] auto input() const
     requires details::has_constexpr_port_configs<Node>
     {
         static_assert(details::static_input_port_is_random_access<Node, Name>(),
@@ -423,18 +673,19 @@ struct PropagateForwardCoverageContext {
             constexpr auto index = details::static_random_access_input_port_index<Node, Name>();
             IV_ASSERT(index < inputs.size(),
                 "background sample input is absent from forward context");
-            return inputs[index];
+            return details::StaticContinuousInputCoverageChange{inputs[index]};
         } else {
             constexpr auto index =
                 details::static_random_access_event_input_port_index<Node, Name>();
             IV_ASSERT(index < event_inputs.size(),
                 "background event input is absent from forward context");
-            return event_inputs[index];
+            return details::StaticEventInputCoverageChange{
+                event_inputs[index]};
         }
     }
 
     template<fixed_string Name>
-    [[nodiscard]] OutputCoverageChange const& output() const
+    [[nodiscard]] auto output() const
     requires details::has_constexpr_port_configs<Node>
     {
         static_assert(
@@ -445,13 +696,15 @@ struct PropagateForwardCoverageContext {
             constexpr auto index = details::static_tock_output_port_index<Node, Name>();
             IV_ASSERT(index < outputs.size(),
                 "background sample output is absent from forward context");
-            return outputs[index];
+            return details::StaticContinuousOutputCoverageChange{
+                outputs[index]};
         } else {
             constexpr auto index =
                 details::static_tock_event_output_port_index<Node, Name>();
             IV_ASSERT(index < event_outputs.size(),
                 "background event output is absent from forward context");
-            return event_outputs[index];
+            return details::StaticEventOutputCoverageChange{
+                event_outputs[index]};
         }
     }
 

@@ -57,7 +57,11 @@ public:
         graph_jit::BackgroundEvaluationPlan const& plan,
         std::uint64_t generation,
         PersistedDataStore& data,
-        std::size_t maximum_block_size = 1);
+        std::size_t maximum_block_size = 1,
+        graph_jit::SequentialInputCombineFunction combine_sequential_input =
+            nullptr,
+        graph_jit::SequentialInputInitializeFunction
+            initialize_sequential_input = nullptr);
     ~TickInvocationWorkspace();
 
     TickInvocationWorkspace(TickInvocationWorkspace const&) = delete;

@@ -10,12 +10,12 @@
 > now `IndexCoverage` over `GlobalIndexRange`. The displaced semantics are preserved
 > in [historical documentation](./historical/linear_global_index_semantics.md).
 
-> **Random-access sample representation boundary:**
+> **Random-access continuous representation boundary:**
 > [Random-Access Port Data, Audio Value Types, And Input Contract Direction](./random_access_port_data_direction.md)
-> defines the future node-facing contiguous `SampleRegion`/`SampleCoverage` API;
-> sample regions may overlap. Canonical persisted storage already uses immutable
-> contiguous sample-region records and explicit-range event chunks, but that
-> store-internal representation does not prematurely become the node-facing API.
+> defines the node-facing `ContinuousRegion<Value>` and
+> `ContinuousCoverage<Value>` contracts. Their Regions can overlap. Canonical
+> persisted storage uses owning `PersistedSampleRegion` and `PersistedEventChunk`
+> records. `ContinuousRegionStorageView` binds continuous records to node callbacks.
 
 This document is the normative design for **coverage and random-access DSP semantics**,
 their incremental background-evaluation model, and the executor-side
@@ -96,12 +96,13 @@ The central rules are:
 > random-access connection requires every selected source channel to satisfy the
 > requested random-access contract; channel projection retains its own capabilities.
 
-> Computed tock outputs publish exact finite `IndexCoverage`. Forward propagation keeps
-> output coverage exact but may conservatively over-report regions whose values could
-> have changed; reverse propagation may likewise conservatively over-request input
-> regions. Under-reporting either dependency direction is a correctness error, while
-> over-reporting is a performance cost. Physical record boundaries never widen
-> semantic coverage or the already-reported forward may-change regions. Mechanically pointwise replayable
+> Computed tock continuous outputs publish an exact finite logical Region-range list.
+> The runtime derives its exact positional `IndexCoverage` union. Forward propagation
+> may conservatively over-report positions whose values could have changed; reverse
+> propagation may likewise conservatively over-request input positions. Under-reporting
+> either dependency direction is a correctness error, while over-reporting is a
+> performance cost. Physical record boundaries never widen the logical Region list or
+> the already-reported forward may-change positions. Mechanically pointwise replayable
 > Tick dependencies may still use compiler-generated propagation.
 
 > Invalidation and requested coverage are processed as batched background
@@ -170,11 +171,12 @@ No `tock_coverage()` call occurs on the audio thread.
 
 ## 2. `IndexCoverage` is the positional coverage boundary
 
-Every tock output publishes finite positional coverage: a canonical union of
-nonempty circular `GlobalIndexRange` values. `IndexCoverage` is set algebra over
-positions only. It carries no samples and does not replace the distinct future
-`SampleCoverage` algebra of data-bearing `SampleRegion` views. There is no separate
-bounding hull or implicit infinite default-valued domain.
+Every tock output has finite positional coverage: a canonical union of nonempty
+circular `GlobalIndexRange` values. A continuous Region or Coverage output publishes
+its logical Region-range list, and the runtime derives this positional union from that
+list. `IndexCoverage` is set algebra over positions only. It carries no values and
+does not replace the data-bearing Region views. There is no separate bounding hull or
+implicit infinite default-valued domain.
 
 For example:
 
@@ -287,10 +289,12 @@ functions rather than growing the core container API. They must use modular
 `GlobalIndex` operations and explicit finite extents; they must not reintroduce raw
 integer ordering or saturating arithmetic.
 
-The same type represents exact output coverage, semantic may-change regions, and
-reverse may-read requirements. Only output coverage is required to be minimal:
-forward invalidation and reverse requirements are sound upper bounds. Cache validity
-is deliberately coarser and is not represented by one `IndexCoverage` bit per sample.
+The same type represents the exact positional union of output Regions, semantic
+may-change positions, and reverse may-read requirements. A continuous output's
+ordered logical Region list remains separate. Only the output's positional union is
+required to be minimal: forward invalidation and reverse requirements are sound upper
+bounds. Cache validity is deliberately coarser and is not represented by one
+`IndexCoverage` bit per sample.
 
 ## 4. Coverage, persisted records, versions, and data
 
@@ -440,15 +444,16 @@ A node may therefore run its forward-coverage logic with **zero changed random-a
 input regions** because local semantic configuration changed. The callback/context
 must distinguish such a local-state-triggered update from the absence of work.
 
-A forward update may change two independent things for each output participating
-in background coverage propagation:
+A forward update may change three related things for each continuous output
+participating in background coverage propagation:
 
-1. the output's new exact `IndexCoverage`; and
-2. a sound region superset inside the old/new coverage containing every value that
+1. the output's new exact ordered logical Region-range list;
+2. the exact positional `IndexCoverage` union derived from that list; and
+3. a sound positional superset inside the old/new union containing every value that
    may have changed.
 
-The executor owns the previous coverage, so node code publishes the new coverage
-as a whole value. The executor derives:
+The executor owns the previous Region-range list, so node code publishes the new list
+as a whole value. The executor derives both positional unions and then derives:
 
 ```text
 added   = new_coverage - old_coverage
@@ -456,7 +461,10 @@ removed = old_coverage - new_coverage
 changed = reported_value_changes | added | removed
 ```
 
-Added or removed coverage is itself semantic change and propagates downstream.
+Added or removed positional coverage is itself semantic change and propagates
+downstream. A Region-list change whose positional union remains equal is also semantic
+change; it invalidates the ranges of the affected old and new Regions even though
+`added` and `removed` are empty.
 For `tock/persisted`, every exact candidate range intersecting `changed`, added or
 removed coverage, or another representation-invalidating change becomes stale in the
 candidate. The reported `changed` set continues downstream unchanged by physical
@@ -494,8 +502,9 @@ regions and multiple changed inputs in that one callback invocation.
 For every node that declares a computed tock output, an explicit forward-coverage
 implementation is **mandatory**. Under the planned batch API that implementation may
 be authored in scalar or batched form and is normalized to both forms by the traits
-layer. Output `IndexCoverage` is semantic and exact;
-there is no generally correct fallback that can invent it. A framework may still
+layer. The output Region-range list is semantic and exact, and its derived
+`IndexCoverage` union is exact; there is no generally correct fallback that can invent
+the list. A framework may still
 generate trivial glue when exact coverage is mechanically declared by another
 static facility, but it must not silently preserve old/empty coverage or substitute
 a conservative superset.
@@ -831,9 +840,9 @@ union reported may-change input regions + current input coverage
         v
 propagate_forward_coverage() at most once for this node
         |
-        +--> publish exact new computed-output coverage
+        +--> publish exact continuous Region list or event coverage
         |       |
-        |       `--> derive added/removed coverage as semantic changes
+        |       `--> derive its positional union and added/removed changes
         |
         `--> publish sound may-change output regions
                 |

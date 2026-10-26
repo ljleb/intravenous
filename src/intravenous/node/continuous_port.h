@@ -3,12 +3,15 @@
 #include <intravenous/channel_layout.h>
 #include <intravenous/compat.h>
 #include <intravenous/continuous_value.h>
+#include <intravenous/coverage.h>
 
+#include <algorithm>
 #include <array>
 #include <bit>
 #include <concepts>
 #include <cstddef>
 #include <cstdint>
+#include <iterator>
 #include <span>
 #include <type_traits>
 
@@ -64,6 +67,39 @@ struct ContinuousOutputPortBinding {
     mutable std::uint64_t sequential_begin_ordinal = 0;
 };
 
+// One logical random-access Region. storage addresses one contiguous native-
+// layout buffer containing range.extent values for every channel. The backing
+// of two descriptors is independent even when their logical ranges overlap.
+// This is a non-owning reflected ABI record; transaction/snapshot owners keep
+// the storage alive for the callback that receives it.
+struct ContinuousRegionStorageView {
+    std::byte* storage = nullptr;
+    // Optional background-evaluation completeness bitmap. One byte belongs
+    // to each native-layout value (frame/channel pair). Mutable Region access
+    // marks it; read-only persisted and Tick views leave it null.
+    std::uint8_t* written_values = nullptr;
+    GlobalIndexRange range{};
+    ContinuousValueStorageGeometry geometry{};
+    ChannelLayout channel_layout{
+        .channel_type = ChannelTypeId::mono,
+        .sample_layout = SampleStreamLayout::planar,
+    };
+
+    [[nodiscard]] constexpr std::size_t frame_count() const noexcept
+    {
+        return static_cast<std::size_t>(range.extent);
+    }
+
+    [[nodiscard]] constexpr std::size_t storage_size_bytes() const noexcept
+    {
+        return frame_count() * channel_count(channel_layout)
+            * geometry.value_size_bytes;
+    }
+};
+
+static_assert(std::is_standard_layout_v<ContinuousRegionStorageView>);
+static_assert(std::is_trivially_copyable_v<ContinuousRegionStorageView>);
+
 static_assert(std::is_standard_layout_v<ContinuousChannelStorageBinding>);
 static_assert(std::is_trivially_copyable_v<ContinuousChannelStorageBinding>);
 static_assert(std::is_standard_layout_v<ContinuousPortStorageBinding>);
@@ -74,6 +110,242 @@ static_assert(std::is_standard_layout_v<ContinuousOutputPortBinding>);
 static_assert(std::is_trivially_copyable_v<ContinuousOutputPortBinding>);
 
 namespace details {
+
+template<RegisteredContinuousValue Value, bool Mutable>
+class ContinuousRegionView {
+    using Extension = ContinuousValueType<Value>;
+    using Element = typename Extension::storage_element;
+    using StorageByte = std::conditional_t<Mutable, std::byte, std::byte const>;
+    using StorageElement = std::conditional_t<Mutable, Element, Element const>;
+
+    ContinuousRegionStorageView const* region_ = nullptr;
+
+    [[nodiscard]] constexpr StorageByte* value_storage(
+        std::size_t frame,
+        std::size_t channel) const noexcept
+    {
+        IV_ASSERT(region_ != nullptr && region_->storage != nullptr,
+            "continuous Region storage is absent");
+        IV_ASSERT(frame < frame_count(),
+            "continuous Region frame is out of bounds");
+        IV_ASSERT(channel < channel_count(region_->channel_layout),
+            "continuous Region channel is out of bounds");
+        auto const channels = channel_count(region_->channel_layout);
+        auto const value = region_->channel_layout.sample_layout
+                == SampleStreamLayout::planar
+            ? channel * frame_count() + frame
+            : frame * channels + channel;
+        return region_->storage + value * region_->geometry.value_size_bytes;
+    }
+
+    constexpr void mark_value_written(
+        std::size_t frame,
+        std::size_t channel) const noexcept
+    requires Mutable
+    {
+        if (!region_->written_values) return;
+        auto const channels = channel_count(region_->channel_layout);
+        auto const value = region_->channel_layout.sample_layout
+                == SampleStreamLayout::planar
+            ? channel * frame_count() + frame
+            : frame * channels + channel;
+        region_->written_values[value] = 1;
+    }
+
+public:
+    using reference = std::conditional_t<
+        Mutable,
+        typename Extension::mutable_reference,
+        typename Extension::const_reference>;
+
+    constexpr ContinuousRegionView() noexcept = default;
+    explicit constexpr ContinuousRegionView(
+        ContinuousRegionStorageView const& region) noexcept
+        : region_(&region)
+    {
+        IV_ASSERT(region.geometry.value_type
+                == continuous_value_type_id_v<Value>,
+            "continuous Region value type does not match its typed facade");
+        IV_ASSERT(region.geometry.element_size == sizeof(Element)
+                && region.geometry.element_alignment == alignof(Element),
+            "continuous Region geometry does not match its typed facade");
+    }
+
+    [[nodiscard]] constexpr GlobalIndexRange range() const noexcept
+    {
+        return region_->range;
+    }
+
+    [[nodiscard]] constexpr std::size_t frame_count() const noexcept
+    {
+        return region_ ? region_->frame_count() : 0;
+    }
+
+    [[nodiscard]] constexpr ChannelLayout channel_layout() const noexcept
+    {
+        return region_->channel_layout;
+    }
+
+    [[nodiscard]] constexpr reference value(
+        std::size_t frame,
+        std::size_t channel = 0) const noexcept
+    {
+        auto* bytes = value_storage(frame, channel);
+        IV_ASSERT(reinterpret_cast<std::uintptr_t>(bytes) % alignof(Element) == 0,
+            "continuous Region value storage is misaligned");
+        auto elements = std::span<StorageElement>{
+            reinterpret_cast<StorageElement*>(bytes),
+            region_->geometry.elements_per_value,
+        };
+        if constexpr (Mutable) {
+            mark_value_written(frame, channel);
+            return Extension::write_value(elements);
+        } else {
+            return Extension::read_value(elements);
+        }
+    }
+
+    [[nodiscard]] constexpr reference at(
+        GlobalIndex index,
+        std::size_t channel = 0) const noexcept
+    {
+        auto const offset = range().offset_of(index);
+        IV_ASSERT(offset.has_value(),
+            "continuous Region index is out of bounds");
+        return value(static_cast<std::size_t>(*offset), channel);
+    }
+
+    // Dense native-layout storage. Planar storage contains complete channels
+    // consecutively; interleaved storage contains complete frames
+    // consecutively. The ChannelLayout says which interpretation applies.
+    [[nodiscard]] constexpr std::span<StorageElement> elements() const noexcept
+    {
+        if (frame_count() == 0) return {};
+        IV_ASSERT(region_ != nullptr && region_->storage != nullptr,
+            "continuous Region storage is absent");
+        if constexpr (Mutable) {
+            if (region_->written_values) {
+                std::fill_n(
+                    region_->written_values,
+                    frame_count() * channel_count(region_->channel_layout),
+                    std::uint8_t{1});
+            }
+        }
+        return {
+            reinterpret_cast<StorageElement*>(region_->storage),
+            frame_count() * channel_count(region_->channel_layout)
+                * region_->geometry.elements_per_value,
+        };
+    }
+
+    // One channel is itself contiguous only for planar storage.
+    [[nodiscard]] constexpr std::span<StorageElement> channel_elements(
+        std::size_t channel) const noexcept
+    {
+        IV_ASSERT(region_->channel_layout.sample_layout
+                == SampleStreamLayout::planar,
+            "an interleaved Region has no contiguous channel span");
+        IV_ASSERT(channel < channel_count(region_->channel_layout),
+            "continuous Region channel is out of bounds");
+        auto const count = frame_count() * region_->geometry.elements_per_value;
+        if constexpr (Mutable) {
+            if (region_->written_values) {
+                std::fill_n(
+                    region_->written_values + channel * frame_count(),
+                    frame_count(),
+                    std::uint8_t{1});
+            }
+        }
+        return {
+            reinterpret_cast<StorageElement*>(region_->storage)
+                + channel * count,
+            count,
+        };
+    }
+};
+
+template<RegisteredContinuousValue Value, bool Mutable>
+class ContinuousCoverageView {
+    std::span<ContinuousRegionStorageView const> regions_{};
+    IndexCoverage const* coverage_ = nullptr;
+
+public:
+    using region_type = ContinuousRegionView<Value, Mutable>;
+
+    class iterator {
+        ContinuousRegionStorageView const* current_ = nullptr;
+
+    public:
+        using value_type = region_type;
+        using difference_type = std::ptrdiff_t;
+        using iterator_category = std::forward_iterator_tag;
+
+        constexpr iterator() noexcept = default;
+        explicit constexpr iterator(
+            ContinuousRegionStorageView const* current) noexcept
+            : current_(current)
+        {}
+
+        [[nodiscard]] constexpr region_type operator*() const noexcept
+        {
+            return region_type{*current_};
+        }
+
+        constexpr iterator& operator++() noexcept
+        {
+            ++current_;
+            return *this;
+        }
+
+        [[nodiscard]] friend constexpr bool operator==(
+            iterator const&, iterator const&) = default;
+    };
+
+    constexpr ContinuousCoverageView() noexcept = default;
+    constexpr ContinuousCoverageView(
+        std::span<ContinuousRegionStorageView const> regions,
+        IndexCoverage const& coverage) noexcept
+        : regions_(regions), coverage_(&coverage)
+    {
+        for (auto const& region : regions_) {
+            IV_ASSERT(region.geometry.value_type
+                    == continuous_value_type_id_v<Value>,
+                "continuous Coverage contains the wrong value type");
+        }
+    }
+
+    [[nodiscard]] constexpr std::size_t size() const noexcept
+    {
+        return regions_.size();
+    }
+    [[nodiscard]] constexpr bool empty() const noexcept
+    {
+        return regions_.empty();
+    }
+    [[nodiscard]] constexpr region_type operator[](
+        std::size_t index) const noexcept
+    {
+        IV_ASSERT(index < regions_.size(),
+            "continuous Coverage Region is out of bounds");
+        return region_type{regions_[index]};
+    }
+    [[nodiscard]] constexpr iterator begin() const noexcept
+    {
+        return iterator{regions_.data()};
+    }
+    [[nodiscard]] constexpr iterator end() const noexcept
+    {
+        return iterator{regions_.empty()
+            ? regions_.data()
+            : regions_.data() + regions_.size()};
+    }
+    [[nodiscard]] constexpr IndexCoverage const& coverage() const noexcept
+    {
+        IV_ASSERT(coverage_ != nullptr,
+            "continuous Coverage has no positional union");
+        return *coverage_;
+    }
+};
 
 template<RegisteredContinuousValue Value>
 class ContinuousChannelStorageAccess {
@@ -618,4 +890,17 @@ public:
 };
 
 } // namespace details
+
+template<RegisteredContinuousValue Value>
+using ContinuousRegion = details::ContinuousRegionView<Value, false>;
+
+template<RegisteredContinuousValue Value>
+using WritableContinuousRegion = details::ContinuousRegionView<Value, true>;
+
+template<RegisteredContinuousValue Value>
+using ContinuousCoverage = details::ContinuousCoverageView<Value, false>;
+
+template<RegisteredContinuousValue Value>
+using WritableContinuousCoverage = details::ContinuousCoverageView<Value, true>;
+
 } // namespace iv

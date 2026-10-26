@@ -7,8 +7,12 @@
 #include <array>
 #include <bit>
 #include <cmath>
+#include <cstring>
+#include <iterator>
 #include <limits>
+#include <memory>
 #include <numeric>
+#include <new>
 #include <optional>
 #include <ranges>
 #include <stdexcept>
@@ -18,6 +22,40 @@ namespace iv {
 namespace {
 
 IndexCoverage const empty_storage_coverage{};
+
+struct AlignedBufferDelete {
+    std::size_t alignment = alignof(std::max_align_t);
+
+    void operator()(std::byte* storage) const noexcept
+    {
+        if (storage) {
+            ::operator delete(storage, std::align_val_t{alignment});
+        }
+    }
+};
+
+class AlignedByteBuffer {
+    std::unique_ptr<std::byte, AlignedBufferDelete> storage_{};
+    std::size_t size_ = 0;
+
+public:
+    AlignedByteBuffer(std::size_t size, std::size_t alignment)
+        : storage_(
+            static_cast<std::byte*>(
+                ::operator new(size, std::align_val_t{alignment})),
+            AlignedBufferDelete{alignment})
+        , size_(size)
+    {
+        std::fill_n(storage_.get(), size_, std::byte{});
+    }
+
+    [[nodiscard]] std::byte* data() noexcept { return storage_.get(); }
+    [[nodiscard]] std::byte const* data() const noexcept
+    {
+        return storage_.get();
+    }
+    [[nodiscard]] std::size_t size() const noexcept { return size_; }
+};
 
 [[nodiscard]] std::size_t coverage_sample_count(IndexCoverage const& coverage)
 {
@@ -103,29 +141,30 @@ event_merge_capacity(std::size_t count)
 }
 
 class TransactionSampleStorage {
+    struct AlignedDelete {
+        std::size_t alignment = alignof(std::max_align_t);
+
+        void operator()(std::byte* storage) const noexcept
+        {
+            if (storage) {
+                ::operator delete(storage, std::align_val_t{alignment});
+            }
+        }
+    };
+
+    struct OwnedRegion {
+        std::unique_ptr<std::byte, AlignedDelete> storage{
+            nullptr, AlignedDelete{}};
+        std::vector<std::uint8_t> written{};
+        ContinuousRegionStorageView view{};
+    };
+
     IndexCoverage const* coverage_ = nullptr;
+    ContinuousValueStorageGeometry geometry_{};
     ChannelLayout layout_{};
     std::vector<std::size_t> channels_{};
-    std::vector<std::size_t> region_offsets_{};
-    std::size_t frame_count_ = 0;
-    std::vector<Sample> values_{};
-    std::vector<std::uint8_t> written_{};
-
-    [[nodiscard]] std::optional<std::size_t> frame_offset(
-        GlobalIndex index) const noexcept
-    {
-        std::size_t region_index = 0;
-        for (auto const region : *coverage_) {
-            if (region.contains(index)) {
-                return region_offsets_[region_index]
-                    + static_cast<std::size_t>(
-                        region.begin.forward_distance_to(index));
-            }
-            if (SignedGlobalIndexOrder{}(index, region.begin)) break;
-            ++region_index;
-        }
-        return std::nullopt;
-    }
+    std::vector<OwnedRegion> owned_regions_{};
+    std::vector<ContinuousRegionStorageView> region_views_{};
 
     [[nodiscard]] std::optional<std::size_t> channel_offset(
         std::size_t channel) const noexcept
@@ -139,9 +178,12 @@ class TransactionSampleStorage {
 public:
     TransactionSampleStorage(
         IndexCoverage const& coverage,
+        std::span<GlobalIndexRange const> regions,
+        ContinuousValueStorageGeometry geometry,
         ChannelLayout layout,
         std::span<std::size_t const> channels)
         : coverage_(&coverage)
+        , geometry_(geometry)
         , layout_(layout)
         , channels_(channels.begin(), channels.end())
     {
@@ -160,31 +202,64 @@ public:
                 "background sample storage has invalid channels");
         }
 
-        region_offsets_.reserve(coverage_->size());
-        for (auto const region : *coverage_) {
-            region_offsets_.push_back(frame_count_);
-            auto const length = region.extent;
-            if (length > std::numeric_limits<std::size_t>::max() - frame_count_) {
-                throw std::length_error(
-                    "background sample storage coverage is too large");
-            }
-            frame_count_ += static_cast<std::size_t>(length);
+        if (!is_registered_continuous_value_type(geometry_.value_type)
+            || geometry_.value_size_bytes == 0
+            || geometry_.element_alignment == 0
+            || !std::has_single_bit(geometry_.element_alignment)) {
+            throw std::invalid_argument(
+                "background continuous storage has invalid geometry");
         }
-        auto const value_count = checked_product(frame_count_, channels_.size());
-        values_.resize(value_count);
-        written_.resize(value_count, 0);
+        owned_regions_.reserve(regions.size());
+        region_views_.reserve(regions.size());
+        for (auto const range : regions) {
+            if (range.empty()
+                || range.extent > std::numeric_limits<std::size_t>::max()) {
+                throw std::length_error(
+                    "background continuous Region is too large");
+            }
+            auto const frames = static_cast<std::size_t>(range.extent);
+            auto const value_count = checked_product(
+                frames, channel_count(layout_));
+            auto const byte_count = checked_product(
+                value_count, geometry_.value_size_bytes);
+            auto* storage = static_cast<std::byte*>(::operator new(
+                byte_count, std::align_val_t{geometry_.element_alignment}));
+            std::fill_n(storage, byte_count, std::byte{});
+            OwnedRegion owned{
+                .storage = std::unique_ptr<std::byte, AlignedDelete>{
+                    storage,
+                    AlignedDelete{geometry_.element_alignment}},
+                .written = std::vector<std::uint8_t>(value_count, 0),
+                .view = {
+                    .storage = storage,
+                    .range = range,
+                    .geometry = geometry_,
+                    .channel_layout = layout_,
+                },
+            };
+            owned.view.written_values = owned.written.data();
+            region_views_.push_back(owned.view);
+            owned_regions_.push_back(std::move(owned));
+        }
     }
 
     [[nodiscard]] Sample read(
         GlobalIndex index,
         std::size_t channel) const noexcept
     {
-        auto const frame = frame_offset(index);
+        auto const region = std::ranges::find_if(
+            region_views_, [&](auto const& value) {
+                return value.range.contains(index);
+            });
         auto const selected_channel = channel_offset(channel);
-        IV_ASSERT(frame && selected_channel,
+        IV_ASSERT(region != region_views_.end() && selected_channel,
             "background sample read lies outside realized storage");
-        if (!frame || !selected_channel) return {};
-        return values_[*selected_channel * frame_count_ + *frame];
+        if (region == region_views_.end() || !selected_channel
+            || geometry_.value_type != continuous_value_type_id_v<Sample>) {
+            return {};
+        }
+        return details::ContinuousRegionView<Sample, false>{*region}.at(
+            index, channel);
     }
 
     [[nodiscard]] bool write(
@@ -192,51 +267,62 @@ public:
         std::size_t channel,
         Sample value) noexcept
     {
-        auto const frame = frame_offset(index);
+        auto const region = std::ranges::find_if(
+            region_views_, [&](auto const& candidate) {
+                return candidate.range.contains(index);
+            });
         auto const selected_channel = channel_offset(channel);
-        if (!frame || !selected_channel) return false;
-        auto const offset = *selected_channel * frame_count_ + *frame;
-        values_[offset] = value;
-        written_[offset] = 1;
+        if (region == region_views_.end() || !selected_channel
+            || geometry_.value_type != continuous_value_type_id_v<Sample>) {
+            return false;
+        }
+        details::ContinuousRegionView<Sample, true>{*region}.at(index, channel)
+            = value;
         return true;
     }
 
     [[nodiscard]] bool complete() const noexcept
     {
         return std::ranges::all_of(
-            written_, [](std::uint8_t written) { return written != 0; });
+            owned_regions_, [&](OwnedRegion const& region) {
+                auto const frames = region.view.frame_count();
+                auto const channel_count_value = channel_count(layout_);
+                for (auto const channel : channels_) {
+                    for (std::size_t frame = 0; frame < frames; ++frame) {
+                        auto const native_index =
+                            layout_.sample_layout
+                                    == SampleStreamLayout::planar
+                                ? channel * frames + frame
+                                : frame * channel_count_value + channel;
+                        if (native_index >= region.written.size()
+                            || region.written[native_index] == 0) {
+                            return false;
+                        }
+                    }
+                }
+                return true;
+            });
     }
 
     [[nodiscard]] BackgroundSampleReadView read_view() const noexcept
     {
         return {
-            .data = this,
             .coverage_value = coverage_,
+            .regions = region_views_,
+            .geometry = geometry_,
             .layout = layout_,
             .channels = channels_,
-            .read_sample = +[](void const* opaque,
-                               GlobalIndex index,
-                               std::size_t channel) noexcept {
-                return static_cast<TransactionSampleStorage const*>(opaque)
-                    ->read(index, channel);
-            },
         };
     }
 
     [[nodiscard]] BackgroundSampleWriteView write_view() noexcept
     {
         return {
-            .data = this,
             .coverage_value = coverage_,
+            .regions = region_views_,
+            .geometry = geometry_,
             .layout = layout_,
             .channels = channels_,
-            .write_sample = +[](void* opaque,
-                                GlobalIndex index,
-                                std::size_t channel,
-                                Sample value) noexcept {
-                return static_cast<TransactionSampleStorage*>(opaque)
-                    ->write(index, channel, value);
-            },
         };
     }
 };
@@ -376,27 +462,61 @@ class PersistedSampleReader {
     PersistedDataStore::Snapshot const* snapshot_ = nullptr;
     PersistedOutputHandle output_{};
     IndexCoverage const* coverage_ = nullptr;
+    ContinuousValueStorageGeometry geometry_{};
     ChannelLayout layout_{};
     std::span<std::size_t const> channels_{};
+    std::vector<ContinuousRegionStorageView> regions_{};
+    bool selected_regions_complete_ = false;
 
 public:
     PersistedSampleReader(
         PersistedDataStore::Snapshot const& snapshot,
         PersistedOutputHandle output,
         IndexCoverage const& coverage,
+        std::span<GlobalIndexRange const> selected_regions,
+        ContinuousValueStorageGeometry geometry,
         ChannelLayout layout,
-        std::span<std::size_t const> channels) noexcept
+        std::span<std::size_t const> channels)
         : snapshot_(&snapshot)
         , output_(std::move(output))
         , coverage_(&coverage)
+        , geometry_(geometry)
         , layout_(layout)
         , channels_(channels)
-    {}
+    {
+        auto retained = snapshot_->sample_regions(output_, layout_);
+        std::vector<bool> used(retained.size(), false);
+        for (auto const selected : selected_regions) {
+            for (std::size_t index = 0; index < retained.size(); ++index) {
+                auto const& region = retained[index];
+                if (used[index] || region.range != selected
+                    || region.geometry != geometry) {
+                    continue;
+                }
+                used[index] = true;
+                regions_.push_back({
+                    .storage = const_cast<std::byte*>(region.storage_data()),
+                    .range = region.range,
+                    .geometry = region.geometry,
+                    .channel_layout = region.layout,
+                });
+                break;
+            }
+        }
+        selected_regions_complete_ = regions_.size() == selected_regions.size();
+    }
 
     [[nodiscard]] bool complete() const noexcept
     {
+        if (!selected_regions_complete_) return false;
+        IndexCoverage descriptor_coverage;
+        for (auto const& region : regions_) {
+            descriptor_coverage.include(region.range);
+        }
+        if (!contains_coverage(descriptor_coverage, *coverage_)) return false;
         if (coverage_->empty()) return true;
-        auto const* retained = snapshot_->find_sample_coverage(output_, layout_);
+        auto const* retained = snapshot_->find_sample_coverage(
+            output_, layout_, geometry_);
         return retained && contains_coverage(*retained, *coverage_)
             && std::ranges::none_of(channels_, [&](std::size_t channel) {
                 return channel >= channel_count(layout_);
@@ -420,16 +540,11 @@ public:
     [[nodiscard]] BackgroundSampleReadView view() const noexcept
     {
         return {
-            .data = this,
             .coverage_value = coverage_,
+            .regions = regions_,
+            .geometry = geometry_,
             .layout = layout_,
             .channels = channels_,
-            .read_sample = +[](void const* opaque,
-                               GlobalIndex index,
-                               std::size_t channel) noexcept {
-                return static_cast<PersistedSampleReader const*>(opaque)
-                    ->read(index, channel);
-            },
         };
     }
 };
@@ -534,7 +649,25 @@ Sample BackgroundSampleReadView::at(
     IV_ASSERT(*this, "background sample storage has no readable view");
     IV_ASSERT(coverage().contains(index) && has_channel(channel),
         "background sample read lies outside selected storage");
-    return *this ? read_sample(data, index, channel) : Sample{};
+    if (!*this || geometry.value_type != continuous_value_type_id_v<Sample>) {
+        return {};
+    }
+    auto const found = std::ranges::find_if(
+        regions, [&](auto const& region) { return region.range.contains(index); });
+    IV_ASSERT(found != regions.end(),
+        "background sample read has no containing Region");
+    return found == regions.end()
+        ? Sample{}
+        : details::ContinuousRegionView<Sample, false>{*found}.at(
+              index, channel);
+}
+
+ContinuousRegionStorageView const& BackgroundSampleReadView::region(
+    std::size_t index) const noexcept
+{
+    IV_ASSERT(index < regions.size(),
+        "background continuous read Region is out of bounds");
+    return regions[index];
 }
 
 IndexCoverage const& BackgroundSampleWriteView::coverage() const noexcept
@@ -553,8 +686,39 @@ bool BackgroundSampleWriteView::write(
     std::size_t channel,
     Sample value) const noexcept
 {
-    return *this && coverage().contains(index) && has_channel(channel)
-        && write_sample(data, index, channel, value);
+    if (!*this || !coverage().contains(index) || !has_channel(channel)
+        || geometry.value_type != continuous_value_type_id_v<Sample>) {
+        return false;
+    }
+    auto const found = std::ranges::find_if(
+        regions, [&](auto const& region) { return region.range.contains(index); });
+    if (found == regions.end()) return false;
+    details::ContinuousRegionView<Sample, true>{*found}.at(index, channel) = value;
+    return true;
+}
+
+bool BackgroundSampleWriteView::write(
+    std::size_t region_index,
+    GlobalIndex index,
+    std::size_t channel,
+    Sample value) const noexcept
+{
+    if (!*this || region_index >= regions.size() || !has_channel(channel)
+        || geometry.value_type != continuous_value_type_id_v<Sample>
+        || !regions[region_index].range.contains(index)) {
+        return false;
+    }
+    details::ContinuousRegionView<Sample, true>{regions[region_index]}.at(
+        index, channel) = value;
+    return true;
+}
+
+ContinuousRegionStorageView const& BackgroundSampleWriteView::region(
+    std::size_t index) const noexcept
+{
+    IV_ASSERT(index < regions.size(),
+        "background continuous write Region is out of bounds");
+    return regions[index];
 }
 
 IndexCoverage const& BackgroundEventReadView::coverage() const noexcept
@@ -585,7 +749,7 @@ struct BackgroundStorageRealization::Slot {
     graph_jit::PortStoragePlan const* plan = nullptr;
     IndexCoverage const* coverage = nullptr;
     std::optional<PersistedOutputHandle> persisted_output{};
-    std::unique_ptr<TransactionSampleStorage> owned_sample{};
+    std::shared_ptr<TransactionSampleStorage> owned_sample{};
     std::unique_ptr<TransactionEventStorage> owned_event{};
     std::unique_ptr<PersistedSampleReader> persisted_sample{};
     std::unique_ptr<PersistedEventReader> persisted_event{};
@@ -598,20 +762,145 @@ struct BackgroundStorageRealization::Slot {
 BackgroundStorageRealization::BackgroundStorageRealization(
     graph_jit::BackgroundEvaluationPlan const& plan,
     PersistedDataStore& data,
-    BackgroundStorageSelection selection)
+    BackgroundStorageSelection selection,
+    graph_jit::SequentialInputCombineFunction combine_sequential_input,
+    graph_jit::SequentialInputInitializeFunction initialize_sequential_input)
     : plan_(&plan)
     , selection_(std::move(selection))
     , executed_operations_(plan.runtime.operations.size(), false)
+    , combine_sequential_input_(combine_sequential_input)
+    , initialize_sequential_input_(initialize_sequential_input)
 {
     if (selection_.storage_coverage.size() != plan.storage.ports.size()) {
         throw std::invalid_argument(
             "background storage coverage is not aligned with the compiled plan");
+    }
+    if (selection_.storage_regions.empty()) {
+        selection_.storage_regions.resize(plan.storage.ports.size());
+        for (graph_jit::PortStorageIndex index = 0;
+             index < plan.storage.ports.size(); ++index) {
+            if (plan.storage.ports[index].kind == PortKind::sample) {
+                selection_.storage_regions[index].assign(
+                    selection_.storage_coverage[index].begin(),
+                    selection_.storage_coverage[index].end());
+            }
+        }
+    } else if (selection_.storage_regions.size()
+               != plan.storage.ports.size()) {
+        throw std::invalid_argument(
+            "background storage Regions are not aligned with the compiled plan");
+    }
+    auto const has_explicit_published_output_regions =
+        !selection_.published_output_regions.empty();
+    if (!has_explicit_published_output_regions) {
+        selection_.published_output_regions.resize(plan.storage.ports.size());
+    } else if (selection_.published_output_regions.size()
+               != plan.storage.ports.size()) {
+        throw std::invalid_argument(
+            "background published output Regions are not aligned with the compiled plan");
+    }
+    if (selection_.persisted_replacement_coverage.empty()) {
+        selection_.persisted_replacement_coverage =
+            selection_.storage_coverage;
+    } else if (selection_.persisted_replacement_coverage.size()
+               != plan.storage.ports.size()) {
+        throw std::invalid_argument(
+            "background persisted replacement coverage is not aligned with the compiled plan");
     }
     if (!selection_.produce_storage.empty()
         && selection_.produce_storage.size() != plan.storage.ports.size()) {
         throw std::invalid_argument(
             "background storage production is not aligned with the compiled plan");
     }
+
+    auto storage_is_produced = [&](graph_jit::PortStorageIndex index) {
+        return selection_.produce_storage.empty()
+            ? storage_is_runtime_produced(plan, plan.storage.ports[index])
+            : selection_.produce_storage[index];
+    };
+
+    // One authored continuous output has one writable Region list even when
+    // planning retained several physical storage roles for it. The former
+    // scalar writer broadcast every value to those roles. Region views cannot
+    // express such a broadcast while retaining contiguous storage, so all
+    // transaction-produced roles of one logical output share one producer-home
+    // allocation instead.
+    std::vector<std::vector<graph_jit::PortStorageIndex>> output_storage(
+        plan.ports.size());
+    for (graph_jit::PortStorageIndex index = 0;
+         index < plan.storage.ports.size(); ++index) {
+        auto const& storage = plan.storage.ports[index];
+        if (storage.kind != PortKind::sample || !storage.output_port
+            || *storage.output_port >= plan.ports.size()
+            || storage.storage == graph_jit::PortStorageKind::current_tick
+            || !storage_is_produced(index)) {
+            continue;
+        }
+        output_storage[*storage.output_port].push_back(index);
+    }
+    for (auto const& group : output_storage) {
+        if (group.empty()) continue;
+        auto const& first_storage = plan.storage.ports[group.front()];
+        if (std::ranges::any_of(
+                group,
+                [&](graph_jit::PortStorageIndex index) {
+                    auto const& candidate = plan.storage.ports[index];
+                    return candidate.sample_layout
+                            != first_storage.sample_layout
+                        || candidate.continuous_geometry
+                            != first_storage.continuous_geometry;
+                })) {
+            throw std::invalid_argument(
+                "background output storage roles disagree on continuous geometry or layout");
+        }
+        IndexCoverage selected;
+        for (auto const index : group) {
+            selected.include(selection_.storage_coverage[index]);
+        }
+
+        std::span<GlobalIndexRange const> published;
+        if (has_explicit_published_output_regions) {
+            for (auto const index : group) {
+                auto const& candidate =
+                    selection_.published_output_regions[index];
+                if (candidate.empty()) continue;
+                if (!published.empty()
+                    && !std::ranges::equal(published, candidate)) {
+                    throw std::invalid_argument(
+                        "background output storage roles disagree on their published Region list");
+                }
+                published = candidate;
+            }
+        } else if (group.size() == 1) {
+            published = selection_.storage_regions[group.front()];
+        }
+        std::vector<GlobalIndexRange> regions;
+        if (!published.empty()) {
+            for (auto const region : published) {
+                if (!(IndexCoverage{region} & selected).empty()) {
+                    regions.push_back(region);
+                    selected.include(region);
+                }
+            }
+        } else {
+            regions.assign(selected.begin(), selected.end());
+        }
+        for (auto const index : group) {
+            selection_.storage_coverage[index] = selected;
+            selection_.storage_regions[index] = regions;
+            if (!has_explicit_published_output_regions) {
+                selection_.published_output_regions[index] = regions;
+            }
+            if (plan.storage.ports[index].storage
+                    == graph_jit::PortStorageKind::persisted_data) {
+                selection_.persisted_replacement_coverage[index].include(
+                    selected);
+            }
+        }
+    }
+
+    std::vector<std::shared_ptr<TransactionSampleStorage>> output_samples(
+        plan.ports.size());
     slots_.reserve(plan.storage.ports.size());
     for (graph_jit::PortStorageIndex index = 0;
          index < plan.storage.ports.size(); ++index) {
@@ -625,15 +914,33 @@ BackgroundStorageRealization::BackgroundStorageRealization(
                 persisted_output_id(plan, index, selection_.generation));
         }
 
-        auto const produced = selection_.produce_storage.empty()
-            ? storage_is_runtime_produced(plan, planned)
-            : selection_.produce_storage[index];
+        auto const produced = storage_is_produced(index);
         if (produced && planned.storage != graph_jit::PortStorageKind::current_tick) {
             if (planned.kind == PortKind::sample) {
-                created->owned_sample = std::make_unique<TransactionSampleStorage>(
-                    *created->coverage,
-                    planned.sample_layout,
-                    planned.sample_channels);
+                if (planned.output_port
+                    && *planned.output_port < output_samples.size()) {
+                    auto& shared = output_samples[*planned.output_port];
+                    if (!shared) {
+                        std::vector<std::size_t> channels(
+                            channel_count(planned.sample_layout));
+                        std::iota(channels.begin(), channels.end(), 0);
+                        shared = std::make_shared<TransactionSampleStorage>(
+                            *created->coverage,
+                            selection_.storage_regions[index],
+                            planned.continuous_geometry,
+                            planned.sample_layout,
+                            channels);
+                    }
+                    created->owned_sample = shared;
+                } else {
+                    created->owned_sample =
+                        std::make_shared<TransactionSampleStorage>(
+                            *created->coverage,
+                            selection_.storage_regions[index],
+                            planned.continuous_geometry,
+                            planned.sample_layout,
+                            planned.sample_channels);
+                }
                 created->sample_read = created->owned_sample->read_view();
                 created->sample_write = created->owned_sample->write_view();
             } else {
@@ -653,6 +960,8 @@ BackgroundStorageRealization::BackgroundStorageRealization(
                         *selection_.published,
                         *created->persisted_output,
                         *created->coverage,
+                        selection_.storage_regions[index],
+                        planned.continuous_geometry,
                         planned.sample_layout,
                         planned.sample_channels);
                 created->sample_read = created->persisted_sample->view();
@@ -780,23 +1089,40 @@ BackgroundStorageRealization::persisted_output_handle(
 
 std::expected<void, std::string> BackgroundStorageRealization::seal()
 {
+    auto const valid_sample_regions = [&](Slot const& selected,
+                                          auto const& view) {
+        IndexCoverage described;
+        for (auto const& region : view.regions) {
+            if (region.storage == nullptr || region.range.empty()
+                || region.geometry != selected.plan->continuous_geometry
+                || region.channel_layout != selected.plan->sample_layout) {
+                return false;
+            }
+            described.include(region.range);
+        }
+        return contains_coverage(described, *selected.coverage);
+    };
     auto const valid_sample_read = [&](Slot const& selected) {
         auto const& planned = *selected.plan;
         return selected.sample_read
-            && selected.sample_read->layout.channel_type
-                == planned.sample_layout.channel_type
+            && selected.sample_read->geometry
+                == planned.continuous_geometry
+            && selected.sample_read->layout == planned.sample_layout
             && contains_coverage(
                 selected.sample_read->coverage(), *selected.coverage)
+            && valid_sample_regions(selected, *selected.sample_read)
             && contains_channels(
                 selected.sample_read->channels, planned.sample_channels);
     };
     auto const valid_sample_write = [&](Slot const& selected) {
         auto const& planned = *selected.plan;
         return selected.sample_write
-            && selected.sample_write->layout.channel_type
-                == planned.sample_layout.channel_type
+            && selected.sample_write->geometry
+                == planned.continuous_geometry
+            && selected.sample_write->layout == planned.sample_layout
             && contains_coverage(
                 selected.sample_write->coverage(), *selected.coverage)
+            && valid_sample_regions(selected, *selected.sample_write)
             && contains_channels(
                 selected.sample_write->channels, planned.sample_channels);
     };
@@ -957,9 +1283,20 @@ BackgroundStorageRealization::execute_operation(
             *slot(materialization.output).coverage;
         if (!target
             || target->layout.channel_type
-                != materialization.target_layout.channel_type) {
+                != materialization.target_layout.channel_type
+            || materialization.output >= plan_->storage.ports.size()) {
             result = std::unexpected(
                 "background sample materialization has no compatible target");
+            break;
+        }
+        auto const geometry = plan_->storage.ports[materialization.output]
+            .continuous_geometry;
+        if (target->geometry != geometry
+            || geometry.value_size_bytes == 0
+            || geometry.element_alignment == 0
+            || !std::has_single_bit(geometry.element_alignment)) {
+            result = std::unexpected(
+                "background continuous materialization has invalid target geometry");
             break;
         }
         if (materialization.inputs.size()
@@ -1073,48 +1410,320 @@ BackgroundStorageRealization::execute_operation(
         }
         if (!result) break;
 
-        std::array<Sample, maximum_supported_channel_count> source_values{};
-        std::array<Sample, maximum_supported_channel_count> target_values{};
-        std::array<Sample, maximum_supported_channel_count>
-            accumulated_target_values{};
-        for (auto const region : target_coverage) {
-            for (GlobalIndex::extent_type frame = 0;
-                 frame < region.extent; ++frame) {
-                auto const sample_index = region.begin.advanced_by(frame);
-                std::ranges::fill(accumulated_target_values, Sample{});
-                for (auto const& projection : projections) {
-                    for (std::size_t channel = 0;
-                         channel < projection.source_indices.size(); ++channel) {
-                        auto const source_index =
-                            projection.source_indices[channel];
-                        auto const latency = materialization
-                            .source_read_latencies[source_index];
-                        auto const source_sample_index =
-                            sample_index.retreated_by(latency);
-                        auto const* source = sample_read(
-                            materialization.inputs[source_index]);
-                        if (!slot(materialization.inputs[source_index])
-                                .coverage->contains(source_sample_index)) {
-                            result = std::unexpected(
-                                "background sample source does not cover its delayed read");
-                            break;
-                        }
-                        source_values[channel] = source->at(
-                            source_sample_index,
-                            materialization.source_channels[source_index]
-                                .channel);
+        if (materialization.target_port >= plan_->ports.size()) {
+            result = std::unexpected(
+                "background sample materialization has no logical target port");
+            break;
+        }
+        auto const& logical_target = plan_->ports[materialization.target_port];
+        struct SourceRegionGroup {
+            BackgroundSampleReadView const* view = nullptr;
+            std::size_t latency = 0;
+        };
+        std::vector<SourceRegionGroup> source_groups;
+        std::vector<std::size_t> input_group(materialization.inputs.size());
+        for (std::size_t source = 0;
+             source < materialization.inputs.size(); ++source) {
+            auto const* view = sample_read(materialization.inputs[source]);
+            if (!view || view->geometry != geometry) {
+                result = std::unexpected(
+                    "background continuous materialization source geometry disagrees with its target");
+                break;
+            }
+            auto const latency = materialization.source_read_latencies[source];
+            auto const found = std::ranges::find_if(
+                source_groups,
+                [&](SourceRegionGroup const& group) {
+                    return group.view->regions.data() == view->regions.data()
+                        && group.latency == latency;
+                });
+            if (found == source_groups.end()) {
+                input_group[source] = source_groups.size();
+                source_groups.push_back({view, latency});
+            } else {
+                input_group[source] = static_cast<std::size_t>(
+                    std::distance(source_groups.begin(), found));
+            }
+        }
+        if (!result) break;
+        struct RegionContribution {
+            GlobalIndexRange range{};
+            std::size_t projection = 0;
+            std::vector<std::optional<std::size_t>> source_regions{};
+        };
+        std::vector<RegionContribution> contributions;
+        for (std::size_t projection_index = 0;
+             projection_index < projections.size(); ++projection_index) {
+            std::vector<std::size_t> projection_groups;
+            for (auto const source_index :
+                 projections[projection_index].source_indices) {
+                auto const group = input_group[source_index];
+                if (!std::ranges::contains(projection_groups, group)) {
+                    projection_groups.push_back(group);
+                }
+            }
+
+            std::vector<RegionContribution> projection_contributions;
+            bool first_group = true;
+            for (auto const group : projection_groups) {
+                auto const& source = source_groups[group];
+                if (first_group) {
+                    for (std::size_t region = 0;
+                         region < source.view->regions.size(); ++region) {
+                        auto const range = source.view->regions[region].range;
+                        RegionContribution contribution{
+                            .range = {
+                                .begin = range.begin.advanced_by(
+                                    source.latency),
+                                .extent = range.extent,
+                            },
+                            .projection = projection_index,
+                            .source_regions = std::vector<
+                                std::optional<std::size_t>>(
+                                source_groups.size()),
+                        };
+                        contribution.source_regions[group] = region;
+                        projection_contributions.push_back(
+                            std::move(contribution));
                     }
-                    if (!result) break;
+                    first_group = false;
+                    continue;
+                }
+                std::vector<RegionContribution> intersections;
+                for (auto const& contribution : projection_contributions) {
+                    for (std::size_t region = 0;
+                         region < source.view->regions.size(); ++region) {
+                        auto const raw = source.view->regions[region].range;
+                        auto const shifted = GlobalIndexRange{
+                            .begin = raw.begin.advanced_by(source.latency),
+                            .extent = raw.extent,
+                        };
+                        for_each_range_intersection(
+                            contribution.range,
+                            shifted,
+                            [&](GlobalIndexRange part) {
+                                auto next = contribution;
+                                next.range = part;
+                                next.source_regions[group] = region;
+                                intersections.push_back(std::move(next));
+                            });
+                    }
+                }
+                projection_contributions = std::move(intersections);
+            }
+            contributions.insert(
+                contributions.end(),
+                std::make_move_iterator(projection_contributions.begin()),
+                std::make_move_iterator(projection_contributions.end()));
+        }
+        std::erase_if(
+            contributions,
+            [&](RegionContribution const& contribution) {
+                return (IndexCoverage{contribution.range} & target_coverage)
+                    .empty();
+            });
+
+        auto const target_channel_count = channel_count(target->layout);
+        std::vector<AlignedByteBuffer> accumulated_target_values;
+        std::vector<AlignedByteBuffer> projected_target_values;
+        accumulated_target_values.reserve(target_channel_count);
+        projected_target_values.reserve(target_channel_count);
+        for (std::size_t channel = 0; channel < target_channel_count;
+             ++channel) {
+            accumulated_target_values.emplace_back(
+                geometry.value_size_bytes, geometry.element_alignment);
+            projected_target_values.emplace_back(
+                geometry.value_size_bytes, geometry.element_alignment);
+        }
+        auto source_value_storage = [&] (
+            ContinuousRegionStorageView const& region,
+            GlobalIndex value_index,
+            std::size_t channel) -> std::byte const* {
+            auto const offset = region.range.offset_of(value_index);
+            if (!offset || channel >= channel_count(region.channel_layout)) {
+                return nullptr;
+            }
+            auto const frames = region.frame_count();
+            auto const channels = channel_count(region.channel_layout);
+            auto const value = region.channel_layout.sample_layout
+                    == SampleStreamLayout::planar
+                ? channel * frames + static_cast<std::size_t>(*offset)
+                : static_cast<std::size_t>(*offset) * channels + channel;
+            return region.storage + value * geometry.value_size_bytes;
+        };
+        auto write_target_value = [&] (
+            ContinuousRegionStorageView const& region,
+            GlobalIndex value_index,
+            std::size_t channel,
+            std::byte const* value) {
+            auto const offset = region.range.offset_of(value_index);
+            if (!offset || channel >= channel_count(region.channel_layout)) {
+                return false;
+            }
+            auto const frames = region.frame_count();
+            auto const channels = channel_count(region.channel_layout);
+            auto const native_index = region.channel_layout.sample_layout
+                    == SampleStreamLayout::planar
+                ? channel * frames + static_cast<std::size_t>(*offset)
+                : static_cast<std::size_t>(*offset) * channels + channel;
+            std::memcpy(
+                region.storage + native_index * geometry.value_size_bytes,
+                value,
+                geometry.value_size_bytes);
+            if (region.written_values) region.written_values[native_index] = 1;
+            return true;
+        };
+        auto initialize_accumulated_values = [&] {
+            for (auto const channel : materialization.target_channels) {
+                if (channel >= accumulated_target_values.size()) return false;
+                auto& destination = accumulated_target_values[channel];
+                if (logical_target.input_access == InputAccessKind::sequential) {
+                    if (initialize_sequential_input_) {
+                        if (!initialize_sequential_input_(
+                            materialization.target_port,
+                            destination.data(),
+                            destination.size())) {
+                            return false;
+                        }
+                    } else if (geometry.value_type
+                            == continuous_value_type_id_v<Sample>
+                        && destination.size() == sizeof(Sample)) {
+                        std::memcpy(
+                            destination.data(),
+                            &logical_target.sample_neutral_value,
+                            sizeof(Sample));
+                    } else {
+                        return false;
+                    }
+                } else {
+                    std::fill_n(
+                        destination.data(), destination.size(), std::byte{});
+                }
+            }
+            return true;
+        };
+        auto combine_projected_value = [&] (
+            std::size_t channel,
+            std::byte const* source) {
+            auto& destination = accumulated_target_values[channel];
+            if (logical_target.input_access == InputAccessKind::sequential) {
+                return combine_sequential_input_
+                    && combine_sequential_input_(
+                        materialization.target_port,
+                        destination.data(),
+                        source,
+                        destination.size());
+            }
+            if (geometry.channel_scalar_lane_count == 0) {
+                std::memcpy(
+                    destination.data(), source, geometry.value_size_bytes);
+                return true;
+            }
+            if (geometry.value_size_bytes
+                != geometry.channel_scalar_lane_count * sizeof(float)) {
+                return false;
+            }
+            auto destination_lanes = std::span{
+                reinterpret_cast<float*>(destination.data()),
+                geometry.channel_scalar_lane_count};
+            auto source_lanes = std::span{
+                reinterpret_cast<float const*>(source),
+                geometry.channel_scalar_lane_count};
+            for (std::size_t lane = 0; lane < destination_lanes.size(); ++lane) {
+                destination_lanes[lane] += source_lanes[lane];
+            }
+            return true;
+        };
+        auto apply_contribution = [&](RegionContribution const& contribution,
+                                      GlobalIndex sample_index) {
+            if (contribution.projection >= projections.size()) {
+                result = std::unexpected(
+                    "background sample contribution lost its projection");
+                return;
+            }
+            auto const& projection = projections[contribution.projection];
+            std::vector<std::byte const*> source_storage(
+                projection.source_indices.size());
+            for (std::size_t channel = 0;
+                 channel < projection.source_indices.size(); ++channel) {
+                auto const source_index = projection.source_indices[channel];
+                auto const group_index = input_group[source_index];
+                auto const& group = source_groups[group_index];
+                auto const latency =
+                    materialization.source_read_latencies[source_index];
+                auto const source_sample_index =
+                    sample_index.retreated_by(latency);
+                if (group_index >= contribution.source_regions.size()
+                    || !contribution.source_regions[group_index]
+                    || *contribution.source_regions[group_index]
+                        >= group.view->regions.size()) {
+                    result = std::unexpected(
+                        "background sample contribution lost its source Region");
+                    return;
+                }
+                auto const& source_region = group.view->regions[
+                    *contribution.source_regions[group_index]];
+                source_storage[channel] = source_value_storage(
+                    source_region,
+                    source_sample_index,
+                    materialization.source_channels[source_index].channel);
+                if (!source_storage[channel]) {
+                    result = std::unexpected(
+                        "background sample source Region does not cover its delayed read");
+                    return;
+                }
+            }
+            if (!result) return;
+            for (auto const channel : projection.target_channels) {
+                std::fill_n(
+                    projected_target_values[channel].data(),
+                    geometry.value_size_bytes,
+                    std::byte{});
+            }
+            if (geometry.channel_scalar_lane_count == 0) {
+                if (source_storage.size() != 1
+                    || projection.target_channels.size() != 1) {
+                    result = std::unexpected(
+                        "scalar continuous materialization cannot apply a channel projection");
+                    return;
+                }
+                std::memcpy(
+                    projected_target_values[
+                        projection.target_channels.front()].data(),
+                    source_storage.front(),
+                    geometry.value_size_bytes);
+            } else {
+                if (geometry.value_size_bytes
+                    != geometry.channel_scalar_lane_count * sizeof(float)) {
+                    result = std::unexpected(
+                        "audio continuous geometry has an invalid scalar-lane extent");
+                    return;
+                }
+                std::array<Sample, maximum_supported_channel_count>
+                    source_values{};
+                std::array<Sample, maximum_supported_channel_count>
+                    target_values{};
+                for (std::size_t lane = 0;
+                     lane < geometry.channel_scalar_lane_count; ++lane) {
+                    for (std::size_t source_channel = 0;
+                         source_channel < projection.source_indices.size();
+                         ++source_channel) {
+                        source_values[source_channel] = Sample{
+                            reinterpret_cast<float const*>(
+                                source_storage[source_channel])[lane]};
+                    }
                     if (projection.conversion) {
                         projection.conversion->convert(
                             source_values.data(), target_values.data(), 1);
                     } else {
                         for (std::size_t target_channel = 0;
-                             target_channel < projection.target_channels.size();
+                             target_channel
+                                < projection.target_channels.size();
                              ++target_channel) {
                             Sample value{};
                             for (std::size_t source_channel = 0;
-                                 source_channel < projection.source_indices.size();
+                                 source_channel
+                                    < projection.source_indices.size();
                                  ++source_channel) {
                                 value += source_values[source_channel]
                                     * projection.transform_coefficients[
@@ -1125,19 +1734,76 @@ BackgroundStorageRealization::execute_operation(
                             target_values[target_channel] = value;
                         }
                     }
-                    for (std::size_t channel = 0;
-                         channel < projection.target_channels.size(); ++channel) {
-                        accumulated_target_values[
-                            projection.target_channels[channel]] +=
-                                target_values[channel];
+                    for (std::size_t target_channel = 0;
+                         target_channel < projection.target_channels.size();
+                         ++target_channel) {
+                        reinterpret_cast<float*>(
+                            projected_target_values[
+                                projection.target_channels[target_channel]]
+                                .data())[lane]
+                            = target_values[target_channel].value;
+                    }
+                }
+            }
+            for (auto const target_channel : projection.target_channels) {
+                if (!combine_projected_value(
+                        target_channel,
+                        projected_target_values[target_channel].data())) {
+                    result = std::unexpected(
+                        "background sample materialization combiner rejected a contribution");
+                    return;
+                }
+            }
+        };
+
+        std::vector<bool> used_contributions(contributions.size(), false);
+        for (std::size_t target_region_index = 0;
+             target_region_index < target->regions.size();
+             ++target_region_index) {
+            auto const target_region = target->regions[target_region_index].range;
+            std::optional<std::size_t> fixed_contribution;
+            if (logical_target.input_access != InputAccessKind::sequential) {
+                for (std::size_t contribution = 0;
+                     contribution < contributions.size(); ++contribution) {
+                    if (!used_contributions[contribution]
+                        && contributions[contribution].range == target_region) {
+                        fixed_contribution = contribution;
+                        used_contributions[contribution] = true;
+                        break;
+                    }
+                }
+                if (!fixed_contribution) {
+                    result = std::unexpected(
+                        "background Coverage materialization lost a logical Region contribution");
+                    break;
+                }
+            }
+            for (GlobalIndex::extent_type frame = 0;
+                 frame < target_region.extent; ++frame) {
+                auto const sample_index = target_region.begin.advanced_by(frame);
+                if (!initialize_accumulated_values()) {
+                    result = std::unexpected(
+                        "background continuous materialization neutral initializer rejected its target geometry");
+                    break;
+                }
+                if (fixed_contribution) {
+                    apply_contribution(
+                        contributions[*fixed_contribution], sample_index);
+                } else {
+                    for (auto const& contribution : contributions) {
+                        if (contribution.range.contains(sample_index)) {
+                            apply_contribution(contribution, sample_index);
+                            if (!result) break;
+                        }
                     }
                 }
                 if (!result) break;
                 for (auto const channel : materialization.target_channels) {
-                    if (!target->write(
+                    if (!write_target_value(
+                            target->regions[target_region_index],
                             sample_index,
                             channel,
-                            accumulated_target_values[channel])) {
+                            accumulated_target_values[channel].data())) {
                         result = std::unexpected(
                             "background sample materialization write failed");
                         break;
@@ -1318,8 +1984,8 @@ BackgroundStorageRealization::validate_produced_storage() const
         auto const& selected = *slots_[index];
         if (selected.owned_sample && !selected.owned_sample->complete()) {
             return std::unexpected(
-                "background sample output did not initialize every selected "
-                "sample and channel");
+                "background continuous output did not initialize every "
+                "selected value and channel");
         }
     }
     return {};
@@ -1340,16 +2006,6 @@ BackgroundStorageRealization::make_tick_materialization_snapshot(
         std::size_t logical_channel = 0;
         std::size_t storage_channel = 0;
         std::size_t latency = 0;
-    };
-    auto shifted_forward = [](IndexCoverage const& source, std::size_t latency) {
-        IndexCoverage result;
-        for (auto const region : source) {
-            result.include({
-                .begin = region.begin.advanced_by(latency),
-                .extent = region.extent,
-            });
-        }
-        return result;
     };
     auto materialized_tick_storage = [&](graph_jit::PortStorageIndex index) {
         return index < plan_->storage.ports.size()
@@ -1398,7 +2054,10 @@ BackgroundStorageRealization::make_tick_materialization_snapshot(
         std::vector<SampleRoute> routes;
         auto append_route = [&](SampleRoute route) {
             if (std::ranges::none_of(routes, [&](SampleRoute const& existing) {
-                    return existing.view->data == route.view->data
+                    return existing.view->regions.data()
+                            == route.view->regions.data()
+                        && existing.view->coverage_value
+                            == route.view->coverage_value
                         && existing.logical_channel == route.logical_channel
                         && existing.storage_channel == route.storage_channel
                         && existing.latency == route.latency;
@@ -1445,48 +2104,239 @@ BackgroundStorageRealization::make_tick_materialization_snapshot(
                 }
             }
         }
-        IndexCoverage complete_coverage;
         auto const channels = channel_count(port.sample_layout);
-        for (std::size_t channel = 0; channel < channels; ++channel) {
-            IndexCoverage available;
-            for (auto const& route : routes) {
-                if (route.logical_channel == channel) {
-                    available.include(shifted_forward(
-                        route.view->coverage(), route.latency));
+        struct FrozenSourceGroup {
+            BackgroundSampleReadView const* view = nullptr;
+            std::size_t latency = 0;
+            std::vector<std::size_t> routes{};
+        };
+        std::vector<FrozenSourceGroup> groups;
+        for (std::size_t route_index = 0;
+             route_index < routes.size(); ++route_index) {
+            auto const& route = routes[route_index];
+            auto found = std::ranges::find_if(
+                groups,
+                [&](FrozenSourceGroup const& group) {
+                    return group.view->regions.data()
+                            == route.view->regions.data()
+                        && group.latency == route.latency;
+                });
+            if (found == groups.end()) {
+                groups.push_back({
+                    .view = route.view,
+                    .latency = route.latency,
+                    .routes = {route_index},
+                });
+            } else {
+                found->routes.push_back(route_index);
+            }
+        }
+        auto group_has_channel = [&](FrozenSourceGroup const& group,
+                                     std::size_t channel) {
+            return std::ranges::any_of(
+                group.routes,
+                [&](std::size_t route) {
+                    return routes[route].logical_channel == channel;
+                });
+        };
+        auto group_is_complete = [&](FrozenSourceGroup const& group) {
+            for (std::size_t channel = 0; channel < channels; ++channel) {
+                if (!group_has_channel(group, channel)) return false;
+            }
+            return true;
+        };
+        constexpr auto no_region = std::numeric_limits<std::size_t>::max();
+        struct FrozenRegion {
+            GlobalIndexRange range{};
+            std::vector<std::size_t> source_regions{};
+        };
+        std::vector<FrozenRegion> frozen_regions;
+        std::vector<std::size_t> incomplete_groups;
+        for (std::size_t group = 0; group < groups.size(); ++group) {
+            if (!group_is_complete(groups[group])) {
+                incomplete_groups.push_back(group);
+                continue;
+            }
+            for (std::size_t region = 0;
+                 region < groups[group].view->regions.size(); ++region) {
+                auto selected = std::vector<std::size_t>(
+                    groups.size(), no_region);
+                selected[group] = region;
+                auto const raw = groups[group].view->regions[region].range;
+                frozen_regions.push_back({
+                    .range = {
+                        .begin = raw.begin.advanced_by(groups[group].latency),
+                        .extent = raw.extent,
+                    },
+                    .source_regions = std::move(selected),
+                });
+            }
+        }
+        if (!incomplete_groups.empty()) {
+            for (std::size_t channel = 0; channel < channels; ++channel) {
+                if (std::ranges::none_of(
+                        incomplete_groups,
+                        [&](std::size_t group) {
+                            return group_has_channel(groups[group], channel);
+                        })) {
+                    return std::unexpected(
+                        "Tick sample materialization has incomplete routed channels");
                 }
             }
-            complete_coverage = channel == 0
-                ? std::move(available)
-                : complete_coverage & available;
+            std::vector<FrozenRegion> composed;
+            bool first = true;
+            for (auto const group : incomplete_groups) {
+                auto const& source = groups[group];
+                if (first) {
+                    for (std::size_t region = 0;
+                         region < source.view->regions.size(); ++region) {
+                        auto selected = std::vector<std::size_t>(
+                            groups.size(), no_region);
+                        selected[group] = region;
+                        auto const raw = source.view->regions[region].range;
+                        composed.push_back({
+                            .range = {
+                                .begin = raw.begin.advanced_by(source.latency),
+                                .extent = raw.extent,
+                            },
+                            .source_regions = std::move(selected),
+                        });
+                    }
+                    first = false;
+                    continue;
+                }
+                std::vector<FrozenRegion> intersections;
+                for (auto const& previous : composed) {
+                    for (std::size_t region = 0;
+                         region < source.view->regions.size(); ++region) {
+                        auto const raw = source.view->regions[region].range;
+                        auto const shifted = GlobalIndexRange{
+                            .begin = raw.begin.advanced_by(source.latency),
+                            .extent = raw.extent,
+                        };
+                        for_each_range_intersection(
+                            previous.range,
+                            shifted,
+                            [&](GlobalIndexRange part) {
+                                auto next = previous;
+                                next.range = part;
+                                next.source_regions[group] = region;
+                                intersections.push_back(std::move(next));
+                            });
+                    }
+                }
+                composed = std::move(intersections);
+            }
+            frozen_regions.insert(
+                frozen_regions.end(),
+                std::make_move_iterator(composed.begin()),
+                std::make_move_iterator(composed.end()));
         }
-        if (complete_coverage.empty()) continue;
+        if (port.ordering == CoverageOrdering::sorted) {
+            std::stable_sort(
+                frozen_regions.begin(),
+                frozen_regions.end(),
+                [](FrozenRegion const& left, FrozenRegion const& right) {
+                    if (left.range.begin == right.range.begin) {
+                        return left.range.extent > right.range.extent;
+                    }
+                    return SignedGlobalIndexOrder{}(
+                        left.range.begin, right.range.begin);
+                });
+        }
+        if (frozen_regions.empty()) continue;
 
         std::vector<std::size_t> frozen_channels(channels);
         std::iota(frozen_channels.begin(), frozen_channels.end(), 0);
-        std::vector<Sample> frozen_values;
+        auto const geometry = port.continuous_geometry;
+        if (geometry.value_size_bytes == 0
+            || std::ranges::any_of(
+                groups,
+                [&](FrozenSourceGroup const& group) {
+                    return group.view->geometry != geometry;
+                })) {
+            return std::unexpected(
+                "Tick continuous materialization has inconsistent source geometry");
+        }
+        std::vector<std::byte> frozen_values;
+        std::size_t frozen_frames = 0;
+        for (auto const& region : frozen_regions) {
+            if (region.range.extent
+                > std::numeric_limits<std::size_t>::max() - frozen_frames) {
+                return std::unexpected(
+                    "Tick sample materialization is too large");
+            }
+            frozen_frames += static_cast<std::size_t>(region.range.extent);
+        }
         frozen_values.reserve(checked_product(
-            coverage_sample_count(complete_coverage), channels));
+            checked_product(frozen_frames, channels),
+            geometry.value_size_bytes));
         bool missing_route = false;
-        for (auto const channel : frozen_channels) {
-            for (auto const region : complete_coverage) {
-                for (GlobalIndex::extent_type frame = 0;
-                     frame < region.extent; ++frame) {
-                    auto const sample = region.begin.advanced_by(frame);
-                    auto const found = std::ranges::find_if(
-                        routes, [&](SampleRoute const& route) {
-                            return route.logical_channel == channel
-                                && route.view->coverage().contains(
-                                    sample.retreated_by(route.latency));
-                        });
-                    if (found == routes.end()) {
-                        missing_route = true;
-                        break;
+        auto append_value = [&](FrozenRegion const& region,
+                                GlobalIndex sample,
+                                std::size_t channel) {
+            for (std::size_t group = 0; group < groups.size(); ++group) {
+                if (region.source_regions[group] == no_region) continue;
+                auto const route = std::ranges::find_if(
+                    groups[group].routes,
+                    [&](std::size_t route_index) {
+                        return routes[route_index].logical_channel == channel;
+                    });
+                if (route == groups[group].routes.end()) continue;
+                auto const& selected_route = routes[*route];
+                auto const source_index = sample.retreated_by(
+                    selected_route.latency);
+                auto const& source_region = groups[group].view->regions[
+                    region.source_regions[group]];
+                auto const source_frame =
+                    source_region.range.offset_of(source_index);
+                if (!source_frame) continue;
+                auto const source_channels = channel_count(
+                    source_region.channel_layout);
+                if (selected_route.storage_channel >= source_channels) continue;
+                auto const source_value =
+                    source_region.channel_layout.sample_layout
+                            == SampleStreamLayout::planar
+                        ? selected_route.storage_channel
+                                * source_region.frame_count()
+                            + static_cast<std::size_t>(*source_frame)
+                        : static_cast<std::size_t>(*source_frame)
+                                * source_channels
+                            + selected_route.storage_channel;
+                auto const* begin = source_region.storage
+                    + source_value * geometry.value_size_bytes;
+                frozen_values.insert(
+                    frozen_values.end(),
+                    begin,
+                    begin + geometry.value_size_bytes);
+                return;
+            }
+            missing_route = true;
+        };
+        for (auto const& region : frozen_regions) {
+            if (port.sample_layout.sample_layout
+                == SampleStreamLayout::planar) {
+                for (auto const channel : frozen_channels) {
+                    for (GlobalIndex::extent_type frame = 0;
+                         frame < region.range.extent; ++frame) {
+                        append_value(
+                            region,
+                            region.range.begin.advanced_by(frame),
+                            channel);
+                        if (missing_route) break;
                     }
-                    frozen_values.push_back(found->view->at(
-                        sample.retreated_by(found->latency),
-                        found->storage_channel));
+                    if (missing_route) break;
                 }
-                if (missing_route) break;
+            } else {
+                for (GlobalIndex::extent_type frame = 0;
+                     frame < region.range.extent; ++frame) {
+                    auto const sample = region.range.begin.advanced_by(frame);
+                    for (auto const channel : frozen_channels) {
+                        append_value(region, sample, channel);
+                        if (missing_route) break;
+                    }
+                    if (missing_route) break;
+                }
             }
             if (missing_route) break;
         }
@@ -1494,12 +2344,35 @@ BackgroundStorageRealization::make_tick_materialization_snapshot(
             return std::unexpected(
                 "Tick sample materialization has incomplete routed coverage");
         }
-        samples.push_back(make_tick_materialized_sample_input(
-            binding.port,
-            port.sample_layout,
-            std::move(frozen_channels),
-            std::move(complete_coverage),
-            std::move(frozen_values)));
+        std::vector<GlobalIndexRange> ranges;
+        ranges.reserve(frozen_regions.size());
+        for (auto const& region : frozen_regions) {
+            ranges.push_back(region.range);
+        }
+        if (geometry.value_type == continuous_value_type_id_v<Sample>) {
+            if (frozen_values.size() % sizeof(Sample) != 0) {
+                return std::unexpected(
+                    "Tick Sample materialization has invalid byte geometry");
+            }
+            std::vector<Sample> values(
+                frozen_values.size() / sizeof(Sample));
+            std::memcpy(
+                values.data(), frozen_values.data(), frozen_values.size());
+            samples.push_back(make_tick_materialized_sample_input(
+                binding.port,
+                port.sample_layout,
+                std::move(frozen_channels),
+                std::move(ranges),
+                std::move(values)));
+        } else {
+            samples.push_back(make_tick_materialized_continuous_input(
+                binding.port,
+                port.sample_layout,
+                geometry,
+                std::move(frozen_channels),
+                std::move(ranges),
+                std::move(frozen_values)));
+        }
     }
 
     std::vector<TickMaterializedEventInput> events;
@@ -1653,13 +2526,99 @@ BackgroundStorageRealization::stage_persisted_data(
         auto const produced = selection_.produce_storage.empty()
             ? storage_is_runtime_produced(*plan_, planned)
             : selection_.produce_storage[index];
-        if (planned.storage != graph_jit::PortStorageKind::persisted_data
-            || selected.coverage->empty() || !produced) {
+        if (planned.storage != graph_jit::PortStorageKind::persisted_data) {
+            continue;
+        }
+        auto const& replacement =
+            selection_.persisted_replacement_coverage[index];
+        if (planned.kind == PortKind::sample) {
+            if (replacement.empty()) continue;
+        } else if (selected.coverage->empty() || !produced) {
             continue;
         }
         if (!selected.persisted_output) {
             return std::unexpected(
                 "produced persisted storage has no output identity");
+        }
+
+        if (planned.kind == PortKind::sample) {
+            auto const channels = channel_count(planned.sample_layout);
+            std::vector<PersistedSampleRegion> retained_regions;
+            auto const* view = produced ? sample_read(index) : nullptr;
+            if (produced
+                && (!view
+                    || view->geometry != planned.continuous_geometry
+                    || planned.sample_channels.size() != channels
+                    || !std::ranges::all_of(
+                        planned.sample_channels,
+                        [&](std::size_t channel) {
+                            return channel < channels
+                                && view->has_channel(channel);
+                        }))) {
+                    return std::unexpected(
+                        "persisted sample Regions have incompatible storage");
+            }
+            if (view) retained_regions.reserve(view->regions.size());
+            for (auto const& descriptor : view
+                    ? view->regions
+                    : std::span<ContinuousRegionStorageView const>{}) {
+                if ((IndexCoverage{descriptor.range}
+                        & *selected.coverage).empty()) {
+                    continue;
+                }
+                if (descriptor.channel_layout != planned.sample_layout
+                    || descriptor.geometry != view->geometry
+                    || descriptor.range.extent
+                        > std::numeric_limits<std::size_t>::max()) {
+                    return std::unexpected(
+                        "persisted sample Region has incompatible metadata");
+                }
+                if (std::ranges::any_of(
+                        staged, [&](StagedRange const& previous) {
+                            return previous.output
+                                    == *selected.persisted_output
+                                && previous.storage != index
+                                && IndexCoverage{previous.range}.intersects(
+                                    descriptor.range);
+                        })) {
+                    return std::unexpected(
+                        "persisted output range is produced by multiple storage slots");
+                }
+                auto const frames = static_cast<std::size_t>(
+                    descriptor.range.extent);
+                PersistedSampleRegion retained{
+                    .output = *selected.persisted_output,
+                    .range = descriptor.range,
+                    .layout = planned.sample_layout,
+                    .geometry = descriptor.geometry,
+                };
+                auto const value_count = checked_product(frames, channels);
+                auto const byte_count = checked_product(
+                    value_count, descriptor.geometry.value_size_bytes);
+                if (descriptor.geometry.value_type
+                    == continuous_value_type_id_v<Sample>) {
+                    retained.values.resize(value_count);
+                } else {
+                    retained.continuous_values = PersistedContinuousStorage{
+                        byte_count, descriptor.geometry.element_alignment};
+                }
+                std::memcpy(
+                    retained.storage_data(), descriptor.storage, byte_count);
+                retained_regions.push_back(std::move(retained));
+                staged.push_back({
+                    .output = *selected.persisted_output,
+                    .storage = index,
+                    .range = descriptor.range,
+                });
+            }
+            candidate.replace_sample_regions(
+                *selected.persisted_output,
+                planned.sample_layout,
+                planned.continuous_geometry,
+                replacement,
+                selection_.published_output_regions[index],
+                std::move(retained_regions));
+            continue;
         }
 
         for (auto const region : *selected.coverage) {
@@ -1671,60 +2630,20 @@ BackgroundStorageRealization::stage_persisted_data(
                 return std::unexpected(
                     "persisted output range is produced by multiple storage slots");
             }
-            if (planned.kind == PortKind::sample) {
-                auto const* view = sample_read(index);
-                auto const channels = channel_count(planned.sample_layout);
-                if (!view || planned.sample_channels.size() != channels
-                    || !std::ranges::all_of(
-                        planned.sample_channels,
-                        [&](std::size_t channel) {
-                            return channel < channels
-                                && view->has_channel(channel);
-                        })) {
-                    return std::unexpected(
-                        "persisted sample region has incomplete channels");
-                }
-                if (region.extent > std::numeric_limits<std::size_t>::max()) {
-                    return std::unexpected(
-                        "persisted sample region is too large");
-                }
-                auto const frames = static_cast<std::size_t>(region.extent);
-                PersistedSampleRegion retained{
-                    .output = *selected.persisted_output,
-                    .range = region,
-                    .layout = planned.sample_layout,
-                    .values = std::vector<Sample>(
-                        checked_product(frames, channels)),
-                };
-                for (std::size_t frame = 0; frame < frames; ++frame) {
-                    auto const sample = region.begin.advanced_by(frame);
-                    for (std::size_t channel = 0; channel < channels;
-                         ++channel) {
-                        auto const offset =
-                            planned.sample_layout.sample_layout
-                                    == SampleStreamLayout::planar
-                                ? channel * frames + frame
-                                : frame * channels + channel;
-                        retained.values[offset] = view->at(sample, channel);
-                    }
-                }
-                candidate.overwrite(std::move(retained));
-            } else {
-                auto const* view = event_read(index);
-                if (!view) {
-                    return std::unexpected(
-                        "persisted event chunk has no readable storage");
-                }
-                PersistedEventChunk retained{
-                    .output = *selected.persisted_output,
-                    .range = region,
-                    .type = planned.event_type,
-                };
-                view->for_each(region, [&](TimedEvent const& event) {
-                    retained.events.push_back(event);
-                });
-                candidate.overwrite(std::move(retained));
+            auto const* view = event_read(index);
+            if (!view) {
+                return std::unexpected(
+                    "persisted event chunk has no readable storage");
             }
+            PersistedEventChunk retained{
+                .output = *selected.persisted_output,
+                .range = region,
+                .type = planned.event_type,
+            };
+            view->for_each(region, [&](TimedEvent const& event) {
+                retained.events.push_back(event);
+            });
+            candidate.overwrite(std::move(retained));
             staged.push_back({
                 .output = *selected.persisted_output,
                 .storage = index,

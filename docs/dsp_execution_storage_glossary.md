@@ -344,9 +344,9 @@ integer sample coordinate is specifically meant.
 ### Coverage
 
 **Coverage** is the exact set of global positions for which an output semantically
-exists and may legally be requested. `IndexCoverage` is the C++ positional-set type
-for this concept; the distinct data-bearing `SampleCoverage` type is described by the
-random-access sample direction.
+exists and can be requested. `IndexCoverage` is the C++ positional-set type for this
+concept. `ContinuousCoverage<Value>` is the data-bearing node view. It preserves the
+logical Region list.
 
 Positional coverage is independent of persisted record boundaries and storage
 placement.

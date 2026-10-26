@@ -124,6 +124,8 @@ struct LoweredGraphRootSymbols {
     std::string propagate_background_forward{};
     std::string propagate_background_reverse{};
     std::string evaluate_background{};
+    std::string combine_sequential_input{};
+    std::string initialize_sequential_input{};
 };
 
 struct LoweredGraphTransition {

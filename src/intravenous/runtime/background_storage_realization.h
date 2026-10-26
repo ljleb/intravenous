@@ -22,43 +22,48 @@ namespace iv {
 // operations. The opaque owner remains address-stable for the realization's
 // lifetime; operations never recover an executor or transaction through it.
 struct BackgroundSampleReadView {
-    void const* data = nullptr;
     IndexCoverage const* coverage_value = nullptr;
+    std::span<ContinuousRegionStorageView const> regions{};
+    ContinuousValueStorageGeometry geometry{};
     ChannelLayout layout{};
     std::span<std::size_t const> channels{};
-    Sample (*read_sample)(
-        void const*, GlobalIndex, std::size_t) noexcept = nullptr;
 
     [[nodiscard]] explicit operator bool() const noexcept
     {
-        return data != nullptr && coverage_value != nullptr
-            && read_sample != nullptr;
+        return coverage_value != nullptr;
     }
 
     [[nodiscard]] IndexCoverage const& coverage() const noexcept;
     [[nodiscard]] bool has_channel(std::size_t channel) const noexcept;
+    [[nodiscard]] ContinuousRegionStorageView const& region(
+        std::size_t index) const noexcept;
     [[nodiscard]] Sample at(
         GlobalIndex index,
         std::size_t channel) const noexcept;
 };
 
 struct BackgroundSampleWriteView {
-    void* data = nullptr;
     IndexCoverage const* coverage_value = nullptr;
+    std::span<ContinuousRegionStorageView const> regions{};
+    ContinuousValueStorageGeometry geometry{};
     ChannelLayout layout{};
     std::span<std::size_t const> channels{};
-    bool (*write_sample)(
-        void*, GlobalIndex, std::size_t, Sample) noexcept = nullptr;
 
     [[nodiscard]] explicit operator bool() const noexcept
     {
-        return data != nullptr && coverage_value != nullptr
-            && write_sample != nullptr;
+        return coverage_value != nullptr;
     }
 
     [[nodiscard]] IndexCoverage const& coverage() const noexcept;
     [[nodiscard]] bool has_channel(std::size_t channel) const noexcept;
+    [[nodiscard]] ContinuousRegionStorageView const& region(
+        std::size_t index) const noexcept;
     [[nodiscard]] bool write(
+        GlobalIndex index,
+        std::size_t channel,
+        Sample value) const noexcept;
+    [[nodiscard]] bool write(
+        std::size_t region,
         GlobalIndex index,
         std::size_t channel,
         Sample value) const noexcept;
@@ -155,6 +160,19 @@ struct BackgroundEventWriteView {
 struct BackgroundStorageSelection {
     std::uint64_t generation = 0;
     std::vector<IndexCoverage> storage_coverage{};
+    // Logical Region descriptors for continuous storage. Unlike
+    // storage_coverage, these lists preserve ordering, overlap, duplicates,
+    // and Region count.
+    std::vector<std::vector<GlobalIndexRange>> storage_regions{};
+    // Complete producer-published logical order for each storage slot that
+    // represents a continuous output. storage_regions is the transaction's
+    // selected subset; this list is the authoritative shape used to place
+    // selected and previously retained Regions during persisted publication.
+    std::vector<std::vector<GlobalIndexRange>> published_output_regions{};
+    // Domain atomically replaced in PersistedDataStore. This includes selected
+    // produced Regions and old positions removed by a Region-shape change;
+    // removed positions do not allocate transaction storage.
+    std::vector<IndexCoverage> persisted_replacement_coverage{};
     // Empty preserves the plan-derived default used by direct component tests.
     // A complete transaction supplies one flag per storage slot so a persisted
     // authored output can be read from the pinned base when it is still valid,
@@ -174,6 +192,9 @@ class BackgroundStorageRealization {
     BackgroundStorageSelection selection_{};
     std::vector<std::unique_ptr<Slot>> slots_{};
     std::vector<bool> executed_operations_{};
+    graph_jit::SequentialInputCombineFunction combine_sequential_input_ = nullptr;
+    graph_jit::SequentialInputInitializeFunction initialize_sequential_input_ =
+        nullptr;
     bool sealed_ = false;
 
     [[nodiscard]] Slot& slot(graph_jit::PortStorageIndex index);
@@ -183,7 +204,11 @@ public:
     BackgroundStorageRealization(
         graph_jit::BackgroundEvaluationPlan const& plan,
         PersistedDataStore& data,
-        BackgroundStorageSelection selection);
+        BackgroundStorageSelection selection,
+        graph_jit::SequentialInputCombineFunction combine_sequential_input =
+            nullptr,
+        graph_jit::SequentialInputInitializeFunction
+            initialize_sequential_input = nullptr);
     ~BackgroundStorageRealization();
 
     BackgroundStorageRealization(BackgroundStorageRealization const&) = delete;

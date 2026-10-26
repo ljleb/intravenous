@@ -25,6 +25,7 @@ struct OutputCoverageRequest {
 
 struct InputCoverageChangeRequest {
     graph_jit::BackgroundPortIndex port = 0;
+    std::vector<GlobalIndexRange> regions{};
     IndexCoverage coverage{};
     IndexCoverage changed{};
 };
@@ -88,6 +89,7 @@ struct BackgroundCoverageDemandExpansion {
     void* data = nullptr;
     void (*expand_output)(
         void*, graph_jit::BackgroundPortIndex, IndexCoverage const& available,
+        std::span<GlobalIndexRange const> regions,
         IndexCoverage const& changed, IndexCoverage const& required,
         IndexCoverage& additional) = nullptr;
     // Optional policy for explicit input demand roots, invoked after the
@@ -110,6 +112,7 @@ public:
 
 private:
     std::vector<IndexCoverage> output_coverages_{};
+    std::vector<std::vector<GlobalIndexRange>> output_region_ranges_{};
 
     friend class BackgroundPropagationWorkspace;
 
@@ -162,6 +165,9 @@ struct BackgroundCoverageState::Migration {
 class PreparedCoveragePropagation {
     CoveragePropagationResult result_{};
     std::vector<IndexCoverage> output_coverages_{};
+    std::vector<std::vector<GlobalIndexRange>> output_region_ranges_{};
+    std::vector<std::vector<GlobalIndexRange>> output_regions_by_port_{};
+    std::vector<std::vector<GlobalIndexRange>> input_regions_by_port_{};
     std::vector<graph_jit::BackgroundNodeActivity> node_activity_{};
 
     PreparedCoveragePropagation() = default;
@@ -189,6 +195,20 @@ public:
         return node_activity_;
     }
 
+    [[nodiscard]] std::span<GlobalIndexRange const> output_regions(
+        graph_jit::BackgroundPortIndex port) const noexcept
+    {
+        if (port >= output_regions_by_port_.size()) return {};
+        return output_regions_by_port_[port];
+    }
+
+    [[nodiscard]] std::span<GlobalIndexRange const> input_regions(
+        graph_jit::BackgroundPortIndex port) const noexcept
+    {
+        if (port >= input_regions_by_port_.size()) return {};
+        return input_regions_by_port_[port];
+    }
+
 };
 
 // Reusable propagation scratch and callback frames. Each preparation starts
@@ -197,6 +217,8 @@ public:
 // persisted data, materialized storage or transaction publication policy.
 class BackgroundPropagationWorkspace {
     struct InputChangeAccumulator {
+        std::vector<GlobalIndexRange> regions{};
+        std::span<GlobalIndexRange const> region_view{};
         IndexCoverage coverage{};
         IndexCoverage changed{};
     };
@@ -204,6 +226,8 @@ class BackgroundPropagationWorkspace {
     struct OutputChangeAccumulator {
         BackgroundPropagationWorkspace* owner = nullptr;
         graph_jit::BackgroundPortIndex port = 0;
+        std::vector<GlobalIndexRange> previous_regions{};
+        std::span<GlobalIndexRange const> previous_region_view{};
         IndexCoverage previous_coverage{};
         IndexCoverage changed{};
         bool touched = false;
@@ -233,6 +257,7 @@ class BackgroundPropagationWorkspace {
     graph_jit::BackgroundEvaluationPlan const* plan_ = nullptr;
     std::size_t sample_rate_ = 0;
     std::vector<IndexCoverage> candidate_output_coverages_{};
+    std::vector<std::vector<GlobalIndexRange>> candidate_output_region_ranges_{};
     std::vector<InputChangeAccumulator> input_changes_{};
     std::vector<OutputChangeAccumulator> output_changes_{};
     std::vector<InputRequirementAccumulator> input_requirements_{};
@@ -254,16 +279,24 @@ class BackgroundPropagationWorkspace {
     input_index(graph_jit::BackgroundPortIndex index) const;
     [[nodiscard]] IndexCoverage
     input_coverage(graph_jit::BackgroundPortIndex input) const;
+    [[nodiscard]] std::vector<GlobalIndexRange>
+    input_regions(graph_jit::BackgroundPortIndex input) const;
     void activate_node(graph_jit::BackgroundNodeIndex node,
                        graph_jit::BackgroundNodeActivity activity);
     void add_input_change(graph_jit::BackgroundPortIndex input,
                           IndexCoverage const& changed, bool coverage_changed);
     void route_output_change(graph_jit::BackgroundPortIndex output,
                              IndexCoverage const& changed, bool coverage_changed);
-    void set_input_change(graph_jit::BackgroundPortIndex input,
-                          IndexCoverage const& coverage, IndexCoverage const& changed);
+    void set_input_change(
+        graph_jit::BackgroundPortIndex input,
+        std::span<GlobalIndexRange const> regions,
+        IndexCoverage const& coverage,
+        IndexCoverage const& changed);
     void publish_output_coverage(graph_jit::BackgroundPortIndex output,
                                  IndexCoverage const& coverage);
+    void publish_output_regions(
+        graph_jit::BackgroundPortIndex output,
+        std::span<GlobalIndexRange const> regions);
     void publish_output_change(graph_jit::BackgroundPortIndex output,
                                IndexCoverage const& changed);
     void require_output(graph_jit::BackgroundPortIndex output,
@@ -275,6 +308,8 @@ class BackgroundPropagationWorkspace {
 
     static void publish_output_coverage_callback(void* accumulator,
                                                  IndexCoverage const& coverage);
+    static void publish_output_regions_callback(
+        void* accumulator, GlobalIndexRange const* regions, std::size_t count);
     static void publish_output_change_callback(void* accumulator,
                                                IndexCoverage const& changed);
     static void publish_input_requirement_callback(void* accumulator,

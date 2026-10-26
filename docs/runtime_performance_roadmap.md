@@ -528,6 +528,19 @@ The governing performance invariant is:
    virtual-node IDs. Production source was unchanged by that follow-up; verification
    is pending.
 
+   The collaborator's next full run passed all 598 tests. This result verifies the
+   stable input-port migration identities and the corrected bundle-handle-shift
+   fixture. The bounded Front 6 correction is complete, and Front 3 is the next
+   dependency-ready correctness front.
+
+   Front 3 source is now a completion candidate. It carries logical continuous Region
+   lists through propagation, transaction storage, persisted publication, and Tick
+   materialization. `BackgroundStorageRealization` pre-allocates one independent
+   buffer per selected Region and shares one producer-home allocation between the
+   output's physical storage roles. Coverage-to-Sequential reduction and Tick
+   playback use the target input's generated initializer and combiner. The source and
+   adversarial tests await the collaborator's compile and complete test run.
+
 3. Complete realtime persisted playback and recording span operations. Persisted
    playback now clears only requested sample windows, traverses relevant sample
    regions, copies ring-wrap runs, and binary-searches clipped event chunks. Realtime
