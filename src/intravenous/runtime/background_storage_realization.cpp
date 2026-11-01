@@ -674,7 +674,7 @@ class PersistedEventReader {
     PersistedOutputHandle output_{};
     IndexCoverage const* coverage_ = nullptr;
     EventTypeId type_ = EventTypeId::empty;
-    std::vector<PersistedEventChunk const*> regions_{};
+    std::vector<std::size_t> source_regions_{};
     std::vector<GlobalIndexRange> region_ranges_{};
     bool selected_regions_complete_ = false;
 
@@ -690,19 +690,19 @@ public:
         , coverage_(&coverage)
         , type_(type)
     {
-        auto retained = snapshot_->event_regions(output_, type_);
+        auto retained = snapshot_->event_region_ranges(output_, type_);
         std::vector<bool> used(retained.size(), false);
         for (auto const selected : selected_regions) {
             for (std::size_t index = 0; index < retained.size(); ++index) {
-                if (used[index] || retained[index].range != selected) continue;
+                if (used[index] || retained[index] != selected) continue;
                 used[index] = true;
-                regions_.push_back(std::addressof(retained[index]));
+                source_regions_.push_back(index);
                 region_ranges_.push_back(selected);
                 break;
             }
         }
         selected_regions_complete_ =
-            regions_.size() == selected_regions.size();
+            source_regions_.size() == selected_regions.size();
     }
 
     [[nodiscard]] bool complete() const noexcept
@@ -726,12 +726,18 @@ public:
         if (region.empty()) return;
         std::vector<std::pair<TimedEvent const*, std::size_t>> events;
         for (std::size_t region_index = 0;
-             region_index < regions_.size(); ++region_index) {
-            for (auto const& event : regions_[region_index]->events) {
-                if (region.contains(event.time)) {
-                    events.emplace_back(std::addressof(event), region_index);
-                }
-            }
+             region_index < source_regions_.size(); ++region_index) {
+            snapshot_->for_each_event_region(
+                output_,
+                type_,
+                source_regions_[region_index],
+                region_ranges_[region_index],
+                [&](TimedEvent const& event) {
+                    if (region.contains(event.time)) {
+                        events.emplace_back(
+                            std::addressof(event), region_index);
+                    }
+                });
         }
         std::stable_sort(events.begin(), events.end(), [&](auto left, auto right) {
             if (left.first->time != right.first->time) {
@@ -752,10 +758,13 @@ public:
         void* visitor_data,
         BackgroundEventReadView::VisitEvent visitor) const
     {
-        if (region_index >= regions_.size()) return;
-        for (auto const& event : regions_[region_index]->events) {
-            if (requested.contains(event.time)) visitor(visitor_data, event);
-        }
+        if (region_index >= source_regions_.size()) return;
+        snapshot_->for_each_event_region(
+            output_,
+            type_,
+            source_regions_[region_index],
+            requested,
+            [&](TimedEvent const& event) { visitor(visitor_data, event); });
     }
 
     [[nodiscard]] BackgroundEventReadView view() const noexcept

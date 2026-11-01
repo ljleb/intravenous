@@ -1026,11 +1026,12 @@ public:
                 || !regions[region].contains(range)) {
                 return;
             }
-            auto const retained = snapshot->event_regions(*output, type);
-            if (region >= retained.size()) return;
-            for (auto const& event : retained[region].events) {
-                if (range.contains(event.time)) visitor(visitor_data, event);
-            }
+            snapshot->for_each_event_region(
+                *output,
+                type,
+                region,
+                range,
+                [&](TimedEvent const& event) { visitor(visitor_data, event); });
         }
     };
 

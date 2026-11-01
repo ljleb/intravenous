@@ -152,9 +152,10 @@ struct TockEventOutputPort {
             "background event output write lies outside its Region");
         IV_ASSERT(write_event != nullptr,
             "background event output Region has no writable storage");
-        // The callback contract requires nondecreasing timestamps for each
-        // output invocation. The concrete sink may validate that in debug
-        // builds without imposing a release-time sorting pass here.
+        // The callback contract requires nondecreasing timestamps within each
+        // event Region. Different Regions own independent event sequences. The
+        // concrete sink may validate each sequence without imposing a
+        // release-time sorting pass here.
         write_event(data, region_index, event);
     }
 };
@@ -290,6 +291,59 @@ struct InputCoverageRequirement {
 };
 
 namespace details {
+
+template<InputAccessKind Access>
+class StaticInputCoverageRequirement {
+    InputCoverageRequirement const& requirement_;
+
+public:
+    explicit StaticInputCoverageRequirement(
+        InputCoverageRequirement const& requirement) noexcept
+        : requirement_(requirement)
+    {}
+
+    [[nodiscard]] IndexCoverage const& coverage() const noexcept
+    {
+        return requirement_.coverage();
+    }
+
+    void require(GlobalIndexRange required) const
+    {
+        requirement_.require(required);
+    }
+
+    void require(IndexCoverage const& required) const
+    requires (Access == InputAccessKind::coverage)
+    {
+        requirement_.require(required);
+    }
+};
+
+template<OutputProductionKind Production>
+class StaticOutputCoverageRequirement {
+    OutputCoverageRequirement const& requirement_;
+
+public:
+    explicit StaticOutputCoverageRequirement(
+        OutputCoverageRequirement const& requirement) noexcept
+        : requirement_(requirement)
+    {}
+
+    [[nodiscard]] IndexCoverage const& required() const noexcept
+    requires (Production == OutputProductionKind::coverage)
+    {
+        return requirement_.required();
+    }
+
+    [[nodiscard]] GlobalIndexRange required() const noexcept
+    requires (Production == OutputProductionKind::region)
+    {
+        auto const& coverage = requirement_.required();
+        IV_ASSERT(coverage.size() <= 1,
+            "background Region output has more than one required Region");
+        return coverage.empty() ? GlobalIndexRange{} : *coverage.begin();
+    }
+};
 
 class EventRegion {
     RandomAccessEventInputPort const* port_ = nullptr;
@@ -864,45 +918,52 @@ struct PropagateReverseCoverageContext {
     std::size_t sample_rate = 48000;
 
     template<fixed_string Name>
-    [[nodiscard]] OutputCoverageRequirement const& output() const
+    [[nodiscard]] auto output() const
     requires details::has_constexpr_port_configs<Node>
     {
         static_assert(
             details::static_output_port_is_tock<Node, Name>(),
             "reverse coverage can only inspect background outputs");
+        constexpr auto production =
+            details::static_output_port_production<Node, Name>();
         if constexpr (details::static_output_port_kind<Node, Name>()
             == PortKind::sample) {
             constexpr auto index = details::static_tock_output_port_index<Node, Name>();
             IV_ASSERT(index < outputs.size(),
                 "background sample output is absent from reverse context");
-            return outputs[index];
+            return details::StaticOutputCoverageRequirement<production>{
+                outputs[index]};
         } else {
             constexpr auto index =
                 details::static_tock_event_output_port_index<Node, Name>();
             IV_ASSERT(index < event_outputs.size(),
                 "background event output is absent from reverse context");
-            return event_outputs[index];
+            return details::StaticOutputCoverageRequirement<production>{
+                event_outputs[index]};
         }
     }
 
     template<fixed_string Name>
-    [[nodiscard]] InputCoverageRequirement const& input() const
+    [[nodiscard]] auto input() const
     requires details::has_constexpr_port_configs<Node>
     {
         static_assert(details::static_input_port_is_random_access<Node, Name>(),
             "reverse coverage can only require background inputs");
+        constexpr auto access = details::static_input_port_access<Node, Name>();
         if constexpr (details::static_input_port_kind<Node, Name>()
             == PortKind::sample) {
             constexpr auto index = details::static_random_access_input_port_index<Node, Name>();
             IV_ASSERT(index < inputs.size(),
                 "background sample input is absent from reverse context");
-            return inputs[index];
+            return details::StaticInputCoverageRequirement<access>{
+                inputs[index]};
         } else {
             constexpr auto index =
                 details::static_random_access_event_input_port_index<Node, Name>();
             IV_ASSERT(index < event_inputs.size(),
                 "background event input is absent from reverse context");
-            return event_inputs[index];
+            return details::StaticInputCoverageRequirement<access>{
+                event_inputs[index]};
         }
     }
 

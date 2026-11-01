@@ -110,6 +110,8 @@ class PersistedContinuousStorage {
     };
 
     std::unique_ptr<std::byte, Delete> storage_{nullptr, Delete{}};
+    std::shared_ptr<void const> external_owner_{};
+    std::byte* external_storage_ = nullptr;
     std::size_t size_ = 0;
     std::size_t alignment_ = alignof(std::max_align_t);
 
@@ -122,10 +124,19 @@ public:
     PersistedContinuousStorage& operator=(
         PersistedContinuousStorage&&) noexcept;
 
-    [[nodiscard]] std::byte* data() noexcept { return storage_.get(); }
+    [[nodiscard]] static PersistedContinuousStorage mapped(
+        std::shared_ptr<void const> owner,
+        std::byte const* storage,
+        std::size_t size,
+        std::size_t alignment);
+
+    [[nodiscard]] std::byte* data() noexcept
+    {
+        return external_storage_ ? external_storage_ : storage_.get();
+    }
     [[nodiscard]] std::byte const* data() const noexcept
     {
-        return storage_.get();
+        return external_storage_ ? external_storage_ : storage_.get();
     }
     [[nodiscard]] std::size_t size() const noexcept { return size_; }
     [[nodiscard]] std::size_t alignment() const noexcept { return alignment_; }
@@ -210,6 +221,7 @@ public:
             void*, PersistedSampleRegion const&, GlobalIndexRange);
         using VisitEventChunk = void (*)(
             void*, PersistedEventChunk const&, GlobalIndexRange);
+        using VisitEvent = void (*)(void*, TimedEvent const&);
 
         [[nodiscard]] PersistedDataVersion version() const noexcept
         {
@@ -262,6 +274,10 @@ public:
         [[nodiscard]] std::span<PersistedEventChunk const> event_regions(
             PersistedOutputHandle output,
             EventTypeId type) const noexcept;
+        // Canonical public Region ranges for either authored Tock output or
+        // positional Tick recording. For positional recording, read a range
+        // with for_each_event_region(); event_regions() retains the internal
+        // chunk records and is not the canonical Region list.
         [[nodiscard]] std::span<GlobalIndexRange const> event_region_ranges(
             PersistedOutputHandle output,
             EventTypeId type) const noexcept;
@@ -271,6 +287,18 @@ public:
         [[nodiscard]] std::span<TimedEvent const> event_timeline(
             PersistedOutputHandle output,
             EventTypeId type) const noexcept;
+
+        // Visits one public event Region. Authored Tock Regions retain their
+        // independent sequence identity. A positional Tick recording Region
+        // may span several retained chunks and is visited as their merged
+        // canonical IndexCoverage range.
+        void for_each_event_region(
+            PersistedOutputHandle output,
+            EventTypeId type,
+            std::size_t region_index,
+            GlobalIndexRange requested,
+            void* visitor_data,
+            VisitEvent visitor) const;
 
         template<typename Fn>
         void for_each_sample_region(
@@ -305,6 +333,26 @@ public:
                     PersistedEventChunk const& chunk,
                     GlobalIndexRange intersection) {
                     (*static_cast<Visitor*>(opaque))(chunk, intersection);
+                });
+        }
+
+        template<typename Fn>
+        void for_each_event_region(
+            PersistedOutputHandle output,
+            EventTypeId type,
+            std::size_t region_index,
+            GlobalIndexRange requested,
+            Fn&& fn) const
+        {
+            using Visitor = std::remove_reference_t<Fn>;
+            for_each_event_region(
+                output,
+                type,
+                region_index,
+                requested,
+                std::addressof(fn),
+                +[](void* opaque, TimedEvent const& event) {
+                    (*static_cast<Visitor*>(opaque))(event);
                 });
         }
 
@@ -364,9 +412,10 @@ public:
         [[nodiscard]] PersistedDataVersion target_version() const noexcept;
         [[nodiscard]] Snapshot const& working_snapshot() const;
 
-        // Overwrite replaces the retained value throughout record.range. A
-        // circular range is split at the signed-order seam without exposing
-        // that storage detail to the caller.
+        // Overwrite commits one positional Tick recording payload. Continuous
+        // recording payloads are interleaved. A circular range is split at
+        // the signed-order seam without exposing that storage detail to the
+        // caller.
         void overwrite(PersistedSampleRegion record);
         // Replaces every complete old logical Region that intersects domain
         // with one ordered batch. Every replacement Region must be contained

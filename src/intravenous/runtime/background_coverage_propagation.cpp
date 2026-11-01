@@ -474,6 +474,7 @@ std::vector<GlobalIndexRange> derive_input_regions(
 struct StableSampleConnectionSource {
     graph_jit::StableOutputPortId port{};
     std::size_t channel = 0;
+    std::size_t read_latency = 0;
     graph_jit::PlannedDeliveryMechanism delivery =
         graph_jit::PlannedDeliveryMechanism::tick_to_sequential;
 
@@ -529,6 +530,8 @@ std::optional<StableInputConnectionDescription> describe_connection(
             || connection.sample_source_channels.size()
                 != connection.sample_source_port_by_channel.size()
             || connection.sample_source_channels.size()
+                != connection.sample_read_latencies.size()
+            || connection.sample_source_channels.size()
                 != connection.sample_deliveries.size()) {
             return std::nullopt;
         }
@@ -550,6 +553,7 @@ std::optional<StableInputConnectionDescription> describe_connection(
             result.sample_sources.push_back({
                 .port = *plan.ports[*source].stable_identity,
                 .channel = connection.sample_source_channels[index].channel,
+                .read_latency = connection.sample_read_latencies[index],
                 .delivery = connection.sample_deliveries[index],
             });
         }

@@ -1583,8 +1583,11 @@ TEST_F(
     output.persisted_tick_output = true;
     output.retention = iv::OutputRetention::persisted;
     output.stable_identity = output_id;
+    output.sample_layout = iv::mono_interleaved_channel_layout;
     graph.background_evaluation_plan.storage.ports[0].storage =
         iv::graph_jit::PortStorageKind::persisted_data;
+    graph.background_evaluation_plan.storage.ports[0].sample_layout =
+        iv::mono_interleaved_channel_layout;
 
     auto tock_states = initialize_tock_states(graph);
     iv::BackgroundCoverageState coverage(
@@ -1630,7 +1633,7 @@ TEST_F(
     auto pin = reader.pin();
     auto const output_handle = data.resolve_output(output_id);
     auto const* published = pin->find_sample_coverage(
-        output_handle, iv::mono_planar_channel_layout);
+        output_handle, iv::mono_interleaved_channel_layout);
     ASSERT_NE(published, nullptr);
     EXPECT_EQ(*published, index_coverage({{123, 125}}));
 }
@@ -2239,6 +2242,7 @@ TEST_F(
             connection.sample_target_type = iv::ChannelTypeId::mono;
             connection.sample_source_channels = {{source, 0, 0}};
             connection.sample_source_port_by_channel = {source};
+            connection.sample_read_latencies = {0};
             connection.sample_deliveries = {
                 iv::graph_jit::PlannedDeliveryMechanism::tock_to_random_access,
             };
@@ -2362,6 +2366,7 @@ TEST_F(
             .sample_target_type = iv::ChannelTypeId::mono,
             .sample_source_channels = {{source, 0, 0}},
             .sample_source_port_by_channel = {source},
+            .sample_read_latencies = {0},
             .sample_deliveries = {
                 iv::graph_jit::PlannedDeliveryMechanism::tock_to_random_access},
             .sample_target_channels = {{2, 0, 0}},
@@ -2420,6 +2425,130 @@ TEST_F(
         background_observation.sink_input_changed,
         index_coverage({{10, 13}, {20, 22}}));
     current_workspace.discard(std::move(reconciled));
+}
+
+TEST_F(
+    BackgroundCoveragePropagationFixture,
+    CoverageMigrationTurnsReadLatencyChangeIntoAnExactInputChangeRoot)
+{
+    auto previous_plan = background_fanin_plan();
+    auto current_plan = previous_plan;
+    auto const stable_source = iv::graph_jit::StableOutputPortId{
+        .node = {
+            .graph = "read-latency-reconciliation",
+            .virtual_node = "source",
+        },
+        .kind = iv::PortKind::sample,
+        .port_name = "output",
+        .port_index = 0,
+    };
+    auto const stable_input = iv::graph_jit::StableInputPortId{
+        .node = {
+            .graph = "read-latency-reconciliation",
+            .virtual_node = "sink",
+        },
+        .kind = iv::PortKind::sample,
+        .port_name = "input",
+        .port_index = 0,
+    };
+    std::array semantic_owners{
+        std::make_shared<int>(1),
+        std::make_shared<int>(2),
+        std::make_shared<int>(3),
+    };
+    std::array stable_node_names{
+        "source",
+        "unused-source",
+        "sink",
+    };
+    for (std::size_t node = 0; node < previous_plan.nodes.size(); ++node) {
+        auto const stable_node = iv::graph_jit::StableConcreteNodeId{
+            .graph = "read-latency-reconciliation",
+            .virtual_node = std::string{stable_node_names[node]},
+        };
+        previous_plan.nodes[node].stable_identity = stable_node;
+        current_plan.nodes[node].stable_identity = stable_node;
+        previous_plan.nodes[node].provider_version = 1;
+        current_plan.nodes[node].provider_version = 1;
+        previous_plan.nodes[node].configuration_identity = semantic_owners[node];
+        current_plan.nodes[node].configuration_identity = semantic_owners[node];
+    }
+    auto stable_output = [&](std::string virtual_node) {
+        return iv::graph_jit::StableOutputPortId{
+            .node = {
+                .graph = "read-latency-reconciliation",
+                .virtual_node = std::move(virtual_node),
+            },
+            .kind = iv::PortKind::sample,
+            .port_name = "output",
+            .port_index = 0,
+        };
+    };
+    for (auto* plan : {&previous_plan, &current_plan}) {
+        plan->ports[0].stable_identity = stable_source;
+        plan->ports[1].stable_identity = stable_output("unused-source");
+        plan->ports[3].stable_identity = stable_output("sink");
+        plan->ports[2].stable_input_identity = stable_input;
+    }
+    auto connect = [&](iv::graph_jit::BackgroundEvaluationPlan& plan,
+                       std::size_t read_latency) {
+        plan.ports[0].outgoing_connections = {0};
+        plan.ports[1].outgoing_connections.clear();
+        plan.ports[2].incoming_connections = {0};
+        plan.connections.resize(1);
+        plan.connections[0] = iv::graph_jit::BackgroundConnectionPlan{
+            .kind = iv::PortKind::sample,
+            .source_coverage_ports = {0},
+            .target_coverage_ports = {2},
+            .sample_source_type = iv::ChannelTypeId::mono,
+            .sample_target_type = iv::ChannelTypeId::mono,
+            .sample_source_channels = {{0, 0, 0}},
+            .sample_source_port_by_channel = {0},
+            .sample_read_latencies = {read_latency},
+            .sample_deliveries = {
+                iv::graph_jit::PlannedDeliveryMechanism::
+                    tock_to_random_access},
+            .sample_target_channels = {{2, 0, 0}},
+            .sample_target_port = 2,
+        };
+    };
+    connect(previous_plan, 0);
+    connect(current_plan, 5);
+
+    auto const operations = iv::CompiledGraphBackgroundOperations{
+        .propagate_forward = &propagate_background_forward,
+        .propagate_reverse = &propagate_background_reverse,
+        .evaluate = &no_op_background_evaluate,
+    };
+    iv::BackgroundCoverageState previous(
+        previous_plan.accumulators.output_change_count);
+    iv::BackgroundPropagationWorkspace previous_workspace(
+        previous_plan, 48000);
+    auto populated = previous_workspace.prepare(
+        operations,
+        previous,
+        iv::CoveragePropagationRequest{.locally_changed_nodes = {0}});
+    (void)previous_workspace.commit(previous, std::move(populated));
+
+    iv::BackgroundCoverageState current(
+        current_plan.accumulators.output_change_count);
+    auto migration = current.prepare_migration_from(
+        previous, current_plan, previous_plan);
+    migration.commit();
+    auto roots = migration.take_reconciliation_roots();
+
+    EXPECT_TRUE(roots.locally_changed_nodes.empty());
+    ASSERT_EQ(roots.input_changes.size(), 1u);
+    EXPECT_EQ(roots.input_changes.front().port, 2u);
+    EXPECT_EQ(
+        roots.input_changes.front().coverage,
+        index_coverage({{15, 18}}));
+    EXPECT_EQ(
+        roots.input_changes.front().regions,
+        (std::vector<iv::GlobalIndexRange>{range(15, 18)}));
+    EXPECT_EQ(
+        roots.input_changes.front().changed,
+        index_coverage({{10, 13}, {15, 18}}));
 }
 
 TEST_F(
@@ -2580,6 +2709,48 @@ TEST_F(BackgroundCoveragePropagationFixture,
         coverage,
         {.locally_changed_nodes = {0}});
     EXPECT_TRUE(prepared.output_regions(0).empty());
+    workspace.discard(std::move(prepared));
+}
+
+TEST_F(BackgroundCoveragePropagationFixture,
+       TickRecordingDerivesProducedRegionsFromCanonicalIndexCoverage)
+{
+    auto plan = probe_tock_plan(
+        iv::OutputRetention::persisted,
+        iv::graph_jit::PortStorageKind::persisted_data);
+    auto& output = plan.ports[0];
+    output.output_production = iv::OutputProductionKind::tick;
+    output.authored_tock_output = false;
+    output.persisted_tick_output = true;
+
+    iv::BackgroundCoverageState coverage(
+        plan.accumulators.output_change_count);
+    iv::BackgroundPropagationWorkspace workspace(plan, 48000);
+    auto prepared = workspace.prepare(
+        {
+            .propagate_forward = &no_op_background_evaluate,
+            .propagate_reverse = &no_op_background_evaluate,
+            .evaluate = &no_op_background_evaluate,
+        },
+        coverage,
+        {.output_changes = {{
+            .port = 0,
+            .coverage = index_coverage({
+                {10, 13},
+                {13, 16},
+                {15, 18},
+                {30, 31},
+            }),
+        }}});
+
+    EXPECT_EQ(
+        std::vector<iv::GlobalIndexRange>(
+            prepared.output_regions(0).begin(),
+            prepared.output_regions(0).end()),
+        (std::vector<iv::GlobalIndexRange>{
+            range(10, 18),
+            range(30, 31),
+        }));
     workspace.discard(std::move(prepared));
 }
 

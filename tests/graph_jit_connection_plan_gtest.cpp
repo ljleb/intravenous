@@ -813,6 +813,37 @@ build_connection_analysis_plan(
 
 } // namespace
 
+TEST(GraphJitConnectionPlan,
+     RejectsConfiguredPlanarPersistedTickContinuousOutput)
+{
+    iv::ConfiguredGraph graph;
+    iv::ReflectedNodeDescription description{
+        .type_name = "archived-planar-persisted-tick-source",
+    };
+    description.ports.output_configs.emplace_back(
+        "out",
+        iv::ContinuousOutputProperties{
+            .channel_layout = iv::mono_planar_channel_layout,
+            .production = iv::TickContinuousOutputProperties{},
+        },
+        iv::OutputRetention::persisted);
+    graph.node_bundles.append_concrete(
+        iv::GraphBuilderNodeBundles::make_concrete_node(
+            std::move(description)));
+
+    auto const plan = iv::graph_jit::detail::build_connection_analysis_plan(
+        graph,
+        iv::graph_jit::ResolvedPortRealization{},
+        64,
+        iv::RealtimeStorageCostModel{},
+        nullptr,
+        {});
+    ASSERT_FALSE(plan.has_value());
+    EXPECT_NE(
+        plan.error().find("must use interleaved storage"),
+        std::string::npos);
+}
+
 TEST(GraphJitConnectionPlan, InventoriesStableNodeOwnedRealtimePortState)
 {
     using namespace iv;
@@ -2260,6 +2291,7 @@ TEST(GraphJitConnectionPlan, PartitionsOverlappingSamplePortUsesIntoPortAtoms)
     auto sequential = details::configure_concrete_node<RealtimeSink>(graph);
     auto random_access = details::configure_concrete_node<BackgroundSink>(graph);
     auto const source_handle = source.node_bundle_handle();
+    auto const random_access_handle = random_access.node_bundle_handle();
     sequential(source[stereo::left]);
     random_access(source[stereo::right]);
     graph.outputs();
@@ -2285,6 +2317,10 @@ TEST(GraphJitConnectionPlan, PartitionsOverlappingSamplePortUsesIntoPortAtoms)
     auto const* right = atom_for_channel(stereo::right.channel_index);
     ASSERT_NE(left, nullptr);
     ASSERT_NE(right, nullptr);
+    EXPECT_EQ(left->source_layout.sample_layout,
+        SampleStreamLayout::interleaved);
+    EXPECT_EQ(right->source_layout.sample_layout,
+        SampleStreamLayout::interleaved);
     EXPECT_TRUE(left->storage.current_tick);
     EXPECT_FALSE(right->storage.current_tick);
     EXPECT_TRUE(left->storage.capture);
@@ -2294,6 +2330,22 @@ TEST(GraphJitConnectionPlan, PartitionsOverlappingSamplePortUsesIntoPortAtoms)
     EXPECT_EQ(left->connection_indices.size(), 1u);
     EXPECT_EQ(right->connection_indices.size(), 1u);
     EXPECT_NE(left->connection_indices, right->connection_indices);
+
+    auto const random_access_connection = std::ranges::find_if(
+        plan->sample_connections,
+        [&](graph_jit::detail::SampleConnectionPlan const& connection) {
+            return connection.target_port.node_bundle_handle
+                == random_access_handle;
+        });
+    ASSERT_NE(random_access_connection, plan->sample_connections.end());
+    // This connection selects one channel from a stereo output, so it is not
+    // a canonical whole-port source. The source subset above remains the
+    // authoritative source-layout fact.
+    EXPECT_FALSE(random_access_connection->canonical_source_layout.has_value());
+    EXPECT_EQ(
+        random_access_connection->target_layout.sample_layout,
+        SampleStreamLayout::planar);
+    EXPECT_TRUE(random_access_connection->requires_conversion);
 
     ASSERT_EQ(plan->sample_producer_groups.size(), 1u);
     EXPECT_EQ(plan->sample_producer_groups.front().source_atom_indices.size(), 2u);
@@ -3491,8 +3543,17 @@ TEST(GraphJitConnectionPlan, PersistedTickToRandomAccessUsesStoredBoundary)
         (NodeBundlePortId{sink_handle, PortKind::sample, 0}));
     ASSERT_EQ(binding.storage.size(), 1u);
     ASSERT_LT(binding.storage.front(), plan->background.storage.ports.size());
+    auto const& playback_storage =
+        plan->background.storage.ports[binding.storage.front()];
     EXPECT_EQ(
-        plan->background.storage.ports[binding.storage.front()].storage,
+        playback_storage.storage,
+        graph_jit::PortStorageKind::tick_random_access);
+    ASSERT_EQ(playback_storage.inputs.size(), 1u);
+    ASSERT_LT(
+        playback_storage.inputs.front(),
+        plan->background.storage.ports.size());
+    EXPECT_EQ(
+        plan->background.storage.ports[playback_storage.inputs.front()].storage,
         graph_jit::PortStorageKind::persisted_data);
     auto const sink_node =
         *plan->background.bundle_to_background_node[sink_handle];
@@ -3905,7 +3966,7 @@ TEST(GraphJitConnectionPlan, RejectsUnreproducibleTickEphemeralRandomAccess)
     EXPECT_NE(event_plan.error().find("explicit recorder"), std::string::npos);
 }
 
-TEST(GraphJitConnectionPlan, RegionInputAcceptsOnlyRegionOutput)
+TEST(GraphJitConnectionPlan, RegionInputAcceptsRegionOutputButRejectsCoverage)
 {
     using namespace iv;
 
@@ -3934,6 +3995,42 @@ TEST(GraphJitConnectionPlan, RegionInputAcceptsOnlyRegionOutput)
     EXPECT_NE(
         rejected.error().find(
             "GraphJit Coverage output cannot satisfy a Region input"),
+        std::string::npos);
+}
+
+TEST(GraphJitConnectionPlan,
+     RegionInputRejectsPersistedTickRecordingOutputs)
+{
+    using namespace iv;
+
+    GraphBuilder sample_graph;
+    auto sample_source = details::configure_concrete_node<
+        RealtimeOutputRetentionModes>(sample_graph);
+    auto sample_sink = details::configure_concrete_node<
+        BackgroundRegionSink>(sample_graph);
+    sample_sink(sample_source["realtime_persisted"]);
+    sample_graph.outputs();
+    auto sample_plan = build_connection_analysis_plan(
+        std::move(sample_graph).finish(), 64);
+    ASSERT_FALSE(sample_plan.has_value());
+    EXPECT_NE(
+        sample_plan.error().find(
+            "GraphJit persisted Tick output cannot satisfy a Region input"),
+        std::string::npos);
+
+    GraphBuilder event_graph;
+    auto event_source = details::configure_concrete_node<
+        PersistedTickEventSource>(event_graph);
+    auto event_sink = details::configure_concrete_node<
+        BackgroundEventRegionSink>(event_graph);
+    event_sink.connect_event_input(0, event_source.event_port());
+    event_graph.outputs();
+    auto event_plan = build_connection_analysis_plan(
+        std::move(event_graph).finish(), 64);
+    ASSERT_FALSE(event_plan.has_value());
+    EXPECT_NE(
+        event_plan.error().find(
+            "GraphJit persisted Tick event output cannot satisfy an event Region input"),
         std::string::npos);
 }
 

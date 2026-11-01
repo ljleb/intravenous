@@ -4,12 +4,19 @@
 #include <array>
 #include <bit>
 #include <cassert>
+#include <cerrno>
 #include <cstring>
 #include <limits>
 #include <iterator>
 #include <ranges>
 #include <stdexcept>
+#include <system_error>
 #include <utility>
+
+#if defined(__linux__)
+#include <sys/mman.h>
+#include <unistd.h>
+#endif
 
 namespace iv {
 namespace persisted_data_store_detail {
@@ -22,6 +29,57 @@ struct RangeNode {
     std::uint32_t height = 1;
 };
 
+struct RecordingPageKey {
+    std::uint64_t high = 0;
+    std::uint64_t low = 0;
+
+    auto operator<=>(RecordingPageKey const&) const = default;
+};
+
+struct RecordingPage {
+    std::uint64_t file_offset = 0;
+};
+
+struct RecordingPageNode {
+    RecordingPageKey key{};
+    std::shared_ptr<RecordingPage const> page{};
+    std::shared_ptr<RecordingPageNode const> left{};
+    std::shared_ptr<RecordingPageNode const> right{};
+    std::uint32_t height = 1;
+};
+
+struct RecordingPageRun {
+    RecordingPageKey first{};
+    std::size_t page_count = 0;
+    std::uint64_t file_offset = 0;
+};
+
+struct RecordingPageRunNode {
+    RecordingPageRun run{};
+    std::shared_ptr<RecordingPageRunNode const> left{};
+    std::shared_ptr<RecordingPageRunNode const> right{};
+    std::uint32_t height = 1;
+};
+
+class RecordingPageAllocator {
+    int file_ = -1;
+    std::size_t page_size_ = 0;
+    std::uint64_t next_file_offset_ = 0;
+
+public:
+    RecordingPageAllocator();
+    ~RecordingPageAllocator();
+
+    RecordingPageAllocator(RecordingPageAllocator const&) = delete;
+    RecordingPageAllocator& operator=(RecordingPageAllocator const&) = delete;
+
+    [[nodiscard]] int file() const noexcept { return file_; }
+    [[nodiscard]] std::size_t page_size() const noexcept { return page_size_; }
+    void read(RecordingPage const& page, std::span<std::byte> target) const;
+    [[nodiscard]] std::shared_ptr<RecordingPage const> allocate(
+        std::span<std::byte const> contents);
+};
+
 struct SampleOutputState {
     PersistedOutputHandle output{};
     IndexCoverage coverage{};
@@ -30,6 +88,10 @@ struct SampleOutputState {
     std::shared_ptr<RangeNode<PersistedSampleRegion> const> regions{};
     std::shared_ptr<std::vector<PersistedSampleRegion> const> logical_regions{};
     std::shared_ptr<std::vector<ContinuousRegionStorageView> const> region_views{};
+    std::shared_ptr<RecordingPageAllocator> recording_allocator{};
+    std::shared_ptr<RecordingPageNode const> recording_pages{};
+    std::shared_ptr<RecordingPageRunNode const> recording_runs{};
+    bool positional_recording = false;
     std::size_t physical_region_count = 0;
     std::size_t region_count = 0;
 };
@@ -42,6 +104,7 @@ struct EventOutputState {
     std::shared_ptr<std::vector<PersistedEventChunk> const> logical_regions{};
     std::shared_ptr<std::vector<GlobalIndexRange> const> region_ranges{};
     std::shared_ptr<std::vector<TimedEvent> const> timeline{};
+    bool positional_recording = false;
     std::size_t chunk_count = 0;
 };
 
@@ -56,11 +119,117 @@ struct OutputDirectoryNode {
 
 } // namespace persisted_data_store_detail
 
+persisted_data_store_detail::RecordingPageAllocator::RecordingPageAllocator()
+{
+#if defined(__linux__)
+    auto const page_size = ::sysconf(_SC_PAGESIZE);
+    if (page_size <= 0) {
+        throw std::system_error(
+            errno, std::generic_category(), "cannot query the Linux page size");
+    }
+    page_size_ = static_cast<std::size_t>(page_size);
+    file_ = ::memfd_create("iv-persisted-recording", MFD_CLOEXEC);
+    if (file_ < 0) {
+        throw std::system_error(
+            errno, std::generic_category(), "cannot create recording page storage");
+    }
+#else
+    throw std::runtime_error(
+        "persisted Tick continuous recording requires Linux virtual memory");
+#endif
+}
+
+persisted_data_store_detail::RecordingPageAllocator::~RecordingPageAllocator()
+{
+#if defined(__linux__)
+    if (file_ >= 0) ::close(file_);
+#endif
+}
+
+void persisted_data_store_detail::RecordingPageAllocator::read(
+    RecordingPage const& page,
+    std::span<std::byte> target) const
+{
+    if (target.size() != page_size_) {
+        throw std::invalid_argument("recording page read has the wrong size");
+    }
+#if defined(__linux__)
+    std::size_t read_bytes = 0;
+    while (read_bytes != target.size()) {
+        auto const result = ::pread(
+            file_,
+            target.data() + read_bytes,
+            target.size() - read_bytes,
+            static_cast<off_t>(page.file_offset + read_bytes));
+        if (result < 0) {
+            if (errno == EINTR) continue;
+            throw std::system_error(
+                errno, std::generic_category(), "cannot read a recording page");
+        }
+        if (result == 0) {
+            throw std::runtime_error("recording page storage ended unexpectedly");
+        }
+        read_bytes += static_cast<std::size_t>(result);
+    }
+#else
+    (void)page;
+#endif
+}
+
+std::shared_ptr<persisted_data_store_detail::RecordingPage const>
+persisted_data_store_detail::RecordingPageAllocator::allocate(
+    std::span<std::byte const> contents)
+{
+    if (contents.size() != page_size_) {
+        throw std::invalid_argument("recording page write has the wrong size");
+    }
+    if (next_file_offset_
+        > static_cast<std::uint64_t>(std::numeric_limits<off_t>::max())
+            - page_size_) {
+        throw std::length_error("recording page storage is exhausted");
+    }
+    auto const offset = next_file_offset_;
+    auto const new_file_size = next_file_offset_ + page_size_;
+#if defined(__linux__)
+    if (::ftruncate(file_, static_cast<off_t>(new_file_size)) != 0) {
+        throw std::system_error(
+            errno, std::generic_category(), "cannot extend recording page storage");
+    }
+    std::size_t written = 0;
+    while (written != contents.size()) {
+        auto const result = ::pwrite(
+            file_,
+            contents.data() + written,
+            contents.size() - written,
+            static_cast<off_t>(offset + written));
+        if (result < 0) {
+            if (errno == EINTR) continue;
+            throw std::system_error(
+                errno, std::generic_category(), "cannot write a recording page");
+        }
+        if (result == 0) {
+            throw std::runtime_error("recording page write made no progress");
+        }
+        written += static_cast<std::size_t>(result);
+    }
+#endif
+    next_file_offset_ = new_file_size;
+    return std::make_shared<RecordingPage const>(RecordingPage{
+        .file_offset = offset,
+    });
+}
+
 namespace {
 
 using persisted_data_store_detail::EventOutputNode;
 using persisted_data_store_detail::EventOutputState;
 using persisted_data_store_detail::RangeNode;
+using persisted_data_store_detail::RecordingPage;
+using persisted_data_store_detail::RecordingPageAllocator;
+using persisted_data_store_detail::RecordingPageKey;
+using persisted_data_store_detail::RecordingPageNode;
+using persisted_data_store_detail::RecordingPageRun;
+using persisted_data_store_detail::RecordingPageRunNode;
 using persisted_data_store_detail::SampleOutputNode;
 using persisted_data_store_detail::SampleOutputState;
 
@@ -73,6 +242,15 @@ make_event_region_ranges(
         ranges->reserve(regions->size());
         for (auto const& region : *regions) ranges->push_back(region.range);
     }
+    return std::shared_ptr<std::vector<GlobalIndexRange> const>{
+        std::move(ranges)};
+}
+
+[[nodiscard]] std::shared_ptr<std::vector<GlobalIndexRange> const>
+make_event_region_ranges(IndexCoverage const& coverage)
+{
+    auto ranges = std::make_shared<std::vector<GlobalIndexRange>>(
+        coverage.begin(), coverage.end());
     return std::shared_ptr<std::vector<GlobalIndexRange> const>{
         std::move(ranges)};
 }
@@ -552,6 +730,580 @@ void for_each_record(
     for_each_record(root->right, fn);
 }
 
+[[nodiscard]] std::shared_ptr<RecordingPageNode const> make_recording_page_node(
+    RecordingPageKey key,
+    std::shared_ptr<RecordingPage const> page,
+    std::shared_ptr<RecordingPageNode const> left = {},
+    std::shared_ptr<RecordingPageNode const> right = {})
+{
+    auto const height = 1 + std::max(node_height(left), node_height(right));
+    return std::make_shared<RecordingPageNode const>(RecordingPageNode{
+        .key = key,
+        .page = std::move(page),
+        .left = std::move(left),
+        .right = std::move(right),
+        .height = height,
+    });
+}
+
+[[nodiscard]] std::shared_ptr<RecordingPageNode const> balance_recording_page_node(
+    std::shared_ptr<RecordingPageNode const> node)
+{
+    auto const balance = static_cast<int>(node_height(node->left))
+        - static_cast<int>(node_height(node->right));
+    if (balance > 1) {
+        auto left = node->left;
+        if (node_height(left->left) < node_height(left->right)) {
+            auto const pivot = left->right;
+            left = make_recording_page_node(
+                left->key, left->page, left->left, pivot->left);
+            left = make_recording_page_node(
+                pivot->key, pivot->page, std::move(left), pivot->right);
+        }
+        auto const new_right = make_recording_page_node(
+            node->key, node->page, left->right, node->right);
+        return make_recording_page_node(
+            left->key, left->page, left->left, std::move(new_right));
+    }
+    if (balance < -1) {
+        auto right = node->right;
+        if (node_height(right->right) < node_height(right->left)) {
+            auto const pivot = right->left;
+            right = make_recording_page_node(
+                right->key, right->page, pivot->right, right->right);
+            right = make_recording_page_node(
+                pivot->key, pivot->page, pivot->left, std::move(right));
+        }
+        auto const new_left = make_recording_page_node(
+            node->key, node->page, node->left, right->left);
+        return make_recording_page_node(
+            right->key, right->page, std::move(new_left), right->right);
+    }
+    return node;
+}
+
+[[nodiscard]] std::shared_ptr<RecordingPageNode const> put_recording_page(
+    std::shared_ptr<RecordingPageNode const> const& root,
+    RecordingPageKey key,
+    std::shared_ptr<RecordingPage const> page)
+{
+    if (!root) {
+        return make_recording_page_node(key, std::move(page));
+    }
+    if (key < root->key) {
+        return balance_recording_page_node(make_recording_page_node(
+            root->key,
+            root->page,
+            put_recording_page(root->left, key, std::move(page)),
+            root->right));
+    }
+    if (root->key < key) {
+        return balance_recording_page_node(make_recording_page_node(
+            root->key,
+            root->page,
+            root->left,
+            put_recording_page(root->right, key, std::move(page))));
+    }
+    return make_recording_page_node(
+        key, std::move(page), root->left, root->right);
+}
+
+[[nodiscard]] RecordingPage const* find_recording_page(
+    std::shared_ptr<RecordingPageNode const> const& root,
+    RecordingPageKey key) noexcept
+{
+    auto const* node = root.get();
+    while (node) {
+        if (key < node->key) {
+            node = node->left.get();
+        } else if (node->key < key) {
+            node = node->right.get();
+        } else {
+            return node->page.get();
+        }
+    }
+    return nullptr;
+}
+
+using RecordingByteAddress = unsigned __int128;
+
+[[nodiscard]] RecordingPageKey recording_page_key(
+    RecordingByteAddress address,
+    std::size_t page_size) noexcept
+{
+    auto const page = address / page_size;
+    return {
+        .high = static_cast<std::uint64_t>(page >> 64),
+        .low = static_cast<std::uint64_t>(page),
+    };
+}
+
+[[nodiscard]] RecordingPageKey add_recording_pages(
+    RecordingPageKey key,
+    std::size_t count) noexcept
+{
+    auto const previous = key.low;
+    key.low += static_cast<std::uint64_t>(count);
+    if (key.low < previous) ++key.high;
+    return key;
+}
+
+using RecordingPageNumber = unsigned __int128;
+
+[[nodiscard]] RecordingPageNumber recording_page_number(
+    RecordingPageKey key) noexcept
+{
+    return (static_cast<RecordingPageNumber>(key.high) << 64) | key.low;
+}
+
+[[nodiscard]] std::size_t checked_page_count_sum(
+    std::size_t left,
+    std::size_t right)
+{
+    if (left > std::numeric_limits<std::size_t>::max() - right) {
+        throw std::length_error("recording page run is too large");
+    }
+    return left + right;
+}
+
+[[nodiscard]] std::shared_ptr<RecordingPageRunNode const>
+make_recording_page_run_node(
+    RecordingPageRun run,
+    std::shared_ptr<RecordingPageRunNode const> left = {},
+    std::shared_ptr<RecordingPageRunNode const> right = {})
+{
+    auto const height = 1 + std::max(node_height(left), node_height(right));
+    return std::make_shared<RecordingPageRunNode const>(RecordingPageRunNode{
+        .run = run,
+        .left = std::move(left),
+        .right = std::move(right),
+        .height = height,
+    });
+}
+
+[[nodiscard]] std::shared_ptr<RecordingPageRunNode const>
+balance_recording_page_run_node(
+    std::shared_ptr<RecordingPageRunNode const> node)
+{
+    auto const balance = static_cast<int>(node_height(node->left))
+        - static_cast<int>(node_height(node->right));
+    if (balance > 1) {
+        auto left = node->left;
+        if (node_height(left->left) < node_height(left->right)) {
+            auto const pivot = left->right;
+            left = make_recording_page_run_node(
+                left->run, left->left, pivot->left);
+            left = make_recording_page_run_node(
+                pivot->run, std::move(left), pivot->right);
+        }
+        auto const new_right = make_recording_page_run_node(
+            node->run, left->right, node->right);
+        return make_recording_page_run_node(
+            left->run, left->left, std::move(new_right));
+    }
+    if (balance < -1) {
+        auto right = node->right;
+        if (node_height(right->right) < node_height(right->left)) {
+            auto const pivot = right->left;
+            right = make_recording_page_run_node(
+                right->run, pivot->right, right->right);
+            right = make_recording_page_run_node(
+                pivot->run, pivot->left, std::move(right));
+        }
+        auto const new_left = make_recording_page_run_node(
+            node->run, node->left, right->left);
+        return make_recording_page_run_node(
+            right->run, std::move(new_left), right->right);
+    }
+    return node;
+}
+
+[[nodiscard]] std::shared_ptr<RecordingPageRunNode const>
+put_recording_page_run(
+    std::shared_ptr<RecordingPageRunNode const> const& root,
+    RecordingPageRun run)
+{
+    if (!root) return make_recording_page_run_node(run);
+    if (run.first < root->run.first) {
+        return balance_recording_page_run_node(make_recording_page_run_node(
+            root->run,
+            put_recording_page_run(root->left, run),
+            root->right));
+    }
+    if (root->run.first < run.first) {
+        return balance_recording_page_run_node(make_recording_page_run_node(
+            root->run,
+            root->left,
+            put_recording_page_run(root->right, run)));
+    }
+    return make_recording_page_run_node(run, root->left, root->right);
+}
+
+[[nodiscard]] std::shared_ptr<RecordingPageRunNode const>
+erase_recording_page_run(
+    std::shared_ptr<RecordingPageRunNode const> const& root,
+    RecordingPageKey first)
+{
+    if (!root) return {};
+    if (first < root->run.first) {
+        return balance_recording_page_run_node(make_recording_page_run_node(
+            root->run,
+            erase_recording_page_run(root->left, first),
+            root->right));
+    }
+    if (root->run.first < first) {
+        return balance_recording_page_run_node(make_recording_page_run_node(
+            root->run,
+            root->left,
+            erase_recording_page_run(root->right, first)));
+    }
+    if (!root->left) return root->right;
+    if (!root->right) return root->left;
+    auto successor = root->right;
+    while (successor->left) successor = successor->left;
+    return balance_recording_page_run_node(make_recording_page_run_node(
+        successor->run,
+        root->left,
+        erase_recording_page_run(root->right, successor->run.first)));
+}
+
+[[nodiscard]] RecordingPageRun const* find_recording_page_run(
+    std::shared_ptr<RecordingPageRunNode const> const& root,
+    RecordingPageKey page) noexcept
+{
+    auto const page_number = recording_page_number(page);
+    auto const* node = root.get();
+    RecordingPageRun const* candidate = nullptr;
+    while (node) {
+        if (page < node->run.first) {
+            node = node->left.get();
+        } else {
+            candidate = std::addressof(node->run);
+            node = node->right.get();
+        }
+    }
+    if (!candidate) return nullptr;
+    auto const offset = page_number
+        - recording_page_number(candidate->first);
+    return offset < candidate->page_count ? candidate : nullptr;
+}
+
+[[nodiscard]] RecordingPageRun const* find_recording_page_run_before(
+    std::shared_ptr<RecordingPageRunNode const> const& root,
+    RecordingPageKey first) noexcept
+{
+    auto const* node = root.get();
+    RecordingPageRun const* result = nullptr;
+    while (node) {
+        if (node->run.first < first) {
+            result = std::addressof(node->run);
+            node = node->right.get();
+        } else {
+            node = node->left.get();
+        }
+    }
+    return result;
+}
+
+[[nodiscard]] RecordingPageRun const* find_recording_page_run_after(
+    std::shared_ptr<RecordingPageRunNode const> const& root,
+    RecordingPageKey first) noexcept
+{
+    auto const* node = root.get();
+    RecordingPageRun const* result = nullptr;
+    while (node) {
+        if (first < node->run.first) {
+            result = std::addressof(node->run);
+            node = node->left.get();
+        } else {
+            node = node->right.get();
+        }
+    }
+    return result;
+}
+
+[[nodiscard]] bool recording_page_runs_are_contiguous(
+    RecordingPageRun const& left,
+    RecordingPageRun const& right,
+    std::size_t page_size) noexcept
+{
+    return add_recording_pages(left.first, left.page_count) == right.first
+        && left.file_offset + left.page_count * page_size
+            == right.file_offset;
+}
+
+[[nodiscard]] std::shared_ptr<RecordingPageRunNode const>
+put_coalesced_recording_page_run(
+    std::shared_ptr<RecordingPageRunNode const> root,
+    RecordingPageRun run,
+    std::size_t page_size)
+{
+    if (auto const* previous = find_recording_page_run_before(
+            root, run.first);
+        previous && recording_page_runs_are_contiguous(
+            *previous, run, page_size)) {
+        auto const first = previous->first;
+        auto const file_offset = previous->file_offset;
+        auto const page_count = previous->page_count;
+        root = erase_recording_page_run(root, first);
+        run.first = first;
+        run.file_offset = file_offset;
+        run.page_count = checked_page_count_sum(
+            page_count, run.page_count);
+    }
+    if (auto const* next = find_recording_page_run_after(root, run.first);
+        next && recording_page_runs_are_contiguous(run, *next, page_size)) {
+        auto const first = next->first;
+        auto const page_count = next->page_count;
+        root = erase_recording_page_run(root, first);
+        run.page_count = checked_page_count_sum(
+            run.page_count, page_count);
+    }
+    return put_recording_page_run(root, run);
+}
+
+[[nodiscard]] std::shared_ptr<RecordingPageRunNode const>
+replace_recording_page_run(
+    std::shared_ptr<RecordingPageRunNode const> root,
+    RecordingPageKey page,
+    std::uint64_t file_offset,
+    std::size_t page_size)
+{
+    if (auto const* previous = find_recording_page_run(root, page)) {
+        auto const old = *previous;
+        root = erase_recording_page_run(root, old.first);
+        auto const prefix_number = recording_page_number(page)
+            - recording_page_number(old.first);
+        auto const prefix = static_cast<std::size_t>(prefix_number);
+        assert(prefix < old.page_count);
+        if (prefix != 0) {
+            root = put_recording_page_run(root, RecordingPageRun{
+                .first = old.first,
+                .page_count = prefix,
+                .file_offset = old.file_offset,
+            });
+        }
+        auto const suffix = old.page_count - prefix - 1;
+        if (suffix != 0) {
+            root = put_recording_page_run(root, RecordingPageRun{
+                .first = add_recording_pages(page, 1),
+                .page_count = suffix,
+                .file_offset = old.file_offset
+                    + (prefix + 1) * page_size,
+            });
+        }
+    }
+    return put_coalesced_recording_page_run(
+        std::move(root),
+        RecordingPageRun{
+            .first = page,
+            .page_count = 1,
+            .file_offset = file_offset,
+        },
+        page_size);
+}
+
+[[nodiscard]] RecordingByteAddress recording_byte_address(
+    GlobalIndex index,
+    std::size_t bytes_per_frame) noexcept
+{
+    return static_cast<RecordingByteAddress>(
+        SignedGlobalIndexOrder::key(index)) * bytes_per_frame;
+}
+
+[[nodiscard]] std::size_t recording_bytes_per_frame(
+    ChannelLayout layout,
+    ContinuousValueStorageGeometry geometry)
+{
+    return checked_product(
+        channel_count(layout), geometry.value_size_bytes);
+}
+
+void write_recording_region(
+    std::shared_ptr<RecordingPageNode const>& root,
+    std::shared_ptr<RecordingPageRunNode const>& runs,
+    RecordingPageAllocator& allocator,
+    PersistedSampleRegion const& record)
+{
+    assert(record.layout.sample_layout == SampleStreamLayout::interleaved);
+    auto const bytes_per_frame = recording_bytes_per_frame(
+        record.layout, record.geometry);
+    auto const page_size = allocator.page_size();
+    record.range.for_each_signed_order_segment([&](GlobalIndexRange segment) {
+        auto const source_frame = static_cast<std::size_t>(
+            record.range.begin.forward_distance_to(segment.begin));
+        auto const segment_frames = checked_frame_count(segment);
+        auto const source_offset = checked_product(
+            source_frame, bytes_per_frame);
+        auto remaining = checked_product(segment_frames, bytes_per_frame);
+        auto const* source = record.storage_data() + source_offset;
+        auto address = recording_byte_address(
+            segment.begin, bytes_per_frame);
+        while (remaining != 0) {
+            auto const key = recording_page_key(address, page_size);
+            auto const in_page = static_cast<std::size_t>(address % page_size);
+            auto const count = std::min(remaining, page_size - in_page);
+            std::vector<std::byte> contents(page_size);
+            if (auto const* previous = find_recording_page(root, key)) {
+                allocator.read(*previous, contents);
+            }
+            std::memcpy(contents.data() + in_page, source, count);
+            auto page = allocator.allocate(contents);
+            runs = replace_recording_page_run(
+                std::move(runs),
+                key,
+                page->file_offset,
+                page_size);
+            root = put_recording_page(root, key, std::move(page));
+            source += count;
+            remaining -= count;
+            address += count;
+        }
+    });
+}
+
+class RecordingRegionMapping {
+    void* mapping_ = nullptr;
+    std::size_t mapping_size_ = 0;
+
+public:
+    std::shared_ptr<RecordingPageAllocator> allocator{};
+    std::shared_ptr<RecordingPageRunNode const> runs{};
+
+    RecordingRegionMapping(
+        void* mapping,
+        std::size_t mapping_size,
+        std::shared_ptr<RecordingPageAllocator> allocator_value,
+        std::shared_ptr<RecordingPageRunNode const> runs_value) noexcept
+        : mapping_(mapping)
+        , mapping_size_(mapping_size)
+        , allocator(std::move(allocator_value))
+        , runs(std::move(runs_value))
+    {}
+
+    ~RecordingRegionMapping()
+    {
+#if defined(__linux__)
+        if (mapping_) ::munmap(mapping_, mapping_size_);
+#endif
+    }
+
+    RecordingRegionMapping(RecordingRegionMapping const&) = delete;
+    RecordingRegionMapping& operator=(RecordingRegionMapping const&) = delete;
+};
+
+[[nodiscard]] PersistedSampleRegion map_recording_region(
+    PersistedOutputHandle output,
+    GlobalIndexRange range,
+    ChannelLayout layout,
+    ContinuousValueStorageGeometry geometry,
+    std::shared_ptr<RecordingPageAllocator> const& allocator,
+    std::shared_ptr<RecordingPageRunNode const> const& runs)
+{
+    assert(layout.sample_layout == SampleStreamLayout::interleaved);
+    auto const bytes_per_frame = recording_bytes_per_frame(layout, geometry);
+    auto const bytes = checked_product(
+        checked_frame_count(range), bytes_per_frame);
+    auto const page_size = allocator->page_size();
+    auto const address = recording_byte_address(range.begin, bytes_per_frame);
+    auto const in_page = static_cast<std::size_t>(address % page_size);
+    if (bytes > std::numeric_limits<std::size_t>::max() - in_page) {
+        throw std::length_error("recording Region mapping is too large");
+    }
+    auto const occupied = in_page + bytes;
+    auto const page_count = occupied / page_size
+        + static_cast<std::size_t>(occupied % page_size != 0);
+    auto const mapping_size = checked_product(page_count, page_size);
+#if defined(__linux__)
+    auto* mapping = ::mmap(
+        nullptr,
+        mapping_size,
+        PROT_NONE,
+        MAP_PRIVATE | MAP_ANONYMOUS,
+        -1,
+        0);
+    if (mapping == MAP_FAILED) {
+        throw std::system_error(
+            errno, std::generic_category(), "cannot reserve a recording Region mapping");
+    }
+    auto const first_key = recording_page_key(address, page_size);
+    std::size_t mapped_pages = 0;
+    try {
+        while (mapped_pages != page_count) {
+            auto const key = add_recording_pages(first_key, mapped_pages);
+            auto const* run = find_recording_page_run(runs, key);
+            if (!run) {
+                throw std::logic_error(
+                    "recording coverage references an unallocated page");
+            }
+            auto const run_offset_number = recording_page_number(key)
+                - recording_page_number(run->first);
+            auto const run_offset = static_cast<std::size_t>(
+                run_offset_number);
+            assert(run_offset < run->page_count);
+            auto const run_pages = std::min(
+                page_count - mapped_pages,
+                run->page_count - run_offset);
+            auto const run_size = checked_product(run_pages, page_size);
+            auto* const target = static_cast<std::byte*>(mapping)
+                + mapped_pages * page_size;
+            if (::mmap(
+                    target,
+                    run_size,
+                    PROT_READ,
+                    MAP_SHARED | MAP_FIXED,
+                    allocator->file(),
+                    static_cast<off_t>(run->file_offset
+                        + run_offset * page_size)) == MAP_FAILED) {
+                throw std::system_error(
+                    errno, std::generic_category(), "cannot map recording Region pages");
+            }
+            mapped_pages += run_pages;
+        }
+    } catch (...) {
+        ::munmap(mapping, mapping_size);
+        throw;
+    }
+    auto owner = std::make_shared<RecordingRegionMapping const>(
+        mapping, mapping_size, allocator, runs);
+    return PersistedSampleRegion{
+        .output = output,
+        .range = range,
+        .layout = layout,
+        .geometry = geometry,
+        .continuous_values = PersistedContinuousStorage::mapped(
+            std::move(owner),
+            static_cast<std::byte const*>(mapping) + in_page,
+            bytes,
+            geometry.element_alignment),
+    };
+#else
+    (void)output;
+    (void)runs;
+    throw std::runtime_error(
+        "persisted Tick continuous recording requires Linux virtual memory");
+#endif
+}
+
+[[nodiscard]] std::shared_ptr<std::vector<PersistedSampleRegion> const>
+make_recording_regions(
+    PersistedOutputHandle output,
+    IndexCoverage const& coverage,
+    ChannelLayout layout,
+    ContinuousValueStorageGeometry geometry,
+    std::shared_ptr<RecordingPageAllocator> const& allocator,
+    std::shared_ptr<RecordingPageRunNode const> const& runs)
+{
+    auto regions = std::make_shared<std::vector<PersistedSampleRegion>>();
+    regions->reserve(coverage.size());
+    for (auto const range : coverage) {
+        regions->push_back(map_recording_region(
+            output, range, layout, geometry, allocator, runs));
+    }
+    return std::shared_ptr<std::vector<PersistedSampleRegion> const>{
+        std::move(regions)};
+}
+
 [[nodiscard]] std::shared_ptr<
     std::vector<ContinuousRegionStorageView> const>
 make_sample_region_views(
@@ -801,12 +1553,18 @@ PersistedContinuousStorage::PersistedContinuousStorage(
     : alignment_(source.alignment_)
 {
     if (source.empty()) return;
+    if (source.external_storage_) {
+        external_owner_ = source.external_owner_;
+        external_storage_ = source.external_storage_;
+        size_ = source.size_;
+        return;
+    }
     storage_ = {
         static_cast<std::byte*>(
             ::operator new(source.size_, std::align_val_t{source.alignment_})),
         Delete{source.alignment_}};
     size_ = source.size_;
-    std::memcpy(storage_.get(), source.storage_.get(), size_);
+    std::memcpy(storage_.get(), source.data(), size_);
 }
 
 PersistedContinuousStorage& PersistedContinuousStorage::operator=(
@@ -815,6 +1573,8 @@ PersistedContinuousStorage& PersistedContinuousStorage::operator=(
     if (this == &source) return *this;
     if (source.empty()) {
         storage_.reset();
+        external_owner_.reset();
+        external_storage_ = nullptr;
         size_ = 0;
         alignment_ = alignof(std::max_align_t);
         return *this;
@@ -827,6 +1587,8 @@ PersistedContinuousStorage& PersistedContinuousStorage::operator=(
 PersistedContinuousStorage::PersistedContinuousStorage(
     PersistedContinuousStorage&& source) noexcept
     : storage_(std::move(source.storage_))
+    , external_owner_(std::move(source.external_owner_))
+    , external_storage_(std::exchange(source.external_storage_, nullptr))
     , size_(std::exchange(source.size_, 0))
     , alignment_(std::exchange(
           source.alignment_, alignof(std::max_align_t)))
@@ -837,10 +1599,32 @@ PersistedContinuousStorage& PersistedContinuousStorage::operator=(
 {
     if (this == &source) return *this;
     storage_ = std::move(source.storage_);
+    external_owner_ = std::move(source.external_owner_);
+    external_storage_ = std::exchange(source.external_storage_, nullptr);
     size_ = std::exchange(source.size_, 0);
     alignment_ = std::exchange(
         source.alignment_, alignof(std::max_align_t));
     return *this;
+}
+
+PersistedContinuousStorage PersistedContinuousStorage::mapped(
+    std::shared_ptr<void const> owner,
+    std::byte const* storage,
+    std::size_t size,
+    std::size_t alignment)
+{
+    if (!owner || !storage || size == 0 || alignment == 0
+        || !std::has_single_bit(alignment)
+        || reinterpret_cast<std::uintptr_t>(storage) % alignment != 0) {
+        throw std::invalid_argument(
+            "mapped persisted continuous storage has invalid geometry");
+    }
+    PersistedContinuousStorage result;
+    result.external_owner_ = std::move(owner);
+    result.external_storage_ = const_cast<std::byte*>(storage);
+    result.size_ = size;
+    result.alignment_ = alignment;
+    return result;
 }
 
 std::byte* PersistedSampleRegion::storage_data() noexcept
@@ -880,7 +1664,13 @@ Sample PersistedSampleRegion::at(
     auto const offset = layout.sample_layout == SampleStreamLayout::planar
         ? channel * frames + frame_index
         : frame_index * channels + channel;
-    return offset < values.size() ? values[offset] : Sample{};
+    if (channels != 0
+        && frames > std::numeric_limits<std::size_t>::max() / channels) {
+        return {};
+    }
+    if (offset >= frames * channels) return {};
+    auto const* samples = reinterpret_cast<Sample const*>(storage_data());
+    return samples ? samples[offset] : Sample{};
 }
 
 PortKind persisted_output_kind(PersistedOutputId const& output) noexcept
@@ -1174,6 +1964,53 @@ PersistedDataStore::Snapshot::event_timeline(
         : std::span<TimedEvent const>{};
 }
 
+void PersistedDataStore::Snapshot::for_each_event_region(
+    PersistedOutputHandle output,
+    EventTypeId type,
+    std::size_t region_index,
+    GlobalIndexRange requested,
+    void* visitor_data,
+    VisitEvent visitor) const
+{
+    if (!visitor || requested.empty() || !output.valid()
+        || output.kind() != PortKind::event
+        || PersistedDataStore::output_owner_token(output)
+            != output_owner_token_) {
+        return;
+    }
+    auto const* selected = find_output<EventOutputNode, EventOutputState>(
+        event_outputs_,
+        event_output_levels_,
+        PersistedDataStore::output_directory_index(output));
+    if (!selected || selected->type != type || !selected->region_ranges
+        || region_index >= selected->region_ranges->size()
+        || !(*selected->region_ranges)[region_index].contains(requested)) {
+        return;
+    }
+
+    if (!selected->positional_recording) {
+        if (!selected->logical_regions
+            || region_index >= selected->logical_regions->size()) {
+            return;
+        }
+        for (auto const& event : (*selected->logical_regions)[region_index].events) {
+            if (requested.contains(event.time)) visitor(visitor_data, event);
+        }
+        return;
+    }
+
+    for_each_event_chunk(
+        output,
+        requested,
+        [&](PersistedEventChunk const& chunk, GlobalIndexRange intersection) {
+            for (auto const& event : chunk.events) {
+                if (intersection.contains(event.time)) {
+                    visitor(visitor_data, event);
+                }
+            }
+        });
+}
+
 IndexCoverage const* PersistedDataStore::Snapshot::find_sample_coverage(
     PersistedOutputHandle output,
     ChannelLayout layout) const noexcept
@@ -1273,49 +2110,32 @@ void PersistedDataStore::Candidate::overwrite(PersistedSampleRegion record)
         throw std::invalid_argument(
             "persisted sample output regions disagree on layout or geometry");
     }
-
-    auto root = current ? current->regions
-                        : std::shared_ptr<RangeNode<PersistedSampleRegion> const>{};
-    auto count = current ? current->physical_region_count : 0;
-    auto coverage = current ? current->coverage : IndexCoverage{};
-    auto const original_range = record.range;
-    auto original_record = record;
-    original_range.for_each_signed_order_segment([&](GlobalIndexRange segment) {
-        remove_range(root, count, segment);
-        auto replacement = slice(record, segment);
-        root = put_record(
-            root,
-            std::make_shared<PersistedSampleRegion const>(
-                std::move(replacement)));
-        ++count;
-    });
-    coverage.include(original_range);
-
-    auto logical = std::make_shared<std::vector<PersistedSampleRegion>>();
-    logical->reserve(count);
-    if (current && current->logical_regions) {
-        for (auto const& existing : *current->logical_regions) {
-            auto remaining = IndexCoverage{existing.range};
-            remaining.exclude(original_range);
-            for (auto const retained : remaining) {
-                logical->push_back(slice(existing, retained));
-            }
-        }
+    if (record.layout.sample_layout != SampleStreamLayout::interleaved) {
+        throw std::invalid_argument(
+            "persisted Tick continuous recording requires interleaved storage");
     }
-    logical->push_back(std::move(original_record));
-    std::ranges::stable_sort(
-        *logical,
-        [](PersistedSampleRegion const& left,
-            PersistedSampleRegion const& right) {
-            auto const left_begin =
-                SignedGlobalIndexOrder::key(left.range.begin);
-            auto const right_begin =
-                SignedGlobalIndexOrder::key(right.range.begin);
-            if (left_begin != right_begin) return left_begin < right_begin;
-            return left.range.extent > right.range.extent;
-        });
-    auto logical_const = std::shared_ptr<
-        std::vector<PersistedSampleRegion> const>{std::move(logical)};
+    if (current && !current->positional_recording) {
+        throw std::invalid_argument(
+            "persisted sample output cannot mix authored Regions with positional recording");
+    }
+
+    auto allocator = current && current->recording_allocator
+        ? current->recording_allocator
+        : std::make_shared<RecordingPageAllocator>();
+    auto pages = current ? current->recording_pages
+                         : std::shared_ptr<RecordingPageNode const>{};
+    auto runs = current ? current->recording_runs
+                        : std::shared_ptr<RecordingPageRunNode const>{};
+    write_recording_region(pages, runs, *allocator, record);
+    auto coverage = current ? current->coverage : IndexCoverage{};
+    coverage.include(record.range);
+    auto logical_const = make_recording_regions(
+        record.output,
+        coverage,
+        record.layout,
+        record.geometry,
+        allocator,
+        runs);
     auto region_views = make_sample_region_views(logical_const);
 
     auto const previous_count = current ? current->region_count : 0;
@@ -1327,10 +2147,12 @@ void PersistedDataStore::Candidate::overwrite(PersistedSampleRegion record)
         .coverage = std::move(coverage),
         .layout = record.layout,
         .geometry = record.geometry,
-        .regions = std::move(root),
         .logical_regions = std::move(logical_const),
         .region_views = std::move(region_views),
-        .physical_region_count = count,
+        .recording_allocator = std::move(allocator),
+        .recording_pages = std::move(pages),
+        .recording_runs = std::move(runs),
+        .positional_recording = true,
         .region_count = logical_count,
     });
     successor_->sample_outputs_ = put_output<
@@ -1359,6 +2181,10 @@ void PersistedDataStore::Candidate::overwrite(PersistedEventChunk record)
     if (current && current->type != record.type) {
         throw std::invalid_argument(
             "persisted event output chunks disagree on event type");
+    }
+    if (current && !current->positional_recording) {
+        throw std::invalid_argument(
+            "persisted event output cannot mix authored Regions with positional recording");
     }
 
     auto original_record = record;
@@ -1401,7 +2227,7 @@ void PersistedDataStore::Candidate::overwrite(PersistedEventChunk record)
         });
     auto logical_const = std::shared_ptr<
         std::vector<PersistedEventChunk> const>{std::move(logical)};
-    auto region_ranges = make_event_region_ranges(logical_const);
+    auto region_ranges = make_event_region_ranges(coverage);
     auto timeline = make_event_timeline(logical_const);
 
     auto const previous_count = current ? current->chunk_count : 0;
@@ -1415,6 +2241,7 @@ void PersistedDataStore::Candidate::overwrite(PersistedEventChunk record)
         .logical_regions = std::move(logical_const),
         .region_ranges = std::move(region_ranges),
         .timeline = std::move(timeline),
+        .positional_recording = true,
         .chunk_count = count,
     });
     successor_->event_outputs_ = put_output<EventOutputNode, EventOutputState>(
@@ -1463,6 +2290,10 @@ void PersistedDataStore::Candidate::replace_sample_regions(
             || current->geometry != geometry)) {
         throw std::invalid_argument(
             "persisted sample output Regions disagree on layout or geometry");
+    }
+    if (current && current->positional_recording) {
+        throw std::invalid_argument(
+            "persisted sample output cannot mix positional recording with authored Regions");
     }
 
     auto const previous_size = current && current->logical_regions
@@ -1610,6 +2441,10 @@ void PersistedDataStore::Candidate::replace_event_regions(
         throw std::invalid_argument(
             "persisted event output Regions disagree on event type");
     }
+    if (current && current->positional_recording) {
+        throw std::invalid_argument(
+            "persisted event output cannot mix positional recording with authored Regions");
+    }
 
     std::vector<PersistedEventChunk> retained;
     if (current && current->logical_regions) {
@@ -1703,6 +2538,7 @@ void PersistedDataStore::Candidate::replace_event_regions(
         .logical_regions = std::move(logical),
         .region_ranges = std::move(region_ranges),
         .timeline = std::move(timeline),
+        .positional_recording = false,
         .chunk_count = physical_count,
     });
     successor_->event_outputs_ = put_output<EventOutputNode, EventOutputState>(
@@ -1733,6 +2569,52 @@ void PersistedDataStore::Candidate::erase_sample(
     if (current->layout != layout) {
         throw std::invalid_argument(
             "persisted sample erasure has the wrong channel layout");
+    }
+
+    if (current->positional_recording) {
+        auto coverage = current->coverage;
+        coverage.exclude(range);
+        if (coverage.empty()) {
+            successor_->sample_region_count_ -= current->region_count;
+            successor_->sample_outputs_ = erase_output_node<SampleOutputNode>(
+                successor_->sample_outputs_,
+                successor_->sample_output_levels_,
+                output_index);
+            return;
+        }
+        auto logical = make_recording_regions(
+            output,
+            coverage,
+            layout,
+            current->geometry,
+            current->recording_allocator,
+            current->recording_runs);
+        auto region_views = make_sample_region_views(logical);
+        auto const logical_count = logical->size();
+        successor_->sample_region_count_ =
+            successor_->sample_region_count_ - current->region_count
+            + logical_count;
+        auto state = std::make_shared<SampleOutputState const>(
+            SampleOutputState{
+                .output = output,
+                .coverage = std::move(coverage),
+                .layout = layout,
+                .geometry = current->geometry,
+                .logical_regions = std::move(logical),
+                .region_views = std::move(region_views),
+                .recording_allocator = current->recording_allocator,
+                .recording_pages = current->recording_pages,
+                .recording_runs = current->recording_runs,
+                .positional_recording = true,
+                .region_count = logical_count,
+            });
+        successor_->sample_outputs_ = put_output<
+            SampleOutputNode, SampleOutputState>(
+                successor_->sample_outputs_,
+                successor_->sample_output_levels_,
+                output_index,
+                std::move(state));
+        return;
     }
 
     auto root = current->regions;
@@ -1836,7 +2718,9 @@ void PersistedDataStore::Candidate::erase_events(
     }
     auto logical_const = std::shared_ptr<
         std::vector<PersistedEventChunk> const>{std::move(logical)};
-    auto region_ranges = make_event_region_ranges(logical_const);
+    auto region_ranges = current->positional_recording
+        ? make_event_region_ranges(coverage)
+        : make_event_region_ranges(logical_const);
     auto timeline = make_event_timeline(logical_const);
     auto state = std::make_shared<EventOutputState const>(EventOutputState{
         .output = output,
@@ -1846,6 +2730,7 @@ void PersistedDataStore::Candidate::erase_events(
         .logical_regions = std::move(logical_const),
         .region_ranges = std::move(region_ranges),
         .timeline = std::move(timeline),
+        .positional_recording = current->positional_recording,
         .chunk_count = count,
     });
     successor_->event_outputs_ = put_output<EventOutputNode, EventOutputState>(

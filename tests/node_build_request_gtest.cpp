@@ -38,7 +38,8 @@ iv::IndexCoverage index_coverage(
 }
 
 iv::ReflectedContinuousPortStorageBinding sample_storage_binding(
-    std::span<iv::Sample> samples)
+    std::span<iv::Sample> samples,
+    iv::ChannelLayout layout = iv::mono_planar_channel_layout)
 {
     auto geometry = iv::continuous_value_storage_geometry(
         iv::ContinuousValueTypeId::sample, std::nullopt);
@@ -47,7 +48,7 @@ iv::ReflectedContinuousPortStorageBinding sample_storage_binding(
     iv::ReflectedContinuousPortStorageBinding result{
         .geometry = *geometry,
         .value_capacity = samples.size(),
-        .channel_layout = iv::mono_planar_channel_layout,
+        .channel_layout = layout,
     };
     result.channels[0] = {
         .storage = reinterpret_cast<std::byte*>(samples.data()),
@@ -67,10 +68,11 @@ iv::ReflectedContinuousInputPortBinding sample_input_binding(
 }
 
 iv::ReflectedContinuousOutputPortBinding sample_output_binding(
-    std::span<iv::Sample> samples)
+    std::span<iv::Sample> samples,
+    iv::ChannelLayout layout = iv::mono_planar_channel_layout)
 {
     return {
-        .storage = sample_storage_binding(samples),
+        .storage = sample_storage_binding(samples, layout),
     };
 }
 
@@ -750,6 +752,24 @@ static_assert(!iv::is_persisted(iv::output<iv::Sample>("ephemeral", iv::OutputPr
 static_assert(iv::is_persisted(iv::output<iv::Sample>("persisted", iv::OutputProduction::coverage, iv::OutputRetention::persisted)));
 static_assert(iv::is_persisted(iv::output<iv::Sample>("persisted", iv::OutputProduction::tick, iv::OutputRetention::persisted)));
 
+TEST(NodeBuildRequest, PersistedTickContinuousOutputReflectsAsInterleaved)
+{
+    auto const erased = iv::erase_port_config(iv::output<iv::Sample>(
+        "recording",
+        iv::OutputProduction::tick,
+        iv::OutputRetention::persisted,
+        {.channel_layout = iv::ChannelLayout{
+            .channel_type = iv::ChannelTypeId::stereo,
+            .sample_layout = iv::SampleStreamLayout::planar,
+        }}));
+    auto const& continuous = std::get<iv::ContinuousOutputProperties>(
+        erased.kind);
+    EXPECT_EQ(continuous.channel_layout.channel_type,
+        iv::ChannelTypeId::stereo);
+    EXPECT_EQ(continuous.channel_layout.sample_layout,
+        iv::SampleStreamLayout::interleaved);
+}
+
 TEST(NodeBuildRequest, MaterializesHostOwnedDescriptionFromTypeSpecificCallback)
 {
     RequestNode source{
@@ -1172,6 +1192,45 @@ struct BackgroundFFTRegionTransform {
     }
 };
 
+template<typename Context>
+concept RegionReverseInputAcceptsCoverage = requires(
+    Context const& context,
+    iv::IndexCoverage const& coverage) {
+    context.template input<"in">().require(coverage);
+};
+
+template<typename Context>
+concept RegionReverseInputAcceptsRegion = requires(
+    Context const& context,
+    iv::GlobalIndexRange region) {
+    context.template input<"in">().require(region);
+};
+
+using BackgroundFFTRegionReverseContext =
+    iv::PropagateReverseCoverageContext<BackgroundFFTRegionTransform>;
+
+static_assert(!RegionReverseInputAcceptsCoverage<
+    BackgroundFFTRegionReverseContext>);
+static_assert(RegionReverseInputAcceptsRegion<
+    BackgroundFFTRegionReverseContext>);
+static_assert(std::same_as<
+    decltype(std::declval<BackgroundFFTRegionReverseContext const&>()
+        .template output<"out">().required()),
+    iv::GlobalIndexRange>);
+
+using BackgroundCoverageReverseContext =
+    iv::PropagateReverseCoverageContext<BackgroundTransform>;
+
+static_assert(requires(
+    BackgroundCoverageReverseContext const& context,
+    iv::IndexCoverage const& coverage) {
+    context.template input<"samples">().require(coverage);
+});
+static_assert(std::same_as<
+    decltype(std::declval<BackgroundCoverageReverseContext const&>()
+        .template output<"samples-out">().required()),
+    iv::IndexCoverage const&>);
+
 struct MissingBackgroundTock {
     static constexpr auto outputs()
     {
@@ -1516,7 +1575,9 @@ TEST(BackgroundDspPorts, PersistedRealtimeOutputsUseOrdinaryTickBindings)
     std::array<iv::Sample, 256> sample_storage {};
     iv::OutputDisposition sample_disposition{};
     std::array sample_outputs{
-        sample_output_binding(std::span{sample_storage})};
+        sample_output_binding(
+            std::span{sample_storage},
+            iv::mono_interleaved_channel_layout)};
     sample_outputs[0].sequential_begin_ordinal = 128;
     std::array<iv::TimedEvent, 16> event_storage {};
     iv::EventSharedPortData event_shared {
@@ -1562,7 +1623,9 @@ TEST(BackgroundDspPorts, ReflectedOutputsExposeFinalInvocationDisposition)
 {
     std::array<iv::Sample, 8> sample_storage{};
     std::array sample_bindings{
-        sample_output_binding(std::span{sample_storage})};
+        sample_output_binding(
+            std::span{sample_storage},
+            iv::mono_interleaved_channel_layout)};
     auto& sample = sample_bindings[0];
 
     struct EventStorage {
@@ -1634,7 +1697,9 @@ TEST(BackgroundDspPorts, GeneratedPersistedSkipOutputsAreOrdinaryWrites)
 {
     std::array<iv::Sample, 8> samples{};
     std::array bindings{
-        sample_output_binding(std::span{samples})};
+        sample_output_binding(
+            std::span{samples},
+            iv::mono_interleaved_channel_layout)};
     struct EventStorage {
         std::size_t count = 0;
         std::array<iv::TimedEvent, 8> events{};

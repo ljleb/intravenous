@@ -409,7 +409,9 @@ Access views and never runs Tock or request-driven materialization.
 A **persisted Tick boundary** is finalized Tick-produced persisted data that can
 satisfy downstream random-access demand without replaying its live producer. It is a
 terminal stored boundary for the covered positions available in the selected
-version.
+version. Its positional writes derive zero or more maximal contiguous Regions from
+`IndexCoverage`; overlapping and touching writes merge. It therefore has Coverage
+shape and cannot directly satisfy a Region input.
 
 ## Background evaluation and publication
 

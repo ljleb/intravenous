@@ -434,13 +434,13 @@ the output shape.
 
 ### Front 3 source status (2026-10-26)
 
-The collaborator compiled the earlier Front 3 continuous completion candidate and
-reported that all 625 tests passed. Follow-up review added the missing postfix
-increment on the public forward iterator and a compiled authored-node test that
-carries two overlapping continuous Regions through the generated callback ABI. The
-current change extends the same representation to event ports and settles the public
-callback facade described below. These corrections and the event adversarial tests
-await the next collaborator run.
+The collaborator compiled the continuous completion candidate and the subsequent
+event/API revision and reported that all 641 tests passed. The next audit correction
+adds effective read latency to stable input-connection migration, rejects
+Tick/persisted recordings as Region sources, makes event ordering explicitly
+per-Region, and extends the generated callback test through continuous and event
+Region outputs. These corrections and their adversarial tests await the next
+collaborator run.
 
 `ContinuousRegionStorageView` is the non-owning callback ABI. Node code receives it
 through `ContinuousRegion<Value>`, `WritableContinuousRegion<Value>`,
@@ -473,6 +473,95 @@ Regions. Overlapping and duplicate ranges do not share event storage. Event fan-
 clips each source Region to the common available positional coverage, then retains one
 Region contribution per source. Sequential consumers receive a premerged immutable
 timeline; the audio thread does not allocate or sort while reading it.
+
+A Tick/persisted recording does not preserve authored Region membership. Its
+positional overwrites produce canonical Regions from `IndexCoverage`; overlapping and
+touching recorded ranges merge. It therefore satisfies Coverage inputs but not Region
+inputs. Replayed Tick/ephemeral execution remains Region-shaped for each replay
+invocation.
+
+The recording storage conflict is resolved. `PersistedDataStore::Candidate::overwrite()`
+does not retain one `PersistedSampleRegion` allocation per captured block. For example,
+captures `[0, 4)` and `[4, 8)` update sparse recording pages, and their canonical
+`IndexCoverage` publishes one `ContinuousRegionStorageView` for `[0, 8)`.
+
+The preliminary correction is a sparse page-backed recording representation owned by
+`PersistedDataStore`. It replaces the earlier segmented-public-Region proposal, which
+is retained in
+[historical documentation](./historical/front_3_segmented_recording_region_proposal_before_sparse_pages_2026-11-01.md).
+This is now the implemented recording representation.
+
+`IndexCoverage` remains the only semantic record of positions that contain valid
+recorded values. A separate sparse physical page directory maps page-aligned timeline
+positions to backing pages. The page directory must not define coverage because one
+page can contain both covered and uncovered positions. The implementation must split
+ranges at the signed-order seam and must reserve bounded virtual-address windows; it
+cannot map the complete cyclic `GlobalIndex` domain.
+
+Authored Tock Region/Coverage publication and Tick recording require different
+`SampleOutputState` representations. `replace_sample_regions()` retains independent
+authored Regions, including overlaps and exact duplicates. A recording-specific
+candidate operation writes a realtime-produced Tick payload directly into affected
+recording pages and updates `IndexCoverage`. It does not create one
+`PersistedSampleRegion` per captured block. The realtime Tick callback still copies its
+output into the preallocated `ProducedBlockChain`; the background transaction commits
+that owned payload into the recording pages.
+
+On Linux, an anonymous RAM-backed file created with `memfd_create()` supplies the
+physical pages. `ftruncate()` grows its physical-page file and `mmap()` places
+backing-page runs into a
+reserved contiguous virtual interval. One `ContinuousRegionStorageView` then describes
+each canonical `IndexCoverage` range. Large uncovered gaps remain separate Coverage
+Regions and consume no sample pages. If later writes fill a gap completely, the
+canonical ranges merge and a new contiguous virtual view can map the retained pages
+without copying the complete recording.
+
+Published `PersistedDataStore::Snapshot` views remain stable. A candidate that
+overwrites a page already visible through an older snapshot allocates a new page,
+copies only that page, and updates its path-copied page directory. Untouched pages stay
+shared. Each snapshot owns its virtual mappings until existing reader pins release it.
+The copied sample bytes are therefore bounded by the new payload and affected boundary
+pages rather than by the complete recording. A second path-copied
+`RecordingPageRunNode` index records logically and physically consecutive pages.
+Virtual-view assembly visits those physical runs instead of looking up every page in a
+long canonical Region. An ordinary append therefore extends one run, while an
+overwrite splits only the run that contains each changed page. Reclaiming or compacting
+obsolete backing pages remains Front 16 work. Copying or walking the complete recording
+on every captured block remains disallowed. The superseded page-walk classification is
+retained in
+[historical documentation](./historical/front_3_page_walk_before_physical_run_index_2026-11-01.md).
+
+Persisted Tick continuous outputs use interleaved storage only. Reflection forces an
+authored Tick/persisted output to interleaved while preserving its `ChannelTypeId`.
+GraphJit rejects a manually assembled or archived configured graph that still marks
+such an output planar. Ordinary connection conversion supplies planar storage to a
+downstream input that requests it. Authored Tock Region/Coverage outputs can still use
+planar storage. The superseded open layout question is retained in
+[historical documentation](./historical/front_3_sparse_recording_before_interleaved_only_decision_2026-11-01.md).
+
+Persisted Tick event outputs use the same Coverage rule but do not need continuous
+virtual storage. Their canonical Regions can retain chunked event records because
+`EventRegion::for_each()` already visits events through the port operation. Persisted
+Tick sample and event outputs remain invalid Region-input sources.
+
+The suspected replayable-Tick-to-Region scheduling conflict was an invalid authoring
+example, not remaining scheduler work. The example declared a Coverage output while
+its `tock_coverage()` implementation required exactly one output Region. Such an
+output must use `OutputProduction::region`.
+
+`BackgroundPropagationWorkspace::require_output()` widens any partial demand on a
+non-Tick output to each complete intersected authored Region before reverse
+propagation. A Region-to-Region pass-through therefore requires one complete input
+Region from its replayable Tick source. A node with a real Coverage output can still
+use a Region input when reverse propagation maps all selected output Regions to one
+contiguous `GlobalIndexRange`. If it requires several disjoint input Regions, the
+input must use `InputAccess::coverage`.
+
+`BackgroundEvaluationCallFrame::seal()` remains the defensive validation that a
+Region input reaches evaluation with exactly one Region. Front 3 does not need a
+per-Region Tock invocation exception or a transaction split. The false analysis is
+retained in
+[historical documentation](./historical/front_3_replayable_tick_region_multi_invocation_false_start_2026-11-01.md).
 
 `BackgroundStorageRealization` allocates one independent contiguous buffer for each
 selected logical Region before `tock_coverage()` runs. All produced
@@ -598,12 +687,19 @@ each source Region is clipped to the common complete range without merging exact
 duplicate contributions, and that Random Access event materialization maps those
 duplicate clipped ranges back to the correct source Regions.
 
+The audit tests additionally verify that effective sample read-latency changes create
+an exact stable-input reconciliation root, Tick/persisted recording coverage derives
+maximal contiguous Regions from `IndexCoverage`, Tick/persisted sample and event
+outputs are rejected as Region-input sources, event writes are ordered independently
+inside each Region, and compiled sample/event Region-output leaves pass one Region
+through an `IV_MODULE` to authored Region-input leaves.
+
 The event Regions are intentionally anonymous. Their list positions are meaningful
 within the current publication and callback but are not stable identities. Optional
 explicit identifiers, dynamic identifier creation, UI enumeration, and selection by
 identifier remain future work rather than Front 3 completion requirements.
 
-One limitation remains outside Front 3. Background contextual replay of a Sequential
+A separate limitation remains outside Front 3. Background contextual replay of a Sequential
 continuous input still accepts only `Sample` at project rate. The validation is in
 `connection_plan.cpp` and belongs to Front 7 replay generalization. It does not limit
 authored Tock Region/Coverage production, persistence, Tick Random Access, or ordinary
@@ -2156,6 +2252,11 @@ Candidate work includes:
   contiguous-input scratch so that block callbacks with continuous inputs can batch
   (Front 2 friction item 2);
 - alias/materialization cost models;
+- persisted-recording backing-page reclamation and measured compaction after old
+  `PersistedDataStore::Snapshot` pins release;
+- persistent/segmented publication metadata for recordings with very many disconnected
+  canonical Regions, if profiling shows that rebuilding the small Region descriptor
+  vector dominates changes to one Region;
 - in-place event fan-in over a transient source whose last read is the merge;
 - transient storage reuse/liveness improvements;
 - immutable-value specialization;

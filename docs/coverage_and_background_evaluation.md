@@ -686,8 +686,9 @@ the callback emits the complete event sequence for every requested covered regio
 zero events is a complete result. Failed, cancelled, or superseded work commits no
 partial output as valid.
 
-Within one output invocation, events are emitted in nondecreasing global timestamp
-order. Equal-timestamp producer-local order is preserved.
+Within each event output Region, events are emitted in nondecreasing global timestamp
+order. Different Regions own independent event sequences and impose no write order on
+one another. Equal-timestamp producer-local order is preserved within each Region.
 
 A single callback remains preferable to mandatory per-output callbacks because one
 Tock primitive may share useful work among several Tock outputs. **Tock and its propagation
@@ -1544,18 +1545,20 @@ These are connection permissions, not guarantees of audio-thread scheduling:
 | --- | --- | --- |
 | Tick/ephemeral, unreproducible for demanded coverage | allowed | authored Tick persistence or an explicit recording node required |
 | Tick/ephemeral, contextually replayable | allowed | allowed by background replay into an addressable materialization |
-| Tick/persisted | allowed from the current Tick representation | allowed through the selected published persisted-data snapshot |
+| Tick/persisted | allowed from the current Tick representation | Coverage input only, through the selected published persisted-data snapshot; a Region input is rejected |
 | Tock/ephemeral | allowed with a materialized sequential/addressable window | allowed with transaction-local materialization in background or materialized addressable data for Tick use |
 | Tock/persisted | allowed from published data generated ahead of playback | allowed through the selected published persisted-data snapshot |
 
 An unreproducible Tick/ephemeral output cannot acquire implicit historical storage
-merely because it feeds a random-access input; that is the **only special connection
-prohibition** introduced by retention. The restriction applies whether the
-random-access input is consumed by tick or tock. Tock outputs may feed sequential
-inputs, and persisted tick outputs may feed random-access inputs. Tiling does not
-change these permissions or silently materialize a new output: a whole-tile
-random-access connection requires every selected source channel to satisfy it.
-Projections preserve their source channel's original capability.
+merely because it feeds a random-access input. The restriction applies whether the
+random-access input is consumed by tick or tock. A Tick/persisted recording has a
+second restriction: it may feed a Coverage input but not a Region input. Recording
+writes are positional overwrites. Their `IndexCoverage` merges overlapping and
+touching ranges into maximal contiguous Regions, so individual Tick block boundaries
+do not become authored Region identities. Tock outputs may feed sequential inputs.
+Tiling does not change these permissions or silently materialize a new output: a
+whole-tile random-access connection requires every selected source channel to satisfy
+it. Projections preserve their source channel's original capability.
 
 A Tock-produced output directly feeding another node's Random Access input must
 be materialized into an immutable addressable representation before that consumer

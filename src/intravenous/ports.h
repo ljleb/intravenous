@@ -498,6 +498,11 @@ namespace iv {
         .sample_layout = SampleStreamLayout::planar,
     };
 
+    inline constexpr ChannelLayout mono_interleaved_channel_layout {
+        .channel_type = ChannelTypeId::mono,
+        .sample_layout = SampleStreamLayout::interleaved,
+    };
+
     // The default preserves the scalar ring-buffer view. Multi-channel block
     // access is intentionally expressed through the layout-aware port views;
     // callers cannot accidentally treat interleaved storage as scalar samples.
@@ -2474,8 +2479,16 @@ namespace iv {
         OutputConfig erase_continuous_output(
             Config const& config, std::index_sequence<I...> indices)
         {
+            auto channel_layout =
+                common_channel_layout<Types...>(config, indices);
+            if constexpr (Config::production == OutputProductionKind::tick) {
+                if (config.retention == OutputRetention::persisted) {
+                    channel_layout.sample_layout =
+                        SampleStreamLayout::interleaved;
+                }
+            }
             ContinuousOutputProperties properties {
-                .channel_layout = common_channel_layout<Types...>(config, indices),
+                .channel_layout = channel_layout,
             };
 
             if constexpr (Config::production == OutputProductionKind::tick) {
@@ -2533,8 +2546,14 @@ namespace iv {
         std::apply([&](auto const&... options) {
             (port_config_details::include_channel_layout(result, options), ...);
         }, config.options);
-        return result.value_or(
+        auto layout = result.value_or(
             continuous_value_details::default_audio_channel_layout);
+        if constexpr (Config::production == OutputProductionKind::tick) {
+            if (config.retention == OutputRetention::persisted) {
+                layout.sample_layout = SampleStreamLayout::interleaved;
+            }
+        }
+        return layout;
     }
 
     template<RegisteredContinuousValue... Types>

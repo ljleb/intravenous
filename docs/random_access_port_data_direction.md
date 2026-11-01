@@ -6,8 +6,9 @@ the continuous node-facing contract through `ContinuousRegion<Value>`,
 `WritableContinuousCoverage<Value>`. It now implements the corresponding event
 contract through `EventRegion`, `WritableEventRegion`, `EventCoverage`, and
 `WritableEventCoverage`. The collaborator's last completed build and full run passed
-all 625 tests before the event Region-list extension. The current extension and its
-new adversarial tests await collaborator compilation and test execution._
+all 641 tests. The subsequent migration, persisted-recording compatibility, generated
+Region callback, and event-order corrections await collaborator compilation and test
+execution._
 
 Related documents:
 
@@ -321,12 +322,19 @@ shape/access compatibility is:
 | --- | --- | --- | --- |
 | Region | yes | yes, as one Region | yes |
 | Coverage | **no** | yes | yes, by bounded reduction |
-| Tick stream | effectively Region-shaped for its available block | yes when lifetime/access requirements are satisfied | yes |
+| Replayable Tick/ephemeral stream | effectively Region-shaped for one replay invocation | yes when lifetime/access requirements are satisfied | yes |
+| Tick/persisted recording | **no** | yes, as canonical `IndexCoverage` Regions | yes |
 
 A Region producer provides a stronger contiguity guarantee than a Coverage producer.
 A Coverage producer cannot directly satisfy an input that requires one contiguous
 Region. Doing so requires an explicit materialization/copy policy rather than an
 implicit hidden copy.
+
+A Tick/persisted recording is also Coverage-shaped. Its Tick writes are positional
+overwrites, not authored Regions. `IndexCoverage` merges overlapping or touching
+recorded ranges into maximal contiguous Regions and discards the original Tick block
+boundaries. The recording can therefore contain zero or more Regions and cannot
+satisfy a Region input, even when its current coverage happens to be contiguous.
 
 This compatibility is only one axis of connection validity. Existing temporal and
 lifetime constraints remain independent. In particular, a Sequential/Tick value may
@@ -949,10 +957,15 @@ Consequences include:
   contiguous storage directly to libraries that require it.
 
 The executor-owned `PersistedDataStore` provides the retained ownership, version, and
-publication boundary. It publishes one coherent immutable root. Continuous outputs
-use contiguous `PersistedSampleRegion` records. Event outputs use explicit-range
-`PersistedEventChunk` records. `PersistedDataStore::Snapshot` binds the continuous
-records to `ContinuousRegionStorageView` at the runtime boundary.
+publication boundary. It publishes one coherent immutable root. Authored Tock
+continuous outputs use independent contiguous `PersistedSampleRegion` records.
+Tick/persisted continuous recording uses interleaved sparse copy-on-write pages and
+maps each canonical `IndexCoverage` range into one virtually contiguous
+`PersistedSampleRegion`. A path-copied physical-run index makes virtual mapping
+proportional to the number of changed/coalesced backing runs rather than the number of
+retained pages. Event outputs use explicit-range `PersistedEventChunk` records.
+`PersistedDataStore::Snapshot` binds these records to
+`ContinuousRegionStorageView` at the runtime boundary.
 
 ## 10. Region count is evaluation data, not realtime layout data
 

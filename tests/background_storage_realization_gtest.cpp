@@ -224,7 +224,7 @@ TEST(BackgroundStorageRealization,
 }
 
 TEST(BackgroundStorageRealization,
-     KeepsOverlappingAndDuplicateEventRegionsIndependent)
+     KeepsOverlappingAndDuplicateEventRegionsIndependentlyOrdered)
 {
     iv::graph_jit::BackgroundEvaluationPlan plan;
     plan.ports = {{
@@ -265,6 +265,10 @@ TEST(BackgroundStorageRealization,
         0, {.time = index(12), .value = iv::TriggerEvent{}}));
     ASSERT_TRUE(writable->write(
         1, {.time = index(11), .value = iv::TriggerEvent{}}));
+    // Region 0's last event is at 12. Region 1 can write 11 because each
+    // authored event Region owns an independent ordered event sequence.
+    EXPECT_FALSE(writable->write(
+        0, {.time = index(11), .value = iv::TriggerEvent{}}));
     ASSERT_TRUE(writable->write(
         2, {.time = index(11), .value = iv::TriggerEvent{}}));
     ASSERT_TRUE(writable->write(
@@ -723,9 +727,9 @@ TEST(BackgroundStorageRealization, ReadsTypedPublishedDataWithoutCopyingIt)
         .range = range(0, 4),
         .layout = {
             .channel_type = iv::ChannelTypeId::stereo,
-            .sample_layout = iv::SampleStreamLayout::planar,
+            .sample_layout = iv::SampleStreamLayout::interleaved,
         },
-        .values = {1, 2, 3, 4, 10, 20, 30, 40},
+        .values = {1, 10, 2, 20, 3, 30, 4, 40},
     });
     candidate.overwrite(iv::PersistedEventChunk{
         .output = event_output,
@@ -749,6 +753,10 @@ TEST(BackgroundStorageRealization, ReadsTypedPublishedDataWithoutCopyingIt)
             .persisted_tick_output = true,
             .retention = iv::OutputRetention::persisted,
             .stable_identity = sample_id,
+            .sample_layout = {
+                .channel_type = iv::ChannelTypeId::stereo,
+                .sample_layout = iv::SampleStreamLayout::interleaved,
+            },
         },
         {
             .kind = iv::PortKind::event,
@@ -765,7 +773,7 @@ TEST(BackgroundStorageRealization, ReadsTypedPublishedDataWithoutCopyingIt)
             .output_port = 0,
             .sample_layout = {
                 .channel_type = iv::ChannelTypeId::stereo,
-                .sample_layout = iv::SampleStreamLayout::planar,
+                .sample_layout = iv::SampleStreamLayout::interleaved,
             },
             .sample_channels = {0, 1},
         },
@@ -933,6 +941,7 @@ TEST(BackgroundStorageRealization,
             .replayed_tick_output = true,
             .retention = iv::OutputRetention::persisted,
             .stable_identity = sample_id,
+            .sample_layout = iv::mono_interleaved_channel_layout,
         },
         {
             .kind = iv::PortKind::event,
@@ -950,7 +959,7 @@ TEST(BackgroundStorageRealization,
             .kind = iv::PortKind::sample,
             .storage = iv::graph_jit::PortStorageKind::persisted_data,
             .output_port = 0,
-            .sample_layout = iv::mono_planar_channel_layout,
+            .sample_layout = iv::mono_interleaved_channel_layout,
             .sample_channels = {0},
         },
         {
@@ -983,7 +992,7 @@ TEST(BackgroundStorageRealization,
     seed.overwrite(iv::PersistedSampleRegion{
         .output = sample_output,
         .range = range(0, 8),
-        .layout = iv::mono_planar_channel_layout,
+        .layout = iv::mono_interleaved_channel_layout,
         .values = std::vector<iv::Sample>(8, iv::Sample{1.0f}),
     });
     seed.overwrite(iv::PersistedEventChunk{

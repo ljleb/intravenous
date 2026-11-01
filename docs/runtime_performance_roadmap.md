@@ -539,14 +539,13 @@ The governing performance invariant is:
    buffer per selected Region and shares one producer-home allocation between the
    output's physical storage roles. Coverage-to-Sequential reduction and Tick
    playback use the target input's generated initializer and combiner. The
-   collaborator's 2026-10-25 build and full run passed all 625 tests. Follow-up review
-   added the missing postfix increment required by the declared forward iterator and
-   a compiled authored-node multi-Region integration test. The event extension gives
+   collaborator's latest completed build and full run passed all 641 tests. Follow-up
+   review added the missing postfix increment required by the declared forward
+   iterator and a compiled authored-node multi-Region integration test. The event extension gives
    every event Region independent storage, preserves overlaps and duplicates, and
    prebuilds the merged event timeline used by Sequential Tick consumers. The public
    propagation operation is now `publish(...)` for both port kinds, with its argument
-   selected statically from Region versus Coverage production. These corrections and
-   the new event adversarial tests await the next collaborator run. Final static
+   selected statically from Region versus Coverage production. Final static
    review also closed event output demands over complete logical Regions before
    reverse propagation, preserved current logical order when Tick materialization
    mixes recomputed and retained records, rejected event coverage
@@ -555,14 +554,21 @@ The governing performance invariant is:
    Tick outputs continue to use positional publication internally; narrow replay
    demand is no longer expanded to the complete canonical output coverage, and
    persisted replay records use positional overwrite instead of authored logical
-   Region-batch replacement. These final corrections also await the next collaborator
-   run.
+   Region-batch replacement. Recording propagation derives logical boundaries from
+   canonical `IndexCoverage`. Tick/persisted continuous outputs now use interleaved
+   sparse copy-on-write pages, and each canonical range is exposed through one virtually
+   contiguous `ContinuousRegionStorageView`. Planar consumers use the ordinary channel-
+   layout conversion path. The earlier segmented-Region and replay-transaction
+   scheduling proposals were false starts and are retained under `docs/historical/`.
 
 3. Complete realtime persisted playback and recording span operations. Persisted
    playback now clears only requested sample windows, traverses relevant sample
    regions, copies ring-wrap runs, and binary-searches clipped event chunks. Realtime
    recording still needs bulk ring capture; direct materialization indexing and cached
    materialization coverage offsets/frame counts also remain.
+   Persisted Tick continuous publication now maintains path-copied logical-page and
+   physical-run indices. Virtual mapping visits physical runs, so extending one
+   canonical recording Region does not search every retained page.
 4. Make `BackgroundGeneration` own a sealed reusable runtime skeleton: reader slots,
    storage realization objects, binding adapters, node/operation frames, reusable replay
    buffers, and pre-indexed static routes. Transactions supply new root pins,

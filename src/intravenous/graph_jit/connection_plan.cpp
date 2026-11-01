@@ -3397,11 +3397,18 @@ std::expected<void, std::string> populate_background_topology(
             auto const source = sources.front();
             if (source >= plan.ports.size()
                 || plan.ports[source].kind != PortKind::event
-                || plan.ports[source].direction != PortDirection::output
-                || plan.ports[source].output_production
-                    == OutputProductionKind::coverage) {
+                || plan.ports[source].direction != PortDirection::output) {
+                return std::unexpected(
+                    "GraphJit event Region input has an invalid source output");
+            }
+            if (plan.ports[source].output_production
+                == OutputProductionKind::coverage) {
                 return std::unexpected(
                     "GraphJit event Coverage output cannot satisfy an event Region input");
+            }
+            if (plan.ports[source].persisted_tick_output) {
+                return std::unexpected(
+                    "GraphJit persisted Tick event output cannot satisfy an event Region input");
             }
             continue;
         }
@@ -3420,11 +3427,18 @@ std::expected<void, std::string> populate_background_topology(
         for (auto const source : connection.source_coverage_ports) {
             if (source >= plan.ports.size()
                 || plan.ports[source].kind != PortKind::sample
-                || plan.ports[source].direction != PortDirection::output
-                || plan.ports[source].output_production
-                    == OutputProductionKind::coverage) {
+                || plan.ports[source].direction != PortDirection::output) {
+                return std::unexpected(
+                    "GraphJit Region input has an invalid continuous source output");
+            }
+            if (plan.ports[source].output_production
+                == OutputProductionKind::coverage) {
                 return std::unexpected(
                     "GraphJit Coverage output cannot satisfy a Region input");
+            }
+            if (plan.ports[source].persisted_tick_output) {
+                return std::unexpected(
+                    "GraphJit persisted Tick output cannot satisfy a Region input");
             }
         }
     }
@@ -5629,6 +5643,26 @@ std::expected<ConnectionAnalysisPlan, std::string> build_connection_analysis_pla
     if (kernel_block_size == 0) {
         return std::unexpected(
             "connection analysis requires a non-zero kernel block size");
+    }
+
+    for (NodeBundleHandle bundle = 0;
+         bundle < graph.node_bundles.size(); ++bundle) {
+        auto const& node_bundle = graph.node_bundles.bundle(bundle);
+        for (std::size_t port = 0;
+             port < node_bundle.sample_output_count(); ++port) {
+            auto const config = graph.node_bundles.resolve_sample_output(
+                {bundle, PortKind::sample, port}).config;
+            if (is_tick(config)
+                && config.retention == OutputRetention::persisted
+                && config.channel_layout.sample_layout
+                    != SampleStreamLayout::interleaved) {
+                return std::unexpected(
+                    "GraphJit persisted Tick continuous output "
+                    + std::to_string(bundle) + ":"
+                    + std::to_string(port)
+                    + " must use interleaved storage");
+            }
+        }
     }
 
     ConnectionAnalysisPlan plan;
