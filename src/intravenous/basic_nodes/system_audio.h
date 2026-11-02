@@ -41,7 +41,7 @@ struct SystemAudioInput {
     void tick_block(TickBlockContext<SystemAudioInput> const& ctx) const
     {
         auto const source = ctx.state().binding.captured_samples();
-        auto output = ctx.template output<0>();
+        auto output = ctx.output<"out">();
         auto constexpr channels = channel_count(
             system_audio_channel_layout.channel_type);
         for (std::size_t frame = 0; frame < output.block_size(); ++frame) {
@@ -81,7 +81,7 @@ struct SystemAudioOutput {
     void tick_block(TickBlockContext<SystemAudioOutput> const& ctx) const
     {
         auto destination = ctx.state().binding.render_samples();
-        auto input = ctx.template input<0>();
+        auto input = ctx.input<"in">();
         auto constexpr channels = channel_count(
             system_audio_channel_layout.channel_type);
         auto const frames = std::min(

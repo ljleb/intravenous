@@ -1020,10 +1020,11 @@ The implementation checkpoints now stand as follows:
     per-input missing-position neutrality are part of that active replacement. Finish
     the source/test/document migration and validate it before enabling transactional
     recording consumption;
-11. integrate stable logical `SystemAudioDevices` bindings with ordinary system
-    audio leaf node definitions;
-12. once GraphJit plus the internally decomposed `GraphExecutor` have fully landed as the normal execution
-    path, run a substantial optimization/profiling iteration over the complete
+11. **Landed:** stable logical `SystemAudioDevices` bindings, ordinary system-audio
+    leaf node definitions, the output-device execution clock, and the
+    `ProjectGraph -> GraphJit -> GraphExecutor` staging path are integrated and passed
+    the repository owner's complete 667-test suite;
+12. run a substantial optimization/profiling iteration over the complete
     runtime plus the current configuration/cache/builder path and establish the
     performance baseline that later structural work must preserve;
 13. make the scoped `BuilderSession`/`GraphBuilder` API migration in

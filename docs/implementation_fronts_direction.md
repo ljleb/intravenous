@@ -1023,7 +1023,7 @@ each once per rebuild. The superseded replaceable-pending context and phase-retr
 design is preserved in
 [`historical/front_8_replaceable_pending_transition_false_start_2026-11-01.md`](historical/front_8_replaceable_pending_transition_false_start_2026-11-01.md).
 
-**Front 8 source implementation (2026-11-02; collaborator verification pending):**
+**Front 8 completion (2026-11-02):**
 `ProjectGraph` now sends one `ProjectGraphGraphJitRequest` and, after successful
 compilation, one `ProjectGraphGraphExecutorRequestedEvent`. `GraphExecutor::stage()`
 accepts only the exact ordered chain tail. It retains every accepted successor and
@@ -1054,7 +1054,10 @@ multi-generation acceptance, migration through an already accepted intermediate
 generation, the complete `ProjectGraph -> GraphJit -> GraphExecutor` chain, output-clock
 activation, slicing a large device request into project blocks, logical-output mixing,
 fallback-clock execution, stable binding activation after device selection, and
-missing-device silence/discard. Compilation and full-suite verification remain pending.
+missing-device silence/discard. The repository-owner build succeeded, and the complete
+667-test suite passed. Front 8 is complete at this boundary. Automatic graph-node
+creation for detected devices remains the optional convenience behavior stated below,
+not unfinished Front 8 work.
 
 The layout half of that specialization boundary is also present.
 `NodeLayoutTransitionBuilder` accepts an already-finalized steady layout, preserves all
@@ -2006,13 +2009,12 @@ repository-owner build succeeded, and the full suite passed all 661 tests. The
 separately recorded bulk-span work remains Front 16 rather than an open Front 5
 correctness dependency.
 
-Fronts 2, 3, 4, 5, 6, and 7 have now completed the execution prerequisites for Front
-8. The remaining execution-path order is:
+Fronts 2, 3, 4, 5, 6, 7, and 8 have now completed the correctness execution path. The
+remaining execution-path order is:
 
-1. Front 8 application execution and system-audio integration.
-2. The Front 16 measurement/baseline step required before structural optimization.
-3. Front 12 scoped builder migration.
-4. The remaining Front 16 optimizations after the correctness architecture and
+1. The Front 16 measurement/baseline step required before structural optimization.
+2. Front 12 scoped builder migration.
+3. The remaining Front 16 optimizations after the correctness architecture and
    builder path are measurable together.
 
 Front 2 reached source implementation on 2026-10-23. Full-suite verification remains
@@ -2049,6 +2051,9 @@ not a requirement to delay independent control-plane or Front 11 work.
 
 **Primary ownership:** make the new execution architecture the application's normal
 runtime path.
+
+**Status:** complete and verified by the repository owner's 667-test full-suite run on
+2026-11-02.
 
 This front owns:
 

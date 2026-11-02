@@ -37,3 +37,12 @@ Explain implementation friction through the concrete records that enter a functi
 the fields that the function can preserve, and the output record that is insufficient.
 Diagrams and conceptual summaries may supplement that explanation, but they must not
 replace it.
+
+## Leaf-node port access
+
+In authored leaf-node callbacks, especially builtin nodes, prefer named static port
+access such as `ctx.input<"audio">()` and `ctx.output<"out">()` over positional
+access such as `ctx.input<0>()` and `ctx.output<0>()`. Use positional access only when
+the node schema is intentionally generic and has no stable authored port name. Do not
+write the `template` disambiguator unless the C++ grammar requires it for a dependent
+expression.
