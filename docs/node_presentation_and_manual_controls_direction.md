@@ -38,6 +38,13 @@ A presentation may be generic (for example, a standard subgraph/member
 presentation) or provider-specific. Selection policy belongs to the presentation
 host, not to the execution graph.
 
+A generic presentation can generate controls from Front 9 configuration metadata. It
+can also provide direct source editing when a generated control is not sufficient. A
+provider-specific Vue presentation can update construction arguments through the same
+typed value model. The user does not have to edit the expression source for each
+change. See
+[Configuration Expression Language Direction](./configuration_expression_language_direction.md).
+
 ## Four global display modes
 
 A presentation receives exactly one of four global display modes:

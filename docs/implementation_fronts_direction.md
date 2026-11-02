@@ -123,7 +123,10 @@ The output contract of this front is an immutable **resolved port realization**.
 fronts should consume that object instead of each independently resolving size, pace,
 history, latency, or ordering.
 
-**Can start independently:** yes.
+**Can start independently:** yes. The parser, metadata, value model, stable reference
+representation, and scope-local resolver can land without Front 10 or Front 12. The
+canonical node-ID spelling must agree with Front 10. If a typed reference needs a live
+handle across `BuilderSession` objects, that materialization step depends on Front 12.
 
 **Important consumers:** fronts 2, 3, 4, 6, 7, and 8.
 
@@ -2105,30 +2108,29 @@ and appends it to its ordered accepted chain. The false start that proposed two
 **Primary ownership:** parse persisted/project-authored configuration source into owned
 typed argument values without accepting arbitrary C++ execution.
 
-The persisted syntax should remain C++-like because it needs natural typed literals,
-aggregate construction, and nested initialization lists, but the accepted language is
-intentionally much smaller than C++. This front owns the grammar, parser, type checking,
-and evaluation model.
+The source is a type-directed argument list. The registered configuration signature
+supplies the expected types. The language supports scalar values, arithmetic, pure
+allowlisted functions, aggregates, registered containers, enum values, and semantic
+references to existing project nodes. It does not support statements, declarations,
+mutation, loops, arbitrary calls, or general C++ execution.
 
-Required language capabilities include at least:
+Enum values are bare identifiers. The expected enum type controls lookup. The Clang
+package-introspection path must emit enum and aggregate metadata for package-defined
+configuration types. The parser must not parse arbitrary C++ headers.
 
-- scalar/string/enum literals as required by registered configuration signatures;
-- nested braced initialization lists and aggregate/value construction;
-- lists/arrays and other registered container/value structures as construction
-  arguments;
-- ordinary numerical arithmetic such as `+`, `-`, `*`, `/`, unary operations, and a
-  small allow-listed set of pure mathematical functions;
-- a small framework-provided reference/query vocabulary, potentially including forms
-  such as `ref(user_authored_node_id)` and
-  `select(virtual_node_name)[idx]...`;
-- no arbitrary statements, mutation, loops, allocation APIs, filesystem/network
-  access, arbitrary function calls, lambdas, templates, or general C++ execution;
-- deterministic evaluation with no correctness dependence on how often an expression
-  is evaluated or cached.
+A stable project-node reference starts with a durable node-ID literal such as
+`&550e8400-e29b-41d4-a716-446655440000`. Three postfix selectors have distinct roles:
 
-Exact grammar and spelling of the predefined functions are owned by this team. The
-important contract is a deliberately restricted, auditable expression language rather
-than handing arbitrary persisted source to Clang.
+- `.name` maps to `ProjectVirtualNodeSelector` and searches only the direct virtual
+  nodes in the current subject scope.
+- `[n]` maps to `ProjectVirtualMemberSelector` and selects concrete virtual member
+  `n`.
+- `#name` maps to `ProjectTiledChildSelector` and selects a named tiled child.
+
+`ProjectVirtualNodeSelector` must not search descendant subgraphs. A selected virtual
+node supplies the semantic route into its backing subgraph. `ProjectSubgraphSelector`
+is not part of the intended semantic path. Configuration references and
+`ProjectNodePortMatcher` must use one shared resolver with these rules.
 
 The evaluator must use the registered configuration signature/type information to
 produce the same owned typed argument tuples already consumed by `NodeInstances`.
@@ -2146,9 +2148,16 @@ values so module-node automation can evolve a dynamic set of construction argume
 This front should expose a stable parsed/value representation that fronts 10 and 13 can
 use for persistence and semantic replacement without duplicating parsers.
 
+Project-node references separate parsed identity, project-state resolution, typed
+materialization, and configured-node ownership. A cache keyed only by source and
+definition version cannot reuse project-dependent resolution. If live reference
+materialization crosses `BuilderSession` boundaries, that part depends on Front 12 and
+must not use an unsafe retained graph handle.
+
 **Can start independently:** yes.
 
 Detailed direction:
+[Configuration Expression Language Direction](./configuration_expression_language_direction.md),
 [Node Definitions And Instances Direction](./node_definitions_and_instances_direction.md),
 [Project Graph Application Architecture](./project_graph_application_architecture.md),
 and [Project File Serialization Direction](./project_file_serialization_direction.md).
@@ -2220,6 +2229,11 @@ This front owns:
 
 This front remains deliberately gated until GraphJit plus the two executor modules have become the
 normal path and the current builder/configuration path has been profiled.
+
+Front 9 must determine whether a project-node construction argument needs a live graph
+handle across `BuilderSession` objects. If it does, this front owns the safe same-session
+materialization path. Front 9 must retain the stable semantic reference until this path
+exists.
 
 ## Front 13: source introspection and semantic node interaction
 

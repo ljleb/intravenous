@@ -315,7 +315,7 @@ Project-authored configuration arguments are persisted initially as one restrict
 C++-like argument-list source string supplied by the UI, for example:
 
 ```cpp
-OscillatorConfig{.frequency = 440.0f}, 0.25f
+{.frequency = 440}, 0.25
 ```
 
 Do **not** split this string on commas in application code. The restricted grammar must
@@ -323,13 +323,20 @@ support nested braced initialization lists, registered aggregate/container value
 other admitted expressions containing commas. A dedicated parser/evaluator handles the
 whole argument list and type-checks it against the registered configuration signature.
 
-This language is intentionally not general C++. It may provide scalar/string/enum
-literals, numeric arithmetic, a small allow-listed set of pure `cmath`-like functions,
-and framework-provided reference/query forms such as
-`ref(user_authored_node_id)` or `select(virtual_node_name)[idx]...`. It does not admit
-arbitrary statements, loops, mutation, lambdas, templates, allocation, arbitrary
-function calls, filesystem/network access, or other general program execution. Exact
-syntax is owned by the configuration-expression implementation front.
+This language is intentionally not general C++. The registered signature supplies the
+expected types for literals, aggregates, registered containers, and bare enum values.
+The language also supports stable project-node ID literals and semantic node paths.
+
+For example, `&550e8400-e29b-41d4-a716-446655440000.voices[2]#left` starts at one
+authored project node. It then applies `ProjectVirtualNodeSelector`,
+`ProjectVirtualMemberSelector`, and `ProjectTiledChildSelector`. A virtual-node selector
+searches only the direct virtual nodes in the current subject scope. It does not search
+descendant subgraphs. The complete grammar is in
+[Configuration Expression Language Direction](./configuration_expression_language_direction.md).
+
+The language does not admit statements, declarations, loops, mutation, lambdas,
+templates, allocation, arbitrary calls, file-system access, network access, or other
+general program execution.
 
 Provider-generated typed helpers can materialize/own values of the demanded C++ types
 and invoke the existing erased configuration ABI. That preserves type-safe provider
@@ -349,11 +356,12 @@ hash
 Those operations are generated where the real C++ types are known. Do not use
 `memcmp` as semantic argument equality.
 
-The restricted source string can key the configuration-expression parse/evaluation cache. The
-semantic node-instance cache should use provider version plus typed argument
-values where equality/hash support is available. If an argument type cannot
-provide safe value comparison, sharing may be disabled for that invocation;
-re-evaluating the definition is correct.
+The restricted source string can key syntax and type analysis. It cannot by itself key
+project-node reference resolution. That result also depends on the project revision and
+the referenced semantic identities. The semantic node-instance cache uses the provider
+version plus typed argument values where equality and hash support is available. If an
+argument type cannot provide safe value comparison, the invocation can run without
+cache sharing.
 
 Configuration expressions are declarative configuration, not a side-effect
 execution API. Equivalent invocations may share one cached configured result,
@@ -456,16 +464,20 @@ builder-local `NodeRef`s without introducing a parallel generic port-address voc
 A matcher is set-valued. It selects a set of matching node ports through:
 
 - one top-level external node-instance id;
-- an arbitrary recursive node-path predicate;
+- an ordered semantic node path;
 - one port name/port matcher;
 - an optional concrete port-channel selector.
 
-The recursive path must preserve and navigate distinctions between:
+The semantic path must preserve and navigate distinctions between:
 
-- virtual-node identity;
+- direct virtual-node identity in the current subject scope;
 - ordered direct members under a virtual node;
-- tiled node children selected by channel/member identity; and
-- nested subgraph scopes.
+- named tiled children.
+
+Selecting a virtual node also makes its backing subgraph the subject for the next
+virtual-node selector. The path does not use `ProjectSubgraphSelector` to select a
+subgraph by structural kind and index. Each addressable subgraph must have a backing
+virtual node.
 
 Selecting a tiled child and selecting a channel of a port are different
 operations and must remain different in the representation.
@@ -483,27 +495,29 @@ Unresolved matchers remain desired connection state. If a node disappears on
 reload, its connection must become dangling rather than being silently deleted
 or retargeted. It may resolve again if the same stable identity/path returns.
 
-## Recursive graph identity requirements
+## Scoped graph identity requirements
 
-Arbitrary recursive child navigation is required, not optional.
+Explicit nested child navigation is required, not optional.
 
-Current virtual-node import behavior that flattens child virtual nodes by
-identity is insufficient. Builder/configured-graph state must preserve a
-hierarchical scope tree so paths such as the conceptual form:
+Builder/configured-graph state must preserve a hierarchical scope tree. A
+`ProjectVirtualNodeSelector` inspects only the direct virtual nodes in its current
+scope. Paths cross scopes only through selected virtual nodes that back addressable
+subgraphs. For example:
 
 ```text
-<instance-id>.virtual-a.virtual-b.<member-4>.<tile-left>.virtual-c
+&<instance-id>.virtual-a.virtual-b[4]#left.virtual-c
 ```
 
-remain meaningful after embedding.
+This path remains meaningful after embedding without exposing a structural subgraph
+kind or index.
 
 Ordered direct-member position under a virtual node is stable external identity
 once it is persisted in project matchers. Reload/reconfiguration must therefore
 preserve semantic member ordering for surviving members.
 
 Tiled nodes must preserve child-node structure in `GraphBuilder` and
-`ConfiguredGraph`. A tile child selector identifies a child node. It is not the
-same as selecting channel N of a matched sample port.
+`ConfiguredGraph`. `ProjectTiledChildSelector` identifies a child node by semantic
+name. It is not the same as selecting channel N of a matched sample port.
 
 ## `GraphJit`
 
@@ -945,15 +959,17 @@ The implementation checkpoints now stand as follows:
    provider-generated typed owned argument operations, one-snapshot recursive
    configuration, batched diagnostics, and reusable frozen-graph value caching.
    Cache invalidation is deliberately whole-snapshot for now.
-4. **Pending independent NodeInstances checkpoint:** parse/type-check/evaluate persisted
-   restricted configuration argument-list source into owned typed argument tuples plus
-   the generated operations needed by the existing `NodeInstances` value-level cache path.
+4. **Pending Front 9 checkpoint:** parse, type-check, and evaluate persisted restricted
+   configuration source. Produce structured typed values and generated operations for
+   the existing `NodeInstances` cache path. Resolve stable project-node references with
+   the shared scope-local semantic path resolver.
 5. **Landed:** `ProjectGraph` is the root-build transaction coordinator without
    duplicating the desired instance/connection sets.
-6. **Landed (semantic connection core):** `GraphConnections` owns desired
-   cross-node connection intent, resolves recursive structured
-   `ProjectNodePortMatcher`s against the complete placement map, applies
-   sample/event connections, and preserves dangling matchers with diagnostics.
+6. **Landed first semantic connection core, with a Front 9 revision pending:**
+   `GraphConnections` owns desired cross-node connection intent, applies sample/event
+   connections, and preserves dangling matchers with diagnostics. Its current resolver
+   searches descendant virtual nodes and accepts `ProjectSubgraphSelector`. Front 9
+   must replace that behavior with the shared scope-local semantic path resolver.
    Structured persistence and JSON-RPC adapters remain follow-up transport work.
 7. **Landed, with a planned storage split (fixed state + existing
    `BackgroundEvaluationPlan` foundation):** the current implementation still

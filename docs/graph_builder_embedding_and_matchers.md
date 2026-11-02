@@ -1,9 +1,10 @@
 # GraphBuilder Embedding, Hierarchy, And Project Port Matchers
 
-_Status: direct frozen-graph embedding, explicit handle translation, and the
-first recursive `ProjectNodePortMatcher`/`GraphConnections` semantic layer are
-implemented. Structured persistence/wire adapters and richer compound-path
-coverage remain follow-up work._
+_Status: direct frozen-graph embedding and explicit handle translation are
+implemented. The first `ProjectNodePortMatcher` resolver is also implemented, but its
+descendant search, numeric tiled-child selector, and `ProjectSubgraphSelector` do not
+match the revised Front 9 design. Front 9 must replace those parts. Structured
+persistence and wire adapters remain follow-up work._
 
 This document supplements [graph_builder.md](./historical/graph_builder.md),
 [virtual_nodes_channel_aware_graph_direction.md](./historical/virtual_nodes_channel_aware_graph_direction.md),
@@ -34,12 +35,17 @@ coalesce those declarations back into one root-scope virtual node. Nested
 subgraph bundles and tiled child bundles continue to translate through the
 node-bundle mapping.
 
-`GraphConnections` now consumes these preserved identities through structured
-project matchers. The current path vocabulary has separate selectors for virtual
-node identity, ordered virtual members, tiled children, and nested subgraph
-scopes; the port matcher separately selects by name/index and optional sample
-channel. Matchers are resolved against a frozen view of the complete freshly
-embedded root before project connections are applied.
+`GraphConnections` now consumes these preserved identities through structured project
+matchers. The current records separate virtual nodes, virtual members, tiled children,
+and structural subgraphs. The current resolver searches descendant virtual nodes and
+uses numeric tiled children. These behaviors are implementation facts, not the intended
+semantic path.
+
+The intended path uses scope-local `ProjectVirtualNodeSelector`, indexed
+`ProjectVirtualMemberSelector`, and named `ProjectTiledChildSelector` records. A selected
+virtual node supplies the route into its backing subgraph. The semantic path does not
+use `ProjectSubgraphSelector`. The port matcher remains separate and selects a port plus
+an optional sample channel.
 
 The remaining work in this document is persistence/wire encoding for those
 structured matchers plus richer compound-path/adversarial coverage as graph
@@ -99,20 +105,23 @@ The exact representation may use compact offsets where the mapping is truly
 contiguous, but callers should consume an explicit translation API rather than
 reconstructing offsets ad hoc.
 
-## Preserve hierarchy instead of flattening virtual nodes
+## Preserve scope-local virtual-node identity
 
-Arbitrary recursive child navigation is required by persistent project
-connections.
+Explicit nested child navigation is required by persistent project connections and
+configuration references.
 
 Current behavior that imports child virtual nodes into one flattened parent
 identity space is insufficient. A virtual identity named `filter` inside two
 different child scopes must remain distinguishable.
 
-`GraphBuilder` and `ConfiguredGraph` therefore need an explicit nested scope
-model. The representation can evolve, but it must preserve the invariant:
+`GraphBuilder` and `ConfiguredGraph` therefore need an explicit nested scope model. The
+representation can evolve, but it must preserve these invariants:
 
 > Virtual-node identity is resolved relative to a graph/subgraph scope, and
 > embedding preserves the complete scope tree.
+
+> `ProjectVirtualNodeSelector` examines only direct virtual nodes in the current subject
+> scope. It does not search descendant scopes.
 
 A conceptual structure is:
 
@@ -147,18 +156,17 @@ infer it from port channel counts or an ad-hoc side table.
 
 A project path needs two different selectors:
 
-1. **tile child selector** — chooses a tiled child node, preferably through the
-   same channel/member identity vocabulary already used by typed tiled
-   `NodeRef` selection;
-2. **port channel selector** — chooses one concrete channel of a sample port on
-   the node(s) matched by the path.
+1. A `ProjectTiledChildSelector` chooses a tiled child by a stable semantic name such as
+   `left`, `right`, `middle`, or `side`.
+2. A port-channel selector chooses one concrete channel of a sample port on the nodes
+   that the path matched.
 
 Those operations are not interchangeable.
 
 For example, these have different meaning:
 
 ```text
-... / tile(left) / port "main" / channel 0
+...#left / port "main" / channel 0
 ```
 
 and:
@@ -187,18 +195,21 @@ port matcher
 The concrete struct may further separate an optional port-channel selector if
 that improves type safety.
 
-The node path is an ordered sequence of structural selectors. It must be able
-to express arbitrary alternation between:
+The node path is an ordered sequence of semantic selectors. It contains:
 
-- virtual-node selection;
-- ordered direct-member selection;
-- tiled-child/channel-member selection; and
-- descent through nested subgraph scopes.
+- Scope-local `ProjectVirtualNodeSelector` records.
+- Indexed `ProjectVirtualMemberSelector` records.
+- Named `ProjectTiledChildSelector` records.
+
+Each addressable subgraph has a backing virtual node. Selecting that virtual node makes
+its subgraph the subject of the next selector. The semantic path does not select a
+subgraph by its structural kind and index, so it does not contain
+`ProjectSubgraphSelector`.
 
 A serialized debug/UI spelling may resemble:
 
 ```text
-<uuid>.virtual-a.virtual-b.4.<tile-left>.virtual-c:main:0
+&<uuid>.virtual-a.virtual-b[4]#left.virtual-c:main:0
 ```
 
 but project state should use structured fields rather than making one string the
@@ -208,9 +219,9 @@ normative parser/ABI.
 
 `ProjectNodePortMatcher` does not denote exactly one concrete channel.
 
-Each path step transforms a set of candidate nodes/scopes. A virtual node may
-contain several direct members, and later steps apply independently to every
-surviving candidate.
+Each path step transforms a set of candidate nodes and scopes. A virtual node can
+contain several direct members. Later steps apply to every surviving candidate. A
+virtual-node step searches only direct virtual nodes in each candidate scope.
 
 Conceptually:
 
@@ -259,7 +270,7 @@ that canonical connection intent.
 It then:
 
 1. consumes the current requested connection batch for this transaction;
-2. resolves every matcher recursively against that complete embedding state;
+2. resolves every ordered semantic path against that complete embedding state;
 3. records unresolved diagnostics without deleting desired connections;
 4. applies every resolvable cross-node sample/event connection to the same root
    builder;
@@ -280,9 +291,9 @@ continue to prove at least:
    preserving its local identities;
 3. the returned translation maps resolve every preserved local object needed by
    project paths;
-4. nested virtual-node scopes survive arbitrary recursive embedding;
+4. nested virtual-node scopes survive embedding and remain separate namespaces;
 5. direct-member order is preserved;
 6. tiled children remain structurally identifiable after embedding;
-7. paths can navigate virtual -> member -> tile -> child scope -> virtual
-   repeatedly;
+7. paths can navigate virtual -> member -> named tile -> virtual repeatedly without a
+   structural `ProjectSubgraphSelector`;
 8. port-channel selection remains distinct from tile-child selection.

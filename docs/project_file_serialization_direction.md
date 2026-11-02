@@ -46,7 +46,7 @@ The initial generic node-configuration persistence format stores one restricted
 C++-like argument-list source string verbatim, for example:
 
 ```text
-OscillatorConfig{.frequency = 440.0f}, 0.25f
+{.frequency = 440}, 0.25
 ```
 
 Do not parse or normalize it by splitting on commas. The restricted grammar may contain
@@ -54,10 +54,19 @@ nested initialization lists, registered containers/aggregates, and other admitte
 expressions with commas. `NodeInstances` later asks the dedicated configuration parser
 to parse/type-check/evaluate it against the registered configuration signature.
 
-The persisted language is deliberately not arbitrary C++. It may include numeric
-operators, an allow-listed set of pure mathematical functions, and framework reference
-forms such as `ref(...)` / `select(...)[...]`, but not statements, mutation, loops,
-lambdas, templates, arbitrary function calls, or general side-effecting execution.
+The registered configuration signature supplies the expected argument types. The
+source can omit redundant aggregate type names, enum type names, and numeric suffixes
+when those types resolve the value.
+
+The persisted language is deliberately not arbitrary C++. It includes numeric
+operators, an allowlist of pure mathematical functions, aggregates, registered
+containers, bare enum values, and stable project-node references. A reference begins
+with a durable node-ID literal such as `&550e8400-e29b-41d4-a716-446655440000`. It can
+use `.name`, `[n]`, and `#name` semantic selectors. The complete language is in
+[Configuration Expression Language Direction](./configuration_expression_language_direction.md).
+
+The language does not include statements, declarations, mutation, loops, lambdas,
+templates, arbitrary calls, or general side-effecting execution.
 
 A future structured UI may generate this string from forms and controls, but the stored
 semantic request can remain the same.
@@ -70,12 +79,14 @@ a dotted debug string the canonical representation.
 A `ProjectNodePortMatcher` contains conceptually:
 
 - top-level stable project node-instance id;
-- recursive node-path matcher;
+- ordered semantic node path;
 - port matcher/name;
 - optional concrete port-channel selector.
 
-The node path must preserve selectors for nested virtual nodes, stable ordered
-direct members, tiled node children, and recursive subgraph scopes.
+The node path uses `ProjectVirtualNodeSelector`, `ProjectVirtualMemberSelector`, and
+`ProjectTiledChildSelector`. Virtual-node lookup is local to the current subject scope.
+A selected virtual node provides the route into its backing subgraph.
+`ProjectSubgraphSelector` is not part of the intended persisted semantic path.
 
 Tiled child selection is a node-path operation. Port-channel selection is a
 port operation. They must remain distinct in persistence.

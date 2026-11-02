@@ -149,7 +149,7 @@ argument-list source string, not an app-defined typed JSON schema.
 For example:
 
 ```cpp
-FilterConfig{.cutoff = 1800.0f, .q = 0.7f}, Mode::stereo
+{.cutoff = 1800, .q = 0.7}, stereo
 ```
 
 The application must not split this string on commas. The dedicated configuration
@@ -157,14 +157,21 @@ parser handles nested initialization lists and other syntax admitted by the rest
 grammar, then type-checks/evaluates those values against the demanded registered
 configuration signature.
 
-The accepted language is intentionally much smaller than C++. It should support typed
-literals, nested braced initialization/registered aggregates and containers, ordinary
-numeric arithmetic, an allow-listed set of pure mathematical functions, and a small
-framework query/reference vocabulary. Candidate framework forms include
-`ref(user_authored_node_id)` and `select(virtual_node_name)[idx]...`; exact grammar and
-spelling remain implementation details of that front. Statements, mutation, arbitrary
-function calls, loops, lambdas, templates, allocation APIs, filesystem/network access,
-and general C++ execution are outside the contract.
+The accepted language is intentionally much smaller than C++. The registered
+configuration signature supplies each expected type. The source can therefore omit
+redundant aggregate type names, enum type names, and numeric suffixes where the target
+type resolves them.
+
+The language supports literals, nested aggregates, registered containers, numeric
+arithmetic, and an allowlist of pure mathematical functions. It also supports stable
+project-node references such as `&550e8400-e29b-41d4-a716-446655440000` and the semantic
+postfix selectors `.name`, `[n]`, and `#name`. The complete grammar and selector rules
+are in
+[Configuration Expression Language Direction](./configuration_expression_language_direction.md).
+
+Statements, declarations, mutation, arbitrary calls, loops, lambdas, templates,
+allocation APIs, file-system access, network access, and general C++ execution are
+outside the contract.
 
 A future UI may generate the same restricted argument-list source from dropdowns,
 numeric fields, text fields, and other structured controls. That UI improvement does
@@ -195,17 +202,19 @@ existing erased configuration interface. Any provider code/data object backing
 retained pointers must stay alive as long as the configured graph that can reference
 it. The parser/evaluator itself does not need to compile arbitrary user-authored C++.
 
-## Two caches, two keys
+## Three stages, three keys
 
-There are two distinct reusable products:
+There are three distinct reusable products or project-dependent results:
 
-1. restricted expression parsing/evaluation: `(definition version, argument-list source)` ->
-   parsed/typed values plus an owned typed argument tuple and generated operations;
-2. node instance configuration: `(definition version, typed argument values)` ->
+1. Restricted syntax and type analysis: `(definition version, argument-list source)` ->
+   parsed structured values and generated operations.
+2. Project-dependent semantic reference resolution: `(parsed expression, project
+   state and dependencies)` -> typed reference values.
+3. Node instance configuration: `(definition version, typed argument values)` ->
    cached `NodeInstance`.
 
-Nested module calls start at step 2 because their arguments are already typed
-C++ values.
+Nested module calls with already typed C++ values skip steps 1 and 2. They enter the
+configuration cache at step 3.
 
 Value-sharing is an optimization. When a safe equality/hash operation cannot
 be supplied for an argument tuple, `NodeInstances` may simply reconfigure that

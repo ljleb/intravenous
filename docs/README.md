@@ -15,6 +15,7 @@ The primary application-architecture entry points are:
 - [Project Graph Application Architecture](./project_graph_application_architecture.md)
 - [Package Pipeline Application Architecture](./package_pipeline_architecture.md)
 - [Node Definitions And Instances Direction](./node_definitions_and_instances_direction.md)
+- [Configuration Expression Language Direction](./configuration_expression_language_direction.md)
 - [GraphBuilder Embedding, Hierarchy, And Project Port Matchers](./graph_builder_embedding_and_matchers.md)
 - [Scoped GraphBuilder And SubgraphClosure Direction](./scoped_graph_builder_and_subgraph_closure_direction.md)
 - [Node Interaction And Presentation Communication Direction](./node_interaction_and_presentation_communication_direction.md)

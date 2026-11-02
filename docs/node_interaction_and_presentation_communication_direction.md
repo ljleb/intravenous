@@ -254,6 +254,8 @@ first-class view of the predecessor's typed/structured configuration values so a
 handler can express "change these arguments, preserve the rest". The same value model
 must handle nested initialization-list/container arguments used by module automation.
 The exact replacement/update spelling remains provisional.
+Front 9 owns this structured configuration value model. See
+[Configuration Expression Language Direction](./configuration_expression_language_direction.md).
 
 ## Event types are ordinary reusable C++ types
 
