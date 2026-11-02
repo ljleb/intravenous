@@ -132,6 +132,7 @@ std::vector<ProjectCommand> ProjectPersistenceBuilder::build() const
                 {"package_root", relativize_path(instance.package_root)},
                 {"display_name", display_name != instance.definition_id
                     ? Json(display_name) : Json(nullptr)},
+                {"configuration_source", instance.configuration_source},
             },
         });
     }

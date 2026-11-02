@@ -24,6 +24,7 @@ struct GetVirtualNodesRequest { std::vector<std::string> node_ids{}; };
 struct CreateIvModuleInstanceRequest {
     std::string module_id{};
     std::optional<std::string> display_name{};
+    std::string configuration_source{};
 };
 struct GetIvPackageDefinitionsRequest {};
 struct CreateIvPackageRequest { std::string name{}; };
@@ -34,6 +35,7 @@ struct DeleteIvModuleInstanceRequest { std::string instance_id{}; };
 struct UpdateIvModuleInstance {
     std::string instance_id{};
     std::optional<std::string> display_name{};
+    std::optional<std::string> configuration_source{};
 };
 struct UpdateIvModuleInstancesRequest {
     std::vector<UpdateIvModuleInstance> updates{};

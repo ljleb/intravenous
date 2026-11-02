@@ -222,6 +222,7 @@ TEST(SocketRpcNotificationBridge, BoundServerForwardsIvModuleInstancesUpdated)
                 .instance_id = "instance:1",
                 .definition_id = "/tmp/module-a",
                 .package_root = "/tmp/module-a",
+                .configuration_source = "{.gain = 0.5}",
                 .realized = true,
                 .module_id = "module.a",
             },
@@ -240,6 +241,9 @@ TEST(SocketRpcNotificationBridge, BoundServerForwardsIvModuleInstancesUpdated)
     ASSERT_EQ(json["params"]["instances"].size(), 2u);
     EXPECT_EQ(json["params"]["instances"][0]["instanceId"], "instance:1");
     EXPECT_EQ(json["params"]["instances"][0]["moduleId"], "module.a");
+    EXPECT_EQ(
+        json["params"]["instances"][0]["configurationSource"],
+        "{.gain = 0.5}");
     EXPECT_EQ(json["params"]["instances"][1]["realized"], false);
 
 }

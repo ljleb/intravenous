@@ -45,7 +45,7 @@ struct SerializedConfiguredGraph {
 namespace iv::binary_wire_details {
 
 inline constexpr std::uint32_t archive_magic = 0x49564147; // IVAG
-inline constexpr std::uint32_t archive_version = 10;
+inline constexpr std::uint32_t archive_version = 11;
 
 class Writer {
 public:
@@ -898,6 +898,7 @@ inline SerializedConfiguredGraph serialize_binary_configured_graph(
             result.node_configs.push_back(std::move(config));
         } else if (view.kind == ConfiguredNodeBundleKind::tiled) {
             bundles.list(view.tiled_members, [&](std::size_t value) { bundles.size(value); });
+            write_enum(bundles, view.tiled_channel_type);
             bundles.string(view.type_identity ? *view.type_identity : std::string{});
             if (!view.ports) throw std::runtime_error("tiled configured node has no ports");
             write_ports(bundles, *view.ports);
@@ -1078,6 +1079,7 @@ inline ConfiguredGraph deserialize_binary_configured_graph(
             }
         } else if (record.kind == ConfiguredNodeBundleKind::tiled) {
             record.tiled_members = read_list<NodeBundleHandle>(reader, [&] { return reader.size(); });
+            record.tiled_channel_type = read_enum<ChannelTypeId>(reader);
             record.type_identity = reader.string();
             record.ports = read_ports(reader);
         } else if (record.kind == ConfiguredNodeBundleKind::boundary) {

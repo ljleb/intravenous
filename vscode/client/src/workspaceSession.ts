@@ -75,6 +75,7 @@ type IvModuleInstanceInfo = {
     instanceId?: string;
     definitionId?: string;
     displayName?: string;
+    configurationSource?: string;
     moduleId?: string;
     packageRoot?: string;
     realized?: boolean;
@@ -341,6 +342,9 @@ export class WorkspaceSession {
                 displayName: typeof instance.displayName === "string" && instance.displayName.length > 0
                     ? instance.displayName
                     : instance.definitionId,
+                configurationSource: typeof instance.configurationSource === "string"
+                    ? instance.configurationSource
+                    : "",
                 moduleId: instance.moduleId,
                 packageRoot: instance.packageRoot,
                 realized: instance.realized === true,

@@ -399,11 +399,45 @@ struct ConfigPointerMetadata {
     std::vector<std::size_t> byte_offsets{};
 };
 
+struct ConfigurationSchemaMetadata;
+
+struct ConfigurationFieldMetadata {
+    std::string name;
+    std::size_t bit_offset = 0;
+    std::string assign_symbol;
+    std::unique_ptr<ConfigurationSchemaMetadata> type;
+};
+
+struct ConfigurationEnumeratorMetadata {
+    std::string name;
+    std::int64_t signed_value = 0;
+    std::uint64_t unsigned_value = 0;
+};
+
+struct ConfigurationSchemaMetadata {
+    std::string kind;
+    std::string display_name;
+    std::size_t size_bits = 0;
+    std::size_t alignment_bits = 0;
+    bool integer_is_signed = false;
+    std::size_t integer_bit_width = 0;
+    std::string construct_scalar_symbol;
+    std::string default_construct_symbol;
+    std::string destroy_symbol;
+    std::string element_assign_symbol;
+    std::string append_element_symbol;
+    std::size_t fixed_element_count = 0;
+    std::vector<ConfigurationFieldMetadata> fields;
+    std::vector<ConfigurationEnumeratorMetadata> enumerators;
+    std::unique_ptr<ConfigurationSchemaMetadata> element_type;
+};
+
 struct ConfigurationTypeMetadata {
     std::string symbol;
     std::string nominal_id;
     std::string definition_fingerprint;
     std::string display_name;
+    ConfigurationSchemaMetadata expression_schema;
 };
 
 struct PackageDefinitionMetadata {
@@ -427,6 +461,147 @@ std::string read_file(std::filesystem::path const& path)
     std::ifstream stream(path, std::ios::binary);
     if (!stream) fail("cannot read metadata file '" + path.string() + "'");
     return {std::istreambuf_iterator<char>(stream), {}};
+}
+
+ConfigurationSchemaMetadata parse_configuration_schema(
+    json::Object const& object,
+    std::filesystem::path const& metadata_path)
+{
+    auto kind = object.getString("kind");
+    auto display_name = object.getString("display_name");
+    auto size_bits = object.getInteger("size_bits");
+    auto alignment_bits = object.getInteger("alignment_bits");
+    auto destroy_symbol = object.getString("destroy_symbol");
+    if (!kind || kind->empty() || !display_name || display_name->empty()
+        || !size_bits || !alignment_bits || !destroy_symbol) {
+        fail("incomplete configuration expression schema in '"
+             + metadata_path.string() + "'");
+    }
+    ConfigurationSchemaMetadata result;
+    result.kind = kind->str();
+    result.display_name = display_name->str();
+    result.size_bits = metadata_size(
+        *size_bits, metadata_path, "configuration schema size_bits");
+    result.alignment_bits = metadata_size(
+        *alignment_bits, metadata_path, "configuration schema alignment_bits");
+    result.destroy_symbol = destroy_symbol->str();
+    if (auto value = object.getBoolean("integer_is_signed"))
+        result.integer_is_signed = *value;
+    if (auto value = object.getInteger("integer_bit_width")) {
+        result.integer_bit_width = metadata_size(
+            *value, metadata_path, "configuration schema integer_bit_width");
+    }
+    if (auto value = object.getString("construct_scalar_symbol"))
+        result.construct_scalar_symbol = value->str();
+    if (auto value = object.getString("default_construct_symbol"))
+        result.default_construct_symbol = value->str();
+    if (auto value = object.getString("element_assign_symbol"))
+        result.element_assign_symbol = value->str();
+    if (auto value = object.getString("append_element_symbol"))
+        result.append_element_symbol = value->str();
+    if (auto value = object.getInteger("fixed_element_count")) {
+        result.fixed_element_count = metadata_size(
+            *value, metadata_path, "configuration schema fixed_element_count");
+    }
+    if (auto fields = object.getArray("fields")) {
+        for (auto const& field_value : *fields) {
+            auto const* field = field_value.getAsObject();
+            if (!field) fail("configuration schema field is not an object in '"
+                             + metadata_path.string() + "'");
+            auto name = field->getString("name");
+            auto bit_offset = field->getInteger("bit_offset");
+            auto assign_symbol = field->getString("assign_symbol");
+            auto const* type = field->getObject("type");
+            if (!name || name->empty() || !bit_offset || !assign_symbol || !type) {
+                fail("incomplete configuration schema field in '"
+                     + metadata_path.string() + "'");
+            }
+            result.fields.push_back(ConfigurationFieldMetadata{
+                .name = name->str(),
+                .bit_offset = metadata_size(
+                    *bit_offset, metadata_path, "configuration field bit_offset"),
+                .assign_symbol = assign_symbol->str(),
+                .type = std::make_unique<ConfigurationSchemaMetadata>(
+                    parse_configuration_schema(*type, metadata_path)),
+            });
+        }
+    }
+    if (auto enumerators = object.getArray("enumerators")) {
+        for (auto const& enumerator_value : *enumerators) {
+            auto const* enumerator = enumerator_value.getAsObject();
+            if (!enumerator) {
+                fail("configuration enumerator is not an object in '"
+                     + metadata_path.string() + "'");
+            }
+            auto name = enumerator->getString("name");
+            if (!name || name->empty()) {
+                fail("configuration enumerator has no name in '"
+                     + metadata_path.string() + "'");
+            }
+            ConfigurationEnumeratorMetadata item{.name = name->str()};
+            if (auto value = enumerator->getInteger("signed_value"))
+                item.signed_value = *value;
+            if (auto value = enumerator->getString("unsigned_value")) {
+                auto parsed = std::from_chars(
+                    value->begin(), value->end(), item.unsigned_value);
+                if (parsed.ec != std::errc{} || parsed.ptr != value->end()) {
+                    fail("configuration enumerator has an invalid unsigned value in '"
+                         + metadata_path.string() + "'");
+                }
+            }
+            result.enumerators.push_back(std::move(item));
+        }
+    }
+    if (auto const* element = object.getObject("element_type")) {
+        result.element_type = std::make_unique<ConfigurationSchemaMetadata>(
+            parse_configuration_schema(*element, metadata_path));
+    }
+    return result;
+}
+
+bool same_configuration_schema(
+    ConfigurationSchemaMetadata const& lhs,
+    ConfigurationSchemaMetadata const& rhs)
+{
+    if (lhs.kind != rhs.kind || lhs.display_name != rhs.display_name
+        || lhs.size_bits != rhs.size_bits
+        || lhs.alignment_bits != rhs.alignment_bits
+        || lhs.integer_is_signed != rhs.integer_is_signed
+        || lhs.integer_bit_width != rhs.integer_bit_width
+        || lhs.construct_scalar_symbol != rhs.construct_scalar_symbol
+        || lhs.default_construct_symbol != rhs.default_construct_symbol
+        || lhs.destroy_symbol != rhs.destroy_symbol
+        || lhs.element_assign_symbol != rhs.element_assign_symbol
+        || lhs.append_element_symbol != rhs.append_element_symbol
+        || lhs.fixed_element_count != rhs.fixed_element_count
+        || lhs.fields.size() != rhs.fields.size()
+        || lhs.enumerators.size() != rhs.enumerators.size()
+        || static_cast<bool>(lhs.element_type)
+            != static_cast<bool>(rhs.element_type)) {
+        return false;
+    }
+    if (lhs.element_type
+        && !same_configuration_schema(*lhs.element_type, *rhs.element_type)) {
+        return false;
+    }
+    for (std::size_t index = 0; index < lhs.fields.size(); ++index) {
+        auto const& a = lhs.fields[index];
+        auto const& b = rhs.fields[index];
+        if (a.name != b.name || a.bit_offset != b.bit_offset
+            || a.assign_symbol != b.assign_symbol || !a.type || !b.type
+            || !same_configuration_schema(*a.type, *b.type)) {
+            return false;
+        }
+    }
+    for (std::size_t index = 0; index < lhs.enumerators.size(); ++index) {
+        auto const& a = lhs.enumerators[index];
+        auto const& b = rhs.enumerators[index];
+        if (a.name != b.name || a.signed_value != b.signed_value
+            || a.unsigned_value != b.unsigned_value) {
+            return false;
+        }
+    }
+    return true;
 }
 
 CompilerMetadata load_metadata(std::filesystem::path const& directory)
@@ -471,9 +646,10 @@ CompilerMetadata load_metadata(std::filesystem::path const& directory)
             auto nominal_id = type->getString("nominal_id");
             auto fingerprint = type->getString("definition_fingerprint");
             auto display_name = type->getString("display_name");
+            auto* expression_schema = type->getObject("expression_schema");
             if (!symbol || symbol->empty() || !nominal_id || nominal_id->empty()
                 || !fingerprint || fingerprint->empty()
-                || !display_name || display_name->empty()) {
+                || !display_name || display_name->empty() || !expression_schema) {
                 fail("incomplete configuration-type metadata entry in '"
                      + entry.path().string() + "'");
             }
@@ -482,6 +658,8 @@ CompilerMetadata load_metadata(std::filesystem::path const& directory)
                 .nominal_id = nominal_id->str(),
                 .definition_fingerprint = fingerprint->str(),
                 .display_name = display_name->str(),
+                .expression_schema = parse_configuration_schema(
+                    *expression_schema, entry.path()),
             };
             auto const duplicate = std::find_if(
                 result.configuration_types.begin(),
@@ -494,7 +672,10 @@ CompilerMetadata load_metadata(std::filesystem::path const& directory)
             } else if (duplicate->nominal_id != metadata_type.nominal_id
                 || duplicate->definition_fingerprint
                     != metadata_type.definition_fingerprint
-                || duplicate->display_name != metadata_type.display_name) {
+                || duplicate->display_name != metadata_type.display_name
+                || !same_configuration_schema(
+                    duplicate->expression_schema,
+                    metadata_type.expression_schema)) {
                 fail("conflicting configuration-type metadata for LLVM symbol '"
                      + duplicate->symbol + "'");
             }
@@ -1039,6 +1220,194 @@ GlobalVariable* constant_bytes(
     return global;
 }
 
+class ConfigurationSchemaEmitter {
+public:
+    explicit ConfigurationSchemaEmitter(Module& module)
+        : module_(module), context_(module.getContext()),
+          pointer_type_(PointerType::getUnqual(context_)),
+          size_type_(IntegerType::get(
+              context_, module.getDataLayout().getPointerSizeInBits())),
+          byte_type_(Type::getInt8Ty(context_)),
+          int64_type_(Type::getInt64Ty(context_)),
+          field_type_(StructType::get(
+              pointer_type_, size_type_, size_type_, pointer_type_, pointer_type_)),
+          enumerator_type_(StructType::get(
+              pointer_type_, size_type_, int64_type_, int64_type_)),
+          schema_type_(StructType::get(
+              byte_type_, size_type_, size_type_, byte_type_, size_type_,
+              pointer_type_, size_type_, pointer_type_, size_type_,
+              pointer_type_, size_type_, pointer_type_, pointer_type_,
+              pointer_type_, pointer_type_, pointer_type_))
+    {
+        auto const& layout = module_.getDataLayout();
+        auto check = [&](Type* type, std::size_t expected, std::string_view name) {
+            auto size = layout.getTypeAllocSize(type);
+            if (size.isScalable() || size.getFixedValue() != expected)
+                fail(std::string(name) + " ABI does not match provider declarations");
+        };
+        check(field_type_, sizeof(iv::details::ConfigurationExpressionFieldSchema),
+            "configuration field schema");
+        check(enumerator_type_,
+            sizeof(iv::details::ConfigurationExpressionEnumeratorSchema),
+            "configuration enumerator schema");
+        check(schema_type_, sizeof(iv::details::ConfigurationExpressionTypeSchema),
+            "configuration type schema");
+    }
+
+    Constant* emit(ConfigurationSchemaMetadata const& metadata)
+    {
+        auto const index = next_index_++;
+        Constant* element = null_pointer();
+        if (metadata.element_type) element = emit(*metadata.element_type);
+
+        std::vector<Constant*> field_values;
+        field_values.reserve(metadata.fields.size());
+        for (auto const& field : metadata.fields) {
+            if (!field.type || field.bit_offset % 8 != 0)
+                fail("configuration aggregate field has an invalid byte layout");
+            auto name = make_string(field.name,
+                "schema." + std::to_string(index) + ".field_name");
+            field_values.push_back(ConstantStruct::get(field_type_, {
+                name.first,
+                name.second,
+                ConstantInt::get(size_type_, field.bit_offset / 8),
+                emit(*field.type),
+                function_pointer(field.assign_symbol, true),
+            }));
+        }
+        Constant* fields = null_pointer();
+        if (!field_values.empty()) {
+            auto* array_type = ArrayType::get(field_type_, field_values.size());
+            auto* storage = new GlobalVariable(
+                module_, array_type, true, GlobalValue::PrivateLinkage,
+                ConstantArray::get(array_type, field_values),
+                "iv.configuration_schema." + std::to_string(index) + ".fields");
+            storage->setUnnamedAddr(GlobalValue::UnnamedAddr::Global);
+            fields = ConstantExpr::getPointerCast(storage, pointer_type_);
+        }
+
+        std::vector<Constant*> enumerator_values;
+        enumerator_values.reserve(metadata.enumerators.size());
+        for (auto const& enumerator : metadata.enumerators) {
+            auto name = make_string(enumerator.name,
+                "schema." + std::to_string(index) + ".enumerator_name");
+            enumerator_values.push_back(ConstantStruct::get(enumerator_type_, {
+                name.first,
+                name.second,
+                ConstantInt::getSigned(int64_type_, enumerator.signed_value),
+                ConstantInt::get(int64_type_, enumerator.unsigned_value),
+            }));
+        }
+        Constant* enumerators = null_pointer();
+        if (!enumerator_values.empty()) {
+            auto* array_type = ArrayType::get(
+                enumerator_type_, enumerator_values.size());
+            auto* storage = new GlobalVariable(
+                module_, array_type, true, GlobalValue::PrivateLinkage,
+                ConstantArray::get(array_type, enumerator_values),
+                "iv.configuration_schema." + std::to_string(index)
+                    + ".enumerators");
+            storage->setUnnamedAddr(GlobalValue::UnnamedAddr::Global);
+            enumerators = ConstantExpr::getPointerCast(storage, pointer_type_);
+        }
+
+        if (metadata.size_bits % 8 != 0 || metadata.alignment_bits % 8 != 0)
+            fail("configuration expression type has a non-byte C++ layout");
+        auto* initializer = ConstantStruct::get(schema_type_, {
+            ConstantInt::get(byte_type_, kind(metadata.kind)),
+            ConstantInt::get(size_type_, metadata.size_bits / 8),
+            ConstantInt::get(size_type_, metadata.alignment_bits / 8),
+            ConstantInt::get(byte_type_, metadata.integer_is_signed),
+            ConstantInt::get(size_type_, metadata.integer_bit_width),
+            fields,
+            ConstantInt::get(size_type_, metadata.fields.size()),
+            enumerators,
+            ConstantInt::get(size_type_, metadata.enumerators.size()),
+            element,
+            ConstantInt::get(size_type_, metadata.fixed_element_count),
+            function_pointer(metadata.construct_scalar_symbol, false),
+            function_pointer(metadata.default_construct_symbol, false),
+            function_pointer(metadata.destroy_symbol, true),
+            function_pointer(metadata.element_assign_symbol, false),
+            function_pointer(metadata.append_element_symbol, false),
+        });
+        auto* global = new GlobalVariable(
+            module_, schema_type_, true, GlobalValue::PrivateLinkage,
+            initializer,
+            "iv.configuration_schema." + std::to_string(index));
+        global->setUnnamedAddr(GlobalValue::UnnamedAddr::Global);
+        return ConstantExpr::getPointerCast(global, pointer_type_);
+    }
+
+private:
+    Module& module_;
+    LLVMContext& context_;
+    PointerType* pointer_type_;
+    IntegerType* size_type_;
+    IntegerType* byte_type_;
+    IntegerType* int64_type_;
+    StructType* field_type_;
+    StructType* enumerator_type_;
+    StructType* schema_type_;
+    std::size_t next_index_ = 0;
+
+    Constant* null_pointer() const
+    {
+        return ConstantPointerNull::get(pointer_type_);
+    }
+
+    std::pair<Constant*, Constant*> make_string(
+        std::string_view value,
+        std::string name)
+    {
+        auto bytes = std::as_bytes(std::span(value.data(), value.size()));
+        auto* storage = constant_bytes(module_, std::move(name), bytes, 1);
+        return {
+            ConstantExpr::getPointerCast(storage, pointer_type_),
+            ConstantInt::get(size_type_, value.size()),
+        };
+    }
+
+    Constant* function_pointer(std::string const& symbol, bool required)
+    {
+        if (symbol.empty()) {
+            if (required) fail("configuration schema is missing a required callback");
+            return null_pointer();
+        }
+        auto* value = module_.getNamedValue(symbol);
+        auto* global = dyn_cast_or_null<GlobalValue>(value);
+        if (!global) {
+            fail("configuration schema callback '" + symbol
+                 + "' was not emitted by the provider compiler");
+        }
+        return ConstantExpr::getPointerCast(global, pointer_type_);
+    }
+
+    static unsigned kind(std::string_view value)
+    {
+        using Kind = iv::details::ConfigurationExpressionTypeKind;
+        if (value == "boolean") return static_cast<unsigned>(Kind::boolean);
+        if (value == "signed_integer")
+            return static_cast<unsigned>(Kind::signed_integer);
+        if (value == "unsigned_integer")
+            return static_cast<unsigned>(Kind::unsigned_integer);
+        if (value == "floating_point")
+            return static_cast<unsigned>(Kind::floating_point);
+        if (value == "string") return static_cast<unsigned>(Kind::string);
+        if (value == "converted_scalar")
+            return static_cast<unsigned>(Kind::converted_scalar);
+        if (value == "enumeration")
+            return static_cast<unsigned>(Kind::enumeration);
+        if (value == "aggregate") return static_cast<unsigned>(Kind::aggregate);
+        if (value == "sequence") return static_cast<unsigned>(Kind::sequence);
+        if (value == "node_reference")
+            return static_cast<unsigned>(Kind::node_reference);
+        if (value == "unsupported")
+            return static_cast<unsigned>(Kind::unsupported);
+        fail("unknown configuration expression schema kind '" + std::string(value) + "'");
+    }
+};
+
 void inject_configuration_type_identities(
     Module& module,
     CompilerMetadata const& metadata)
@@ -1052,7 +1421,8 @@ void inject_configuration_type_identities(
     // checked; two structurally identical LLVM struct types are not pointer
     // equal when one is named.
     auto* identity_abi_type = StructType::get(
-        pointer_type, size_type, pointer_type, size_type, pointer_type, size_type);
+        pointer_type, size_type, pointer_type, size_type, pointer_type, size_type,
+        pointer_type);
     auto const identity_size = module.getDataLayout().getTypeAllocSize(identity_abi_type);
     if (identity_size.isScalable()
         || identity_size.getFixedValue()
@@ -1073,6 +1443,7 @@ void inject_configuration_type_identities(
         }
     }
 
+    ConfigurationSchemaEmitter schema_emitter(module);
     for (std::size_t index = 0; index < metadata.configuration_types.size(); ++index) {
         auto const& metadata_type = metadata.configuration_types[index];
         auto* identity = module.getGlobalVariable(metadata_type.symbol, true);
@@ -1103,11 +1474,13 @@ void inject_configuration_type_identities(
         auto const fingerprint = make_string(
             metadata_type.definition_fingerprint, "fingerprint");
         auto const display = make_string(metadata_type.display_name, "display");
+        auto* schema = schema_emitter.emit(metadata_type.expression_schema);
         identity->setInitializer(ConstantStruct::get(
             identity_type,
             {nominal.first, nominal.second,
              fingerprint.first, fingerprint.second,
-             display.first, display.second}));
+             display.first, display.second,
+             schema}));
         identity->setConstant(true);
     }
 }

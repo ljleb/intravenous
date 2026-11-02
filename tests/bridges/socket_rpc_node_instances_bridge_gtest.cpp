@@ -322,6 +322,7 @@ TEST(SocketRpcNodeInstancesBridge, BoundUpdateRenamesInstance)
             .updates = {iv::UpdateIvModuleInstance{
                 .instance_id = created_instance_id,
                 .display_name = "Lead",
+                .configuration_source = " ",
             }},
         },
         update_builder);
@@ -331,5 +332,6 @@ TEST(SocketRpcNodeInstancesBridge, BoundUpdateRenamesInstance)
     auto const listed = instances.list_instances();
     ASSERT_EQ(listed.size(), 1u);
     EXPECT_EQ(listed.front().display_name, "Lead");
+    EXPECT_EQ(listed.front().configuration_source, " ");
 
 }

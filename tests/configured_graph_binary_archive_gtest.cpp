@@ -187,6 +187,29 @@ TEST(ConfiguredGraphBinaryArchive, RoundTripsNativeScalarsAndRejectsCorruption)
     EXPECT_THROW(fixture.decode(trailing), std::runtime_error);
 }
 
+TEST(ConfiguredGraphBinaryArchive, PreservesNamedTiledChildMetadata)
+{
+    using namespace iv;
+    using Pass = Sum<mono, SampleStreamLayout::planar, 1>;
+    GraphBuilder graph;
+    auto tiled = details::configure_concrete_tiled_node<Pass, stereo>(graph);
+    graph.outputs("main"_P = tiled);
+    auto archive = serialize_configured_graph(std::move(graph).finish());
+    std::array node_types{details::node_compiler_record<Pass>};
+    auto decoded = deserialize_configured_graph(
+        archive.bytes, node_types, archive.node_configs);
+
+    bool found = false;
+    decoded.node_bundles.for_each_configured_bundle(
+        [&](iv::ConfiguredNodeBundleView const& bundle) {
+            if (bundle.kind != ConfiguredNodeBundleKind::tiled) return;
+            found = true;
+            EXPECT_EQ(bundle.tiled_channel_type, ChannelTypeId::stereo);
+            ASSERT_EQ(bundle.tiled_members.size(), 2u);
+        });
+    EXPECT_TRUE(found);
+}
+
 TEST(ConfiguredGraphBinaryArchive, PreservesIntrinsicReplayMetadata)
 {
     using namespace iv;

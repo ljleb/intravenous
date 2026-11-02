@@ -149,7 +149,7 @@ TEST(SocketRpcRequestParser, ParsesProjectAutosaveRequests)
 TEST(SocketRpcRequestParser, ParsesCreateIvModuleInstanceRequest)
 {
     auto const parsed = iv::parse_socket_rpc_request(
-        R"({"jsonrpc":"2.0","id":26,"method":"ivModuleInstances.create","params":{"moduleId":"iv.test.mod","displayName":"Bass"}})");
+        R"({"jsonrpc":"2.0","id":26,"method":"ivModuleInstances.create","params":{"moduleId":"iv.test.mod","displayName":"Bass","configurationSource":"{.gain = 0.5}"}})");
 
     EXPECT_EQ(parsed.request_id, 26);
     auto const *request = std::get_if<iv::CreateIvModuleInstanceRequest>(&parsed.payload);
@@ -157,12 +157,13 @@ TEST(SocketRpcRequestParser, ParsesCreateIvModuleInstanceRequest)
     EXPECT_EQ(request->module_id, "iv.test.mod");
     ASSERT_TRUE(request->display_name.has_value());
     EXPECT_EQ(*request->display_name, "Bass");
+    EXPECT_EQ(request->configuration_source, "{.gain = 0.5}");
 }
 
 TEST(SocketRpcRequestParser, ParsesUpdateIvModuleInstancesRequest)
 {
     auto const parsed = iv::parse_socket_rpc_request(
-        R"({"jsonrpc":"2.0","id":27,"method":"ivModuleInstances.update","params":{"updates":[{"instanceId":"instance:1","displayName":"Lead"}]}})");
+        R"({"jsonrpc":"2.0","id":27,"method":"ivModuleInstances.update","params":{"updates":[{"instanceId":"instance:1","displayName":"Lead","configurationSource":"880, stereo"}]}})");
 
     EXPECT_EQ(parsed.request_id, 27);
     auto const *request = std::get_if<iv::UpdateIvModuleInstancesRequest>(&parsed.payload);
@@ -171,6 +172,19 @@ TEST(SocketRpcRequestParser, ParsesUpdateIvModuleInstancesRequest)
     EXPECT_EQ(request->updates.front().instance_id, "instance:1");
     ASSERT_TRUE(request->updates.front().display_name.has_value());
     EXPECT_EQ(*request->updates.front().display_name, "Lead");
+    ASSERT_TRUE(request->updates.front().configuration_source.has_value());
+    EXPECT_EQ(*request->updates.front().configuration_source, "880, stereo");
+}
+
+TEST(SocketRpcRequestParser, DefaultsMissingConfigurationSourceToEmpty)
+{
+    auto const parsed = iv::parse_socket_rpc_request(
+        R"({"jsonrpc":"2.0","id":35,"method":"ivModuleInstances.create","params":{"moduleId":"iv.test.mod"}})");
+
+    auto const* request = std::get_if<iv::CreateIvModuleInstanceRequest>(
+        &parsed.payload);
+    ASSERT_NE(request, nullptr);
+    EXPECT_TRUE(request->configuration_source.empty());
 }
 
 TEST(SocketRpcRequestParser, ParsesDeleteIvModuleInstanceRequest)

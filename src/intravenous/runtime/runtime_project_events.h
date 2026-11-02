@@ -42,6 +42,7 @@ struct ProjectCreateIvModuleInstanceRequest {
     std::string module_id {};
     std::optional<std::filesystem::path> package_root {};
     std::optional<std::string> display_name {};
+    std::string configuration_source {};
 };
 
 struct ProjectDeleteIvModuleInstanceRequest {
@@ -51,6 +52,7 @@ struct ProjectDeleteIvModuleInstanceRequest {
 struct ProjectUpdateIvModuleInstance {
     std::string instance_id {};
     std::optional<std::string> display_name {};
+    std::optional<std::string> configuration_source {};
 };
 
 struct ProjectUpdateIvModuleInstancesRequest {

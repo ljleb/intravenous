@@ -246,6 +246,8 @@ void ProjectPersistence::apply_command(ProjectCommand const &command)
                 .module_id = require_string(args, "module_id"),
                 .package_root = require_project_path(args, "package_root", workspace_root_),
                 .display_name = optional_nullable_string(args, "display_name"),
+                .configuration_source = optional_nullable_string(
+                    args, "configuration_source").value_or(std::string{}),
             },
             builder);
         (void)builder.build();
@@ -266,6 +268,8 @@ void ProjectPersistence::apply_command(ProjectCommand const &command)
             updates.push_back(ProjectUpdateIvModuleInstance{
                 .instance_id = require_string(update, "instance_id"),
                 .display_name = optional_nullable_string(update, "display_name"),
+                .configuration_source = optional_nullable_string(
+                    update, "configuration_source"),
             });
         }
         ProjectAckBuilder builder;

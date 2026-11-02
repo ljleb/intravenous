@@ -1,7 +1,9 @@
 # Configuration Expression Language Direction
 
-_Status: normative Front 9 design. The parser, type metadata, evaluator, reference
-resolver, and typed construction path are not implemented yet._
+_Status: normative Front 9 design and implementation status. Parsing, generated type
+metadata, ordinary typed-value construction, durable configuration source, and shared
+semantic path resolution are implemented. Live `NodeRef` materialization and its
+project-revision dependencies remain at the explicit Front 12 boundary._
 
 This document defines the restricted language for project-authored node configuration.
 The language constructs typed values and refers to existing project nodes. It does not
@@ -225,10 +227,10 @@ The shared resolver performs these operations:
 The configuration evaluator then makes sure that the result is valid for the expected
 construction-argument type.
 
-The current `GraphConnections::apply_path_selector()` behavior differs from this
-design. It searches descendant virtual-node records, uses a numeric
-`ProjectTiledChildSelector`, and accepts `ProjectSubgraphSelector`. Front 9 must replace
-or refactor that behavior instead of creating a second resolver with different rules.
+`GraphConnections` and configuration references now call
+`resolve_project_node_path()`. The previous descendant search, numeric tiled-child
+selector, and `ProjectSubgraphSelector` implementation is preserved in
+[Front 9 Status Before Implementation](./historical/front_9_status_before_implementation_2026-11-02.md).
 
 ## Structured values and updates
 
@@ -309,20 +311,48 @@ Front 9 tests must cover these cases:
 - Unknown project IDs, member indices, and tile names.
 - Rejection of a standalone `#name`.
 - Shared path results between configuration references and `GraphConnections`.
-- Project-dependent cache invalidation for resolved references.
+- Project-dependent cache invalidation for resolved references when Front 12 enables
+  live `NodeRef` materialization.
 
-## Open implementation details
+## Implemented decisions and remaining dependency
 
-The following details remain open:
+The implementation uses these concrete records and functions:
 
-- The canonical lexical format of a durable project node ID.
-- The ABI for configuration type metadata and typed construction.
-- The metadata representation for named tiled children.
-- The exact application of selectors to set-valued intermediate results.
-- The safe conversion of an authored-node reference into a construction argument
-  across builder scopes.
-- Project-dependent dependency tracking and cache invalidation.
-- The durable representation of future project-owned editable subgraphs.
+- `ConfigurationExpression` retains the parsed argument, aggregate, container, enum,
+  arithmetic, and `ConfigurationNodeReferenceExpression` structure.
+- `ConfigurationExpressionTypeSchema` is immutable package data. The Clang metadata
+  plugin describes each reachable type, and the package finalizer emits provider
+  callbacks for construction, destruction, field assignment, fixed-sequence indexed
+  assignment, and dynamic-container append. The app runtime does not derive a
+  `std::array` element address from an erased object layout.
+- A durable node ID uses lowercase canonical UUID text with the `8-4-4-4-12` hyphen
+  positions. The parser keeps the UUID and the three selector records; it never
+  retains a `NodeRef`.
+- `TiledNodeBundle::channel_type` preserves the channel type that supplied names such
+  as `left` and `right`. Configured-graph archive version 11 preserves that field.
+- `resolve_project_node_path()` resolves both configuration paths and
+  `ProjectNodePortMatcher::path`. Every selector applies to every current match, and
+  duplicate matches are removed. A virtual-node match retains only the
+  `VirtualNodeRecord::node_bundle_handles` indices that belong directly to the selected
+  scope, so `[n]` cannot enter a sibling subgraph through a shared record. A caller
+  that requires one node uses `require_single_project_node_path_match()`.
+- `NodeInstances` caches parsed source by definition ID, definition version, and exact
+  source. It evaluates ordinary values against the provider's current
+  `RegisteredSignature`, then sends the resulting typed arguments through the existing
+  configured-node cache.
 
-These details cannot reintroduce recursive virtual-node lookup, implicit global lookup,
-ambiguous indexing, or redundant type syntax.
+`ConfigurationExpressionTypeKind::node_reference` is recognized, but
+`evaluate_configuration_expression_list()` does not manufacture a live handle. The
+current `NodeInstances::configure_cached()` path opens an independent `BuilderSession`.
+A `NodeRef` resolved in the project root builder would therefore be invalid in that
+session. The evaluator reports this before provider invocation.
+
+Front 12 must add the same-`BuilderSession` construction path. That path must resolve
+the retained project ID and selectors against the current placement map, require the
+cardinality expected by the parameter type, and include the project revision and
+semantic dependencies in reuse decisions. Until then, there is no project-dependent
+resolution cache to invalidate.
+
+The durable representation of future project-owned editable subgraphs remains
+`ProjectGraph` work. It cannot reintroduce recursive virtual-node lookup, implicit
+global lookup, ambiguous indexing, or redundant type syntax.

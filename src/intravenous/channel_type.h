@@ -5,6 +5,7 @@
 #include <concepts>
 #include <cstdint>
 #include <optional>
+#include <span>
 #include <stdexcept>
 #include <string_view>
 #include <tuple>
@@ -81,6 +82,7 @@ namespace iv {
         ChannelTypeId id {};
         std::string_view wire_name {};
         std::size_t channel_count = 0;
+        std::span<std::string_view const> channel_names {};
     };
 
 // The registry intentionally has a small bounded channel arity.  Extending
@@ -174,6 +176,7 @@ namespace iv {
             .id = ChannelTypeId::name,                                   \
             .wire_name = wire,                                           \
             .channel_count = name::channel_count,                        \
+            .channel_names = name::channel_names,                        \
         },
         IV_CHANNEL_TYPES(IV_CHANNEL_TYPE_INFO)
 #undef IV_CHANNEL_TYPE_INFO

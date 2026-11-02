@@ -188,9 +188,13 @@ ParsedSocketRpcRequest parse_socket_rpc_request(std::string_view line)
             .node_ids = parse_string_array_param(params, "nodeIds")}};
     }
     if (method == "ivModuleInstances.create") {
+        auto configuration_source = parse_optional_nullable_string_param(
+            params, "configurationSource");
         return {.request_id = request_id, .payload = CreateIvModuleInstanceRequest{
             .module_id = parse_string_param(params, "moduleId"),
-            .display_name = parse_optional_nullable_string_param(params, "displayName")}};
+            .display_name = parse_optional_nullable_string_param(params, "displayName"),
+            .configuration_source = configuration_source.value_or(std::string{}),
+        }};
     }
     if (method == "ivPackages.list") {
         return {.request_id = request_id, .payload = GetIvPackageDefinitionsRequest{}};
@@ -223,7 +227,10 @@ ParsedSocketRpcRequest parse_socket_rpc_request(std::string_view line)
             }
             updates.push_back(UpdateIvModuleInstance{
                 .instance_id = parse_string_param(update, "instanceId"),
-                .display_name = parse_optional_nullable_string_param(update, "displayName")});
+                .display_name = parse_optional_nullable_string_param(update, "displayName"),
+                .configuration_source = parse_optional_nullable_string_param(
+                    update, "configurationSource"),
+            });
         }
         return {.request_id = request_id, .payload = UpdateIvModuleInstancesRequest{
             .updates = std::move(updates)}};

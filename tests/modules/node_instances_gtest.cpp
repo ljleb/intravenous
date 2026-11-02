@@ -331,3 +331,34 @@ TEST_F(NodeInstancesTest, RemoveLastPublishedInstancePublishesDeleteAndDropsRequ
     ASSERT_TRUE(witness.listed_instances.has_value());
     EXPECT_TRUE(witness.listed_instances->empty());
 }
+
+TEST_F(NodeInstancesTest, ConfigurationSourceUpdatePublishesTheNewDurableRequest)
+{
+    auto const workspace = iv::test_support::fresh_module_fixture_workspace(
+        "iv_module_instances_configuration_source_update");
+    auto const module_root = std::filesystem::weakly_canonical(workspace);
+    auto const instance_id = bridge_source.create_instance(
+        module_id,
+        module_root,
+        "instance:configured",
+        std::nullopt,
+        "440");
+    apply_module_definitions(bridge_source, iv::ModuleNodeDefinitionsChanged{
+        .created = {make_definition(module_root)},
+    });
+    witness.reset();
+
+    bridge_source.update_instances({iv::NodeInstances::Update{
+        .instance_id = instance_id,
+        .configuration_source = "880",
+    }});
+
+    ASSERT_TRUE(witness.instances_diff.has_value());
+    ASSERT_EQ(witness.instances_diff->updated.size(), 1u);
+    EXPECT_EQ(
+        witness.instances_diff->updated.front().configuration_source,
+        "880");
+    ASSERT_TRUE(witness.listed_instances.has_value());
+    ASSERT_EQ(witness.listed_instances->size(), 1u);
+    EXPECT_EQ(witness.listed_instances->front().configuration_source, "880");
+}

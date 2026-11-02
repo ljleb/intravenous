@@ -2,6 +2,7 @@
 
 #include <intravenous/graph/builder/state.h>
 #include <intravenous/graph/configured_graph.hpp>
+#include <intravenous/runtime/project_node_path_resolver.h>
 
 #include <algorithm>
 #include <cstddef>
@@ -9,193 +10,13 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <type_traits>
 #include <unordered_set>
 #include <utility>
 
 namespace iv {
 namespace {
-struct PathCursor {
-    enum class Kind { bundle, virtual_node } kind = Kind::bundle;
-    NodeBundleHandle bundle = 0;
-    VirtualNodeHandle virtual_node = 0;
-    std::vector<VirtualNodeHandle> virtual_ancestry{};
-};
-
-bool subtree_contains(
-    ConfiguredGraph const& graph,
-    NodeBundleHandle root,
-    NodeBundleHandle candidate)
-{
-    if (root == candidate) return true;
-    auto const& bundle = graph.node_bundles.bundle(root);
-    if (bundle.is_subgraph()) {
-        auto const begin = bundle.subgraph_child_begin();
-        auto const end = begin + bundle.subgraph_child_count();
-        return candidate >= begin && candidate < end;
-    }
-    if (bundle.is_tiled()) {
-        return std::ranges::any_of(bundle.tiled_members(), [&](auto member) {
-            return subtree_contains(graph, member, candidate);
-        });
-    }
-    return false;
-}
-
-std::vector<NodeBundleHandle> direct_subgraphs(
-    ConfiguredGraph const& graph,
-    NodeBundleHandle root)
-{
-    std::vector<NodeBundleHandle> candidates;
-    for (NodeBundleHandle handle = 0; handle < graph.node_bundles.size(); ++handle) {
-        if (handle == root || !graph.node_bundles.bundle(handle).is_subgraph()) continue;
-        if (subtree_contains(graph, root, handle)) candidates.push_back(handle);
-    }
-    std::erase_if(candidates, [&](NodeBundleHandle candidate) {
-        return std::ranges::any_of(candidates, [&](NodeBundleHandle possible_parent) {
-            return possible_parent != candidate
-                && subtree_contains(graph, possible_parent, candidate);
-        });
-    });
-    std::ranges::sort(candidates);
-    return candidates;
-}
-
-std::vector<NodeBundleHandle> cursor_roots(
-    ConfiguredGraph const& graph,
-    PathCursor const& cursor)
-{
-    if (cursor.kind == PathCursor::Kind::bundle) return {cursor.bundle};
-    auto const& members = graph.virtual_nodes.record(cursor.virtual_node).node_bundle_handles;
-    return {members.begin(), members.end()};
-}
-
-bool virtual_selector_matches(
-    VirtualNodeRecord const& record,
-    ProjectVirtualNodeSelector const& selector)
-{
-    if (record.source_identity != selector.source_identity) return false;
-    return !selector.type_identity.has_value()
-        || record.type_identity == *selector.type_identity;
-}
-
-void deduplicate_cursors(std::vector<PathCursor>& cursors)
-{
-    std::vector<PathCursor> unique;
-    unique.reserve(cursors.size());
-    for (auto& cursor : cursors) {
-        auto const duplicate = std::ranges::any_of(unique, [&](PathCursor const& existing) {
-            return existing.kind == cursor.kind
-                && (cursor.kind == PathCursor::Kind::bundle
-                    ? existing.bundle == cursor.bundle
-                    : existing.virtual_node == cursor.virtual_node);
-        });
-        if (!duplicate) unique.push_back(std::move(cursor));
-    }
-    cursors = std::move(unique);
-}
-
-std::vector<PathCursor> apply_path_selector(
-    ConfiguredGraph const& graph,
-    std::vector<PathCursor> const& current,
-    ProjectNodePathSelector const& selector)
-{
-    std::vector<PathCursor> next;
-    std::visit([&](auto const& step) {
-        using Step = std::remove_cvref_t<decltype(step)>;
-        if constexpr (std::same_as<Step, ProjectVirtualNodeSelector>) {
-            for (auto const& cursor : current) {
-                auto const roots = cursor_roots(graph, cursor);
-                for (VirtualNodeHandle handle = 0;
-                     handle < graph.virtual_nodes.records().size(); ++handle) {
-                    if (cursor.kind == PathCursor::Kind::virtual_node
-                        && handle == cursor.virtual_node) {
-                        continue;
-                    }
-                    if (std::ranges::contains(cursor.virtual_ancestry, handle)) continue;
-                    auto const& record = graph.virtual_nodes.record(handle);
-                    if (!virtual_selector_matches(record, step)) continue;
-                    auto const under_cursor = std::ranges::any_of(
-                        record.node_bundle_handles, [&](NodeBundleHandle member) {
-                            return std::ranges::any_of(roots, [&](NodeBundleHandle root) {
-                                return subtree_contains(graph, root, member);
-                            });
-                        });
-                    if (!under_cursor) continue;
-                    auto ancestry = cursor.virtual_ancestry;
-                    if (cursor.kind == PathCursor::Kind::virtual_node)
-                        ancestry.push_back(cursor.virtual_node);
-                    next.push_back(PathCursor{
-                        .kind = PathCursor::Kind::virtual_node,
-                        .virtual_node = handle,
-                        .virtual_ancestry = std::move(ancestry),
-                    });
-                }
-            }
-        } else if constexpr (std::same_as<Step, ProjectVirtualMemberSelector>) {
-            for (auto const& cursor : current) {
-                if (cursor.kind != PathCursor::Kind::virtual_node) continue;
-                auto const& record = graph.virtual_nodes.record(cursor.virtual_node);
-                if (step.index >= record.node_bundle_handles.size()) continue;
-                auto ancestry = cursor.virtual_ancestry;
-                ancestry.push_back(cursor.virtual_node);
-                next.push_back(PathCursor{
-                    .kind = PathCursor::Kind::bundle,
-                    .bundle = record.node_bundle_handles[step.index],
-                    .virtual_ancestry = std::move(ancestry),
-                });
-            }
-        } else if constexpr (std::same_as<Step, ProjectTiledChildSelector>) {
-            for (auto const& cursor : current) {
-                if (cursor.kind != PathCursor::Kind::bundle) continue;
-                auto const& bundle = graph.node_bundles.bundle(cursor.bundle);
-                if (!bundle.is_tiled()) continue;
-                auto const members = bundle.tiled_members();
-                if (step.index >= members.size()) continue;
-                next.push_back(PathCursor{
-                    .kind = PathCursor::Kind::bundle,
-                    .bundle = members[step.index],
-                    .virtual_ancestry = cursor.virtual_ancestry,
-                });
-            }
-        } else if constexpr (std::same_as<Step, ProjectSubgraphSelector>) {
-            for (auto const& cursor : current) {
-                auto const roots = cursor_roots(graph, cursor);
-                for (auto const root : roots) {
-                    auto subgraphs = direct_subgraphs(graph, root);
-                    if (step.kind.has_value()) {
-                        std::erase_if(subgraphs, [&](NodeBundleHandle handle) {
-                            return graph.node_bundles.bundle(handle).subgraph_kind() != *step.kind;
-                        });
-                    }
-                    if (step.index >= subgraphs.size()) continue;
-                    next.push_back(PathCursor{
-                        .kind = PathCursor::Kind::bundle,
-                        .bundle = subgraphs[step.index],
-                        .virtual_ancestry = cursor.virtual_ancestry,
-                    });
-                }
-            }
-        }
-    }, selector);
-    deduplicate_cursors(next);
-    return next;
-}
-
-std::vector<PathCursor> resolve_path(
-    ConfiguredGraph const& graph,
-    NodeInstancePlacement const& placement,
-    ProjectNodePortMatcher const& matcher)
-{
-    std::vector<PathCursor> current{{
-        .kind = PathCursor::Kind::bundle,
-        .bundle = placement.root,
-    }};
-    for (auto const& selector : matcher.path) {
-        current = apply_path_selector(graph, current, selector);
-        if (current.empty()) break;
-    }
-    return current;
-}
+using PathCursor = ProjectNodePathMatch;
 
 bool port_matches(
     ProjectPortMatcher const& matcher,
@@ -237,6 +58,38 @@ void append_unique(std::vector<T>& output, T value)
     if (!std::ranges::contains(output, value)) output.push_back(std::move(value));
 }
 
+template<class Mapping>
+auto selected_sample_member_channels(
+    VirtualNodeRecord const& record,
+    Mapping const& mapping,
+    PathCursor const& cursor)
+{
+    using MemberChannels = typename std::remove_cvref_t<
+        decltype(mapping.member_channels)>::value_type;
+    std::vector<MemberChannels> result;
+    if (record.type_identity == "sample-port") {
+        MemberChannels selected;
+        for (auto const channel : mapping.channels) {
+            auto const member = std::ranges::find(
+                record.node_bundle_handles, channel.bundle);
+            if (member == record.node_bundle_handles.end()) continue;
+            auto const member_index = static_cast<std::size_t>(
+                member - record.node_bundle_handles.begin());
+            if (std::ranges::contains(
+                    cursor.virtual_member_indices, member_index)) {
+                selected.push_back(channel);
+            }
+        }
+        if (!selected.empty()) result.push_back(std::move(selected));
+        return result;
+    }
+    for (auto const member_index : cursor.virtual_member_indices) {
+        if (member_index < mapping.member_channels.size())
+            result.push_back(mapping.member_channels[member_index]);
+    }
+    return result;
+}
+
 std::vector<ResolvedSampleOutput> sample_outputs_for_cursor(
     ConfiguredGraph const& graph,
     PathCursor const& cursor,
@@ -247,7 +100,8 @@ std::vector<ResolvedSampleOutput> sample_outputs_for_cursor(
         auto const& record = graph.virtual_nodes.record(cursor.virtual_node);
         for (auto const& mapping : record.sample_outputs) {
             if (!port_matches(matcher, mapping.name, mapping.index)) continue;
-            for (auto const& member_channels : mapping.member_channels) {
+            for (auto const& member_channels
+                 : selected_sample_member_channels(record, mapping, cursor)) {
                 if (matcher.channel.has_value()) {
                     if (*matcher.channel >= member_channels.size()) continue;
                     append_unique(result, ResolvedSampleOutput{
@@ -255,6 +109,10 @@ std::vector<ResolvedSampleOutput> sample_outputs_for_cursor(
                         .channels = {member_channels[*matcher.channel]},
                     });
                 } else {
+                    if (member_channels.size() != channel_type_info(
+                            mapping.channel_layout.channel_type).channel_count) {
+                        continue;
+                    }
                     append_unique(result, ResolvedSampleOutput{
                         .type = mapping.channel_layout.channel_type,
                         .channels = member_channels,
@@ -298,7 +156,8 @@ std::vector<ResolvedSampleInput> sample_inputs_for_cursor(
         auto const& record = graph.virtual_nodes.record(cursor.virtual_node);
         for (auto const& mapping : record.sample_inputs) {
             if (!port_matches(matcher, mapping.name, mapping.index)) continue;
-            for (auto const& member_channels : mapping.member_channels) {
+            for (auto const& member_channels
+                 : selected_sample_member_channels(record, mapping, cursor)) {
                 if (member_channels.empty()) continue;
                 if (matcher.channel.has_value()) {
                     if (*matcher.channel >= member_channels.size()) continue;
@@ -307,6 +166,10 @@ std::vector<ResolvedSampleInput> sample_inputs_for_cursor(
                         .target = member_channels[*matcher.channel],
                     });
                 } else {
+                    if (member_channels.size() != channel_type_info(
+                            mapping.channel_layout.channel_type).channel_count) {
+                        continue;
+                    }
                     auto const first = member_channels.front();
                     auto const one_port = std::ranges::all_of(
                         member_channels, [&](SampleInputChannelId channel) {
@@ -362,6 +225,14 @@ std::vector<ResolvedEventOutput> event_outputs_for_cursor(
         for (auto const& mapping : record.event_outputs) {
             if (!port_matches(matcher, mapping.name, mapping.index)) continue;
             for (auto const port : mapping.node_bundle_ports) {
+                auto const selected = std::ranges::any_of(
+                    cursor.virtual_member_indices,
+                    [&](std::size_t member_index) {
+                        return member_index < record.node_bundle_handles.size()
+                            && record.node_bundle_handles[member_index]
+                                == port.node_bundle_handle;
+                    });
+                if (!selected) continue;
                 append_unique(result, ResolvedEventOutput{
                     .type = mapping.type,
                     .sources = graph.node_bundles.event_output_ports(port),
@@ -397,6 +268,14 @@ std::vector<ResolvedEventInput> event_inputs_for_cursor(
         for (auto const& mapping : record.event_inputs) {
             if (!port_matches(matcher, mapping.name, mapping.index)) continue;
             for (auto const port : mapping.node_bundle_ports) {
+                auto const selected = std::ranges::any_of(
+                    cursor.virtual_member_indices,
+                    [&](std::size_t member_index) {
+                        return member_index < record.node_bundle_handles.size()
+                            && record.node_bundle_handles[member_index]
+                                == port.node_bundle_handle;
+                    });
+                if (!selected) continue;
                 append_unique(result, ResolvedEventInput{
                     .type = mapping.type,
                     .target = port,
@@ -426,9 +305,8 @@ std::vector<Result> resolve_matcher(
     ProjectNodePortMatcher const& matcher,
     Resolver&& resolver)
 {
-    auto const placement = placements.find(matcher.instance_id);
-    if (placement == placements.end()) return {};
-    auto const cursors = resolve_path(graph, placement->second, matcher);
+    auto const cursors = resolve_project_node_path(
+        graph, placements, matcher.instance_id, matcher.path);
     std::vector<Result> result;
     for (auto const& cursor : cursors) {
         auto values = std::forward<Resolver>(resolver)(graph, cursor, matcher.port);
@@ -449,9 +327,10 @@ void validate_matcher(ProjectNodePortMatcher const& matcher)
             throw std::invalid_argument(
                 "project virtual-node selector has an empty source identity");
         }
-        if (auto const* subgraph = std::get_if<ProjectSubgraphSelector>(&selector);
-            subgraph && subgraph->kind.has_value() && subgraph->kind->empty()) {
-            throw std::invalid_argument("project subgraph selector has an empty kind");
+        if (auto const* tiled = std::get_if<ProjectTiledChildSelector>(&selector);
+            tiled && tiled->name.empty()) {
+            throw std::invalid_argument(
+                "project tiled-child selector has an empty channel name");
         }
     }
 }

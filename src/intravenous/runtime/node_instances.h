@@ -41,6 +41,7 @@ struct IvModuleInstance {
     std::string definition_id{};
     std::string display_name{};
     std::filesystem::path package_root{};
+    std::string configuration_source{};
     std::string module_id{};
 
     bool operator==(IvModuleInstance const&) const = default;
@@ -56,6 +57,7 @@ struct NodeInstanceConfigurationRequest {
     std::string instance_id{};
     std::string definition_id{};
     std::span<details::ConfigurationArgument> arguments{};
+    std::optional<std::string> configuration_source{};
     std::optional<ChannelLayout> tiled_layout{};
 };
 
@@ -105,6 +107,7 @@ struct NodeInstanceCreateMutation {
     std::string definition_id{};
     std::optional<std::filesystem::path> package_root{};
     std::optional<std::string> display_name{};
+    std::string configuration_source{};
 };
 
 struct NodeInstanceDeleteMutation {
@@ -114,6 +117,7 @@ struct NodeInstanceDeleteMutation {
 struct NodeInstanceDisplayNameUpdate {
     std::string instance_id{};
     std::optional<std::string> display_name{};
+    std::optional<std::string> configuration_source{};
 };
 
 struct NodeInstanceUpdateMutation {
@@ -148,6 +152,7 @@ public:
     struct Update {
         std::string instance_id{};
         std::optional<std::string> display_name{};
+        std::optional<std::string> configuration_source{};
     };
 
 private:
@@ -156,9 +161,11 @@ private:
         std::string definition_id{};
         std::string display_name{};
         std::filesystem::path package_root{};
+        std::string configuration_source{};
     };
     struct CacheEntry;
     struct ConfigurationContext;
+    struct ExpressionCacheEntry;
 
     mutable std::mutex mutex_;
     std::unordered_map<std::string, DesiredInstance> desired_instances_by_id_;
@@ -166,6 +173,7 @@ private:
     std::unordered_map<std::string, IvModuleInstance> published_instances_by_id_;
     std::shared_ptr<NodeDefinitionsSnapshot const> definitions_snapshot_{};
     std::vector<std::shared_ptr<CacheEntry>> configuration_cache_{};
+    std::vector<std::shared_ptr<ExpressionCacheEntry const>> expression_cache_{};
     std::uint64_t minimum_cache_generation_ = 0;
 
     bool publish_instance_locked(
@@ -179,6 +187,10 @@ private:
         std::string_view definition_id,
         std::optional<ChannelLayout> tiled_layout,
         std::span<details::ConfigurationArgument> arguments);
+    std::shared_ptr<ExpressionCacheEntry const> parse_expression_cached(
+        std::string_view definition_id,
+        std::uint64_t definition_version,
+        std::string source);
     static NodeRef resolve_builder_definition(
         void* context,
         GraphBuilder& builder,
@@ -196,7 +208,8 @@ public:
         std::string_view definition_id,
         std::filesystem::path package_root,
         std::optional<std::string> instance_id = std::nullopt,
-        std::optional<std::string> display_name = std::nullopt);
+        std::optional<std::string> display_name = std::nullopt,
+        std::string configuration_source = {});
     void remove_instance(std::string const& instance_id);
     void update_instances(std::vector<Update> updates);
     [[nodiscard]] std::vector<IvModuleInstanceInfo> list_instances() const;

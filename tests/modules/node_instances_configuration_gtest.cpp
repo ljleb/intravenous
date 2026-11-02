@@ -33,6 +33,19 @@ constexpr char int_nominal[] = "test:int";
 constexpr char int_fingerprint[] = "test:int:v1";
 constexpr char int_display[] = "int";
 
+iv::details::ConfigurationExpressionTypeSchema const int_expression_schema{
+    .kind = iv::details::ConfigurationExpressionTypeKind::signed_integer,
+    .size = sizeof(int),
+    .alignment = alignof(int),
+    .integer_is_signed = true,
+    .integer_bit_width = sizeof(int) * 8,
+    .construct_scalar =
+        &iv::details::configuration_expression_details::construct_scalar<int>,
+    .default_construct =
+        &iv::details::configuration_expression_details::default_construct<int>,
+    .destroy = &iv::details::configuration_expression_details::destroy<int>,
+};
+
 ConfigurationTypeIdentity const int_identity{
     .nominal_id = int_nominal,
     .nominal_id_size = sizeof(int_nominal) - 1,
@@ -40,6 +53,7 @@ ConfigurationTypeIdentity const int_identity{
     .definition_fingerprint_size = sizeof(int_fingerprint) - 1,
     .display_name = int_display,
     .display_name_size = sizeof(int_display) - 1,
+    .expression_schema = &int_expression_schema,
 };
 
 ConfigurationTypeIdentity const* const int_types[]{&int_identity};
@@ -324,6 +338,33 @@ TEST(NodeInstancesConfiguration, EqualTypedValuesShareConfigurationButNotPlaceme
     auto const& second = result.placements.at("second");
     EXPECT_EQ(first.configured, second.configured);
     EXPECT_NE(first.root, second.root);
+}
+
+TEST(NodeInstancesConfiguration, ExpressionValuesEnterTheExistingTypedCachePath)
+{
+    counted_calls = 0;
+    auto snapshot = make_snapshot(1, {counted_spec()});
+    iv::NodeInstances instances;
+    iv::GraphBuilder root;
+    std::array requests{
+        iv::NodeInstanceConfigurationRequest{
+            .instance_id = "first",
+            .definition_id = counted_id,
+            .configuration_source = "5 + 6",
+        },
+        iv::NodeInstanceConfigurationRequest{
+            .instance_id = "second",
+            .definition_id = counted_id,
+            .configuration_source = "11",
+        },
+    };
+
+    auto result = instances.configure_and_embed(snapshot, root, requests);
+
+    ASSERT_TRUE(result.diagnostics.empty());
+    ASSERT_EQ(result.placements.size(), 2u);
+    EXPECT_EQ(counted_calls.load(), 1);
+    EXPECT_EQ(instances.configuration_cache_size(), 1u);
 }
 
 TEST(NodeInstancesConfiguration, DifferentTypedValuesCreateDistinctCacheEntries)

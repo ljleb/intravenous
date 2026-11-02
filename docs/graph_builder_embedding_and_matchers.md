@@ -1,9 +1,8 @@
 # GraphBuilder Embedding, Hierarchy, And Project Port Matchers
 
-_Status: direct frozen-graph embedding and explicit handle translation are
-implemented. The first `ProjectNodePortMatcher` resolver is also implemented, but its
-descendant search, numeric tiled-child selector, and `ProjectSubgraphSelector` do not
-match the revised Front 9 design. Front 9 must replace those parts. Structured
+_Status: direct frozen-graph embedding, explicit handle translation, and the revised
+Front 9 `ProjectNodePortMatcher` resolver are implemented. The resolver uses direct
+scope lookup, named tiled children, and no `ProjectSubgraphSelector`. Structured
 persistence and wire adapters remain follow-up work._
 
 This document supplements [graph_builder.md](./historical/graph_builder.md),
@@ -36,12 +35,8 @@ subgraph bundles and tiled child bundles continue to translate through the
 node-bundle mapping.
 
 `GraphConnections` now consumes these preserved identities through structured project
-matchers. The current records separate virtual nodes, virtual members, tiled children,
-and structural subgraphs. The current resolver searches descendant virtual nodes and
-uses numeric tiled children. These behaviors are implementation facts, not the intended
-semantic path.
-
-The intended path uses scope-local `ProjectVirtualNodeSelector`, indexed
+matchers and `resolve_project_node_path()`. The implemented path uses scope-local
+`ProjectVirtualNodeSelector`, indexed
 `ProjectVirtualMemberSelector`, and named `ProjectTiledChildSelector` records. A selected
 virtual node supplies the route into its backing subgraph. The semantic path does not
 use `ProjectSubgraphSelector`. The port matcher remains separate and selects a port plus

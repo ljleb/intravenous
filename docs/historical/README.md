@@ -62,6 +62,7 @@ These documents are retained because they record deleted architectures, supersed
 
 ## Completed migrations, experiments, and checkpoints
 
+- [Front 9 Status Before Implementation, 2026-11-02](./front_9_status_before_implementation_2026-11-02.md)
 - [Front 9 Reference Syntax Before 2026-11-02](./front_9_configuration_reference_syntax_before_2026-11-02.md)
 - [Source Introspection With Fake Live Port Values](./source_introspection_fake_live_port_values.md)
 - [Superseded Linear And Saturating Global Index Semantics](./linear_global_index_semantics.md)

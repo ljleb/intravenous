@@ -1,6 +1,7 @@
 #include "module_test_utils.h"
 
 #include <intravenous/graph/configured_graph.hpp>
+#include <intravenous/runtime/configuration_expression.h>
 
 #include <gtest/gtest.h>
 
@@ -451,34 +452,46 @@ TEST(ModuleLoaderPackages, RegisteredNodeAndModuleUseProviderConstructionArgumen
     iv::test::write_text(
         provider_package / "module.cpp",
         "#include <intravenous/dsl.h>\n"
-        "#include <array>\n\n"
+        "#include <array>\n"
+        "#include <vector>\n\n"
         "namespace {\n"
         "struct ConfiguredProviderNode {\n"
         "    iv::Sample gain;\n"
         "    constexpr explicit ConfiguredProviderNode(iv::Sample gain_ = iv::Sample{0.25f})\n"
         "        : gain(gain_) {}\n"
         "    static constexpr auto outputs()\n"
-        "    { return std::array<iv::TickOutputConfig<iv::Sample>, 1>{}; }\n"
+        "    { return std::array{iv::TickOutputConfig<iv::Sample>{.name = \"out\"}}; }\n"
         "    void tick(iv::TickSampleContext<ConfiguredProviderNode> const& ctx) const\n"
-        "    { ctx.template output<0>().push(gain); }\n"
+        "    { ctx.output<\"out\">().push(gain); }\n"
         "};\n"
         "struct RequiredConfiguredProviderNode {\n"
         "    iv::Sample gain;\n"
         "    constexpr explicit RequiredConfiguredProviderNode(iv::Sample gain_)\n"
         "        : gain(gain_) {}\n"
         "    static constexpr auto outputs()\n"
-        "    { return std::array<iv::TickOutputConfig<iv::Sample>, 1>{}; }\n"
+        "    { return std::array{iv::TickOutputConfig<iv::Sample>{.name = \"out\"}}; }\n"
         "    void tick(iv::TickSampleContext<RequiredConfiguredProviderNode> const& ctx) const\n"
-        "    { ctx.template output<0>().push(gain); }\n"
+        "    { ctx.output<\"out\">().push(gain); }\n"
         "};\n"
         "struct LabelConfiguredProviderNode {\n"
         "    char const* label;\n"
         "    constexpr explicit LabelConfiguredProviderNode(char const* label_)\n"
         "        : label(label_) {}\n"
         "    static constexpr auto outputs()\n"
-        "    { return std::array<iv::TickOutputConfig<iv::Sample>, 1>{}; }\n"
+        "    { return std::array{iv::TickOutputConfig<iv::Sample>{.name = \"out\"}}; }\n"
         "    void tick(iv::TickSampleContext<LabelConfiguredProviderNode> const& ctx) const\n"
-        "    { ctx.template output<0>().push(iv::Sample{}); }\n"
+        "    { ctx.output<\"out\">().push(iv::Sample{}); }\n"
+        "};\n"
+        "enum class FilterMode : unsigned { lowpass, highpass };\n"
+        "struct Band {\n"
+        "    double frequency = 1000.0;\n"
+        "    double gain = 0.0;\n"
+        "};\n"
+        "struct FilterOptions {\n"
+        "    double cutoff = 440.0;\n"
+        "    FilterMode mode = FilterMode::lowpass;\n"
+        "    std::vector<Band> bands{};\n"
+        "    std::array<double, 2> resonance{};\n"
         "};\n"
         "}\n\n"
         "IV_NODE(\"iv.test.configured_provider_node\", ConfiguredProviderNode);\n\n"
@@ -496,7 +509,15 @@ TEST(ModuleLoaderPackages, RegisteredNodeAndModuleUseProviderConstructionArgumen
         "{\n"
         "    g.outputs(g.node<\"iv.test.configured_provider_node\">(gain));\n"
         "}\n"
-        "IV_MODULE(\"iv.test.required_provider_module\", required_provider_module);\n");
+        "IV_MODULE(\"iv.test.required_provider_module\", required_provider_module);\n"
+        "void aggregate_provider_module(iv::GraphBuilder& g, FilterOptions)\n"
+        "{ g.outputs(); }\n"
+        "IV_MODULE(\"iv.test.aggregate_provider_module\", aggregate_provider_module);\n"
+        "void framework_enum_provider_module(\n"
+        "    iv::GraphBuilder& g, iv::SampleStreamLayout)\n"
+        "{ g.outputs(); }\n"
+        "IV_MODULE(\"iv.test.framework_enum_provider_module\",\n"
+        "    framework_enum_provider_module);\n");
     iv::test::write_text(
         consumer_package / "iv_package.json",
         "{\"schema\":2,\"entry\":\"module.cpp\"}\n");
@@ -536,7 +557,96 @@ TEST(ModuleLoaderPackages, RegisteredNodeAndModuleUseProviderConstructionArgumen
         "default_configured_module_reference);\n");
 
     auto loader = iv::test::make_loader();
-    ASSERT_NO_THROW((void)loader.load_package_definitions(provider_package));
+    auto provider_definitions = loader.load_package_definitions(provider_package);
+    auto const provider_definition = std::ranges::find(
+        provider_definitions,
+        "iv.test.configured_provider_module",
+        &iv::ModuleLoader::LoadedDefinition::module_id);
+    ASSERT_NE(provider_definition, provider_definitions.end());
+    ASSERT_NE(provider_definition->provider.signature, nullptr);
+    auto const* provider_signature = provider_definition->provider.signature();
+    ASSERT_NE(provider_signature, nullptr);
+    ASSERT_EQ(provider_signature->argument_count, 1u);
+    ASSERT_NE(provider_signature->parameter_types[0], nullptr);
+    ASSERT_NE(provider_signature->parameter_types[0]->expression_schema, nullptr);
+    EXPECT_EQ(
+        provider_signature->parameter_types[0]->expression_schema->kind,
+        iv::details::ConfigurationExpressionTypeKind::converted_scalar);
+    EXPECT_NO_THROW({
+        auto values = iv::compile_configuration_expression_list(
+            "0.75", *provider_signature);
+        EXPECT_EQ(values.arguments().size(), 1u);
+    });
+    auto const aggregate_definition = std::ranges::find(
+        provider_definitions,
+        "iv.test.aggregate_provider_module",
+        &iv::ModuleLoader::LoadedDefinition::module_id);
+    ASSERT_NE(aggregate_definition, provider_definitions.end());
+    auto const* aggregate_signature = aggregate_definition->provider.signature();
+    ASSERT_NE(aggregate_signature, nullptr);
+    ASSERT_EQ(aggregate_signature->argument_count, 1u);
+    auto const* aggregate_schema =
+        aggregate_signature->parameter_types[0]->expression_schema;
+    ASSERT_NE(aggregate_schema, nullptr);
+    ASSERT_EQ(
+        aggregate_schema->kind,
+        iv::details::ConfigurationExpressionTypeKind::aggregate);
+    ASSERT_EQ(aggregate_schema->field_count, 4u);
+    EXPECT_EQ(
+        aggregate_schema->fields[1].type->kind,
+        iv::details::ConfigurationExpressionTypeKind::enumeration);
+    EXPECT_EQ(aggregate_schema->fields[1].type->enumerator_count, 2u);
+    EXPECT_EQ(
+        aggregate_schema->fields[2].type->kind,
+        iv::details::ConfigurationExpressionTypeKind::sequence);
+    ASSERT_NE(aggregate_schema->fields[2].type->element_type, nullptr);
+    EXPECT_EQ(
+        aggregate_schema->fields[2].type->element_type->kind,
+        iv::details::ConfigurationExpressionTypeKind::aggregate);
+    EXPECT_EQ(
+        aggregate_schema->fields[3].type->kind,
+        iv::details::ConfigurationExpressionTypeKind::sequence);
+    EXPECT_EQ(aggregate_schema->fields[3].type->fixed_element_count, 2u);
+    EXPECT_NO_THROW({
+        auto values = iv::compile_configuration_expression_list(
+            "{.cutoff = 1800, .mode = highpass, "
+            ".bands = {{.frequency = 200, .gain = -3}, "
+            "{.frequency = 2000, .gain = 2.5}}, "
+            ".resonance = {0.25, 0.5}}",
+            *aggregate_signature);
+        EXPECT_EQ(values.arguments().size(), 1u);
+    });
+    auto const framework_enum_definition = std::ranges::find(
+        provider_definitions,
+        "iv.test.framework_enum_provider_module",
+        &iv::ModuleLoader::LoadedDefinition::module_id);
+    ASSERT_NE(framework_enum_definition, provider_definitions.end());
+    auto const* framework_enum_signature =
+        framework_enum_definition->provider.signature();
+    ASSERT_NE(framework_enum_signature, nullptr);
+    ASSERT_EQ(framework_enum_signature->argument_count, 1u);
+    auto const* framework_enum_schema =
+        framework_enum_signature->parameter_types[0]->expression_schema;
+    ASSERT_NE(framework_enum_schema, nullptr);
+    EXPECT_EQ(
+        framework_enum_schema->kind,
+        iv::details::ConfigurationExpressionTypeKind::enumeration);
+    ASSERT_GE(framework_enum_schema->enumerator_count, 2u);
+    EXPECT_EQ(
+        std::string_view(
+            framework_enum_schema->enumerators[0].name,
+            framework_enum_schema->enumerators[0].name_size),
+        "planar");
+    EXPECT_EQ(
+        std::string_view(
+            framework_enum_schema->enumerators[1].name,
+            framework_enum_schema->enumerators[1].name_size),
+        "interleaved");
+    EXPECT_NO_THROW({
+        auto values = iv::compile_configuration_expression_list(
+            "interleaved", *framework_enum_signature);
+        EXPECT_EQ(values.arguments().size(), 1u);
+    });
     auto loaded = loader.load_package_definitions(consumer_package);
 
     ASSERT_EQ(loaded.size(), 6u);
@@ -570,7 +680,7 @@ TEST(ModuleLoaderPackages, RegisteredNodeAndModuleUseProviderConstructionArgumen
         loaded.end());
 
     auto provider_loaded = loader.load_package_definitions(provider_package);
-    ASSERT_EQ(provider_loaded.size(), 2u);
+    ASSERT_EQ(provider_loaded.size(), 4u);
     auto const required_provider = std::ranges::find(
         provider_loaded,
         "iv.test.required_provider_module",

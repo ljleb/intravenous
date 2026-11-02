@@ -128,6 +128,7 @@ add_iv_gtest(intravenous_node_definitions_tests modules/node_definitions_gtest.c
 add_iv_gtest(intravenous_node_instances_tests modules/node_instances_gtest.cpp)
 add_iv_gtest(intravenous_project_graph_tests modules/project_graph_gtest.cpp)
 add_iv_gtest(intravenous_graph_connections_tests modules/graph_connections_gtest.cpp)
+add_iv_gtest(intravenous_configuration_expression_tests configuration_expression_gtest.cpp)
 add_iv_gtest(
     intravenous_graph_jit_connection_plan_tests
     graph_jit_connection_plan_gtest.cpp)

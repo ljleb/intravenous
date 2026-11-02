@@ -2154,6 +2154,30 @@ definition version cannot reuse project-dependent resolution. If live reference
 materialization crosses `BuilderSession` boundaries, that part depends on Front 12 and
 must not use an unsafe retained graph handle.
 
+**Implementation status (2026-11-02):** `ConfigurationExpression` parses complete
+argument lists and retains their field/index structure. `ConfigurationExpressionTypeSchema`
+is emitted from provider C++ by the Clang metadata plugin and package finalizer.
+`evaluate_configuration_expression_list()` constructs scalar, enum, aggregate, and
+`std::vector`/`std::array` values through provider callbacks. Fixed-sequence element
+assignment also remains in provider code; the runtime does not infer an erased
+`std::array` layout. `NodeInstances` passes those values through its existing typed
+configured-node cache. Configuration
+source now survives create/update RPCs, project replay, project save, instance lists,
+and instance-change notifications.
+
+`resolve_project_node_path()` now owns `.name`, `[n]`, and `#name` resolution for both
+configuration references and `GraphConnections`. Direct-scope virtual lookup is
+set-valued. `TiledNodeBundle::channel_type` supplies named tiled children and is
+preserved by configured-graph archive version 11. `ProjectSubgraphSelector` is removed
+from the project path representation.
+
+The remaining `ConfigurationExpressionTypeKind::node_reference` materialization is an
+explicit Front 12 dependency. The evaluator retains and validates the stable reference,
+but rejects conversion to `NodeRef` before provider invocation while
+`NodeInstances::configure_cached()` uses an independent `BuilderSession`. Front 12 must
+provide same-session construction and add project revision/semantic dependencies to
+cache reuse. No unsafe cross-session handle or source-only reference cache is present.
+
 **Can start independently:** yes.
 
 Detailed direction:

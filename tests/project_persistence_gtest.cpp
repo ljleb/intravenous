@@ -120,6 +120,7 @@ TEST(ProjectPersistenceBuilder, SerializesOnlyDurableConfiguredStateInStableOrde
             .definition_id = "iv.test.b",
             .display_name = "B",
             .package_root = workspace / "modules" / "b",
+            .configuration_source = "{.gain = 0.25}",
         },
         iv::IvModuleInstanceInfo{
             .instance_id = "instance:a",
@@ -142,10 +143,12 @@ TEST(ProjectPersistenceBuilder, SerializesOnlyDurableConfiguredStateInStableOrde
     EXPECT_EQ(commands[1].args["module_id"], "iv.test.a");
     EXPECT_EQ(commands[1].args["package_root"], "modules/a");
     EXPECT_TRUE(commands[1].args["display_name"].is_null());
+    EXPECT_EQ(commands[1].args["configuration_source"], "");
 
     EXPECT_EQ(commands[2].command, "ivModuleInstances.create");
     EXPECT_EQ(commands[2].args["instance_id"], "instance:b");
     EXPECT_EQ(commands[2].args["display_name"], "B");
+    EXPECT_EQ(commands[2].args["configuration_source"], "{.gain = 0.25}");
 
     for (auto const &command : commands) {
         EXPECT_FALSE(command.args.contains("graph_input"));
@@ -173,7 +176,8 @@ TEST(ProjectPersistence, LoadContinuesAfterBadCommandAndReplaysLaterInstance)
     write_text(
         workspace / "iv_project.jsonl",
         R"({"command":"removed.timelineCommand","args":{}})" "\n"
-        R"({"command":"ivModuleInstances.create","args":{"instance_id":"instance:1","module_id":"iv.test.replayed","package_root":"modules/replayed","display_name":"Replayed"}})" "\n");
+        R"({"command":"ivModuleInstances.create","args":{"instance_id":"instance:0","module_id":"iv.test.legacy","package_root":"modules/legacy","display_name":null}})" "\n"
+        R"({"command":"ivModuleInstances.create","args":{"instance_id":"instance:1","module_id":"iv.test.replayed","package_root":"modules/replayed","display_name":"Replayed","configuration_source":"12 + 4"}})" "\n");
 
     iv::ProjectPersistence persistence(workspace, startup);
     iv::NodeInstances instances;
@@ -193,10 +197,14 @@ TEST(ProjectPersistence, LoadContinuesAfterBadCommandAndReplaysLaterInstance)
     persistence.load();
 
     auto const listed = instances.list_instances();
-    ASSERT_EQ(listed.size(), 1u);
-    EXPECT_EQ(listed.front().instance_id, "instance:1");
-    EXPECT_EQ(listed.front().definition_id, "iv.test.replayed");
-    EXPECT_EQ(listed.front().display_name, "Replayed");
+    ASSERT_EQ(listed.size(), 2u);
+    EXPECT_EQ(listed[0].instance_id, "instance:0");
+    EXPECT_EQ(listed[0].definition_id, "iv.test.legacy");
+    EXPECT_TRUE(listed[0].configuration_source.empty());
+    EXPECT_EQ(listed[1].instance_id, "instance:1");
+    EXPECT_EQ(listed[1].definition_id, "iv.test.replayed");
+    EXPECT_EQ(listed[1].display_name, "Replayed");
+    EXPECT_EQ(listed[1].configuration_source, "12 + 4");
     EXPECT_TRUE(std::ranges::any_of(witness.messages, [](auto const &message) {
         return message.level == "error"
             && message.message.contains("unknown project command: removed.timelineCommand");
@@ -216,7 +224,8 @@ TEST(ProjectPersistence, SaveCollectsInstanceMetadataWithoutExecutionState)
         "iv.test.persisted",
         workspace / "modules" / "persisted",
         "instance:stable",
-        "Persisted");
+        "Persisted",
+        "{.cutoff = 1200}");
 
     persistence.save();
 
@@ -227,7 +236,8 @@ TEST(ProjectPersistence, SaveCollectsInstanceMetadataWithoutExecutionState)
     EXPECT_EQ(commands[0]["args"]["module_id"], "iv.test.persisted");
     EXPECT_EQ(commands[0]["args"]["package_root"], "modules/persisted");
     EXPECT_EQ(commands[0]["args"]["display_name"], "Persisted");
-    EXPECT_EQ(commands[0]["args"].size(), 4u);
+    EXPECT_EQ(commands[0]["args"]["configuration_source"], "{.cutoff = 1200}");
+    EXPECT_EQ(commands[0]["args"].size(), 5u);
 }
 
 TEST(ProjectPersistence, SaveWithNoContributorsWritesEmptyProjectFile)

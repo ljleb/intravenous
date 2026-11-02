@@ -14,10 +14,17 @@ export class WorkspaceRpc {
         return this.client.request("ivModuleInstances.get", sourceFilePath ? { sourceFilePath } : {});
     }
 
-    createIvModuleInstance(moduleId: string, displayName: string | null = null): Promise<{ instanceId: string }> {
+    createIvModuleInstance(
+        moduleId: string,
+        displayName: string | null = null,
+        configurationSource = "",
+    ): Promise<{ instanceId: string }> {
         const params: Record<string, unknown> = { moduleId };
         if (displayName != null) {
             params.displayName = displayName;
+        }
+        if (configurationSource.length > 0) {
+            params.configurationSource = configurationSource;
         }
         return this.client.request("ivModuleInstances.create", params);
     }
@@ -27,7 +34,11 @@ export class WorkspaceRpc {
     }
 
     updateIvModuleInstances(
-        updates: Array<{ instanceId: string; displayName?: string | null }>,
+        updates: Array<{
+            instanceId: string;
+            displayName?: string | null;
+            configurationSource?: string | null;
+        }>,
     ): Promise<void> {
         return this.client.request("ivModuleInstances.update", { updates });
     }

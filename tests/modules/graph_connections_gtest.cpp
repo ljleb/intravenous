@@ -1,7 +1,9 @@
 #include <intravenous/basic_nodes/arithmetic.h>
 #include <intravenous/dsl.h>
 #include <intravenous/graph/configured_graph.hpp>
+#include <intravenous/runtime/configuration_expression.h>
 #include <intravenous/runtime/graph_connections.h>
+#include <intravenous/runtime/project_node_path_resolver.h>
 
 #include <gtest/gtest.h>
 
@@ -74,6 +76,49 @@ iv::ConfiguredGraph make_virtual_source()
     return std::move(graph).finish();
 }
 
+iv::ConfiguredGraph make_set_valued_virtual_source()
+{
+    using namespace iv;
+    using First = Sum<mono, SampleStreamLayout::planar, 1>;
+    using Second = Product<1>;
+    GraphBuilder graph;
+    auto input = graph.input<"in">();
+    auto first = details::configure_concrete_node<First>(graph);
+    first(input);
+    first._annotate_source_info(
+        "virtual-source", "/tmp/virtual.cpp", 1, 2);
+    auto second = details::configure_concrete_node<Second>(graph);
+    second(input);
+    second._annotate_source_info(
+        "virtual-source", "/tmp/virtual.cpp", 3, 4);
+    graph.outputs("main"_P = first);
+    return std::move(graph).finish();
+}
+
+iv::ConfiguredGraph make_scoped_virtual_source()
+{
+    using namespace iv;
+    using Pass = Sum<mono, SampleStreamLayout::planar, 1>;
+    GraphBuilder graph;
+    auto input = graph.input<"in">();
+    auto make_processor = [&](std::string_view processor, std::size_t offset) {
+        auto result = graph.subgraph([&](SubgraphBuilder& boundary) {
+            auto filter = details::configure_concrete_node<Pass>(graph);
+            filter(input);
+            filter._annotate_source_info(
+                "filter", "/tmp/scoped.cpp", offset + 1, offset + 2);
+            boundary.outputs("main"_P = filter);
+        }, "processor");
+        result._annotate_source_info(
+            processor, "/tmp/scoped.cpp", offset + 3, offset + 4);
+        return result;
+    };
+    auto processor_a = make_processor("processorA", 0);
+    (void)make_processor("processorB", 10);
+    graph.outputs("main"_P = processor_a);
+    return std::move(graph).finish();
+}
+
 struct FrozenRootFixture {
     iv::ConfiguredGraph graph{};
     iv::NodeBundleHandle local_root = 0;
@@ -88,21 +133,6 @@ FrozenRootFixture make_tiled_source()
     auto const local_root = tiled.node_bundle_handle();
     graph.outputs("main"_P = tiled);
     return {std::move(graph).finish(), local_root};
-}
-
-iv::ConfiguredGraph make_nested_subgraph_source()
-{
-    using namespace iv;
-    using Pass = Sum<mono, SampleStreamLayout::planar, 1>;
-    GraphBuilder graph;
-    auto input = graph.input<"in">();
-    auto nested = graph.subgraph([&](SubgraphBuilder& boundary) {
-        auto pass = details::configure_concrete_node<Pass>(graph);
-        pass(input);
-        boundary.outputs("main"_P = pass);
-    }, "inner");
-    graph.outputs("main"_P = nested);
-    return std::move(graph).finish();
 }
 
 iv::NodeInstancePlacement embed_as_instance(
@@ -280,7 +310,7 @@ TEST(GraphConnections, VirtualNodeThenOrderedMemberPathResolvesConcretePort)
 
 TEST(GraphConnections, SetValuedVirtualMatcherConnectsEveryResolvedMember)
 {
-    auto source_graph = make_virtual_source();
+    auto source_graph = make_set_valued_virtual_source();
     auto sink_graph = make_sample_sink();
     iv::GraphBuilder root;
     std::unordered_map<std::string, iv::NodeInstancePlacement> placements;
@@ -310,6 +340,86 @@ TEST(GraphConnections, SetValuedVirtualMatcherConnectsEveryResolvedMember)
     root.outputs();
     auto configured = std::move(root).finish();
     EXPECT_EQ(configured.connections.configured_sample_connections().size(), before + 2);
+}
+
+TEST(GraphConnections, SingleNodeConsumerRejectsASetValuedPathResult)
+{
+    auto source_graph = make_set_valued_virtual_source();
+    iv::GraphBuilder root;
+    auto placement = embed_as_instance(root, source_graph, "source");
+    auto configured = root.finish();
+    auto matches = iv::resolve_project_node_path(
+        configured,
+        placement.root,
+        std::array<iv::ProjectNodePathSelector, 1>{
+            iv::ProjectVirtualNodeSelector{.source_identity = "virtual-source"},
+        });
+    ASSERT_EQ(matches.size(), 2u);
+    EXPECT_THROW(
+        (void)iv::require_single_project_node_path_match(
+            matches, "configuration node reference"),
+        std::invalid_argument);
+}
+
+TEST(GraphConnections, VirtualLookupDoesNotFindDescendantOnlyNodes)
+{
+    auto source_graph = make_scoped_virtual_source();
+    iv::GraphBuilder root;
+    auto placement = embed_as_instance(root, source_graph, "source");
+    auto configured = root.finish();
+    auto matches = iv::resolve_project_node_path(
+        configured,
+        placement.root,
+        std::array<iv::ProjectNodePathSelector, 1>{
+            iv::ProjectVirtualNodeSelector{.source_identity = "filter"},
+        });
+    EXPECT_TRUE(matches.empty());
+}
+
+TEST(GraphConnections, SelectedVirtualSubgraphSuppliesTheNextLookupScope)
+{
+    auto source_graph = make_scoped_virtual_source();
+    iv::GraphBuilder root;
+    auto placement = embed_as_instance(root, source_graph, "source");
+    auto configured = root.finish();
+    auto matches = iv::resolve_project_node_path(
+        configured,
+        placement.root,
+        std::array<iv::ProjectNodePathSelector, 2>{
+            iv::ProjectVirtualNodeSelector{.source_identity = "processorA"},
+            iv::ProjectVirtualNodeSelector{.source_identity = "filter"},
+        });
+    ASSERT_EQ(matches.size(), 1u);
+    EXPECT_EQ(matches.front().kind, iv::ProjectNodePathMatch::Kind::virtual_node);
+    ASSERT_EQ(matches.front().virtual_member_indices.size(), 1u);
+
+    auto processor_a_member = iv::resolve_project_node_path(
+        configured,
+        placement.root,
+        std::array<iv::ProjectNodePathSelector, 3>{
+            iv::ProjectVirtualNodeSelector{.source_identity = "processorA"},
+            iv::ProjectVirtualNodeSelector{.source_identity = "filter"},
+            iv::ProjectVirtualMemberSelector{.index = 0},
+        });
+    auto processor_b_member = iv::resolve_project_node_path(
+        configured,
+        placement.root,
+        std::array<iv::ProjectNodePathSelector, 3>{
+            iv::ProjectVirtualNodeSelector{.source_identity = "processorB"},
+            iv::ProjectVirtualNodeSelector{.source_identity = "filter"},
+            iv::ProjectVirtualMemberSelector{.index = 0},
+        });
+    ASSERT_EQ(processor_a_member.size(), 1u);
+    ASSERT_EQ(processor_b_member.size(), 1u);
+    EXPECT_NE(processor_a_member.front().bundle, processor_b_member.front().bundle);
+    EXPECT_TRUE(iv::resolve_project_node_path(
+        configured,
+        placement.root,
+        std::array<iv::ProjectNodePathSelector, 3>{
+            iv::ProjectVirtualNodeSelector{.source_identity = "processorA"},
+            iv::ProjectVirtualNodeSelector{.source_identity = "filter"},
+            iv::ProjectVirtualMemberSelector{.index = 1},
+        }).empty());
 }
 
 TEST(GraphConnections, DeleteRemovesDesiredConnectionBeforeResolution)
@@ -436,7 +546,7 @@ TEST(GraphConnections, TiledChildPathSelectorChoosesNodeBeforePortResolution)
     auto source_matcher = named_matcher("source", "");
     source_matcher.port.name.reset();
     source_matcher.port.index = 0;
-    source_matcher.path = {iv::ProjectTiledChildSelector{.index = 1}};
+    source_matcher.path = {iv::ProjectTiledChildSelector{.name = "right"}};
 
     iv::GraphConnections connections;
     auto result = apply(connections, root, placements, iv::GraphConnectionUpsertMutation{
@@ -451,29 +561,88 @@ TEST(GraphConnections, TiledChildPathSelectorChoosesNodeBeforePortResolution)
     EXPECT_TRUE(result.diagnostics.empty());
 }
 
-TEST(GraphConnections, SubgraphPathSelectorDescendsByKindAndStableIndex)
+TEST(GraphConnections, ConfigurationReferenceAndConnectionUseTheSamePathResolver)
 {
-    auto source_graph = make_nested_subgraph_source();
+    constexpr std::string_view source_id =
+        "550e8400-e29b-41d4-a716-446655440000";
+    auto source_fixture = make_tiled_source();
     auto sink_graph = make_sample_sink();
     iv::GraphBuilder root;
     std::unordered_map<std::string, iv::NodeInstancePlacement> placements;
-    placements.emplace("source", embed_as_instance(root, source_graph, "source"));
+    auto source_embedding = root.embed(source_fixture.graph, "source");
+    auto const source_root = source_embedding.node_bundle(source_fixture.local_root);
+    placements.emplace(source_id, iv::NodeInstancePlacement{
+        .embedding = std::move(source_embedding),
+        .root = source_root,
+    });
     placements.emplace("sink", embed_as_instance(root, sink_graph, "sink"));
 
-    auto source_matcher = named_matcher("source", "main");
-    source_matcher.path = {iv::ProjectSubgraphSelector{
-        .kind = "inner",
-        .index = 0,
-    }};
+    auto parsed = iv::parse_configuration_expression_list(
+        std::string("&") + std::string(source_id) + "#right");
+    auto const* reference = std::get_if<iv::ConfigurationNodeReferenceExpression>(
+        &parsed.arguments.front()->value);
+    ASSERT_NE(reference, nullptr);
+    auto snapshot = root.finish();
+    auto matches = iv::resolve_project_node_path(
+        snapshot, placements, reference->instance_id, reference->path);
+    ASSERT_EQ(matches.size(), 1u);
+    EXPECT_EQ(matches.front().kind, iv::ProjectNodePathMatch::Kind::bundle);
 
+    auto source_matcher = named_matcher(reference->instance_id, "");
+    source_matcher.port.name.reset();
+    source_matcher.port.index = 0;
+    source_matcher.path = reference->path;
     iv::GraphConnections connections;
-    auto result = apply(connections, root, placements, iv::GraphConnectionUpsertMutation{
-        .connection = iv::ProjectSampleConnection{
-            .connection_id = "sample:subgraph",
-            .outputs = {std::move(source_matcher)},
-            .inputs = {named_matcher("sink", "main")},
-        },
-    });
-    EXPECT_EQ(result.applied_connection_ids.size(), 1u);
+    auto result = apply(
+        connections,
+        root,
+        placements,
+        iv::GraphConnectionUpsertMutation{
+            .connection = iv::ProjectSampleConnection{
+                .connection_id = "sample:shared-reference-path",
+                .outputs = {std::move(source_matcher)},
+                .inputs = {named_matcher("sink", "main")},
+            },
+        });
+    EXPECT_EQ(
+        result.applied_connection_ids,
+        std::vector<std::string>{"sample:shared-reference-path"});
     EXPECT_TRUE(result.diagnostics.empty());
+}
+
+TEST(GraphConnections, ProjectNodePathRejectsUnknownSubjectsAndSelectors)
+{
+    auto source_graph = make_virtual_source();
+    auto tiled_fixture = make_tiled_source();
+    iv::GraphBuilder root;
+    std::unordered_map<std::string, iv::NodeInstancePlacement> placements;
+    placements.emplace("source", embed_as_instance(root, source_graph, "source"));
+    auto tiled_embedding = root.embed(tiled_fixture.graph, "tiled");
+    auto const tiled_root = tiled_embedding.node_bundle(tiled_fixture.local_root);
+    placements.emplace("tiled", iv::NodeInstancePlacement{
+        .embedding = std::move(tiled_embedding),
+        .root = tiled_root,
+    });
+    auto configured = root.finish();
+
+    EXPECT_TRUE(iv::resolve_project_node_path(
+        configured,
+        placements,
+        "unknown",
+        std::span<iv::ProjectNodePathSelector const>{}).empty());
+    EXPECT_TRUE(iv::resolve_project_node_path(
+        configured,
+        placements,
+        "source",
+        std::array<iv::ProjectNodePathSelector, 2>{
+            iv::ProjectVirtualNodeSelector{.source_identity = "virtual-source"},
+            iv::ProjectVirtualMemberSelector{.index = 99},
+        }).empty());
+    EXPECT_TRUE(iv::resolve_project_node_path(
+        configured,
+        placements,
+        "tiled",
+        std::array<iv::ProjectNodePathSelector, 1>{
+            iv::ProjectTiledChildSelector{.name = "unknown"},
+        }).empty());
 }

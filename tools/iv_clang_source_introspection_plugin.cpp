@@ -1,5 +1,6 @@
 #include "clang/AST/ASTContext.h"
 #include "clang/AST/ASTMutationListener.h"
+#include "clang/AST/Attr.h"
 #include "clang/AST/Decl.h"
 #include "clang/AST/DeclCXX.h"
 #include "clang/AST/DeclTemplate.h"
@@ -1433,12 +1434,51 @@ private:
     std::vector<CXXRecordDecl const*> nodes_;
 };
 
+class ConfigurationExpressionAdapterFinder final
+    : public RecursiveASTVisitor<ConfigurationExpressionAdapterFinder> {
+public:
+    bool VisitFunctionTemplateDecl(FunctionTemplateDecl* declaration)
+    {
+        if (!declaration) return true;
+        auto const name = declaration->getQualifiedNameAsString();
+        if (name == "iv::details::configuration_expression_details::construct_scalar")
+            construct_scalar = declaration;
+        else if (name == "iv::details::configuration_expression_details::default_construct")
+            default_construct = declaration;
+        else if (name == "iv::details::configuration_expression_details::destroy")
+            destroy = declaration;
+        else if (name == "iv::details::configuration_expression_details::assign")
+            assign = declaration;
+        else if (name == "iv::details::configuration_expression_details::append_element")
+            append_element = declaration;
+        else if (name == "iv::details::configuration_expression_details::assign_element")
+            assign_element = declaration;
+        return true;
+    }
+
+    FunctionTemplateDecl* construct_scalar = nullptr;
+    FunctionTemplateDecl* default_construct = nullptr;
+    FunctionTemplateDecl* destroy = nullptr;
+    FunctionTemplateDecl* assign = nullptr;
+    FunctionTemplateDecl* append_element = nullptr;
+    FunctionTemplateDecl* assign_element = nullptr;
+};
+
 class ConfigurationTypeIdentityCollector final
     : public RecursiveASTVisitor<ConfigurationTypeIdentityCollector> {
 public:
-    explicit ConfigurationTypeIdentityCollector(ASTContext& context)
-        : context_(context)
-    {}
+    explicit ConfigurationTypeIdentityCollector(CompilerInstance& compiler)
+        : compiler_(compiler), context_(compiler.getASTContext())
+    {
+        ConfigurationExpressionAdapterFinder finder;
+        finder.TraverseDecl(context_.getTranslationUnitDecl());
+        construct_scalar_ = finder.construct_scalar;
+        default_construct_ = finder.default_construct;
+        destroy_ = finder.destroy;
+        assign_ = finder.assign;
+        append_element_ = finder.append_element;
+        assign_element_ = finder.assign_element;
+    }
 
     bool VisitVarTemplateSpecializationDecl(
         VarTemplateSpecializationDecl* specialization)
@@ -1457,6 +1497,8 @@ public:
         auto const symbol = mangled_global_name(context_, specialization);
         if (symbol.empty() || !seen_.insert(symbol).second) return true;
         auto metadata = configuration_type_metadata(context_, arguments.front().getAsType());
+        metadata["expression_schema"] = schema_metadata(
+            arguments.front().getAsType(), specialization->getLocation());
         metadata["symbol"] = symbol;
         identities_.push_back(std::move(metadata));
         return true;
@@ -1473,9 +1515,238 @@ public:
     }
 
 private:
+    FunctionDecl* specialize(
+        FunctionTemplateDecl* function_template,
+        QualType type,
+        SourceLocation location)
+    {
+        if (!function_template) return nullptr;
+        TemplateArgumentListInfo explicit_arguments(location, location);
+        explicit_arguments.addArgument(compiler_.getSema().getTrivialTemplateArgumentLoc(
+            TemplateArgument(type), QualType{}, location));
+        sema::TemplateDeductionInfo deduction(location);
+        FunctionDecl* specialization = nullptr;
+        auto const result = compiler_.getSema().DeduceTemplateArguments(
+            function_template, &explicit_arguments, specialization, deduction, false);
+        if (result != TemplateDeductionResult::Success || !specialization) {
+            auto id = compiler_.getDiagnostics().getCustomDiagID(
+                DiagnosticsEngine::Error,
+                "cannot generate configuration-expression adapter for type '%0'");
+            compiler_.getDiagnostics().Report(location, id)
+                << type_string(context_, type);
+            return nullptr;
+        }
+        if (!specialization->hasAttr<UsedAttr>())
+            specialization->addAttr(UsedAttr::CreateImplicit(context_));
+        if (!specialization->doesThisDeclarationHaveABody()) {
+            compiler_.getSema().MarkFunctionReferenced(location, specialization);
+            compiler_.getSema().InstantiateFunctionDefinition(
+                location, specialization, true, true);
+        }
+        return specialization;
+    }
+
+    std::string adapter_symbol(
+        FunctionTemplateDecl* function_template,
+        QualType type,
+        SourceLocation location)
+    {
+        auto* function = specialize(function_template, type, location);
+        if (!function) return {};
+        ASTNameGenerator names(context_);
+        return names.getName(function);
+    }
+
+    static ClassTemplateSpecializationDecl const* template_specialization(
+        QualType type)
+    {
+        type = transported_configuration_type(type);
+        auto const* record = type->getAsCXXRecordDecl();
+        return dyn_cast_or_null<ClassTemplateSpecializationDecl>(record);
+    }
+
+    llvm::json::Object schema_metadata(QualType type, SourceLocation location)
+    {
+        std::vector<Type const*> active_types;
+        return schema_metadata(type, location, active_types);
+    }
+
+    llvm::json::Object schema_metadata(
+        QualType type,
+        SourceLocation location,
+        std::vector<Type const*>& active_types)
+    {
+        type = transported_configuration_type(type);
+        llvm::json::Object result{
+            {"display_name", type_string(context_, type)},
+            {"size_bits", static_cast<std::int64_t>(context_.getTypeSize(type))},
+            {"alignment_bits", static_cast<std::int64_t>(context_.getTypeAlign(type))},
+            {"destroy_symbol", adapter_symbol(destroy_, type, location)},
+        };
+        auto const* canonical_type = context_.getCanonicalType(type).getTypePtr();
+        if (std::ranges::contains(active_types, canonical_type)) {
+            result["kind"] = "unsupported";
+            result["reason"] =
+                "recursive configuration value schemas are not supported";
+            return result;
+        }
+        active_types.push_back(canonical_type);
+        struct ActiveTypeGuard {
+            std::vector<Type const*>& values;
+            ~ActiveTypeGuard() { values.pop_back(); }
+        } guard{active_types};
+
+        if (type->isBooleanType()) {
+            result["kind"] = "boolean";
+            result["construct_scalar_symbol"] =
+                adapter_symbol(construct_scalar_, type, location);
+            return result;
+        }
+        if (auto const* enumeration = type->getAs<EnumType>()) {
+            result["kind"] = "enumeration";
+            auto const underlying = enumeration->getDecl()->getIntegerType();
+            if (context_.getTypeSize(underlying) > 64) {
+                result["kind"] = "unsupported";
+                result["reason"] = "enum underlying type is wider than 64 bits";
+                return result;
+            }
+            result["integer_is_signed"] = underlying->isSignedIntegerType();
+            result["integer_bit_width"] =
+                static_cast<std::int64_t>(context_.getTypeSize(underlying));
+            result["construct_scalar_symbol"] =
+                adapter_symbol(construct_scalar_, type, location);
+            llvm::json::Array values;
+            if (auto const* definition = enumeration->getDecl()->getDefinition()) {
+                for (auto const* enumerator : definition->enumerators()) {
+                    auto const value = enumerator->getInitVal();
+                    llvm::json::Object item{{"name", enumerator->getNameAsString()}};
+                    if (underlying->isSignedIntegerType())
+                        item["signed_value"] = value.getSExtValue();
+                    else
+                        item["unsigned_value"] =
+                            std::to_string(value.getZExtValue());
+                    values.push_back(std::move(item));
+                }
+            }
+            result["enumerators"] = std::move(values);
+            return result;
+        }
+        if (type->isSignedIntegerType() || type->isUnsignedIntegerType()) {
+            result["kind"] = type->isSignedIntegerType()
+                ? "signed_integer" : "unsigned_integer";
+            result["integer_is_signed"] = type->isSignedIntegerType();
+            result["integer_bit_width"] =
+                static_cast<std::int64_t>(context_.getTypeSize(type));
+            result["construct_scalar_symbol"] =
+                adapter_symbol(construct_scalar_, type, location);
+            return result;
+        }
+        if (type->isRealFloatingType()) {
+            result["kind"] = "floating_point";
+            result["construct_scalar_symbol"] =
+                adapter_symbol(construct_scalar_, type, location);
+            return result;
+        }
+        if (auto const* specialization = template_specialization(type)) {
+            auto const template_name = specialization->getSpecializedTemplate()
+                ->getQualifiedNameAsString();
+            auto const arguments = specialization->getTemplateArgs().asArray();
+            if (template_name.ends_with("::basic_string") && !arguments.empty()
+                && arguments.front().getKind() == TemplateArgument::Type
+                && context_.hasSameType(
+                    arguments.front().getAsType(), context_.CharTy)) {
+                result["kind"] = "string";
+                result["construct_scalar_symbol"] =
+                    adapter_symbol(construct_scalar_, type, location);
+                return result;
+            }
+            if ((template_name == "std::vector" || template_name == "std::array")
+                && !arguments.empty()
+                && arguments.front().getKind() == TemplateArgument::Type) {
+                auto const element = arguments.front().getAsType();
+                result["kind"] = "sequence";
+                result["default_construct_symbol"] =
+                    adapter_symbol(default_construct_, type, location);
+                if (template_name == "std::vector") {
+                    result["append_element_symbol"] =
+                        adapter_symbol(append_element_, type, location);
+                } else if (arguments.size() > 1
+                    && arguments[1].getKind() == TemplateArgument::Integral) {
+                    result["element_assign_symbol"] =
+                        adapter_symbol(assign_element_, type, location);
+                    result["fixed_element_count"] = static_cast<std::int64_t>(
+                        arguments[1].getAsIntegral().getZExtValue());
+                }
+                result["element_type"] = schema_metadata(
+                    element, location, active_types);
+                return result;
+            }
+        }
+
+        auto const name = record_name(type);
+        if (name == "NodeRef" || name == "TypedNodeRef") {
+            result["kind"] = "node_reference";
+            return result;
+        }
+
+        if (auto const* record = type->getAsCXXRecordDecl(); record
+            && record->getDefinition() && record->getDefinition()->isAggregate()) {
+            auto const* definition = record->getDefinition();
+            if (definition->isUnion() || definition->getNumBases() != 0) {
+                result["kind"] = "unsupported";
+                result["reason"] =
+                    "aggregate unions and aggregate base classes are not supported";
+                return result;
+            }
+            result["kind"] = "aggregate";
+            result["default_construct_symbol"] =
+                adapter_symbol(default_construct_, type, location);
+            auto const& layout = context_.getASTRecordLayout(definition);
+            llvm::json::Array fields;
+            std::size_t index = 0;
+            for (auto const* field : definition->fields()) {
+                if (field->isBitField() || field->getType()->isReferenceType()
+                    || field->getType().isConstQualified()
+                    || field->getName().empty()) {
+                    result["kind"] = "unsupported";
+                    result["reason"] =
+                        "aggregate has a const, bit-field, reference, or unnamed member";
+                    return result;
+                }
+                auto const field_type = transported_configuration_type(field->getType());
+                fields.push_back(llvm::json::Object{
+                    {"name", field->getNameAsString()},
+                    {"bit_offset", static_cast<std::int64_t>(
+                        layout.getFieldOffset(index++))},
+                    {"assign_symbol", adapter_symbol(assign_, field_type, location)},
+                    {"type", schema_metadata(field_type, location, active_types)},
+                });
+            }
+            result["fields"] = std::move(fields);
+            return result;
+        }
+
+        if (type->getAsCXXRecordDecl()) {
+            result["kind"] = "converted_scalar";
+            result["construct_scalar_symbol"] =
+                adapter_symbol(construct_scalar_, type, location);
+            return result;
+        }
+        result["kind"] = "unsupported";
+        result["reason"] = "type is not a supported configuration-expression value";
+        return result;
+    }
+
+    CompilerInstance& compiler_;
     ASTContext& context_;
     llvm::json::Array identities_;
     std::set<std::string> seen_;
+    FunctionTemplateDecl* construct_scalar_ = nullptr;
+    FunctionTemplateDecl* default_construct_ = nullptr;
+    FunctionTemplateDecl* destroy_ = nullptr;
+    FunctionTemplateDecl* assign_ = nullptr;
+    FunctionTemplateDecl* append_element_ = nullptr;
+    FunctionTemplateDecl* assign_element_ = nullptr;
 };
 
 class RegisteredNodeAdapterFinder final
@@ -1741,7 +2012,7 @@ void write_state_metadata(
     StateMetadataCollector state_collector(context);
     NodeConfigMetadataCollector node_config_collector(context);
     ReflectedNodeDiscovery reflected_node_discovery(context);
-    ConfigurationTypeIdentityCollector configuration_type_collector(context);
+    ConfigurationTypeIdentityCollector configuration_type_collector(compiler);
     PackageDefinitionCollector package_definition_collector(compiler);
     // IV_NODE rewrites materialize the constructor-adapter specializations
     // that reference configuration_type_identity_storage<T>. Discover those
@@ -1813,7 +2084,8 @@ public:
         FunctionInstrumenter* instrumenter)
         : compiler_(compiler),
           metadata_dir_(std::move(metadata_dir)),
-          instrumenter_(instrumenter)
+          instrumenter_(instrumenter),
+          configuration_type_collector_(compiler)
     {}
 
     void FunctionDefinitionInstantiated(FunctionDecl const* definition) override
@@ -1841,6 +2113,14 @@ public:
                 && variable_template->getCanonicalDecl()->getQualifiedNameAsString()
                     == "iv::details::configuration_type_identity_storage";
         };
+        if (is_configuration_identity()) {
+            // Materialize schema callbacks while the parser still owns a
+            // valid translation-unit scope. Doing this for the first time in
+            // HandleTranslationUnit is too late for implicit special-member
+            // definitions such as std::array's assignment operator.
+            configuration_type_collector_.VisitVarTemplateSpecializationDecl(
+                const_cast<VarTemplateSpecializationDecl*>(specialization));
+        }
         if (initial_snapshot_written_
             && (node_type_from_compiler_record_specialization(specialization)
                 || is_configuration_identity())) {
@@ -1867,6 +2147,7 @@ private:
     CompilerInstance& compiler_;
     std::filesystem::path metadata_dir_;
     FunctionInstrumenter* instrumenter_ = nullptr;
+    ConfigurationTypeIdentityCollector configuration_type_collector_;
     bool initial_snapshot_written_ = false;
 };
 

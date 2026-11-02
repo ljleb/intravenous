@@ -64,6 +64,7 @@ class NodeBundle {
 
   struct TiledNodeBundle {
     std::vector<NodeBundleHandle> member_bundles{};
+    ChannelTypeId channel_type = ChannelTypeId::mono;
     NodeTypeIdentity type_identity{};
     NodePorts ports{};
   };
@@ -111,6 +112,7 @@ public:
   constexpr bool is_subgraph() const;
   constexpr std::optional<NodeBundleHandle> subgraph_boundary_handle() const;
   constexpr std::span<NodeBundleHandle const> tiled_members() const;
+  constexpr ChannelTypeId tiled_channel_type() const;
   constexpr size_t subgraph_child_begin() const;
   constexpr size_t subgraph_child_count() const;
   constexpr std::string_view subgraph_kind() const;
@@ -209,6 +211,7 @@ struct ConfiguredNodeBundleRecord {
   std::optional<Sample> static_sample_value{};
 
   std::vector<NodeBundleHandle> tiled_members{};
+  ChannelTypeId tiled_channel_type = ChannelTypeId::mono;
 
   NodeBundleHandle subgraph_boundary = 0;
   size_t subgraph_child_begin = 0;
@@ -249,6 +252,7 @@ struct ConfiguredNodeBundleView {
   std::optional<Sample> const* static_sample_value = nullptr;
 
   std::span<NodeBundleHandle const> tiled_members{};
+  ChannelTypeId tiled_channel_type = ChannelTypeId::mono;
 
   NodeBundleHandle subgraph_boundary = 0;
   size_t subgraph_child_begin = 0;
@@ -458,6 +462,13 @@ constexpr std::span<NodeBundleHandle const> NodeBundle::tiled_members() const {
   auto const *tiled = std::get_if<TiledNodeBundle>(&*_payload);
   if (!tiled) details::error("NodeBundle is not tiled");
   return tiled->member_bundles;
+}
+
+constexpr ChannelTypeId NodeBundle::tiled_channel_type() const {
+  if (!_payload) details::error("empty NodeBundle");
+  auto const *tiled = std::get_if<TiledNodeBundle>(&*_payload);
+  if (!tiled) details::error("NodeBundle is not tiled");
+  return tiled->channel_type;
 }
 
 constexpr NodePorts const &NodeBundle::concrete_ports() const {
@@ -1064,6 +1075,7 @@ constexpr NodeBundleHandle GraphBuilderNodeBundles::append_tiled(
 
   NodeBundle::TiledNodeBundle payload;
   payload.member_bundles.assign(members.begin(), members.end());
+  payload.channel_type = promoted_channel_layout.channel_type;
   payload.type_identity.value = std::string(first.type_identity());
   payload.ports = first_ports;
   for (InputConfig& input : payload.ports.input_configs) {
@@ -1332,6 +1344,7 @@ constexpr void GraphBuilderNodeBundles::for_each_configured_bundle(
         view.kind = ConfiguredNodeBundleKind::tiled;
         view.tiled_members = std::span<NodeBundleHandle const>{
             payload.member_bundles};
+        view.tiled_channel_type = payload.channel_type;
         view.type_identity = &payload.type_identity.value;
         view.ports = &payload.ports;
       } else if constexpr (std::same_as<Payload, NodeBundle::BoundaryNodeBundle>) {
@@ -1395,6 +1408,7 @@ constexpr GraphBuilderNodeBundles GraphBuilderNodeBundles::from_configured_recor
     case ConfiguredNodeBundleKind::tiled:
       bundle = NodeBundle(NodeBundle::TiledNodeBundle{
           .member_bundles = record.tiled_members,
+          .channel_type = record.tiled_channel_type,
           .type_identity = {.value = record.type_identity},
           .ports = record.ports,
       });

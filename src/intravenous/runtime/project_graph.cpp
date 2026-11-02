@@ -139,6 +139,7 @@ void ProjectGraph::handle_project_create_iv_module_instance(
             .definition_id = request.module_id,
             .package_root = request.package_root,
             .display_name = request.display_name,
+            .configuration_source = request.configuration_source,
         }, std::monostate{});
         if (rebuilt.created_instance_ids.size() != 1) {
             throw std::logic_error("NodeInstances did not return one created instance id");
@@ -173,6 +174,7 @@ void ProjectGraph::handle_project_update_iv_module_instances(
         mutation.updates.push_back(NodeInstanceDisplayNameUpdate{
             .instance_id = update.instance_id,
             .display_name = update.display_name,
+            .configuration_source = update.configuration_source,
         });
     }
     {
@@ -221,6 +223,7 @@ void ProjectGraph::handle_socket_rpc_create_iv_module_instance(
             ProjectCreateIvModuleInstanceRequest{
                 .module_id = request.module_id,
                 .display_name = request.display_name,
+                .configuration_source = request.configuration_source,
             },
             project_builder);
         builder.succeed(project_builder.build());
@@ -256,6 +259,7 @@ void ProjectGraph::handle_socket_rpc_update_iv_module_instances(
             updates.push_back(ProjectUpdateIvModuleInstance{
                 .instance_id = update.instance_id,
                 .display_name = update.display_name,
+                .configuration_source = update.configuration_source,
             });
         }
         ProjectAckBuilder project_builder;

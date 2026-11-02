@@ -959,17 +959,18 @@ The implementation checkpoints now stand as follows:
    provider-generated typed owned argument operations, one-snapshot recursive
    configuration, batched diagnostics, and reusable frozen-graph value caching.
    Cache invalidation is deliberately whole-snapshot for now.
-4. **Pending Front 9 checkpoint:** parse, type-check, and evaluate persisted restricted
-   configuration source. Produce structured typed values and generated operations for
-   the existing `NodeInstances` cache path. Resolve stable project-node references with
-   the shared scope-local semantic path resolver.
+4. **Landed to the Front 12 boundary:** parse, type-check, and evaluate persisted
+   restricted configuration source. Structured typed values and generated operations
+   feed the existing `NodeInstances` cache path. Stable project-node IDs and selectors
+   use the shared scope-local semantic path resolver. Conversion of a resolved match to
+   a live `NodeRef` remains blocked until Front 12 constructs it in the same
+   `BuilderSession`.
 5. **Landed:** `ProjectGraph` is the root-build transaction coordinator without
    duplicating the desired instance/connection sets.
-6. **Landed first semantic connection core, with a Front 9 revision pending:**
+6. **Landed semantic connection core and Front 9 resolver revision:**
    `GraphConnections` owns desired cross-node connection intent, applies sample/event
-   connections, and preserves dangling matchers with diagnostics. Its current resolver
-   searches descendant virtual nodes and accepts `ProjectSubgraphSelector`. Front 9
-   must replace that behavior with the shared scope-local semantic path resolver.
+   connections, and preserves dangling matchers with diagnostics. It uses the same
+   scope-local `resolve_project_node_path()` function as configuration references.
    Structured persistence and JSON-RPC adapters remain follow-up transport work.
 7. **Landed, with a planned storage split (fixed state + existing
    `BackgroundEvaluationPlan` foundation):** the current implementation still

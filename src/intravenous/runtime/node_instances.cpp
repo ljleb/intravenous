@@ -5,6 +5,7 @@
 #include <intravenous/module/package_definitions.h>
 #include <intravenous/runtime/iv_module_instances_events.h>
 #include <intravenous/runtime/iv_module_source_introspection_events.h>
+#include <intravenous/runtime/configuration_expression.h>
 #include <intravenous/runtime/node_definitions_events.h>
 #include <intravenous/runtime/package_pipeline_types.h>
 #include <intravenous/runtime/project_persistence_builder.h>
@@ -85,13 +86,15 @@ bool configured_definition_closure_matches(
 IvModuleInstance make_instance(
     NodeDefinitionEntry const& definition,
     std::string const& instance_id,
-    std::string const& display_name)
+    std::string const& display_name,
+    std::string const& configuration_source)
 {
     return IvModuleInstance{
         .instance_id = instance_id,
         .definition_id = definition.definition_id,
         .display_name = display_name,
         .package_root = definition_package_root(definition),
+        .configuration_source = configuration_source,
         .module_id = definition_compatibility_module_id(definition),
     };
 }
@@ -256,6 +259,12 @@ struct NodeInstances::CacheEntry {
     std::vector<OwnedConfigurationArgument> key_arguments{};
 };
 
+struct NodeInstances::ExpressionCacheEntry {
+    std::string definition_id{};
+    std::uint64_t definition_version = 0;
+    ParsedConfigurationExpressionList parsed{};
+};
+
 struct NodeInstances::ConfigurationContext {
     NodeInstances* owner = nullptr;
     std::shared_ptr<NodeDefinitionsSnapshot const> snapshot{};
@@ -269,6 +278,40 @@ NodeInstances::NodeInstances()
 {}
 
 NodeInstances::~NodeInstances() = default;
+
+std::shared_ptr<NodeInstances::ExpressionCacheEntry const>
+NodeInstances::parse_expression_cached(
+    std::string_view definition_id,
+    std::uint64_t definition_version,
+    std::string source)
+{
+    {
+        std::scoped_lock lock(mutex_);
+        auto const found = std::ranges::find_if(
+            expression_cache_, [&](auto const& entry) {
+                return entry && entry->definition_id == definition_id
+                    && entry->definition_version == definition_version
+                    && entry->parsed.source == source;
+            });
+        if (found != expression_cache_.end()) return *found;
+    }
+    auto entry = std::make_shared<ExpressionCacheEntry const>(ExpressionCacheEntry{
+        .definition_id = std::string(definition_id),
+        .definition_version = definition_version,
+        .parsed = parse_configuration_expression_list(std::move(source)),
+    });
+    std::scoped_lock lock(mutex_);
+    auto const found = std::ranges::find_if(
+        expression_cache_, [&](auto const& candidate) {
+            return candidate
+                && candidate->definition_id == entry->definition_id
+                && candidate->definition_version == entry->definition_version
+                && candidate->parsed.source == entry->parsed.source;
+        });
+    if (found != expression_cache_.end()) return *found;
+    expression_cache_.push_back(entry);
+    return entry;
+}
 
 bool NodeInstances::publish_instance_locked(
     std::string const& instance_id,
@@ -293,7 +336,8 @@ bool NodeInstances::publish_instance_locked(
     auto instance = make_instance(
         definition,
         desired->second.instance_id,
-        desired->second.display_name);
+        desired->second.display_name,
+        desired->second.configuration_source);
     auto existing = published_instances_by_id_.find(instance_id);
     if (existing != published_instances_by_id_.end() && existing->second == instance) {
         return false;
@@ -327,7 +371,8 @@ std::string NodeInstances::create_instance(
     std::string_view definition_id,
     std::filesystem::path package_root,
     std::optional<std::string> requested_instance_id,
-    std::optional<std::string> requested_display_name)
+    std::optional<std::string> requested_display_name,
+    std::string configuration_source)
 {
     IvModuleRequiredDefinitionsChanged required_diff;
     IvModuleInstancesChanged instance_diff;
@@ -356,6 +401,7 @@ std::string NodeInstances::create_instance(
             .definition_id = definition_key,
             .display_name = std::move(display_name),
             .package_root = normalized_root,
+            .configuration_source = std::move(configuration_source),
         });
 
         if (auto required = required_definitions_by_id_.find(definition_key);
@@ -439,15 +485,27 @@ void NodeInstances::update_instances(std::vector<Update> updates)
         }
         for (auto const& update : updates) {
             auto desired = desired_instances_by_id_.find(update.instance_id);
-            if (!update.display_name.has_value()) continue;
-            auto next = *update.display_name;
-            if (next.empty()) next = desired->second.definition_id;
-            if (desired->second.display_name == next) continue;
-            desired->second.display_name = std::move(next);
+            bool changed = false;
+            if (update.display_name.has_value()) {
+                auto next = *update.display_name;
+                if (next.empty()) next = desired->second.definition_id;
+                if (desired->second.display_name != next) {
+                    desired->second.display_name = std::move(next);
+                    changed = true;
+                }
+            }
+            if (update.configuration_source
+                && desired->second.configuration_source != *update.configuration_source) {
+                desired->second.configuration_source = *update.configuration_source;
+                changed = true;
+            }
+            if (!changed) continue;
             list_changed = true;
             if (auto instance = published_instances_by_id_.find(update.instance_id);
                 instance != published_instances_by_id_.end()) {
                 instance->second.display_name = desired->second.display_name;
+                instance->second.configuration_source =
+                    desired->second.configuration_source;
                 diff.updated.push_back(instance->second);
             }
         }
@@ -467,6 +525,7 @@ std::vector<IvModuleInstanceInfo> NodeInstances::list_instances() const
             .definition_id = desired.definition_id,
             .display_name = desired.display_name,
             .package_root = desired.package_root,
+            .configuration_source = desired.configuration_source,
             .module_id = desired.definition_id,
         };
         if (auto published = published_instances_by_id_.find(id);
@@ -714,11 +773,37 @@ NodeInstancesBatchResult NodeInstances::configure_and_embed(
             continue;
         }
         try {
+            std::optional<EvaluatedConfigurationArguments> evaluated;
+            auto arguments = request.arguments;
+            if (request.configuration_source) {
+                auto definition = context.snapshot->by_id.find(request.definition_id);
+                if (definition == context.snapshot->by_id.end()) {
+                    throw std::runtime_error(
+                        "node definition '" + request.definition_id
+                        + "' is unavailable in this definitions snapshot");
+                }
+                auto const& provider = definition_provider(definition->second);
+                auto const* signature = provider.signature
+                    ? provider.signature()
+                    : nullptr;
+                if (!signature) {
+                    throw std::logic_error(
+                        "node definition '" + request.definition_id
+                        + "' has no construction signature");
+                }
+                auto parsed = parse_expression_cached(
+                    request.definition_id,
+                    definition->second.version,
+                    *request.configuration_source);
+                evaluated.emplace(evaluate_configuration_expression_list(
+                    parsed->parsed, *signature));
+                arguments = evaluated->arguments();
+            }
             auto cached = configure_cached(
                 context,
                 request.definition_id,
                 request.tiled_layout,
-                request.arguments);
+                arguments);
             auto embedding = root_builder.embed(
                 *cached->configured->graph, "Project node instance");
             auto const root = embedding.node_bundle(cached->configured->local_root);
@@ -777,6 +862,12 @@ void NodeInstances::handle_node_definitions_snapshot_changed(
             }
         }
         configuration_cache_ = std::move(retained_cache_entries);
+        std::erase_if(expression_cache_, [&](auto const& entry) {
+            if (!entry) return true;
+            auto const definition = change.snapshot->by_id.find(entry->definition_id);
+            return definition == change.snapshot->by_id.end()
+                || definition->second.version != entry->definition_version;
+        });
 
         std::unordered_set<std::string> realized_ids;
         for (auto& [instance_id, desired] : desired_instances_by_id_) {
@@ -848,7 +939,8 @@ void NodeInstances::handle_project_graph_transaction(
                     mutation.definition_id,
                     *package_root,
                     mutation.instance_id,
-                    mutation.display_name));
+                    mutation.display_name,
+                    mutation.configuration_source));
             } else if constexpr (std::same_as<Mutation, NodeInstanceDeleteMutation>) {
                 remove_instance(mutation.instance_id);
             } else if constexpr (std::same_as<Mutation, NodeInstanceUpdateMutation>) {
@@ -858,6 +950,7 @@ void NodeInstances::handle_project_graph_transaction(
                     updates.push_back(Update{
                         .instance_id = update.instance_id,
                         .display_name = update.display_name,
+                        .configuration_source = update.configuration_source,
                     });
                 }
                 update_instances(std::move(updates));
@@ -873,6 +966,7 @@ void NodeInstances::handle_project_graph_transaction(
             configuration_requests.push_back(NodeInstanceConfigurationRequest{
                 .instance_id = instance_id,
                 .definition_id = desired.definition_id,
+                .configuration_source = desired.configuration_source,
             });
         }
     }

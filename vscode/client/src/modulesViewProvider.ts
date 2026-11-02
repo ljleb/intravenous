@@ -10,6 +10,7 @@ export type ModuleInstanceInfo = {
     instanceId: string;
     definitionId: string;
     displayName: string;
+    configurationSource: string;
     moduleId?: string;
     packageRoot: string;
     realized: boolean;
