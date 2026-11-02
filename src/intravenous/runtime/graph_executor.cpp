@@ -435,15 +435,24 @@ void GraphExecutor::ExecutionGeneration::commit_background_migration()
     background_initialized = true;
 }
 
-void GraphExecutor::ExecutionGeneration::publish_successor(
+void GraphExecutor::ExecutionGeneration::attach_successor(
     std::unique_ptr<ExecutionGeneration> successor)
 {
     if (!successor || successor_owner
         || published_successor.load(std::memory_order_relaxed)) {
         throw std::logic_error(
-            "GraphExecutor generation cannot publish this successor");
+            "GraphExecutor generation cannot attach this successor");
     }
     successor_owner = std::move(successor);
+}
+
+void GraphExecutor::ExecutionGeneration::publish_attached_successor()
+{
+    if (!successor_owner
+        || published_successor.load(std::memory_order_relaxed)) {
+        throw std::logic_error(
+            "GraphExecutor generation has no unpublished successor");
+    }
     published_successor.store(
         successor_owner.get(), std::memory_order_release);
 }
@@ -496,7 +505,7 @@ GraphExecutor::BackgroundExecutor::failures() const noexcept
     };
 }
 
-void GraphExecutor::BackgroundExecutor::install_first_generation(
+void GraphExecutor::BackgroundExecutor::install_initial_generation(
     std::unique_ptr<ExecutionGeneration> prepared)
 {
     if (!prepared) {
@@ -509,13 +518,18 @@ void GraphExecutor::BackgroundExecutor::install_first_generation(
             throw std::logic_error(
                 "BackgroundExecutor cannot install this first generation");
         }
-        current_generation_.store(
-            prepared->graph->project_generation, std::memory_order_relaxed);
         generation_chain_ = std::move(prepared);
-        has_generation_.store(true, std::memory_order_release);
     }
+}
+
+void GraphExecutor::BackgroundExecutor::activate_initial_generation(
+    std::uint64_t generation) noexcept
+{
+    current_generation_.store(generation, std::memory_order_relaxed);
+    has_generation_.store(true, std::memory_order_release);
     // Initialization belongs to the worker even when this graph has no
-    // immediate producer input or reconciliation work.
+    // immediate producer input or reconciliation work. The generation owner
+    // was installed during cold staging, so this publication takes no lock.
     work_signal_.notify_work();
 }
 
@@ -615,7 +629,7 @@ void GraphExecutor::BackgroundExecutor::run(std::stop_token stop) noexcept
             if (stopping_ || stop.stop_requested()) {
                 // Run background lifecycle teardown on its owning worker.
                 for (auto* generation = generation_chain_.get(); generation;
-                     generation = generation->successor_owner.get()) {
+                     generation = generation->successor()) {
                     generation->background.tock_states.release();
                     generation->background.tock_states
                         .destroy_constructed_states();
@@ -694,7 +708,7 @@ void GraphExecutor::BackgroundExecutor::run(std::stop_token stop) noexcept
                 try {
                     auto* selected = generation_chain_.get();
                     while (selected && selected != command->demand_target) {
-                        selected = selected->successor_owner.get();
+                        selected = selected->successor();
                     }
                     if (!selected) {
                         throw std::logic_error(
@@ -743,9 +757,10 @@ GraphExecutor::GraphExecutor(
 
 GraphExecutor::~GraphExecutor()
 {
-    // A never-activated generation also owns PendingQueues referring to the
-    // background executor's work signal, so retire it before that actor.
-    pending_generation_.reset();
+    // A successor accepted after the installed chain but never attached also
+    // owns PendingQueues referring to the background executor's work signal,
+    // so retire it before that actor.
+    pending_owner_.reset();
 }
 
 GraphExecutor::ExecutionGeneration&
@@ -766,94 +781,55 @@ GraphExecutor::realtime_execution_generation() const
     return *realtime_active_;
 }
 
-GraphJitTransitionCompileRequest
-GraphExecutorStageContext::transition_compile_request(
-    GraphJitCompileRequest successor,
-    std::shared_ptr<CompiledGraph const> steady_successor) const
+void GraphExecutor::lock_accepted_chain() noexcept
 {
-    if (successor.project_generation != successor_generation_) {
-        throw std::invalid_argument(
-            "GraphExecutor stage context names a different transition successor");
+    while (accepted_chain_guard_.test_and_set(std::memory_order_acquire)) {
+        std::this_thread::yield();
     }
-    if (!active_predecessor_) {
-        throw std::logic_error(
-            "GraphExecutor first generation has no transition predecessor");
-    }
-    return GraphJitTransitionCompileRequest{
-        .successor = std::move(successor),
-        .steady_successor = std::move(steady_successor),
-        .active_predecessor = active_predecessor_,
-        .active_predecessor_phase = active_predecessor_phase_,
-    };
 }
 
-GraphExecutorStageContext GraphExecutor::prepare_stage(
-    std::uint64_t successor_generation) const noexcept
+void GraphExecutor::unlock_accepted_chain() noexcept
 {
-    return GraphExecutorStageContext{
-        *this,
-        successor_generation,
-        realtime_active_ ? realtime_active_->graph : nullptr,
-        realtime_active_
-            ? realtime_active_->realtime_phase.load(std::memory_order_acquire)
-            : CompiledGraphRealtimePhase::steady,
-    };
+    accepted_chain_guard_.clear(std::memory_order_release);
 }
 
 GraphExecutorStageResult GraphExecutor::stage(
-    GraphExecutorStageContext const& context,
     std::shared_ptr<CompiledGraph const> compiled_graph)
 {
+    struct Unlock {
+        GraphExecutor* executor;
+        ~Unlock() { executor->unlock_accepted_chain(); }
+    };
+    lock_accepted_chain();
+    Unlock unlock{this};
     if (!compiled_graph) {
         throw std::invalid_argument("GraphExecutor cannot stage an empty compiled graph");
     }
-    if (context.executor_ != this) {
-        throw std::invalid_argument(
-            "GraphExecutor cannot use a stage context from another executor");
-    }
-    if (compiled_graph->project_generation
-        != context.successor_generation_) {
-        throw std::invalid_argument(
-            "GraphExecutor stage context names a different successor generation");
-    }
-    auto const newest_generation = pending_generation_
-        ? pending_generation_->graph->project_generation
-        : realtime_active_ ? realtime_active_->graph->project_generation
-                           : std::uint64_t{0};
-    if ((realtime_active_ || pending_generation_)
+    auto* predecessor = pending_tail_ ? pending_tail_ : realtime_active_;
+    auto const newest_generation = predecessor
+        ? predecessor->graph->project_generation : std::uint64_t{0};
+    if (predecessor
         && compiled_graph->project_generation <= newest_generation) {
         return GraphExecutorStageResult::ignored_stale;
     }
-
-    auto const active_predecessor = realtime_active_
-        ? realtime_active_->graph.get()
-        : nullptr;
-    if (active_predecessor != context.active_predecessor_.get()) {
-        return GraphExecutorStageResult::active_predecessor_changed;
-    }
-    auto const active_phase = realtime_active_
-        ? realtime_active_->realtime_phase.load(std::memory_order_acquire)
-        : CompiledGraphRealtimePhase::steady;
-    if (active_phase != context.active_predecessor_phase_) {
-        return GraphExecutorStageResult::active_predecessor_changed;
-    }
     if (compiled_graph->cutover) {
-        if (!context.active_predecessor_) {
+        if (!predecessor) {
             throw std::invalid_argument(
                 "GraphExecutor first generation cannot carry a predecessor cutover");
         }
-        auto predecessor = compiled_graph->cutover->predecessor.lock();
-        if (predecessor.get() != context.active_predecessor_.get()
-            || compiled_graph->cutover->predecessor_phase
-                != context.active_predecessor_phase_) {
+        auto named_predecessor = compiled_graph->cutover->predecessor.lock();
+        if (named_predecessor.get() != predecessor->graph.get()) {
             throw std::invalid_argument(
-                "GraphExecutor compiled cutover does not match its stage context");
+                "GraphExecutor compiled cutover does not name the accepted chain tail");
         }
-    } else if (context.active_predecessor_
-               && context.active_predecessor_phase_
-                    == CompiledGraphRealtimePhase::transition) {
+        if (compiled_graph->cutover->predecessor_phase
+            != CompiledGraphRealtimePhase::steady) {
+            throw std::invalid_argument(
+                "GraphExecutor ordered cutover must name the predecessor steady realization");
+        }
+    } else if (predecessor) {
         throw std::invalid_argument(
-            "GraphExecutor successor is not specialized from the active transition realization");
+            "GraphExecutor successor does not carry its predecessor cutover");
     }
 
     auto prepared = std::make_unique<ExecutionGeneration>(
@@ -871,33 +847,66 @@ GraphExecutorStageResult GraphExecutor::stage(
         && !prepared->graph->background_evaluation_plan
                 .tick_sequential_inputs.empty();
     prepared->prepare_initial_persisted_state(persisted_data_);
-    if (!realtime_active_) {
+    if (!predecessor) {
         prepared->initialize_first_generation();
     } else {
-        prepared->prepare_realtime_migration_from(
-            realtime_execution_generation());
+        prepared->prepare_realtime_migration_from(*predecessor);
         background_executor_.prepare_background_migration(
-            *prepared, realtime_execution_generation());
+            *prepared, *predecessor);
     }
-    pending_generation_ = std::move(prepared);
-    return GraphExecutorStageResult::staged;
+    auto* accepted = prepared.get();
+    if (!predecessor) {
+        background_executor_.install_initial_generation(std::move(prepared));
+        pending_head_ = accepted;
+    } else if (pending_tail_) {
+        pending_tail_->attach_successor(std::move(prepared));
+    } else {
+        pending_owner_ = std::move(prepared);
+        pending_head_ = pending_owner_.get();
+    }
+    pending_tail_ = accepted;
+    accepted_tail_graph_ = accepted->graph;
+    return GraphExecutorStageResult::accepted;
+}
+
+ProjectGraphGraphExecutorResult GraphExecutor::handle_project_graph_transaction(
+    std::shared_ptr<CompiledGraph const> const& compiled_graph)
+{
+    auto const result = stage(compiled_graph);
+    if (result != GraphExecutorStageResult::accepted) {
+        throw std::logic_error(
+            "ProjectGraph submitted a stale GraphExecutor generation");
+    }
+    return {
+        .attempted = true,
+        .accepted = true,
+    };
 }
 
 bool GraphExecutor::activate_pending(GlobalIndex sample_index)
 {
-    if (!pending_generation_) return false;
+    if (accepted_chain_guard_.test_and_set(std::memory_order_acquire)) {
+        return false;
+    }
+    struct Unlock {
+        GraphExecutor* executor;
+        ~Unlock() { executor->unlock_accepted_chain(); }
+    } unlock{this};
+    if (!pending_head_) return false;
     if (!realtime_active_) {
-        if (!pending_generation_->initial_persisted_state
-            || !pending_generation_->initial_persisted_state->capture_initial()) {
+        if (!pending_head_->initial_persisted_state
+            || !pending_head_->initial_persisted_state->capture_initial()) {
             throw std::logic_error(
                 "GraphExecutor initial persisted state was not prepared");
         }
-        auto* first = pending_generation_.get();
-        background_executor_.install_first_generation(
-            std::move(pending_generation_));
+        auto* first = pending_head_;
         realtime_active_ = first;
         realtime_persisted_state_.activate_generation(
             std::move(realtime_active_->initial_persisted_state));
+        background_executor_.activate_initial_generation(
+            first->graph->project_generation);
+        pending_head_ = first->successor_owner.get();
+        if (!pending_head_) pending_tail_ = nullptr;
         return true;
     }
 
@@ -905,31 +914,35 @@ bool GraphExecutor::activate_pending(GlobalIndex sample_index)
     previous.update_realtime_phase();
     auto const previous_phase =
         previous.realtime_phase.load(std::memory_order_relaxed);
-    auto const& cutover = pending_generation_->graph->cutover;
+    auto const& cutover = pending_head_->graph->cutover;
     auto const cutover_is_current = cutover
         ? cutover->predecessor.lock().get() == previous.graph.get()
             && cutover->predecessor_phase == previous_phase
         : previous_phase == CompiledGraphRealtimePhase::steady;
     if (!cutover_is_current) {
-        // Phase expiry can happen after cold staging but before the caller's
-        // quiescent activation boundary. The prepared transfer may name a
-        // transition suffix which has since stopped receiving samples, so it
-        // cannot be repaired or committed on the realtime path.
-        pending_generation_.reset();
+        // The accepted successor remains queued until its named predecessor
+        // realization becomes active. In particular, ProjectGraph may submit
+        // a steady-predecessor cutover while the predecessor transition root
+        // is still expiring.
         return false;
     }
-    if (!pending_generation_->initial_persisted_state
-        || !pending_generation_->initial_persisted_state->capture_initial()) {
+    if (!pending_head_->initial_persisted_state
+        || !pending_head_->initial_persisted_state->capture_initial()) {
         throw std::logic_error(
             "GraphExecutor initial persisted state was not prepared");
     }
-    pending_generation_->commit_realtime_migration(sample_index);
+    pending_head_->commit_realtime_migration(sample_index);
     previous.background.close_inputs();
-    auto* next = pending_generation_.get();
+    auto* next = pending_head_;
     realtime_persisted_state_.activate_generation(
         std::move(next->initial_persisted_state));
-    previous.publish_successor(std::move(pending_generation_));
+    if (pending_owner_) {
+        previous.attach_successor(std::move(pending_owner_));
+    }
+    previous.publish_attached_successor();
     realtime_active_ = next;
+    pending_head_ = next->successor_owner.get();
+    if (!pending_head_) pending_tail_ = nullptr;
     background_executor_.notify_generation_cutover();
     return true;
 }
@@ -942,8 +955,8 @@ std::optional<std::uint64_t> GraphExecutor::active_generation() const noexcept
 
 std::optional<std::uint64_t> GraphExecutor::pending_generation() const noexcept
 {
-    if (!pending_generation_) return std::nullopt;
-    return pending_generation_->graph->project_generation;
+    if (!pending_head_) return std::nullopt;
+    return pending_head_->graph->project_generation;
 }
 
 std::optional<std::uint64_t>
@@ -957,17 +970,29 @@ std::shared_ptr<CompiledGraph const> GraphExecutor::active_graph() const noexcep
     return realtime_active_ ? realtime_active_->graph : nullptr;
 }
 
+std::shared_ptr<CompiledGraph const> GraphExecutor::accepted_graph() const noexcept
+{
+    return accepted_tail_graph_;
+}
+
 void GraphExecutor::set_tick_materialization_demand(IndexCoverage demand)
 {
+    struct Unlock {
+        GraphExecutor* executor;
+        ~Unlock() { executor->unlock_accepted_chain(); }
+    };
+    lock_accepted_chain();
+    Unlock unlock{this};
     tick_materialization_demand_ = std::move(demand);
-    if (pending_generation_) {
-        auto& background = pending_generation_->background;
+    for (auto* pending = pending_head_; pending;
+         pending = pending->successor_owner.get()) {
+        auto& background = pending->background;
         background.tick_materialization_demand =
             tick_materialization_demand_;
         auto const missing = background.tick_materialization_demand
             - background.materialized_tick_coverage;
         background.tick_materialization_required = !missing.empty()
-            && !pending_generation_->graph->background_evaluation_plan
+            && !pending->graph->background_evaluation_plan
                     .tick_sequential_inputs.empty();
     }
     if (realtime_active_) {

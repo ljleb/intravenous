@@ -1672,11 +1672,14 @@ from the transition realization into the steady one; only the transition-only in
 portion is known to have expired.
 
 If another project revision arrives before the current transition expires, that new
-revision reconciles from the **currently active transition realization** and its
-semantic state views. Any pending steady realization for the superseded revision may
-be discarded. Rebuild logic must never reconstruct history from an older logical graph
-or assume that the not-yet-activated steady plan describes the state the node has
-actually observed.
+revision names the previously accepted destination as its predecessor. `ProjectGraph`
+and `GraphExecutor` preserve the revision order. They do not replace or discard an
+accepted intermediate transition. Reconciliation still uses the predecessor's actual
+semantic state when its ordered cutover occurs; it must never reconstruct history from
+an older logical graph.
+
+The replaceable-pending rule that preceded this decision is preserved in
+[Front 8 Replaceable Pending Transition False Start](./historical/front_8_replaceable_pending_transition_false_start_2026-11-01.md).
 
 This continuity work is a **correctness prerequisite for optimization**. The eventual
 NodeStorage cleanup is a separate task. The first implementation may retain existing
@@ -2008,10 +2011,11 @@ Desired graph revision and active executable revision are therefore distinct
 state even though compilation itself is synchronous.
 
 Runtime staging after a successful compile is also transactional with respect to
-activation. `ProjectGraph` stages background first. If that fails, realtime is not
-staged. If background staging succeeds but realtime staging fails, no cutover occurs;
-the staged background target has never become semantically active and may be reclaimed
-or superseded off realtime. The previous active generation continues in either case.
+acceptance. `GraphExecutor::stage()` constructs realtime and background state as one
+complete `ExecutionGeneration`. A failure before acceptance leaves the ordered chain
+tail unchanged and the previous executable generation continues. After acceptance,
+the generation is not replaceable and must reach its ordered realtime cutover unless
+the process terminates.
 
 ## Compiler pipeline
 

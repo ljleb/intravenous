@@ -93,22 +93,19 @@ The governing performance invariant is:
    background storage instance, which would duplicate an appended realtime-only tail.
    A steady-only allocation extent is now implemented: background `NodeStorage`
    instances omit the transition suffix even though they retain the canonical layout.
-   The predecessor must not simply come from the prior `ProjectGraph` generation,
-   because pending generations can be superseded and the executor's active predecessor
-   can be older. `GraphExecutor` already distinguishes `realtime_active_` from the
-   replaceable `pending_generation_`. `prepare_stage()` now snapshots only the former
-   into an immutable compiler-coordination context, and `stage()` rejects that context
-   if realtime activated a different predecessor while specialization was in flight.
-   Pending replacement does not invalidate it. Before transition-root expiry is
-   connected, extend the same context token to distinguish that active transition
-   realization from the later steady realization of the same logical generation. A
+   The predecessor comes from the ordered executable chain owned by `ProjectGraph` and
+   accepted by `GraphExecutor`. Once A to B is accepted, a later B to C request cannot
+   replace it with A to C. `GraphExecutor` validates that each submitted predecessor is
+   the accepted chain tail and preserves every accepted cutover in order. A
    finalized steady `NodeLayout` can now
    be extended through `NodeLayoutTransitionBuilder`, which preserves all prefix
    offsets and admits only a transition suffix. The representative project-rate direct-
    ring sample case can now allocate a private suffix target when the steady target is
    shared, and the prepared cutover transfer populates it. Connect these completed
    primitives to GraphJit transition binding/root emission; do not force every graph
-   edit to activate or reserve all possible transition tails.
+   edit to activate or reserve all possible transition tails. The superseded
+   replaceable-pending coordination is preserved in
+   [`historical/front_8_replaceable_pending_transition_false_start_2026-11-01.md`](historical/front_8_replaceable_pending_transition_false_start_2026-11-01.md).
 
    **Representative connection implemented (2026-10-18; verification pending):**
    cold transition specialization now binds feed-forward project-rate direct `Sample`
@@ -117,12 +114,10 @@ The governing performance invariant is:
    the same module. `GraphExecutor` activates that root from a prevalidated cutover,
    exposes the suffix as the active semantic realization to a newer specialization, and
    switches to the steady entrypoint at a callback boundary after the finite history
-   horizon. The staging token includes the active transition/steady phase, so expiry
-   during compilation invalidates the result even when the logical predecessor graph is
-   unchanged. Expiry after staging but before activation likewise discards the prepared
-   generation at the quiescent boundary and requires cold respecialization; a stale
-   suffix is never committed. Background storage continues to allocate only the steady
-   prefix.
+   horizon. Application cutovers are compiled from the accepted predecessor's steady
+   realization. An accepted successor waits if that predecessor is still executing its
+   transition root; phase expiry does not discard the successor or require cold
+   respecialization. Background storage continues to allocate only the steady prefix.
 
    This path currently rejects output history/latency, feedback producer order,
    materialized/composed and non-project-rate samples, and event transition storage.

@@ -404,6 +404,7 @@ add_library(intravenous_tooling_runtime_objects OBJECT
     runtime/graph_connections.cpp
     runtime/project_graph.cpp
     runtime/project_graph_graph_connections_bridge.cpp
+    runtime/project_graph_graph_executor_bridge.cpp
     runtime/project_graph_graph_jit_bridge.cpp
     runtime/project_graph_node_instances_bridge.cpp
     runtime/package_definitions.cpp

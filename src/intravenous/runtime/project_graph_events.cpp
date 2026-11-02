@@ -2,7 +2,13 @@
 
 namespace iv {
 namespace {
-GraphJitCompileResult ignore_graph_jit_request(GraphJitCompileRequest const&)
+GraphJitCompileResult ignore_graph_jit_request(ProjectGraphGraphJitRequest const&)
+{
+    return {};
+}
+
+ProjectGraphGraphExecutorResult ignore_graph_executor_request(
+    std::shared_ptr<CompiledGraph const> const&)
 {
     return {};
 }
@@ -17,4 +23,8 @@ IV_DEFINE_SINGLETON_EVENT(
     ProjectGraphGraphJitRequestedEvent,
     iv_runtime_project_graph_graph_jit_requested_event,
     &ignore_graph_jit_request)
+IV_DEFINE_SINGLETON_EVENT(
+    ProjectGraphGraphExecutorRequestedEvent,
+    iv_runtime_project_graph_graph_executor_requested_event,
+    &ignore_graph_executor_request)
 } // namespace iv

@@ -4,6 +4,7 @@
 #include <intravenous/devices/miniaudio_device.h>
 #include <intravenous/juce/vst_runtime.h>
 #include <intravenous/runtime/graph_connections.h>
+#include <intravenous/runtime/graph_executor.h>
 #include <intravenous/runtime/graph_jit.h>
 #include <intravenous/runtime/handlers.h>
 #include <intravenous/runtime/node_definitions.h>
@@ -30,6 +31,7 @@
 #include <intravenous/runtime/project_persistence_system_audio_devices_bridge.h>
 #include <intravenous/runtime/project_graph.h>
 #include <intravenous/runtime/project_graph_graph_connections_bridge.h>
+#include <intravenous/runtime/project_graph_graph_executor_bridge.h>
 #include <intravenous/runtime/project_graph_graph_jit_bridge.h>
 #include <intravenous/runtime/project_graph_node_instances_bridge.h>
 #include <intravenous/runtime/server_options.h>
@@ -44,7 +46,10 @@
 #include <intravenous/runtime/startup_config.h>
 #include <intravenous/runtime/system_audio_devices.h>
 
+#include <atomic>
 #include <chrono>
+#include <cstdint>
+#include <exception>
 #include <filesystem>
 #include <functional>
 #include <iostream>
@@ -131,6 +136,135 @@ public:
     }
 };
 
+class GraphExecutorAudioAttachment {
+    SystemAudioDevices* devices_ = nullptr;
+    GraphExecutor* executor_ = nullptr;
+
+public:
+    GraphExecutorAudioAttachment(
+        SystemAudioDevices& devices,
+        GraphExecutor& executor) noexcept
+        : devices_(&devices)
+        , executor_(&executor)
+    {
+        devices_->attach_graph_executor(*executor_);
+    }
+
+    ~GraphExecutorAudioAttachment() { stop(); }
+
+    GraphExecutorAudioAttachment(GraphExecutorAudioAttachment const&) = delete;
+    GraphExecutorAudioAttachment& operator=(
+        GraphExecutorAudioAttachment const&) = delete;
+
+    void stop() noexcept
+    {
+        if (!devices_) return;
+        devices_->detach_graph_executor(*executor_);
+        devices_->stop();
+        devices_ = nullptr;
+        executor_ = nullptr;
+    }
+};
+
+class RuntimeExecutionService {
+    enum class Failure : std::uint8_t {
+        none,
+        system_audio,
+        realtime_production,
+        capacity_allocation,
+        capacity_unexpected,
+        background_execution,
+    };
+
+    SystemAudioDevices* devices_ = nullptr;
+    GraphExecutor* executor_ = nullptr;
+    std::function<void()> request_shutdown_{};
+    std::atomic<Failure> failure_ = Failure::none;
+    std::optional<std::jthread> thread_{};
+
+    [[nodiscard]] Failure current_failure() const noexcept
+    {
+        if (devices_->output_render_failed()) {
+            return Failure::system_audio;
+        }
+        if (executor_->realtime_production_failures().any()) {
+            return Failure::realtime_production;
+        }
+        auto const capacity =
+            executor_->realtime_capacity_maintenance_failures();
+        if (capacity.allocation_failed) {
+            return Failure::capacity_allocation;
+        }
+        if (capacity.unexpected_failure) {
+            return Failure::capacity_unexpected;
+        }
+        if (executor_->background_execution_failures().any()) {
+            return Failure::background_execution;
+        }
+        return Failure::none;
+    }
+
+public:
+    RuntimeExecutionService(
+        SystemAudioDevices& devices,
+        GraphExecutor& executor,
+        std::function<void()> request_shutdown)
+        : devices_(&devices)
+        , executor_(&executor)
+        , request_shutdown_(std::move(request_shutdown))
+    {
+    }
+
+    ~RuntimeExecutionService() { stop(); }
+
+    void start()
+    {
+        if (thread_) return;
+        thread_.emplace([this](std::stop_token stop) {
+            while (!stop.stop_requested()) {
+                auto const failure = current_failure();
+                if (failure != Failure::none) {
+                    failure_.store(failure, std::memory_order_release);
+                    request_shutdown_();
+                    return;
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(20));
+            }
+        });
+    }
+
+    void stop()
+    {
+        if (!thread_) return;
+        thread_->request_stop();
+        thread_.reset();
+    }
+
+    void throw_if_failed() const
+    {
+        auto failure = failure_.load(std::memory_order_acquire);
+        if (failure == Failure::none) failure = current_failure();
+        switch (failure) {
+        case Failure::none:
+            return;
+        case Failure::system_audio:
+            throw std::runtime_error("system audio rendering failed");
+        case Failure::realtime_production:
+            throw std::runtime_error(
+                "realtime execution exhausted mandatory producer storage");
+        case Failure::capacity_allocation:
+            throw std::runtime_error(
+                "realtime producer capacity allocation failed");
+        case Failure::capacity_unexpected:
+            throw std::runtime_error(
+                "realtime producer capacity maintenance failed");
+        case Failure::background_execution:
+            throw std::runtime_error("background graph execution failed");
+        }
+        std::terminate();
+    }
+};
+
 void startup_log(std::string const& message)
 {
     std::cerr << "[intravenous startup] " << message << '\n';
@@ -163,6 +297,9 @@ int run_server_mode(int argc, char** argv)
     PackageJit package_jit(startup);
     PackageDefinitions package_definitions(startup.workspace_root);
     IvModuleSourceIntrospection introspection;
+#if IV_ENABLE_JUCE_VST
+    JuceVstRuntimeManager vst_runtime_manager;
+#endif
     SystemAudioDevices system_audio_devices(
         startup.execution.sample_rate,
         startup.execution.block_size,
@@ -178,6 +315,17 @@ int run_server_mode(int argc, char** argv)
         },
         startup.output_device_id,
         startup.input_device_id);
+    auto execution_resources = system_audio_devices.resources();
+#if IV_ENABLE_JUCE_VST
+    JuceVstRuntimeSupport vst_runtime_support(
+        vst_runtime_manager,
+        static_cast<double>(startup.execution.sample_rate));
+    execution_resources.vst = vst_runtime_support.resources().vst;
+#endif
+    GraphExecutor graph_executor(std::move(execution_resources));
+    GraphExecutorAudioAttachment graph_executor_audio_attachment(
+        system_audio_devices,
+        graph_executor);
     ProjectPersistence project_persistence(startup.workspace_root, startup);
     ProjectAutosave project_autosave;
     SocketRpcServer server(options.workspace_root, options.rpc_fd);
@@ -198,6 +346,10 @@ int run_server_mode(int argc, char** argv)
     };
     ScopedShutdownCallback shutdown_callback_scope(shutdown);
     install_shutdown_handlers(request_shutdown);
+    RuntimeExecutionService runtime_execution_service(
+        system_audio_devices,
+        graph_executor,
+        shutdown);
 
     // Runtime bridges.
     auto definitions_project_graph_scope =
@@ -208,6 +360,8 @@ int run_server_mode(int argc, char** argv)
         project_graph_graph_connections_bridge::bind(project_graph, graph_connections);
     auto project_graph_graph_jit_scope =
         project_graph_graph_jit_bridge::bind(project_graph, graph_jit);
+    auto project_graph_graph_executor_scope =
+        project_graph_graph_executor_bridge::bind(project_graph, graph_executor);
     auto definitions_introspection_scope =
         node_definitions_iv_module_source_introspection_bridge::bind(
             node_definitions, introspection);
@@ -255,6 +409,7 @@ int run_server_mode(int argc, char** argv)
     startup_log("loading project persistence");
     project_persistence.load();
     project_autosave_service.start();
+    runtime_execution_service.start();
 
     startup_log("starting socket rpc server");
     server.start();
@@ -269,7 +424,9 @@ int run_server_mode(int argc, char** argv)
 
     package_watcher_service.request_shutdown();
     project_autosave_service.stop();
-    system_audio_devices.request_shutdown();
+    runtime_execution_service.stop();
+    graph_executor_audio_attachment.stop();
+    runtime_execution_service.throw_if_failed();
     return 0;
 }
 } // namespace

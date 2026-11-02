@@ -76,6 +76,7 @@ TickObservation first_tick;
 TickObservation second_tick;
 std::size_t first_raw_offset = 0;
 std::size_t second_raw_offset = 0;
+std::size_t third_raw_offset = 0;
 unsigned migrated_raw_value = 0;
 iv::IndexCoverage persisted_probe_coverage{};
 std::size_t persisted_probe_evaluate_calls = 0;
@@ -167,6 +168,25 @@ void observe_raw_state(
     std::size_t)
 {
     migrated_raw_value = std::to_integer<unsigned>(storage[second_raw_offset]);
+}
+
+void replace_second_raw_state(
+    std::byte* storage,
+    iv::graph_jit::TickInvocationCall const*,
+    iv::GlobalIndex,
+    std::size_t)
+{
+    migrated_raw_value = std::to_integer<unsigned>(storage[second_raw_offset]);
+    storage[second_raw_offset] = std::byte{0x6b};
+}
+
+void observe_third_raw_state(
+    std::byte* storage,
+    iv::graph_jit::TickInvocationCall const*,
+    iv::GlobalIndex,
+    std::size_t)
+{
+    migrated_raw_value = std::to_integer<unsigned>(storage[third_raw_offset]);
 }
 
 void propagate_background_forward(
@@ -888,8 +908,24 @@ iv::GraphExecutorStageResult stage_graph(
     iv::GraphExecutor& executor,
     std::shared_ptr<iv::CompiledGraph const> const& graph)
 {
-    return executor.stage(
-        executor.prepare_stage(graph->project_generation), graph);
+    if (graph->cutover || !executor.accepted_graph()) {
+        return executor.stage(graph);
+    }
+    auto executable = std::make_shared<iv::CompiledGraph>(*graph);
+    auto transition = iv::graph_jit::plan_realtime_port_state_transition(
+        executor.accepted_graph()->realtime_port_state_requirements,
+        executor.accepted_graph()->realtime_port_state_realizations,
+        executable->realtime_port_state_requirements,
+        executable->realtime_port_state_realizations);
+    if (!transition) {
+        throw std::runtime_error(transition.error());
+    }
+    executable->cutover.emplace(iv::CompiledGraphCutover{
+        .predecessor = executor.accepted_graph(),
+        .predecessor_phase = iv::CompiledGraphRealtimePhase::steady,
+        .state_transition = std::move(*transition),
+    });
+    return executor.stage(std::move(executable));
 }
 
 iv::NodeLayout persistent_raw_layout(std::size_t& offset)
@@ -920,6 +956,7 @@ protected:
         second_tick = {};
         first_raw_offset = 0;
         second_raw_offset = 0;
+        third_raw_offset = 0;
         migrated_raw_value = 0;
         persisted_probe_coverage = index_coverage({{0, 8}});
         persisted_probe_evaluate_calls = 0;
@@ -1038,7 +1075,7 @@ TEST_F(GraphExecutorFixture, StagesActivatesAndDispatchesOnlyActiveGeneration)
 
     EXPECT_THROW(executor.tick_block(index(0), 64), std::logic_error);
     EXPECT_EQ(
-        stage_graph(executor, first), iv::GraphExecutorStageResult::staged);
+        stage_graph(executor, first), iv::GraphExecutorStageResult::accepted);
     EXPECT_FALSE(executor.active_generation());
     EXPECT_EQ(executor.pending_generation(), 1u);
     EXPECT_TRUE(executor.activate_pending(index(0)));
@@ -1056,14 +1093,14 @@ TEST_F(GraphExecutorFixture, StagesActivatesAndDispatchesOnlyActiveGeneration)
     EXPECT_TRUE(first_tick.invocation->random_access_event_inputs.empty());
 
     EXPECT_EQ(
-        stage_graph(executor, second), iv::GraphExecutorStageResult::staged);
+        stage_graph(executor, second), iv::GraphExecutorStageResult::accepted);
     executor.tick_block(index(49), 16);
     EXPECT_EQ(first_tick.calls, 2u);
     EXPECT_EQ(second_tick.calls, 0u);
 
     EXPECT_TRUE(executor.activate_pending(index(65)));
     EXPECT_EQ(executor.active_generation(), 2u);
-    EXPECT_EQ(executor.active_graph(), second);
+    EXPECT_EQ(executor.active_graph()->project_generation, 2u);
     executor.tick_block(index(65), 64);
     EXPECT_EQ(second_tick.calls, 1u);
     EXPECT_EQ(second_tick.sample_index, index(65));
@@ -1071,18 +1108,21 @@ TEST_F(GraphExecutorFixture, StagesActivatesAndDispatchesOnlyActiveGeneration)
     EXPECT_FALSE(executor.activate_pending(index(129)));
 }
 
-TEST_F(GraphExecutorFixture, IgnoresStaleAndSupersedesOlderPendingGeneration)
+TEST_F(GraphExecutorFixture, PreservesEveryAcceptedGenerationBeforeActivation)
 {
     iv::GraphExecutor executor;
     auto first = compiled_graph(1, &observe_first);
     auto second = compiled_graph(2, &observe_second);
 
     EXPECT_EQ(
-        stage_graph(executor, first), iv::GraphExecutorStageResult::staged);
+        stage_graph(executor, first), iv::GraphExecutorStageResult::accepted);
     EXPECT_EQ(
         stage_graph(executor, first), iv::GraphExecutorStageResult::ignored_stale);
     EXPECT_EQ(
-        stage_graph(executor, second), iv::GraphExecutorStageResult::staged);
+        stage_graph(executor, second), iv::GraphExecutorStageResult::accepted);
+    EXPECT_EQ(executor.pending_generation(), 1u);
+    EXPECT_TRUE(executor.activate_pending(index(0)));
+    EXPECT_EQ(executor.active_generation(), 1u);
     EXPECT_EQ(executor.pending_generation(), 2u);
     EXPECT_TRUE(executor.activate_pending(index(0)));
     EXPECT_EQ(executor.active_generation(), 2u);
@@ -1090,54 +1130,62 @@ TEST_F(GraphExecutorFixture, IgnoresStaleAndSupersedesOlderPendingGeneration)
         stage_graph(executor, first), iv::GraphExecutorStageResult::ignored_stale);
 }
 
-TEST_F(GraphExecutorFixture, SupersedesPendingGenerationAgainstOlderActiveGeneration)
+TEST_F(GraphExecutorFixture, ProjectGraphSubmissionMustAdvanceTheAcceptedTail)
+{
+    iv::GraphExecutor executor;
+    auto first = compiled_graph(1, &observe_first);
+
+    auto const accepted = executor.handle_project_graph_transaction(first);
+    EXPECT_TRUE(accepted.attempted);
+    EXPECT_TRUE(accepted.accepted);
+    EXPECT_THROW(
+        executor.handle_project_graph_transaction(first),
+        std::logic_error);
+    EXPECT_EQ(executor.pending_generation(), 1u);
+}
+
+TEST_F(GraphExecutorFixture, AppendsAcceptedGenerationsAfterTheAcceptedChainTail)
 {
     iv::GraphExecutor executor;
     auto first = compiled_graph(1, &observe_first);
     auto second = compiled_graph(2, &observe_second);
     auto third = compiled_graph(3, &observe_second);
 
-    ASSERT_EQ(stage_graph(executor, first), iv::GraphExecutorStageResult::staged);
+    ASSERT_EQ(stage_graph(executor, first), iv::GraphExecutorStageResult::accepted);
     ASSERT_TRUE(executor.activate_pending(index(0)));
     ASSERT_EQ(executor.active_generation(), 1u);
 
-    auto const second_stage = executor.prepare_stage(2);
-    auto const third_stage = executor.prepare_stage(3);
-    EXPECT_EQ(second_stage.active_predecessor(), first);
-    EXPECT_EQ(third_stage.active_predecessor(), first);
-    ASSERT_EQ(
-        executor.stage(second_stage, second),
-        iv::GraphExecutorStageResult::staged);
-    ASSERT_EQ(
-        executor.stage(third_stage, third),
-        iv::GraphExecutorStageResult::staged);
+    ASSERT_EQ(stage_graph(executor, second), iv::GraphExecutorStageResult::accepted);
+    ASSERT_EQ(stage_graph(executor, third), iv::GraphExecutorStageResult::accepted);
     EXPECT_EQ(executor.active_generation(), 1u);
-    EXPECT_EQ(executor.pending_generation(), 3u);
+    EXPECT_EQ(executor.pending_generation(), 2u);
 
+    ASSERT_TRUE(executor.activate_pending(index(64)));
+    EXPECT_EQ(executor.active_generation(), 2u);
+    EXPECT_EQ(executor.pending_generation(), 3u);
     ASSERT_TRUE(executor.activate_pending(index(64)));
     EXPECT_EQ(executor.active_generation(), 3u);
 }
 
-TEST_F(GraphExecutorFixture, RejectsSpecializationAfterItsActivePredecessorChanges)
+TEST_F(GraphExecutorFixture, RejectsACutoverThatSkipsTheAcceptedChainTail)
 {
     iv::GraphExecutor executor;
     auto first = compiled_graph(1, &observe_first);
     auto second = compiled_graph(2, &observe_second);
     auto third = compiled_graph(3, &observe_second);
 
-    ASSERT_EQ(stage_graph(executor, first), iv::GraphExecutorStageResult::staged);
+    ASSERT_EQ(stage_graph(executor, first), iv::GraphExecutorStageResult::accepted);
     ASSERT_TRUE(executor.activate_pending(index(0)));
 
-    auto const third_stage = executor.prepare_stage(3);
-    ASSERT_EQ(third_stage.active_predecessor(), first);
-    ASSERT_EQ(stage_graph(executor, second), iv::GraphExecutorStageResult::staged);
-    ASSERT_TRUE(executor.activate_pending(index(64)));
-
-    EXPECT_EQ(
-        executor.stage(third_stage, third),
-        iv::GraphExecutorStageResult::active_predecessor_changed);
-    EXPECT_FALSE(executor.pending_generation());
-    EXPECT_EQ(executor.active_generation(), 2u);
+    ASSERT_EQ(stage_graph(executor, second), iv::GraphExecutorStageResult::accepted);
+    auto skipped = std::make_shared<iv::CompiledGraph>(*third);
+    skipped->cutover.emplace(iv::CompiledGraphCutover{
+        .predecessor = first,
+        .predecessor_phase = iv::CompiledGraphRealtimePhase::steady,
+    });
+    EXPECT_THROW(executor.stage(std::move(skipped)), std::invalid_argument);
+    EXPECT_EQ(executor.pending_generation(), 2u);
+    EXPECT_EQ(executor.active_generation(), 1u);
 }
 
 TEST_F(
@@ -1146,7 +1194,7 @@ TEST_F(
 {
     iv::GraphExecutor executor;
     auto first = compiled_graph(1, &observe_second);
-    ASSERT_EQ(stage_graph(executor, first), iv::GraphExecutorStageResult::staged);
+    ASSERT_EQ(stage_graph(executor, first), iv::GraphExecutorStageResult::accepted);
     ASSERT_TRUE(executor.activate_pending(index(0)));
 
     auto second = transition_graph(
@@ -1156,10 +1204,7 @@ TEST_F(
         64,
         &observe_first_and_advance_transition_cursor,
         &observe_second);
-    auto const second_stage = executor.prepare_stage(2);
-    ASSERT_EQ(
-        executor.stage(second_stage, second),
-        iv::GraphExecutorStageResult::staged);
+    ASSERT_EQ(executor.stage(second), iv::GraphExecutorStageResult::accepted);
     ASSERT_TRUE(executor.activate_pending(index(100)));
 
     first_tick = {};
@@ -1167,26 +1212,13 @@ TEST_F(
     executor.tick_block(index(100), 32);
     EXPECT_EQ(first_tick.calls, 1u);
     EXPECT_EQ(second_tick.calls, 0u);
-    auto const transition_phase_stage = executor.prepare_stage(3);
-    EXPECT_EQ(
-        transition_phase_stage.active_predecessor_phase(),
-        iv::CompiledGraphRealtimePhase::transition);
-
-    auto third = transition_graph(
-        3,
-        second,
-        iv::CompiledGraphRealtimePhase::transition,
-        16,
-        &observe_first_and_advance_transition_cursor,
-        &observe_second);
+    auto third = compiled_graph(3, &observe_second);
+    ASSERT_EQ(stage_graph(executor, third), iv::GraphExecutorStageResult::accepted);
+    EXPECT_FALSE(executor.activate_pending(index(132)));
     executor.tick_block(index(10'000), 32);
     EXPECT_EQ(first_tick.calls, 2u);
-    EXPECT_EQ(
-        executor.prepare_stage(3).active_predecessor_phase(),
-        iv::CompiledGraphRealtimePhase::steady);
-    EXPECT_EQ(
-        executor.stage(transition_phase_stage, third),
-        iv::GraphExecutorStageResult::active_predecessor_changed);
+    EXPECT_TRUE(executor.activate_pending(index(10'032)));
+    EXPECT_EQ(executor.active_generation(), 3u);
 
     executor.tick_block(index(-4'000), 32);
     EXPECT_EQ(first_tick.calls, 2u);
@@ -1199,7 +1231,7 @@ TEST_F(
 {
     iv::GraphExecutor executor;
     auto first = compiled_graph(1, &observe_second);
-    ASSERT_EQ(stage_graph(executor, first), iv::GraphExecutorStageResult::staged);
+    ASSERT_EQ(stage_graph(executor, first), iv::GraphExecutorStageResult::accepted);
     ASSERT_TRUE(executor.activate_pending(index(0)));
 
     auto second = transition_graph(
@@ -1210,7 +1242,7 @@ TEST_F(
         &observe_first,
         &observe_second,
         64);
-    ASSERT_EQ(stage_graph(executor, second), iv::GraphExecutorStageResult::staged);
+    ASSERT_EQ(stage_graph(executor, second), iv::GraphExecutorStageResult::accepted);
     ASSERT_TRUE(executor.activate_pending(index(100)));
 
     first_tick = {};
@@ -1218,15 +1250,8 @@ TEST_F(
     executor.tick_block(index(100), 32);
     EXPECT_EQ(first_tick.calls, 1u);
     EXPECT_EQ(second_tick.calls, 0u);
-    EXPECT_EQ(
-        executor.prepare_stage(3).active_predecessor_phase(),
-        iv::CompiledGraphRealtimePhase::transition);
-
     executor.tick_block(index(10'000), 32);
     EXPECT_EQ(first_tick.calls, 2u);
-    EXPECT_EQ(
-        executor.prepare_stage(3).active_predecessor_phase(),
-        iv::CompiledGraphRealtimePhase::steady);
 
     executor.tick_block(index(-4'000), 32);
     EXPECT_EQ(first_tick.calls, 2u);
@@ -1235,11 +1260,11 @@ TEST_F(
 
 TEST_F(
     GraphExecutorFixture,
-    DiscardsStagedCutoverIfItsPredecessorPhaseExpiresBeforeActivation)
+    RejectsCutoverWhoseRequiredPredecessorPhaseCanExpireBeforeActivation)
 {
     iv::GraphExecutor executor;
     auto first = compiled_graph(1, &observe_second);
-    ASSERT_EQ(stage_graph(executor, first), iv::GraphExecutorStageResult::staged);
+    ASSERT_EQ(stage_graph(executor, first), iv::GraphExecutorStageResult::accepted);
     ASSERT_TRUE(executor.activate_pending(index(0)));
 
     auto second = transition_graph(
@@ -1249,7 +1274,7 @@ TEST_F(
         64,
         &observe_first_and_advance_transition_cursor,
         &observe_second);
-    ASSERT_EQ(stage_graph(executor, second), iv::GraphExecutorStageResult::staged);
+    ASSERT_EQ(stage_graph(executor, second), iv::GraphExecutorStageResult::accepted);
     ASSERT_TRUE(executor.activate_pending(index(100)));
     executor.tick_block(index(100), 32);
 
@@ -1260,17 +1285,7 @@ TEST_F(
         16,
         &observe_first_and_advance_transition_cursor,
         &observe_second);
-    auto const third_stage = executor.prepare_stage(3);
-    ASSERT_EQ(
-        executor.stage(third_stage, third),
-        iv::GraphExecutorStageResult::staged);
-    EXPECT_EQ(executor.pending_generation(), 3u);
-
-    executor.tick_block(index(132), 32);
-    EXPECT_EQ(
-        executor.prepare_stage(3).active_predecessor_phase(),
-        iv::CompiledGraphRealtimePhase::steady);
-    EXPECT_FALSE(executor.activate_pending(index(164)));
+    EXPECT_THROW(executor.stage(third), std::invalid_argument);
     EXPECT_FALSE(executor.pending_generation());
     EXPECT_EQ(executor.active_generation(), 2u);
 }
@@ -1285,10 +1300,10 @@ TEST_F(
     auto second = compiled_graph(
         2, &observe_raw_state, persistent_raw_layout(second_raw_offset));
 
-    ASSERT_EQ(stage_graph(executor, first), iv::GraphExecutorStageResult::staged);
+    ASSERT_EQ(stage_graph(executor, first), iv::GraphExecutorStageResult::accepted);
     ASSERT_TRUE(executor.activate_pending(index(0)));
 
-    ASSERT_EQ(stage_graph(executor, second), iv::GraphExecutorStageResult::staged);
+    ASSERT_EQ(stage_graph(executor, second), iv::GraphExecutorStageResult::accepted);
     EXPECT_EQ(executor.active_generation(), 1u);
     // Migration preparation must not snapshot mutable realtime bytes. The
     // value written after staging is the value copied at activation.
@@ -1298,18 +1313,44 @@ TEST_F(
     EXPECT_EQ(migrated_raw_value, 0x5au);
 }
 
+TEST_F(
+    GraphExecutorFixture,
+    AcceptedChainMigrationReadsEachPredecessorAtItsOwnCutover)
+{
+    iv::GraphExecutor executor;
+    auto first = compiled_graph(
+        1, &write_raw_state, persistent_raw_layout(first_raw_offset));
+    auto second = compiled_graph(
+        2, &replace_second_raw_state, persistent_raw_layout(second_raw_offset));
+    auto third = compiled_graph(
+        3, &observe_third_raw_state, persistent_raw_layout(third_raw_offset));
+
+    ASSERT_EQ(stage_graph(executor, first), iv::GraphExecutorStageResult::accepted);
+    ASSERT_EQ(stage_graph(executor, second), iv::GraphExecutorStageResult::accepted);
+    ASSERT_EQ(stage_graph(executor, third), iv::GraphExecutorStageResult::accepted);
+
+    ASSERT_TRUE(executor.activate_pending(index(0)));
+    executor.tick_block(index(0), 64);
+    ASSERT_TRUE(executor.activate_pending(index(64)));
+    executor.tick_block(index(64), 64);
+    ASSERT_EQ(migrated_raw_value, 0x5au);
+    ASSERT_TRUE(executor.activate_pending(index(128)));
+    executor.tick_block(index(128), 64);
+    EXPECT_EQ(migrated_raw_value, 0x6bu);
+}
+
 TEST_F(GraphExecutorFixture, GenerationCutoverWakesTheBackgroundActor)
 {
     iv::GraphExecutor executor;
     auto first = compiled_graph(1, &observe_first);
     ASSERT_EQ(
         stage_graph(executor, first),
-        iv::GraphExecutorStageResult::staged);
+        iv::GraphExecutorStageResult::accepted);
     ASSERT_TRUE(executor.activate_pending(index(0)));
     auto second = compiled_graph(2, &observe_second);
     ASSERT_EQ(
         stage_graph(executor, second),
-        iv::GraphExecutorStageResult::staged);
+        iv::GraphExecutorStageResult::accepted);
     ASSERT_TRUE(executor.activate_pending(index(0)));
 
     auto const deadline = std::chrono::steady_clock::now()
@@ -1325,13 +1366,12 @@ TEST_F(GraphExecutorFixture, GenerationCutoverWakesTheBackgroundActor)
 TEST_F(GraphExecutorFixture, RejectsInvalidGraphsAndBlockSizes)
 {
     iv::GraphExecutor executor;
-    auto const empty_stage = executor.prepare_stage(1);
-    EXPECT_THROW(executor.stage(empty_stage, nullptr), std::invalid_argument);
+    EXPECT_THROW(executor.stage(nullptr), std::invalid_argument);
 
     auto first = compiled_graph(1, &observe_first);
     ASSERT_EQ(
         stage_graph(executor, first),
-        iv::GraphExecutorStageResult::staged);
+        iv::GraphExecutorStageResult::accepted);
     ASSERT_TRUE(executor.activate_pending(index(0)));
     EXPECT_FALSE(executor.realtime_production_failures().any());
     EXPECT_FALSE(executor.realtime_capacity_maintenance_failures().any());

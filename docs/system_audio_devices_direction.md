@@ -26,6 +26,12 @@ System input/output node definitions are ordinary leaf node definitions. A user
 creates them through the same `ProjectGraph` node-instantiation surface used by
 any other node.
 
+The implemented leaf types are `SystemAudioInput` and `SystemAudioOutput`, registered
+as `iv.builtin.system_audio_input` and `iv.builtin.system_audio_output`. Each type has a
+`device_id` configuration field. Both expose stereo interleaved `Sample` ports. The
+input node has one Tick output named `out`; the output node has one Sequential input
+named `in`.
+
 The node's immutable configuration contains a stable device-id value object,
 for example:
 
@@ -52,6 +58,12 @@ The unavailable behavior is deterministic:
 
 - input binding: produce silence;
 - output binding: accept and discard provided samples.
+
+If no selected hardware output can open, `SystemAudioDevices` uses an internal
+project-rate fallback output clock. The graph therefore continues to activate and run;
+the unavailable output binding still discards its samples. Selecting an available
+hardware output replaces the fallback clock through the same stop-and-join boundary
+used for hardware-device replacement.
 
 The binding object remains valid while a hardware device disappears, appears,
 is reopened, or while the implementation's `default` mapping changes.
@@ -83,6 +95,7 @@ applicable as an internal `SystemAudioDevices` concern:
 - hardware callback sizes may not equal project graph block size;
 - device disappearance/reappearance must not corrupt graph state.
 
-How `RealtimeExecutor` chooses its pacing policy is an execution design detail, but
-hardware-device synchronization should not leak into `ProjectGraph`,
-`NodeInstances`, or `GraphConnections`.
+`SystemAudioDevices::output_render_loop()` supplies the clock for
+`GraphExecutor::activate_pending()` and `GraphExecutor::tick_block()`. The exact pacing
+policy is an execution detail, but hardware-device synchronization must not leak into
+`ProjectGraph`, `NodeInstances`, or `GraphConnections`.

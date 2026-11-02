@@ -26,61 +26,13 @@
 namespace iv {
 
 enum class GraphExecutorStageResult : std::uint8_t {
-    staged,
+    accepted,
     ignored_stale,
-    active_predecessor_changed,
 };
 
-class GraphExecutor;
-
-// Stable cold-compilation input for one prospective successor. The predecessor
-// is the generation which has crossed a realtime activation boundary, never a
-// replaceable pending generation. GraphExecutor validates the snapshot again
-// when the resulting successor is staged.
-class GraphExecutorStageContext {
-    GraphExecutor const* executor_ = nullptr;
-    std::uint64_t successor_generation_ = 0;
-    std::shared_ptr<CompiledGraph const> active_predecessor_{};
-    CompiledGraphRealtimePhase active_predecessor_phase_ =
-        CompiledGraphRealtimePhase::steady;
-
-    GraphExecutorStageContext(
-        GraphExecutor const& executor,
-        std::uint64_t successor_generation,
-        std::shared_ptr<CompiledGraph const> active_predecessor,
-        CompiledGraphRealtimePhase active_predecessor_phase) noexcept
-        : executor_(&executor)
-        , successor_generation_(successor_generation)
-        , active_predecessor_(std::move(active_predecessor))
-        , active_predecessor_phase_(active_predecessor_phase)
-    {}
-
-    friend class GraphExecutor;
-
-public:
-    [[nodiscard]] std::uint64_t successor_generation() const noexcept
-    {
-        return successor_generation_;
-    }
-
-    [[nodiscard]] std::shared_ptr<CompiledGraph const> const&
-    active_predecessor() const noexcept
-    {
-        return active_predecessor_;
-    }
-
-    [[nodiscard]] CompiledGraphRealtimePhase active_predecessor_phase()
-        const noexcept
-    {
-        return active_predecessor_phase_;
-    }
-
-    // Constructs the compiler request from this exact active realization.
-    // The caller still owns scheduling the cold compilation and must return
-    // its result through GraphExecutor::stage() with this same context.
-    [[nodiscard]] GraphJitTransitionCompileRequest transition_compile_request(
-        GraphJitCompileRequest successor,
-        std::shared_ptr<CompiledGraph const> steady_successor) const;
+struct ProjectGraphGraphExecutorResult {
+    bool attempted = false;
+    bool accepted = false;
 };
 
 struct GraphExecutorReclaimedSnapshots {
@@ -245,8 +197,9 @@ class GraphExecutor {
         void commit_background_migration();
         void update_realtime_phase(
             std::size_t event_samples_advanced = 0) noexcept;
-        void publish_successor(
+        void attach_successor(
             std::unique_ptr<ExecutionGeneration> successor);
+        void publish_attached_successor();
         [[nodiscard]] ExecutionGeneration* successor() const noexcept;
         void prepare_initial_persisted_state(
             PersistedDataStore& data);
@@ -304,8 +257,10 @@ class GraphExecutor {
         BackgroundExecutor(BackgroundExecutor const&) = delete;
         BackgroundExecutor& operator=(BackgroundExecutor const&) = delete;
 
-        void install_first_generation(
+        void install_initial_generation(
             std::unique_ptr<ExecutionGeneration> generation);
+        void activate_initial_generation(
+            std::uint64_t generation) noexcept;
         void prepare_background_migration(
             ExecutionGeneration& target,
             ExecutionGeneration& source);
@@ -339,8 +294,21 @@ class GraphExecutor {
     std::atomic<bool> production_reservation_failed_{false};
     // Realtime may run ahead while background drains closed predecessor queues.
     ExecutionGeneration* realtime_active_ = nullptr;
-    // This generation has not crossed a realtime boundary and may be replaced.
-    std::unique_ptr<ExecutionGeneration> pending_generation_{};
+    // Owns a successor accepted after the initial chain was installed and
+    // before it is attached to the active/background-owned chain. Successors
+    // already attached through ExecutionGeneration::successor_owner remain
+    // unpublished until their realtime cutover.
+    std::unique_ptr<ExecutionGeneration> pending_owner_{};
+    ExecutionGeneration* pending_head_ = nullptr;
+    ExecutionGeneration* pending_tail_ = nullptr;
+    // Control-path authority for ProjectGraph's next predecessor. Activation
+    // never changes this owner, so reading it does not inspect audio-thread
+    // state. ProjectGraph serializes accepted_graph() with stage().
+    std::shared_ptr<CompiledGraph const> accepted_tail_graph_{};
+    // Cold submission may overlap an audio callback. The control path waits;
+    // realtime only tries once and defers activation when submission owns the
+    // guard. No audio callback blocks on cold generation construction.
+    std::atomic_flag accepted_chain_guard_ = ATOMIC_FLAG_INIT;
     // Control-path playback demand copied into every staged generation before
     // it becomes visible to either executor actor.
     IndexCoverage tick_materialization_demand_{};
@@ -357,6 +325,8 @@ class GraphExecutor {
         bool publish_realtime_state);
     [[nodiscard]] GraphExecutorReclaimedSnapshots
     reclaim_retired_snapshots_on_background();
+    void lock_accepted_chain() noexcept;
+    void unlock_accepted_chain() noexcept;
 
 public:
     explicit GraphExecutor(
@@ -369,32 +339,23 @@ public:
     GraphExecutor(GraphExecutor&&) = delete;
     GraphExecutor& operator=(GraphExecutor&&) = delete;
 
-    // Snapshots the activated predecessor against which cold transition
-    // specialization must be compiled. Pending generations are intentionally
-    // excluded: they have not established semantic execution history and may
-    // be superseded before activation.
-    [[nodiscard]] GraphExecutorStageContext prepare_stage(
-        std::uint64_t successor_generation) const noexcept;
-
-    // Builds a complete pending execution generation and prepares realtime
-    // state migration plus background coverage reconciliation without copying
-    // mutable active state. A newer pending
-    // generation supersedes an older one without disturbing the active one.
-    // If realtime activated a different predecessor after prepare_stage(), the
-    // caller must specialize again from a fresh context.
+    // Builds one complete execution generation and appends it after the
+    // accepted chain tail. A compiled cutover must name that exact tail. Once
+    // accepted, the generation cannot be replaced by a later submission.
     GraphExecutorStageResult stage(
-        GraphExecutorStageContext const& context,
         std::shared_ptr<CompiledGraph const> compiled_graph);
+
+    ProjectGraphGraphExecutorResult handle_project_graph_transaction(
+        std::shared_ptr<CompiledGraph const> const& compiled_graph);
 
     // At the caller-provided quiescent boundary, commits the prepared realtime
     // migration at the first successor sample, closes the predecessor's
     // producer queues, installs the successor's prepared initial persisted-state
-    // root, appends the pending
-    // generation to the ordered cutover chain and switches realtime. Background
-    // migration commits only after those closed queues drain. Returns false when
-    // no generation is pending or when transition-phase expiry made its
-    // prepared predecessor realization stale; a stale pending generation is
-    // discarded and must be specialized again.
+    // root, publishes the next accepted generation in the ordered cutover chain
+    // and switches realtime. Background migration commits only after those
+    // closed queues drain. Returns false when no generation is pending or when
+    // the next accepted cutover names a predecessor phase that is not active
+    // yet. It never discards an accepted generation.
     bool activate_pending(GlobalIndex sample_index);
 
     // Replaces the anticipated future Tick playback positions for every
@@ -409,6 +370,7 @@ public:
     [[nodiscard]] std::optional<std::uint64_t>
     background_generation() const noexcept;
     [[nodiscard]] std::shared_ptr<CompiledGraph const> active_graph() const noexcept;
+    [[nodiscard]] std::shared_ptr<CompiledGraph const> accepted_graph() const noexcept;
 
     // Submits explicit reclamation of immutable roots to the background worker
     // and waits for the reclaimed-owner counts. A live callback pin always

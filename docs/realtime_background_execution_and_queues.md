@@ -499,7 +499,8 @@ realtime generation merely because it was published later in wall-clock time.
 
 ### 15.1 Preparation
 
-`ProjectGraph` supplies generation N+1 once to `GraphExecutor`.
+`ProjectGraph` supplies generation N+1 once to `GraphExecutor`. The request names the
+tail of the ordered transition chain that `GraphExecutor` has already accepted.
 
 `GraphExecutor` completely constructs `ExecutionGeneration N+1`, including both actor
 halves, generation-specific routes/endpoints, pre-sized work descriptors, migration
@@ -512,9 +513,13 @@ it never inspects or prepares migration from actor-owned predecessor `NodeStorag
 concurrently with evaluation. Any preparation failure is therefore still reported and
 the successor discarded before realtime can publish the cutover.
 
-A staged generation is not active merely because preparation completed. A pending
-successor that never activates may be superseded and reclaimed off realtime without
-creating a semantic generation boundary.
+An accepted generation is not active merely because preparation completed. However,
+acceptance commits its place in the transition chain. A later accepted generation is
+attached after it and cannot replace it. A generation that fails preparation is not
+accepted and can be reclaimed off realtime.
+
+The older replaceable-pending rule is preserved in
+[Front 8 Replaceable Pending Transition False Start](./historical/front_8_replaceable_pending_transition_false_start_2026-11-01.md).
 
 ### 15.2 Realtime-authoritative cutover
 

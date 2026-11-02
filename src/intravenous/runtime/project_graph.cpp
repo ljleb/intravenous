@@ -60,14 +60,27 @@ ProjectGraph::RebuildResult ProjectGraph::rebuild_locked(
 
     auto graph_jit_result = IV_INVOKE_SINGLETON_EVENT(
         iv_runtime_project_graph_graph_jit_requested_event,
-        GraphJitCompileRequest{
-            .project_generation = generation->generation,
-            .graph = generation->graph,
-            .definitions = generation->definitions,
+        ProjectGraphGraphJitRequest{
+            .successor = {
+                .project_generation = generation->generation,
+                .graph = generation->graph,
+                .definitions = generation->definitions,
+            },
+            .predecessor = accepted_execution_graph_,
         });
     generation->graph_jit_attempted = graph_jit_result.attempted;
     generation->compiled_graph = std::move(graph_jit_result.compiled_graph);
     generation->graph_jit_diagnostics = std::move(graph_jit_result.diagnostics);
+    if (generation->compiled_graph) {
+        auto const execution_result = IV_INVOKE_SINGLETON_EVENT(
+            iv_runtime_project_graph_graph_executor_requested_event,
+            generation->compiled_graph);
+        generation->graph_executor_attempted = execution_result.attempted;
+        generation->graph_executor_accepted = execution_result.accepted;
+        if (generation->graph_executor_accepted) {
+            accepted_execution_graph_ = generation->compiled_graph;
+        }
+    }
 
     current_generation_ = generation;
     ++next_generation_;

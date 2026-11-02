@@ -198,8 +198,9 @@ one. Explicitly anchored components retain their authored absolute scale.
   into each capture slot. Capture projects the root invocation range onto the value
   lattice, copies the registered continuous representation, and publishes the result
   in value-lattice ordinal coordinates. The background transaction validates the
-  geometry before committing `PersistedContinuousStorage`. Repository-owner build and
-  full-suite verification of this final Front 5 slice remain pending.
+  geometry before committing `PersistedContinuousStorage`. The repository-owner build
+  succeeded, and the full suite passed all 661 tests. This verifies the final Front 5
+  slice.
 - Contextual background Tick replay still realizes its temporary continuous bindings
   as project-rate `Sample` rings. Connection analysis rejects a non-Sample or
   non-project-rate continuous replay binding immediately after contextual replay proof,
@@ -379,9 +380,8 @@ to owner build/test validation, no dependency-ready continuous Front 1 execution
 remains to be connected.
 
 The remaining items above deliberately stay with their consuming fronts. Front 3 owns
-Region/Coverage data realization. Front 5 now supplies generalized retained-data
-capture and publication, pending repository-owner validation. The ProjectGraph/runtime
-read-model join owns realized live
+Region/Coverage data realization. Front 5 supplies verified generalized retained-data
+capture and publication. The ProjectGraph/runtime read-model join owns realized live
 introspection. Optional FFT packages own transform/window/overlap algorithms; core
 Front 1 owns only the canonical `FFTBlock` and the execution/storage contract that
 transports it.

@@ -42,6 +42,8 @@ struct ProjectGraphGeneration {
     bool graph_jit_attempted = false;
     std::shared_ptr<CompiledGraph const> compiled_graph{};
     std::vector<GraphJitDiagnostic> graph_jit_diagnostics{};
+    bool graph_executor_attempted = false;
+    bool graph_executor_accepted = false;
 };
 
 // Root-graph transaction coordinator. It deliberately does not own desired
@@ -57,6 +59,7 @@ class ProjectGraph {
     mutable std::mutex mutex_;
     std::shared_ptr<NodeDefinitionsSnapshot const> definitions_snapshot_{};
     std::shared_ptr<ProjectGraphGeneration const> current_generation_{};
+    std::shared_ptr<CompiledGraph const> accepted_execution_graph_{};
     std::uint64_t next_generation_ = 1;
 
     RebuildResult rebuild_locked(

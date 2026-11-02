@@ -191,13 +191,33 @@ Its root-build procedure is always batched:
    the same root builder and complete embedding map;
 4. finish the root builder into one `ConfiguredGraph`;
 5. invoke `GraphJit` exactly once to synchronously compile that graph into one
-   immutable `CompiledGraph`;
-6. stage that immutable generation once in `GraphExecutor`; `GraphExecutor` constructs one
+   immutable `CompiledGraph`; after the first executable revision, the request names
+   the last executable revision accepted by `GraphExecutor` as its predecessor;
+6. submit that immutable generation once to `GraphExecutor`; `GraphExecutor` constructs one
    complete `ExecutionGeneration` off-thread containing both actor realizations,
    generation-specific routes/endpoints, pre-sized background descriptors, migration
    metadata, producer-reserve requirements and allocation-free cutover linkage;
-7. only after that complete generation object is ready may its pointer become the pending
-   activatable successor.
+7. only after that complete generation object is ready may `GraphExecutor` accept it as
+   the next ordered activatable successor.
+
+`ProjectGraph` advances its executable predecessor only after `GraphExecutor` accepts
+the complete generation. If it requests A to B and later requests B to C,
+`GraphExecutor` preserves both transitions and activates A to B before B to C. An
+accepted transition is not replaceable by a later request. Failure before acceptance
+leaves the accepted chain tail unchanged. Failure while performing an accepted
+cutover is a fatal runtime error because continuing would violate the application
+transaction that `ProjectGraph` already completed.
+
+The `ProjectGraphGraphExecutorRequestedEvent` result distinguishes an unbound bridge
+from an accepted generation. `GraphExecutor` treats a stale generation submitted by
+`ProjectGraph` as an invariant error; it does not report that case as a successful or
+retryable project transaction.
+
+Each application-produced cutover is compiled from the accepted predecessor's steady
+realization. If that predecessor is still running its transition root, the successor
+remains queued until the predecessor reaches steady state. This makes acceptance
+durable: a transition-phase expiry cannot invalidate an accepted cutover or require
+recompilation.
 
 `GraphExecutor` is one child in the application-event propagation tree. Internal actor
 preparation and handoffs are implementation, not additional app-module propagation.
@@ -237,6 +257,9 @@ This is why `ProjectGraph` is the parent/orchestrator of `NodeInstances`,
 `GraphConnections`, `GraphJit`, and `GraphExecutor` for every execution-affecting
 graph-change cause. Realtime/background handoffs happen between internal actors owned
 by `GraphExecutor`; they are not app-module event propagation.
+
+The earlier replaceable-pending and re-specialization design is preserved in
+[Front 8 Replaceable Pending Transition False Start](./historical/front_8_replaceable_pending_transition_false_start_2026-11-01.md).
 
 Batches are the normal API shape. One logical graph change must not emit one
 application event per node or per connection.

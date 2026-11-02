@@ -887,8 +887,9 @@ adapter to the deleted fixed-width page representation.
 **Dependencies:** front 4 for the complete consumer side; front 3 is strongly preferred
 before the durable publication layer is finalized.
 
-**Current implementation status (2026-11-01):** source implementation is complete,
-pending repository-owner build and full-suite verification. `ProducerReserve`,
+**Current implementation status (2026-11-01):** implementation is complete and
+verified. The repository-owner build succeeded, and the full suite passed all 661
+tests. `ProducerReserve`,
 `PendingQueue`, `AsyncCapacityManager`, per-output capture disposition, finite-prefix
 pinning, transaction consumption, canonical persisted publication, generation-aware
 mailbox publication, and reclamation were already present. The final correctness gap
@@ -1003,35 +1004,57 @@ layout, while background generations allocate and expose only `steady_storage_si
 transition-only raw initializers and region views are excluded from that shorter
 instance. This resolves the duplicated-background-tail part of the preceding friction.
 
-The predecessor-input part cannot be implemented by copying
-`ProjectGraph::current_generation_` into the ordinary compile request. That is the
-latest logical graph, but `GraphExecutor` deliberately permits a pending generation to
-be superseded before activation. The executor's active predecessor can therefore be an
-older generation, and a transition program compiled against the logical predecessor
-would be semantically wrong. The generations are already distinguishable inside
-`GraphExecutor`: `realtime_active_` is the predecessor and `pending_generation_` is
-only a replaceable candidate. The missing piece is a cold compiler-coordination path
-which receives that active identity. Do not serialize graph edits merely to make these
-identities coincide, and do not preallocate every possible transition suffix in the
-steady compile.
+**Ordered transition coordination decision (2026-11-01):** `ProjectGraph` owns the
+ordered executable revision request. `GraphExecutor` accepts only a successor whose
+named predecessor is its accepted chain tail. Once it accepts A to B, it must preserve
+and perform A to B before a later accepted B to C transition. It must not replace the
+pending generation, silently skip the intermediate transition, or return a normal
+retry result because realtime activation moved while compilation ran. Failure before
+acceptance leaves the accepted tail unchanged. Failure during an accepted cutover is
+fatal.
 
-**Coordination resolution (2026-10-18):** steady compilation remains
-predecessor-independent. `GraphExecutor::prepare_stage()` now returns a cold staging
-context containing the exact activated predecessor and intended successor generation.
-The application-side staging coordinator will use that immutable context to request
-transition specialization, then return the result with the same context to
-`GraphExecutor::stage()`. Staging accepts replacement of any pending generation, but
-returns `active_predecessor_changed` if a realtime activation changed the predecessor
-in the meantime; the caller must then specialize again. This gives the compiler the
-active identity without giving it mutable executor ownership or treating a pending
-generation as semantic history.
+Application-produced cutovers name the accepted predecessor's steady realization. If
+that predecessor is still in its transition realization, the next accepted cutover
+waits in the ordered chain until steady state is active. The executor does not accept a
+cutover whose only valid predecessor phase can expire before activation.
 
-The context currently tokens the active `CompiledGraph` identity. When the first
-transition root lands, the same logical generation will be able to switch from its
-transition realization to its steady realization. That realization phase is also part
-of the semantic predecessor: `prepare_stage()` must snapshot it, and `stage()` must
-reject a specialization if expiry changed it while compilation was in flight. Do not
-infer the phase from project-generation equality.
+`ProjectGraph` remains the parent of both `GraphJit` and `GraphExecutor` and enters
+each once per rebuild. The superseded replaceable-pending context and phase-retry
+design is preserved in
+[`historical/front_8_replaceable_pending_transition_false_start_2026-11-01.md`](historical/front_8_replaceable_pending_transition_false_start_2026-11-01.md).
+
+**Front 8 source implementation (2026-11-02; collaborator verification pending):**
+`ProjectGraph` now sends one `ProjectGraphGraphJitRequest` and, after successful
+compilation, one `ProjectGraphGraphExecutorRequestedEvent`. `GraphExecutor::stage()`
+accepts only the exact ordered chain tail. It retains every accepted successor and
+publishes one successor at each realtime pass boundary. First-generation background
+ownership is installed during cold staging; the audio boundary publishes it without
+taking `BackgroundExecutor::commands_mutex_`. The executor request result separately
+records whether the singleton bridge was bound, so an unbound bridge cannot be
+mistaken for acceptance. A stale submission from `ProjectGraph` is an invariant error.
+
+`SystemAudioDevices` now supplies `ResourceContext::SystemAudioResources`. The
+registered `iv.builtin.system_audio_input` and `iv.builtin.system_audio_output` leaf
+nodes resolve stable logical bindings in `initialize()`. An unavailable input reads as
+silence and an unavailable output discards writes. If no selected hardware output can
+open, an internal project-rate fallback output clock keeps the graph running. An
+available hardware output replaces that fallback through the normal stop-and-join
+device boundary. The output callback slices device requests into project blocks, calls
+`GraphExecutor::activate_pending()`, and then calls `GraphExecutor::tick_block()`.
+Output writes for the selected logical device mix into the current hardware slice.
+Input capture passes through
+`AudioInputSynchronizer`; its realtime consumer uses `try_lock()` and emits a silent
+slice instead of waiting for the capture thread.
+
+The server constructs `GraphExecutor` with both system-audio and JUCE VST resources,
+stops audio threads before destroying the executor, and monitors the executor's sticky
+production, capacity, and background failures. A detected failure requests application
+shutdown and is returned as a server error. Source-level tests cover ordered
+multi-generation acceptance, migration through an already accepted intermediate
+generation, the complete `ProjectGraph -> GraphJit -> GraphExecutor` chain, output-clock
+activation, slicing a large device request into project blocks, logical-output mixing,
+fallback-clock execution, stable binding activation after device selection, and
+missing-device silence/discard. Compilation and full-suite verification remain pending.
 
 The layout half of that specialization boundary is also present.
 `NodeLayoutTransitionBuilder` accepts an already-finalized steady layout, preserves all
@@ -1055,8 +1078,8 @@ must grow a two-realization container. This review does not change Front 6's sem
 scope or its position as the next execution-correctness front.
 
 **Representative transition-root path implemented (2026-10-18; verification
-pending):** GraphJit can now cold-specialize an already compiled steady successor from
-the exact predecessor and realization phase captured by `GraphExecutorStageContext`.
+pending):** GraphJit can cold-specialize an already compiled steady successor from
+the exact predecessor supplied by `ProjectGraph`.
 For feed-forward project-rate `Sample` input history backed by a canonical persistent
 ring, specialization appends private suffix rings, transfers inherited history at
 cutover, mirrors newly produced samples into those rings while the transition root is
@@ -1066,16 +1089,13 @@ selected entrypoint. `CompiledGraph` retains the prepared semantic cutover and t
 transition-phase realization inventory, while its weak predecessor token avoids pinning
 obsolete generated code for the successor's lifetime.
 
-`GraphExecutor` now tokens the active realization phase as well as the active compiled
-graph. A specialization becomes stale if the predecessor expires from transition to
-steady while compilation is in flight. Activation selects the transition root without
-allocation, and callback completion switches the generation to its steady root once the
-finite history horizon has elapsed. If expiry instead occurs after staging but before
-activation, the executor discards that prepared generation at the quiescent boundary;
-its suffix transfer can no longer be current and cold specialization must be repeated.
-A newer revision can therefore specialize from the suffix inventory while the
-transition remains active. The contiguous suffix allocation is still retained until the
-generation retires, as already recorded above.
+`ProjectGraph` always compiles from the accepted predecessor's steady realization.
+`GraphExecutor` preserves that accepted cutover until activation. If the predecessor
+is still executing its transition root, the successor waits until the predecessor
+reaches steady state. Activation selects the successor transition root without
+allocation, and callback completion switches that generation to its steady root once
+the finite history horizon has elapsed. The contiguous suffix allocation is retained
+until the generation retires, as already recorded above.
 
 This representative implementation deliberately rejects output history/latency,
 producer-after-consumer feedback order, materialized or composed sample state,
@@ -1981,21 +2001,18 @@ landed. Front 5 remains open for generalized continuous-value capture/publicatio
 the separately recorded bulk-span performance work.
 
 **Front 5 follow-up (2026-11-01):** the generalized continuous-value
-capture/publication gap described above is now source-complete. The separately
-recorded bulk-span work remains Front 16 rather than an open Front 5 correctness
-dependency. Repository-owner build and full-suite verification remain pending.
+capture/publication gap described above is complete and verified. The
+repository-owner build succeeded, and the full suite passed all 661 tests. The
+separately recorded bulk-span work remains Front 16 rather than an open Front 5
+correctness dependency.
 
-The revised execution-path order is:
+Fronts 2, 3, 4, 5, 6, and 7 have now completed the execution prerequisites for Front
+8. The remaining execution-path order is:
 
-1. Front 2 callback normalization and scalar/batch scheduling, including the deferred
-   normalized block-replay consumer;
-2. Front 3 node-facing `Region`/`Coverage` data representation over the already-landed
-   persisted region/chunk substrate;
-3. the remaining Front 5 generalized capture/publication work;
-4. Front 8 application execution and system-audio integration;
-5. the Front 16 measurement/baseline step required before structural optimization;
-6. Front 12 scoped builder migration; and
-7. the remaining Front 16 optimizations after the correctness architecture and
+1. Front 8 application execution and system-audio integration.
+2. The Front 16 measurement/baseline step required before structural optimization.
+3. Front 12 scoped builder migration.
+4. The remaining Front 16 optimizations after the correctness architecture and
    builder path are measurable together.
 
 Front 2 reached source implementation on 2026-10-23. Full-suite verification remains
@@ -2036,7 +2053,7 @@ runtime path.
 This front owns:
 
 - construction and lifetime of the `GraphExecutor` app module plus its internal
-  `RealtimeExecutor`, `BackgroundExecutor`, and `AsyncCapacityManager`;
+  `RealtimeGeneration`, `BackgroundExecutor`, and `AsyncCapacityManager`;
 - one `ProjectGraph -> GraphExecutor` staging bridge after successful `GraphJit`;
 - complete off-thread construction of one `ExecutionGeneration` containing both actor
   realizations, routes/endpoints, pre-sized work descriptors, migration data and all
@@ -2047,7 +2064,8 @@ This front owns:
   queue drain, and prepared migration before consuming new-generation queues;
 - preservation of multiple ordered cutovers while background lags;
 - realtime compiled-generation state migration and pass-boundary activation;
-- audio callback routing through `RealtimeExecutor`;
+- audio callback routing through `GraphExecutor::activate_pending()` and
+  `GraphExecutor::tick_block()`;
 - `BackgroundExecutor` worker/evaluation lifecycle and independently pinned
   producer queues;
 - `AsyncCapacityManager` provisioning/reclamation for producer-specific
@@ -2068,6 +2086,14 @@ convenience behavior, not a prerequisite for this front.
 
 **Dependencies:** front 4 is the near-term execution prerequisite; enough of fronts 6
 and 7 must be present before this becomes the sole production path.
+
+**Front 8 application-entry decision (2026-11-01):** `ProjectGraph` keeps both child
+edges. It invokes `GraphJit` once and then invokes `GraphExecutor` once. It plans each
+compile from the last executable generation that `GraphExecutor` accepted. The
+executor validates the predecessor, constructs the complete `ExecutionGeneration`,
+and appends it to its ordered accepted chain. The false start that proposed two
+`GraphExecutor` entries or moving `GraphJit` under `GraphExecutor` is preserved in
+[`historical/front_8_replaceable_pending_transition_false_start_2026-11-01.md`](historical/front_8_replaceable_pending_transition_false_start_2026-11-01.md).
 
 ## Front 9: restricted configuration-expression language
 
@@ -2288,7 +2314,10 @@ Candidate work includes:
 - immutable-value specialization;
 - finer NodeInstances cache invalidation/reuse;
 - measured builder/package reload optimization;
-- runtime PGO experiments if profiling demonstrates a worthwhile target.
+- runtime PGO experiments if profiling demonstrates a worthwhile target;
+- a lock-free SPSC capture queue inside `AudioInputSynchronizer`, if profiling shows
+  that the current non-blocking `try_lock()` path drops too many input slices under
+  capture-thread contention.
 - running every contextually replayable Tick node only in background replay,
   removing it from the realtime root and giving its live Sequential consumers
   playback delivery (moved from Front 4 step B2, 2026-10-23). This depends on
@@ -2349,9 +2378,8 @@ documents:
   the allocated `NodeStorage` at that moment. It decides synchronously which subgraphs
   skip and which execute. It then submits the resulting graph refinement profile to
   GraphJit and returns.
-- Replacement at the graph-call boundary should reuse the existing
-  successor-staging path (`GraphExecutorStageContext` and `GraphExecutor::stage()`) as
-  far as possible.
+- Replacement at the graph-call boundary should reuse the ordered
+  `ProjectGraph -> GraphJit -> GraphExecutor::stage()` path as far as possible.
 - Dormancy forms a tree. Each subgraph that can be put to sleep on its own contains
   exclusive whole subgraphs that can in turn be put to sleep on their own. The variant
   cache can be structured along that tree. A naive policy such as LRU is a starting

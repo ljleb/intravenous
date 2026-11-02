@@ -1560,8 +1560,15 @@ GraphJitCompileResult GraphJit::compile_transition(
 }
 
 GraphJitCompileResult GraphJit::handle_project_graph_transaction(
-    GraphJitCompileRequest const& request)
+    ProjectGraphGraphJitRequest const& request)
 {
-    return compile(request);
+    auto steady = compile(request.successor);
+    if (!steady.succeeded() || !request.predecessor) return steady;
+    return compile_transition(GraphJitTransitionCompileRequest{
+        .successor = request.successor,
+        .steady_successor = std::move(steady.compiled_graph),
+        .active_predecessor = request.predecessor,
+        .active_predecessor_phase = CompiledGraphRealtimePhase::steady,
+    });
 }
 } // namespace iv

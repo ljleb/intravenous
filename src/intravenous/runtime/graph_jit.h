@@ -167,6 +167,15 @@ struct GraphJitTransitionCompileRequest {
         CompiledGraphRealtimePhase::steady;
 };
 
+// One ProjectGraph child request. GraphJit first compiles the predecessor-
+// independent steady artifact. When predecessor is present, it then returns
+// the executable cutover specialized from that predecessor's steady
+// realization. Both compiler operations remain one app-module entry.
+struct ProjectGraphGraphJitRequest {
+    GraphJitCompileRequest successor{};
+    std::shared_ptr<CompiledGraph const> predecessor{};
+};
+
 struct GraphJitCompileResult {
     // False only for an unbound singleton bridge. Once GraphJit receives a
     // request, expected compiler failures are represented by diagnostics.
@@ -199,6 +208,6 @@ public:
         GraphJitTransitionCompileRequest const& request);
 
     [[nodiscard]] GraphJitCompileResult handle_project_graph_transaction(
-        GraphJitCompileRequest const& request);
+        ProjectGraphGraphJitRequest const& request);
 };
 } // namespace iv

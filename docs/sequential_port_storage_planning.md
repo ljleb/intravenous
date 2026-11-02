@@ -1624,9 +1624,12 @@ both are needed. The second handoff is activation of already compiled code, not 
 second asynchronous compilation. State that has evolved while the transition form was
 active is reconciled into the steady realization at that handoff. If the steady
 representation can directly absorb all inherited state, only the steady realization
-is necessary. If another graph edit supersedes the transition before its expiry, the
-next rebuild uses the currently active transition realization as its old semantic
-state source and discards the obsolete pending steady form.
+is necessary. If another graph edit arrives before the transition expires, the next
+rebuild names the already accepted destination as its predecessor. `GraphExecutor`
+preserves the ordered chain. It does not discard an accepted intermediate revision.
+
+The replaceable-pending rule that preceded this decision is preserved in
+[Front 8 Replaceable Pending Transition False Start](./historical/front_8_replaceable_pending_transition_false_start_2026-11-01.md).
 
 This transition-correctness layer must land **before further storage/code
 optimization**. It is deliberately independent of later `NodeStorage` simplification:

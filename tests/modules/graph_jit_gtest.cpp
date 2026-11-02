@@ -13,11 +13,13 @@
 #include <intravenous/runtime/background_coverage_propagation.h>
 #include <intravenous/runtime/background_evaluation_transaction.h>
 #include <intravenous/runtime/graph_connections.h>
+#include <intravenous/runtime/graph_executor.h>
 #include <intravenous/runtime/graph_jit.h>
 #include <intravenous/runtime/node_definitions_events.h>
 #include <intravenous/runtime/node_instances.h>
 #include <intravenous/runtime/project_graph.h>
 #include <intravenous/runtime/project_graph_graph_connections_bridge.h>
+#include <intravenous/runtime/project_graph_graph_executor_bridge.h>
 #include <intravenous/runtime/project_graph_graph_jit_bridge.h>
 #include <intravenous/runtime/project_graph_node_instances_bridge.h>
 #include <intravenous/runtime/package_jit.h>
@@ -18216,12 +18218,15 @@ TEST(GraphJitProjectGraphBridge, EmptyRootGenerationCompilesSuccessfully)
     iv::GraphConnections connections;
     iv::ProjectGraph project_graph;
     iv::GraphJit graph_jit;
+    iv::GraphExecutor graph_executor;
     auto instances_scope = iv::project_graph_node_instances_bridge::bind(
         project_graph, instances);
     auto connections_scope = iv::project_graph_graph_connections_bridge::bind(
         project_graph, connections);
     auto graph_jit_scope = iv::project_graph_graph_jit_bridge::bind(
         project_graph, graph_jit);
+    auto graph_executor_scope = iv::project_graph_graph_executor_bridge::bind(
+        project_graph, graph_executor);
 
     auto snapshot = std::make_shared<iv::NodeDefinitionsSnapshot>();
     snapshot->generation = 1;
@@ -18235,12 +18240,17 @@ TEST(GraphJitProjectGraphBridge, EmptyRootGenerationCompilesSuccessfully)
     EXPECT_TRUE(generation->graph_jit_attempted);
     ASSERT_TRUE(generation->compiled_graph);
     EXPECT_TRUE(generation->graph_jit_diagnostics.empty());
+    EXPECT_TRUE(generation->graph_executor_attempted);
+    EXPECT_TRUE(generation->graph_executor_accepted);
+    EXPECT_EQ(graph_executor.pending_generation(), 1u);
     EXPECT_EQ(generation->compiled_graph->project_generation, generation->generation);
     EXPECT_EQ(
         generation->compiled_graph->definitions_generation,
         generation->definitions_generation);
     EXPECT_EQ(generation->compiled_graph->node_layout.storage_size, 0u);
     EXPECT_TRUE(generation->compiled_graph->root_operations.valid());
+    EXPECT_TRUE(graph_executor.activate_pending(index(0)));
+    EXPECT_EQ(graph_executor.active_generation(), 1u);
 }
 
 TEST(GraphJitProjectGraphBridge, UnboundSingletonReturnLeavesCompilationUnattempted)
