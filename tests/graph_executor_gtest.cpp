@@ -937,6 +937,99 @@ protected:
     void SetUp() override { background_observation = {}; }
 };
 
+TEST(GraphExecutorPersistedStorageCompatibility,
+     IncludesProductionRolesAndContinuousGeometry)
+{
+    auto sample_plan = [] {
+        iv::graph_jit::BackgroundEvaluationPlan plan;
+        plan.ports = {{
+            .kind = iv::PortKind::sample,
+            .direction = iv::graph_jit::PortDirection::output,
+            .output_production = iv::OutputProductionKind::coverage,
+            .authored_tock_output = true,
+            .retention = iv::OutputRetention::persisted,
+            .sample_layout = iv::mono_planar_channel_layout,
+            .continuous_geometry =
+                *iv::continuous_value_storage_geometry(
+                    iv::continuous_value_type_id_v<iv::Sample>,
+                    std::nullopt),
+        }};
+        plan.storage.ports = {{
+            .kind = iv::PortKind::sample,
+            .storage = iv::graph_jit::PortStorageKind::persisted_data,
+            .output_port = 0,
+            .sample_layout = iv::mono_planar_channel_layout,
+            .continuous_geometry = plan.ports[0].continuous_geometry,
+            .sample_channels = {0},
+        }};
+        return plan;
+    };
+
+    auto const previous = sample_plan();
+    auto current = previous;
+    EXPECT_TRUE(iv::graph_jit::persisted_storage_is_compatible(
+        current, 0, previous, 0));
+
+    current.ports[0].output_production = iv::OutputProductionKind::region;
+    EXPECT_FALSE(iv::graph_jit::persisted_storage_is_compatible(
+        current, 0, previous, 0));
+    current = previous;
+    current.ports[0].authored_tock_output = false;
+    current.ports[0].persisted_tick_output = true;
+    current.ports[0].output_production = iv::OutputProductionKind::tick;
+    EXPECT_FALSE(iv::graph_jit::persisted_storage_is_compatible(
+        current, 0, previous, 0));
+    EXPECT_FALSE(iv::graph_jit::persisted_storage_is_compatible(
+        previous, 0, current, 0));
+
+    current = previous;
+    current.storage.ports[0].continuous_geometry =
+        *iv::continuous_value_storage_geometry(
+            iv::continuous_value_type_id_v<iv::FFTBlock>,
+            std::size_t{8});
+    EXPECT_FALSE(iv::graph_jit::persisted_storage_is_compatible(
+        current, 0, previous, 0));
+
+    current = previous;
+    current.storage.ports[0].sample_channels = {1};
+    EXPECT_FALSE(iv::graph_jit::persisted_storage_is_compatible(
+        current, 0, previous, 0));
+}
+
+TEST(GraphExecutorPersistedStorageCompatibility,
+     IncludesEventProductionAndType)
+{
+    iv::graph_jit::BackgroundEvaluationPlan previous;
+    previous.ports = {{
+        .kind = iv::PortKind::event,
+        .direction = iv::graph_jit::PortDirection::output,
+        .output_production = iv::OutputProductionKind::coverage,
+        .authored_tock_output = true,
+        .retention = iv::OutputRetention::persisted,
+        .event_type = iv::EventTypeId::trigger,
+    }};
+    previous.storage.ports = {{
+        .kind = iv::PortKind::event,
+        .storage = iv::graph_jit::PortStorageKind::persisted_data,
+        .output_port = 0,
+        .event_type = iv::EventTypeId::trigger,
+    }};
+
+    auto current = previous;
+    EXPECT_TRUE(iv::graph_jit::persisted_storage_is_compatible(
+        current, 0, previous, 0));
+    current.ports[0].authored_tock_output = false;
+    current.ports[0].persisted_tick_output = true;
+    current.ports[0].output_production = iv::OutputProductionKind::tick;
+    EXPECT_FALSE(iv::graph_jit::persisted_storage_is_compatible(
+        current, 0, previous, 0));
+
+    current = previous;
+    current.storage.ports[0].event_type = iv::EventTypeId::midi;
+    EXPECT_FALSE(iv::graph_jit::persisted_storage_is_compatible(
+        current, 0, previous, 0));
+}
+
 TEST_F(GraphExecutorFixture, StagesActivatesAndDispatchesOnlyActiveGeneration)
 {
     iv::GraphExecutor executor;

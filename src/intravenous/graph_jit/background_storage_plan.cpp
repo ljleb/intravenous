@@ -1665,8 +1665,32 @@ std::expected<void, std::string> validate_background_runtime_plan(
                 }
                 ++placement_count[operation_index];
                 auto const position = *execution_position[node];
+                bool placed_before_consumer = false;
+                auto const& operation = runtime.operations[operation_index];
+                if (before) {
+                    if (operation.kind
+                            == BackgroundRuntimeOperationKind::sample_materialization
+                        && operation.operation
+                            < plan.storage.sample_materializations.size()) {
+                        auto const target = plan.storage
+                            .sample_materializations[operation.operation]
+                            .target_port;
+                        placed_before_consumer = target < plan.ports.size()
+                            && plan.ports[target].node == node;
+                    } else if (operation.kind
+                            == BackgroundRuntimeOperationKind::event_materialization
+                        && operation.operation
+                            < plan.storage.event_materializations.size()) {
+                        auto const target = plan.storage
+                            .event_materializations[operation.operation]
+                            .target_port;
+                        placed_before_consumer = target
+                            && *target < plan.ports.size()
+                            && plan.ports[*target].node == node;
+                    }
+                }
                 for (auto const connection_index :
-                     operation_connections(runtime.operations[operation_index])) {
+                     operation_connections(operation)) {
                     if (connection_index >= plan.connections.size()) {
                         return std::unexpected(
                             "GraphJit runtime operation references a missing connection");
@@ -1694,12 +1718,19 @@ std::expected<void, std::string> validate_background_runtime_plan(
                         auto const target = plan.ports[port_index].node;
                         if (target >= execution_position.size()
                             || !execution_position[target]) continue;
-                        if ((before && *execution_position[target] < position)
-                            || (!before && *execution_position[target] <= position)) {
+                        if (before && target == node) {
+                            placed_before_consumer = true;
+                        }
+                        if (!before
+                            && *execution_position[target] <= position) {
                             return std::unexpected(
                                 "GraphJit runtime operation is placed after its consumer");
                         }
                     }
+                }
+                if (before && !placed_before_consumer) {
+                    return std::unexpected(
+                        "GraphJit runtime operation is not placed before one of its consumers");
                 }
             }
             return {};
@@ -1714,9 +1745,9 @@ std::expected<void, std::string> validate_background_runtime_plan(
         }
     }
     if (std::ranges::any_of(
-            placement_count, [](std::size_t count) { return count != 1; })) {
+            placement_count, [](std::size_t count) { return count == 0; })) {
         return std::unexpected(
-            "GraphJit runtime operation does not have exactly one placement");
+            "GraphJit runtime operation has no placement");
     }
     for (auto const& operation : runtime.operations) {
         auto valid_index = [&] {
@@ -1906,15 +1937,31 @@ std::expected<void, std::string> finalize_background_runtime_plan(
         auto const node = plan.background_evaluation_order[position];
         if (node < execution_position.size()) execution_position[node] = position;
     }
-    auto source_and_target_positions = [&](std::span<BackgroundConnectionIndex const> connections) {
+    struct RuntimeOperationPositions {
+        std::optional<std::pair<std::size_t, BackgroundNodeIndex>>
+            latest_source{};
+        std::vector<std::pair<std::size_t, BackgroundNodeIndex>> targets{};
+    };
+    auto operation_positions = [&] (
+        std::span<BackgroundConnectionIndex const> connections,
+        std::span<BackgroundPortIndex const> explicit_targets) {
         std::optional<std::pair<std::size_t, BackgroundNodeIndex>> latest_source;
-        std::optional<std::pair<std::size_t, BackgroundNodeIndex>> earliest_target;
+        std::vector<std::pair<std::size_t, BackgroundNodeIndex>> targets;
         for (auto const connection_index : connections) {
             if (connection_index >= plan.connections.size()) continue;
             auto const& connection = plan.connections[connection_index];
             for (auto const port_index : connection.source_coverage_ports) {
                 if (port_index >= plan.ports.size()) continue;
-                auto const node = plan.ports[port_index].node;
+                auto const& port = plan.ports[port_index];
+                // Persisted Tick output storage is already readable when the
+                // background transaction starts. It is not produced by this
+                // evaluation, even if its owning semantic node has a position
+                // in the background order.
+                if (!port.authored_tock_output
+                    && !port.replayed_tick_output) {
+                    continue;
+                }
+                auto const node = port.node;
                 if (node >= execution_position.size()
                     || !execution_position[node]) continue;
                 auto const candidate = std::pair{*execution_position[node], node};
@@ -1928,35 +1975,58 @@ std::expected<void, std::string> finalize_background_runtime_plan(
                 if (node >= execution_position.size()
                     || !execution_position[node]) continue;
                 auto const candidate = std::pair{*execution_position[node], node};
-                if (!earliest_target || candidate.first < earliest_target->first) {
-                    earliest_target = candidate;
+                if (!std::ranges::contains(targets, candidate)) {
+                    targets.push_back(candidate);
                 }
             }
         }
-        return std::pair{latest_source, earliest_target};
+        for (auto const port_index : explicit_targets) {
+            if (port_index >= plan.ports.size()) continue;
+            auto const node = plan.ports[port_index].node;
+            if (node >= execution_position.size()
+                || !execution_position[node]) continue;
+            auto const candidate = std::pair{*execution_position[node], node};
+            if (!std::ranges::contains(targets, candidate)) {
+                targets.push_back(candidate);
+            }
+        }
+        std::ranges::sort(targets);
+        return RuntimeOperationPositions{
+            .latest_source = latest_source,
+            .targets = std::move(targets),
+        };
     };
     auto append_operation = [&](BackgroundRuntimeOperationKind kind,
                                 std::size_t operation,
                                 PortStorageKind storage_kind,
-                                std::vector<BackgroundConnectionIndex> connections) {
+                                std::vector<BackgroundConnectionIndex> connections,
+                                std::vector<BackgroundPortIndex> explicit_targets = {}) {
         if (storage_kind == PortStorageKind::current_tick) return;
-        auto const [latest_source, earliest_target] =
-            source_and_target_positions(connections);
-        auto const place_before = storage_kind == PortStorageKind::background
+        auto const positions = operation_positions(
+            connections, explicit_targets);
+        auto const place_before_consumers =
+            !positions.targets.empty()
+            && (storage_kind == PortStorageKind::background
                 || storage_kind == PortStorageKind::persisted_data
-            ? earliest_target
-            : std::optional<std::pair<std::size_t, BackgroundNodeIndex>>{};
-        if (!place_before && !latest_source) return;
+                || !positions.latest_source);
+        if (!place_before_consumers && !positions.latest_source) return;
         auto const index = runtime.operations.size();
         runtime.operations.push_back(BackgroundRuntimeOperationPlan{
             .kind = kind,
             .operation = operation,
             .connections = std::move(connections),
         });
-        if (place_before) {
-            runtime.node_operations[place_before->second].before.push_back(index);
+        if (place_before_consumers) {
+            // A shared materialization must not depend on one arbitrarily
+            // selected consumer being active. Every consumer can trigger the
+            // operation; BackgroundStorageRealization executes it only once.
+            for (auto const [unused, target] : positions.targets) {
+                static_cast<void>(unused);
+                runtime.node_operations[target].before.push_back(index);
+            }
         } else {
-            runtime.node_operations[latest_source->second].after.push_back(index);
+            runtime.node_operations[positions.latest_source->second]
+                .after.push_back(index);
         }
     };
     for (std::size_t index = 0;
@@ -1986,7 +2056,8 @@ std::expected<void, std::string> finalize_background_runtime_plan(
             BackgroundRuntimeOperationKind::sample_materialization,
             index,
             materialization.storage,
-            materialization.connections);
+            materialization.connections,
+            {materialization.target_port});
     }
     for (std::size_t index = 0;
          index < plan.storage.event_materializations.size(); ++index) {
@@ -1995,7 +2066,11 @@ std::expected<void, std::string> finalize_background_runtime_plan(
             BackgroundRuntimeOperationKind::event_materialization,
             index,
             materialization.storage,
-            materialization.connections);
+            materialization.connections,
+            materialization.target_port
+                ? std::vector<BackgroundPortIndex>{
+                    *materialization.target_port}
+                : std::vector<BackgroundPortIndex>{});
     }
 
     for (BackgroundNodeIndex node = 0; node < plan.nodes.size(); ++node) {

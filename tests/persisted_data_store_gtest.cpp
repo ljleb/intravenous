@@ -914,6 +914,71 @@ TEST(PersistedDataStore,
     EXPECT_EQ(events, (std::vector<std::int64_t>{1, 3, 4, 7}));
 }
 
+TEST(PersistedDataStore,
+     EventRecordingEraseAndRefillSplitsThenRejoinsCanonicalRegions)
+{
+    iv::PersistedDataStore store;
+    auto const output = store.resolve_output(
+        stable_output(iv::PortKind::event, "recorded-event-gap"));
+
+    auto seed = store.begin_candidate(1);
+    seed.overwrite(event_chunk(output, range(0, 8), {1, 3, 5, 7}));
+    ASSERT_EQ(store.publish(std::move(seed)),
+        iv::PersistedDataPublishResult::published);
+
+    auto erase = store.begin_candidate(2);
+    erase.erase_events(
+        output, range(2, 4), iv::EventTypeId::trigger);
+    ASSERT_EQ(store.publish(std::move(erase)),
+        iv::PersistedDataPublishResult::published);
+
+    auto split_reader = store.register_reader();
+    auto split = split_reader.pin();
+    auto const split_regions = split->event_region_ranges(
+        output, iv::EventTypeId::trigger);
+    ASSERT_EQ(split_regions.size(), 2u);
+    EXPECT_EQ(split_regions[0], range(0, 2));
+    EXPECT_EQ(split_regions[1], range(6, 2));
+    std::vector<std::int64_t> split_events;
+    for (std::size_t region = 0; region < split_regions.size(); ++region) {
+        split->for_each_event_region(
+            output,
+            iv::EventTypeId::trigger,
+            region,
+            split_regions[region],
+            [&](iv::TimedEvent const& event) {
+                split_events.push_back(event.time.signed_value());
+            });
+    }
+    EXPECT_EQ(split_events, (std::vector<std::int64_t>{1, 7}));
+
+    auto refill = store.begin_candidate(3);
+    refill.overwrite(event_chunk(output, range(2, 4), {2, 5}));
+    ASSERT_EQ(store.publish(std::move(refill)),
+        iv::PersistedDataPublishResult::published);
+
+    auto joined_reader = store.register_reader();
+    auto joined = joined_reader.pin();
+    auto const joined_regions = joined->event_region_ranges(
+        output, iv::EventTypeId::trigger);
+    ASSERT_EQ(joined_regions.size(), 1u);
+    EXPECT_EQ(joined_regions.front(), range(0, 8));
+    std::vector<std::int64_t> joined_events;
+    joined->for_each_event_region(
+        output,
+        iv::EventTypeId::trigger,
+        0,
+        joined_regions.front(),
+        [&](iv::TimedEvent const& event) {
+            joined_events.push_back(event.time.signed_value());
+        });
+    EXPECT_EQ(joined_events, (std::vector<std::int64_t>{1, 2, 5, 7}));
+
+    // The snapshot pinned before the refill remains immutable.
+    EXPECT_EQ(split->event_region_ranges(
+        output, iv::EventTypeId::trigger).size(), 2u);
+}
+
 TEST(TickMaterializationSnapshot,
      EventRegionsRemainIndependentAndFlatVisitUsesMergedTimeline)
 {
@@ -1159,6 +1224,60 @@ TEST(PersistedDataStore,
     auto const* old_region = old->find_sample_region(output, index(2048));
     ASSERT_NE(old_region, nullptr);
     EXPECT_FLOAT_EQ(old_region->at(index(2048), 0).value, 2049.0f);
+}
+
+TEST(PersistedDataStore,
+     FillingASparseRecordingGapMapsOneContiguousRegionInTimelineOrder)
+{
+    iv::PersistedDataStore store;
+    auto const output = store.resolve_output(
+        stable_output(iv::PortKind::sample, "filled-recording-gap"));
+
+    auto separated = store.begin_candidate(1);
+    separated.overwrite(sample_region(output, range(0, 2048), 1.0f));
+    separated.overwrite(sample_region(output, range(4096, 2048), 4097.0f));
+    ASSERT_EQ(store.publish(std::move(separated)),
+        iv::PersistedDataPublishResult::published);
+
+    auto old_reader = store.register_reader();
+    auto old = old_reader.pin();
+    ASSERT_EQ(old->sample_region_views(
+        output,
+        iv::mono_interleaved_channel_layout,
+        *iv::continuous_value_storage_geometry(
+            iv::continuous_value_type_id_v<iv::Sample>, std::nullopt)).size(),
+        2u);
+
+    auto fill = store.begin_candidate(2);
+    fill.overwrite(sample_region(output, range(2048, 2048), 2049.0f));
+    ASSERT_EQ(store.publish(std::move(fill)),
+        iv::PersistedDataPublishResult::published);
+
+    auto reader = store.register_reader();
+    auto current = reader.pin();
+    auto const views = current->sample_region_views(
+        output,
+        iv::mono_interleaved_channel_layout,
+        *iv::continuous_value_storage_geometry(
+            iv::continuous_value_type_id_v<iv::Sample>, std::nullopt));
+    ASSERT_EQ(views.size(), 1u);
+    EXPECT_EQ(views.front().range, range(0, 6144));
+    auto const elements =
+        iv::ContinuousRegion<iv::Sample>{views.front()}.elements();
+    ASSERT_EQ(elements.size(), 6144u);
+    EXPECT_FLOAT_EQ(elements[0].value, 1.0f);
+    EXPECT_FLOAT_EQ(elements[2047].value, 2048.0f);
+    EXPECT_FLOAT_EQ(elements[2048].value, 2049.0f);
+    EXPECT_FLOAT_EQ(elements[4095].value, 4096.0f);
+    EXPECT_FLOAT_EQ(elements[4096].value, 4097.0f);
+    EXPECT_FLOAT_EQ(elements[6143].value, 6144.0f);
+
+    EXPECT_EQ(old->sample_region_views(
+        output,
+        iv::mono_interleaved_channel_layout,
+        *iv::continuous_value_storage_geometry(
+            iv::continuous_value_type_id_v<iv::Sample>, std::nullopt)).size(),
+        2u);
 }
 
 TEST(PersistedDataStore, PositionalSampleRecordingRejectsPlanarStorage)

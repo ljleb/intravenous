@@ -136,6 +136,15 @@ event_merge_capacity(std::size_t count)
 }
 
 class TransactionSampleStorage {
+public:
+    struct UnwrittenValue {
+        std::size_t region = 0;
+        std::size_t frame = 0;
+        std::size_t channel = 0;
+        GlobalIndexRange range{};
+    };
+
+private:
     struct AlignedDelete {
         std::size_t alignment = alignof(std::max_align_t);
 
@@ -276,27 +285,33 @@ public:
         return true;
     }
 
-    [[nodiscard]] bool complete() const noexcept
+    [[nodiscard]] std::optional<UnwrittenValue>
+    first_unwritten_value() const noexcept
     {
-        return std::ranges::all_of(
-            owned_regions_, [&](OwnedRegion const& region) {
-                auto const frames = region.view.frame_count();
-                auto const channel_count_value = channel_count(layout_);
-                for (auto const channel : channels_) {
-                    for (std::size_t frame = 0; frame < frames; ++frame) {
-                        auto const native_index =
-                            layout_.sample_layout
-                                    == SampleStreamLayout::planar
-                                ? channel * frames + frame
-                                : frame * channel_count_value + channel;
-                        if (native_index >= region.written.size()
-                            || region.written[native_index] == 0) {
-                            return false;
-                        }
+        for (std::size_t region_index = 0;
+             region_index < owned_regions_.size(); ++region_index) {
+            auto const& region = owned_regions_[region_index];
+            auto const frames = region.view.frame_count();
+            auto const channel_count_value = channel_count(layout_);
+            for (auto const channel : channels_) {
+                for (std::size_t frame = 0; frame < frames; ++frame) {
+                    auto const native_index =
+                        layout_.sample_layout == SampleStreamLayout::planar
+                        ? channel * frames + frame
+                        : frame * channel_count_value + channel;
+                    if (native_index >= region.written.size()
+                        || region.written[native_index] == 0) {
+                        return UnwrittenValue{
+                            .region = region_index,
+                            .frame = frame,
+                            .channel = channel,
+                            .range = region.view.range,
+                        };
                     }
                 }
-                return true;
-            });
+            }
+        }
+        return std::nullopt;
     }
 
     [[nodiscard]] BackgroundSampleReadView read_view() const noexcept
@@ -1461,6 +1476,41 @@ BackgroundStorageRealization::execute_operation(
     }
 
     auto const& operation = plan_->runtime.operations[index];
+    std::optional<graph_jit::PortStorageIndex> selected_storage;
+    switch (operation.kind) {
+    case graph_jit::BackgroundRuntimeOperationKind::direct_sample:
+        if (operation.operation < plan_->storage.direct_samples.size()) {
+            selected_storage = plan_->storage
+                .direct_samples[operation.operation].storage;
+        }
+        break;
+    case graph_jit::BackgroundRuntimeOperationKind::direct_event:
+        if (operation.operation < plan_->storage.direct_events.size()) {
+            selected_storage = plan_->storage
+                .direct_events[operation.operation].storage;
+        }
+        break;
+    case graph_jit::BackgroundRuntimeOperationKind::sample_materialization:
+        if (operation.operation
+            < plan_->storage.sample_materializations.size()) {
+            selected_storage = plan_->storage
+                .sample_materializations[operation.operation].output;
+        }
+        break;
+    case graph_jit::BackgroundRuntimeOperationKind::event_materialization:
+        if (operation.operation
+            < plan_->storage.event_materializations.size()) {
+            selected_storage = plan_->storage
+                .event_materializations[operation.operation].output;
+        }
+        break;
+    }
+    if (selected_storage && *selected_storage < slots_.size()
+        && slot(*selected_storage).coverage->empty()) {
+        executed_operations_[index] = true;
+        return {};
+    }
+
     std::expected<void, std::string> result;
     switch (operation.kind) {
     case graph_jit::BackgroundRuntimeOperationKind::direct_sample: {
@@ -2317,11 +2367,27 @@ BackgroundStorageRealization::validate_produced_storage() const
     }
     for (graph_jit::PortStorageIndex index = 0; index < slots_.size(); ++index) {
         auto const& selected = *slots_[index];
-        if (selected.owned_sample && !selected.owned_sample->complete()) {
-            return std::unexpected(
-                "background continuous output did not initialize every "
-                "selected value and channel");
+        if (!selected.owned_sample) continue;
+        auto const unwritten = selected.owned_sample->first_unwritten_value();
+        if (!unwritten) continue;
+
+        std::string owner = "derived materialization";
+        if (selected.plan->output_port
+            && *selected.plan->output_port < plan_->ports.size()) {
+            auto const& output = plan_->ports[*selected.plan->output_port];
+            owner = "output port '" + output.name + "' (port "
+                + std::to_string(*selected.plan->output_port) + ")";
         }
+        return std::unexpected(
+            "background continuous output did not initialize every selected "
+            "value and channel: storage " + std::to_string(index)
+            + " for " + owner
+            + " did not initialize Region "
+            + std::to_string(unwritten->region)
+            + " [begin=" + std::to_string(unwritten->range.begin.bits())
+            + ", extent=" + std::to_string(unwritten->range.extent)
+            + "] frame " + std::to_string(unwritten->frame)
+            + " channel " + std::to_string(unwritten->channel));
     }
     return {};
 }
@@ -3109,6 +3175,10 @@ void BackgroundStorageOperationFrame::execute(
             "background storage operation frame has no realization");
     }
     for (auto const operation : operations) {
+        // Shared operations can be placed before several consumers. The first
+        // active consumer produces the storage; later active consumers reuse
+        // it without weakening execute_operation()'s duplicate-call check.
+        if (realization_->operation_executed(operation)) continue;
         auto executed = realization_->execute_operation(operation);
         if (!executed) {
             throw std::runtime_error(std::move(executed.error()));

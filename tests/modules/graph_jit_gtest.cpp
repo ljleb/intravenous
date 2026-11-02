@@ -21,6 +21,7 @@
 #include <intravenous/runtime/project_graph_graph_jit_bridge.h>
 #include <intravenous/runtime/project_graph_node_instances_bridge.h>
 #include <intravenous/runtime/package_jit.h>
+#include <intravenous/runtime/realtime_produced_record.h>
 #include <intravenous/runtime/startup_config.h>
 #include <intravenous/runtime/tick_invocation_frame.h>
 
@@ -28,6 +29,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <bit>
 #include <cstdint>
 #include <cstring>
@@ -192,6 +194,8 @@ constexpr char graph_jit_retained_event_module_id[] = "iv.test.graph_jit.state_c
 constexpr char graph_jit_persistent_event_ring_module_id[] = "iv.test.graph_jit.state_context.persistent_event_ring_module";
 constexpr char graph_jit_retained_converted_event_fanout_module_id[] = "iv.test.graph_jit.state_context.retained_converted_event_fanout_module";
 constexpr char graph_jit_tick_capture_module_id[] = "iv.test.graph_jit.state_context.tick_capture_module";
+constexpr char graph_jit_persisted_recording_coverage_module_id[] =
+    "iv.test.graph_jit.state_context.persisted_recording_coverage_module";
 constexpr char graph_jit_declaration_layout_module_id[] =
     "iv.test.graph_jit.state_context.declaration_layout_module";
 constexpr char graph_jit_sample_feedback_a_id[] = "iv.test.graph_jit.state_context.sample_feedback_a";
@@ -773,6 +777,29 @@ struct StereoSampleConsumerProbeStateMirror {
     float last_right = 0.0f;
     float sum_left = 0.0f;
     float sum_right = 0.0f;
+};
+
+struct PersistedRecordingCoverageStateMirror {
+    std::uint64_t calls = 0;
+    std::uint64_t sample_region_count = 0;
+    std::uint64_t sample_layout = 0;
+    std::uint64_t event_region_count = 0;
+    std::uint64_t event_count = 0;
+    std::uint64_t first_event_time = 0;
+    float first_left = 0.0f;
+    float first_right = 0.0f;
+    float last_left = 0.0f;
+    float last_right = 0.0f;
+};
+
+struct ModuleBoundaryCoverageStateMirror {
+    std::uint64_t calls = 0;
+    std::uint64_t sample_region_count = 0;
+    std::uint64_t event_region_count = 0;
+    std::uint64_t first_event_count = 0;
+    std::uint64_t second_event_count = 0;
+    float first_overlap_value = 0.0f;
+    float second_overlap_value = 0.0f;
 };
 
 struct HistoryRampSourceStateMirror {
@@ -7769,6 +7796,319 @@ struct PlaybackEventHistoryPeer {
     }
 };
 
+struct ModuleBoundaryCoverageObserver {
+    struct alignas(64) TockState {
+        std::uint64_t calls = 0;
+        std::uint64_t sample_region_count = 0;
+        std::uint64_t event_region_count = 0;
+        std::uint64_t first_event_count = 0;
+        std::uint64_t second_event_count = 0;
+        float first_overlap_value = 0.0f;
+        float second_overlap_value = 0.0f;
+    };
+
+    static constexpr auto inputs()
+    {
+        return std::tuple{
+            iv::input<iv::Sample>(
+                "module-boundary-sample-input",
+                iv::InputAccess::coverage),
+            iv::event_input(
+                "module-boundary-event-input",
+                iv::EventTypeId::trigger,
+                iv::InputAccess::coverage),
+        };
+    }
+
+    static constexpr auto outputs()
+    {
+        return std::tuple{
+            iv::output<iv::Sample>(
+                "module-boundary-sample-output",
+                iv::OutputProduction::coverage),
+            iv::event_output(
+                "module-boundary-event-output",
+                iv::EventTypeId::trigger,
+                iv::OutputProduction::coverage,
+                {.max_events_per_index = 1.0}),
+        };
+    }
+
+    void propagate_forward_coverage(
+        iv::PropagateForwardCoverageContext<
+            ModuleBoundaryCoverageObserver>& ctx) const
+    {
+        auto samples = ctx.input<"module-boundary-sample-input">();
+        ctx.output<"module-boundary-sample-output">().publish(
+            samples.regions());
+        ctx.output<"module-boundary-sample-output">().change(
+            samples.changed());
+        auto events = ctx.input<"module-boundary-event-input">();
+        ctx.output<"module-boundary-event-output">().publish(
+            events.regions());
+        ctx.output<"module-boundary-event-output">().change(
+            events.changed());
+    }
+
+    void propagate_reverse_coverage(
+        iv::PropagateReverseCoverageContext<
+            ModuleBoundaryCoverageObserver>& ctx) const
+    {
+        ctx.input<"module-boundary-sample-input">().require(
+            ctx.output<"module-boundary-sample-output">().required());
+        ctx.input<"module-boundary-event-input">().require(
+            ctx.output<"module-boundary-event-output">().required());
+    }
+
+    void tock_coverage(
+        iv::TockCoverageContext<ModuleBoundaryCoverageObserver>& ctx) const
+    {
+        auto samples = ctx.input<"module-boundary-sample-input">().regions();
+        auto sample_outputs =
+            ctx.output<"module-boundary-sample-output">().regions();
+        auto events = ctx.input<"module-boundary-event-input">().regions();
+        auto event_outputs =
+            ctx.output<"module-boundary-event-output">().regions();
+        IV_ASSERT(samples.size() == 2 && sample_outputs.size() == 2,
+            "module boundary did not preserve two sample Regions");
+        IV_ASSERT(events.size() == 2 && event_outputs.size() == 2,
+            "module boundary did not preserve two event Regions");
+
+        auto& state = ctx.tock_state();
+        ++state.calls;
+        state.sample_region_count = samples.size();
+        state.event_region_count = events.size();
+        auto const overlap = iv::GlobalIndex::from_signed(12);
+        state.first_overlap_value = static_cast<float>(samples[0].at(overlap));
+        state.second_overlap_value = static_cast<float>(samples[1].at(overlap));
+        events[0].for_each([&](iv::TimedEvent const&) {
+            ++state.first_event_count;
+        });
+        events[1].for_each([&](iv::TimedEvent const&) {
+            ++state.second_event_count;
+        });
+
+        for (std::size_t region = 0; region < samples.size(); ++region) {
+            for (std::size_t frame = 0;
+                 frame < samples[region].frame_count(); ++frame) {
+                sample_outputs[region].value(frame) =
+                    samples[region].value(frame);
+            }
+            events[region].for_each([&](iv::TimedEvent const& event) {
+                event_outputs[region].write(event);
+            });
+        }
+    }
+};
+
+void multi_region_boundary_child_module(iv::GraphBuilder& graph)
+{
+    auto sample_input = graph.input<"samples", iv::Sample>();
+    auto event_input = graph.event_input<"events">(iv::EventTypeId::trigger);
+    auto sample = graph.node<
+        "iv.test.graph_jit.state_context.multi_region_coverage_consumer">();
+    auto events = graph.node<
+        "iv.test.graph_jit.state_context.multi_region_event_coverage_consumer">();
+    sample(sample_input);
+    events.connect_event_input(0, event_input);
+    graph.outputs(sample);
+    graph.event_outputs(events.event_port());
+}
+
+struct PersistedStereoRecordingSource {
+    static constexpr auto inputs() { return std::tuple{}; }
+
+    static constexpr auto outputs()
+    {
+        return std::tuple{
+            iv::output<iv::Sample>(
+                "recorded-samples",
+                iv::OutputProduction::tick,
+                iv::OutputRetention::persisted,
+                {.channel_layout = {
+                    .channel_type = iv::ChannelTypeId::stereo,
+                    .sample_layout = iv::SampleStreamLayout::planar,
+                }}),
+            iv::event_output(
+                "recorded-events",
+                iv::EventTypeId::trigger,
+                iv::OutputProduction::tick,
+                iv::OutputRetention::persisted,
+                {.max_events_per_index = 0.25}),
+        };
+    }
+
+    void tick_block(
+        iv::TickBlockContext<PersistedStereoRecordingSource> const& ctx) const
+    {
+        auto samples = ctx.output<"recorded-samples">();
+        for (std::size_t frame = 0; frame < ctx.block_size; ++frame) {
+            auto const position = ctx.index.advanced_by({.whole = frame}).whole();
+            samples.value(frame, 0) =
+                iv::Sample{static_cast<float>(position.signed_value())};
+            samples.value(frame, 1) = iv::Sample{
+                1000.0f + static_cast<float>(position.signed_value())};
+        }
+        if (ctx.block_size > 2) {
+            ctx.output<"recorded-events">().push(iv::TriggerEvent{}, 2);
+        }
+    }
+};
+
+struct PersistedRecordingCoverageConsumer {
+    struct alignas(64) TockState {
+        std::uint64_t calls = 0;
+        std::uint64_t sample_region_count = 0;
+        std::uint64_t sample_layout = 0;
+        std::uint64_t event_region_count = 0;
+        std::uint64_t event_count = 0;
+        std::uint64_t first_event_time = 0;
+        float first_left = 0.0f;
+        float first_right = 0.0f;
+        float last_left = 0.0f;
+        float last_right = 0.0f;
+    };
+
+    static constexpr auto inputs()
+    {
+        return std::tuple{
+            iv::input<iv::Sample>(
+                "recorded-sample-coverage",
+                iv::InputAccess::coverage,
+                {.channel_layout = {
+                    .channel_type = iv::ChannelTypeId::stereo,
+                    .sample_layout = iv::SampleStreamLayout::planar,
+                }}),
+            iv::event_input(
+                "recorded-event-coverage",
+                iv::EventTypeId::trigger,
+                iv::InputAccess::coverage),
+        };
+    }
+
+    static constexpr auto outputs()
+    {
+        return std::tuple{
+            iv::output<iv::Sample>(
+                "observed-sample-coverage",
+                iv::OutputProduction::coverage,
+                {.channel_layout = {
+                    .channel_type = iv::ChannelTypeId::stereo,
+                    .sample_layout = iv::SampleStreamLayout::planar,
+                }}),
+            iv::event_output(
+                "observed-event-coverage",
+                iv::EventTypeId::trigger,
+                iv::OutputProduction::coverage,
+                {.max_events_per_index = 0.25}),
+        };
+    }
+
+    void propagate_forward_coverage(
+        iv::PropagateForwardCoverageContext<
+            PersistedRecordingCoverageConsumer>& ctx) const
+    {
+        auto samples = ctx.input<"recorded-sample-coverage">();
+        ctx.output<"observed-sample-coverage">().publish(samples.regions());
+        ctx.output<"observed-sample-coverage">().change(samples.changed());
+        auto events = ctx.input<"recorded-event-coverage">();
+        ctx.output<"observed-event-coverage">().publish(events.regions());
+        ctx.output<"observed-event-coverage">().change(events.changed());
+    }
+
+    void propagate_reverse_coverage(
+        iv::PropagateReverseCoverageContext<
+            PersistedRecordingCoverageConsumer>& ctx) const
+    {
+        ctx.input<"recorded-sample-coverage">().require(
+            ctx.output<"observed-sample-coverage">().required());
+        ctx.input<"recorded-event-coverage">().require(
+            ctx.output<"observed-event-coverage">().required());
+    }
+
+    void tock_coverage(
+        iv::TockCoverageContext<PersistedRecordingCoverageConsumer>& ctx) const
+    {
+        auto sample_inputs =
+            ctx.input<"recorded-sample-coverage">().regions();
+        auto sample_outputs =
+            ctx.output<"observed-sample-coverage">().regions();
+        auto event_inputs =
+            ctx.input<"recorded-event-coverage">().regions();
+        auto event_outputs =
+            ctx.output<"observed-event-coverage">().regions();
+        IV_ASSERT(sample_inputs.size() == sample_outputs.size(),
+            "recorded sample input and output Region counts differ");
+        IV_ASSERT(event_inputs.size() == event_outputs.size(),
+            "recorded event input and output Region counts differ");
+
+        auto& state = ctx.tock_state();
+        ++state.calls;
+        state.sample_region_count = sample_inputs.size();
+        state.event_region_count = event_inputs.size();
+        if (!sample_inputs.empty()) {
+            auto const first = sample_inputs[0];
+            auto const last = sample_inputs[sample_inputs.size() - 1];
+            state.sample_layout = static_cast<std::uint64_t>(
+                first.channel_layout().sample_layout);
+            state.first_left = static_cast<float>(first.value(0, 0));
+            state.first_right = static_cast<float>(first.value(0, 1));
+            state.last_left = static_cast<float>(
+                last.value(last.frame_count() - 1, 0));
+            state.last_right = static_cast<float>(
+                last.value(last.frame_count() - 1, 1));
+        }
+        for (auto const region : event_inputs) {
+            region.for_each([&](iv::TimedEvent const& event) {
+                if (state.event_count == 0) {
+                    state.first_event_time = event.time.bits();
+                }
+                ++state.event_count;
+            });
+        }
+
+        for (std::size_t region = 0; region < sample_inputs.size(); ++region) {
+            for (std::size_t frame = 0;
+                 frame < sample_inputs[region].frame_count(); ++frame) {
+                sample_outputs[region].value(frame, 0) =
+                    sample_inputs[region].value(frame, 0);
+                sample_outputs[region].value(frame, 1) =
+                    sample_inputs[region].value(frame, 1);
+            }
+        }
+        for (std::size_t region = 0; region < event_inputs.size(); ++region) {
+            event_inputs[region].for_each(
+                [&](iv::TimedEvent const& event) {
+                    event_outputs[region].write(event);
+                });
+        }
+    }
+};
+
+void persisted_recording_coverage_module(iv::GraphBuilder& graph)
+{
+    auto source = graph.node<
+        "iv.test.graph_jit.state_context.persisted_stereo_recording_source">();
+    auto consumer = graph.node<
+        "iv.test.graph_jit.state_context.persisted_recording_coverage_consumer">();
+    consumer(source);
+    consumer.connect_event_input(0, source.event_port());
+
+    auto sample_source = graph.node<
+        "iv.test.graph_jit.state_context.multi_region_source">();
+    auto event_source = graph.node<
+        "iv.test.graph_jit.state_context.multi_region_event_source">();
+    auto child = graph.node<
+        "iv.test.graph_jit.state_context.multi_region_boundary_child_module">();
+    child(sample_source);
+    child.connect_event_input(0, event_source.event_port());
+    auto observer = graph.node<
+        "iv.test.graph_jit.state_context.module_boundary_coverage_observer">();
+    observer(child);
+    observer.connect_event_input(0, child.event_port());
+    graph.outputs();
+}
+
 void playback_sample_history_module(iv::GraphBuilder& graph)
 {
     auto source = graph.node<"iv.test.graph_jit.state_context.playback_sample_source">();
@@ -7865,6 +8205,21 @@ IV_NODE("iv.test.graph_jit.state_context.playback_history_peer", PlaybackHistory
 IV_NODE("iv.test.graph_jit.state_context.playback_stereo_history_consumer", PlaybackStereoHistoryConsumer);
 IV_NODE("iv.test.graph_jit.state_context.playback_event_history_consumer", PlaybackEventHistoryConsumer);
 IV_NODE("iv.test.graph_jit.state_context.playback_event_history_peer", PlaybackEventHistoryPeer);
+IV_NODE(
+    "iv.test.graph_jit.state_context.module_boundary_coverage_observer",
+    ModuleBoundaryCoverageObserver);
+IV_MODULE(
+    "iv.test.graph_jit.state_context.multi_region_boundary_child_module",
+    multi_region_boundary_child_module);
+IV_NODE(
+    "iv.test.graph_jit.state_context.persisted_stereo_recording_source",
+    PersistedStereoRecordingSource);
+IV_NODE(
+    "iv.test.graph_jit.state_context.persisted_recording_coverage_consumer",
+    PersistedRecordingCoverageConsumer);
+IV_MODULE(
+    "iv.test.graph_jit.state_context.persisted_recording_coverage_module",
+    persisted_recording_coverage_module);
 IV_MODULE("iv.test.graph_jit.state_context.playback_sample_history_module", playback_sample_history_module);
 IV_MODULE("iv.test.graph_jit.state_context.playback_sample_history_replacement_module", playback_sample_history_replacement_module);
 IV_MODULE("iv.test.graph_jit.state_context.playback_sample_window_module", playback_sample_window_module);
@@ -10973,6 +11328,214 @@ TEST_F(GraphJitRuntimeFixture, GeneratedRootInvokesPersistedTickCaptures)
     EXPECT_FLOAT_EQ(probe.last_sample, 1003.5f);
     EXPECT_EQ(probe.event_count, 1u);
     EXPECT_EQ(probe.first_event_time, index(1003));
+}
+
+TEST_F(GraphJitRuntimeFixture,
+     PersistedTickRecordingsFeedPlanarSampleAndEventCoverageInputs)
+{
+    auto compiled = compile(
+        graph_jit_persisted_recording_coverage_module_id, 307);
+    ASSERT_TRUE(compiled.succeeded())
+        << (compiled.diagnostics.empty()
+                ? ""
+                : compiled.diagnostics.front().message);
+    auto& graph = *compiled.compiled_graph;
+    auto const& plan = graph.background_evaluation_plan;
+
+    auto const find_port = [&](std::string_view name,
+                               iv::graph_jit::PortDirection direction)
+        -> std::optional<iv::graph_jit::BackgroundPortIndex> {
+        for (iv::graph_jit::BackgroundPortIndex port = 0;
+             port < plan.ports.size(); ++port) {
+            if (plan.ports[port].name == name
+                && plan.ports[port].direction == direction) {
+                return port;
+            }
+        }
+        return std::nullopt;
+    };
+    auto const observed_samples = find_port(
+        "observed-sample-coverage",
+        iv::graph_jit::PortDirection::output);
+    auto const observed_events = find_port(
+        "observed-event-coverage",
+        iv::graph_jit::PortDirection::output);
+    auto const boundary_sample_source = find_port(
+        "multi-region-source-output",
+        iv::graph_jit::PortDirection::output);
+    auto const boundary_event_source = find_port(
+        "multi-region-event-source-output",
+        iv::graph_jit::PortDirection::output);
+    auto const boundary_samples = find_port(
+        "module-boundary-sample-output",
+        iv::graph_jit::PortDirection::output);
+    auto const boundary_events = find_port(
+        "module-boundary-event-output",
+        iv::graph_jit::PortDirection::output);
+    ASSERT_TRUE(observed_samples.has_value());
+    ASSERT_TRUE(observed_events.has_value());
+    ASSERT_TRUE(boundary_sample_source.has_value());
+    ASSERT_TRUE(boundary_event_source.has_value());
+    ASSERT_TRUE(boundary_samples.has_value());
+    ASSERT_TRUE(boundary_events.has_value());
+
+    iv::PersistedDataStore data;
+    auto data_reader = data.register_reader();
+    iv::TickMaterializationStore materializations;
+    auto materialization_reader = materializations.register_reader();
+    iv::TickInvocationWorkspace workspace(
+        plan,
+        graph.project_generation,
+        data,
+        graph.specialization.block_size,
+        graph.root_operations.combine_sequential_input,
+        graph.root_operations.initialize_sequential_input);
+    auto const requirements = workspace.producer_requirements();
+    ASSERT_EQ(requirements.size(), 2u);
+    EXPECT_EQ(requirements[0].kind, iv::PortKind::sample);
+    EXPECT_EQ(requirements[1].kind, iv::PortKind::event);
+
+    iv::ProducerReserve sample_reserve{
+        iv::realtime_produced_block_storage_size};
+    iv::ProducerReserve event_reserve{
+        iv::realtime_produced_block_storage_size};
+    iv::AsyncCapacityManager manager{1};
+    iv::AsyncWorkSignal work_signal;
+    iv::PendingQueue sample_pending{sample_reserve, work_signal};
+    iv::PendingQueue event_pending{event_reserve, work_signal};
+    std::atomic<bool> reservation_failed{false};
+    auto const sample_blocks = requirements[0].maximum_blocks_per_callback;
+    auto const event_blocks = requirements[1].maximum_blocks_per_callback;
+    ASSERT_EQ(manager.maintain(sample_reserve,
+        {sample_blocks, sample_blocks, 2 * sample_blocks}),
+        2 * sample_blocks);
+    ASSERT_EQ(manager.maintain(event_reserve,
+        {event_blocks, event_blocks, 2 * event_blocks}),
+        2 * event_blocks);
+    workspace.bind_producer_endpoint(
+        0, sample_reserve, sample_pending, reservation_failed);
+    workspace.bind_producer_endpoint(
+        1, event_reserve, event_pending, reservation_failed);
+
+    auto node_storage = graph.node_layout.create_storage(resources);
+    node_storage.initialize();
+    {
+        iv::TickInvocationFrame frame{
+            data_reader,
+            materialization_reader,
+            workspace,
+            index(64),
+            8};
+        graph.root_operations.tick_block(
+            node_storage.buffer().data(), &frame.call(), index(64), 8);
+    }
+    EXPECT_FALSE(reservation_failed.load(std::memory_order_relaxed));
+
+    std::array routes{
+        iv::BackgroundProducedInputRoute{
+            .output = requirements[0].output,
+            .port = requirements[0].port,
+            .kind = requirements[0].kind,
+        },
+        iv::BackgroundProducedInputRoute{
+            .output = requirements[1].output,
+            .port = requirements[1].port,
+            .kind = requirements[1].kind,
+        },
+    };
+    std::array selections{
+        sample_pending.pin(),
+        event_pending.pin(),
+    };
+    auto tock_states = graph.tock_state_layout.create_storage(resources);
+    tock_states.initialize();
+    iv::BackgroundCoverageState coverage(
+        plan.accumulators.output_change_count);
+    iv::BackgroundPropagationWorkspace propagation(
+        plan, graph.specialization.sample_rate);
+    auto const demanded = index_coverage({{64, 72}});
+    iv::BackgroundEvaluationTransaction transaction{
+        graph,
+        tock_states,
+        coverage,
+        propagation,
+        data,
+        materializations,
+        {
+            .semantic_version = 1,
+            .roots = {
+                .locally_changed_nodes = {
+                    plan.ports[*boundary_sample_source].node,
+                    plan.ports[*boundary_event_source].node,
+                },
+                .output_demands = {
+                    {.port = *observed_samples, .required = demanded},
+                    {.port = *observed_events, .required = demanded},
+                    {
+                        .port = *boundary_samples,
+                        .required = index_coverage({{10, 16}}),
+                    },
+                    {
+                        .port = *boundary_events,
+                        .required = index_coverage({{10, 16}}),
+                    },
+                },
+            },
+        },
+        routes,
+        selections,
+    };
+    auto result = transaction.execute();
+    ASSERT_TRUE(result.has_value()) << result.error();
+    ASSERT_EQ(result->status, iv::BackgroundEvaluationStatus::committed);
+
+    auto const consumer_node = plan.ports[*observed_samples].node;
+    ASSERT_EQ(consumer_node, plan.ports[*observed_events].node);
+    ASSERT_TRUE(plan.nodes[consumer_node].tock_state_node.has_value());
+    auto const* state =
+        static_cast<PersistedRecordingCoverageStateMirror const*>(
+            tock_states.state_ptr(
+                *plan.nodes[consumer_node].tock_state_node));
+    ASSERT_NE(state, nullptr);
+    EXPECT_EQ(state->calls, 1u);
+    EXPECT_EQ(state->sample_region_count, 1u);
+    EXPECT_EQ(state->sample_layout,
+        static_cast<std::uint64_t>(iv::SampleStreamLayout::planar));
+    EXPECT_FLOAT_EQ(state->first_left, 64.0f);
+    EXPECT_FLOAT_EQ(state->first_right, 1064.0f);
+    EXPECT_FLOAT_EQ(state->last_left, 71.0f);
+    EXPECT_FLOAT_EQ(state->last_right, 1071.0f);
+    EXPECT_EQ(state->event_region_count, 1u);
+    EXPECT_EQ(state->event_count, 1u);
+    EXPECT_EQ(state->first_event_time, index(66).bits());
+
+    auto const boundary_node = plan.ports[*boundary_samples].node;
+    ASSERT_EQ(boundary_node, plan.ports[*boundary_events].node);
+    ASSERT_TRUE(plan.nodes[boundary_node].tock_state_node.has_value());
+    auto const* boundary_state =
+        static_cast<ModuleBoundaryCoverageStateMirror const*>(
+            tock_states.state_ptr(
+                *plan.nodes[boundary_node].tock_state_node));
+    ASSERT_NE(boundary_state, nullptr);
+    EXPECT_EQ(boundary_state->calls, 1u);
+    EXPECT_EQ(boundary_state->sample_region_count, 2u);
+    EXPECT_FLOAT_EQ(boundary_state->first_overlap_value, 1.0f);
+    EXPECT_FLOAT_EQ(boundary_state->second_overlap_value, 2.0f);
+    EXPECT_EQ(boundary_state->event_region_count, 2u);
+    EXPECT_EQ(boundary_state->first_event_count, 2u);
+    EXPECT_EQ(boundary_state->second_event_count, 2u);
+
+    auto published = data_reader.pin();
+    auto const stored_samples = published->sample_region_views(
+        requirements[0].output,
+        iv::ChannelLayout{
+            .channel_type = iv::ChannelTypeId::stereo,
+            .sample_layout = iv::SampleStreamLayout::interleaved,
+        },
+        *iv::continuous_value_storage_geometry(
+            iv::continuous_value_type_id_v<iv::Sample>, std::nullopt));
+    ASSERT_EQ(stored_samples.size(), 1u);
+    EXPECT_EQ(stored_samples.front().range, range(64, 72));
 }
 
 TEST_F(GraphJitRuntimeFixture, TypeOwnedFFTBlockStorageUsesProjectedPortExtents)

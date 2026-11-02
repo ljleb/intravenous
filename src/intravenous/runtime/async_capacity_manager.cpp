@@ -492,10 +492,9 @@ struct AsyncCapacityManager::Slab {
 };
 
 ProducerCapacityRegistration::ProducerCapacityRegistration(
-    AsyncCapacityManager& manager,
     ProducerReserve& reserve,
     ProducerCapacityPolicy policy) noexcept
-    : manager_(&manager), reserve_(&reserve), policy_(policy)
+    : reserve_(&reserve), policy_(policy)
 {}
 
 ProducerCapacityRegistration::~ProducerCapacityRegistration()
@@ -584,7 +583,7 @@ AsyncCapacityManager::register_producer(
 {
     validate_policy(policy);
     auto registration = std::unique_ptr<ProducerCapacityRegistration>{
-        new ProducerCapacityRegistration{*this, reserve, policy}};
+        new ProducerCapacityRegistration{reserve, policy}};
     {
         std::scoped_lock lock(mutex_);
         auto const duplicate = std::find_if(
@@ -598,6 +597,10 @@ AsyncCapacityManager::register_producer(
         }
         static_cast<void>(maintain_locked(reserve, policy));
         registrations_.push_back(registration.get());
+        // The registration becomes live only after every throwing operation
+        // above has succeeded. A provisional registration therefore cannot
+        // call unregister() during exception unwinding.
+        registration->manager_ = this;
         ++registration_revision_;
     }
     wake_.notify_one();

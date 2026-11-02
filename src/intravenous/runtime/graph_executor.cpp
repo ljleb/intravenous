@@ -34,17 +34,6 @@ ProducerCapacityPolicy producer_capacity_policy(
     };
 }
 
-bool persisted_storage_is_compatible(
-    graph_jit::PortStoragePlan const& current,
-    graph_jit::PortStoragePlan const& previous) noexcept
-{
-    if (current.kind != previous.kind) return false;
-    return current.kind == PortKind::sample
-        ? current.sample_layout == previous.sample_layout
-            && current.sample_channels == previous.sample_channels
-        : current.event_type == previous.event_type;
-}
-
 std::vector<PersistedOutputHandle> retired_persisted_outputs(
     CompiledGraph const& current,
     CompiledGraph const& previous,
@@ -70,7 +59,11 @@ std::vector<PersistedOutputHandle> retired_persisted_outputs(
                     current_plan.storage.ports[current_storage];
                 if (candidate.storage
                         != graph_jit::PortStorageKind::persisted_data
-                    || !persisted_storage_is_compatible(candidate, prior)) {
+                    || !graph_jit::persisted_storage_is_compatible(
+                        current_plan,
+                        current_storage,
+                        previous_plan,
+                        previous_storage)) {
                     continue;
                 }
                 if (persisted_output_id(

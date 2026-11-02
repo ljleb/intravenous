@@ -684,4 +684,48 @@ struct BackgroundEvaluationPlan {
     }
 };
 
+// Persisted data can remain under one stable output identity only while its
+// physical value representation and its authored production contract remain
+// unchanged. GraphExecutor uses this predicate before deciding that a
+// predecessor output survives generation reconciliation.
+[[nodiscard]] inline bool persisted_storage_is_compatible(
+    BackgroundEvaluationPlan const& current_plan,
+    PortStorageIndex current_storage,
+    BackgroundEvaluationPlan const& previous_plan,
+    PortStorageIndex previous_storage) noexcept
+{
+    if (current_storage >= current_plan.storage.ports.size()
+        || previous_storage >= previous_plan.storage.ports.size()) {
+        return false;
+    }
+    auto const& current = current_plan.storage.ports[current_storage];
+    auto const& previous = previous_plan.storage.ports[previous_storage];
+    if (current.storage != PortStorageKind::persisted_data
+        || previous.storage != PortStorageKind::persisted_data
+        || current.kind != previous.kind
+        || !current.output_port || !previous.output_port
+        || *current.output_port >= current_plan.ports.size()
+        || *previous.output_port >= previous_plan.ports.size()) {
+        return false;
+    }
+
+    auto const& current_output = current_plan.ports[*current.output_port];
+    auto const& previous_output = previous_plan.ports[*previous.output_port];
+    if (current_output.output_production != previous_output.output_production
+        || current_output.authored_tock_output
+            != previous_output.authored_tock_output
+        || current_output.persisted_tick_output
+            != previous_output.persisted_tick_output
+        || current_output.replayed_tick_output
+            != previous_output.replayed_tick_output) {
+        return false;
+    }
+
+    return current.kind == PortKind::sample
+        ? current.sample_layout == previous.sample_layout
+            && current.continuous_geometry == previous.continuous_geometry
+            && current.sample_channels == previous.sample_channels
+        : current.event_type == previous.event_type;
+}
+
 } // namespace iv::graph_jit

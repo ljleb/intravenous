@@ -1987,6 +1987,67 @@ TEST(BackgroundDspPorts, RegionAccessUsesResolvedFFTBlockGeometry)
     EXPECT_EQ(output_values, input_values);
 }
 
+TEST(BackgroundDspPorts,
+     FractionalGlobalIndexRegionAndCoverageExposeTypedContiguousStorage)
+{
+    auto const geometry = *iv::continuous_value_storage_geometry(
+        iv::continuous_value_type_id_v<iv::FractionalGlobalIndex>,
+        std::nullopt);
+    auto const first_range = range(4, 7);
+    auto const second_range = range(10, 12);
+    iv::IndexCoverage coverage;
+    coverage.include(first_range);
+    coverage.include(second_range);
+
+    std::array first_values{
+        iv::FractionalGlobalIndex::from_parts(index(40), 1),
+        iv::FractionalGlobalIndex::from_parts(index(41), 2),
+        iv::FractionalGlobalIndex::from_parts(index(42), 3),
+    };
+    std::array second_values{
+        iv::FractionalGlobalIndex::from_parts(index(100), 4),
+        iv::FractionalGlobalIndex::from_parts(index(101), 5),
+    };
+    std::array regions{
+        iv::ContinuousRegionStorageView{
+            .storage = reinterpret_cast<std::byte*>(first_values.data()),
+            .range = first_range,
+            .geometry = geometry,
+            .channel_layout = iv::mono_planar_channel_layout,
+        },
+        iv::ContinuousRegionStorageView{
+            .storage = reinterpret_cast<std::byte*>(second_values.data()),
+            .range = second_range,
+            .geometry = geometry,
+            .channel_layout = iv::mono_planar_channel_layout,
+        },
+    };
+
+    iv::ContinuousCoverage<iv::FractionalGlobalIndex> const readable{
+        regions, coverage};
+    ASSERT_EQ(readable.size(), 2u);
+    EXPECT_EQ(readable.coverage(), coverage);
+    EXPECT_EQ(readable[0].at(index(5)), first_values[1]);
+    EXPECT_EQ(readable[1].value(1), second_values[1]);
+    auto const first_elements = readable[0].elements();
+    ASSERT_EQ(first_elements.size(), first_values.size());
+    EXPECT_EQ(first_elements.front(), first_values.front());
+    EXPECT_EQ(first_elements.back(), first_values.back());
+
+    iv::WritableContinuousCoverage<iv::FractionalGlobalIndex> writable{
+        regions, coverage};
+    writable[0].at(index(6)) =
+        iv::FractionalGlobalIndex::from_parts(index(900), 90);
+    auto second_elements = writable[1].channel_elements(0);
+    ASSERT_EQ(second_elements.size(), second_values.size());
+    second_elements[0] =
+        iv::FractionalGlobalIndex::from_parts(index(800), 80);
+    EXPECT_EQ(first_values[2],
+        iv::FractionalGlobalIndex::from_parts(index(900), 90));
+    EXPECT_EQ(second_values[0],
+        iv::FractionalGlobalIndex::from_parts(index(800), 80));
+}
+
 TEST(BackgroundDspPorts, EmptyContinuousCoverageHasAnEmptyIteratorRange)
 {
     iv::IndexCoverage const coverage;

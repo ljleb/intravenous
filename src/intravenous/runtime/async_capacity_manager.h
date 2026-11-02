@@ -346,7 +346,6 @@ class ProducerCapacityRegistration {
     ProducerCapacityPolicy policy_{};
 
     ProducerCapacityRegistration(
-        AsyncCapacityManager& manager,
         ProducerReserve& reserve,
         ProducerCapacityPolicy policy) noexcept;
 
