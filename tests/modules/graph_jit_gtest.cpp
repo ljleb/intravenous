@@ -11651,21 +11651,44 @@ TEST_F(GraphJitRuntimeFixture, TypeOwnedFractionalIndexStorageSupportsFastPace)
     EXPECT_EQ(state->last_fraction, 0x8000000000000009ull);
 }
 
-TEST_F(GraphJitRuntimeFixture, NonSamplePersistedTickCaptureIsRejectedAtItsBoundary)
+TEST_F(GraphJitRuntimeFixture, PersistedTickCaptureAcceptsDynamicContinuousValues)
 {
     auto compiled = compile(graph_jit_persisted_fft_value_module_id, 303);
-    expect_lowering_failure(
-        compiled,
-        "persisted Tick capture does not yet support continuous type 'FFTBlock'");
+    ASSERT_TRUE(compiled.succeeded())
+        << (compiled.diagnostics.empty()
+                ? ""
+                : compiled.diagnostics.front().message);
+    auto const& plan = compiled.compiled_graph->background_evaluation_plan;
+    auto const found = std::ranges::find_if(
+        plan.ports, [](auto const& port) {
+            return port.persisted_tick_output;
+        });
+    ASSERT_NE(found, plan.ports.end());
+    EXPECT_EQ(
+        found->continuous_geometry.value_type,
+        iv::ContinuousValueTypeId::fft_block);
+    EXPECT_EQ(found->continuous_geometry.elements_per_value, 3u);
+    ASSERT_EQ(plan.tick_runtime.sample_captures.size(), 1u);
 }
 
-TEST_F(GraphJitRuntimeFixture, NonProjectRatePersistedTickCaptureIsRejectedAtItsBoundary)
+TEST_F(GraphJitRuntimeFixture, PersistedTickCaptureAcceptsResolvedNonProjectPace)
 {
     auto compiled = compile(
         graph_jit_persisted_non_project_rate_sample_module_id, 304);
-    expect_lowering_failure(
-        compiled,
-        "persisted Tick capture does not yet support a non-project-rate continuous output");
+    ASSERT_TRUE(compiled.succeeded())
+        << (compiled.diagnostics.empty()
+                ? ""
+                : compiled.diagnostics.front().message);
+    auto const& plan = compiled.compiled_graph->background_evaluation_plan;
+    auto const found = std::ranges::find_if(
+        plan.ports, [](auto const& port) {
+            return port.persisted_tick_output;
+        });
+    ASSERT_NE(found, plan.ports.end());
+    EXPECT_EQ(
+        found->absolute_pace_exponent,
+        iv::PortPace{2}.exponent());
+    ASSERT_EQ(plan.tick_runtime.sample_captures.size(), 1u);
 }
 
 TEST_F(GraphJitRuntimeFixture, DirectSampleStorage)

@@ -887,6 +887,27 @@ adapter to the deleted fixed-width page representation.
 **Dependencies:** front 4 for the complete consumer side; front 3 is strongly preferred
 before the durable publication layer is finalized.
 
+**Current implementation status (2026-11-01):** source implementation is complete,
+pending repository-owner build and full-suite verification. `ProducerReserve`,
+`PendingQueue`, `AsyncCapacityManager`, per-output capture disposition, finite-prefix
+pinning, transaction consumption, canonical persisted publication, generation-aware
+mailbox publication, and reclamation were already present. The final correctness gap
+is now closed: persisted Tick continuous outputs carry the resolved
+`ContinuousValueStorageGeometry` and absolute pace into each compiled capture slot.
+`TickInvocationWorkspace` projects each root invocation range onto that port's value
+lattice, copies arbitrary registered continuous values from the physical
+invocation-order ring, and publishes value-lattice ordinal ranges. The background
+transaction validates the exact `ChannelLayout` and
+`ContinuousValueStorageGeometry`, then commits the payload through
+`PersistedContinuousStorage`. `write_void()` uses the same projected range. Persisted
+Tick continuous outputs remain interleaved at the capture boundary; ordinary planned
+conversion supplies planar consumers.
+
+This closes Front 5 correctness only. Bulk ring capture, streaming queued block chains
+directly into persisted storage, and related wake/capacity reductions remain Front 16
+performance work. They are not required to represent or publish a retained continuous
+value correctly.
+
 ## Front 6: graph-revision state continuity
 
 **Primary ownership:** preserving semantically valid node/port state when one compiled
@@ -1958,6 +1979,11 @@ new prerequisite implementation pass. Front 5's producer reserves, pending queue
 capture disposition, transaction consumption, and persisted-state mailbox have also
 landed. Front 5 remains open for generalized continuous-value capture/publication and
 the separately recorded bulk-span performance work.
+
+**Front 5 follow-up (2026-11-01):** the generalized continuous-value
+capture/publication gap described above is now source-complete. The separately
+recorded bulk-span work remains Front 16 rather than an open Front 5 correctness
+dependency. Repository-owner build and full-suite verification remain pending.
 
 The revised execution-path order is:
 

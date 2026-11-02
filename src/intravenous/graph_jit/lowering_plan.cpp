@@ -8556,32 +8556,9 @@ std::expected<LoweringPlan, std::string> build_lowering_plan(
                 view.intrinsically_replayable;
         });
 
-    // Persisted Tick capture still publishes the canonical project-rate
-    // scalar-Sample store owned by the recording front. Keep that unfinished
-    // consumer boundary explicit without disabling the type-owned realtime
-    // storage path for ephemeral FractionalGlobalIndex and FFTBlock ports.
     for (NodeBundleHandle bundle = 0;
          bundle < input.graph.node_bundles.size(); ++bundle) {
         auto const& configured = input.graph.node_bundles.bundle(bundle);
-        for (std::size_t port = 0;
-             port < configured.sample_output_count(); ++port) {
-            auto const selected = port_realization->output(bundle, port).value_type;
-            auto const output = input.graph.node_bundles.resolve_sample_output(
-                {bundle, PortKind::sample, port}).config;
-            if (is_tick(output) && is_persisted(output.retention)
-                && selected != continuous_value_type_id_v<Sample>) {
-                return std::unexpected(
-                    "GraphJit persisted Tick capture does not yet support continuous type '"
-                    + std::string(continuous_value_type_info(selected).name)
-                    + "'");
-            }
-            if (is_tick(output) && is_persisted(output.retention)
-                && port_realization->output(bundle, port).absolute_pace
-                    != PortPace{}) {
-                return std::unexpected(
-                    "GraphJit persisted Tick capture does not yet support a non-project-rate continuous output");
-            }
-        }
         if (intrinsically_replayable[bundle]) {
             for (std::size_t port = 0;
                  port < configured.sample_input_count(); ++port) {

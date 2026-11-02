@@ -14,7 +14,7 @@ namespace iv {
 inline constexpr std::size_t realtime_produced_block_storage_size = 64 * 1024;
 
 enum class RealtimeProducedPayloadKind : std::uint8_t {
-    samples,
+    continuous_values,
     events,
     void_value,
 };
@@ -35,12 +35,13 @@ struct RealtimeProductionFailures {
 // have been joined into one pass-level pending-queue publication.
 struct RealtimeProducedRecordHeader {
     RealtimeProducedPayloadKind payload_kind =
-        RealtimeProducedPayloadKind::samples;
+        RealtimeProducedPayloadKind::continuous_values;
     std::size_t record_block_count = 0;
     std::size_t payload_size = 0;
     GlobalIndex begin{};
-    std::size_t sample_count = 0;
-    ChannelLayout sample_layout{};
+    GlobalIndex::extent_type range_extent = 0;
+    ChannelLayout continuous_layout{};
+    ContinuousValueStorageGeometry continuous_geometry{};
     EventTypeId event_type = EventTypeId::empty;
     std::size_t event_count = 0;
 };

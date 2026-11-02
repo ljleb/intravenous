@@ -236,6 +236,8 @@ public:
         std::atomic<bool>* reservation_failed = nullptr;
         ProducedBlockChain callback_chain{};
         ChannelLayout layout{};
+        ContinuousValueStorageGeometry geometry{};
+        std::int32_t absolute_pace_exponent = 0;
         std::size_t history = 0;
         std::size_t latency = 0;
 
@@ -279,11 +281,10 @@ public:
             if (binding.disposition == OutputDisposition::untouched) return;
             if (!reserve || !pending
                 || binding.storage.channel_layout != layout
+                || binding.storage.geometry != geometry
                 || binding.history != history || binding.latency != latency
-                || binding.absolute_pace_exponent != 0
-                || binding.storage.geometry.value_type
-                    != ContinuousValueTypeId::sample
-                || binding.storage.geometry.value_size_bytes != sizeof(Sample)
+                || binding.absolute_pace_exponent != absolute_pace_exponent
+                || geometry.value_size_bytes == 0
                 || binding.storage.value_capacity == 0
                 || !std::has_single_bit(binding.storage.value_capacity)
                 || binding.storage.storage_latency
@@ -293,15 +294,16 @@ public:
             auto const channels = channel_count(layout);
             if (channels == 0 || channels > maximum_supported_channel_count
                 || channels > std::numeric_limits<std::size_t>::max()
-                        / sizeof(Sample)) {
+                        / geometry.value_size_bytes) {
                 return;
             }
-            auto const bytes_per_frame = channels * sizeof(Sample);
+            auto const bytes_per_value_index =
+                channels * geometry.value_size_bytes;
             for (std::size_t channel = 0; channel < channels; ++channel) {
                 auto const& source = binding.storage.channels[channel];
                 if (!source.storage || source.value_capacity == 0
                     || !std::has_single_bit(source.value_capacity)
-                    || source.value_stride_bytes < sizeof(Sample)
+                    || source.value_stride_bytes < geometry.value_size_bytes
                     || source.value_delay >= source.value_capacity
                     || binding.storage.storage_latency
                         >= source.value_capacity) {
@@ -311,12 +313,21 @@ public:
 
             auto const window = realtime_port_window(
                 sample_index, block_size, 0, 0);
-            auto const selected_count = static_cast<std::size_t>(window.extent);
-            if (selected_count == 0
-                || static_cast<GlobalIndex::extent_type>(selected_count)
-                    != window.extent
-                || selected_count > std::numeric_limits<std::size_t>::max()
-                        / bytes_per_frame) {
+            auto const projection = FractionalGlobalIndexRange::from_global_range(
+                window).try_project_onto_lattice(absolute_pace_exponent);
+            if (!projection || projection->count == 0) return;
+            auto const selected_count = projection->count;
+            if (selected_count
+                    > std::numeric_limits<std::size_t>::max()
+                        / bytes_per_value_index) {
+                return;
+            }
+            auto const recorded_range = GlobalIndexRange{
+                .begin = GlobalIndex::from_bits(projection->begin_ordinal_bits),
+                .extent = selected_count,
+            };
+            if (static_cast<std::size_t>(recorded_range.extent)
+                    != selected_count) {
                 return;
             }
             if (binding.disposition == OutputDisposition::voided) {
@@ -336,9 +347,10 @@ public:
                     .payload_kind = RealtimeProducedPayloadKind::void_value,
                     .record_block_count = block_count,
                     .payload_size = 0,
-                    .begin = window.begin,
-                    .sample_count = selected_count,
-                    .sample_layout = layout,
+                    .begin = recorded_range.begin,
+                    .range_extent = recorded_range.extent,
+                    .continuous_layout = layout,
+                    .continuous_geometry = geometry,
                 };
                 if (!writer.append(std::as_bytes(
                         std::span{&header, std::size_t{1}}))) {
@@ -351,44 +363,31 @@ public:
                 return;
             }
             auto append_values = [&](auto& writer) noexcept {
-                auto append_sample = [&](std::size_t frame,
-                                         std::size_t channel) noexcept {
+                auto append_value = [&](std::size_t frame,
+                                        std::size_t channel) noexcept {
                     auto const& source = binding.storage.channels[channel];
                     auto const delayed = binding.sequential_begin_ordinal
                         + binding.storage.storage_latency + frame
                         - source.value_delay;
                     auto const source_frame = static_cast<std::size_t>(
                         delayed & (source.value_capacity - 1));
-                    Sample value{};
-                    std::memcpy(
-                        &value,
+                    return writer.append(std::span<std::byte const>{
                         source.storage
                             + source_frame * source.value_stride_bytes,
-                        sizeof(value));
-                    return writer.append(
-                        std::as_bytes(std::span{&value, std::size_t{1}}));
+                        geometry.value_size_bytes});
                 };
-                if (layout.sample_layout == SampleStreamLayout::planar) {
+                for (std::size_t frame = 0;
+                     frame < selected_count; ++frame) {
                     for (std::size_t channel = 0;
                          channel < channels; ++channel) {
-                        for (std::size_t frame = 0;
-                             frame < selected_count; ++frame) {
-                            if (!append_sample(frame, channel)) return false;
-                        }
-                    }
-                } else {
-                    for (std::size_t frame = 0;
-                         frame < selected_count; ++frame) {
-                        for (std::size_t channel = 0;
-                             channel < channels; ++channel) {
-                            if (!append_sample(frame, channel)) return false;
-                        }
+                        if (!append_value(frame, channel)) return false;
                     }
                 }
                 return true;
             };
 
-            auto const payload_size = selected_count * bytes_per_frame;
+            auto const payload_size =
+                selected_count * bytes_per_value_index;
             auto const block_count = queued_record_block_count_noexcept(
                 payload_size, reserve->block_storage_size());
             if (block_count == 0) {
@@ -402,12 +401,13 @@ public:
             }
             auto writer = chain.writer();
             auto const header = RealtimeProducedRecordHeader{
-                .payload_kind = RealtimeProducedPayloadKind::samples,
+                .payload_kind = RealtimeProducedPayloadKind::continuous_values,
                 .record_block_count = block_count,
                 .payload_size = payload_size,
-                .begin = window.begin,
-                .sample_count = selected_count,
-                .sample_layout = layout,
+                .begin = recorded_range.begin,
+                .range_extent = recorded_range.extent,
+                .continuous_layout = layout,
+                .continuous_geometry = geometry,
             };
             if (!writer.append(std::as_bytes(
                     std::span{&header, std::size_t{1}}))
@@ -503,7 +503,7 @@ public:
                     .record_block_count = block_count,
                     .payload_size = 0,
                     .begin = window.begin,
-                    .sample_count = selected_window_size,
+                    .range_extent = selected_window_size,
                     .event_type = type,
                     .event_count = 0,
                 };
@@ -586,7 +586,7 @@ public:
                 .record_block_count = block_count,
                 .payload_size = payload_size,
                 .begin = window.begin,
-                .sample_count = selected_window_size,
+                .range_extent = selected_window_size,
                 .event_type = type,
                 .event_count = selected_count,
             };
@@ -1303,9 +1303,11 @@ public:
             if (port.kind != PortKind::sample
                 || port.direction != graph_jit::PortDirection::output
                 || !port.persisted_tick_output
-                || port.retention != OutputRetention::persisted) {
+                || port.retention != OutputRetention::persisted
+                || port.sample_layout.sample_layout
+                    != SampleStreamLayout::interleaved) {
                 throw std::invalid_argument(
-                    "Tick sample capture references a non-persisted output");
+                    "Tick continuous capture references an invalid persisted output");
             }
             auto const bounds_compatible =
                 capture_bounds_match_workspace(planned);
@@ -1314,24 +1316,35 @@ public:
             auto& selected = sample_capture_slots[slot];
             selected = SampleCaptureSlot{
                 .layout = port.sample_layout,
+                .geometry = port.continuous_geometry,
+                .absolute_pace_exponent = port.absolute_pace_exponent,
                 .history = port.output_history,
                 .latency = port.output_latency,
             };
-            auto const window = planned.maximum_block_size;
+            auto const maximum_value_count =
+                FractionalGlobalIndexRange::maximum_projection_count(
+                    planned.maximum_block_size,
+                    port.absolute_pace_exponent);
+            if (!maximum_value_count) {
+                throw std::length_error(
+                    "Tick continuous capture projection is too large");
+            }
             auto const channels = channel_count(port.sample_layout);
-            if (channels == 0
+            if (channels == 0 || port.continuous_geometry.value_size_bytes == 0
                 || channels > std::numeric_limits<std::size_t>::max()
-                        / sizeof(Sample)) {
+                        / port.continuous_geometry.value_size_bytes) {
                 throw std::length_error(
-                    "Tick sample capture layout is too large");
+                    "Tick continuous capture layout is too large");
             }
-            auto const bytes_per_frame = channels * sizeof(Sample);
-            if (window > std::numeric_limits<std::size_t>::max()
-                    / bytes_per_frame) {
+            auto const bytes_per_value_index =
+                channels * port.continuous_geometry.value_size_bytes;
+            if (*maximum_value_count > std::numeric_limits<std::size_t>::max()
+                    / bytes_per_value_index) {
                 throw std::length_error(
-                    "Tick sample capture payload is too large");
+                    "Tick continuous capture payload is too large");
             }
-            auto const payload_size = window * bytes_per_frame;
+            auto const payload_size =
+                *maximum_value_count * bytes_per_value_index;
             auto const required = capture_requirement(
                 planned,
                 queued_record_block_count(

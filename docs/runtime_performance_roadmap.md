@@ -564,8 +564,10 @@ The governing performance invariant is:
 3. Complete realtime persisted playback and recording span operations. Persisted
    playback now clears only requested sample windows, traverses relevant sample
    regions, copies ring-wrap runs, and binary-searches clipped event chunks. Realtime
-   recording still needs bulk ring capture; direct materialization indexing and cached
-   materialization coverage offsets/frame counts also remain.
+   recording now has the complete correctness path for arbitrary registered continuous
+   geometry and non-project-rate value lattices, but still needs bulk ring capture;
+   direct materialization indexing and cached materialization coverage offsets/frame
+   counts also remain.
    Persisted Tick continuous publication now maintains path-copied logical-page and
    physical-run indices. Virtual mapping visits physical runs, so extending one
    canonical recording Region does not search every retained page.

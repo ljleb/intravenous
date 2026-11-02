@@ -192,11 +192,14 @@ one. Explicitly anchored components retain their authored absolute scale.
   or live runtime value. Those facts become available only after GraphJit realization
   and require the planned ProjectGraph/runtime read-model join. This is a runtime
   read-model feature, not missing constraint or Tick-storage realization.
-- Tick/persisted capture still publishes the scalar `Sample` recording representation.
-  Graph lowering now rejects a non-Sample or non-project-rate Tick/persisted output at
-  that exact boundary instead of rejecting ordinary ephemeral non-Sample execution or
-  letting the current capture callback silently skip an unsupported binding.
-  Generalized retained-data capture and publication belong to Front 5.
+- The previous Tick/persisted boundary published only scalar project-rate `Sample`
+  values and rejected other continuous types and paces during GraphJit lowering.
+  Front 5 now carries the resolved `ContinuousValueStorageGeometry` and absolute pace
+  into each capture slot. Capture projects the root invocation range onto the value
+  lattice, copies the registered continuous representation, and publishes the result
+  in value-lattice ordinal coordinates. The background transaction validates the
+  geometry before committing `PersistedContinuousStorage`. Repository-owner build and
+  full-suite verification of this final Front 5 slice remain pending.
 - Contextual background Tick replay still realizes its temporary continuous bindings
   as project-rate `Sample` rings. Connection analysis rejects a non-Sample or
   non-project-rate continuous replay binding immediately after contextual replay proof,
@@ -376,8 +379,9 @@ to owner build/test validation, no dependency-ready continuous Front 1 execution
 remains to be connected.
 
 The remaining items above deliberately stay with their consuming fronts. Front 3 owns
-Region/Coverage data realization. Front 5 owns generalized retained-data capture and
-publication. The ProjectGraph/runtime read-model join owns realized live
+Region/Coverage data realization. Front 5 now supplies generalized retained-data
+capture and publication, pending repository-owner validation. The ProjectGraph/runtime
+read-model join owns realized live
 introspection. Optional FFT packages own transform/window/overlap algorithms; core
 Front 1 owns only the canonical `FFTBlock` and the execution/storage contract that
 transports it.

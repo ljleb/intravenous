@@ -283,36 +283,46 @@ class BackgroundEvaluationTransaction::Impl {
         ProducedRecord const& record,
         PersistedDataStore::Candidate& candidate)
     {
-        static_assert(std::is_trivially_copyable_v<Sample>);
         auto const& header = record.header;
         auto const& port =
             graph_->background_evaluation_plan.ports[record.route.port];
-        auto const channels = channel_count(header.sample_layout);
-        if (header.payload_kind != RealtimeProducedPayloadKind::samples
+        auto const channels = channel_count(header.continuous_layout);
+        if (header.payload_kind
+                != RealtimeProducedPayloadKind::continuous_values
             || record.route.kind != PortKind::sample
-            || header.sample_layout != port.sample_layout
+            || header.continuous_layout != port.sample_layout
+            || header.continuous_geometry != port.continuous_geometry
+            || header.continuous_geometry.value_size_bytes == 0
             || channels == 0
-            || header.sample_count
+            || header.range_extent
+                > std::numeric_limits<std::size_t>::max()
+            || static_cast<std::size_t>(header.range_extent)
                 > std::numeric_limits<std::size_t>::max() / channels
-            || header.sample_count * channels
-                > std::numeric_limits<std::size_t>::max() / sizeof(Sample)
+            || static_cast<std::size_t>(header.range_extent) * channels
+                > std::numeric_limits<std::size_t>::max()
+                    / header.continuous_geometry.value_size_bytes
             || header.payload_size
-                != header.sample_count * channels * sizeof(Sample)
-            || header.sample_count == 0) {
+                != static_cast<std::size_t>(header.range_extent) * channels
+                    * header.continuous_geometry.value_size_bytes
+            || header.range_extent == 0) {
             return std::unexpected(
-                "realtime-produced sample record has invalid metadata");
+                "realtime-produced continuous record has invalid metadata");
         }
+        PersistedContinuousStorage values{
+            header.payload_size,
+            header.continuous_geometry.element_alignment};
+        std::memcpy(
+            values.data(), record.payload.data(), header.payload_size);
         PersistedSampleRegion retained{
             .output = record.route.output,
             .range = {
                 .begin = header.begin,
-                .extent = header.sample_count,
+                .extent = header.range_extent,
             },
-            .layout = header.sample_layout,
-            .values = std::vector<Sample>(header.sample_count * channels),
+            .layout = header.continuous_layout,
+            .geometry = header.continuous_geometry,
+            .continuous_values = std::move(values),
         };
-        std::memcpy(
-            retained.values.data(), record.payload.data(), header.payload_size);
         candidate.overwrite(std::move(retained));
         return {};
     }
@@ -331,13 +341,13 @@ class BackgroundEvaluationTransaction::Impl {
             || header.event_count
                 > std::numeric_limits<std::size_t>::max() / sizeof(TimedEvent)
             || header.payload_size != header.event_count * sizeof(TimedEvent)
-            || header.sample_count == 0) {
+            || header.range_extent == 0) {
             return std::unexpected(
                 "realtime-produced event record has invalid metadata");
         }
         auto const range = GlobalIndexRange{
             .begin = header.begin,
-            .extent = header.sample_count,
+            .extent = header.range_extent,
         };
         std::vector<TimedEvent> captured(header.event_count);
         if (!captured.empty()) {
@@ -374,19 +384,20 @@ class BackgroundEvaluationTransaction::Impl {
             graph_->background_evaluation_plan.ports[record.route.port];
         if (header.payload_kind != RealtimeProducedPayloadKind::void_value
             || record.route.kind != PortKind::sample
-            || header.sample_layout != port.sample_layout
+            || header.continuous_layout != port.sample_layout
+            || header.continuous_geometry != port.continuous_geometry
             || header.payload_size != 0 || !record.payload.empty()
-            || header.sample_count == 0) {
+            || header.range_extent == 0) {
             return std::unexpected(
-                "realtime-produced sample void has invalid metadata");
+                "realtime-produced continuous void has invalid metadata");
         }
         candidate.erase_sample(
             record.route.output,
             GlobalIndexRange{
                 .begin = header.begin,
-                .extent = header.sample_count,
+                .extent = header.range_extent,
             },
-            header.sample_layout);
+            header.continuous_layout);
         return {};
     }
 
@@ -401,7 +412,7 @@ class BackgroundEvaluationTransaction::Impl {
             || record.route.kind != PortKind::event
             || header.event_type != port.event_type
             || header.payload_size != 0 || !record.payload.empty()
-            || header.event_count != 0 || header.sample_count == 0) {
+            || header.event_count != 0 || header.range_extent == 0) {
             return std::unexpected(
                 "realtime-produced event void has invalid metadata");
         }
@@ -409,7 +420,7 @@ class BackgroundEvaluationTransaction::Impl {
             record.route.output,
             GlobalIndexRange{
                 .begin = header.begin,
-                .extent = header.sample_count,
+                .extent = header.range_extent,
             },
             header.event_type);
         return {};
@@ -427,13 +438,13 @@ class BackgroundEvaluationTransaction::Impl {
         };
         std::vector<Root> roots;
         for (auto const& record : records) {
-            if (record.header.sample_count == 0) {
+            if (record.header.range_extent == 0) {
                 return std::unexpected(
                     "realtime-produced record has an invalid timeline window");
             }
             auto const changed = GlobalIndexRange{
                 .begin = record.header.begin,
-                .extent = record.header.sample_count,
+                .extent = record.header.range_extent,
             };
             auto found = std::ranges::find_if(roots, [&](Root const& root) {
                 return root.route.port == record.route.port
@@ -442,10 +453,13 @@ class BackgroundEvaluationTransaction::Impl {
             if (found == roots.end()) {
                 IndexCoverage coverage;
                 if (record.route.kind == PortKind::sample) {
-                    auto const& layout = graph_->background_evaluation_plan
-                        .ports[record.route.port].sample_layout;
+                    auto const& port = graph_->background_evaluation_plan
+                        .ports[record.route.port];
                     if (auto const* existing =
-                            base.find_sample_coverage(record.route.output, layout)) {
+                            base.find_sample_coverage(
+                                record.route.output,
+                                port.sample_layout,
+                                port.continuous_geometry)) {
                         coverage = *existing;
                     }
                 } else {
@@ -564,7 +578,9 @@ class BackgroundEvaluationTransaction::Impl {
             IndexCoverage existing;
             if (storage.kind == PortKind::sample) {
                 if (auto const* retained = snapshot.find_sample_coverage(
-                        output, storage.sample_layout)) {
+                        output,
+                        storage.sample_layout,
+                        storage.continuous_geometry)) {
                     existing = *retained;
                 }
             } else if (auto const* retained = snapshot.find_event_coverage(

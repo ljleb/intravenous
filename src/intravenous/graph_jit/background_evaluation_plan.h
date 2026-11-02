@@ -226,6 +226,10 @@ struct BackgroundPortPlan {
 
     ChannelLayout sample_layout{};
     ContinuousValueStorageGeometry continuous_geometry{};
+    // Continuous Region/Coverage coordinates are value-lattice ordinals.
+    // Persisted Tick capture uses the resolved pace to project each root
+    // invocation window into that coordinate space before publication.
+    std::int32_t absolute_pace_exponent = 0;
     CoverageOrdering ordering = CoverageOrdering::unspecified;
     EventTypeId event_type = EventTypeId::empty;
     double max_events_per_index = 0.0;

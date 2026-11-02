@@ -2884,6 +2884,7 @@ std::expected<void, std::string> populate_background_topology(
             OutputProductionKind::tick;
         ChannelLayout sample_layout{};
         ContinuousValueStorageGeometry continuous_geometry{};
+        std::int32_t absolute_pace_exponent = 0;
         EventTypeId event_type = EventTypeId::empty;
         double max_events_per_index = 0.0;
         Sample neutral{};
@@ -2900,6 +2901,7 @@ std::expected<void, std::string> populate_background_topology(
                     port.node_bundle_handle, port.port_index);
                 continuous_geometry = *continuous_value_storage_geometry(
                     resolved.value_type, resolved.size);
+                absolute_pace_exponent = resolved.absolute_pace.exponent();
                 if (is_sequential(config)) {
                     neutral = sequential_input_metadata<Sample>(
                         sequential_input_properties(config)).neutral_value;
@@ -2927,6 +2929,7 @@ std::expected<void, std::string> populate_background_topology(
                     port.node_bundle_handle, port.port_index);
                 continuous_geometry = *continuous_value_storage_geometry(
                     resolved.value_type, resolved.size);
+                absolute_pace_exponent = resolved.absolute_pace.exponent();
                 output_history = resolved.history;
                 output_latency = resolved.latency;
             } else {
@@ -2994,6 +2997,7 @@ std::expected<void, std::string> populate_background_topology(
             .stable_input_identity = std::move(stable_input),
             .sample_layout = sample_layout,
             .continuous_geometry = continuous_geometry,
+            .absolute_pace_exponent = absolute_pace_exponent,
             .ordering = port.port_kind == PortKind::sample
                 ? (direction == PortDirection::input
                     ? realization.input(
