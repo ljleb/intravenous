@@ -16,8 +16,10 @@
 
 #include <array>
 #include <filesystem>
+#include <optional>
 #include <regex>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -42,18 +44,29 @@ IV_SUBSCRIBE_LINKER_EVENT(
     iv_runtime_project_notification_event,
     &PackageWatcherStatusWitness::handle_notification)
 
-std::pair<std::string, std::filesystem::path> package_declaration(
+iv::IvPackageDeclaration package_declaration(
     std::string package_id,
-    std::filesystem::path package_root)
+    std::filesystem::path package_root,
+    iv::PackageProvenance provenance = iv::PackageProvenance::project_local,
+    std::optional<std::filesystem::path> artifact_root = std::nullopt)
 {
-    return {std::move(package_id), std::filesystem::weakly_canonical(package_root)};
+    return iv::IvPackageDeclaration{
+        .package_id = std::move(package_id),
+        .package_root = std::filesystem::weakly_canonical(package_root),
+        .provenance = provenance,
+        .artifact_root = std::move(artifact_root),
+    };
 }
 
-std::pair<std::string, std::filesystem::path> default_package_declaration()
+iv::IvPackageDeclaration default_package_declaration()
 {
     auto root = std::filesystem::weakly_canonical(
         iv::test::staged_builtin_package_root());
-    return {root.generic_string(), root};
+    return package_declaration(
+        root.generic_string(),
+        root,
+        iv::PackageProvenance::built_in,
+        iv::test::builtin_package_artifact_root());
 }
 
 struct PipelineHarness {

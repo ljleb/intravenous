@@ -23,8 +23,10 @@
 #include <llvm/Support/MemoryBuffer.h>
 #include <llvm/Support/TargetSelect.h>
 #include <llvm/Support/raw_ostream.h>
+#include <llvm/TargetParser/Host.h>
 
 #include <algorithm>
+#include <bit>
 #include <chrono>
 #include <cctype>
 #include <cstring>
@@ -76,7 +78,8 @@ struct ResolvedPackage {
     std::filesystem::path module_dir;
     std::filesystem::path manifest_file;
     std::filesystem::path entry_file;
-    bool global = false;
+    PackageProvenance provenance = PackageProvenance::project_local;
+    std::filesystem::path artifact_root;
     std::filesystem::file_time_type package_stamp {};
 };
 
@@ -321,6 +324,72 @@ std::string package_key_for(std::filesystem::path const& directory)
             "cannot derive IV package key from '" + normalized.string() + "'");
     }
     return name;
+}
+
+std::string stable_text_hash(std::string_view value);
+
+std::string source_tree_fingerprint(
+    std::filesystem::path const& directory)
+{
+    std::vector<std::filesystem::path> files;
+    std::error_code error;
+    auto const options = std::filesystem::directory_options::skip_permission_denied;
+    for (std::filesystem::recursive_directory_iterator it(directory, options, error), end;
+         !error && it != end;
+         it.increment(error)) {
+        if (it->is_directory()) {
+            if (is_module_dependency_ignored_directory(it->path())) {
+                it.disable_recursion_pending();
+            } else if (it->path() != directory
+                       && std::filesystem::exists(
+                           it->path() / std::string(IV_PACKAGE_MANIFEST_FILE))) {
+                it.disable_recursion_pending();
+            }
+            continue;
+        }
+        if (it->is_regular_file()
+            && is_module_dependency_package_path(it->path())) {
+            files.push_back(it->path());
+        }
+    }
+    if (error) {
+        throw std::runtime_error(
+            "cannot fingerprint source tree '" + directory.string()
+            + "': " + error.message());
+    }
+    std::ranges::sort(files, {}, [&](auto const& path) {
+        return path.lexically_relative(directory).generic_string();
+    });
+
+    std::string source;
+    for (auto const& file : files) {
+        source += file.lexically_relative(directory).generic_string();
+        source.push_back('\0');
+        source += read_text(file);
+        source.push_back('\0');
+    }
+    return stable_text_hash(source);
+}
+
+std::string file_identity(std::filesystem::path const& path)
+{
+    if (path.empty()) return "<none>";
+    std::error_code error;
+    auto const normalized = normalize(path);
+    auto const size = std::filesystem::file_size(normalized, error);
+    if (error) {
+        throw std::runtime_error(
+            "cannot inspect configured build tool '" + normalized.string()
+            + "': " + error.message());
+    }
+    auto const stamp = std::filesystem::last_write_time(normalized, error);
+    if (error) {
+        throw std::runtime_error(
+            "cannot inspect configured build tool '" + normalized.string()
+            + "': " + error.message());
+    }
+    return normalized.generic_string() + ':' + std::to_string(size) + ':'
+        + std::to_string(stamp.time_since_epoch().count());
 }
 
 std::filesystem::file_time_type directory_stamp(std::filesystem::path const &dir)
@@ -632,14 +701,27 @@ class ModuleLoader::Impl {
     mutable std::unordered_map<std::string, std::shared_ptr<LoadedPackageCode>>
         current_packages_by_root_;
 
-    static std::string key(ResolvedPackage const &module)
+    static std::string artifact_signature_package_identity(
+        ResolvedPackage const& package)
     {
-        return std::string(module.global ? "global:" : "project:")
-            + normalize(module.module_dir).generic_string();
+        std::string_view provenance;
+        switch (package.provenance) {
+        case PackageProvenance::project_local:
+            provenance = "project-local";
+            break;
+        case PackageProvenance::common:
+            provenance = "common";
+            break;
+        case PackageProvenance::built_in:
+            provenance = "built-in";
+            break;
+        }
+        return std::string(provenance) + ':' + package.package_key;
     }
 
-    ResolvedPackage resolve_dir(std::filesystem::path dir, bool global) const
+    ResolvedPackage resolve_dir(PackageBuildRequest const& request) const
     {
+        auto dir = request.package_root;
         dir = normalize(dir);
         auto manifest_file = find_package_manifest(dir);
         if (!manifest_file) {
@@ -660,13 +742,32 @@ class ModuleLoader::Impl {
                 "IV package manifest entry escapes source directory: " + manifest.entry.string());
         }
 
+        std::filesystem::path artifact_root;
+        if (request.artifact_root) {
+            artifact_root = normalize(*request.artifact_root);
+        } else {
+            switch (request.provenance) {
+            case PackageProvenance::project_local:
+                artifact_root = discover_project_root(dir) / "build/iv";
+                break;
+            case PackageProvenance::common:
+                artifact_root = global_cache_root_;
+                break;
+            case PackageProvenance::built_in:
+                throw std::runtime_error(
+                    "built-in IV package has no executable-owned artifact root: '"
+                    + dir.string() + "'");
+            }
+        }
+
         return {
             .manifest = std::move(manifest),
             .package_key = package_key_for(dir),
             .module_dir = dir,
             .manifest_file = normalize(*manifest_file),
             .entry_file = entry,
-            .global = global,
+            .provenance = request.provenance,
+            .artifact_root = std::move(artifact_root),
             .package_stamp = directory_stamp(dir),
         };
     }
@@ -688,13 +789,33 @@ class ModuleLoader::Impl {
         return {IV_CONFIGURED_C_COMPILER, IV_CONFIGURED_CXX_COMPILER};
     }
 
-    std::filesystem::path build(
-        ResolvedPackage const &root,
-        std::filesystem::path const &project_root) const
+    std::optional<std::filesystem::path> make_program() const
     {
-        auto const project_iv_root = project_root / "build/iv";
-        auto const owner_root = root.global ? global_cache_root_ : project_iv_root;
-        auto const build_key = sanitize(root.package_key) + "_" + stable_hash(root.module_dir);
+        if (toolchain_.make_program && !toolchain_.make_program->empty()) {
+            return toolchain_.make_program;
+        }
+        auto const configured = std::string_view(IV_CONFIGURED_MAKE_PROGRAM);
+        if (!configured.empty()) return std::filesystem::path(configured);
+        return std::nullopt;
+    }
+
+    std::optional<std::filesystem::path> juce_dir() const
+    {
+        if (toolchain_.juce_dir && !toolchain_.juce_dir->empty()) {
+            return toolchain_.juce_dir;
+        }
+        auto const configured = std::string_view(IV_CONFIGURED_JUCE_DIR);
+        if (!configured.empty()) return std::filesystem::path(configured);
+        return std::nullopt;
+    }
+
+    std::filesystem::path build(
+        ResolvedPackage const &root) const
+    {
+        auto const& owner_root = root.artifact_root;
+        auto const build_key = root.provenance == PackageProvenance::built_in
+            ? sanitize(root.package_key)
+            : sanitize(root.package_key) + "_" + stable_hash(root.module_dir);
         auto const workspace = owner_root / "build" / build_key / config_name();
         auto const build_dir = workspace / "cmake-build";
         auto const output_dir = workspace / "out";
@@ -740,46 +861,60 @@ class ModuleLoader::Impl {
         }
         std::string generator = toolchain_.cmake_generator.value_or(
             std::string(IV_CONFIGURED_CMAKE_GENERATOR));
+        auto const selected_make_program = make_program();
+        auto const selected_juce_dir = juce_dir();
 
         std::ostringstream signature;
         signature << "iv-package-abi=" << IV_PACKAGE_ABI_VERSION << '\n'
                   << "config=" << config_name() << '\n'
-                  << "cmake=" << cmake_program().generic_string() << '\n'
-                  << "cc=" << cc.generic_string() << '\n'
-                  << "cxx=" << cxx.generic_string() << '\n'
+                  << "target-triple=" << llvm::sys::getDefaultTargetTriple() << '\n'
+                  << "pointer-size=" << sizeof(void*) << '\n'
+                  << "little-endian=" << (std::endian::native == std::endian::little) << '\n'
+                  << "cmake=" << file_identity(cmake_program()) << '\n'
+                  << "cc=" << file_identity(cc) << '\n'
+                  << "cxx=" << file_identity(cxx) << '\n'
                   << "generator=" << generator << '\n'
+                  << "make-program="
+                  << (selected_make_program
+                          ? file_identity(*selected_make_program)
+                          : std::string("<default>")) << '\n'
+                  << "juce-dir="
+                  << (selected_juce_dir
+                          ? normalize(*selected_juce_dir).generic_string()
+                          : std::string("<none>")) << '\n'
+                  << "juce-vst=" << IV_CONFIGURED_ENABLE_JUCE_VST << '\n'
+                  << "juce-web-browser=" << IV_CONFIGURED_JUCE_WEB_BROWSER << '\n'
+                  << "juce-curl=" << IV_CONFIGURED_JUCE_USE_CURL << '\n'
                   << "source-introspection="
                   << toolchain_.source_introspection << '\n'
                   << "dsl-pch="
-                  << toolchain_.iv_package_pch->generic_string() << '\n'
-                  << "dsl-pch-stamp="
-                  << std::filesystem::last_write_time(*toolchain_.iv_package_pch)
-                         .time_since_epoch().count() << '\n'
+                  << file_identity(*toolchain_.iv_package_pch) << '\n'
                   << "clang-time-trace="
                   << toolchain_.clang_time_trace << '\n'
-                  << "core-source-stamp="
-                  << directory_stamp(repo_root_ / "src/intravenous")
-                         .time_since_epoch().count() << '\n'
+                  << "package-build-templates="
+                  << source_tree_fingerprint(
+                         repo_root_ / "src/intravenous/module/template") << '\n'
                   << read_text(repo_root_ / "src/intravenous/module/abi.h") << '\n'
                   << read_text(repo_root_ / "src/intravenous/module/builder_session.h") << '\n'
                   << read_text(repo_root_ / "src/intravenous/module/template/ModuleSupport.cmake") << '\n';
         signature
             << "package-finalizer=" << module_finalizer.generic_string() << '\n'
-            << "package-finalizer-stamp="
-            << std::filesystem::last_write_time(module_finalizer)
-                   .time_since_epoch().count() << '\n';
+            << "package-finalizer-identity=" << file_identity(module_finalizer) << '\n';
         signature
             << "source-introspection-plugin="
             << source_introspection_plugin.generic_string() << '\n'
-            << "source-introspection-plugin-stamp="
-            << std::filesystem::last_write_time(source_introspection_plugin)
-                   .time_since_epoch().count() << '\n';
+            << "source-introspection-plugin-identity="
+            << file_identity(source_introspection_plugin) << '\n';
         // An IV package compile owns only its own implementation files. Package
         // definition IDs resolve through graph configuration, so provider edits do
         // not enter a consumer's C++ compilation signature.
-        signature << key(root) << '\n'
+        signature << artifact_signature_package_identity(root) << '\n'
                   << read_text(root.manifest_file) << '\n'
-                  << root.package_stamp.time_since_epoch().count() << '\n';
+                  << "package-source=" << source_tree_fingerprint(root.module_dir) << '\n';
+        if (std::string_view(IV_CONFIGURED_IV_BUILDER_LIBRARY).size()) {
+            signature << "builder-library="
+                      << file_identity(IV_CONFIGURED_IV_BUILDER_LIBRARY) << '\n';
+        }
         if (std::filesystem::exists(custom_cmake)) {
             signature << read_text(custom_cmake) << '\n';
         }
@@ -810,6 +945,12 @@ class ModuleLoader::Impl {
         if (!generator.empty()) configure << " -G " << quote(generator);
         if (!cc.empty()) configure << " -DCMAKE_C_COMPILER=" << quote(cc);
         if (!cxx.empty()) configure << " -DCMAKE_CXX_COMPILER=" << quote(cxx);
+        if (selected_make_program) {
+            configure << " -DCMAKE_MAKE_PROGRAM=" << quote(*selected_make_program);
+        }
+        if (selected_juce_dir) {
+            configure << " -DJUCE_DIR=" << quote(*selected_juce_dir);
+        }
         configure << " -DIV_INCLUDE_DIR=" << quote(repo_root_ / "src")
                   << " -DIV_SOURCE_DIR=" << quote(repo_root_ / "src/intravenous")
                   << " -DIV_THIRD_PARTY_INCLUDE_DIR=" << quote(repo_root_ / "src/intravenous/third_party")
@@ -879,11 +1020,8 @@ class ModuleLoader::Impl {
     }
 
 public:
-    std::vector<std::filesystem::path> extra_search_roots;
-
     Impl(
         std::filesystem::path discovery_start,
-        std::vector<std::filesystem::path> roots,
         ModuleLoaderToolchainConfig toolchain,
         LogSink sink)
         : repo_root_(discover_repo(std::move(discovery_start))),
@@ -894,15 +1032,12 @@ public:
     {
         apply_configured_dsl_pch(toolchain_);
         std::filesystem::create_directories(global_cache_root_);
-        for (auto const &root : roots) {
-            extra_search_roots.push_back(normalize(root));
-        }
     }
 
     CompiledPackage compile_package_unlocked(
-        std::filesystem::path const& path) const
+        PackageBuildRequest const& request) const
     {
-        auto module_path = normalize(path);
+        auto module_path = normalize(request.package_root);
         if (std::filesystem::is_regular_file(module_path)) {
             if (is_iv_package_manifest_file(module_path.filename().string())) {
                 module_path = module_path.parent_path();
@@ -913,14 +1048,10 @@ public:
             }
         }
 
-        bool const global_root = std::ranges::any_of(
-            extra_search_roots,
-            [&](auto const& root) { return is_within(module_path, root); });
-        auto root = resolve_dir(module_path, global_root);
-        auto const project_root = root.global
-            ? global_cache_root_
-            : discover_project_root(root.module_dir);
-        auto artifact = build(root, project_root);
+        auto normalized_request = request;
+        normalized_request.package_root = std::move(module_path);
+        auto root = resolve_dir(normalized_request);
+        auto artifact = build(root);
         return {
             .root = std::move(root),
             .artifact = std::move(artifact),
@@ -928,10 +1059,10 @@ public:
     }
 
     std::filesystem::path compile_package(
-        std::filesystem::path const& path) const
+        PackageBuildRequest const& package) const
     {
         std::lock_guard lock(mutex_);
-        return compile_package_unlocked(path).artifact;
+        return compile_package_unlocked(package).artifact;
     }
 
     void set_toolchain_config(ModuleLoaderToolchainConfig toolchain)
@@ -1410,10 +1541,10 @@ public:
     }
 
     std::vector<ModuleLoader::PackageLoadResult> load_packages(
-        std::vector<std::filesystem::path> const& paths) const
+        std::vector<PackageBuildRequest> const& packages) const
     {
         std::lock_guard lock(mutex_);
-        std::vector<ModuleLoader::PackageLoadResult> results(paths.size());
+        std::vector<ModuleLoader::PackageLoadResult> results(packages.size());
 
         struct Candidate {
             std::size_t result_index = 0;
@@ -1425,13 +1556,13 @@ public:
             bool surviving = true;
         };
         std::vector<Candidate> candidates;
-        candidates.reserve(paths.size());
+        candidates.reserve(packages.size());
         std::unordered_set<std::string> requested_roots;
 
-        for (std::size_t index = 0; index < paths.size(); ++index) {
-            results[index].package_path = paths[index];
+        for (std::size_t index = 0; index < packages.size(); ++index) {
+            results[index].package_path = packages[index].package_root;
             try {
-                auto compiled = compile_package_unlocked(paths[index]);
+                auto compiled = compile_package_unlocked(packages[index]);
                 auto const root_key = normalize(compiled.root.module_dir).generic_string();
                 results[index].package_path = compiled.root.module_dir;
                 if (!requested_roots.insert(root_key).second) {
@@ -1506,9 +1637,9 @@ public:
     }
 
     ModuleLoader::LoadedPackage load_package(
-        std::filesystem::path const& path) const
+        PackageBuildRequest const& package) const
     {
-        auto results = load_packages({path});
+        auto results = load_packages({package});
         if (results.empty() || !results.front()) {
             throw std::runtime_error(
                 results.empty()
@@ -1544,12 +1675,10 @@ ModuleLoader::LoadedDefinition::LoadedDefinition(
 
 ModuleLoader::ModuleLoader(
     std::filesystem::path start,
-    std::vector<std::filesystem::path> roots,
     ModuleLoaderToolchainConfig toolchain,
     LogSink sink)
     : _impl(std::make_unique<Impl>(
           std::move(start),
-          std::move(roots),
           std::move(toolchain),
           std::move(sink)))
 {}
@@ -1559,15 +1688,24 @@ ModuleLoader::ModuleLoader(ModuleLoader &&) noexcept = default;
 ModuleLoader &ModuleLoader::operator=(ModuleLoader &&) noexcept = default;
 
 ModuleLoader::LoadedPackage ModuleLoader::load_package(
-    std::filesystem::path const &path) const
+    PackageBuildRequest const& package) const
 {
-    return _impl->load_package(path);
+    return _impl->load_package(package);
+}
+
+ModuleLoader::LoadedPackage ModuleLoader::load_project_package(
+    std::filesystem::path const& package_path) const
+{
+    return load_package(PackageBuildRequest{
+        .package_root = package_path,
+        .provenance = PackageProvenance::project_local,
+    });
 }
 
 std::vector<ModuleLoader::PackageLoadResult> ModuleLoader::load_packages(
-    std::vector<std::filesystem::path> const& paths) const
+    std::vector<PackageBuildRequest> const& packages) const
 {
-    return _impl->load_packages(paths);
+    return _impl->load_packages(packages);
 }
 
 void ModuleLoader::remove_package(std::filesystem::path const& path) const
@@ -1576,16 +1714,34 @@ void ModuleLoader::remove_package(std::filesystem::path const& path) const
 }
 
 std::vector<ModuleLoader::LoadedDefinition> ModuleLoader::load_package_definitions(
-    std::filesystem::path const &path) const
+    PackageBuildRequest const& package) const
 {
-    auto source = load_package(path);
+    auto source = load_package(package);
     return std::move(source.definitions);
 }
 
-std::filesystem::path ModuleLoader::compile_package(
-    std::filesystem::path const& path) const
+std::vector<ModuleLoader::LoadedDefinition> ModuleLoader::load_project_package_definitions(
+    std::filesystem::path const& package_path) const
 {
-    return _impl->compile_package(path);
+    return load_package_definitions(PackageBuildRequest{
+        .package_root = package_path,
+        .provenance = PackageProvenance::project_local,
+    });
+}
+
+std::filesystem::path ModuleLoader::compile_package(
+    PackageBuildRequest const& package) const
+{
+    return _impl->compile_package(package);
+}
+
+std::filesystem::path ModuleLoader::compile_project_package(
+    std::filesystem::path const& package_path) const
+{
+    return compile_package(PackageBuildRequest{
+        .package_root = package_path,
+        .provenance = PackageProvenance::project_local,
+    });
 }
 
 void ModuleLoader::set_toolchain_config(ModuleLoaderToolchainConfig toolchain)
@@ -1593,8 +1749,4 @@ void ModuleLoader::set_toolchain_config(ModuleLoaderToolchainConfig toolchain)
     _impl->set_toolchain_config(std::move(toolchain));
 }
 
-std::vector<std::filesystem::path> const &ModuleLoader::extra_search_roots() const
-{
-    return _impl->extra_search_roots;
-}
 } // namespace iv

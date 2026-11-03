@@ -18,7 +18,7 @@ struct GetIvPackageDefinitionsRequest;
 struct IvPackageInfo {
     std::string package_id = {};
     std::filesystem::path package_root = {};
-    bool project_local = false;
+    PackageProvenance provenance = PackageProvenance::project_local;
     std::vector<std::string> module_ids = {};
     std::vector<std::string> node_type_ids = {};
     PackageBuildState build_state = PackageBuildState::queued;
@@ -37,7 +37,8 @@ class PackageDefinitions {
 
     [[nodiscard]] IvPackageInfo& ensure_package_locked(
         std::string const& package_id,
-        std::filesystem::path const& package_root);
+        std::filesystem::path const& package_root,
+        PackageProvenance provenance);
     void rebuild_snapshot_locked();
     void apply_publication_result(PackageDefinitionsPublicationRequest const& request);
 

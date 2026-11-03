@@ -101,15 +101,35 @@ std::optional<PackageManifest> read_manifest(std::filesystem::path const& path)
         return std::nullopt;
     }
 }
+
+int provenance_priority(PackageProvenance provenance) noexcept
+{
+    switch (provenance) {
+    case PackageProvenance::project_local:
+        return 0;
+    case PackageProvenance::common:
+        return 1;
+    case PackageProvenance::built_in:
+        return 2;
+    }
+    return 0;
+}
 } // namespace
 
-std::vector<std::pair<std::string, std::filesystem::path>>
+std::vector<IvPackageDeclaration>
 discover_iv_package_declarations(
     std::filesystem::path const& project_root,
-    std::vector<std::filesystem::path> const& shared_roots)
+    std::vector<PackageDiscoveryRoot> const& package_roots)
 {
-    std::unordered_map<std::string, std::filesystem::path> by_id;
-    auto scan = [&](std::filesystem::path const& root) {
+    std::unordered_map<std::string, IvPackageDeclaration> by_id;
+    auto scan = [&](PackageDiscoveryRoot const& search_root) {
+        if (search_root.provenance == PackageProvenance::built_in
+            && !search_root.artifact_root) {
+            throw std::runtime_error(
+                "built-in package discovery root has no artifact owner: "
+                + search_root.root.string());
+        }
+        auto const root = normalize_path(search_root.root);
         std::error_code error;
         if (!std::filesystem::exists(root, error)) return;
         auto const options = std::filesystem::directory_options::skip_permission_denied;
@@ -133,19 +153,41 @@ discover_iv_package_declarations(
                 continue;
             }
             auto const normalized = normalize_path(directory);
-            by_id.insert_or_assign(normalized.generic_string(), normalized);
+            auto const package_id = normalized.generic_string();
+            IvPackageDeclaration declaration{
+                .package_id = package_id,
+                .package_root = normalized,
+                .provenance = search_root.provenance,
+                .artifact_root = search_root.artifact_root
+                    ? std::optional(normalize_path(*search_root.artifact_root))
+                    : std::nullopt,
+            };
+            auto const existing = by_id.find(package_id);
+            if (existing == by_id.end()
+                || provenance_priority(declaration.provenance)
+                    > provenance_priority(existing->second.provenance)) {
+                by_id.insert_or_assign(package_id, std::move(declaration));
+            } else if (existing->second.provenance == declaration.provenance
+                       && existing->second.artifact_root != declaration.artifact_root) {
+                throw std::runtime_error(
+                    "overlapping IV package roots assign different artifact owners to '"
+                    + package_id + "'");
+            }
             it.disable_recursion_pending();
         }
     };
-    scan(project_root);
-    for (auto const& root : shared_roots) scan(root);
+    scan(PackageDiscoveryRoot{
+        .root = project_root,
+        .provenance = PackageProvenance::project_local,
+    });
+    for (auto const& root : package_roots) scan(root);
 
-    std::vector<std::pair<std::string, std::filesystem::path>> result;
+    std::vector<IvPackageDeclaration> result;
     result.reserve(by_id.size());
-    for (auto& [package_id, package_root] : by_id) {
-        result.emplace_back(package_id, std::move(package_root));
+    for (auto& [_, declaration] : by_id) {
+        result.push_back(std::move(declaration));
     }
-    std::ranges::sort(result, {}, &std::pair<std::string, std::filesystem::path>::first);
+    std::ranges::sort(result, {}, &IvPackageDeclaration::package_id);
     return result;
 }
 
@@ -164,6 +206,7 @@ PackageWatcher::merge_declaration_sources_locked() const
                 "IV package declaration sources disagree about package ID '"
                 + package_id + "'");
         }
+        if (!inserted) position->second = declaration;
     }
     return merged;
 }
@@ -174,7 +217,7 @@ void PackageWatcher::install_effective_declarations_locked(
     for (auto const& [package_id, declaration] : next) {
         auto const current = package_declarations_by_id_.find(package_id);
         if (current == package_declarations_by_id_.end()
-            || current->second.package_root != declaration.package_root) {
+            || current->second != declaration) {
             dirty_package_ids_.insert(package_id);
             source_dependencies_by_package_id_.insert_or_assign(
                 package_id, source_dependency(declaration));
@@ -215,12 +258,25 @@ void PackageWatcher::handle_required_definitions_changed(
         auto retain = [&](IvModuleRequiredDefinition const& required) {
             auto package_root = normalize_path(required.package_root);
             auto package_id = package_root.generic_string();
+            auto declaration = IvPackageDeclaration{
+                .package_id = package_id,
+                .package_root = package_root,
+                .provenance = PackageProvenance::project_local,
+            };
+            if (auto const discovered =
+                    discovered_package_declarations_by_id_.find(package_id);
+                discovered != discovered_package_declarations_by_id_.end()
+                && discovered->second.package_root == package_root) {
+                declaration = discovered->second;
+            } else if (auto const retained =
+                           retained_package_declarations_by_id_.find(package_id);
+                       retained != retained_package_declarations_by_id_.end()
+                       && retained->second.package_root == package_root) {
+                declaration = retained->second;
+            }
             retained_package_declarations_by_id_.insert_or_assign(
                 package_id,
-                IvPackageDeclaration{
-                    .package_id = package_id,
-                    .package_root = std::move(package_root),
-                });
+                std::move(declaration));
         };
         for (auto const& required : diff.created) retain(required);
         for (auto const& required : diff.updated) retain(required);
@@ -233,18 +289,24 @@ void PackageWatcher::handle_required_definitions_changed(
 }
 
 void PackageWatcher::synchronize_discovered_packages(
-    std::vector<std::pair<std::string, std::filesystem::path>> declarations)
+    std::vector<IvPackageDeclaration> declarations)
 {
     std::unordered_map<std::string, IvPackageDeclaration> next_discovered;
     next_discovered.reserve(declarations.size());
-    for (auto& [package_id, package_root] : declarations) {
-        if (package_id.empty()) {
+    for (auto& declaration : declarations) {
+        if (declaration.package_id.empty()) {
             throw std::runtime_error("discovered IV package has an empty package ID");
         }
-        auto declaration = IvPackageDeclaration{
-            .package_id = std::move(package_id),
-            .package_root = normalize_path(package_root),
-        };
+        declaration.package_root = normalize_path(declaration.package_root);
+        if (declaration.artifact_root) {
+            declaration.artifact_root = normalize_path(*declaration.artifact_root);
+        }
+        if (declaration.provenance == PackageProvenance::built_in
+            && !declaration.artifact_root) {
+            throw std::runtime_error(
+                "discovered built-in IV package has no artifact owner: '"
+                + declaration.package_id + "'");
+        }
         if (!next_discovered.emplace(declaration.package_id, declaration).second) {
             throw std::runtime_error(
                 "discovered IV package snapshot contains duplicate package ID '"
@@ -253,6 +315,13 @@ void PackageWatcher::synchronize_discovered_packages(
     }
 
     std::scoped_lock lock(mutex_);
+    for (auto& [package_id, retained] : retained_package_declarations_by_id_) {
+        auto const discovered = next_discovered.find(package_id);
+        if (discovered != next_discovered.end()
+            && discovered->second.package_root == retained.package_root) {
+            retained = discovered->second;
+        }
+    }
     auto merged = retained_package_declarations_by_id_;
     for (auto const& [package_id, declaration] : next_discovered) {
         auto const [position, inserted] = merged.emplace(package_id, declaration);
@@ -261,6 +330,7 @@ void PackageWatcher::synchronize_discovered_packages(
                 "IV package declaration sources disagree about package ID '"
                 + package_id + "'");
         }
+        if (!inserted) position->second = declaration;
     }
     discovered_package_declarations_by_id_ = std::move(next_discovered);
     install_effective_declarations_locked(std::move(merged));
@@ -305,7 +375,7 @@ bool PackageWatcher::has_pending_refresh() const
     for (auto const& [package_id, declaration] : package_declarations_by_id_) {
         auto const published = published_declarations_by_id_.find(package_id);
         if (published == published_declarations_by_id_.end()
-            || published->second.package_root != declaration.package_root) {
+            || published->second != declaration) {
             return true;
         }
     }
@@ -341,7 +411,7 @@ bool PackageWatcher::refresh_pending_packages()
             auto const published = published_declarations_by_id_.find(package_id);
             if (published == published_declarations_by_id_.end()) {
                 transaction.declarations.created.push_back(declaration);
-            } else if (published->second.package_root != declaration.package_root) {
+            } else if (published->second != declaration) {
                 transaction.declarations.updated.push_back(declaration);
                 jit_request.removed_package_roots.push_back(published->second.package_root);
             }

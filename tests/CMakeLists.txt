@@ -22,7 +22,7 @@ function(add_iv_gtest target source)
     # Direct-loader tests use the same staged built-in package as the server.
     # Building a single test executable must stage it even if the server target
     # was not built in this build directory.
-    add_dependencies(${target} intravenous_builtin_package_assets)
+    add_dependencies(${target} intravenous_builtin_package_artifacts)
 
     if(NOT IVGT_NO_HOST_RUNTIME_OBJECTS)
         target_sources(${target} PRIVATE

@@ -15,45 +15,41 @@ int main()
         auto missing_dir = runtime_root / "missing_entry";
         std::filesystem::create_directories(missing_dir);
         iv::test::expect_failure(
-            [&] { (void)loader.load_package_definitions(missing_dir); },
+            [&] { (void)loader.load_project_package_definitions(missing_dir); },
             "iv_package.json",
             "missing manifest should fail");
     }
 
     {
-        auto loader = iv::test::make_loader({fixtures / "missing_export"});
+        auto loader = iv::test::make_loader();
         iv::test::expect_failure(
-            [&] { (void)loader.load_package_definitions(fixtures / "missing_export"); },
+            [&] { (void)loader.load_project_package_definitions(fixtures / "missing_export"); },
             "iv_package.json",
             "source without manifest should fail");
     }
 
     {
-        auto loader = iv::test::make_loader({fixtures / "build_failure"});
+        auto loader = iv::test::make_loader();
         iv::test::expect_failure(
-            [&] { (void)loader.load_package_definitions(fixtures / "build_failure"); },
+            [&] { (void)loader.load_project_package_definitions(fixtures / "build_failure"); },
             "command failed",
             "build failure should propagate");
     }
 
     {
-        auto loader = iv::test::make_loader({fixtures / "missing_dependency"});
+        auto loader = iv::test::make_loader();
         iv::test::expect_failure(
-            [&] { (void)loader.load_package_definitions(fixtures / "missing_dependency"); },
+            [&] { (void)loader.load_project_package_definitions(fixtures / "missing_dependency"); },
             "imports missing",
             "missing dependency id should fail");
     }
 
     {
         auto const duplicates = iv::test::duplicate_modules_root();
-        auto loader = iv::test::make_loader({
-            fixtures / "nested_loader_project",
-            fixtures / "nested_loader_voice",
-            duplicates / "one",
-            duplicates / "two",
-        });
+        auto loader = iv::test::make_loader();
+        (void)loader.load_project_package_definitions(duplicates / "one");
         iv::test::expect_failure(
-            [&] { (void)loader.load_package_definitions(fixtures / "nested_loader_project"); },
+            [&] { (void)loader.load_project_package_definitions(duplicates / "two"); },
             "duplicate stable IV definition ID",
             "duplicate module id should fail");
     }

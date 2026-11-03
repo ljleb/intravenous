@@ -22,12 +22,12 @@ void publish_package_catalog_changed()
 
 std::vector<std::filesystem::path> discovery_roots(
     std::filesystem::path const& project_root,
-    std::vector<std::filesystem::path> const& shared_roots)
+    std::vector<PackageDiscoveryRoot> const& package_roots)
 {
     std::vector<std::filesystem::path> roots;
-    roots.reserve(shared_roots.size() + 1);
+    roots.reserve(package_roots.size() + 1);
     roots.push_back(project_root);
-    roots.insert(roots.end(), shared_roots.begin(), shared_roots.end());
+    for (auto const& root : package_roots) roots.push_back(root.root);
     return roots;
 }
 
@@ -52,11 +52,11 @@ void require_healthy_descriptor(pollfd const& descriptor, char const* name)
 PackageWatcherService::PackageWatcherService(
     PackageWatcher& watcher,
     std::filesystem::path project_root,
-    std::vector<std::filesystem::path> shared_roots)
+    std::vector<PackageDiscoveryRoot> package_roots)
     : watcher_(&watcher)
     , project_root_(std::move(project_root))
-    , shared_roots_(std::move(shared_roots))
-    , discovery_watcher_(discovery_roots(project_root_, shared_roots_))
+    , package_roots_(std::move(package_roots))
+    , discovery_watcher_(discovery_roots(project_root_, package_roots_))
 {}
 
 PackageWatcherService::~PackageWatcherService()
@@ -94,7 +94,7 @@ void PackageWatcherService::report_service_error(std::string message)
 bool PackageWatcherService::synchronize_discovered_packages()
 {
     try {
-        auto declarations = discover_iv_package_declarations(project_root_, shared_roots_);
+        auto declarations = discover_iv_package_declarations(project_root_, package_roots_);
         last_discovery_error_.reset();
         if (last_package_declarations_.has_value()
             && declarations == *last_package_declarations_) {

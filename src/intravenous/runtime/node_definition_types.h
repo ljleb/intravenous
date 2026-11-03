@@ -2,12 +2,14 @@
 
 #include <intravenous/graph/build_types.h>
 #include <intravenous/module/dependency.h>
+#include <intravenous/module/package_provenance.h>
 #include <intravenous/module/package_definitions.h>
 #include <intravenous/node/compiler_record.h>
 
 #include <cstdint>
 #include <filesystem>
 #include <memory>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <variant>
@@ -22,6 +24,12 @@ struct IvPackageDeclaration {
     // Stable identity of one independently compiled IV package.
     std::string package_id{};
     std::filesystem::path package_root{};
+    PackageProvenance provenance = PackageProvenance::project_local;
+    std::optional<std::filesystem::path> artifact_root{};
+
+    friend bool operator==(
+        IvPackageDeclaration const&,
+        IvPackageDeclaration const&) = default;
 };
 
 struct IvPackageDeclarationsChanged {

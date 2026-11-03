@@ -70,6 +70,23 @@ target_compile_definitions(intravenous_module_loader PRIVATE
     IV_CONFIGURED_CLANG_SOURCE_INTROSPECTION_PLUGIN="$<TARGET_FILE:iv_clang_source_introspection_plugin>"
     IV_CONFIGURED_IV_PACKAGE_FINALIZER="$<TARGET_FILE:iv_package_finalize>")
 
+add_dependencies(
+    iv_package_prebuild
+    intravenous_dsl_pch
+    iv_clang_source_introspection_plugin
+    iv_package_finalize)
+add_custom_target(intravenous_builtin_package_artifacts ALL
+    COMMAND $<TARGET_FILE:iv_package_prebuild>
+        "${CMAKE_BINARY_DIR}/src/intravenous/builtin_packages/builtin"
+        "${IV_BUILTIN_PACKAGE_ARTIFACT_ROOT}"
+        "${CMAKE_SOURCE_DIR}"
+    DEPENDS
+        iv_package_prebuild
+        intravenous_builtin_package_assets
+    COMMENT "Prebuilding executable-owned built-in IV package artifacts"
+    VERBATIM)
+add_dependencies(intravenous intravenous_builtin_package_artifacts)
+
 add_subdirectory(tests)
 add_subdirectory(benchmark)
 

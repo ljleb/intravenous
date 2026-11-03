@@ -34,7 +34,6 @@ ModuleLoader& PackageJit::ensure_loader()
     if (!loader_) {
         loader_ = std::make_unique<ModuleLoader>(
             startup_config_.discovery_start,
-            startup_config_.search_roots,
             startup_config_.toolchain,
             ModuleLoader::LogSink{});
     }
@@ -65,12 +64,16 @@ PackageJitBatchResult PackageJit::build(
     if (declarations.empty()) return results;
 
     auto& loader = ensure_loader();
-    std::vector<std::filesystem::path> package_paths;
-    package_paths.reserve(declarations.size());
+    std::vector<PackageBuildRequest> packages;
+    packages.reserve(declarations.size());
     for (auto const& declaration : declarations) {
-        package_paths.push_back(declaration.package_root);
+        packages.push_back(PackageBuildRequest{
+            .package_root = declaration.package_root,
+            .provenance = declaration.provenance,
+            .artifact_root = declaration.artifact_root,
+        });
     }
-    auto batch = loader.load_packages(package_paths);
+    auto batch = loader.load_packages(packages);
 
     for (std::size_t index = 0; index < declarations.size(); ++index) {
         auto const& declaration = declarations[index];
@@ -89,6 +92,7 @@ PackageJitBatchResult PackageJit::build(
             PackageRevision revision{
                 .package_id = declaration.package_id,
                 .package_root = declaration.package_root,
+                .provenance = declaration.provenance,
                 .compiler_artifact = std::move(loaded_package.compiler_artifact),
                 .package_code = std::move(loaded_package.package_code),
                 .provider_definitions = std::move(loaded_package.provider_definitions),
@@ -137,6 +141,7 @@ PackageJitBatchResult PackageJit::build(
             results.failed.push_back(PackageJitFailure{
                 .package_id = declaration.package_id,
                 .package_root = declaration.package_root,
+                .provenance = declaration.provenance,
                 .message = describe_exception(std::current_exception()),
             });
         }

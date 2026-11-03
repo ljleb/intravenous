@@ -6,17 +6,23 @@
 #include <gtest/gtest.h>
 
 #include <filesystem>
+#include <optional>
 #include <ranges>
 #include <string>
+#include <utility>
 
 namespace {
 iv::IvPackageDeclaration declaration(
     std::string package_id,
-    std::filesystem::path const& package_root)
+    std::filesystem::path const& package_root,
+    iv::PackageProvenance provenance = iv::PackageProvenance::project_local,
+    std::optional<std::filesystem::path> artifact_root = std::nullopt)
 {
     return iv::IvPackageDeclaration{
         .package_id = std::move(package_id),
         .package_root = std::filesystem::weakly_canonical(package_root),
+        .provenance = provenance,
+        .artifact_root = std::move(artifact_root),
     };
 }
 } // namespace
@@ -34,7 +40,11 @@ void package_jit_batch_good(iv::GraphBuilder& g)
 }
 )cpp");
     auto const bad_root = iv::test_support::read_only_module_fixture_workspace("build_failure");
-    auto const good = declaration("iv.test.jit.good", good_root);
+    auto const good = declaration(
+        "iv.test.jit.good",
+        good_root,
+        iv::PackageProvenance::common,
+        good_root.parent_path() / "package-jit-common-cache");
     auto const bad = declaration("iv.test.jit.bad", bad_root);
 
     iv::StartupConfig startup_config(good_root, iv::test::repo_root(), {});
@@ -50,6 +60,7 @@ void package_jit_batch_good(iv::GraphBuilder& g)
     auto const& first_revision = first_request.result.revisions.front();
     EXPECT_EQ(first_revision.package_id, good.package_id);
     EXPECT_EQ(first_revision.package_root, good.package_root);
+    EXPECT_EQ(first_revision.provenance, iv::PackageProvenance::common);
     EXPECT_EQ(first_revision.revision, 1u);
     EXPECT_TRUE(std::filesystem::is_regular_file(
         first_revision.compiler_artifact.bitcode_path));
@@ -64,6 +75,9 @@ void package_jit_batch_good(iv::GraphBuilder& g)
 
     EXPECT_EQ(first_request.result.failed.front().package_id, bad.package_id);
     EXPECT_EQ(first_request.result.failed.front().package_root, bad.package_root);
+    EXPECT_EQ(
+        first_request.result.failed.front().provenance,
+        iv::PackageProvenance::project_local);
     EXPECT_FALSE(first_request.result.failed.front().message.empty());
 
     iv::PackageJitBatchRequest second_request{

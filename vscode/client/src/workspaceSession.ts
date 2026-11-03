@@ -53,7 +53,7 @@ type IvPackageInfo = {
     buildMessage: string;
     publicationMessage: string;
     packageRoot: string;
-    projectLocal: boolean;
+    provenance: "builtIn" | "common" | "projectLocal";
 };
 
 type ServerStatusNotification = {
@@ -323,7 +323,10 @@ export class WorkspaceSession {
                 ? packageInfo.publicationMessage
                 : "",
             packageRoot: packageInfo.packageRoot,
-            projectLocal: packageInfo.projectLocal === true,
+            provenance: packageInfo.provenance === "builtIn"
+                || packageInfo.provenance === "common"
+                ? packageInfo.provenance
+                : "projectLocal",
         };
     }
 
@@ -356,7 +359,7 @@ export class WorkspaceSession {
         return this.ivPackages.flatMap((packageInfo) => packageInfo.moduleIds.map((moduleId) => ({
             moduleId,
             packageRoot: packageInfo.packageRoot,
-            projectLocal: packageInfo.projectLocal,
+            provenance: packageInfo.provenance,
         })));
     }
 

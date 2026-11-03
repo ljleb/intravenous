@@ -50,11 +50,13 @@ struct DefinitionsHarness {
 
 iv::IvPackageDeclaration declaration(
     std::string package_id,
-    std::filesystem::path const& package_root)
+    std::filesystem::path const& package_root,
+    iv::PackageProvenance provenance = iv::PackageProvenance::project_local)
 {
     return iv::IvPackageDeclaration{
         .package_id = std::move(package_id),
         .package_root = std::filesystem::weakly_canonical(package_root),
+        .provenance = provenance,
     };
 }
 
@@ -65,6 +67,7 @@ iv::PackageRevision revision(
     return iv::PackageRevision{
         .package_id = declaration.package_id,
         .package_root = declaration.package_root,
+        .provenance = declaration.provenance,
         .revision = revision_number,
     };
 }
@@ -111,7 +114,7 @@ TEST(PackageDefinitions, SuccessfulRevisionBecomesAcceptedAndPublicationProjecti
     auto const& info = only_package(listed);
     EXPECT_EQ(info.package_id, package.package_id);
     EXPECT_EQ(info.package_root, package.package_root);
-    EXPECT_TRUE(info.project_local);
+    EXPECT_EQ(info.provenance, iv::PackageProvenance::project_local);
     EXPECT_EQ(info.build_state, iv::PackageBuildState::built);
     EXPECT_EQ(
         info.module_ids,
@@ -119,6 +122,31 @@ TEST(PackageDefinitions, SuccessfulRevisionBecomesAcceptedAndPublicationProjecti
     EXPECT_EQ(info.node_type_ids, std::vector<std::string>{"iv.test.osc"});
     EXPECT_TRUE(info.build_message.empty());
     EXPECT_TRUE(info.publication_message.empty());
+}
+
+TEST(PackageDefinitions, AcceptedRevisionRetainsDiscoveredPackageProvenance)
+{
+    auto const project = iv::test_support::fresh_module_fixture_workspace(
+        "package_definitions_provenance");
+    auto const root = project / "shared";
+    std::filesystem::create_directories(root);
+    auto const package = declaration(
+        "iv.test.common",
+        root,
+        iv::PackageProvenance::common);
+
+    DefinitionsHarness harness(project);
+    harness.packages.handle_package_refresh(iv::PackageRefreshTransaction{
+        .declarations = iv::IvPackageDeclarationsChanged{.created = {package}},
+        .successful_revisions = {revision(package, 1)},
+    });
+
+    auto const& info = only_package(harness.packages.list_packages());
+    EXPECT_EQ(info.provenance, iv::PackageProvenance::common);
+    ASSERT_TRUE(harness.packages.snapshot()->by_package_id.contains(package.package_id));
+    EXPECT_EQ(
+        harness.packages.snapshot()->by_package_id.at(package.package_id)->provenance,
+        iv::PackageProvenance::common);
 }
 
 TEST(PackageDefinitions, FailedRebuildPreservesAcceptedSnapshotAndPublishedProjection)
@@ -289,7 +317,7 @@ TEST(PackageDefinitions, ProjectPackageCreationWritesSelfConsistentSkeletonAndRe
         project / "modules" / "_voice-bank");
     EXPECT_EQ(created.package_root, expected_root);
     EXPECT_EQ(created.package_id, expected_root.generic_string());
-    EXPECT_TRUE(created.project_local);
+    EXPECT_EQ(created.provenance, iv::PackageProvenance::project_local);
 
     auto const manifest = iv::test_support::read_text(expected_root / "iv_package.json");
     EXPECT_NE(manifest.find(R"("schema": 2)"), std::string::npos);

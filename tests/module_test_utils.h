@@ -58,6 +58,11 @@ namespace iv::test {
         return configured_build_root() / "src/intravenous/builtin_packages/builtin";
     }
 
+    inline std::filesystem::path builtin_package_artifact_root()
+    {
+        return configured_build_root() / "src/intravenous/builtin_package_artifacts";
+    }
+
     inline std::filesystem::path duplicate_modules_root()
     {
         return repo_root() / "tests" / "test_modules_duplicate";
@@ -69,7 +74,11 @@ namespace iv::test {
         // catalog state it would provide from the package staged in the active
         // CMake build tree, never from the checkout's source directory.
         auto defaults = loader.load_packages({
-            staged_builtin_package_root()});
+            iv::PackageBuildRequest{
+                .package_root = staged_builtin_package_root(),
+                .provenance = iv::PackageProvenance::built_in,
+                .artifact_root = builtin_package_artifact_root(),
+            }});
         if (defaults.size() != 1 || !defaults.front()) {
             throw std::runtime_error(
                 defaults.empty() ? "test default IV package load produced no result"
@@ -491,11 +500,10 @@ namespace iv::test {
             runtime_module_cache_root() / ("load_" + stable_path_hash(normalized_package_root) + ".lock"));
         iv::ModuleLoader loader(
             config.discovery_start,
-            config.search_roots,
             config.toolchain,
             {});
         load_test_default_package_catalog(loader);
-        auto loaded_graph = loader.load_package_definitions(package_root).front();
+        auto loaded_graph = loader.load_project_package_definitions(package_root).front();
         return iv::PackageModuleDefinition{
             .package_id = normalized_package_root.generic_string(),
             .definition_id = loaded_graph.module_id,
@@ -598,16 +606,14 @@ namespace iv::test {
         std::exit(1);
     }
 
-    inline iv::ModuleLoader make_loader(
-        std::vector<std::filesystem::path> extra_roots = {})
+    inline iv::ModuleLoader make_loader()
     {
         // ModuleLoader supplies the application-built shared DSL PCH when no
-        // explicit override is requested. The production catalog explicitly
-        // declares its default package roots before module configuration; make
-        // that setup equally explicit in direct-loader tests.
+        // explicit override is requested. The production catalog declares the
+        // built-in package's provenance and artifact owner before module
+        // configuration; make that setup equally explicit in direct-loader tests.
         iv::ModuleLoader loader(
             repo_root(),
-            std::move(extra_roots),
             {},
             {});
         load_test_default_package_catalog(loader);

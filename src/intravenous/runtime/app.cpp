@@ -337,7 +337,7 @@ int run_server_mode(int argc, char** argv)
     PackageWatcherService package_watcher_service(
         package_watcher,
         startup.workspace_root,
-        startup.search_roots);
+        startup.package_roots);
 
     std::function<void()> shutdown = [&] {
         package_watcher_service.request_shutdown();

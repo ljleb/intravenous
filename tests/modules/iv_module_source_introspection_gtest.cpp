@@ -56,11 +56,11 @@ struct InitializedIvModuleSourceIntrospectionApp {
     InitializedIvModuleSourceIntrospectionApp(
         std::filesystem::path workspace_root,
         std::filesystem::path discovery_start,
-        std::vector<std::filesystem::path> extra_search_roots)
+        std::vector<std::filesystem::path> extra_common_package_roots)
         : startup_config(
               std::move(workspace_root),
               std::move(discovery_start),
-              std::move(extra_search_roots)),
+              std::move(extra_common_package_roots)),
           node_definitions_project_graph_scope(definitions, project_graph),
           project_graph_node_instances_scope(project_graph, instances),
           project_graph_graph_connections_scope(project_graph, graph_connections),
@@ -239,7 +239,7 @@ namespace {
 )");
 
     auto loader = iv::test::make_loader();
-    auto definition = loader.load_package_definitions(workspace).front();
+    auto definition = loader.load_project_package_definitions(workspace).front();
     ASSERT_NE(definition.configured_graph, nullptr);
 
     auto structural_state_nodes = 0u;
@@ -359,7 +359,7 @@ namespace {
 )");
 
     auto loader = iv::test::make_loader();
-    auto definitions = loader.load_package_definitions(workspace);
+    auto definitions = loader.load_project_package_definitions(workspace);
     auto const definition = std::ranges::find_if(definitions, [](auto const& candidate) {
         return candidate.module_id == "iv.test.source_provenance.main";
     });

@@ -39,6 +39,7 @@ struct PackageLeafDefinition {
 struct PackageRevision {
     std::string package_id{};
     std::filesystem::path package_root{};
+    PackageProvenance provenance = PackageProvenance::project_local;
     std::uint64_t revision = 0;
     // Exact finalized O0 LLVM and native link dependencies for this accepted
     // package generation. Whole-project compilation consumes these directly
@@ -60,6 +61,7 @@ struct PackageRevision {
 struct PackageJitFailure {
     std::string package_id{};
     std::filesystem::path package_root{};
+    PackageProvenance provenance = PackageProvenance::project_local;
     std::string message{};
 };
 

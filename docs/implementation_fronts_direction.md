@@ -2191,8 +2191,8 @@ and [Project File Serialization Direction](./project_file_serialization_directio
 **Primary ownership:** the durable desired project graph and transport-neutral mutation
 surface.
 
-**Implementation status (2026-11-02): implementation complete; build and test
-verification pending.** `ProjectPersistence` now
+**Implementation status (2026-11-02): complete and verified.** The collaborator's
+full suite passed all 697 tests. `ProjectPersistence` now
 normalizes all project node and connection commands before one
 `ProjectReplaceGraphRequest`. Structured matcher paths, port/channel selectors,
 sample channel types, and event types round-trip through project files and the
@@ -2226,6 +2226,19 @@ restricted parser lands.
 
 **Primary ownership:** artifact ownership across built-in, common, and project-local
 packages.
+
+**Implementation status (2026-11-02): implementation complete; collaborator build
+and test verification pending.** `PackageProvenance` now travels from
+`PackageDiscoveryRoot` through `IvPackageDeclaration`, `PackageBuildRequest`,
+`PackageRevision`, `PackageDefinitions`, JSON-RPC, and the VS Code module view.
+Overlapping roots emit one declaration with explicit ownership. CMake prebuilds the
+staged built-in package into `IV_BUILTIN_PACKAGE_ARTIFACT_ROOT`; common packages use
+the shared global cache; project-local packages use the containing project's
+`build/iv`. Artifact signatures include package content and the relevant ABI,
+toolchain, target, host-library, PCH, plugin, finalizer, JUCE, and package-build
+template inputs.
+See [Package Pipeline Application Architecture](./package_pipeline_architecture.md)
+for the exact records, configuration keys, and paths.
 
 This front owns:
 

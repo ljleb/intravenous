@@ -192,6 +192,9 @@ set(IV_BUILTIN_PACKAGE_SOURCE_ROOT
     "${CMAKE_CURRENT_SOURCE_DIR}/builtin_packages")
 set(IV_BUILTIN_PACKAGE_SEARCH_ROOT
     "${CMAKE_CURRENT_BINARY_DIR}/builtin_packages")
+set(IV_BUILTIN_PACKAGE_ARTIFACT_ROOT
+    "${CMAKE_CURRENT_BINARY_DIR}/builtin_package_artifacts"
+    CACHE INTERNAL "Executable-owned built-in IV package artifacts")
 set(_iv_builtin_package_manifest
     "${IV_BUILTIN_PACKAGE_SEARCH_ROOT}/builtin/iv_package.json")
 set(_iv_builtin_package_entry
@@ -539,7 +542,6 @@ target_include_directories(intravenous SYSTEM PRIVATE
 )
 
 iv_add_host_runtime_objects(intravenous)
-add_dependencies(intravenous intravenous_builtin_package_assets)
 add_dependencies(intravenous intravenous_dsl_pch)
 
 file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}")
@@ -552,8 +554,8 @@ cmake_generator=${CMAKE_GENERATOR}
 make_program=${CMAKE_MAKE_PROGRAM}
 juce_dir=${JUCE_DIR}
 iv_package_pch=${IV_DSL_PCH}
-# Shipped package roots use the ordinary installation search-root protocol.
-iv_package_search_root=${IV_BUILTIN_PACKAGE_SEARCH_ROOT}
+iv_builtin_package_root=${IV_BUILTIN_PACKAGE_SEARCH_ROOT}
+iv_builtin_package_artifact_root=${IV_BUILTIN_PACKAGE_ARTIFACT_ROOT}
 sample_rate=48000
 block_size=256
 ")

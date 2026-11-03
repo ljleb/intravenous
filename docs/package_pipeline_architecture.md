@@ -51,7 +51,7 @@ build results to `PackageWatcher` over the existing request/response edge is
 simpler and safer than introducing a separate coordinator and then routing watch
 updates back into the watcher.
 
-## Package roots and build-artifact ownership (planned)
+## Package roots and build-artifact ownership
 
 Package discovery has three distinct source scopes for a project. A package is
 identified by its own `iv_package.json`; an IV project is rooted at its
@@ -100,15 +100,66 @@ packages retain project-owned build workspaces. Neither kind of package needs a
 second implementation of `PackageJit`, and reusing package LLVM does not imply
 reusing a project's configured graph or `GraphJit`-compiled generation.
 
-**Current implementation boundary:** CMake stages the built-in manifest and
-entry source under its binary tree and exposes that directory through
-`iv_package_search_root`. `ModuleLoader` currently treats all configured extra
-search roots as global and places their build workspaces under
-`IV_GLOBAL_MODULE_CACHE` (or its platform default); project-local workspaces
-use `<project>/build/iv/`. Dedicated executable-owned built-in artifacts,
-explicit three-scope provenance, and build/install-time prebuilding are future
-package-pipeline work. This section does not change the current loader or the
-ongoing `GraphJit` implementation plan.
+### Implemented provenance and artifact routing
+
+`PackageProvenance` has the exact values `built_in`, `common`, and
+`project_local`. `StartupConfigState::package_roots` stores
+`PackageDiscoveryRoot` records. Each record contains the source root, its
+provenance, and an optional artifact root. Built-in discovery roots require an
+artifact root. The installation defaults use these keys:
+
+- `iv_builtin_package_root` for each built-in source root;
+- `iv_builtin_package_artifact_root` for the executable-owned artifact root; and
+- `iv_common_package_root` for each common source root.
+
+`discover_iv_package_declarations()` returns complete `IvPackageDeclaration`
+records. If the same normalized package directory appears through overlapping
+roots, it emits one declaration. Explicit ownership wins in this order:
+`built_in`, then `common`, then `project_local`. Two roots with the same
+provenance cannot assign different artifact roots to one package.
+
+`PackageWatcher` retains the complete declaration. A provenance or artifact-root
+change is therefore an updated declaration and a rebuild cause. `PackageJit`
+converts each declaration to a `PackageBuildRequest`; it does not ask
+`ModuleLoader` to infer ownership from the source path. `PackageRevision`,
+`PackageJitFailure`, `IvPackageInfo`, JSON-RPC package results, and the VS Code
+module view retain the same provenance. When `NodeInstances` retains a required
+definition by package root, `PackageWatcher` enriches that retained requirement
+with the matching discovered declaration. Removing an overlapping discovery root
+therefore cannot silently reclassify a still-required built-in or common package
+as project-local.
+
+`ModuleLoader` routes artifacts as follows:
+
+| Provenance | Artifact root |
+| --- | --- |
+| `built_in` | The explicit executable-owned `artifact_root`; omission is an error |
+| `common` | `IV_GLOBAL_MODULE_CACHE`, or its platform default |
+| `project_local` | The containing IV project's `build/iv/` directory |
+
+CMake stages the built-in package under
+`<cmake-build>/src/intravenous/builtin_packages/` and the
+`intravenous_builtin_package_artifacts` target invokes `iv_package_prebuild` to
+compile it under
+`<cmake-build>/src/intravenous/builtin_package_artifacts/`. The server and test
+targets depend on that prebuild target. Runtime package loading reuses the same
+artifact and still creates the process-owned package revision and ORC state.
+For a distribution directory, `generate_intravenous_defaults.sh` emits the same
+explicit source and artifact roots when the corresponding directories are next
+to the executable.
+
+The disk artifact signature includes the package ABI, build configuration,
+target triple, pointer size and endianness, compiler/CMake/generator inputs,
+JUCE configuration, DSL PCH, finalizer, source-introspection plugin, builder
+library, package-build template content, the explicit package ABI inputs,
+package source content, manifest, and custom package CMake content. The DSL PCH
+owns repository-header invalidation, so one package request does not reread the
+complete Intravenous header tree. Package source content, rather than only its
+latest timestamp, selects the artifact name. An unchanged signature is a disk
+cache hit and skips C++ compilation and finalization.
+
+The superseded path-derived implementation boundary is retained in
+[Front 11 Pre-Implementation Checkpoint](./historical/front_11_pre_implementation_checkpoint_2026-11-02.md).
 
 ## `PackageWatcher`
 

@@ -17,15 +17,6 @@
 
 namespace iv {
 namespace {
-bool is_within(std::filesystem::path const& candidate, std::filesystem::path const& root)
-{
-    auto const relative = candidate.lexically_relative(root);
-    if (relative.empty()) return false;
-    return std::ranges::none_of(relative, [](auto const& component) {
-        return component == std::filesystem::path{".."};
-    });
-}
-
 bool valid_package_name(std::string const& name)
 {
     if (name.empty() || name == "." || name == "..") return false;
@@ -113,16 +104,17 @@ PackageDefinitions::PackageDefinitions(std::filesystem::path project_root)
 
 IvPackageInfo& PackageDefinitions::ensure_package_locked(
     std::string const& package_id,
-    std::filesystem::path const& package_root)
+    std::filesystem::path const& package_root,
+    PackageProvenance provenance)
 {
     auto [it, inserted] = packages_by_id_.try_emplace(package_id, IvPackageInfo{
         .package_id = package_id,
         .package_root = package_root,
-        .project_local = !package_root.empty() && is_within(package_root, project_root_),
+        .provenance = provenance,
     });
     if (!inserted && !package_root.empty()) {
         it->second.package_root = package_root;
-        it->second.project_local = is_within(package_root, project_root_);
+        it->second.provenance = provenance;
     }
     return it->second;
 }
@@ -182,13 +174,17 @@ void PackageDefinitions::handle_package_refresh(
         std::scoped_lock lock(mutex_);
         for (auto const& declaration : transaction.declarations.created) {
             auto& package = ensure_package_locked(
-                declaration.package_id, declaration.package_root);
+                declaration.package_id,
+                declaration.package_root,
+                declaration.provenance);
             package.build_state = PackageBuildState::queued;
             package.build_message.clear();
         }
         for (auto const& declaration : transaction.declarations.updated) {
             auto& package = ensure_package_locked(
-                declaration.package_id, declaration.package_root);
+                declaration.package_id,
+                declaration.package_root,
+                declaration.provenance);
             package.build_state = PackageBuildState::queued;
             package.build_message.clear();
         }
@@ -201,13 +197,19 @@ void PackageDefinitions::handle_package_refresh(
         for (auto const& revision : transaction.successful_revisions) {
             auto accepted = std::make_shared<PackageRevision const>(revision);
             accepted_revisions_by_package_id_.insert_or_assign(revision.package_id, accepted);
-            auto& package = ensure_package_locked(revision.package_id, revision.package_root);
+            auto& package = ensure_package_locked(
+                revision.package_id,
+                revision.package_root,
+                revision.provenance);
             package.build_state = PackageBuildState::built;
             package.build_message.clear();
             accepted_changed = true;
         }
         for (auto const& failure : transaction.failed_builds) {
-            auto& package = ensure_package_locked(failure.package_id, failure.package_root);
+            auto& package = ensure_package_locked(
+                failure.package_id,
+                failure.package_root,
+                failure.provenance);
             package.build_state = PackageBuildState::failed;
             package.build_message = failure.message;
         }
@@ -290,7 +292,7 @@ IvPackageInfo PackageDefinitions::create_project_package(std::string const& name
     return IvPackageInfo{
         .package_id = normalized_root.generic_string(),
         .package_root = normalized_root,
-        .project_local = true,
+        .provenance = PackageProvenance::project_local,
     };
 }
 } // namespace iv

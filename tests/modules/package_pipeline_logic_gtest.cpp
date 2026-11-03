@@ -64,11 +64,16 @@ struct PipelineLogicHarness {
     }
 };
 
-std::pair<std::string, std::filesystem::path> declaration(
+iv::IvPackageDeclaration declaration(
     std::string package_id,
-    std::filesystem::path package_root)
+    std::filesystem::path package_root,
+    iv::PackageProvenance provenance = iv::PackageProvenance::project_local)
 {
-    return {std::move(package_id), std::filesystem::weakly_canonical(package_root)};
+    return iv::IvPackageDeclaration{
+        .package_id = std::move(package_id),
+        .package_root = std::filesystem::weakly_canonical(package_root),
+        .provenance = provenance,
+    };
 }
 
 iv::PackageModuleDefinition module_definition(
@@ -91,6 +96,7 @@ iv::PackageRevision revision_with_module(
     return iv::PackageRevision{
         .package_id = declaration.package_id,
         .package_root = declaration.package_root,
+        .provenance = declaration.provenance,
         .revision = revision,
         .module_definitions = {
             module_definition(declaration, std::move(definition_id)),

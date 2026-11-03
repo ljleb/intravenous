@@ -504,7 +504,7 @@ void run(Options const& options)
     {
         std::vector<std::string> loader_log;
         iv::ModuleLoader loader(
-            std::filesystem::current_path(), {},
+            std::filesystem::current_path(),
             iv::ModuleLoaderToolchainConfig{
                 .c_compiler = options.c_compiler,
                 .cxx_compiler = options.cxx_compiler,
@@ -514,7 +514,7 @@ void run(Options const& options)
             [&](std::string const& entry) { loader_log.push_back(entry); });
 
         auto const cold_start = Clock::now();
-        (void)loader.compile_package(module);
+        (void)loader.compile_project_package(module);
         auto const cold_elapsed = Clock::now() - cold_start;
         auto const ninja_log = find_ninja_log(options.workspace);
         auto const cold_log = read(ninja_log);
@@ -541,7 +541,7 @@ void run(Options const& options)
         write(hot_source, source);
         loader_log.clear();
         auto const hot_start = Clock::now();
-        (void)loader.compile_package(module);
+        (void)loader.compile_project_package(module);
         auto const hot_elapsed = Clock::now() - hot_start;
         auto const hot_log = read(ninja_log);
         auto const hot_finalizer_timings = finalizer_timings(

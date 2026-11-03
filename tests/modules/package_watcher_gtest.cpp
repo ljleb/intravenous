@@ -23,6 +23,7 @@
 #include <ranges>
 #include <optional>
 #include <string>
+#include <stdexcept>
 #include <utility>
 #include <vector>
 
@@ -175,11 +176,16 @@ struct WatcherHarness {
     }
 };
 
-std::pair<std::string, std::filesystem::path> declaration(
+iv::IvPackageDeclaration declaration(
     std::string package_id,
-    std::filesystem::path package_root)
+    std::filesystem::path package_root,
+    iv::PackageProvenance provenance = iv::PackageProvenance::project_local)
 {
-    return {std::move(package_id), std::filesystem::weakly_canonical(package_root)};
+    return iv::IvPackageDeclaration{
+        .package_id = std::move(package_id),
+        .package_root = std::filesystem::weakly_canonical(package_root),
+        .provenance = provenance,
+    };
 }
 
 iv::PackageRevision revision_for(
@@ -190,6 +196,7 @@ iv::PackageRevision revision_for(
     return iv::PackageRevision{
         .package_id = declaration.package_id,
         .package_root = declaration.package_root,
+        .provenance = declaration.provenance,
         .revision = revision,
         .dependencies = std::move(dependencies),
     };
@@ -373,7 +380,7 @@ TEST(PackageDiscoveryWatcher, QueueOverflowForcesConservativeReconciliationAndRe
     auto const discovered = iv::discover_iv_package_declarations(root, {});
     auto const canonical_package_root = std::filesystem::weakly_canonical(package_root);
     ASSERT_EQ(discovered.size(), 1u);
-    EXPECT_EQ(discovered.front().second, canonical_package_root);
+    EXPECT_EQ(discovered.front().package_root, canonical_package_root);
 
     // Recovery must also re-arm future observation below the subtree whose
     // creation events were dropped, not merely reconstruct this one snapshot.
@@ -430,7 +437,7 @@ TEST(PackageDiscoveryWatcher, RepeatedRootMoveAndRecreationDoesNotLoseCoverage)
         auto const discovered = iv::discover_iv_package_declarations(root, {});
         ASSERT_EQ(discovered.size(), 1u);
         EXPECT_EQ(
-            discovered.front().second,
+            discovered.front().package_root,
             std::filesystem::weakly_canonical(package_root));
 
         if (wait_until_readable(watcher.native_handle(), 0)) {
@@ -614,6 +621,51 @@ TEST(PackageWatcher, MovingPackageRootEvictsOldRootAndPublishesOneUpdatedDeclara
     EXPECT_TRUE(transaction.declarations.deleted_package_ids.empty());
 }
 
+TEST(PackageWatcher, ProvenanceChangeRebuildsAndPublishesAnUpdatedDeclaration)
+{
+    auto const root = iv::test_support::fresh_module_fixture_workspace(
+        "package_watcher_provenance_change");
+    auto const artifact_root = root.parent_path() / "owned-artifacts";
+    std::string const package_id = "iv.test.provenance";
+
+    WatcherHarness harness;
+    harness.jit.respond = [](iv::PackageJitBatchRequest& request) {
+        for (auto const& item : request.declarations) {
+            request.result.revisions.push_back(revision_for(item));
+        }
+    };
+
+    harness.watcher.synchronize_discovered_packages({
+        declaration(package_id, root, iv::PackageProvenance::project_local),
+    });
+    ASSERT_TRUE(harness.refresh());
+    harness.jit.calls.clear();
+    harness.definitions.transactions.clear();
+
+    auto built_in = declaration(package_id, root, iv::PackageProvenance::built_in);
+    built_in.artifact_root = artifact_root;
+    harness.watcher.synchronize_discovered_packages({built_in});
+    ASSERT_TRUE(harness.refresh());
+
+    ASSERT_EQ(harness.jit.calls.size(), 1u);
+    auto const& call = harness.jit.calls.front();
+    ASSERT_EQ(call.declarations.size(), 1u);
+    EXPECT_EQ(call.declarations.front().provenance, iv::PackageProvenance::built_in);
+    EXPECT_EQ(
+        call.declarations.front().artifact_root,
+        std::optional<std::filesystem::path>(
+            std::filesystem::weakly_canonical(artifact_root)));
+    ASSERT_EQ(call.removed_package_roots.size(), 1u);
+    EXPECT_EQ(call.removed_package_roots.front(), std::filesystem::weakly_canonical(root));
+
+    ASSERT_EQ(harness.definitions.transactions.size(), 1u);
+    auto const& transaction = harness.definitions.transactions.front();
+    ASSERT_EQ(transaction.declarations.updated.size(), 1u);
+    EXPECT_EQ(
+        transaction.declarations.updated.front().provenance,
+        iv::PackageProvenance::built_in);
+}
+
 TEST(PackageWatcher, RemovalEvictsJitRootAndPublishesExactlyOneDeletionTransaction)
 {
     auto const root = iv::test_support::fresh_module_fixture_workspace(
@@ -700,6 +752,58 @@ TEST(PackageWatcher, RequiredDefinitionChangePublishesWorkAvailable)
     EXPECT_EQ(sink.calls, 1);
 }
 
+TEST(PackageWatcher, RequiredDefinitionRetainsDiscoveredArtifactOwnership)
+{
+    auto const root = iv::test_support::fresh_module_fixture_workspace(
+        "package_watcher_required_builtin");
+    auto const package_id = std::filesystem::weakly_canonical(root).generic_string();
+    auto const artifact_root = root.parent_path() / "builtin-artifacts";
+    auto built_in = declaration(
+        package_id, root, iv::PackageProvenance::built_in);
+    built_in.artifact_root = artifact_root;
+
+    WatcherHarness harness;
+    harness.jit.respond = [](iv::PackageJitBatchRequest& request) {
+        for (auto const& item : request.declarations) {
+            request.result.revisions.push_back(revision_for(item));
+        }
+    };
+    harness.watcher.handle_required_definitions_changed(
+        iv::IvModuleRequiredDefinitionsChanged{
+            .created = {iv::IvModuleRequiredDefinition{
+                .definition_id = "iv.test.required_builtin",
+                .package_root = root,
+            }},
+        });
+    harness.watcher.synchronize_discovered_packages({built_in});
+    harness.watcher.handle_required_definitions_changed(
+        iv::IvModuleRequiredDefinitionsChanged{
+            .updated = {iv::IvModuleRequiredDefinition{
+                .definition_id = "iv.test.required_builtin",
+                .package_root = root,
+            }},
+        });
+
+    ASSERT_TRUE(harness.refresh());
+    ASSERT_EQ(harness.jit.calls.size(), 1u);
+    ASSERT_EQ(harness.jit.calls.front().declarations.size(), 1u);
+    EXPECT_EQ(
+        harness.jit.calls.front().declarations.front().provenance,
+        iv::PackageProvenance::built_in);
+    EXPECT_EQ(
+        harness.jit.calls.front().declarations.front().artifact_root,
+        std::optional<std::filesystem::path>(
+            std::filesystem::weakly_canonical(artifact_root)));
+
+    harness.jit.calls.clear();
+    harness.definitions.transactions.clear();
+    harness.watcher.synchronize_discovered_packages({});
+    EXPECT_FALSE(harness.watcher.has_pending_refresh());
+    EXPECT_FALSE(harness.refresh());
+    EXPECT_TRUE(harness.jit.calls.empty());
+    EXPECT_TRUE(harness.definitions.transactions.empty());
+}
+
 TEST(PackageWatcher, ConflictingDeclarationSourcesThrowWithoutPoisoningFutureMerges)
 {
     auto const retained_root = iv::test_support::fresh_module_fixture_workspace(
@@ -761,11 +865,81 @@ TEST(PackageWatcher, DiscoveryIgnoresMalformedPackagesAndDeduplicatesOverlapping
         R"({"schema":2,"entry":"module.cpp"})");
     iv::test_support::write_text(ignored_build / "module.cpp", "// ignored\n");
 
-    auto const discovered = iv::discover_iv_package_declarations(root, {root, good});
+    auto const discovered = iv::discover_iv_package_declarations(root, {
+        iv::PackageDiscoveryRoot{
+            .root = root,
+            .provenance = iv::PackageProvenance::common,
+        },
+        iv::PackageDiscoveryRoot{
+            .root = good,
+            .provenance = iv::PackageProvenance::common,
+        },
+    });
     ASSERT_EQ(discovered.size(), 1u);
     auto const canonical_good = std::filesystem::weakly_canonical(good);
-    EXPECT_EQ(discovered.front().first, canonical_good.generic_string());
-    EXPECT_EQ(discovered.front().second, canonical_good);
+    EXPECT_EQ(discovered.front().package_id, canonical_good.generic_string());
+    EXPECT_EQ(discovered.front().package_root, canonical_good);
+    EXPECT_EQ(discovered.front().provenance, iv::PackageProvenance::common);
+}
+
+TEST(PackageWatcher, OverlappingDiscoveryRootsUseHighestPriorityOwnershipOnce)
+{
+    auto const project = iv::test_support::fresh_module_fixture_workspace(
+        "package_discovery_provenance_priority");
+    auto const package = project / "modules" / "voice";
+    auto const artifact_root = project / "executable-artifacts";
+    std::filesystem::create_directories(package);
+    iv::test_support::write_text(
+        package / "iv_package.json",
+        R"({"schema":2,"entry":"module.cpp"})");
+    iv::test_support::write_text(package / "module.cpp", "// valid\n");
+
+    auto const discovered = iv::discover_iv_package_declarations(project, {
+        iv::PackageDiscoveryRoot{
+            .root = project,
+            .provenance = iv::PackageProvenance::common,
+        },
+        iv::PackageDiscoveryRoot{
+            .root = package,
+            .provenance = iv::PackageProvenance::built_in,
+            .artifact_root = artifact_root,
+        },
+    });
+
+    ASSERT_EQ(discovered.size(), 1u);
+    EXPECT_EQ(discovered.front().package_root, std::filesystem::weakly_canonical(package));
+    EXPECT_EQ(discovered.front().provenance, iv::PackageProvenance::built_in);
+    EXPECT_EQ(
+        discovered.front().artifact_root,
+        std::optional<std::filesystem::path>(
+            std::filesystem::weakly_canonical(artifact_root)));
+}
+
+TEST(PackageWatcher, EqualPriorityOverlapsRejectConflictingArtifactOwners)
+{
+    auto const project = iv::test_support::fresh_module_fixture_workspace(
+        "package_discovery_conflicting_artifact_owners");
+    auto const package = project / "modules" / "voice";
+    std::filesystem::create_directories(package);
+    iv::test_support::write_text(
+        package / "iv_package.json",
+        R"({"schema":2,"entry":"module.cpp"})");
+    iv::test_support::write_text(package / "module.cpp", "// valid\n");
+
+    EXPECT_THROW(
+        static_cast<void>(iv::discover_iv_package_declarations(project, {
+            iv::PackageDiscoveryRoot{
+                .root = package,
+                .provenance = iv::PackageProvenance::built_in,
+                .artifact_root = project / "first-artifact-owner",
+            },
+            iv::PackageDiscoveryRoot{
+                .root = package,
+                .provenance = iv::PackageProvenance::built_in,
+                .artifact_root = project / "second-artifact-owner",
+            },
+        })),
+        std::runtime_error);
 }
 
 TEST(PackageWatcher, SuccessfulBuildDependencySetCanDirtyPackageWithoutSourceChange)

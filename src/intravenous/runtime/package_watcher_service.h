@@ -1,7 +1,9 @@
 #pragma once
 
 #include <intravenous/linux_file_descriptor.h>
+#include <intravenous/module/package_provenance.h>
 #include <intravenous/runtime/package_discovery_watcher.h>
+#include <intravenous/runtime/node_definition_types.h>
 #include <intravenous/runtime/package_pipeline_events.h>
 
 #include <filesystem>
@@ -24,12 +26,11 @@ class PackageWatcher;
 class PackageWatcherService {
     PackageWatcher* watcher_ = nullptr;
     std::filesystem::path project_root_;
-    std::vector<std::filesystem::path> shared_roots_;
+    std::vector<PackageDiscoveryRoot> package_roots_;
     PackageDiscoveryWatcher discovery_watcher_;
     EventSignal work_signal_{"package watcher work"};
     EventSignal shutdown_signal_{"package watcher shutdown"};
-    std::optional<std::vector<std::pair<std::string, std::filesystem::path>>>
-        last_package_declarations_;
+    std::optional<std::vector<IvPackageDeclaration>> last_package_declarations_;
     std::optional<std::string> last_discovery_error_;
     std::optional<std::string> last_service_error_;
     std::optional<std::jthread> worker_{};
@@ -43,7 +44,7 @@ public:
     PackageWatcherService(
         PackageWatcher& watcher,
         std::filesystem::path project_root,
-        std::vector<std::filesystem::path> shared_roots);
+        std::vector<PackageDiscoveryRoot> package_roots);
     ~PackageWatcherService();
 
     PackageWatcherService(PackageWatcherService const&) = delete;

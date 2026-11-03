@@ -5,6 +5,7 @@
 #include <intravenous/module/dependency.h>
 #include <intravenous/module/package_compiler_artifact.h>
 #include <intravenous/module/package_definitions.h>
+#include <intravenous/module/package_provenance.h>
 #include <intravenous/module/builder_session.h>
 #include <intravenous/node/compiler_record.h>
 
@@ -109,7 +110,6 @@ namespace iv {
 
         explicit ModuleLoader(
             std::filesystem::path discovery_start = std::filesystem::current_path(),
-            std::vector<std::filesystem::path> extra_search_roots = {},
             ModuleLoaderToolchainConfig toolchain = ModuleLoaderToolchainConfig(),
             LogSink log_sink = {}
         );
@@ -126,15 +126,19 @@ namespace iv {
         // to establish a fresh multi-package candidate set, including every
         // provider that is not already active.
         LoadedPackage load_package(
+            PackageBuildRequest const& package
+        ) const;
+
+        LoadedPackage load_project_package(
             std::filesystem::path const& package_path
         ) const;
 
-        // Compiles only `package_paths`, then configures each successful
+        // Compiles only `packages`, then configures each successful
         // candidate against that batch and the last valid revisions of all
         // other packages. It deliberately does not scan and rebuild every
         // package discoverable from the project directory.
         std::vector<PackageLoadResult> load_packages(
-            std::vector<std::filesystem::path> const& package_paths
+            std::vector<PackageBuildRequest> const& packages
         ) const;
 
         // Removes a package from the active definition/configuration set after
@@ -143,11 +147,19 @@ namespace iv {
         void remove_package(std::filesystem::path const& package_path) const;
 
         std::vector<LoadedDefinition> load_package_definitions(
+            PackageBuildRequest const& package
+        ) const;
+
+        std::vector<LoadedDefinition> load_project_package_definitions(
             std::filesystem::path const& package_path
         ) const;
 
         // Builds finalized O0 LLVM for the IV package without adding it to the shared ORC JIT.
         std::filesystem::path compile_package(
+            PackageBuildRequest const& package
+        ) const;
+
+        std::filesystem::path compile_project_package(
             std::filesystem::path const& package_path
         ) const;
 
@@ -155,6 +167,5 @@ namespace iv {
         // replacing the shared ORC instance or invalidating loaded package code.
         void set_toolchain_config(ModuleLoaderToolchainConfig toolchain);
 
-        std::vector<std::filesystem::path> const& extra_search_roots() const;
     };
 }

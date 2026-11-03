@@ -426,6 +426,36 @@ TEST(SocketRpcCreateNodeInstanceResultBuilder, SerializesCreatedInstanceId)
     EXPECT_EQ(response["result"]["instanceId"], "instance:7");
 }
 
+TEST(SocketRpcIvPackageDefinitionsResultBuilder, SerializesPackageProvenance)
+{
+    iv::SocketRpcIvPackageDefinitionsResultBuilder builder;
+    builder.succeed({
+        iv::IvPackageInfo{
+            .package_id = "iv.builtin",
+            .package_root = "/tmp/builtin",
+            .provenance = iv::PackageProvenance::built_in,
+        },
+        iv::IvPackageInfo{
+            .package_id = "iv.common",
+            .package_root = "/tmp/common",
+            .provenance = iv::PackageProvenance::common,
+        },
+        iv::IvPackageInfo{
+            .package_id = "iv.project",
+            .package_root = "/tmp/project",
+            .provenance = iv::PackageProvenance::project_local,
+        },
+    });
+
+    auto const response = parse_json_line(builder.build(19));
+    auto const& packages = response["result"]["packages"];
+    ASSERT_EQ(packages.size(), 3u);
+    EXPECT_EQ(packages[0]["provenance"], "builtIn");
+    EXPECT_EQ(packages[1]["provenance"], "common");
+    EXPECT_EQ(packages[2]["provenance"], "projectLocal");
+    EXPECT_FALSE(packages[0].contains("projectLocal"));
+}
+
 TEST(SocketRpcAudioDevicesResultBuilder, SerializesSnapshot)
 {
     iv::SocketRpcAudioDevicesResultBuilder builder;

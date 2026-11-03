@@ -34,7 +34,7 @@ TEST(ModuleLoaderFailures, MissingManifestFails)
     auto missing_dir = runtime_root / "missing_entry";
     std::filesystem::create_directories(missing_dir);
     expect_failure_contains(
-        [&] { (void)loader.load_package_definitions(missing_dir); },
+        [&] { (void)loader.load_project_package_definitions(missing_dir); },
         "iv_package.json");
 }
 
@@ -57,7 +57,7 @@ TEST(ModuleLoaderPackages, CanonicalPackageManifestLoads)
         "IV_MODULE(\"iv.test.canonical_source.secondary\", module_secondary);\n");
 
     auto loader = iv::test::make_loader();
-    auto loaded = loader.load_package_definitions(runtime_root);
+    auto loaded = loader.load_project_package_definitions(runtime_root);
 
     ASSERT_EQ(loaded.size(), 2);
     auto const primary = std::ranges::find(
@@ -72,19 +72,68 @@ TEST(ModuleLoaderPackages, CanonicalPackageManifestLoads)
     EXPECT_NE(secondary->configured_graph, nullptr);
 }
 
-TEST(ModuleLoaderPackages, StagedBuiltinBuildStaysInsideCurrentCmakeBuildTree)
+TEST(ModuleLoaderPackages, BuiltinPackageUsesExecutableOwnedArtifactRoot)
 {
     // make_loader() loads the shipped package before loading project packages.
     // It must not make the source checkout's builtin directory a build owner.
     auto loader = iv::test::make_loader();
     auto const staged = iv::test::staged_builtin_package_root();
-    auto const artifact = loader.compile_package(staged);
-    auto const build_root = staged / "build/iv/build";
+    auto const artifact = loader.compile_package(iv::PackageBuildRequest{
+        .package_root = staged,
+        .provenance = iv::PackageProvenance::built_in,
+        .artifact_root = iv::test::builtin_package_artifact_root(),
+    });
+    auto const build_root = iv::test::builtin_package_artifact_root() / "build/builtin";
     auto const relative_artifact = artifact.lexically_relative(build_root);
 
     ASSERT_FALSE(relative_artifact.empty());
     EXPECT_NE(*relative_artifact.begin(), std::filesystem::path{".."});
     EXPECT_TRUE(std::filesystem::is_regular_file(artifact));
+}
+
+TEST(ModuleLoaderFailures, BuiltinPackageWithoutExecutableArtifactRootFails)
+{
+    iv::ModuleLoader loader(iv::test::repo_root());
+    EXPECT_THROW(
+        static_cast<void>(loader.compile_package(iv::PackageBuildRequest{
+            .package_root = iv::test::staged_builtin_package_root(),
+            .provenance = iv::PackageProvenance::built_in,
+        })),
+        std::runtime_error);
+}
+
+TEST(ModuleLoaderPackages, CommonPackageUsesSharedCacheInsteadOfProjectBuildTree)
+{
+    auto const package_root = iv::test_support::make_inline_module_workspace(
+        "module_loader_common_artifact_owner",
+        R"cpp(
+#include <intravenous/dsl.h>
+void common_artifact_owner(iv::GraphBuilder& g) { g.outputs(); }
+)cpp");
+    auto const common_cache = package_root.parent_path() / "common-cache";
+    iv::test_support::ScopedEnvVar cache_env(
+        "IV_GLOBAL_MODULE_CACHE", common_cache.string());
+    iv::ModuleLoader loader(iv::test::repo_root());
+
+    auto const request = iv::PackageBuildRequest{
+        .package_root = package_root,
+        .provenance = iv::PackageProvenance::common,
+    };
+    auto const artifact = loader.compile_package(request);
+
+    auto const relative_artifact = artifact.lexically_relative(common_cache);
+    ASSERT_FALSE(relative_artifact.empty());
+    EXPECT_NE(*relative_artifact.begin(), std::filesystem::path{".."});
+    EXPECT_FALSE(std::filesystem::exists(package_root / "build/iv"));
+
+    auto const source_path = package_root / "module.cpp";
+    auto const original_stamp = std::filesystem::last_write_time(source_path);
+    iv::test_support::write_text(
+        source_path,
+        iv::test_support::read_text(source_path) + "\n// changed without a timestamp change\n");
+    std::filesystem::last_write_time(source_path, original_stamp);
+    auto const changed_artifact = loader.compile_package(request);
+    EXPECT_NE(changed_artifact, artifact);
 }
 
 TEST(ModuleLoaderPackages, ScalarSourceOutputResolvesShippedBuiltinConstant)
@@ -107,7 +156,7 @@ TEST(ModuleLoaderPackages, ScalarSourceOutputResolvesShippedBuiltinConstant)
         "IV_MODULE(\"iv.test.scalar_output\", scalar_output);\n");
 
     auto loader = iv::test::make_loader();
-    auto loaded = loader.load_package_definitions(package_root);
+    auto loaded = loader.load_project_package_definitions(package_root);
     ASSERT_EQ(loaded.size(), 1u);
     EXPECT_EQ(loaded.front().module_id, "iv.test.scalar_output");
     EXPECT_NE(loaded.front().configured_graph, nullptr);
@@ -135,7 +184,7 @@ TEST(ModuleLoaderPackages, BuiltinNodeShortIdCanConstructATiledRegisteredNode)
         "IV_MODULE(\"iv.test.builtin_oscillator\", builtin_oscillator);\n");
 
     auto loader = iv::test::make_loader();
-    auto loaded = loader.load_package_definitions(package_root);
+    auto loaded = loader.load_project_package_definitions(package_root);
 
     ASSERT_EQ(loaded.size(), 1u);
     EXPECT_EQ(loaded.front().module_id, "iv.test.builtin_oscillator");
@@ -172,7 +221,7 @@ TEST(ModuleLoaderPackages, ExactShortRegistrationOverridesBuiltinConvenienceAlia
         "IV_MODULE(\"iv.test.local_short_name_consumer\", local_short_name_consumer);\n");
 
     auto loader = iv::test::make_loader();
-    auto loaded = loader.load_package_definitions(package_root);
+    auto loaded = loader.load_project_package_definitions(package_root);
 
     // The shipped saw oscillator does not accept this construction argument.
     // Reaching a valid root proves the exact local ID won before the bare-ID
@@ -213,7 +262,7 @@ TEST(ModuleLoaderPackages, RegisteredModuleCanConstructATiledMonoInterface)
         "IV_MODULE(\"iv.test.tiled_stereo_voice\", stereo_voice);\n");
 
     auto loader = iv::test::make_loader();
-    auto loaded = loader.load_package_definitions(package_root);
+    auto loaded = loader.load_project_package_definitions(package_root);
 
     ASSERT_EQ(loaded.size(), 2u);
     auto const stereo = std::ranges::find(
@@ -259,7 +308,7 @@ TEST(ModuleLoaderFailures, TiledRegisteredModuleRequiresMonoSampleInterface)
 
     auto loader = iv::test::make_loader();
     expect_failure_contains(
-        [&] { (void)loader.load_package_definitions(package_root); },
+        [&] { (void)loader.load_project_package_definitions(package_root); },
         "tiled IV module members must expose only mono sample inputs");
 }
 
@@ -289,7 +338,7 @@ TEST(ModuleLoaderFailures, TiledRegisteredModuleRequiresMonoSampleOutputs)
 
     auto loader = iv::test::make_loader();
     expect_failure_contains(
-        [&] { (void)loader.load_package_definitions(package_root); },
+        [&] { (void)loader.load_project_package_definitions(package_root); },
         "tiled IV module members must expose only mono sample outputs");
 }
 
@@ -323,7 +372,7 @@ TEST(ModuleLoaderPackages, RejectedTiledModuleLeavesNoPartialSubgraphs)
         "IV_MODULE(\"iv.test.catches_rejected_tile\", catches_rejected_tile);\n");
 
     auto loader = iv::test::make_loader();
-    auto loaded = loader.load_package_definitions(package_root);
+    auto loaded = loader.load_project_package_definitions(package_root);
     auto const fallback = std::ranges::find(
         loaded,
         "iv.test.catches_rejected_tile",
@@ -342,14 +391,13 @@ TEST(ModuleLoaderPackages, RejectedTiledModuleLeavesNoPartialSubgraphs)
 TEST(ModuleLoaderPackages, RootPackageDoesNotPublishOtherPackageDefinitions)
 {
     auto const fixtures = iv::test::test_modules_root();
-    auto loader = iv::test::make_loader(
-        {fixtures / "nested_loader_project", fixtures / "nested_loader_voice"});
+    auto loader = iv::test::make_loader();
 
     // Provider packages are independent compilation units. Make the active
     // package set explicit instead of relying on loader-wide source scanning.
-    ASSERT_NO_THROW((void)loader.load_package_definitions(
+    ASSERT_NO_THROW((void)loader.load_project_package_definitions(
         fixtures / "nested_loader_voice"));
-    auto loaded = loader.load_package_definitions(fixtures / "nested_loader_project");
+    auto loaded = loader.load_project_package_definitions(fixtures / "nested_loader_project");
 
     ASSERT_EQ(loaded.size(), 1u);
     EXPECT_EQ(loaded.front().module_id, "iv.test.nested_loader_project");
@@ -399,7 +447,16 @@ TEST(ModuleLoaderPackages, RegisteredPackageNodeIsResolvedFromLoadedPackageDefin
         "IV_MODULE(\"iv.test.registered_node_consumer\", registered_node_consumer);\n");
 
     auto loader = iv::test::make_loader();
-    auto batch = loader.load_packages({node_package, consumer_package});
+    auto batch = loader.load_packages({
+        iv::PackageBuildRequest{
+            .package_root = node_package,
+            .provenance = iv::PackageProvenance::project_local,
+        },
+        iv::PackageBuildRequest{
+            .package_root = consumer_package,
+            .provenance = iv::PackageProvenance::project_local,
+        },
+    });
     ASSERT_EQ(batch.size(), 2u);
     ASSERT_TRUE(batch[0]) << batch[0].error;
     ASSERT_TRUE(batch[1]) << batch[1].error;
@@ -432,7 +489,7 @@ TEST(ModuleLoaderPackages, RegisteredPackageNodeIsResolvedFromLoadedPackageDefin
     // silently bind to a package that discovery has removed.
     loader.remove_package(node_package);
     expect_failure_contains(
-        [&] { (void)loader.load_package_definitions(consumer_package); },
+        [&] { (void)loader.load_project_package_definitions(consumer_package); },
         "iv.test.registered_package_node");
 }
 
@@ -557,7 +614,7 @@ TEST(ModuleLoaderPackages, RegisteredNodeAndModuleUseProviderConstructionArgumen
         "default_configured_module_reference);\n");
 
     auto loader = iv::test::make_loader();
-    auto provider_definitions = loader.load_package_definitions(provider_package);
+    auto provider_definitions = loader.load_project_package_definitions(provider_package);
     auto const provider_definition = std::ranges::find(
         provider_definitions,
         "iv.test.configured_provider_module",
@@ -647,7 +704,7 @@ TEST(ModuleLoaderPackages, RegisteredNodeAndModuleUseProviderConstructionArgumen
             "interleaved", *framework_enum_signature);
         EXPECT_EQ(values.arguments().size(), 1u);
     });
-    auto loaded = loader.load_package_definitions(consumer_package);
+    auto loaded = loader.load_project_package_definitions(consumer_package);
 
     ASSERT_EQ(loaded.size(), 6u);
     EXPECT_NE(std::ranges::find(
@@ -679,7 +736,7 @@ TEST(ModuleLoaderPackages, RegisteredNodeAndModuleUseProviderConstructionArgumen
         &iv::ModuleLoader::LoadedDefinition::module_id),
         loaded.end());
 
-    auto provider_loaded = loader.load_package_definitions(provider_package);
+    auto provider_loaded = loader.load_project_package_definitions(provider_package);
     ASSERT_EQ(provider_loaded.size(), 4u);
     auto const required_provider = std::ranges::find(
         provider_loaded,
@@ -730,9 +787,9 @@ TEST(ModuleLoaderFailures, RegisteredConfigurationRejectsImplicitConversions)
         "IV_MODULE(\"iv.test.mismatched_configuration\", mismatched_configuration);\n");
 
     auto loader = iv::test::make_loader();
-    ASSERT_NO_THROW((void)loader.load_package_definitions(provider_package));
+    ASSERT_NO_THROW((void)loader.load_project_package_definitions(provider_package));
     expect_failure_contains(
-        [&] { (void)loader.load_package_definitions(consumer_package); },
+        [&] { (void)loader.load_project_package_definitions(consumer_package); },
         "registered-ID argument conversion is not supported");
 }
 
@@ -765,34 +822,34 @@ TEST(ModuleLoaderFailures, SamePackageNodeAndModuleCannotShareStableId)
     // while compiling the one package rather than survive as a later registry
     // conflict that depends on unrelated reload order.
     expect_failure_contains(
-        [&] { (void)loader.load_package_definitions(package_root); },
+        [&] { (void)loader.load_project_package_definitions(package_root); },
         "command failed");
 }
 
 TEST(ModuleLoaderFailures, SourceWithoutManifestFails)
 {
     auto const fixtures = iv::test::test_modules_root();
-    auto loader = iv::test::make_loader({fixtures / "missing_export"});
+    auto loader = iv::test::make_loader();
     expect_failure_contains(
-        [&] { (void)loader.load_package_definitions(fixtures / "missing_export"); },
+        [&] { (void)loader.load_project_package_definitions(fixtures / "missing_export"); },
         "iv_package.json");
 }
 
 TEST(ModuleLoaderFailures, BuildFailurePropagates)
 {
     auto const fixtures = iv::test::test_modules_root();
-    auto loader = iv::test::make_loader({fixtures / "build_failure"});
+    auto loader = iv::test::make_loader();
     expect_failure_contains(
-        [&] { (void)loader.load_package_definitions(fixtures / "build_failure"); },
+        [&] { (void)loader.load_project_package_definitions(fixtures / "build_failure"); },
         "command failed");
 }
 
 TEST(ModuleLoaderFailures, MissingDependencyFails)
 {
     auto const fixtures = iv::test::test_modules_root();
-    auto loader = iv::test::make_loader({fixtures / "missing_dependency"});
+    auto loader = iv::test::make_loader();
     expect_failure_contains(
-        [&] { (void)loader.load_package_definitions(fixtures / "missing_dependency"); },
+        [&] { (void)loader.load_project_package_definitions(fixtures / "missing_dependency"); },
         "is unavailable in the loaded package definitions");
 }
 
@@ -800,15 +857,10 @@ TEST(ModuleLoaderFailures, UnrelatedDuplicateDefinitionIdsDoNotBlockLoading)
 {
     auto const fixtures = iv::test::test_modules_root();
     auto const duplicates = iv::test::duplicate_modules_root();
-    auto loader = iv::test::make_loader({
-        fixtures / "nested_loader_project",
-        fixtures / "nested_loader_voice",
-        duplicates / "one",
-        duplicates / "two",
-    });
-    ASSERT_NO_THROW((void)loader.load_package_definitions(
+    auto loader = iv::test::make_loader();
+    ASSERT_NO_THROW((void)loader.load_project_package_definitions(
         fixtures / "nested_loader_voice"));
-    auto const definitions = loader.load_package_definitions(
+    auto const definitions = loader.load_project_package_definitions(
         fixtures / "nested_loader_project");
     EXPECT_EQ(definitions.size(), 1u);
     EXPECT_EQ(definitions.front().module_id, "iv.test.nested_loader_project");

@@ -1,8 +1,10 @@
 #pragma once
 
 #include <intravenous/module/loader.h>
+#include <intravenous/module/package_provenance.h>
 
 #include <filesystem>
+#include <optional>
 #include <vector>
 
 namespace iv {
@@ -13,9 +15,9 @@ namespace iv {
 
     struct ProjectConfig {
         std::filesystem::path workspace_root {};
-        // Installation-provided package roots. These are ordinary discovery
-        // roots: the package catalog decides what they provide.
-        std::vector<std::filesystem::path> default_package_roots {};
+        std::vector<std::filesystem::path> builtin_package_roots {};
+        std::optional<std::filesystem::path> builtin_package_artifact_root {};
+        std::vector<std::filesystem::path> common_package_roots {};
         ModuleLoaderToolchainConfig toolchain {};
         RuntimeExecutionConfig execution {};
         std::optional<std::string> output_device_id {std::optional<std::string>("default")};

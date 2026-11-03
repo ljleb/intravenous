@@ -15,10 +15,10 @@
 namespace iv {
 struct IvModuleRequiredDefinitionsChanged;
 
-[[nodiscard]] std::vector<std::pair<std::string, std::filesystem::path>>
+[[nodiscard]] std::vector<IvPackageDeclaration>
 discover_iv_package_declarations(
     std::filesystem::path const& project_root,
-    std::vector<std::filesystem::path> const& shared_roots);
+    std::vector<PackageDiscoveryRoot> const& package_roots);
 
 class PackageWatcher {
     mutable std::mutex mutex_;
@@ -54,7 +54,7 @@ public:
     void handle_required_definitions_changed(
         IvModuleRequiredDefinitionsChanged const& diff);
     void synchronize_discovered_packages(
-        std::vector<std::pair<std::string, std::filesystem::path>> declarations);
+        std::vector<IvPackageDeclaration> declarations);
     void poll_dependency_changes();
     [[nodiscard]] int dependency_watch_descriptor() const noexcept;
     [[nodiscard]] bool has_pending_refresh() const;

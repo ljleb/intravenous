@@ -69,6 +69,19 @@ std::string_view package_build_state_json(PackageBuildState state)
     return "queued";
 }
 
+std::string_view package_provenance_json(PackageProvenance provenance)
+{
+    switch (provenance) {
+    case PackageProvenance::built_in:
+        return "builtIn";
+    case PackageProvenance::common:
+        return "common";
+    case PackageProvenance::project_local:
+        return "projectLocal";
+    }
+    return "projectLocal";
+}
+
 } // namespace
 
 SocketRpcJson source_range_json(SourceRange const &range)
@@ -128,7 +141,7 @@ SocketRpcJson iv_package_json(IvPackageInfo const &package)
     return SocketRpcJson{
         {"packageId", package.package_id},
         {"packageRoot", package.package_root.generic_string()},
-        {"projectLocal", package.project_local},
+        {"provenance", package_provenance_json(package.provenance)},
         {"moduleIds", package.module_ids},
         {"nodeTypeIds", package.node_type_ids},
         {"buildState", package_build_state_json(package.build_state)},

@@ -242,15 +242,7 @@ TEST_F(NodeInstancesTest, PackageRegistryListsQueuedPackagesBeforeTheirFirstBuil
     iv::PackageDefinitions sources(workspace);
     auto package_definitions_scope =
         iv::package_definitions_node_definitions_bridge::bind(sources, definitions);
-    auto const discovered_declarations = iv::discover_iv_package_declarations(workspace, {});
-    std::vector<iv::IvPackageDeclaration> declarations;
-    declarations.reserve(discovered_declarations.size());
-    for (auto const& [package_id, package_root] : discovered_declarations) {
-        declarations.push_back(iv::IvPackageDeclaration{
-            .package_id = package_id,
-            .package_root = package_root,
-        });
-    }
+    auto declarations = iv::discover_iv_package_declarations(workspace, {});
     sources.handle_package_refresh(iv::PackageRefreshTransaction{
         .declarations = iv::IvPackageDeclarationsChanged{
             .created = std::move(declarations),
