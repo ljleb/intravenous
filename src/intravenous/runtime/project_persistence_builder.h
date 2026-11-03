@@ -1,6 +1,7 @@
 #pragma once
 
-#include <intravenous/runtime/iv_module_instance_types.h>
+#include <intravenous/runtime/project_connection_types.h>
+#include <intravenous/runtime/project_node_instance_types.h>
 #include <intravenous/runtime/startup_config.h>
 
 #include <filesystem>
@@ -24,7 +25,8 @@ class ProjectPersistenceBuilder {
     bool has_input_device_id_ = false;
     std::optional<std::string> output_device_id_{};
     std::optional<std::string> input_device_id_{};
-    std::vector<IvModuleInstanceInfo> iv_module_instances_{};
+    std::vector<ProjectNodeInstanceDeclaration> node_instances_{};
+    std::vector<ProjectConnection> graph_connections_{};
 
     [[nodiscard]] std::string relativize_path(std::filesystem::path const &path) const;
 
@@ -37,7 +39,8 @@ public:
     void add_project_audio_device_selection(
         std::optional<std::string> output_device_id,
         std::optional<std::string> input_device_id);
-    void add_iv_module_instances(std::vector<IvModuleInstanceInfo> instances);
+    void add_node_instances(std::vector<ProjectNodeInstanceDeclaration> instances);
+    void add_graph_connections(std::vector<ProjectConnection> connections);
 
     [[nodiscard]] std::vector<ProjectCommand> build() const;
 };

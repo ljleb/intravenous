@@ -1,6 +1,7 @@
 #pragma once
 
 #include <intravenous/runtime/runtime_project_api_types.h>
+#include <intravenous/runtime/project_connection_types.h>
 
 #include <filesystem>
 #include <optional>
@@ -21,25 +22,28 @@ struct GraphQueryActiveRegionsRequest { std::filesystem::path file_path{}; };
 struct GetVirtualNodeRequest { std::string node_id{}; };
 struct GetVirtualNodesRequest { std::vector<std::string> node_ids{}; };
 
-struct CreateIvModuleInstanceRequest {
-    std::string module_id{};
+struct CreateNodeInstanceRequest {
+    std::optional<std::string> instance_id{};
+    std::string definition_id{};
     std::optional<std::string> display_name{};
     std::string configuration_source{};
 };
 struct GetIvPackageDefinitionsRequest {};
 struct CreateIvPackageRequest { std::string name{}; };
-struct GetIvModuleInstancesRequest {
+struct GetNodeInstancesRequest {
     std::optional<std::filesystem::path> source_file_path {};
 };
-struct DeleteIvModuleInstanceRequest { std::string instance_id{}; };
-struct UpdateIvModuleInstance {
+struct DeleteNodeInstanceRequest { std::string instance_id{}; };
+struct UpdateNodeInstance {
     std::string instance_id{};
     std::optional<std::string> display_name{};
     std::optional<std::string> configuration_source{};
 };
-struct UpdateIvModuleInstancesRequest {
-    std::vector<UpdateIvModuleInstance> updates{};
+struct UpdateNodeInstancesRequest {
+    std::vector<UpdateNodeInstance> updates{};
 };
+struct UpsertGraphConnectionRequest { ProjectConnection connection{}; };
+struct DeleteGraphConnectionRequest { std::string connection_id{}; };
 
 struct GetAudioDevicesRequest {};
 struct SetAudioDevicesRequest {
@@ -58,12 +62,14 @@ using SocketRpcRequestPayload = std::variant<
     GraphQueryActiveRegionsRequest,
     GetVirtualNodeRequest,
     GetVirtualNodesRequest,
-    CreateIvModuleInstanceRequest,
+    CreateNodeInstanceRequest,
     GetIvPackageDefinitionsRequest,
     CreateIvPackageRequest,
-    GetIvModuleInstancesRequest,
-    DeleteIvModuleInstanceRequest,
-    UpdateIvModuleInstancesRequest,
+    GetNodeInstancesRequest,
+    DeleteNodeInstanceRequest,
+    UpdateNodeInstancesRequest,
+    UpsertGraphConnectionRequest,
+    DeleteGraphConnectionRequest,
     GetAudioDevicesRequest,
     SetAudioDevicesRequest,
     SaveProjectRequest,

@@ -1,5 +1,7 @@
 #include <intravenous/runtime/project_persistence_builder.h>
 
+#include <intravenous/runtime/project_connection_json.h>
+
 #include <algorithm>
 #include <ranges>
 
@@ -49,10 +51,16 @@ void ProjectPersistenceBuilder::add_project_audio_device_selection(
     input_device_id_ = std::move(input_device_id);
 }
 
-void ProjectPersistenceBuilder::add_iv_module_instances(
-    std::vector<IvModuleInstanceInfo> instances)
+void ProjectPersistenceBuilder::add_node_instances(
+    std::vector<ProjectNodeInstanceDeclaration> instances)
 {
-    iv_module_instances_ = std::move(instances);
+    node_instances_ = std::move(instances);
+}
+
+void ProjectPersistenceBuilder::add_graph_connections(
+    std::vector<ProjectConnection> connections)
+{
+    graph_connections_ = std::move(connections);
 }
 
 std::string ProjectPersistenceBuilder::relativize_path(
@@ -119,21 +127,33 @@ std::vector<ProjectCommand> ProjectPersistenceBuilder::build() const
         });
     }
 
-    auto instances = iv_module_instances_;
-    std::ranges::sort(instances, {}, &IvModuleInstanceInfo::instance_id);
+    auto instances = node_instances_;
+    std::ranges::sort(instances, {}, &ProjectNodeInstanceDeclaration::instance_id);
     for (auto const &instance : instances) {
-        auto const &display_name =
-            instance.display_name.empty() ? instance.definition_id : instance.display_name;
         commands.push_back(ProjectCommand{
-            .command = "ivModuleInstances.create",
+            .command = "nodeInstances.upsert",
             .args = Json{
                 {"instance_id", instance.instance_id},
-                {"module_id", instance.definition_id},
-                {"package_root", relativize_path(instance.package_root)},
-                {"display_name", display_name != instance.definition_id
-                    ? Json(display_name) : Json(nullptr)},
+                {"definition_id", instance.definition_id},
+                {"package_root", instance.package_root
+                        && !instance.package_root->empty()
+                    ? Json(relativize_path(*instance.package_root)) : Json(nullptr)},
+                {"display_name", instance.display_name
+                    ? Json(*instance.display_name) : Json(nullptr)},
                 {"configuration_source", instance.configuration_source},
             },
+        });
+    }
+
+    auto connections = graph_connections_;
+    std::ranges::sort(connections, {}, [](ProjectConnection const& connection) {
+        return project_connection_id(connection);
+    });
+    for (auto const& connection : connections) {
+        commands.push_back(ProjectCommand{
+            .command = "graphConnections.upsert",
+            .args = project_connection_json(
+                connection, ProjectConnectionJsonNames::project_file),
         });
     }
 

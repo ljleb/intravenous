@@ -3,6 +3,7 @@
 #include <intravenous/graph/builder/state.h>
 #include <intravenous/graph/configured_graph.hpp>
 #include <intravenous/runtime/project_node_path_resolver.h>
+#include <intravenous/runtime/project_persistence_builder.h>
 
 #include <algorithm>
 #include <cstddef>
@@ -335,15 +336,37 @@ void validate_matcher(ProjectNodePortMatcher const& matcher)
     }
 }
 
-void validate_connection(ProjectConnection const& connection)
+void validate_connection_impl(ProjectConnection const& connection)
 {
     std::visit([](auto const& value) {
+        using Connection = std::remove_cvref_t<decltype(value)>;
         if (value.connection_id.empty())
             throw std::invalid_argument("project connection id must not be empty");
         if (value.outputs.empty())
             throw std::invalid_argument("project connection requires at least one output matcher");
         if (value.inputs.empty())
             throw std::invalid_argument("project connection requires at least one input matcher");
+        if constexpr (std::same_as<Connection, ProjectSampleConnection>) {
+            if (!is_registered_channel_type(value.source_type)
+                || !is_registered_channel_type(value.target_type)) {
+                throw std::invalid_argument(
+                    "project sample connection uses an invalid channel type");
+            }
+        } else {
+            if (value.source_type >= EventTypeId::count
+                || value.target_type >= EventTypeId::count) {
+                throw std::invalid_argument(
+                    "project event connection uses an invalid event type");
+            }
+            auto const has_channel_selector = [](auto const& matcher) {
+                return matcher.port.channel.has_value();
+            };
+            if (std::ranges::any_of(value.outputs, has_channel_selector)
+                || std::ranges::any_of(value.inputs, has_channel_selector)) {
+                throw std::invalid_argument(
+                    "project event connection cannot use a port-channel selector");
+            }
+        }
         for (auto const& matcher : value.outputs) validate_matcher(matcher);
         for (auto const& matcher : value.inputs) validate_matcher(matcher);
     }, connection);
@@ -358,7 +381,7 @@ std::unordered_map<std::string, ProjectConnection> apply_mutation(
         if constexpr (std::same_as<Mutation, std::monostate>) {
             return;
         } else if constexpr (std::same_as<Mutation, GraphConnectionUpsertMutation>) {
-            validate_connection(value.connection);
+            validate_project_connection(value.connection);
             desired[project_connection_id(value.connection)] = value.connection;
         } else if constexpr (std::same_as<Mutation, GraphConnectionDeleteMutation>) {
             if (value.connection_id.empty())
@@ -369,7 +392,7 @@ std::unordered_map<std::string, ProjectConnection> apply_mutation(
             std::unordered_map<std::string, ProjectConnection> replacement;
             replacement.reserve(value.connections.size());
             for (auto const& connection : value.connections) {
-                validate_connection(connection);
+                validate_project_connection(connection);
                 auto const& id = project_connection_id(connection);
                 if (!replacement.emplace(id, connection).second)
                     throw std::invalid_argument(
@@ -503,6 +526,11 @@ void apply_event_connection(
 }
 } // namespace
 
+void validate_project_connection(ProjectConnection const& connection)
+{
+    validate_connection_impl(connection);
+}
+
 std::vector<ProjectConnection> GraphConnections::desired_connections() const
 {
     std::scoped_lock lock(mutex_);
@@ -513,6 +541,12 @@ std::vector<ProjectConnection> GraphConnections::desired_connections() const
         return project_connection_id(connection);
     });
     return result;
+}
+
+void GraphConnections::handle_project_persistence_collect_state(
+    ProjectPersistenceBuilder& builder) const
+{
+    builder.add_graph_connections(desired_connections());
 }
 
 void GraphConnections::handle_project_graph_transaction(

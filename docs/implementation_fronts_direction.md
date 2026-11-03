@@ -2191,6 +2191,15 @@ and [Project File Serialization Direction](./project_file_serialization_directio
 **Primary ownership:** the durable desired project graph and transport-neutral mutation
 surface.
 
+**Implementation status (2026-11-02): implementation complete; build and test
+verification pending.** `ProjectPersistence` now
+normalizes all project node and connection commands before one
+`ProjectReplaceGraphRequest`. Structured matcher paths, port/channel selectors,
+sample channel types, and event types round-trip through project files and the
+JSON-RPC adapters. `NodeInstances` and `GraphConnections` contribute their
+durable desired records directly to save collection. The mutation wire surface
+uses the definition-kind-agnostic `nodeInstances.*` names.
+
 This front owns:
 
 - stable project node IDs;

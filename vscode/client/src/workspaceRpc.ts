@@ -10,37 +10,49 @@ export type SourceQueryRange = {
 export class WorkspaceRpc {
     constructor(private readonly client: JsonRpcSocketClient) {}
 
-    getIvModuleInstances(sourceFilePath: string | null = null): Promise<{ instances?: Array<Record<string, unknown>> }> {
-        return this.client.request("ivModuleInstances.get", sourceFilePath ? { sourceFilePath } : {});
+    getNodeInstances(sourceFilePath: string | null = null): Promise<{ instances?: Array<Record<string, unknown>> }> {
+        return this.client.request("nodeInstances.get", sourceFilePath ? { sourceFilePath } : {});
     }
 
-    createIvModuleInstance(
-        moduleId: string,
+    createNodeInstance(
+        definitionId: string,
         displayName: string | null = null,
         configurationSource = "",
+        instanceId: string | null = null,
     ): Promise<{ instanceId: string }> {
-        const params: Record<string, unknown> = { moduleId };
+        const params: Record<string, unknown> = { definitionId };
+        if (instanceId != null) {
+            params.instanceId = instanceId;
+        }
         if (displayName != null) {
             params.displayName = displayName;
         }
         if (configurationSource.length > 0) {
             params.configurationSource = configurationSource;
         }
-        return this.client.request("ivModuleInstances.create", params);
+        return this.client.request("nodeInstances.create", params);
     }
 
-    deleteIvModuleInstance(instanceId: string): Promise<void> {
-        return this.client.request("ivModuleInstances.delete", { instanceId });
+    deleteNodeInstance(instanceId: string): Promise<void> {
+        return this.client.request("nodeInstances.delete", { instanceId });
     }
 
-    updateIvModuleInstances(
+    updateNodeInstances(
         updates: Array<{
             instanceId: string;
             displayName?: string | null;
             configurationSource?: string | null;
         }>,
     ): Promise<void> {
-        return this.client.request("ivModuleInstances.update", { updates });
+        return this.client.request("nodeInstances.update", { updates });
+    }
+
+    upsertGraphConnection(connection: Record<string, unknown>): Promise<void> {
+        return this.client.request("graphConnections.upsert", { connection });
+    }
+
+    deleteGraphConnection(connectionId: string): Promise<void> {
+        return this.client.request("graphConnections.delete", { connectionId });
     }
 
     getIvPackageDefinitions(): Promise<{ packages?: Array<Record<string, unknown>> }> {

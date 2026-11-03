@@ -169,10 +169,10 @@ export class WorkspaceSession {
             this.resolveServerReadyWaiters();
         });
 
-        this.notifications.subscribe<IvModuleInstancesUpdatedNotification>("ivModuleInstances.updated", (params) => {
+        this.notifications.subscribe<IvModuleInstancesUpdatedNotification>("nodeInstances.updated", (params) => {
             this.projectModuleInstances = Array.isArray(params.instances) ? params.instances : [];
             if (this.activeSourceFilePath && this.rpc) {
-                void this.rpc.getIvModuleInstances(this.activeSourceFilePath).then((result) => {
+                void this.rpc.getNodeInstances(this.activeSourceFilePath).then((result) => {
                     this.ivModuleInstances = this.parseIvModuleInstances(result.instances);
                     this.refreshVisibleInstances();
                     this.refreshModulesPanelState();
@@ -747,7 +747,7 @@ export class WorkspaceSession {
         this.outputChannel.appendLine("Intravenous startup: waiting for server.ready");
         await this.waitForServerReady(10000);
         if (this.rpc) {
-            const result = await this.rpc.getIvModuleInstances();
+            const result = await this.rpc.getNodeInstances();
             this.ivModuleInstances = this.parseIvModuleInstances(result.instances);
             this.projectModuleInstances = this.ivModuleInstances;
             this.refreshVisibleInstances();
@@ -791,7 +791,7 @@ export class WorkspaceSession {
                 return;
             }
             {
-                const created = await this.rpc.createIvModuleInstance(
+                const created = await this.rpc.createNodeInstance(
                     await this.moduleIdForPackageRoot(this.activePackageRoot),
                 );
                 this.selectedInstanceId = created.instanceId;
@@ -808,7 +808,7 @@ export class WorkspaceSession {
         if (!(await this.ensureReady()) || !this.rpc) return;
         const [packages, instances] = await Promise.all([
             this.rpc.getIvPackageDefinitions(),
-            this.rpc.getIvModuleInstances(),
+            this.rpc.getNodeInstances(),
         ]);
         this.ivPackages = this.parseIvPackageDefinitions(packages.packages);
         this.projectModuleInstances = this.parseIvModuleInstances(instances.instances);
@@ -843,7 +843,7 @@ export class WorkspaceSession {
         }
         case "instantiate":
         case "duplicate": {
-            const created = await this.rpc.createIvModuleInstance(
+            const created = await this.rpc.createNodeInstance(
                 message.moduleId,
             );
             this.selectedInstanceId = created.instanceId;
@@ -857,14 +857,14 @@ export class WorkspaceSession {
             await this.refreshModulesPanel();
             return;
         case "rename":
-            await this.rpc.updateIvModuleInstances([{
+            await this.rpc.updateNodeInstances([{
                 instanceId: message.instanceId,
                 displayName: message.displayName,
             }]);
             await this.refreshModulesPanel();
             return;
         case "delete":
-            await this.rpc.deleteIvModuleInstance(message.instanceId);
+            await this.rpc.deleteNodeInstance(message.instanceId);
             if (this.selectedInstanceId === message.instanceId) this.selectedInstanceId = null;
             await this.refreshModulesPanel();
             return;
@@ -1043,7 +1043,7 @@ export class WorkspaceSession {
                 && hasPackageManifest
                 ? packageDirectory
                 : null;
-            const result = await this.rpc.getIvModuleInstances(nextSourceFilePath);
+            const result = await this.rpc.getNodeInstances(nextSourceFilePath);
             this.ivModuleInstances = this.parseIvModuleInstances(result.instances);
             this.provider.setPackageRoot(this.activePackageRoot);
             this.refreshVisibleInstances();

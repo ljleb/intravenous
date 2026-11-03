@@ -3,6 +3,7 @@
 #include <intravenous/devices/audio_device.h>
 #include <intravenous/linker_event.h>
 #include <intravenous/runtime/project_connection_types.h>
+#include <intravenous/runtime/project_node_instance_types.h>
 #include <intravenous/runtime/runtime_project_api_types.h>
 
 #include <filesystem>
@@ -37,26 +38,26 @@ public:
     [[nodiscard]] AudioDevicesSnapshot build() const;
 };
 
-struct ProjectCreateIvModuleInstanceRequest {
+struct ProjectCreateNodeInstanceRequest {
     std::optional<std::string> instance_id {};
-    std::string module_id {};
+    std::string definition_id {};
     std::optional<std::filesystem::path> package_root {};
     std::optional<std::string> display_name {};
     std::string configuration_source {};
 };
 
-struct ProjectDeleteIvModuleInstanceRequest {
+struct ProjectDeleteNodeInstanceRequest {
     std::string instance_id {};
 };
 
-struct ProjectUpdateIvModuleInstance {
+struct ProjectUpdateNodeInstance {
     std::string instance_id {};
     std::optional<std::string> display_name {};
     std::optional<std::string> configuration_source {};
 };
 
-struct ProjectUpdateIvModuleInstancesRequest {
-    std::vector<ProjectUpdateIvModuleInstance> updates {};
+struct ProjectUpdateNodeInstancesRequest {
+    std::vector<ProjectUpdateNodeInstance> updates {};
 };
 
 struct ProjectUpsertGraphConnectionRequest {
@@ -65,6 +66,11 @@ struct ProjectUpsertGraphConnectionRequest {
 
 struct ProjectDeleteGraphConnectionRequest {
     std::string connection_id{};
+};
+
+struct ProjectReplaceGraphRequest {
+    std::vector<ProjectNodeInstanceDeclaration> instances{};
+    std::vector<ProjectConnection> connections{};
 };
 
 struct ProjectSetAudioDevicesRequest {
@@ -93,16 +99,18 @@ using ProjectStateChangedEvent = void (*)();
 using ProjectLoadedEvent = void (*)();
 using ProjectSetAutosaveEnabledRequestedEvent =
     void (*)(ProjectSetAutosaveEnabledRequest const&, ProjectAckBuilder&);
-using ProjectCreateIvModuleInstanceRequestedEvent =
-    void (*)(ProjectCreateIvModuleInstanceRequest const&, ProjectStringBuilder&);
-using ProjectDeleteIvModuleInstanceRequestedEvent =
-    void (*)(ProjectDeleteIvModuleInstanceRequest const&, ProjectAckBuilder&);
-using ProjectUpdateIvModuleInstancesRequestedEvent =
-    void (*)(ProjectUpdateIvModuleInstancesRequest const&, ProjectAckBuilder&);
+using ProjectCreateNodeInstanceRequestedEvent =
+    void (*)(ProjectCreateNodeInstanceRequest const&, ProjectStringBuilder&);
+using ProjectDeleteNodeInstanceRequestedEvent =
+    void (*)(ProjectDeleteNodeInstanceRequest const&, ProjectAckBuilder&);
+using ProjectUpdateNodeInstancesRequestedEvent =
+    void (*)(ProjectUpdateNodeInstancesRequest const&, ProjectAckBuilder&);
 using ProjectUpsertGraphConnectionRequestedEvent =
     void (*)(ProjectUpsertGraphConnectionRequest const&, ProjectAckBuilder&);
 using ProjectDeleteGraphConnectionRequestedEvent =
     void (*)(ProjectDeleteGraphConnectionRequest const&, ProjectAckBuilder&);
+using ProjectReplaceGraphRequestedEvent =
+    void (*)(ProjectReplaceGraphRequest const&, ProjectAckBuilder&);
 using ProjectSetAudioDevicesRequestedEvent =
     void (*)(ProjectSetAudioDevicesRequest const&, ProjectAudioDevicesBuilder&);
 using ProjectOverrideSettingsRequestedEvent =
@@ -118,20 +126,23 @@ IV_DECLARE_LINKER_EVENT(
     ProjectOverrideSettingsRequestedEvent,
     iv_runtime_project_override_settings_requested_event);
 IV_DECLARE_LINKER_EVENT(
-    ProjectCreateIvModuleInstanceRequestedEvent,
-    iv_runtime_project_create_iv_module_instance_requested_event);
+    ProjectCreateNodeInstanceRequestedEvent,
+    iv_runtime_project_create_node_instance_requested_event);
 IV_DECLARE_LINKER_EVENT(
-    ProjectDeleteIvModuleInstanceRequestedEvent,
-    iv_runtime_project_delete_iv_module_instance_requested_event);
+    ProjectDeleteNodeInstanceRequestedEvent,
+    iv_runtime_project_delete_node_instance_requested_event);
 IV_DECLARE_LINKER_EVENT(
-    ProjectUpdateIvModuleInstancesRequestedEvent,
-    iv_runtime_project_update_iv_module_instances_requested_event);
+    ProjectUpdateNodeInstancesRequestedEvent,
+    iv_runtime_project_update_node_instances_requested_event);
 IV_DECLARE_LINKER_EVENT(
     ProjectUpsertGraphConnectionRequestedEvent,
     iv_runtime_project_upsert_graph_connection_requested_event);
 IV_DECLARE_LINKER_EVENT(
     ProjectDeleteGraphConnectionRequestedEvent,
     iv_runtime_project_delete_graph_connection_requested_event);
+IV_DECLARE_LINKER_EVENT(
+    ProjectReplaceGraphRequestedEvent,
+    iv_runtime_project_replace_graph_requested_event);
 IV_DECLARE_LINKER_EVENT(
     ProjectSetAudioDevicesRequestedEvent,
     iv_runtime_project_set_audio_devices_requested_event);

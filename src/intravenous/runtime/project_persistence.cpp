@@ -1,12 +1,16 @@
 #include <intravenous/runtime/project_persistence.h>
 
 #include <intravenous/runtime/project_persistence_events.h>
+#include <intravenous/runtime/project_connection_json.h>
 #include <intravenous/runtime/runtime_project_events.h>
 #include <intravenous/runtime/socket_rpc_server.h>
 
 #include <fstream>
 #include <nlohmann/json.hpp>
+#include <algorithm>
+#include <ranges>
 #include <system_error>
+#include <unordered_map>
 #include <utility>
 
 namespace iv {
@@ -52,6 +56,20 @@ std::filesystem::path require_project_path(
             "command args key '" + key + "' cannot be resolved: " + ec.message());
     }
     return normalized.lexically_normal();
+}
+
+std::optional<std::filesystem::path> optional_project_path(
+    Json const& args,
+    std::string const& key,
+    std::filesystem::path const& workspace_root)
+{
+    auto const found = args.find(key);
+    if (found == args.end() || found->is_null()) return std::nullopt;
+    if (!found->is_string()) {
+        throw std::runtime_error(
+            "command args key '" + key + "' must be a string or null");
+    }
+    return require_project_path(args, key, workspace_root);
 }
 
 std::optional<std::filesystem::path> parse_optional_path_override_value(
@@ -221,80 +239,78 @@ std::vector<ProjectCommand> ProjectPersistence::read_commands() const
     return commands;
 }
 
-void ProjectPersistence::apply_command(ProjectCommand const &command)
-{
-    auto const &args = command.args;
-    if (command.command == "project.overrideSettings") {
-        auto request = parse_project_override_settings_request(
-            args,
-            workspace_root_,
-            [&](std::string const &message) { emit_message("warning", message); });
-        if (request) {
-            IV_INVOKE_LINKER_EVENT(
-                iv_runtime_project_override_settings_requested_event,
-                *request);
-        }
-        return;
-    }
-
-    if (command.command == "ivModuleInstances.create") {
-        ProjectStringBuilder builder;
-        IV_INVOKE_LINKER_EVENT(
-            iv_runtime_project_create_iv_module_instance_requested_event,
-            ProjectCreateIvModuleInstanceRequest{
-                .instance_id = require_string(args, "instance_id"),
-                .module_id = require_string(args, "module_id"),
-                .package_root = require_project_path(args, "package_root", workspace_root_),
-                .display_name = optional_nullable_string(args, "display_name"),
-                .configuration_source = optional_nullable_string(
-                    args, "configuration_source").value_or(std::string{}),
-            },
-            builder);
-        (void)builder.build();
-        return;
-    }
-
-    if (command.command == "ivModuleInstances.update") {
-        auto const updates_it = args.find("updates");
-        if (updates_it == args.end() || !updates_it->is_array()) {
-            throw std::runtime_error("command args are missing array key 'updates'");
-        }
-        std::vector<ProjectUpdateIvModuleInstance> updates;
-        updates.reserve(updates_it->size());
-        for (auto const &update : *updates_it) {
-            if (!update.is_object()) {
-                throw std::runtime_error("command update entry must be an object");
-            }
-            updates.push_back(ProjectUpdateIvModuleInstance{
-                .instance_id = require_string(update, "instance_id"),
-                .display_name = optional_nullable_string(update, "display_name"),
-                .configuration_source = optional_nullable_string(
-                    update, "configuration_source"),
-            });
-        }
-        ProjectAckBuilder builder;
-        IV_INVOKE_LINKER_EVENT(
-            iv_runtime_project_update_iv_module_instances_requested_event,
-            ProjectUpdateIvModuleInstancesRequest{.updates = std::move(updates)},
-            builder);
-        builder.build();
-        return;
-    }
-
-    throw std::runtime_error("unknown project command: " + command.command);
-}
-
 void ProjectPersistence::load()
 {
+    std::unordered_map<std::string, ProjectNodeInstanceDeclaration> instances;
+    std::unordered_map<std::string, ProjectConnection> connections;
     for (auto const &command : read_commands()) {
         try {
-            apply_command(command);
+            auto const& args = command.args;
+            if (command.command == "project.overrideSettings") {
+                auto request = parse_project_override_settings_request(
+                    args,
+                    workspace_root_,
+                    [&](std::string const& message) {
+                        emit_message("warning", message);
+                    });
+                if (request) {
+                    IV_INVOKE_LINKER_EVENT(
+                        iv_runtime_project_override_settings_requested_event,
+                        *request);
+                }
+            } else if (command.command == "nodeInstances.upsert") {
+                ProjectNodeInstanceDeclaration declaration{
+                    .instance_id = require_string(args, "instance_id"),
+                    .definition_id = require_string(args, "definition_id"),
+                    .package_root = optional_project_path(
+                        args, "package_root", workspace_root_),
+                    .display_name = optional_nullable_string(args, "display_name"),
+                    .configuration_source = optional_nullable_string(
+                        args, "configuration_source").value_or(std::string{}),
+                };
+                instances[declaration.instance_id] = std::move(declaration);
+            } else if (command.command == "nodeInstances.delete") {
+                instances.erase(require_string(args, "instance_id"));
+            } else if (command.command == "graphConnections.upsert") {
+                auto connection = parse_project_connection_json(
+                    args, ProjectConnectionJsonNames::project_file);
+                connections[project_connection_id(connection)] = std::move(connection);
+            } else if (command.command == "graphConnections.delete") {
+                connections.erase(require_string(args, "connection_id"));
+            } else {
+                throw std::runtime_error("unknown project command: " + command.command);
+            }
         } catch (std::exception const &error) {
             emit_message(
                 "error",
                 "project load command failed for '" + command.command + "' args="
                     + command.args.dump() + ": " + error.what());
         }
+    }
+
+    ProjectReplaceGraphRequest request;
+    request.instances.reserve(instances.size());
+    for (auto& [_, declaration] : instances) {
+        request.instances.push_back(std::move(declaration));
+    }
+    request.connections.reserve(connections.size());
+    for (auto& [_, connection] : connections) {
+        request.connections.push_back(std::move(connection));
+    }
+    std::ranges::sort(
+        request.instances, {}, &ProjectNodeInstanceDeclaration::instance_id);
+    std::ranges::sort(request.connections, {}, [](ProjectConnection const& connection) {
+        return project_connection_id(connection);
+    });
+    try {
+        ProjectAckBuilder builder;
+        IV_INVOKE_LINKER_EVENT(
+            iv_runtime_project_replace_graph_requested_event,
+            request,
+            builder);
+        builder.build();
+    } catch (std::exception const& error) {
+        emit_message("error", "project graph replay failed: " + std::string(error.what()));
     }
     IV_INVOKE_LINKER_EVENT(iv_runtime_project_loaded_event);
 }

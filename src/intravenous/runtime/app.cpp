@@ -25,6 +25,7 @@
 #include <intravenous/runtime/project_autosave.h>
 #include <intravenous/runtime/project_persistence.h>
 #include <intravenous/runtime/project_persistence_node_instances_bridge.h>
+#include <intravenous/runtime/project_persistence_graph_connections_bridge.h>
 #include <intravenous/runtime/project_persistence_project_graph_bridge.h>
 #include <intravenous/runtime/project_persistence_package_jit_bridge.h>
 #include <intravenous/runtime/project_persistence_project_autosave_bridge.h>
@@ -383,6 +384,9 @@ int run_server_mode(int argc, char** argv)
         project_persistence_project_graph_bridge::bind(project_persistence, project_graph);
     auto persistence_instances_scope =
         project_persistence_node_instances_bridge::bind(project_persistence, node_instances);
+    auto persistence_connections_scope =
+        project_persistence_graph_connections_bridge::bind(
+            project_persistence, graph_connections);
     auto persistence_jit_scope =
         project_persistence_package_jit_bridge::bind(project_persistence, package_jit);
     auto persistence_audio_scope =

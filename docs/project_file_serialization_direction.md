@@ -127,6 +127,18 @@ remove this project connection
 
 The normalized file is not an append-only edit history.
 
+The implemented normalized commands are:
+
+- `nodeInstances.upsert`, with `instance_id`, `definition_id`, optional
+  `package_root`, optional `display_name`, and exact `configuration_source`;
+- `nodeInstances.delete` for command-stream normalization during load;
+- `graphConnections.upsert`, whose arguments are the complete structured
+  `ProjectSampleConnection` or `ProjectEventConnection` record;
+- `graphConnections.delete` for command-stream normalization during load.
+
+The save path emits only the current `*.upsert` records. The delete commands are
+accepted while normalizing input; they are not written as historical edits.
+
 ## Replay batching
 
 Even if the file is command-oriented, replay should collect project graph state
@@ -152,7 +164,9 @@ converges on one app module.
 - normalized save collection;
 - atomic file writing.
 
-It does not own canonical node/connection state. `ProjectGraph` does.
+It does not own canonical node/connection state. `NodeInstances` owns desired
+node declarations, `GraphConnections` owns desired connection declarations, and
+`ProjectGraph` coordinates their reconstruction transaction.
 
 `ProjectAutosave` may coalesce mutations and request a save after project load.
 Project replay itself must not immediately schedule a save merely because it is
@@ -163,7 +177,9 @@ reconstructing state.
 Ordinary configured mutations should be coalesced with a short debounce and
 saved atomically rather than writing after every UI gesture.
 
-A save collection procedure should ask each owning app module for its normalized
-persistent contribution. `ProjectGraph` contributes its current project-owned
-node-instance declarations and connection declarations; it must not expose
+A save collection procedure asks each owning app module for its normalized
+persistent contribution. `NodeInstances` contributes
+`ProjectNodeInstanceDeclaration` records and `GraphConnections` contributes
+`ProjectConnection` records. `ProjectGraph` coordinates the single replay
+transaction and does not duplicate either desired-state set. Collection must not expose
 `NodeInstances` caches, `GraphJit` compiled generations, or realtime/background executor runtime state as persistence.

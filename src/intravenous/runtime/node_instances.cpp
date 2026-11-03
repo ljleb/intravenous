@@ -377,6 +377,12 @@ std::string NodeInstances::create_instance(
     IvModuleRequiredDefinitionsChanged required_diff;
     IvModuleInstancesChanged instance_diff;
     auto const definition_key = std::string(definition_id);
+    if (definition_key.empty()) {
+        throw std::invalid_argument("node definition id must not be empty");
+    }
+    if (requested_instance_id && requested_instance_id->empty()) {
+        throw std::invalid_argument("node instance id must not be empty");
+    }
     auto normalized_root = normalize_path(package_root);
     auto display_name = requested_display_name.value_or(definition_key);
     if (display_name.empty()) display_name = definition_key;
@@ -536,6 +542,28 @@ std::vector<IvModuleInstanceInfo> NodeInstances::list_instances() const
         result.push_back(std::move(info));
     }
     std::ranges::sort(result, {}, &IvModuleInstanceInfo::instance_id);
+    return result;
+}
+
+std::vector<ProjectNodeInstanceDeclaration> NodeInstances::desired_instances() const
+{
+    std::vector<ProjectNodeInstanceDeclaration> result;
+    std::scoped_lock lock(mutex_);
+    result.reserve(desired_instances_by_id_.size());
+    for (auto const& [instance_id, desired] : desired_instances_by_id_) {
+        result.push_back(ProjectNodeInstanceDeclaration{
+            .instance_id = instance_id,
+            .definition_id = desired.definition_id,
+            .package_root = desired.package_root.empty()
+                ? std::nullopt
+                : std::optional<std::filesystem::path>{desired.package_root},
+            .display_name = desired.display_name != desired.definition_id
+                ? std::optional<std::string>{desired.display_name}
+                : std::nullopt,
+            .configuration_source = desired.configuration_source,
+        });
+    }
+    std::ranges::sort(result, {}, &ProjectNodeInstanceDeclaration::instance_id);
     return result;
 }
 
@@ -954,6 +982,136 @@ void NodeInstances::handle_project_graph_transaction(
                     });
                 }
                 update_instances(std::move(updates));
+            } else if constexpr (std::same_as<Mutation, NodeInstanceReplaceAllMutation>) {
+                std::unordered_set<std::string> instance_ids;
+                std::unordered_map<std::string, DesiredInstance> desired;
+                std::unordered_map<std::string, IvModuleRequiredDefinition> required;
+                desired.reserve(mutation.instances.size());
+                for (auto const& declaration : mutation.instances) {
+                    if (declaration.instance_id.empty()) {
+                        throw std::invalid_argument(
+                            "project node instance id must not be empty");
+                    }
+                    if (declaration.definition_id.empty()) {
+                        throw std::invalid_argument(
+                            "project node definition id must not be empty");
+                    }
+                    if (!instance_ids.insert(declaration.instance_id).second) {
+                        throw std::invalid_argument(
+                            "duplicate project node instance id in replacement batch: "
+                            + declaration.instance_id);
+                    }
+
+                    std::filesystem::path package_root;
+                    if (auto definition = request.snapshot->by_id.find(
+                            declaration.definition_id);
+                        definition != request.snapshot->by_id.end()) {
+                        package_root = definition_package_root(definition->second);
+                    } else if (declaration.package_root
+                               && !declaration.package_root->empty()) {
+                        package_root = normalize_path(*declaration.package_root);
+                    }
+                    auto display_name = declaration.display_name.value_or(
+                        declaration.definition_id);
+                    if (display_name.empty()) display_name = declaration.definition_id;
+                    desired.emplace(declaration.instance_id, DesiredInstance{
+                        .instance_id = declaration.instance_id,
+                        .definition_id = declaration.definition_id,
+                        .display_name = std::move(display_name),
+                        .package_root = package_root,
+                        .configuration_source = declaration.configuration_source,
+                    });
+
+                    if (!package_root.empty()) {
+                        auto [required_it, inserted] = required.emplace(
+                            declaration.definition_id,
+                            IvModuleRequiredDefinition{
+                                .definition_id = declaration.definition_id,
+                                .package_root = package_root,
+                            });
+                        if (!inserted
+                            && required_it->second.package_root != package_root) {
+                            throw std::invalid_argument(
+                                "project node definition has conflicting package roots: "
+                                + declaration.definition_id);
+                        }
+                    }
+                }
+
+                IvModuleRequiredDefinitionsChanged required_diff;
+                IvModuleInstancesChanged instance_diff;
+                bool list_changed = false;
+                {
+                    std::scoped_lock lock(mutex_);
+                    list_changed = desired_instances_by_id_.size() != desired.size();
+                    if (!list_changed) {
+                        for (auto const& [instance_id, next] : desired) {
+                            auto const current = desired_instances_by_id_.find(instance_id);
+                            if (current == desired_instances_by_id_.end()
+                                || current->second.instance_id != next.instance_id
+                                || current->second.definition_id != next.definition_id
+                                || current->second.display_name != next.display_name
+                                || current->second.package_root != next.package_root
+                                || current->second.configuration_source
+                                    != next.configuration_source) {
+                                list_changed = true;
+                                break;
+                            }
+                        }
+                    }
+
+                    for (auto const& [definition_id, value] : required) {
+                        auto const current = required_definitions_by_id_.find(definition_id);
+                        if (current == required_definitions_by_id_.end()) {
+                            required_diff.created.push_back(value);
+                        } else if (current->second.package_root != value.package_root) {
+                            required_diff.updated.push_back(value);
+                        }
+                    }
+                    for (auto const& [definition_id, _] : required_definitions_by_id_) {
+                        if (!required.contains(definition_id)) {
+                            required_diff.deleted_definition_ids.push_back(definition_id);
+                        }
+                    }
+
+                    std::unordered_map<std::string, IvModuleInstance> published;
+                    for (auto const& [instance_id, next] : desired) {
+                        auto const definition = request.snapshot->by_id.find(
+                            next.definition_id);
+                        if (definition == request.snapshot->by_id.end()) continue;
+                        auto instance = make_instance(
+                            definition->second,
+                            instance_id,
+                            next.display_name,
+                            next.configuration_source);
+                        auto const current = published_instances_by_id_.find(instance_id);
+                        if (current == published_instances_by_id_.end()) {
+                            instance_diff.created.push_back(instance);
+                        } else if (current->second != instance) {
+                            instance_diff.updated.push_back(instance);
+                        }
+                        published.emplace(instance_id, std::move(instance));
+                    }
+                    for (auto const& [instance_id, _] : published_instances_by_id_) {
+                        if (!published.contains(instance_id)) {
+                            instance_diff.deleted_instance_ids.push_back(instance_id);
+                        }
+                    }
+
+                    desired_instances_by_id_ = std::move(desired);
+                    required_definitions_by_id_ = std::move(required);
+                    published_instances_by_id_ = std::move(published);
+                }
+
+                if (!required_diff.created.empty()
+                    || !required_diff.updated.empty()
+                    || !required_diff.deleted_definition_ids.empty()) {
+                    IV_INVOKE_LINKER_EVENT(
+                        iv_runtime_iv_module_required_definitions_changed_event,
+                        required_diff);
+                }
+                publish_instance_changes(std::move(instance_diff), list_changed);
+                if (list_changed) publish_instance_declarations_changed();
             }
         },
         request.mutation);
@@ -979,12 +1137,12 @@ void NodeInstances::handle_project_graph_transaction(
 void NodeInstances::handle_project_persistence_collect_state(
     ProjectPersistenceBuilder& builder) const
 {
-    builder.add_iv_module_instances(list_instances());
+    builder.add_node_instances(desired_instances());
 }
 
-void NodeInstances::handle_socket_rpc_get_iv_module_instances(
-    GetIvModuleInstancesRequest const& request,
-    SocketRpcIvModuleInstancesResultBuilder& builder) const
+void NodeInstances::handle_socket_rpc_get_node_instances(
+    GetNodeInstancesRequest const& request,
+    SocketRpcNodeInstancesResultBuilder& builder) const
 {
     auto instances = list_instances();
     if (request.source_file_path.has_value()) {

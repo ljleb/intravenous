@@ -155,15 +155,12 @@ realization/workspaces and reaches internal outputs through specialized backgrou
 evaluation component metadata rather than a synthetic project-root `tock_coverage()`.
 Final layout offsets are therefore compile-time constants in the generated LLVM. The
 current implementation may temporarily retain a monolithic executor while these
-responsibilities are split, but the two-executor ownership model is normative. Structured connection persistence/JSON-RPC adapters are also still
-pending; the typed project command surface and canonical connection owner now
-exist so those adapters do not need to invent connection semantics. The existing
-line-oriented `ProjectPersistence` loader still replays legacy node commands one
-at a time; collapsing those commands into the one normalized startup replay batch
-described below remains a persistence-side checkpoint. C++ argument-list
-expression compilation remains an independent internal `NodeInstances`
-checkpoint; `IvModuleSourceIntrospection` remains a later read-model migration
-checkpoint.
+responsibilities are split, but the two-executor ownership model is normative.
+Front 10 has implemented structured connection persistence, JSON-RPC adapters,
+and one normalized `ProjectPersistence -> ProjectGraph` replay batch. The
+superseded pre-Front-10 checkpoint is preserved in
+[front_10_pre_implementation_checkpoint_2026-11-02.md](./historical/front_10_pre_implementation_checkpoint_2026-11-02.md).
+`IvModuleSourceIntrospection` remains a later read-model migration checkpoint.
 
 ## `ProjectGraph` is the root-graph transaction coordinator
 
@@ -971,7 +968,9 @@ The implementation checkpoints now stand as follows:
    `GraphConnections` owns desired cross-node connection intent, applies sample/event
    connections, and preserves dangling matchers with diagnostics. It uses the same
    scope-local `resolve_project_node_path()` function as configuration references.
-   Structured persistence and JSON-RPC adapters remain follow-up transport work.
+   Structured persistence and JSON-RPC adapters are implemented by Front 10. The
+   superseded checkpoint is preserved in
+   [front_10_pre_implementation_checkpoint_2026-11-02.md](./historical/front_10_pre_implementation_checkpoint_2026-11-02.md).
 7. **Landed, with a planned storage split (fixed state + existing
    `BackgroundEvaluationPlan` foundation):** the current implementation still
    places non-semantic tock-only `TockState` in canonical `NodeStorage` alongside

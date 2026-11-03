@@ -8,6 +8,7 @@
 #include <intravenous/runtime/socket_rpc_response_builders.h>
 
 #include <stdexcept>
+#include <unordered_set>
 #include <utility>
 
 namespace iv {
@@ -127,8 +128,8 @@ void ProjectGraph::handle_node_definitions_snapshot_changed(
     }
 }
 
-void ProjectGraph::handle_project_create_iv_module_instance(
-    ProjectCreateIvModuleInstanceRequest const& request,
+void ProjectGraph::handle_project_create_node_instance(
+    ProjectCreateNodeInstanceRequest const& request,
     ProjectStringBuilder& builder)
 {
     std::string created_instance_id;
@@ -136,7 +137,7 @@ void ProjectGraph::handle_project_create_iv_module_instance(
         std::scoped_lock lock(mutex_);
         auto rebuilt = rebuild_locked(NodeInstanceCreateMutation{
             .instance_id = request.instance_id,
-            .definition_id = request.module_id,
+            .definition_id = request.definition_id,
             .package_root = request.package_root,
             .display_name = request.display_name,
             .configuration_source = request.configuration_source,
@@ -150,8 +151,8 @@ void ProjectGraph::handle_project_create_iv_module_instance(
     IV_INVOKE_LINKER_EVENT(iv_runtime_project_state_changed_event);
 }
 
-void ProjectGraph::handle_project_delete_iv_module_instance(
-    ProjectDeleteIvModuleInstanceRequest const& request,
+void ProjectGraph::handle_project_delete_node_instance(
+    ProjectDeleteNodeInstanceRequest const& request,
     ProjectAckBuilder& builder)
 {
     {
@@ -164,8 +165,8 @@ void ProjectGraph::handle_project_delete_iv_module_instance(
     IV_INVOKE_LINKER_EVENT(iv_runtime_project_state_changed_event);
 }
 
-void ProjectGraph::handle_project_update_iv_module_instances(
-    ProjectUpdateIvModuleInstancesRequest const& request,
+void ProjectGraph::handle_project_update_node_instances(
+    ProjectUpdateNodeInstancesRequest const& request,
     ProjectAckBuilder& builder)
 {
     NodeInstanceUpdateMutation mutation;
@@ -213,15 +214,53 @@ void ProjectGraph::handle_project_delete_graph_connection(
     IV_INVOKE_LINKER_EVENT(iv_runtime_project_state_changed_event);
 }
 
-void ProjectGraph::handle_socket_rpc_create_iv_module_instance(
-    CreateIvModuleInstanceRequest const& request,
-    SocketRpcCreateIvModuleInstanceResultBuilder& builder)
+void ProjectGraph::handle_project_replace_graph(
+    ProjectReplaceGraphRequest const& request,
+    ProjectAckBuilder& builder)
+{
+    std::unordered_set<std::string> instance_ids;
+    for (auto const& instance : request.instances) {
+        if (instance.instance_id.empty()) {
+            throw std::invalid_argument("project node instance id must not be empty");
+        }
+        if (instance.definition_id.empty()) {
+            throw std::invalid_argument("project node definition id must not be empty");
+        }
+        if (!instance_ids.insert(instance.instance_id).second) {
+            throw std::invalid_argument(
+                "duplicate project node instance id in replacement batch: "
+                + instance.instance_id);
+        }
+    }
+    std::unordered_set<std::string> connection_ids;
+    for (auto const& connection : request.connections) {
+        validate_project_connection(connection);
+        auto const& connection_id = project_connection_id(connection);
+        if (!connection_ids.insert(connection_id).second) {
+            throw std::invalid_argument(
+                "duplicate project connection id in replacement batch: "
+                + connection_id);
+        }
+    }
+    {
+        std::scoped_lock lock(mutex_);
+        (void)rebuild_locked(
+            NodeInstanceReplaceAllMutation{.instances = request.instances},
+            GraphConnectionReplaceAllMutation{.connections = request.connections});
+    }
+    builder.succeed();
+}
+
+void ProjectGraph::handle_socket_rpc_create_node_instance(
+    CreateNodeInstanceRequest const& request,
+    SocketRpcCreateNodeInstanceResultBuilder& builder)
 {
     try {
         ProjectStringBuilder project_builder;
-        handle_project_create_iv_module_instance(
-            ProjectCreateIvModuleInstanceRequest{
-                .module_id = request.module_id,
+        handle_project_create_node_instance(
+            ProjectCreateNodeInstanceRequest{
+                .instance_id = request.instance_id,
+                .definition_id = request.definition_id,
                 .display_name = request.display_name,
                 .configuration_source = request.configuration_source,
             },
@@ -232,14 +271,14 @@ void ProjectGraph::handle_socket_rpc_create_iv_module_instance(
     }
 }
 
-void ProjectGraph::handle_socket_rpc_delete_iv_module_instance(
-    DeleteIvModuleInstanceRequest const& request,
+void ProjectGraph::handle_socket_rpc_delete_node_instance(
+    DeleteNodeInstanceRequest const& request,
     SocketRpcAckResponseBuilder& builder)
 {
     try {
         ProjectAckBuilder project_builder;
-        handle_project_delete_iv_module_instance(
-            ProjectDeleteIvModuleInstanceRequest{.instance_id = request.instance_id},
+        handle_project_delete_node_instance(
+            ProjectDeleteNodeInstanceRequest{.instance_id = request.instance_id},
             project_builder);
         project_builder.build();
         builder.succeed();
@@ -248,23 +287,57 @@ void ProjectGraph::handle_socket_rpc_delete_iv_module_instance(
     }
 }
 
-void ProjectGraph::handle_socket_rpc_update_iv_module_instances(
-    UpdateIvModuleInstancesRequest const& request,
+void ProjectGraph::handle_socket_rpc_update_node_instances(
+    UpdateNodeInstancesRequest const& request,
     SocketRpcAckResponseBuilder& builder)
 {
     try {
-        std::vector<ProjectUpdateIvModuleInstance> updates;
+        std::vector<ProjectUpdateNodeInstance> updates;
         updates.reserve(request.updates.size());
         for (auto const& update : request.updates) {
-            updates.push_back(ProjectUpdateIvModuleInstance{
+            updates.push_back(ProjectUpdateNodeInstance{
                 .instance_id = update.instance_id,
                 .display_name = update.display_name,
                 .configuration_source = update.configuration_source,
             });
         }
         ProjectAckBuilder project_builder;
-        handle_project_update_iv_module_instances(
-            ProjectUpdateIvModuleInstancesRequest{.updates = std::move(updates)},
+        handle_project_update_node_instances(
+            ProjectUpdateNodeInstancesRequest{.updates = std::move(updates)},
+            project_builder);
+        project_builder.build();
+        builder.succeed();
+    } catch (std::exception const& error) {
+        builder.fail(error.what());
+    }
+}
+
+void ProjectGraph::handle_socket_rpc_upsert_graph_connection(
+    UpsertGraphConnectionRequest const& request,
+    SocketRpcAckResponseBuilder& builder)
+{
+    try {
+        ProjectAckBuilder project_builder;
+        handle_project_upsert_graph_connection(
+            ProjectUpsertGraphConnectionRequest{.connection = request.connection},
+            project_builder);
+        project_builder.build();
+        builder.succeed();
+    } catch (std::exception const& error) {
+        builder.fail(error.what());
+    }
+}
+
+void ProjectGraph::handle_socket_rpc_delete_graph_connection(
+    DeleteGraphConnectionRequest const& request,
+    SocketRpcAckResponseBuilder& builder)
+{
+    try {
+        ProjectAckBuilder project_builder;
+        handle_project_delete_graph_connection(
+            ProjectDeleteGraphConnectionRequest{
+                .connection_id = request.connection_id,
+            },
             project_builder);
         project_builder.build();
         builder.succeed();

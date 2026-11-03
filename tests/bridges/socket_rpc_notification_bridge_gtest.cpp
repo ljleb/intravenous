@@ -237,7 +237,7 @@ TEST(SocketRpcNotificationBridge, BoundServerForwardsIvModuleInstancesUpdated)
     auto const line = harness.read_line();
     ASSERT_FALSE(line.empty());
     auto const json = parse_json_line(line);
-    EXPECT_EQ(json["method"], "ivModuleInstances.updated");
+    EXPECT_EQ(json["method"], "nodeInstances.updated");
     ASSERT_EQ(json["params"]["instances"].size(), 2u);
     EXPECT_EQ(json["params"]["instances"][0]["instanceId"], "instance:1");
     EXPECT_EQ(json["params"]["instances"][0]["moduleId"], "module.a");

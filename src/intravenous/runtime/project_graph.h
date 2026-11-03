@@ -16,16 +16,19 @@ namespace iv {
 class ProjectAckBuilder;
 class ProjectStringBuilder;
 class SocketRpcAckResponseBuilder;
-class SocketRpcCreateIvModuleInstanceResultBuilder;
-struct CreateIvModuleInstanceRequest;
-struct DeleteIvModuleInstanceRequest;
+class SocketRpcCreateNodeInstanceResultBuilder;
+struct CreateNodeInstanceRequest;
+struct DeleteNodeInstanceRequest;
 struct NodeDefinitionsSnapshotChanged;
-struct ProjectCreateIvModuleInstanceRequest;
-struct ProjectDeleteIvModuleInstanceRequest;
-struct ProjectUpdateIvModuleInstancesRequest;
+struct ProjectCreateNodeInstanceRequest;
+struct ProjectDeleteNodeInstanceRequest;
+struct ProjectUpdateNodeInstancesRequest;
 struct ProjectUpsertGraphConnectionRequest;
 struct ProjectDeleteGraphConnectionRequest;
-struct UpdateIvModuleInstancesRequest;
+struct ProjectReplaceGraphRequest;
+struct UpdateNodeInstancesRequest;
+struct UpsertGraphConnectionRequest;
+struct DeleteGraphConnectionRequest;
 
 // One immutable root-configuration generation produced by ProjectGraph. GraphJit
 // will consume this object (plus its pinned definition provenance) in the next
@@ -76,14 +79,14 @@ public:
     [[nodiscard]] std::shared_ptr<NodeDefinitionsSnapshot const> definitions_snapshot() const;
 
     void handle_node_definitions_snapshot_changed(NodeDefinitionsSnapshotChanged const& change);
-    void handle_project_create_iv_module_instance(
-        ProjectCreateIvModuleInstanceRequest const& request,
+    void handle_project_create_node_instance(
+        ProjectCreateNodeInstanceRequest const& request,
         ProjectStringBuilder& builder);
-    void handle_project_delete_iv_module_instance(
-        ProjectDeleteIvModuleInstanceRequest const& request,
+    void handle_project_delete_node_instance(
+        ProjectDeleteNodeInstanceRequest const& request,
         ProjectAckBuilder& builder);
-    void handle_project_update_iv_module_instances(
-        ProjectUpdateIvModuleInstancesRequest const& request,
+    void handle_project_update_node_instances(
+        ProjectUpdateNodeInstancesRequest const& request,
         ProjectAckBuilder& builder);
 
     void handle_project_upsert_graph_connection(
@@ -92,15 +95,24 @@ public:
     void handle_project_delete_graph_connection(
         ProjectDeleteGraphConnectionRequest const& request,
         ProjectAckBuilder& builder);
+    void handle_project_replace_graph(
+        ProjectReplaceGraphRequest const& request,
+        ProjectAckBuilder& builder);
 
-    void handle_socket_rpc_create_iv_module_instance(
-        CreateIvModuleInstanceRequest const& request,
-        SocketRpcCreateIvModuleInstanceResultBuilder& builder);
-    void handle_socket_rpc_delete_iv_module_instance(
-        DeleteIvModuleInstanceRequest const& request,
+    void handle_socket_rpc_create_node_instance(
+        CreateNodeInstanceRequest const& request,
+        SocketRpcCreateNodeInstanceResultBuilder& builder);
+    void handle_socket_rpc_delete_node_instance(
+        DeleteNodeInstanceRequest const& request,
         SocketRpcAckResponseBuilder& builder);
-    void handle_socket_rpc_update_iv_module_instances(
-        UpdateIvModuleInstancesRequest const& request,
+    void handle_socket_rpc_update_node_instances(
+        UpdateNodeInstancesRequest const& request,
+        SocketRpcAckResponseBuilder& builder);
+    void handle_socket_rpc_upsert_graph_connection(
+        UpsertGraphConnectionRequest const& request,
+        SocketRpcAckResponseBuilder& builder);
+    void handle_socket_rpc_delete_graph_connection(
+        DeleteGraphConnectionRequest const& request,
         SocketRpcAckResponseBuilder& builder);
 };
 } // namespace iv

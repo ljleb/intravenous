@@ -201,11 +201,11 @@ void SocketRpcServer::handle_client(int fd) {
                             builder.fail("iv module source introspection service is unavailable");
                         }
                         response = builder.build(request_id);
-                    } else if constexpr (std::same_as<Request, CreateIvModuleInstanceRequest>) {
-                        SocketRpcCreateIvModuleInstanceResultBuilder builder;
-                        IV_INVOKE_LINKER_EVENT(iv_socket_rpc_create_iv_module_instance_event, event_request, builder);
+                    } else if constexpr (std::same_as<Request, CreateNodeInstanceRequest>) {
+                        SocketRpcCreateNodeInstanceResultBuilder builder;
+                        IV_INVOKE_LINKER_EVENT(iv_socket_rpc_create_node_instance_event, event_request, builder);
                         if (!builder.has_response()) {
-                            builder.fail("iv module instance service is unavailable");
+                            builder.fail("node instance service is unavailable");
                         }
                         response = builder.build(request_id);
                     } else if constexpr (std::same_as<Request, GetIvPackageDefinitionsRequest>) {
@@ -222,28 +222,48 @@ void SocketRpcServer::handle_client(int fd) {
                             builder.fail("IV package service is unavailable");
                         }
                         response = builder.build(request_id);
-                    } else if constexpr (std::same_as<Request, GetIvModuleInstancesRequest>) {
-                        SocketRpcIvModuleInstancesResultBuilder builder;
-                        IV_INVOKE_LINKER_EVENT(iv_socket_rpc_get_iv_module_instances_event, event_request, builder);
+                    } else if constexpr (std::same_as<Request, GetNodeInstancesRequest>) {
+                        SocketRpcNodeInstancesResultBuilder builder;
+                        IV_INVOKE_LINKER_EVENT(iv_socket_rpc_get_node_instances_event, event_request, builder);
                         if (!builder.has_response()) {
-                            builder.fail("iv module instance service is unavailable");
+                            builder.fail("node instance service is unavailable");
                         }
                         response = builder.build(request_id);
-                    } else if constexpr (std::same_as<Request, DeleteIvModuleInstanceRequest>) {
+                    } else if constexpr (std::same_as<Request, DeleteNodeInstanceRequest>) {
                         SocketRpcAckResponseBuilder builder;
-                        IV_INVOKE_LINKER_EVENT(iv_socket_rpc_delete_iv_module_instance_event, event_request, builder);
+                        IV_INVOKE_LINKER_EVENT(iv_socket_rpc_delete_node_instance_event, event_request, builder);
                         if (!builder.has_response()) {
-                            builder.fail("iv module instance service is unavailable");
+                            builder.fail("node instance service is unavailable");
                         }
                         response = builder.build(request_id);
-                    } else if constexpr (std::same_as<Request, UpdateIvModuleInstancesRequest>) {
+                    } else if constexpr (std::same_as<Request, UpdateNodeInstancesRequest>) {
                         SocketRpcAckResponseBuilder builder;
                         IV_INVOKE_LINKER_EVENT(
-                            iv_socket_rpc_update_iv_module_instances_event,
+                            iv_socket_rpc_update_node_instances_event,
                             event_request,
                             builder);
                         if (!builder.has_response()) {
-                            builder.fail("iv module instance service is unavailable");
+                            builder.fail("node instance service is unavailable");
+                        }
+                        response = builder.build(request_id);
+                    } else if constexpr (std::same_as<Request, UpsertGraphConnectionRequest>) {
+                        SocketRpcAckResponseBuilder builder;
+                        IV_INVOKE_LINKER_EVENT(
+                            iv_socket_rpc_upsert_graph_connection_event,
+                            event_request,
+                            builder);
+                        if (!builder.has_response()) {
+                            builder.fail("project graph service is unavailable");
+                        }
+                        response = builder.build(request_id);
+                    } else if constexpr (std::same_as<Request, DeleteGraphConnectionRequest>) {
+                        SocketRpcAckResponseBuilder builder;
+                        IV_INVOKE_LINKER_EVENT(
+                            iv_socket_rpc_delete_graph_connection_event,
+                            event_request,
+                            builder);
+                        if (!builder.has_response()) {
+                            builder.fail("project graph service is unavailable");
                         }
                         response = builder.build(request_id);
                     } else if constexpr (std::same_as<Request, GetAudioDevicesRequest>) {
@@ -428,7 +448,7 @@ void SocketRpcServer::send_server_status(SocketRpcServerStatus const &notificati
     }
 }
 
-void SocketRpcServer::send_iv_module_instances_updated(
+void SocketRpcServer::send_node_instances_updated(
     std::vector<IvModuleInstanceInfo> const &instances) {
     int fd = -1;
     {
@@ -440,7 +460,7 @@ void SocketRpcServer::send_iv_module_instances_updated(
     }
 
     auto const message = jsonrpc_notification(
-        "ivModuleInstances.updated",
+        "nodeInstances.updated",
         Json{{"instances", iv_module_instances_json(instances)}});
 
     {
@@ -544,7 +564,7 @@ void SocketRpcServer::handle_iv_package_catalog_changed(
 void SocketRpcServer::handle_iv_module_instances_list_changed(
     std::vector<IvModuleInstanceInfo> const &instances)
 {
-    send_iv_module_instances_updated(instances);
+    send_node_instances_updated(instances);
 }
 
 void SocketRpcServer::handle_iv_module_source_introspection_nodes_updated(

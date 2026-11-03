@@ -17,6 +17,7 @@
 #include <filesystem>
 #include <memory>
 #include <span>
+#include <stdexcept>
 #include <string>
 
 namespace {
@@ -104,10 +105,10 @@ TEST_F(ProjectGraphFixture, DefinitionAndMutationTransactionsBuildWholeRootGener
     EXPECT_TRUE(generation->placements.empty());
 
     iv::ProjectStringBuilder create_builder;
-    project_graph.handle_project_create_iv_module_instance(
-        iv::ProjectCreateIvModuleInstanceRequest{
+    project_graph.handle_project_create_node_instance(
+        iv::ProjectCreateNodeInstanceRequest{
             .instance_id = "instance:a",
-            .module_id = definition_id,
+            .definition_id = definition_id,
         },
         create_builder);
     EXPECT_EQ(create_builder.build(), "instance:a");
@@ -121,8 +122,8 @@ TEST_F(ProjectGraphFixture, DefinitionAndMutationTransactionsBuildWholeRootGener
     EXPECT_EQ(configure_calls.load(), 1);
 
     iv::ProjectAckBuilder update_builder;
-    project_graph.handle_project_update_iv_module_instances(
-        iv::ProjectUpdateIvModuleInstancesRequest{
+    project_graph.handle_project_update_node_instances(
+        iv::ProjectUpdateNodeInstancesRequest{
             .updates = {{.instance_id = "instance:a", .display_name = "Renamed"}},
         },
         update_builder);
@@ -142,8 +143,8 @@ TEST_F(ProjectGraphFixture, DefinitionAndMutationTransactionsBuildWholeRootGener
     EXPECT_EQ(configure_calls.load(), 2);
 
     iv::ProjectAckBuilder delete_builder;
-    project_graph.handle_project_delete_iv_module_instance(
-        iv::ProjectDeleteIvModuleInstanceRequest{.instance_id = "instance:a"},
+    project_graph.handle_project_delete_node_instance(
+        iv::ProjectDeleteNodeInstanceRequest{.instance_id = "instance:a"},
         delete_builder);
     EXPECT_NO_THROW(delete_builder.build());
     generation = project_graph.current_generation();
@@ -155,10 +156,10 @@ TEST_F(ProjectGraphFixture, DefinitionAndMutationTransactionsBuildWholeRootGener
 TEST_F(ProjectGraphFixture, MissingDefinitionRemainsDesiredAndRealizesWhenDefinitionArrives)
 {
     iv::ProjectStringBuilder builder;
-    project_graph.handle_project_create_iv_module_instance(
-        iv::ProjectCreateIvModuleInstanceRequest{
+    project_graph.handle_project_create_node_instance(
+        iv::ProjectCreateNodeInstanceRequest{
             .instance_id = "instance:pending",
-            .module_id = definition_id,
+            .definition_id = definition_id,
             .package_root = std::filesystem::path(package_root),
         },
         builder);
@@ -250,10 +251,10 @@ TEST_F(ProjectGraphFixture, InvalidUpdateBatchDoesNotPartiallyMutateDesiredState
     project_graph.handle_node_definitions_snapshot_changed(
         iv::NodeDefinitionsSnapshotChanged{.snapshot = make_snapshot(1)});
     iv::ProjectStringBuilder create_builder;
-    project_graph.handle_project_create_iv_module_instance(
-        iv::ProjectCreateIvModuleInstanceRequest{
+    project_graph.handle_project_create_node_instance(
+        iv::ProjectCreateNodeInstanceRequest{
             .instance_id = "instance:a",
-            .module_id = definition_id,
+            .definition_id = definition_id,
             .display_name = "Original",
         },
         create_builder);
@@ -263,8 +264,8 @@ TEST_F(ProjectGraphFixture, InvalidUpdateBatchDoesNotPartiallyMutateDesiredState
 
     iv::ProjectAckBuilder update_builder;
     EXPECT_THROW(
-        project_graph.handle_project_update_iv_module_instances(
-            iv::ProjectUpdateIvModuleInstancesRequest{
+        project_graph.handle_project_update_node_instances(
+            iv::ProjectUpdateNodeInstancesRequest{
                 .updates = {
                     {.instance_id = "instance:a", .display_name = "Changed"},
                     {.instance_id = "instance:missing", .display_name = "Invalid"},
@@ -287,10 +288,10 @@ TEST_F(ProjectGraphFixture, ConnectionMutationRebuildsWholeRootAndDanglingIntent
 
     for (auto const* instance_id : {"instance:source", "instance:sink"}) {
         iv::ProjectStringBuilder builder;
-        project_graph.handle_project_create_iv_module_instance(
-            iv::ProjectCreateIvModuleInstanceRequest{
+        project_graph.handle_project_create_node_instance(
+            iv::ProjectCreateNodeInstanceRequest{
                 .instance_id = std::string(instance_id),
-                .module_id = definition_id,
+                .definition_id = definition_id,
             },
             builder);
         EXPECT_EQ(builder.build(), instance_id);
@@ -321,8 +322,8 @@ TEST_F(ProjectGraphFixture, ConnectionMutationRebuildsWholeRootAndDanglingIntent
     ASSERT_EQ(connections.desired_connections().size(), 1u);
 
     iv::ProjectAckBuilder delete_builder;
-    project_graph.handle_project_delete_iv_module_instance(
-        iv::ProjectDeleteIvModuleInstanceRequest{.instance_id = "instance:sink"},
+    project_graph.handle_project_delete_node_instance(
+        iv::ProjectDeleteNodeInstanceRequest{.instance_id = "instance:sink"},
         delete_builder);
     EXPECT_NO_THROW(delete_builder.build());
     generation = project_graph.current_generation();
@@ -332,10 +333,10 @@ TEST_F(ProjectGraphFixture, ConnectionMutationRebuildsWholeRootAndDanglingIntent
     EXPECT_EQ(connections.desired_connections().size(), 1u);
 
     iv::ProjectStringBuilder recreate_builder;
-    project_graph.handle_project_create_iv_module_instance(
-        iv::ProjectCreateIvModuleInstanceRequest{
+    project_graph.handle_project_create_node_instance(
+        iv::ProjectCreateNodeInstanceRequest{
             .instance_id = "instance:sink",
-            .module_id = definition_id,
+            .definition_id = definition_id,
         },
         recreate_builder);
     EXPECT_EQ(recreate_builder.build(), "instance:sink");
@@ -344,4 +345,111 @@ TEST_F(ProjectGraphFixture, ConnectionMutationRebuildsWholeRootAndDanglingIntent
     EXPECT_EQ(generation->applied_connection_ids,
               std::vector<std::string>{"connection:main"});
     EXPECT_TRUE(generation->connection_diagnostics.empty());
+}
+
+TEST_F(ProjectGraphFixture, ReplaceGraphReplaysNodesAndConnectionsInOneGeneration)
+{
+    iv::ProjectAckBuilder builder;
+    project_graph.handle_project_replace_graph(
+        iv::ProjectReplaceGraphRequest{
+            .instances = {
+                {
+                    .instance_id = "instance:source",
+                    .definition_id = definition_id,
+                    .package_root = std::filesystem::path(package_root),
+                    .display_name = "Source",
+                },
+                {
+                    .instance_id = "instance:target",
+                    .definition_id = definition_id,
+                    .package_root = std::filesystem::path(package_root),
+                    .configuration_source = "",
+                },
+            },
+            .connections = {iv::ProjectSampleConnection{
+                .connection_id = "connection:main",
+                .outputs = {{
+                    .instance_id = "instance:source",
+                    .port = {.name = "main"},
+                }},
+                .inputs = {{
+                    .instance_id = "instance:target",
+                    .port = {.name = "main"},
+                }},
+            }},
+        },
+        builder);
+    EXPECT_NO_THROW(builder.build());
+
+    auto generation = project_graph.current_generation();
+    ASSERT_TRUE(generation);
+    EXPECT_EQ(generation->generation, 1u);
+    EXPECT_TRUE(generation->placements.empty());
+    ASSERT_EQ(instances.desired_instances().size(), 2u);
+    ASSERT_EQ(connections.desired_connections().size(), 1u);
+
+    project_graph.handle_node_definitions_snapshot_changed(
+        iv::NodeDefinitionsSnapshotChanged{.snapshot = make_snapshot(1)});
+    generation = project_graph.current_generation();
+    ASSERT_TRUE(generation);
+    EXPECT_EQ(generation->generation, 2u);
+    EXPECT_EQ(generation->placements.size(), 2u);
+    EXPECT_EQ(
+        generation->applied_connection_ids,
+        std::vector<std::string>{"connection:main"});
+
+    iv::ProjectAckBuilder replacement_builder;
+    project_graph.handle_project_replace_graph(
+        iv::ProjectReplaceGraphRequest{},
+        replacement_builder);
+    EXPECT_NO_THROW(replacement_builder.build());
+    EXPECT_TRUE(instances.desired_instances().empty());
+    EXPECT_TRUE(connections.desired_connections().empty());
+    EXPECT_EQ(project_graph.current_generation()->generation, 3u);
+}
+
+TEST_F(ProjectGraphFixture, InvalidReplacementDoesNotChangeEitherDesiredOwner)
+{
+    iv::ProjectStringBuilder create_builder;
+    project_graph.handle_project_create_node_instance(
+        iv::ProjectCreateNodeInstanceRequest{
+            .instance_id = "instance:existing",
+            .definition_id = definition_id,
+            .package_root = std::filesystem::path(package_root),
+        },
+        create_builder);
+    EXPECT_EQ(create_builder.build(), "instance:existing");
+    auto const generation_before = project_graph.current_generation();
+    auto const instances_before = instances.desired_instances();
+    auto const connections_before = connections.desired_connections();
+
+    iv::ProjectAckBuilder builder;
+    EXPECT_THROW(
+        project_graph.handle_project_replace_graph(
+            iv::ProjectReplaceGraphRequest{
+                .instances = {{
+                    .instance_id = "instance:replacement",
+                    .definition_id = definition_id,
+                    .package_root = std::filesystem::path(package_root),
+                }},
+                .connections = {iv::ProjectEventConnection{
+                    .connection_id = "event:invalid",
+                    .source_type = iv::EventTypeId::midi,
+                    .outputs = {{
+                        .instance_id = "instance:replacement",
+                        .port = {.name = "events", .channel = 0},
+                    }},
+                    .target_type = iv::EventTypeId::midi,
+                    .inputs = {{
+                        .instance_id = "instance:replacement",
+                        .port = {.name = "events"},
+                    }},
+                }},
+            },
+            builder),
+        std::invalid_argument);
+
+    EXPECT_EQ(project_graph.current_generation(), generation_before);
+    EXPECT_EQ(instances.desired_instances(), instances_before);
+    EXPECT_EQ(connections.desired_connections(), connections_before);
 }

@@ -98,7 +98,7 @@ namespace iv {
         [[nodiscard]] std::string build(int request_id) const;
     };
 
-    class SocketRpcCreateIvModuleInstanceResultBuilder {
+    class SocketRpcCreateNodeInstanceResultBuilder {
         int error_code = -32000;
         std::string error_message;
         std::optional<std::string> instance_id;
@@ -152,7 +152,7 @@ namespace iv {
         [[nodiscard]] std::string build(int request_id) const;
     };
 
-    class SocketRpcIvModuleInstancesResultBuilder {
+    class SocketRpcNodeInstancesResultBuilder {
         int error_code = -32000;
         std::string error_message;
         std::optional<std::vector<IvModuleInstanceInfo>> result;

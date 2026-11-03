@@ -19,7 +19,6 @@ class ProjectPersistence {
 
     [[nodiscard]] std::filesystem::path project_file_path() const;
     [[nodiscard]] std::vector<ProjectCommand> read_commands() const;
-    void apply_command(ProjectCommand const &command);
     void emit_message(std::string level, std::string message) const;
 
 public:

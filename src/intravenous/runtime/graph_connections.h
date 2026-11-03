@@ -11,6 +11,7 @@
 #include <vector>
 
 namespace iv {
+class ProjectPersistenceBuilder;
 struct GraphConnectionDiagnostic {
     std::string connection_id{};
     std::string message{};
@@ -21,6 +22,8 @@ struct GraphConnectionsBatchResult {
     std::vector<std::string> applied_connection_ids{};
     std::vector<GraphConnectionDiagnostic> diagnostics{};
 };
+
+void validate_project_connection(ProjectConnection const& connection);
 
 struct GraphConnectionUpsertMutation {
     ProjectConnection connection{};
@@ -67,5 +70,7 @@ public:
 
     [[nodiscard]] std::vector<ProjectConnection> desired_connections() const;
     void handle_project_graph_transaction(GraphConnectionsProjectGraphRequest& request);
+    void handle_project_persistence_collect_state(
+        ProjectPersistenceBuilder& builder) const;
 };
 } // namespace iv

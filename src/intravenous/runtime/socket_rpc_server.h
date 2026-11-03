@@ -35,18 +35,22 @@ namespace iv {
         void (*)(GetVirtualNodeRequest const &, SocketRpcVirtualNodeResultBuilder &);
     using SocketRpcGetVirtualNodesEvent =
         void (*)(GetVirtualNodesRequest const &, SocketRpcVirtualNodesResultBuilder &);
-    using SocketRpcCreateIvModuleInstanceEvent =
-        void (*)(CreateIvModuleInstanceRequest const &, SocketRpcCreateIvModuleInstanceResultBuilder &);
+    using SocketRpcCreateNodeInstanceEvent =
+        void (*)(CreateNodeInstanceRequest const &, SocketRpcCreateNodeInstanceResultBuilder &);
     using SocketRpcGetIvPackageDefinitionsEvent =
         void (*)(GetIvPackageDefinitionsRequest const &, SocketRpcIvPackageDefinitionsResultBuilder &);
     using SocketRpcCreateIvPackageEvent =
         void (*)(CreateIvPackageRequest const &, SocketRpcIvPackageResultBuilder &);
-    using SocketRpcGetIvModuleInstancesEvent =
-        void (*)(GetIvModuleInstancesRequest const &, SocketRpcIvModuleInstancesResultBuilder &);
-    using SocketRpcDeleteIvModuleInstanceEvent =
-        void (*)(DeleteIvModuleInstanceRequest const &, SocketRpcAckResponseBuilder &);
-    using SocketRpcUpdateIvModuleInstancesEvent =
-        void (*)(UpdateIvModuleInstancesRequest const &, SocketRpcAckResponseBuilder &);
+    using SocketRpcGetNodeInstancesEvent =
+        void (*)(GetNodeInstancesRequest const &, SocketRpcNodeInstancesResultBuilder &);
+    using SocketRpcDeleteNodeInstanceEvent =
+        void (*)(DeleteNodeInstanceRequest const &, SocketRpcAckResponseBuilder &);
+    using SocketRpcUpdateNodeInstancesEvent =
+        void (*)(UpdateNodeInstancesRequest const &, SocketRpcAckResponseBuilder &);
+    using SocketRpcUpsertGraphConnectionEvent =
+        void (*)(UpsertGraphConnectionRequest const&, SocketRpcAckResponseBuilder&);
+    using SocketRpcDeleteGraphConnectionEvent =
+        void (*)(DeleteGraphConnectionRequest const&, SocketRpcAckResponseBuilder&);
     using SocketRpcGetAudioDevicesEvent =
         void (*)(GetAudioDevicesRequest const &, SocketRpcAudioDevicesResultBuilder &);
     using SocketRpcSetAudioDevicesEvent =
@@ -62,12 +66,14 @@ namespace iv {
     IV_DECLARE_LINKER_EVENT(SocketRpcGraphQueryActiveRegionsEvent, iv_socket_rpc_graph_query_active_regions_event);
     IV_DECLARE_LINKER_EVENT(SocketRpcGetVirtualNodeEvent, iv_socket_rpc_get_virtual_node_event);
     IV_DECLARE_LINKER_EVENT(SocketRpcGetVirtualNodesEvent, iv_socket_rpc_get_virtual_nodes_event);
-    IV_DECLARE_LINKER_EVENT(SocketRpcCreateIvModuleInstanceEvent, iv_socket_rpc_create_iv_module_instance_event);
+    IV_DECLARE_LINKER_EVENT(SocketRpcCreateNodeInstanceEvent, iv_socket_rpc_create_node_instance_event);
     IV_DECLARE_LINKER_EVENT(SocketRpcGetIvPackageDefinitionsEvent, iv_socket_rpc_get_iv_package_definitions_event);
     IV_DECLARE_LINKER_EVENT(SocketRpcCreateIvPackageEvent, iv_socket_rpc_create_iv_package_event);
-    IV_DECLARE_LINKER_EVENT(SocketRpcGetIvModuleInstancesEvent, iv_socket_rpc_get_iv_module_instances_event);
-    IV_DECLARE_LINKER_EVENT(SocketRpcDeleteIvModuleInstanceEvent, iv_socket_rpc_delete_iv_module_instance_event);
-    IV_DECLARE_LINKER_EVENT(SocketRpcUpdateIvModuleInstancesEvent, iv_socket_rpc_update_iv_module_instances_event);
+    IV_DECLARE_LINKER_EVENT(SocketRpcGetNodeInstancesEvent, iv_socket_rpc_get_node_instances_event);
+    IV_DECLARE_LINKER_EVENT(SocketRpcDeleteNodeInstanceEvent, iv_socket_rpc_delete_node_instance_event);
+    IV_DECLARE_LINKER_EVENT(SocketRpcUpdateNodeInstancesEvent, iv_socket_rpc_update_node_instances_event);
+    IV_DECLARE_LINKER_EVENT(SocketRpcUpsertGraphConnectionEvent, iv_socket_rpc_upsert_graph_connection_event);
+    IV_DECLARE_LINKER_EVENT(SocketRpcDeleteGraphConnectionEvent, iv_socket_rpc_delete_graph_connection_event);
     IV_DECLARE_LINKER_EVENT(SocketRpcGetAudioDevicesEvent, iv_socket_rpc_get_audio_devices_event);
     IV_DECLARE_LINKER_EVENT(SocketRpcSetAudioDevicesEvent, iv_socket_rpc_set_audio_devices_event);
     IV_DECLARE_LINKER_EVENT(SocketRpcSaveProjectEvent, iv_socket_rpc_save_project_event);
@@ -115,7 +121,7 @@ namespace iv {
 
         void send_server_message(SocketRpcServerMessage const &notification);
         void send_server_status(SocketRpcServerStatus const &notification);
-        void send_iv_module_instances_updated(
+        void send_node_instances_updated(
             std::vector<IvModuleInstanceInfo> const &instances);
         void send_iv_package_definitions_updated();
         void send_virtual_nodes_updated(

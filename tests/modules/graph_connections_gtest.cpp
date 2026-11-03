@@ -528,6 +528,31 @@ TEST(GraphConnections, InvalidReplaceAllBatchHasStrongExceptionSafety)
     EXPECT_EQ(iv::project_connection_id(desired.front()), "valid");
 }
 
+TEST(GraphConnections, EventConnectionRejectsSampleChannelSelector)
+{
+    iv::GraphConnections connections;
+    iv::GraphBuilder root;
+    std::unordered_map<std::string, iv::NodeInstancePlacement> placements;
+    iv::GraphConnectionsProjectGraphRequest request{
+        .root_builder = &root,
+        .placements = &placements,
+        .mutation = iv::GraphConnectionUpsertMutation{
+            .connection = iv::ProjectEventConnection{
+                .connection_id = "event:invalid-channel",
+                .source_type = iv::EventTypeId::trigger,
+                .outputs = {named_matcher("source", "events", 0)},
+                .target_type = iv::EventTypeId::trigger,
+                .inputs = {named_matcher("target", "events")},
+            },
+        },
+    };
+
+    EXPECT_THROW(
+        connections.handle_project_graph_transaction(request),
+        std::invalid_argument);
+    EXPECT_TRUE(connections.desired_connections().empty());
+}
+
 
 TEST(GraphConnections, TiledChildPathSelectorChoosesNodeBeforePortResolution)
 {

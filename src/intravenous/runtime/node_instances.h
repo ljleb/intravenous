@@ -4,6 +4,7 @@
 #include <intravenous/module/configuration_argument.h>
 #include <intravenous/runtime/iv_module_instance_types.h>
 #include <intravenous/runtime/node_definition_types.h>
+#include <intravenous/runtime/project_node_instance_types.h>
 
 #include <cstdint>
 #include <filesystem>
@@ -19,9 +20,9 @@
 
 namespace iv {
 class ProjectPersistenceBuilder;
-class SocketRpcIvModuleInstancesResultBuilder;
+class SocketRpcNodeInstancesResultBuilder;
 struct NodeDefinitionsSnapshotChanged;
-struct GetIvModuleInstancesRequest;
+struct GetNodeInstancesRequest;
 
 struct IvModuleRequiredDefinition {
     std::string definition_id{};
@@ -34,8 +35,9 @@ struct IvModuleRequiredDefinitionsChanged {
     std::vector<std::string> deleted_definition_ids{};
 };
 
-// Compatibility read model retained for the current IV-module RPC/persistence
-// surface. NodeInstances itself is definition-kind agnostic.
+// Compatibility read model retained for the current source-introspection
+// projection. NodeInstances itself and its project mutation surface are
+// definition-kind agnostic.
 struct IvModuleInstance {
     std::string instance_id{};
     std::string definition_id{};
@@ -124,11 +126,16 @@ struct NodeInstanceUpdateMutation {
     std::vector<NodeInstanceDisplayNameUpdate> updates{};
 };
 
+struct NodeInstanceReplaceAllMutation {
+    std::vector<ProjectNodeInstanceDeclaration> instances{};
+};
+
 using NodeInstancesMutation = std::variant<
     std::monostate,
     NodeInstanceCreateMutation,
     NodeInstanceDeleteMutation,
-    NodeInstanceUpdateMutation>;
+    NodeInstanceUpdateMutation,
+    NodeInstanceReplaceAllMutation>;
 
 // Synchronous ProjectGraph -> NodeInstances transaction request. ProjectGraph
 // supplies one pinned definition world and one fresh root builder. NodeInstances
@@ -213,6 +220,8 @@ public:
     void remove_instance(std::string const& instance_id);
     void update_instances(std::vector<Update> updates);
     [[nodiscard]] std::vector<IvModuleInstanceInfo> list_instances() const;
+    [[nodiscard]] std::vector<ProjectNodeInstanceDeclaration>
+    desired_instances() const;
 
     // Synchronous configuration/embedding primitive intended for ProjectGraph.
     // Every request in the batch resolves recursively through exactly `snapshot`.
@@ -228,8 +237,8 @@ public:
         NodeDefinitionsSnapshotChanged const& change);
     void handle_project_graph_transaction(NodeInstancesProjectGraphRequest& request);
     void handle_project_persistence_collect_state(ProjectPersistenceBuilder& builder) const;
-    void handle_socket_rpc_get_iv_module_instances(
-        GetIvModuleInstancesRequest const& request,
-        SocketRpcIvModuleInstancesResultBuilder& builder) const;
+    void handle_socket_rpc_get_node_instances(
+        GetNodeInstancesRequest const& request,
+        SocketRpcNodeInstancesResultBuilder& builder) const;
 };
 } // namespace iv

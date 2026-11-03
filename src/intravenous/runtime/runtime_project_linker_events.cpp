@@ -11,20 +11,23 @@ IV_DEFINE_LINKER_EVENT(
     ProjectOverrideSettingsRequestedEvent,
     iv_runtime_project_override_settings_requested_event)
 IV_DEFINE_LINKER_EVENT(
-    ProjectCreateIvModuleInstanceRequestedEvent,
-    iv_runtime_project_create_iv_module_instance_requested_event)
+    ProjectCreateNodeInstanceRequestedEvent,
+    iv_runtime_project_create_node_instance_requested_event)
 IV_DEFINE_LINKER_EVENT(
-    ProjectDeleteIvModuleInstanceRequestedEvent,
-    iv_runtime_project_delete_iv_module_instance_requested_event)
+    ProjectDeleteNodeInstanceRequestedEvent,
+    iv_runtime_project_delete_node_instance_requested_event)
 IV_DEFINE_LINKER_EVENT(
-    ProjectUpdateIvModuleInstancesRequestedEvent,
-    iv_runtime_project_update_iv_module_instances_requested_event)
+    ProjectUpdateNodeInstancesRequestedEvent,
+    iv_runtime_project_update_node_instances_requested_event)
 IV_DEFINE_LINKER_EVENT(
     ProjectUpsertGraphConnectionRequestedEvent,
     iv_runtime_project_upsert_graph_connection_requested_event)
 IV_DEFINE_LINKER_EVENT(
     ProjectDeleteGraphConnectionRequestedEvent,
     iv_runtime_project_delete_graph_connection_requested_event)
+IV_DEFINE_LINKER_EVENT(
+    ProjectReplaceGraphRequestedEvent,
+    iv_runtime_project_replace_graph_requested_event)
 IV_DEFINE_LINKER_EVENT(
     ProjectSetAudioDevicesRequestedEvent,
     iv_runtime_project_set_audio_devices_requested_event)

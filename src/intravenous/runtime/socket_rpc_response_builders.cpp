@@ -195,16 +195,16 @@ std::string SocketRpcVirtualNodesResultBuilder::build(int request_id) const {
     return jsonrpc_result(request_id, Json{{"nodes", virtual_nodes_json(*result)}});
 }
 
-void SocketRpcCreateIvModuleInstanceResultBuilder::succeed(std::string created_instance_id) {
+void SocketRpcCreateNodeInstanceResultBuilder::succeed(std::string created_instance_id) {
     instance_id = std::move(created_instance_id);
 }
 
-void SocketRpcCreateIvModuleInstanceResultBuilder::fail(std::string message) {
+void SocketRpcCreateNodeInstanceResultBuilder::fail(std::string message) {
     error_code = -32000;
     error_message = std::move(message);
 }
 
-void SocketRpcCreateIvModuleInstanceResultBuilder::fail(int code, std::string message) {
+void SocketRpcCreateNodeInstanceResultBuilder::fail(int code, std::string message) {
     error_code = code;
     error_message = std::move(message);
 }
@@ -249,36 +249,36 @@ std::string SocketRpcIvPackageResultBuilder::build(int request_id) const {
     return jsonrpc_result(request_id, Json{{"package", iv_package_json(*result)}});
 }
 
-std::string SocketRpcCreateIvModuleInstanceResultBuilder::build(int request_id) const {
+std::string SocketRpcCreateNodeInstanceResultBuilder::build(int request_id) const {
     if (!error_message.empty()) {
         return jsonrpc_error(request_id, error_code, error_message);
     }
     if (!instance_id.has_value()) {
-        throw_unbuilt_response("SocketRpcCreateIvModuleInstanceResultBuilder");
+        throw_unbuilt_response("SocketRpcCreateNodeInstanceResultBuilder");
     }
     return jsonrpc_result(request_id, Json{{"instanceId", *instance_id}});
 }
 
-void SocketRpcIvModuleInstancesResultBuilder::succeed(std::vector<IvModuleInstanceInfo> value) {
+void SocketRpcNodeInstancesResultBuilder::succeed(std::vector<IvModuleInstanceInfo> value) {
     result = std::move(value);
 }
 
-void SocketRpcIvModuleInstancesResultBuilder::fail(std::string message) {
+void SocketRpcNodeInstancesResultBuilder::fail(std::string message) {
     error_code = -32000;
     error_message = std::move(message);
 }
 
-void SocketRpcIvModuleInstancesResultBuilder::fail(int code, std::string message) {
+void SocketRpcNodeInstancesResultBuilder::fail(int code, std::string message) {
     error_code = code;
     error_message = std::move(message);
 }
 
-std::string SocketRpcIvModuleInstancesResultBuilder::build(int request_id) const {
+std::string SocketRpcNodeInstancesResultBuilder::build(int request_id) const {
     if (!error_message.empty()) {
         return jsonrpc_error(request_id, error_code, error_message);
     }
     if (!result.has_value()) {
-        throw_unbuilt_response("SocketRpcIvModuleInstancesResultBuilder");
+        throw_unbuilt_response("SocketRpcNodeInstancesResultBuilder");
     }
     return jsonrpc_result(request_id, Json{{"instances", iv_module_instances_json(*result)}});
 }

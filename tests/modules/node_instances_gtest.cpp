@@ -16,6 +16,7 @@
 #include <filesystem>
 #include <memory>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -131,6 +132,23 @@ TEST_F(NodeInstancesTest, CreateInstancePublishesRequiredDefinitionAndListChange
     EXPECT_EQ(witness.listed_instances->front().instance_id, instance_id);
     EXPECT_EQ(witness.listed_instances->front().definition_id, module_id);
     EXPECT_FALSE(witness.listed_instances->front().realized);
+}
+
+TEST_F(NodeInstancesTest, CreateRejectsEmptyStableAndDefinitionIds)
+{
+    auto const workspace = iv::test_support::fresh_module_fixture_workspace(
+        "node_instances_empty_ids");
+
+    EXPECT_THROW(
+        (void)bridge_source.create_instance(
+            module_id,
+            workspace,
+            std::optional<std::string>{""}),
+        std::invalid_argument);
+    EXPECT_THROW(
+        (void)bridge_source.create_instance("", workspace),
+        std::invalid_argument);
+    EXPECT_TRUE(bridge_source.desired_instances().empty());
 }
 
 TEST_F(NodeInstancesTest, CreateSecondInstanceForSameDefinitionDoesNotRepublishRequirement)
@@ -361,4 +379,74 @@ TEST_F(NodeInstancesTest, ConfigurationSourceUpdatePublishesTheNewDurableRequest
     ASSERT_TRUE(witness.listed_instances.has_value());
     ASSERT_EQ(witness.listed_instances->size(), 1u);
     EXPECT_EQ(witness.listed_instances->front().configuration_source, "880");
+}
+
+TEST_F(NodeInstancesTest, InvalidReplaceAllDoesNotPartiallyChangeDesiredState)
+{
+    auto const workspace = iv::test_support::fresh_module_fixture_workspace(
+        "node_instances_replace_all_atomicity");
+    auto const module_root = std::filesystem::weakly_canonical(workspace);
+    (void)bridge_source.create_instance(
+        module_id,
+        module_root,
+        "instance:existing",
+        "Existing",
+        "440");
+    auto const before = bridge_source.desired_instances();
+    witness.reset();
+
+    iv::GraphBuilder root;
+    iv::NodeInstancesProjectGraphRequest request{
+        .snapshot = std::make_shared<iv::NodeDefinitionsSnapshot const>(),
+        .root_builder = &root,
+        .mutation = iv::NodeInstanceReplaceAllMutation{
+            .instances = {
+                {
+                    .instance_id = "instance:duplicate",
+                    .definition_id = "iv.test.first",
+                    .package_root = module_root,
+                },
+                {
+                    .instance_id = "instance:duplicate",
+                    .definition_id = "iv.test.second",
+                    .package_root = module_root,
+                },
+            },
+        },
+    };
+
+    EXPECT_THROW(
+        bridge_source.handle_project_graph_transaction(request),
+        std::invalid_argument);
+    EXPECT_TRUE(request.handled);
+    EXPECT_EQ(bridge_source.desired_instances(), before);
+    EXPECT_FALSE(witness.required_diff.has_value());
+    EXPECT_FALSE(witness.instances_diff.has_value());
+    EXPECT_FALSE(witness.listed_instances.has_value());
+}
+
+TEST_F(NodeInstancesTest, ReplaceAllDoesNotInventARootForAnUnresolvedDefinition)
+{
+    iv::GraphBuilder root;
+    iv::NodeInstancesProjectGraphRequest request{
+        .snapshot = std::make_shared<iv::NodeDefinitionsSnapshot const>(),
+        .root_builder = &root,
+        .mutation = iv::NodeInstanceReplaceAllMutation{
+            .instances = {{
+                .instance_id = "instance:unresolved",
+                .definition_id = "iv.test.unresolved",
+                .configuration_source = "440",
+            }},
+        },
+    };
+
+    bridge_source.handle_project_graph_transaction(request);
+
+    ASSERT_TRUE(request.handled);
+    ASSERT_EQ(request.result.diagnostics.size(), 1u);
+    auto const declarations = bridge_source.desired_instances();
+    ASSERT_EQ(declarations.size(), 1u);
+    EXPECT_EQ(declarations.front().instance_id, "instance:unresolved");
+    EXPECT_FALSE(declarations.front().package_root.has_value());
+    EXPECT_FALSE(witness.required_diff.has_value());
 }

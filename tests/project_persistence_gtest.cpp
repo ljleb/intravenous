@@ -1,10 +1,12 @@
 #include "module_test_utils.h"
 
 #include <intravenous/runtime/node_instances.h>
+#include <intravenous/runtime/project_connection_json.h>
 #include <intravenous/runtime/project_persistence.h>
 #include <intravenous/runtime/project_persistence_builder.h>
 #include <intravenous/runtime/project_persistence_events.h>
 #include <intravenous/runtime/project_persistence_node_instances_bridge.h>
+#include <intravenous/runtime/project_persistence_graph_connections_bridge.h>
 #include <intravenous/runtime/project_persistence_project_graph_bridge.h>
 #include <intravenous/runtime/graph_connections.h>
 #include <intravenous/runtime/project_graph.h>
@@ -21,6 +23,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <unordered_map>
 #include <variant>
 #include <vector>
 
@@ -114,45 +117,118 @@ TEST(ProjectPersistenceBuilder, SerializesOnlyDurableConfiguredStateInStableOrde
     toolchain.c_compiler = workspace / "toolchain" / "clang";
     builder.add_project_toolchain_config(toolchain);
     builder.add_project_audio_device_selection("out-1", std::nullopt);
-    builder.add_iv_module_instances({
-        iv::IvModuleInstanceInfo{
+    builder.add_node_instances({
+        iv::ProjectNodeInstanceDeclaration{
             .instance_id = "instance:b",
             .definition_id = "iv.test.b",
-            .display_name = "B",
             .package_root = workspace / "modules" / "b",
+            .display_name = "B",
             .configuration_source = "{.gain = 0.25}",
         },
-        iv::IvModuleInstanceInfo{
+        iv::ProjectNodeInstanceDeclaration{
             .instance_id = "instance:a",
             .definition_id = "iv.test.a",
-            .display_name = "iv.test.a",
             .package_root = workspace / "modules" / "a",
         },
     });
+    builder.add_graph_connections({iv::ProjectSampleConnection{
+        .connection_id = "connection:main",
+        .source_type = iv::ChannelTypeId::stereo,
+        .outputs = {{
+            .instance_id = "instance:a",
+            .path = {
+                iv::ProjectVirtualNodeSelector{
+                    .source_identity = "processor",
+                    .type_identity = "filter",
+                },
+                iv::ProjectVirtualMemberSelector{.index = 1},
+                iv::ProjectTiledChildSelector{.name = "right"},
+            },
+            .port = {.name = "main", .index = 2, .channel = 1},
+        }},
+        .target_type = iv::ChannelTypeId::mono,
+        .inputs = {{
+            .instance_id = "instance:b",
+            .port = {.name = "main"},
+        }},
+    }});
 
     auto const commands = builder.build();
-    ASSERT_EQ(commands.size(), 3u);
+    ASSERT_EQ(commands.size(), 4u);
     EXPECT_EQ(commands[0].command, "project.overrideSettings");
     EXPECT_EQ(commands[0].args["cmake_generator"], "Unix Makefiles");
     EXPECT_EQ(commands[0].args["c_compiler"], "toolchain/clang");
     EXPECT_EQ(commands[0].args["output_device_id"], "out-1");
     EXPECT_TRUE(commands[0].args["input_device_id"].is_null());
 
-    EXPECT_EQ(commands[1].command, "ivModuleInstances.create");
+    EXPECT_EQ(commands[1].command, "nodeInstances.upsert");
     EXPECT_EQ(commands[1].args["instance_id"], "instance:a");
-    EXPECT_EQ(commands[1].args["module_id"], "iv.test.a");
+    EXPECT_EQ(commands[1].args["definition_id"], "iv.test.a");
     EXPECT_EQ(commands[1].args["package_root"], "modules/a");
     EXPECT_TRUE(commands[1].args["display_name"].is_null());
     EXPECT_EQ(commands[1].args["configuration_source"], "");
 
-    EXPECT_EQ(commands[2].command, "ivModuleInstances.create");
+    EXPECT_EQ(commands[2].command, "nodeInstances.upsert");
     EXPECT_EQ(commands[2].args["instance_id"], "instance:b");
     EXPECT_EQ(commands[2].args["display_name"], "B");
     EXPECT_EQ(commands[2].args["configuration_source"], "{.gain = 0.25}");
 
+    EXPECT_EQ(commands[3].command, "graphConnections.upsert");
+    EXPECT_EQ(commands[3].args["kind"], "sample");
+    EXPECT_EQ(commands[3].args["connection_id"], "connection:main");
+    EXPECT_EQ(commands[3].args["source_type"], "stereo");
+    EXPECT_EQ(commands[3].args["target_type"], "mono");
+    auto const& output = commands[3].args["outputs"][0];
+    EXPECT_EQ(output["instance_id"], "instance:a");
+    ASSERT_EQ(output["path"].size(), 3u);
+    EXPECT_EQ(output["path"][0]["kind"], "virtualNode");
+    EXPECT_EQ(output["path"][0]["source_identity"], "processor");
+    EXPECT_EQ(output["path"][0]["type_identity"], "filter");
+    EXPECT_EQ(output["path"][1]["kind"], "virtualMember");
+    EXPECT_EQ(output["path"][1]["index"], 1u);
+    EXPECT_EQ(output["path"][2]["kind"], "tiledChild");
+    EXPECT_EQ(output["path"][2]["name"], "right");
+    EXPECT_EQ(output["port"]["channel"], 1u);
+
     for (auto const &command : commands) {
         EXPECT_FALSE(command.args.contains("graph_input"));
         EXPECT_FALSE(command.args.contains("compiled_sample_cache_chunk_size_multiplier"));
+    }
+}
+
+TEST(ProjectConnectionJson, RoundTripsEveryStructuredMatcherFieldInBothNameStyles)
+{
+    iv::ProjectConnection const original = iv::ProjectSampleConnection{
+        .connection_id = "connection:round-trip",
+        .source_type = iv::ChannelTypeId::stereo,
+        .outputs = {{
+            .instance_id = "instance:source",
+            .path = {
+                iv::ProjectVirtualNodeSelector{
+                    .source_identity = "processor",
+                    .type_identity = "filter",
+                },
+                iv::ProjectVirtualMemberSelector{.index = 5},
+                iv::ProjectTiledChildSelector{.name = "right"},
+            },
+            .port = {.name = "audio", .index = 2, .channel = 1},
+        }},
+        .target_type = iv::ChannelTypeId::mono,
+        .inputs = {{
+            .instance_id = "instance:target",
+            .path = {iv::ProjectVirtualNodeSelector{
+                .source_identity = "sink",
+            }},
+            .port = {.index = 0, .channel = 0},
+        }},
+    };
+
+    for (auto const names : {
+             iv::ProjectConnectionJsonNames::project_file,
+             iv::ProjectConnectionJsonNames::socket_rpc,
+         }) {
+        auto const json = iv::project_connection_json(original, names);
+        EXPECT_EQ(iv::parse_project_connection_json(json, names), original);
     }
 }
 
@@ -176,8 +252,14 @@ TEST(ProjectPersistence, LoadContinuesAfterBadCommandAndReplaysLaterInstance)
     write_text(
         workspace / "iv_project.jsonl",
         R"({"command":"removed.timelineCommand","args":{}})" "\n"
-        R"({"command":"ivModuleInstances.create","args":{"instance_id":"instance:0","module_id":"iv.test.legacy","package_root":"modules/legacy","display_name":null}})" "\n"
-        R"({"command":"ivModuleInstances.create","args":{"instance_id":"instance:1","module_id":"iv.test.replayed","package_root":"modules/replayed","display_name":"Replayed","configuration_source":"12 + 4"}})" "\n");
+        R"({"command":"nodeInstances.upsert","args":{"instance_id":"instance:0","definition_id":"iv.test.legacy","package_root":"modules/legacy","display_name":null}})" "\n"
+        R"({"command":"nodeInstances.upsert","args":{"instance_id":"instance:removed","definition_id":"iv.test.removed","package_root":null,"display_name":null,"configuration_source":""}})" "\n"
+        R"({"command":"nodeInstances.delete","args":{"instance_id":"instance:removed"}})" "\n"
+        R"({"command":"nodeInstances.upsert","args":{"instance_id":"instance:1","definition_id":"iv.test.replayed","package_root":"modules/replayed","display_name":"Replayed","configuration_source":"12 + 4"}})" "\n"
+        R"({"command":"graphConnections.upsert","args":{"kind":"event","connection_id":"event:removed","source_type":"trigger","outputs":[{"instance_id":"instance:0","path":[],"port":{"name":"out"}}],"target_type":"empty","inputs":[{"instance_id":"instance:1","path":[],"port":{"index":0}}]}})" "\n"
+        R"({"command":"graphConnections.delete","args":{"connection_id":"event:removed"}})" "\n"
+        R"({"command":"graphConnections.upsert","args":{"kind":"event","connection_id":"event:dangling","source_type":"trigger","outputs":[{"instance_id":"instance:0","path":[],"port":{"name":"out"}}],"target_type":"empty","inputs":[{"instance_id":"instance:1","path":[],"port":{"index":0}}]}})" "\n"
+        R"({"command":"graphConnections.upsert","args":{"kind":"sample","connection_id":"sample:structured","source_type":"stereo","outputs":[{"instance_id":"instance:0","path":[{"kind":"virtualNode","source_identity":"processor","type_identity":"filter"},{"kind":"virtualMember","index":2},{"kind":"tiledChild","name":"left"}],"port":{"name":"audio","index":1,"channel":0}}],"target_type":"mono","inputs":[{"instance_id":"instance:1","path":[],"port":{"name":"audio"}}]}})" "\n");
 
     iv::ProjectPersistence persistence(workspace, startup);
     iv::NodeInstances instances;
@@ -205,6 +287,19 @@ TEST(ProjectPersistence, LoadContinuesAfterBadCommandAndReplaysLaterInstance)
     EXPECT_EQ(listed[1].definition_id, "iv.test.replayed");
     EXPECT_EQ(listed[1].display_name, "Replayed");
     EXPECT_EQ(listed[1].configuration_source, "12 + 4");
+    auto const desired_connections = graph_connections.desired_connections();
+    ASSERT_EQ(desired_connections.size(), 2u);
+    EXPECT_EQ(iv::project_connection_id(desired_connections[0]), "event:dangling");
+    EXPECT_EQ(iv::project_connection_id(desired_connections[1]), "sample:structured");
+    auto const* sample = std::get_if<iv::ProjectSampleConnection>(
+        &desired_connections[1]);
+    ASSERT_NE(sample, nullptr);
+    EXPECT_EQ(sample->source_type, iv::ChannelTypeId::stereo);
+    ASSERT_EQ(sample->outputs[0].path.size(), 3u);
+    EXPECT_EQ(sample->outputs[0].port.channel, 0u);
+    auto const generation = project_graph.current_generation();
+    ASSERT_TRUE(generation);
+    EXPECT_EQ(generation->generation, 1u);
     EXPECT_TRUE(std::ranges::any_of(witness.messages, [](auto const &message) {
         return message.level == "error"
             && message.message.contains("unknown project command: removed.timelineCommand");
@@ -231,13 +326,58 @@ TEST(ProjectPersistence, SaveCollectsInstanceMetadataWithoutExecutionState)
 
     auto const commands = parse_project_file(workspace / "iv_project.jsonl");
     ASSERT_EQ(commands.size(), 1u);
-    EXPECT_EQ(commands[0]["command"], "ivModuleInstances.create");
+    EXPECT_EQ(commands[0]["command"], "nodeInstances.upsert");
     EXPECT_EQ(commands[0]["args"]["instance_id"], "instance:stable");
-    EXPECT_EQ(commands[0]["args"]["module_id"], "iv.test.persisted");
+    EXPECT_EQ(commands[0]["args"]["definition_id"], "iv.test.persisted");
     EXPECT_EQ(commands[0]["args"]["package_root"], "modules/persisted");
     EXPECT_EQ(commands[0]["args"]["display_name"], "Persisted");
     EXPECT_EQ(commands[0]["args"]["configuration_source"], "{.cutoff = 1200}");
     EXPECT_EQ(commands[0]["args"].size(), 5u);
+}
+
+TEST(ProjectPersistence, SaveCollectsDanglingStructuredGraphConnections)
+{
+    auto const workspace = fresh_workspace("project_persistence_connection_save");
+    iv::ProjectPersistence persistence(workspace, startup_for(workspace));
+    iv::GraphConnections connections;
+    auto connections_scope =
+        iv::project_persistence_graph_connections_bridge::bind(
+            persistence, connections);
+
+    iv::GraphBuilder root;
+    std::unordered_map<std::string, iv::NodeInstancePlacement> placements;
+    iv::GraphConnectionsProjectGraphRequest request{
+        .root_builder = &root,
+        .placements = &placements,
+        .mutation = iv::GraphConnectionUpsertMutation{
+            .connection = iv::ProjectEventConnection{
+                .connection_id = "event:dangling",
+                .source_type = iv::EventTypeId::midi,
+                .outputs = {{
+                    .instance_id = "source",
+                    .path = {iv::ProjectVirtualMemberSelector{.index = 3}},
+                    .port = {.name = "events"},
+                }},
+                .target_type = iv::EventTypeId::trigger,
+                .inputs = {{
+                    .instance_id = "target",
+                    .port = {.index = 1},
+                }},
+            },
+        },
+    };
+    connections.handle_project_graph_transaction(request);
+
+    persistence.save();
+
+    auto const commands = parse_project_file(workspace / "iv_project.jsonl");
+    ASSERT_EQ(commands.size(), 1u);
+    EXPECT_EQ(commands[0]["command"], "graphConnections.upsert");
+    EXPECT_EQ(commands[0]["args"]["kind"], "event");
+    EXPECT_EQ(commands[0]["args"]["connection_id"], "event:dangling");
+    EXPECT_EQ(commands[0]["args"]["source_type"], "midi");
+    EXPECT_EQ(commands[0]["args"]["target_type"], "trigger");
+    EXPECT_EQ(commands[0]["args"]["outputs"][0]["path"][0]["index"], 3u);
 }
 
 TEST(ProjectPersistence, SaveWithNoContributorsWritesEmptyProjectFile)

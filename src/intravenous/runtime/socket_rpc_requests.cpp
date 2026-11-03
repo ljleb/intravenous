@@ -1,5 +1,7 @@
 #include <intravenous/runtime/socket_rpc_requests.h>
 
+#include <intravenous/runtime/project_connection_json.h>
+
 #include <nlohmann/json.hpp>
 
 #include <cstdint>
@@ -187,11 +189,12 @@ ParsedSocketRpcRequest parse_socket_rpc_request(std::string_view line)
         return {.request_id = request_id, .payload = GetVirtualNodesRequest{
             .node_ids = parse_string_array_param(params, "nodeIds")}};
     }
-    if (method == "ivModuleInstances.create") {
+    if (method == "nodeInstances.create") {
         auto configuration_source = parse_optional_nullable_string_param(
             params, "configurationSource");
-        return {.request_id = request_id, .payload = CreateIvModuleInstanceRequest{
-            .module_id = parse_string_param(params, "moduleId"),
+        return {.request_id = request_id, .payload = CreateNodeInstanceRequest{
+            .instance_id = parse_optional_nullable_string_param(params, "instanceId"),
+            .definition_id = parse_string_param(params, "definitionId"),
             .display_name = parse_optional_nullable_string_param(params, "displayName"),
             .configuration_source = configuration_source.value_or(std::string{}),
         }};
@@ -203,37 +206,59 @@ ParsedSocketRpcRequest parse_socket_rpc_request(std::string_view line)
         return {.request_id = request_id, .payload = CreateIvPackageRequest{
             .name = parse_string_param(params, "name")}};
     }
-    if (method == "ivModuleInstances.get") {
+    if (method == "nodeInstances.get") {
         auto const source_file_path = parse_optional_nullable_string_param(params, "sourceFilePath");
-        return {.request_id = request_id, .payload = GetIvModuleInstancesRequest{
+        return {.request_id = request_id, .payload = GetNodeInstancesRequest{
             .source_file_path = source_file_path.has_value()
                 ? std::optional<std::filesystem::path>{*source_file_path}
                 : std::nullopt}};
     }
-    if (method == "ivModuleInstances.delete") {
-        return {.request_id = request_id, .payload = DeleteIvModuleInstanceRequest{
+    if (method == "nodeInstances.delete") {
+        return {.request_id = request_id, .payload = DeleteNodeInstanceRequest{
             .instance_id = parse_string_param(params, "instanceId")}};
     }
-    if (method == "ivModuleInstances.update") {
+    if (method == "nodeInstances.update") {
         auto const updates_it = params.find("updates");
         if (updates_it == params.end() || !updates_it->is_array()) {
             throw std::runtime_error("socket rpc params are missing array 'updates'");
         }
-        std::vector<UpdateIvModuleInstance> updates;
+        std::vector<UpdateNodeInstance> updates;
         updates.reserve(updates_it->size());
         for (auto const &update : *updates_it) {
             if (!update.is_object()) {
                 throw std::runtime_error("socket rpc update entry must be an object");
             }
-            updates.push_back(UpdateIvModuleInstance{
+            updates.push_back(UpdateNodeInstance{
                 .instance_id = parse_string_param(update, "instanceId"),
                 .display_name = parse_optional_nullable_string_param(update, "displayName"),
                 .configuration_source = parse_optional_nullable_string_param(
                     update, "configurationSource"),
             });
         }
-        return {.request_id = request_id, .payload = UpdateIvModuleInstancesRequest{
+        return {.request_id = request_id, .payload = UpdateNodeInstancesRequest{
             .updates = std::move(updates)}};
+    }
+    if (method == "graphConnections.upsert") {
+        auto const connection = params.find("connection");
+        if (connection == params.end() || !connection->is_object()) {
+            throw std::runtime_error(
+                "graphConnections.upsert requires object param 'connection'");
+        }
+        return {
+            .request_id = request_id,
+            .payload = UpsertGraphConnectionRequest{
+                .connection = parse_project_connection_json(
+                    *connection, ProjectConnectionJsonNames::socket_rpc),
+            },
+        };
+    }
+    if (method == "graphConnections.delete") {
+        return {
+            .request_id = request_id,
+            .payload = DeleteGraphConnectionRequest{
+                .connection_id = parse_string_param(params, "connectionId"),
+            },
+        };
     }
     if (method == "audioDevices.get") {
         return {.request_id = request_id, .payload = GetAudioDevicesRequest{}};

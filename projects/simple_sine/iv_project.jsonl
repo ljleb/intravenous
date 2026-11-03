@@ -1,2 +1,2 @@
-{"command":"ivModuleInstances.create","args":{"instance_id":"7bb2a16a-6614-4ffa-9bcc-ffefe80b4bd7","module_id":"iv.project.q24_icosphere_pan","package_root":"modules/q24_icosphere_pan","display_name":null}}
-{"command":"ivModuleInstances.create","args":{"instance_id":"c01e1d47-c6fd-4b48-8a1e-ddd2e2a553fb","module_id":"iv.project.saw","package_root":"modules/saw","display_name":null}}
+{"command":"nodeInstances.upsert","args":{"instance_id":"7bb2a16a-6614-4ffa-9bcc-ffefe80b4bd7","definition_id":"iv.project.q24_icosphere_pan","package_root":"modules/q24_icosphere_pan","display_name":null,"configuration_source":""}}
+{"command":"nodeInstances.upsert","args":{"instance_id":"c01e1d47-c6fd-4b48-8a1e-ddd2e2a553fb","definition_id":"iv.project.saw","package_root":"modules/saw","display_name":null,"configuration_source":""}}

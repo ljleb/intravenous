@@ -2,9 +2,10 @@
 
 _Implementation checkpoint: the typed project mutation surface,
 `ProjectGraph -> GraphConnections` sibling edge, desired-state ownership, matcher
-resolution, dangling diagnostics, and root-builder application are implemented.
-The JSON-RPC/persistence serialization adapters for structured matchers remain a
-follow-up transport checkpoint._
+resolution, dangling diagnostics, root-builder application, project-file
+serialization, and JSON-RPC adapters are implemented. The superseded checkpoint
+is preserved in
+[front_10_pre_implementation_checkpoint_2026-11-02.md](../historical/front_10_pre_implementation_checkpoint_2026-11-02.md)._
 
 This procedure covers user creation, deletion, or replacement of project-wide
 connections expressed through `ProjectNodePortMatcher`s.
