@@ -153,3 +153,29 @@ TEST(ModuleContextBoundary, ModuleContextRejectsAnUnknownNamedLocal)
 
     EXPECT_THROW((void)context.ref<"missing">(), std::logic_error);
 }
+
+TEST(ModuleContextBoundary, ModuleContextRejectsAnAmbiguousNamedLocal)
+{
+    iv::NodeMessageContextOperations const operations{};
+    iv::NodeAddress const address{.instance_id = "instance:module"};
+    iv::ModuleMessageLocalRefs const locals{
+        .values = {
+            {
+                .name = "voice",
+                .relative_path = {iv::ProjectVirtualNodeSelector{
+                    .source_identity = "module.cpp:first-voice",
+                }},
+            },
+            {
+                .name = "voice",
+                .relative_path = {iv::ProjectVirtualNodeSelector{
+                    .source_identity = "module.cpp:second-voice",
+                }},
+            },
+        },
+    };
+    iv::ModuleMessageContext<AddressingModule> context(
+        operations, address, &locals);
+
+    EXPECT_THROW((void)context.ref<"voice">(), std::logic_error);
+}

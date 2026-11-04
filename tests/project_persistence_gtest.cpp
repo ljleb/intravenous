@@ -1,6 +1,9 @@
 #include "module_test_utils.h"
 
+#include <intravenous/module/package_definitions.h>
 #include <intravenous/runtime/node_instances.h>
+#include <intravenous/runtime/node_definitions_events.h>
+#include <intravenous/runtime/package_pipeline_types.h>
 #include <intravenous/runtime/project_connection_json.h>
 #include <intravenous/runtime/project_persistence.h>
 #include <intravenous/runtime/project_persistence_builder.h>
@@ -18,8 +21,11 @@
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <atomic>
 #include <filesystem>
 #include <fstream>
+#include <memory>
+#include <span>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -29,6 +35,105 @@
 
 namespace {
 using Json = nlohmann::ordered_json;
+
+constexpr char persisted_original_definition_id[] =
+    "iv.test.persistence.original";
+constexpr char persisted_successor_definition_id[] =
+    "iv.test.persistence.successor";
+constexpr char persisted_package_root[] =
+    "/tmp/iv-project-persistence-replacement-tests";
+constexpr char persisted_source_file[] =
+    "/tmp/iv-project-persistence-replacement-tests/module.cpp";
+iv::details::RegisteredSignature const persisted_zero_signature{};
+std::atomic<int> persisted_successor_configure_calls{0};
+
+iv::details::RegisteredSignature const* persisted_signature_callback()
+{
+    return &persisted_zero_signature;
+}
+
+void configure_persisted_original(
+    iv::GraphBuilder& graph,
+    std::span<iv::details::ConfigurationArgument>)
+{
+    using namespace iv;
+    auto input = graph.input<"main">();
+    graph.outputs(input);
+}
+
+void configure_persisted_successor(
+    iv::GraphBuilder& graph,
+    std::span<iv::details::ConfigurationArgument>)
+{
+    ++persisted_successor_configure_calls;
+    using namespace iv;
+    auto input = graph.input<"main">();
+    graph.outputs(input);
+}
+
+std::shared_ptr<iv::NodeDefinitionsSnapshot const>
+persisted_replacement_definitions()
+{
+    using iv::details::PackageDefinition;
+    using iv::details::PackageDefinitionKind;
+
+    auto revision = std::make_shared<iv::PackageRevision>();
+    revision->package_id = "iv.test.persistence.package";
+    revision->package_root = persisted_package_root;
+    revision->revision = 1;
+    auto add_provider = [&](char const* id,
+                            std::size_t id_size,
+                            iv::details::IvModuleConfigureFunction configure) {
+        revision->provider_definitions.push_back(PackageDefinition{
+            .kind = PackageDefinitionKind::module,
+            .id = id,
+            .id_size = id_size,
+            .source_file = persisted_source_file,
+            .source_file_size = sizeof(persisted_source_file) - 1,
+            .package_root = persisted_package_root,
+            .package_root_size = sizeof(persisted_package_root) - 1,
+            .module_build = configure,
+            .signature = &persisted_signature_callback,
+        });
+    };
+    add_provider(
+        persisted_original_definition_id,
+        sizeof(persisted_original_definition_id) - 1,
+        &configure_persisted_original);
+    add_provider(
+        persisted_successor_definition_id,
+        sizeof(persisted_successor_definition_id) - 1,
+        &configure_persisted_successor);
+
+    auto snapshot = std::make_shared<iv::NodeDefinitionsSnapshot>();
+    snapshot->generation = 1;
+    snapshot->package_revisions.push_back(revision);
+    auto add_definition = [&](std::string id,
+                              iv::details::IvModuleConfigureFunction configure) {
+        snapshot->by_id.emplace(id, iv::NodeDefinitionEntry{
+            .definition_id = id,
+            .kind = iv::NodeDefinitionKind::module,
+            .version = 1,
+            .definition = iv::ModuleNodeDefinition{
+                .definition_id = id,
+                .package_id = revision->package_id,
+                .package_root = revision->package_root,
+                .module_id = id,
+                .provider = iv::NodeDefinitionProvider{
+                    .module_build = configure,
+                    .signature = &persisted_signature_callback,
+                },
+            },
+        });
+    };
+    add_definition(
+        persisted_original_definition_id,
+        &configure_persisted_original);
+    add_definition(
+        persisted_successor_definition_id,
+        &configure_persisted_successor);
+    return snapshot;
+}
 
 std::filesystem::path fresh_workspace(std::string_view name)
 {
@@ -349,6 +454,58 @@ TEST(ProjectPersistence, LoadContinuesAfterBadCommandAndReplaysLaterInstance)
         return message.level == "error"
             && message.message.contains("unknown project command: removed.timelineCommand");
     }));
+}
+
+TEST(ProjectPersistence, LoadedReplacementConfiguresAfterDefinitionsArrive)
+{
+    auto const workspace = fresh_workspace(
+        "project_persistence_reconstructs_node_replacement");
+    auto startup = startup_for(workspace);
+    write_text(
+        workspace / "iv_project.jsonl",
+        R"({"command":"nodeInstances.upsert","args":{"instance_id":"instance:original","definition_id":"iv.test.persistence.original","package_root":null,"display_name":null,"configuration_source":""}})" "\n"
+        R"({"command":"nodeReplacements.upsert","args":{"address":{"instance_id":"instance:original","path":[]},"definition_id":"iv.test.persistence.successor","package_root":null,"configuration_arguments":[]}})" "\n");
+
+    iv::ProjectPersistence persistence(workspace, startup);
+    iv::NodeInstances instances;
+    iv::GraphConnections graph_connections;
+    iv::ProjectGraph project_graph;
+    auto persistence_graph_scope =
+        iv::project_persistence_project_graph_bridge::bind(
+            persistence, project_graph);
+    auto graph_instances_scope =
+        iv::project_graph_node_instances_bridge::bind(
+            project_graph, instances);
+    auto graph_connections_scope =
+        iv::project_graph_graph_connections_bridge::bind(
+            project_graph, graph_connections);
+    auto persistence_instances_scope =
+        iv::project_persistence_node_instances_bridge::bind(
+            persistence, instances);
+    persisted_successor_configure_calls = 0;
+
+    persistence.load();
+    ASSERT_EQ(instances.desired_node_replacements().size(), 1u);
+    ASSERT_TRUE(project_graph.current_generation());
+    EXPECT_TRUE(project_graph.current_generation()->placements.empty());
+
+    project_graph.handle_node_definitions_snapshot_changed(
+        iv::NodeDefinitionsSnapshotChanged{
+            .snapshot = persisted_replacement_definitions(),
+        });
+
+    auto const generation = project_graph.current_generation();
+    ASSERT_TRUE(generation);
+    ASSERT_TRUE(generation->placements.contains("instance:original"));
+    EXPECT_EQ(
+        generation->placements.at("instance:original")
+            .configured->definition_id,
+        persisted_successor_definition_id);
+    ASSERT_EQ(generation->node_replacements.size(), 1u);
+    EXPECT_EQ(
+        generation->node_replacements[0].definition_id,
+        persisted_successor_definition_id);
+    EXPECT_EQ(persisted_successor_configure_calls.load(), 1);
 }
 
 TEST(ProjectPersistence, SaveCollectsInstanceMetadataWithoutExecutionState)
