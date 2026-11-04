@@ -260,6 +260,36 @@ ParsedSocketRpcRequest parse_socket_rpc_request(std::string_view line)
             },
         };
     }
+    if (method == "nodeMessages.getProtocol") {
+        return {
+            .request_id = request_id,
+            .payload = GetNodeEventProtocolRequest{},
+        };
+    }
+    if (method == "nodeMessages.dispatch") {
+        auto const target = params.find("target");
+        if (target == params.end() || !target->is_object()) {
+            throw std::runtime_error(
+                "nodeMessages.dispatch requires object param 'target'");
+        }
+        auto const payload = params.find("payload");
+        if (payload == params.end()) {
+            throw std::runtime_error(
+                "nodeMessages.dispatch requires param 'payload'");
+        }
+        return {
+            .request_id = request_id,
+            .payload = DispatchNodeMessageRequest{
+                .target = parse_node_address_json(
+                    *target, ProjectConnectionJsonNames::socket_rpc),
+                .event_type_nominal_id = parse_string_param(
+                    params, "eventTypeNominalId"),
+                .event_type_definition_fingerprint = parse_string_param(
+                    params, "eventTypeDefinitionFingerprint"),
+                .payload = std::make_shared<Json>(*payload),
+            },
+        };
+    }
     if (method == "audioDevices.get") {
         return {.request_id = request_id, .payload = GetAudioDevicesRequest{}};
     }

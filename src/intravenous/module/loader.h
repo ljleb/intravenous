@@ -87,6 +87,8 @@ namespace iv {
             std::vector<details::PackageDefinition> provider_definitions{};
             std::vector<NodeConfigPointerFieldData> config_pointer_fields{};
             std::vector<RetainedGlobalData> retained_globals{};
+            std::vector<NodeMessageHandlerData> node_message_handlers{};
+            std::vector<ModuleMessageHandlerData> module_message_handlers{};
             std::vector<details::BuilderNodeStateStructures> node_state_structures{};
             // Opaque ownership of this IV package's ORC resources. Definitions and
             // configured graphs retain it while callbacks or retained LLVM globals

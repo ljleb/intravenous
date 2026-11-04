@@ -5,12 +5,28 @@
 #include <intravenous/graph/reflected_node_description.h>
 #include <intravenous/module/builder_session.h>
 
+#include <algorithm>
 #include <array>
 #include <stdexcept>
 #include <string>
 #include <utility>
 
 namespace iv {
+namespace details {
+void iv_builder_prepare_node_source_identity(
+    GraphBuilder* builder,
+    std::string_view source_identity,
+    std::string_view authored_name)
+{
+    if (!builder) {
+        throw std::invalid_argument(
+            "node source identity requires a GraphBuilder");
+    }
+    prepare_builder_node_source_identity(
+        builder->_session, source_identity, authored_name);
+}
+} // namespace details
+
 namespace {
 GraphBuilderState& state(GraphBuilder& builder)
 {
@@ -53,16 +69,108 @@ namespace details {
 NodeBundleHandle iv_builder_append_node(
     GraphBuilder& builder, NodeBuildRequest const& request)
 {
-    return state(builder).append_node_description(
-        materialize_node_build_request(builder._session, request));
+    auto paths = claim_builder_concrete_node_paths(builder._session);
+    if (paths.size() != 1) {
+        throw std::logic_error("a concrete node did not produce one semantic path");
+    }
+    if (auto replacement = resolve_builder_concrete_node_replacement(
+            builder._session, builder, paths.front())) {
+        iv_builder_discard_node_config(
+            builder._session, const_cast<void*>(request.config));
+        record_builder_node_message_path(
+            builder._session, *replacement, paths.front());
+        return *replacement;
+    }
+    auto description = materialize_node_build_request(builder._session, request);
+    register_builder_concrete_node_message_handlers(
+        builder._session,
+        request.compiler_record->code_key,
+        description.node_storage,
+        paths.front());
+    auto const handle = state(builder).append_node_description(
+        std::move(description));
+    record_builder_node_message_path(
+        builder._session, handle, paths.front());
+    return handle;
 }
 
 NodeBundleHandle iv_builder_append_tiled_node(
     GraphBuilder& builder, NodeBuildRequest const& request,
     ChannelLayout layout)
 {
+    auto paths = claim_builder_concrete_node_paths(builder._session, layout);
+    if (paths.size() != channel_count(layout.channel_type)) {
+        throw std::logic_error(
+            "a tiled concrete node produced the wrong semantic path count");
+    }
+
+    std::vector<std::optional<NodeBundleHandle>> replacements;
+    replacements.reserve(paths.size());
+    bool has_replacement = false;
+    for (auto const& path : paths) {
+        replacements.push_back(resolve_builder_concrete_node_replacement(
+            builder._session, builder, path));
+        has_replacement = has_replacement || replacements.back().has_value();
+    }
+    auto const all_replaced = std::ranges::all_of(
+        replacements,
+        [](auto const& replacement) { return replacement.has_value(); });
+    if (all_replaced) {
+        iv_builder_discard_node_config(
+            builder._session, const_cast<void*>(request.config));
+        std::vector<NodeBundleHandle> members;
+        members.reserve(replacements.size());
+        for (auto const& replacement : replacements) {
+            members.push_back(*replacement);
+        }
+        auto const handle = state(builder).append_tiled_node_bundles(
+            members, layout);
+        auto parent_path = paths.front();
+        parent_path.pop_back();
+        record_builder_node_message_path(
+            builder._session, handle, parent_path);
+        return handle;
+    }
+
     auto description = materialize_node_build_request(builder._session, request);
-    return state(builder).append_tiled_node_description(description, layout);
+    if (!has_replacement) {
+        for (auto const& path : paths) {
+            register_builder_concrete_node_message_handlers(
+                builder._session,
+                request.compiler_record->code_key,
+                description.node_storage,
+                path);
+        }
+        auto const handle = state(builder).append_tiled_node_description(
+            description, layout);
+        auto parent_path = paths.front();
+        parent_path.pop_back();
+        record_builder_node_message_path(
+            builder._session, handle, parent_path);
+        return handle;
+    }
+
+    std::vector<NodeBundleHandle> members;
+    members.reserve(paths.size());
+    for (std::size_t index = 0; index < paths.size(); ++index) {
+        if (replacements[index]) {
+            members.push_back(*replacements[index]);
+            continue;
+        }
+        register_builder_concrete_node_message_handlers(
+            builder._session,
+            request.compiler_record->code_key,
+            description.node_storage,
+            paths[index]);
+        members.push_back(state(builder).append_node_description(description));
+    }
+    auto const handle = state(builder).append_tiled_node_bundles(
+        members, layout);
+    auto parent_path = paths.front();
+    parent_path.pop_back();
+    record_builder_node_message_path(
+        builder._session, handle, parent_path);
+    return handle;
 }
 
 NodeBundleHandle iv_builder_append_tiled_node_bundles(

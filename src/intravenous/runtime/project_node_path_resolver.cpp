@@ -214,6 +214,54 @@ std::vector<ProjectNodePathMatch> resolve_project_node_path(
     return resolve_project_node_path(graph, placement->second.root, path);
 }
 
+std::vector<ProjectNodePathMatch> resolve_node_address(
+    ConfiguredGraph const& graph,
+    std::unordered_map<std::string, NodeInstancePlacement> const& placements,
+    NodeAddress const& address)
+{
+    return resolve_project_node_path(
+        graph, placements, address.instance_id, address.path);
+}
+
+std::vector<NodeBundleHandle> concrete_node_address_matches(
+    ConfiguredGraph const& graph,
+    std::span<ProjectNodePathMatch const> matches)
+{
+    std::vector<NodeBundleHandle> result;
+    for (auto const& match : matches) {
+        if (match.kind == ProjectNodePathMatch::Kind::bundle) {
+            auto const& bundle = graph.node_bundles.bundle(match.bundle);
+            if (bundle.is_tiled()) {
+                for (auto const member : bundle.tiled_members()) {
+                    if (!std::ranges::contains(result, member)) {
+                        result.push_back(member);
+                    }
+                }
+            } else if (!std::ranges::contains(result, match.bundle)) {
+                result.push_back(match.bundle);
+            }
+            continue;
+        }
+        auto const& members = graph.virtual_nodes
+            .record(match.virtual_node).node_bundle_handles;
+        for (auto const member_index : match.virtual_member_indices) {
+            if (member_index >= members.size()) continue;
+            auto const member = members[member_index];
+            auto const& bundle = graph.node_bundles.bundle(member);
+            if (bundle.is_tiled()) {
+                for (auto const child : bundle.tiled_members()) {
+                    if (!std::ranges::contains(result, child)) {
+                        result.push_back(child);
+                    }
+                }
+            } else if (!std::ranges::contains(result, member)) {
+                result.push_back(member);
+            }
+        }
+    }
+    return result;
+}
+
 ProjectNodePathMatch require_single_project_node_path_match(
     std::span<ProjectNodePathMatch const> matches,
     std::string_view description)

@@ -15,6 +15,7 @@
 #include <array>
 #include <concepts>
 #include <cstddef>
+#include <memory>
 #include <span>
 #include <stdexcept>
 #include <string>
@@ -89,6 +90,8 @@ NodeRef configure_package_definition(
 NodeRef configure_tiled_package_definition(
     GraphBuilder&, std::string_view id, ChannelLayout,
     std::span<ConfigurationArgument> arguments);
+void register_builder_module_class_message_handlers(
+    GraphBuilder&, std::shared_ptr<void const> receiver);
 
 // This is the private concrete-node construction primitive. Registered node
 // adapters use it after validating their erased arguments; source-facing code
@@ -352,6 +355,97 @@ struct IvModuleConfigureAdapter<Function, DirectInvoker> {
     }
 };
 
+template<class Module, class... Args>
+struct ModuleClassConfigureAdapter {
+    struct DirectInvoker {
+        template<class... ConstructorArgs>
+        requires std::constructible_from<Module, ConstructorArgs...>
+            && requires(Module const& module, GraphBuilder& builder) {
+                { module.build_graph(builder) } -> std::same_as<void>;
+            }
+        static void invoke(
+            GraphBuilder& builder,
+            ConstructorArgs&&... arguments)
+        {
+            auto receiver = std::make_shared<Module>(
+                std::forward<ConstructorArgs>(arguments)...);
+            receiver->build_graph(builder);
+            register_builder_module_class_message_handlers(
+                builder, std::move(receiver));
+        }
+    };
+
+    using Erased = ErasedConfigurationArguments<Args...>;
+    static constexpr auto required_argument_count =
+        Erased::template first_accepted_prefix<DirectInvoker>();
+    static_assert(required_argument_count <= sizeof...(Args),
+        "IV_MODULE_CLASS constructor has no valid provider-side configuration call");
+
+    static RegisteredSignature const* signature()
+    {
+        return std::addressof(
+            RegisteredSignatureStorage<required_argument_count, Args...>::value);
+    }
+
+    template<std::size_t Count = 0>
+    static void dispatch(
+        GraphBuilder& builder,
+        std::span<ConfigurationArgument> arguments)
+    {
+        if (arguments.size() == Count) {
+            if constexpr (Erased::template accepts_prefix_count<DirectInvoker, Count>()) {
+                Erased::template invoke_prefix<DirectInvoker>(
+                    builder, arguments, std::make_index_sequence<Count>{});
+                return;
+            } else {
+                throw_configuration_argument_count_mismatch(
+                    "<provider adapter>", *signature(), arguments.size());
+            }
+        }
+        if constexpr (Count < sizeof...(Args)) {
+            dispatch<Count + 1>(builder, arguments);
+        } else {
+            throw_configuration_argument_count_mismatch(
+                "<provider adapter>", *signature(), arguments.size());
+        }
+    }
+
+    static void configure(
+        GraphBuilder& builder,
+        std::span<ConfigurationArgument> arguments)
+    {
+        dispatch(builder, arguments);
+    }
+};
+
+template<class Module, class... Args>
+void configure_module_class_constructor(
+    GraphBuilder& builder,
+    std::span<ConfigurationArgument> arguments)
+{
+    ModuleClassConfigureAdapter<Module, Args...>::configure(builder, arguments);
+}
+
+template<class Module, class... Args>
+RegisteredSignature const* module_class_constructor_signature()
+{
+    return ModuleClassConfigureAdapter<Module, Args...>::signature();
+}
+
+template<class Module>
+void iv_package_module_class_configuration_pending(
+    GraphBuilder&, std::span<ConfigurationArgument>)
+{
+    throw std::logic_error(
+        "IV_MODULE_CLASS was not processed by the IV Clang registration plugin");
+}
+
+template<class Module>
+RegisteredSignature const* iv_package_module_class_signature_pending()
+{
+    return nullptr;
+}
+
 template<class Node, class... Args>
 struct NodeTypeConfigureAdapter {
     struct DirectInvoker {
@@ -504,6 +598,25 @@ RegisteredSignature const* node_constructor_signature()
             nullptr, nullptr, \
             &::iv::details::IvModuleConfigureAdapter< \
                 Function, IV_PACKAGE_CONCAT(iv_package_module_invoker_, Unique)>::signature}; \
+    }
+
+#define IV_MODULE_CLASS(Id, Module) \
+    IV_MODULE_CLASS_IMPL(Id, Module, __COUNTER__)
+#define IV_MODULE_CLASS_IMPL(Id, Module, Unique) \
+    static_assert(requires(Module const& module, ::iv::GraphBuilder& builder) { \
+        { module.build_graph(builder) } -> std::same_as<void>; \
+    }, "IV_MODULE_CLASS requires a public const void build_graph(GraphBuilder&) member"); \
+    namespace { \
+    IV_PACKAGE_DEFINITION_RECORD constinit const \
+        ::iv::details::PackageDefinition \
+        IV_PACKAGE_CONCAT(iv_package_module_class_definition_, Unique){ \
+            ::iv::details::PackageDefinitionKind::module, \
+            Id, sizeof(Id) - 1, \
+            __FILE__, sizeof(__FILE__) - 1, \
+            "", 0, \
+            &::iv::details::iv_package_module_class_configuration_pending<Module>, \
+            nullptr, nullptr, \
+            &::iv::details::iv_package_module_class_signature_pending<Module>}; \
     }
 
 #define IV_NODE(Id, Node) \

@@ -232,6 +232,38 @@ TEST(ProjectConnectionJson, RoundTripsEveryStructuredMatcherFieldInBothNameStyle
     }
 }
 
+TEST(ProjectPersistenceBuilder, StoresReplacementArgumentsAsStructuredJson)
+{
+    auto const workspace = fresh_workspace(
+        "project_persistence_builder_node_replacement");
+    iv::ProjectPersistenceBuilder builder(workspace, startup_for(workspace));
+    builder.add_node_replacements({iv::ProjectNodeReplacement{
+        .address = {
+            .instance_id = "instance:source",
+            .path = {iv::ProjectVirtualNodeSelector{
+                .source_identity = "processor",
+            }},
+        },
+        .definition_id = "iv.test.successor",
+        .package_root = workspace / "modules" / "successor",
+        .configuration_arguments_json =
+            R"([17,{"mode":"highpass"},[1,2,3]])",
+    }});
+
+    auto const commands = builder.build();
+    ASSERT_EQ(commands.size(), 1u);
+    EXPECT_EQ(commands[0].command, "nodeReplacements.upsert");
+    EXPECT_EQ(commands[0].args["definition_id"], "iv.test.successor");
+    EXPECT_EQ(commands[0].args["package_root"], "modules/successor");
+    EXPECT_EQ(
+        commands[0].args["configuration_arguments"],
+        nlohmann::ordered_json::array({
+            17,
+            nlohmann::ordered_json{{"mode", "highpass"}},
+            nlohmann::ordered_json::array({1, 2, 3}),
+        }));
+}
+
 TEST(ProjectPersistenceBuilder, OmitsSettingsThatMatchStartupDefaults)
 {
     auto const workspace = fresh_workspace("project_persistence_builder_defaults");
@@ -256,6 +288,7 @@ TEST(ProjectPersistence, LoadContinuesAfterBadCommandAndReplaysLaterInstance)
         R"({"command":"nodeInstances.upsert","args":{"instance_id":"instance:removed","definition_id":"iv.test.removed","package_root":null,"display_name":null,"configuration_source":""}})" "\n"
         R"({"command":"nodeInstances.delete","args":{"instance_id":"instance:removed"}})" "\n"
         R"({"command":"nodeInstances.upsert","args":{"instance_id":"instance:1","definition_id":"iv.test.replayed","package_root":"modules/replayed","display_name":"Replayed","configuration_source":"12 + 4"}})" "\n"
+        R"({"command":"nodeReplacements.upsert","args":{"address":{"instance_id":"instance:0","path":[{"kind":"virtualNode","source_identity":"processor"}]},"definition_id":"iv.test.successor","package_root":"modules/successor","configuration_arguments":[17,{"mode":"highpass"}]}})" "\n"
         R"({"command":"graphConnections.upsert","args":{"kind":"event","connection_id":"event:removed","source_type":"trigger","outputs":[{"instance_id":"instance:0","path":[],"port":{"name":"out"}}],"target_type":"empty","inputs":[{"instance_id":"instance:1","path":[],"port":{"index":0}}]}})" "\n"
         R"({"command":"graphConnections.delete","args":{"connection_id":"event:removed"}})" "\n"
         R"({"command":"graphConnections.upsert","args":{"kind":"event","connection_id":"event:dangling","source_type":"trigger","outputs":[{"instance_id":"instance:0","path":[],"port":{"name":"out"}}],"target_type":"empty","inputs":[{"instance_id":"instance:1","path":[],"port":{"index":0}}]}})" "\n"
@@ -287,6 +320,18 @@ TEST(ProjectPersistence, LoadContinuesAfterBadCommandAndReplaysLaterInstance)
     EXPECT_EQ(listed[1].definition_id, "iv.test.replayed");
     EXPECT_EQ(listed[1].display_name, "Replayed");
     EXPECT_EQ(listed[1].configuration_source, "12 + 4");
+    auto const replacements = instances.desired_node_replacements();
+    ASSERT_EQ(replacements.size(), 1u);
+    EXPECT_EQ(replacements[0].address.instance_id, "instance:0");
+    ASSERT_EQ(replacements[0].address.path.size(), 1u);
+    EXPECT_EQ(replacements[0].definition_id, "iv.test.successor");
+    EXPECT_EQ(
+        nlohmann::ordered_json::parse(
+            replacements[0].configuration_arguments_json),
+        nlohmann::ordered_json::array({
+            17,
+            nlohmann::ordered_json{{"mode", "highpass"}},
+        }));
     auto const desired_connections = graph_connections.desired_connections();
     ASSERT_EQ(desired_connections.size(), 2u);
     EXPECT_EQ(iv::project_connection_id(desired_connections[0]), "event:dangling");

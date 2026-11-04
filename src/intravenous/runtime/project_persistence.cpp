@@ -242,6 +242,7 @@ std::vector<ProjectCommand> ProjectPersistence::read_commands() const
 void ProjectPersistence::load()
 {
     std::unordered_map<std::string, ProjectNodeInstanceDeclaration> instances;
+    std::unordered_map<std::string, ProjectNodeReplacement> node_replacements;
     std::unordered_map<std::string, ProjectConnection> connections;
     for (auto const &command : read_commands()) {
         try {
@@ -271,6 +272,47 @@ void ProjectPersistence::load()
                 instances[declaration.instance_id] = std::move(declaration);
             } else if (command.command == "nodeInstances.delete") {
                 instances.erase(require_string(args, "instance_id"));
+            } else if (command.command == "nodeReplacements.upsert") {
+                auto const address = args.find("address");
+                if (address == args.end()) {
+                    throw std::runtime_error(
+                        "node replacement args are missing object key 'address'");
+                }
+                ProjectNodeReplacement replacement{
+                    .address = parse_node_address_json(
+                        *address, ProjectConnectionJsonNames::project_file),
+                    .definition_id = require_string(args, "definition_id"),
+                    .package_root = optional_project_path(
+                        args, "package_root", workspace_root_),
+                    .configuration_arguments_json = [&] {
+                        auto const arguments = args.find(
+                            "configuration_arguments");
+                        if (arguments == args.end() || !arguments->is_array()) {
+                            throw std::runtime_error(
+                                "node replacement args require array key "
+                                "'configuration_arguments'");
+                        }
+                        return arguments->dump();
+                    }(),
+                };
+                if (replacement.definition_id.empty()) {
+                    throw std::runtime_error(
+                        "node replacement definition id must not be empty");
+                }
+                auto key = node_address_json(
+                    replacement.address,
+                    ProjectConnectionJsonNames::project_file).dump();
+                node_replacements[std::move(key)] = std::move(replacement);
+            } else if (command.command == "nodeReplacements.delete") {
+                auto const address = args.find("address");
+                if (address == args.end()) {
+                    throw std::runtime_error(
+                        "node replacement args are missing object key 'address'");
+                }
+                node_replacements.erase(node_address_json(
+                    parse_node_address_json(
+                        *address, ProjectConnectionJsonNames::project_file),
+                    ProjectConnectionJsonNames::project_file).dump());
             } else if (command.command == "graphConnections.upsert") {
                 auto connection = parse_project_connection_json(
                     args, ProjectConnectionJsonNames::project_file);
@@ -297,11 +339,23 @@ void ProjectPersistence::load()
     for (auto& [_, connection] : connections) {
         request.connections.push_back(std::move(connection));
     }
+    request.node_replacements.reserve(node_replacements.size());
+    for (auto& [_, replacement] : node_replacements) {
+        request.node_replacements.push_back(std::move(replacement));
+    }
     std::ranges::sort(
         request.instances, {}, &ProjectNodeInstanceDeclaration::instance_id);
     std::ranges::sort(request.connections, {}, [](ProjectConnection const& connection) {
         return project_connection_id(connection);
     });
+    std::ranges::sort(
+        request.node_replacements,
+        {},
+        [](ProjectNodeReplacement const& replacement) {
+            return node_address_json(
+                replacement.address,
+                ProjectConnectionJsonNames::project_file).dump();
+        });
     try {
         ProjectAckBuilder builder;
         IV_INVOKE_LINKER_EVENT(

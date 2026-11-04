@@ -73,12 +73,22 @@ std::optional<std::size_t> optional_index(Json const& json, std::string_view key
 {
     auto const found = json.find(std::string(key));
     if (found == json.end() || found->is_null()) return std::nullopt;
-    if (!found->is_number_unsigned()) {
+    std::uint64_t value = 0;
+    if (found->is_number_unsigned()) {
+        value = found->get<std::uint64_t>();
+    } else if (found->is_number_integer()) {
+        auto const signed_value = found->get<std::int64_t>();
+        if (signed_value < 0) {
+            throw std::runtime_error(
+                "project connection JSON field '" + std::string(key)
+                + "' must be an unsigned integer or null");
+        }
+        value = static_cast<std::uint64_t>(signed_value);
+    } else {
         throw std::runtime_error(
             "project connection JSON field '" + std::string(key)
             + "' must be an unsigned integer or null");
     }
-    auto const value = found->get<std::uint64_t>();
     if (value > std::numeric_limits<std::size_t>::max()) {
         throw std::runtime_error(
             "project connection JSON field '" + std::string(key) + "' is too large");
@@ -284,5 +294,43 @@ ProjectConnection parse_project_connection_json(
         };
     }
     throw std::runtime_error("unknown project connection kind: " + kind);
+}
+
+nlohmann::ordered_json node_address_json(
+    NodeAddress const& address,
+    ProjectConnectionJsonNames name_style)
+{
+    auto const names = fields(name_style);
+    Json path = Json::array();
+    for (auto const& selector : address.path) {
+        path.push_back(selector_json(selector, names));
+    }
+    return Json{
+        {std::string(names.instance_id), address.instance_id},
+        {"path", std::move(path)},
+    };
+}
+
+NodeAddress parse_node_address_json(
+    nlohmann::ordered_json const& json,
+    ProjectConnectionJsonNames name_style)
+{
+    if (!json.is_object()) {
+        throw std::runtime_error("node address must be a JSON object");
+    }
+    auto const names = fields(name_style);
+    auto const path = json.find("path");
+    if (path == json.end() || !path->is_array()) {
+        throw std::runtime_error("node address requires array field 'path'");
+    }
+    NodeAddress result{.instance_id = require_string(json, names.instance_id)};
+    if (result.instance_id.empty()) {
+        throw std::runtime_error("node address instance id must not be empty");
+    }
+    result.path.reserve(path->size());
+    for (auto const& selector : *path) {
+        result.path.push_back(parse_selector(selector, names));
+    }
+    return result;
 }
 } // namespace iv

@@ -51,6 +51,11 @@ namespace iv {
         void (*)(UpsertGraphConnectionRequest const&, SocketRpcAckResponseBuilder&);
     using SocketRpcDeleteGraphConnectionEvent =
         void (*)(DeleteGraphConnectionRequest const&, SocketRpcAckResponseBuilder&);
+    using SocketRpcDispatchNodeMessageEvent =
+        void (*)(DispatchNodeMessageRequest const&, SocketRpcNodeMessageResultBuilder&);
+    using SocketRpcGetNodeEventProtocolEvent =
+        void (*)(GetNodeEventProtocolRequest const&,
+                 SocketRpcNodeEventProtocolResultBuilder&);
     using SocketRpcGetAudioDevicesEvent =
         void (*)(GetAudioDevicesRequest const &, SocketRpcAudioDevicesResultBuilder &);
     using SocketRpcSetAudioDevicesEvent =
@@ -74,6 +79,8 @@ namespace iv {
     IV_DECLARE_LINKER_EVENT(SocketRpcUpdateNodeInstancesEvent, iv_socket_rpc_update_node_instances_event);
     IV_DECLARE_LINKER_EVENT(SocketRpcUpsertGraphConnectionEvent, iv_socket_rpc_upsert_graph_connection_event);
     IV_DECLARE_LINKER_EVENT(SocketRpcDeleteGraphConnectionEvent, iv_socket_rpc_delete_graph_connection_event);
+    IV_DECLARE_LINKER_EVENT(SocketRpcDispatchNodeMessageEvent, iv_socket_rpc_dispatch_node_message_event);
+    IV_DECLARE_LINKER_EVENT(SocketRpcGetNodeEventProtocolEvent, iv_socket_rpc_get_node_event_protocol_event);
     IV_DECLARE_LINKER_EVENT(SocketRpcGetAudioDevicesEvent, iv_socket_rpc_get_audio_devices_event);
     IV_DECLARE_LINKER_EVENT(SocketRpcSetAudioDevicesEvent, iv_socket_rpc_set_audio_devices_event);
     IV_DECLARE_LINKER_EVENT(SocketRpcSaveProjectEvent, iv_socket_rpc_save_project_event);

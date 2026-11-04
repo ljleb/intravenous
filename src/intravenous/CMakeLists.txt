@@ -234,6 +234,9 @@ add_library(intravenous_graph_builder OBJECT
     node/layout.cpp
 )
 iv_configure_intravenous_target(intravenous_graph_builder PUBLIC)
+target_link_libraries(intravenous_graph_builder PRIVATE
+    nlohmann_json::nlohmann_json
+)
 
 add_library(iv_builder SHARED
     $<TARGET_OBJECTS:intravenous_graph_builder>
@@ -385,6 +388,9 @@ target_link_libraries(intravenous_runtime_project_persistence_events PRIVATE
 iv_add_linker_event_object(
     intravenous_runtime_socket_rpc_events
     runtime/socket_rpc_linker_events.cpp
+)
+target_link_libraries(intravenous_runtime_socket_rpc_events PRIVATE
+    nlohmann_json::nlohmann_json
 )
 target_link_libraries(intravenous_runtime_runtime_project_events PRIVATE
     nlohmann_json::nlohmann_json

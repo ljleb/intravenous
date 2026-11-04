@@ -1,4 +1,5 @@
 #include <intravenous/runtime/configuration_expression.h>
+#include <intravenous/runtime/project_connection_json.h>
 
 #include <algorithm>
 #include <array>
@@ -12,6 +13,8 @@
 #include <string_view>
 #include <type_traits>
 #include <utility>
+
+#include <nlohmann/json.hpp>
 
 namespace iv {
 namespace {
@@ -755,6 +758,26 @@ void construct_value(
         }
         return;
     }
+    if (schema.kind == Kind::node_address) {
+        auto const* address = std::get_if<ConfigurationNodeReferenceExpression>(
+            &expression.value);
+        if (!address) {
+            evaluation_error(expression, "expected a semantic node address");
+        }
+        if (!schema.construct_node_address) {
+            evaluation_error(
+                expression,
+                "NodeAddress metadata has no provider constructor");
+        }
+        provider_operation(expression, [&] {
+            schema.construct_node_address(output.data(), NodeAddress{
+                .instance_id = address->instance_id,
+                .path = address->path,
+            });
+        });
+        output.mark_constructed();
+        return;
+    }
     if (schema.kind == Kind::node_reference) {
         if (!std::holds_alternative<ConfigurationNodeReferenceExpression>(expression.value))
             evaluation_error(expression, "expected a project-node reference");
@@ -764,6 +787,123 @@ void construct_value(
     }
     evaluation_error(expression,
         "configuration type is not supported by the restricted expression language");
+}
+
+ConfigurationExpressionPtr expression_from_json(
+    details::ConfigurationExpressionTypeSchema const& schema,
+    nlohmann::ordered_json const& value)
+{
+    using Kind = details::ConfigurationExpressionTypeKind;
+    auto make = [](auto expression) -> ConfigurationExpressionPtr {
+        return std::make_shared<ConfigurationExpression const>(
+            ConfigurationExpression{
+                .value = std::move(expression),
+            });
+    };
+
+    if (schema.kind == Kind::boolean) {
+        if (!value.is_boolean()) {
+            throw std::invalid_argument("node-message value must be Boolean");
+        }
+        return make(value.get<bool>());
+    }
+    if (schema.kind == Kind::signed_integer
+        || schema.kind == Kind::unsigned_integer
+        || schema.kind == Kind::floating_point) {
+        if (!value.is_number()) {
+            throw std::invalid_argument("node-message value must be numeric");
+        }
+        return make(ConfigurationNumberLiteral{.source = value.dump()});
+    }
+    if (schema.kind == Kind::string) {
+        if (!value.is_string()) {
+            throw std::invalid_argument("node-message value must be a string");
+        }
+        return make(ConfigurationStringLiteral{.value = value.get<std::string>()});
+    }
+    if (schema.kind == Kind::converted_scalar) {
+        if (value.is_boolean()) return make(value.get<bool>());
+        if (value.is_number()) {
+            return make(ConfigurationNumberLiteral{.source = value.dump()});
+        }
+        if (value.is_string()) {
+            return make(ConfigurationStringLiteral{
+                .value = value.get<std::string>(),
+            });
+        }
+        throw std::invalid_argument(
+            "node-message converted scalar must be Boolean, numeric, or string");
+    }
+    if (schema.kind == Kind::enumeration) {
+        if (!value.is_string()) {
+            throw std::invalid_argument(
+                "node-message enum value must be an enumerator name");
+        }
+        return make(ConfigurationIdentifierExpression{
+            .value = value.get<std::string>(),
+        });
+    }
+    if (schema.kind == Kind::aggregate) {
+        if (!value.is_object()) {
+            throw std::invalid_argument(
+                "node-message aggregate value must be an object");
+        }
+        ConfigurationAggregateExpression aggregate;
+        for (auto const& item : value.items()) {
+            auto fields = std::span(schema.fields, schema.field_count);
+            auto const field = std::ranges::find_if(
+                fields,
+                [&](auto const& candidate) {
+                    return field_name(candidate) == item.key();
+                });
+            if (field == fields.end()) {
+                throw std::invalid_argument(
+                    "unknown node-message field '" + item.key() + "'");
+            }
+            if (!field->type) {
+                throw std::invalid_argument(
+                    "node-message field '" + item.key()
+                    + "' has no generated type metadata");
+            }
+            aggregate.elements.push_back({
+                .name = item.key(),
+                .value = expression_from_json(*field->type, item.value()),
+            });
+        }
+        return make(std::move(aggregate));
+    }
+    if (schema.kind == Kind::sequence) {
+        if (!value.is_array()) {
+            throw std::invalid_argument(
+                "node-message sequence value must be an array");
+        }
+        if (!schema.element_type) {
+            throw std::invalid_argument(
+                "node-message sequence has no generated element metadata");
+        }
+        ConfigurationAggregateExpression sequence;
+        sequence.elements.reserve(value.size());
+        for (auto const& element : value) {
+            sequence.elements.push_back({
+                .value = expression_from_json(*schema.element_type, element),
+            });
+        }
+        return make(std::move(sequence));
+    }
+    if (schema.kind == Kind::node_address) {
+        auto address = parse_node_address_json(
+            value, ProjectConnectionJsonNames::socket_rpc);
+        return make(ConfigurationNodeReferenceExpression{
+            .instance_id = std::move(address.instance_id),
+            .path = std::move(address.path),
+        });
+    }
+    if (schema.kind == Kind::node_reference) {
+        throw std::invalid_argument(
+            "a node-message payload cannot contain a live NodeRef; use NodeAddress");
+    }
+    throw std::invalid_argument(
+        "node-message value type is not supported by generated metadata");
 }
 } // namespace
 
@@ -775,6 +915,11 @@ struct EvaluatedConfigurationArguments::Implementation {
     ParsedConfigurationExpressionList parsed{};
     std::vector<Argument> owned{};
     std::vector<details::ConfigurationArgument> arguments{};
+};
+
+struct EvaluatedConfigurationValue::Implementation {
+    details::ConfigurationTypeIdentity const* type = nullptr;
+    std::unique_ptr<OwnedValue> value{};
 };
 
 ParsedConfigurationExpressionList parse_configuration_expression_list(std::string source)
@@ -801,6 +946,27 @@ ParsedConfigurationExpressionList const&
 EvaluatedConfigurationArguments::parsed() const noexcept
 {
     return implementation_->parsed;
+}
+
+EvaluatedConfigurationValue::EvaluatedConfigurationValue()
+    : implementation_(std::make_unique<Implementation>())
+{}
+
+EvaluatedConfigurationValue::~EvaluatedConfigurationValue() = default;
+EvaluatedConfigurationValue::EvaluatedConfigurationValue(
+    EvaluatedConfigurationValue&&) noexcept = default;
+EvaluatedConfigurationValue& EvaluatedConfigurationValue::operator=(
+    EvaluatedConfigurationValue&&) noexcept = default;
+
+void const* EvaluatedConfigurationValue::data() const noexcept
+{
+    return implementation_->value ? implementation_->value->data() : nullptr;
+}
+
+details::ConfigurationTypeIdentity const*
+EvaluatedConfigurationValue::type() const noexcept
+{
+    return implementation_->type;
 }
 
 EvaluatedConfigurationArguments evaluate_configuration_expression_list(
@@ -850,5 +1016,70 @@ EvaluatedConfigurationArguments compile_configuration_expression_list(
 {
     return evaluate_configuration_expression_list(
         parse_configuration_expression_list(std::move(source)), signature);
+}
+
+EvaluatedConfigurationArguments evaluate_configuration_json_arguments(
+    nlohmann::ordered_json const& value,
+    details::RegisteredSignature const& signature)
+{
+    details::validate_registered_signature_shape(
+        "<replacement configuration arguments>", signature);
+    if (!value.is_array()) {
+        throw std::invalid_argument(
+            "replacement configuration arguments must be a JSON array");
+    }
+    if (value.size() < signature.required_argument_count
+        || value.size() > signature.argument_count) {
+        details::throw_configuration_argument_count_mismatch(
+            "<replacement configuration arguments>", signature, value.size());
+    }
+
+    EvaluatedConfigurationArguments result;
+    result.implementation_->owned.reserve(value.size());
+    result.implementation_->arguments.reserve(value.size());
+    for (std::size_t index = 0; index < value.size(); ++index) {
+        auto const* identity = signature.parameter_types[index];
+        if (!identity || !identity->expression_schema) {
+            throw std::invalid_argument(
+                "replacement configuration argument " + std::to_string(index)
+                + " has no generated expression type metadata");
+        }
+        auto const& schema = *identity->expression_schema;
+        auto owned = std::make_unique<OwnedValue>(schema);
+        auto expression = expression_from_json(schema, value[index]);
+        construct_value(*owned, schema, *expression);
+        result.implementation_->arguments.push_back({
+            .data = owned->data(),
+            .type = identity,
+            .is_const = false,
+            .is_rvalue = true,
+            .is_array_decay = false,
+        });
+        result.implementation_->owned.push_back({
+            .identity = identity,
+            .value = std::move(owned),
+        });
+    }
+    return result;
+}
+
+EvaluatedConfigurationValue evaluate_configuration_json_value(
+    nlohmann::ordered_json const& value,
+    details::ConfigurationTypeIdentity const& type)
+{
+    if (!type.expression_schema) {
+        throw std::invalid_argument(
+            "node-message type has no generated value schema");
+    }
+    EvaluatedConfigurationValue result;
+    result.implementation_->type = &type;
+    result.implementation_->value = std::make_unique<OwnedValue>(
+        *type.expression_schema);
+    auto expression = expression_from_json(*type.expression_schema, value);
+    construct_value(
+        *result.implementation_->value,
+        *type.expression_schema,
+        *expression);
+    return result;
 }
 } // namespace iv

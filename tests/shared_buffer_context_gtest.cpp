@@ -20,9 +20,8 @@ namespace {
 
         void declare(iv::DeclarationContext<Exporter> const& ctx) const
         {
-            auto const& state = ctx.state();
-            ctx.local_array(state.values, 8);
-            ctx.export_array("shared", state.values);
+            ctx.local_array<&State::values>(8);
+            ctx.export_array<&State::values>("shared");
         }
 
         void initialize(iv::InitializationContext<Exporter> const& ctx) const
@@ -42,8 +41,7 @@ namespace {
 
         void declare(iv::DeclarationContext<Importer> const& ctx) const
         {
-            auto const& state = ctx.state();
-            ctx.import_array("shared", state.imported);
+            ctx.import_array<&State::imported>("shared");
         }
 
         void initialize(iv::InitializationContext<Importer> const& ctx) const

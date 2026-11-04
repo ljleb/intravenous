@@ -12,6 +12,7 @@
 #include <intravenous/module/package_definitions.h>
 #include <intravenous/runtime/background_coverage_propagation.h>
 #include <intravenous/runtime/background_evaluation_transaction.h>
+#include <intravenous/runtime/configuration_expression.h>
 #include <intravenous/runtime/graph_connections.h>
 #include <intravenous/runtime/graph_executor.h>
 #include <intravenous/runtime/graph_jit.h>
@@ -28,6 +29,7 @@
 #include <intravenous/runtime/tick_invocation_frame.h>
 
 #include <gtest/gtest.h>
+#include <nlohmann/json.hpp>
 
 #include <algorithm>
 #include <array>
@@ -131,6 +133,10 @@ build_connection_analysis_plan(
 
 iv::graph_jit::TickInvocationCall const empty_tick_invocation{};
 constexpr char graph_jit_state_package_id[] = "iv.test.graph_jit.state_context.package";
+constexpr char graph_jit_message_replacement_id[] =
+    "iv.test.graph_jit.state_context.message_replacement";
+constexpr char graph_jit_message_successor_id[] =
+    "iv.test.graph_jit.state_context.message_successor";
 constexpr char graph_jit_stateful_module_id[] = "iv.test.graph_jit.state_context.stateful_module";
 constexpr char graph_jit_state_only_module_id[] = "iv.test.graph_jit.state_context.state_only_module";
 constexpr char graph_jit_background_only_module_id[] = "iv.test.graph_jit.state_context.background_only_module";
@@ -3304,6 +3310,38 @@ struct ConfiguredProbe {
     }
 };
 
+struct MessageReplacementEvent {
+    int delta = 0;
+};
+
+struct MessageReplacementProbe {
+    int successor_value = 40;
+
+    static constexpr auto inputs() { return std::tuple{}; }
+    static constexpr auto outputs() { return std::tuple{}; }
+
+    void on_message(
+        iv::NodeMessageContext<MessageReplacementProbe>& context,
+        MessageReplacementEvent const& event) const
+    {
+        context.replace<"iv.test.graph_jit.state_context.message_successor">(
+            successor_value + event.delta);
+    }
+
+    void tick(iv::TickSampleContext<MessageReplacementProbe> const&) const {}
+};
+
+struct MessageSuccessorProbe {
+    int value = 0;
+
+    constexpr explicit MessageSuccessorProbe(int value_) : value(value_) {}
+
+    static constexpr auto inputs() { return std::tuple{}; }
+    static constexpr auto outputs() { return std::tuple{}; }
+
+    void tick(iv::TickSampleContext<MessageSuccessorProbe> const&) const {}
+};
+
 inline constexpr std::array<std::uint64_t, 4> pointer_probe_values{
     0x1111111111111111ull,
     0x2222222222222222ull,
@@ -5855,6 +5893,12 @@ IV_NODE("iv.test.graph_jit.state_context.background_only", BackgroundOnlyProbe);
 IV_NODE("iv.test.graph_jit.state_context.background_evaluation_call", BackgroundExecutionProbe);
 IV_NODE("iv.test.graph_jit.state_context.stateless", StatelessProbe);
 IV_NODE("iv.test.graph_jit.state_context.configured", ConfiguredProbe);
+IV_NODE(
+    "iv.test.graph_jit.state_context.message_replacement",
+    MessageReplacementProbe);
+IV_NODE(
+    "iv.test.graph_jit.state_context.message_successor",
+    MessageSuccessorProbe);
 IV_NODE("iv.test.graph_jit.state_context.pointer_configured", PointerConfiguredProbe);
 IV_NODE("iv.test.graph_jit.state_context.limited_block", LimitedBlockProbe);
 IV_NODE("iv.test.graph_jit.state_context.sample_ramp_source", SampleRampSource);
@@ -6461,13 +6505,12 @@ struct DeclarationLayoutParent {
 
     void declare(iv::DeclarationContext<DeclarationLayoutParent> const& ctx) const
     {
-        auto const& state = ctx.state();
-        ctx.local_array(state.local, 3);
+        ctx.local_array<&State::local>(3);
         DeclarationLayoutLeaf first;
         DeclarationLayoutLeaf second;
         do_declare(first, ctx, {});
         do_declare(second, ctx, {});
-        ctx.nested_node_states(state.nested);
+        ctx.nested_node_states<&State::nested>();
     }
 
     void initialize(iv::InitializationContext<DeclarationLayoutParent> const& ctx) const
@@ -6503,9 +6546,8 @@ struct DeclarationLayoutProducer {
 
     void declare(iv::DeclarationContext<DeclarationLayoutProducer> const& ctx) const
     {
-        auto const& state = ctx.state();
-        ctx.local_array(state.values, 3);
-        ctx.export_array("declaration_layout_values", state.values);
+        ctx.local_array<&State::values>(3);
+        ctx.export_array<&State::values>("declaration_layout_values");
     }
 
     void initialize(iv::InitializationContext<DeclarationLayoutProducer> const& ctx) const
@@ -6535,7 +6577,7 @@ struct DeclarationLayoutConsumer {
 
     void declare(iv::DeclarationContext<DeclarationLayoutConsumer> const& ctx) const
     {
-        ctx.import_array("declaration_layout_values", ctx.state().imported);
+        ctx.import_array<&State::imported>("declaration_layout_values");
     }
 
     void initialize(iv::InitializationContext<DeclarationLayoutConsumer> const& ctx) const
@@ -9583,6 +9625,8 @@ TEST(GraphJitSharedRuntimeFixture, BuildPackage)
     };
     EXPECT_TRUE(has_leaf_definition(
         "iv.test.graph_jit.state_context.mono_interleaved_consumer"));
+    EXPECT_TRUE(has_leaf_definition(graph_jit_message_replacement_id));
+    EXPECT_TRUE(has_leaf_definition(graph_jit_message_successor_id));
     EXPECT_TRUE(has_leaf_definition(
         "iv.test.graph_jit.state_context.background_evaluation_call"));
     EXPECT_TRUE(has_module_definition(graph_jit_background_execution_module_id));
@@ -9678,6 +9722,69 @@ TEST(GraphJitSharedRuntimeFixture, BuildPackage)
         "iv.test.graph_jit.state_context.retained_midi_event_consumer"));
     EXPECT_TRUE(has_module_definition(graph_jit_persistent_event_ring_module_id));
     EXPECT_TRUE(has_module_definition(graph_jit_retained_converted_event_fanout_module_id));
+
+    using Session = std::unique_ptr<iv::details::BuilderSession,
+        decltype(&iv::details::iv_builder_session_destroy)>;
+    Session session(
+        iv::details::iv_builder_session_create(),
+        iv::details::iv_builder_session_destroy);
+    ASSERT_TRUE(session);
+    auto const package_root = revision->package_root.generic_string();
+    std::array packages{iv::details::BuilderPackageView{
+        .package_root = package_root,
+        .definitions = revision->provider_definitions,
+        .config_pointer_fields = revision->config_pointer_fields,
+        .retained_globals = revision->retained_globals,
+        .node_message_handlers = revision->node_message_handlers,
+        .node_state_structures = revision->node_state_structures,
+    }};
+    iv::details::set_builder_packages(session.get(), packages);
+
+    iv::GraphBuilder graph(session.get());
+    (void)iv::details::configure_package_definition_provider(
+        graph, graph_jit_message_replacement_id, std::nullopt, {});
+    graph.outputs();
+    auto handlers = iv::details::take_builder_message_handlers(session.get());
+    (void)iv::details::take_built_graph(session.get());
+    ASSERT_EQ(handlers.size(), 1u);
+    ASSERT_NE(handlers[0].event_type, nullptr);
+    ASSERT_NE(handlers[0].invoke, nullptr);
+    ASSERT_TRUE(handlers[0].receiver);
+
+    auto event = iv::evaluate_configuration_json_value(
+        nlohmann::ordered_json{{"delta", 2}},
+        *handlers[0].event_type);
+    struct ReplacementCapture {
+        iv::NodeAddress address{};
+        std::string definition_id{};
+        std::string arguments_json{};
+    } capture;
+    iv::NodeMessageContextOperations const operations{
+        .context = &capture,
+        .replace = [](
+            void* opaque,
+            iv::NodeAddress const& address,
+            std::string definition_id,
+            std::string arguments_json) {
+            auto& value = *static_cast<ReplacementCapture*>(opaque);
+            value.address = address;
+            value.definition_id = std::move(definition_id);
+            value.arguments_json = std::move(arguments_json);
+        },
+    };
+    iv::NodeAddress const address{.instance_id = "instance:message"};
+    handlers[0].invoke(
+        handlers[0].receiver.get(),
+        operations,
+        address,
+        handlers[0].module_local_refs.get(),
+        event.data());
+
+    EXPECT_EQ(capture.address, address);
+    EXPECT_EQ(capture.definition_id, graph_jit_message_successor_id);
+    EXPECT_EQ(
+        nlohmann::ordered_json::parse(capture.arguments_json),
+        nlohmann::ordered_json::array({42}));
 }
 
 TEST_F(GraphJitRuntimeFixture, StateAndBackgroundStateContexts)

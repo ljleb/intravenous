@@ -4,6 +4,7 @@
 #include <intravenous/graph/builder/output_refs.h>
 #include <intravenous/graph/error.h>
 #include <intravenous/graph/node_ports.h>
+#include <intravenous/node/address.h>
 #include <intravenous/node/static_port_access.h>
 
 #include <concepts>
@@ -11,10 +12,12 @@
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <type_traits>
 #include <utility>
+#include <vector>
 
 namespace iv {
     class GraphBuilder;
@@ -87,6 +90,8 @@ namespace iv {
         // table. The façade only needs this bit to preserve the one-time
         // initialization rule for annotated virtual refs.
         mutable bool _has_source_identity = false;
+        bool _has_message_path = false;
+        std::vector<ProjectNodePathSelector> _message_path{};
 
         friend class GraphBuilder;
         friend class GraphBuilderAnnotations;
@@ -97,8 +102,8 @@ namespace iv {
 
     public:
         constexpr NodeRef() = default;
-        NodeRef(NodeRef const&) = delete;
-        NodeRef(NodeRef&&) noexcept = default;
+        NodeRef(NodeRef const&);
+        NodeRef(NodeRef&&) noexcept;
         constexpr explicit NodeRef(GraphBuilder& graph_builder, size_t index) :
             _graph_builder(&graph_builder),
             _index(index)
@@ -160,6 +165,18 @@ namespace iv {
         NodeRef ttl(size_t samples) const;
         NodeRef no_ttl() const;
         std::string to_string() const;
+        [[nodiscard]] bool _has_semantic_message_path() const noexcept
+        {
+            return _has_message_path;
+        }
+        [[nodiscard]] std::span<ProjectNodePathSelector const>
+        _semantic_message_path() const noexcept { return _message_path; }
+        void _set_semantic_message_path(
+            std::span<ProjectNodePathSelector const> path)
+        {
+            _message_path.assign(path.begin(), path.end());
+            _has_message_path = true;
+        }
         void _annotate_source_info(
             std::string_view declaration_identity,
             std::string_view file_path,
@@ -204,7 +221,11 @@ namespace iv {
             if (!this->_graph_builder) {
                 return Derived{};
             }
-            return Derived(*this->_graph_builder, this->_index);
+            Derived result(*this->_graph_builder, this->_index);
+            result._has_source_identity = this->_has_source_identity;
+            result._has_message_path = this->_has_message_path;
+            result._message_path = this->_message_path;
+            return result;
         }
 
         Derived ttl(size_t samples) const
@@ -257,9 +278,13 @@ namespace iv {
         using Base::_index;
         using Base::to_string;
 
-        TypedNodeRef(TypedNodeRef const&) = delete;
+        TypedNodeRef(TypedNodeRef const&) = default;
         TypedNodeRef(TypedNodeRef&&) noexcept = default;
-        TypedNodeRef& operator=(TypedNodeRef const&) = delete;
+        TypedNodeRef& operator=(TypedNodeRef const& rhs)
+        {
+            Base::operator=(rhs);
+            return *this;
+        }
         TypedNodeRef& operator=(TypedNodeRef&& rhs)
         {
             Base::operator=(std::move(rhs));
@@ -348,10 +373,14 @@ namespace iv {
         constexpr explicit TypedNodeRef(GraphBuilder& graph_builder, NodeBundleHandle handle) :
             Base(graph_builder, handle) {}
 
-        TypedNodeRef(TypedNodeRef const&) = delete;
+        TypedNodeRef(TypedNodeRef const&) = default;
         TypedNodeRef(TypedNodeRef&&) noexcept = default;
 
-        TypedNodeRef& operator=(TypedNodeRef const&) = delete;
+        TypedNodeRef& operator=(TypedNodeRef const& rhs)
+        {
+            Base::operator=(rhs);
+            return *this;
+        }
         TypedNodeRef& operator=(TypedNodeRef&& rhs)
         {
             Base::operator=(std::move(rhs));
@@ -363,7 +392,11 @@ namespace iv {
             if (!this->_graph_builder) {
                 return Self {};
             }
-            return Self(*this->_graph_builder, this->_index);
+            Self result(*this->_graph_builder, this->_index);
+            result._has_source_identity = this->_has_source_identity;
+            result._has_message_path = this->_has_message_path;
+            result._message_path = this->_message_path;
+            return result;
         }
 
         // Keep the dynamic output selectors available without importing the
@@ -399,10 +432,19 @@ namespace iv {
             if (!this->_graph_builder) {
                 details::error("attempted to select a tile from a null tiled node ref");
             }
-            return ConcreteRef(
+            ConcreteRef result(
                 *this->_graph_builder,
                 this->_graph_builder->tiled_member(
                     this->_index, MemberType::channel_index));
+            if (this->_has_message_path) {
+                auto path = this->_message_path;
+                path.push_back(ProjectTiledChildSelector{
+                    .name = std::string(
+                        ChannelType::channel_names[MemberType::channel_index]),
+                });
+                result._set_semantic_message_path(path);
+            }
+            return result;
         }
 
         template<size_t I>

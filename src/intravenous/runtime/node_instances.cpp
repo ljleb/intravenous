@@ -12,7 +12,10 @@
 #include <intravenous/runtime/socket_rpc_server.h>
 #include <intravenous/runtime/uuid.h>
 
+#include <nlohmann/json.hpp>
+
 #include <algorithm>
+#include <array>
 #include <concepts>
 #include <new>
 #include <ranges>
@@ -37,6 +40,16 @@ std::filesystem::path definition_package_root(NodeDefinitionEntry const& definit
     return std::visit(
         [](auto const& concrete) { return concrete.package_root; },
         definition.definition);
+}
+
+std::string canonical_replacement_arguments(std::string const& source)
+{
+    auto value = nlohmann::ordered_json::parse(source);
+    if (!value.is_array()) {
+        throw std::invalid_argument(
+            "node replacement configuration arguments must be a JSON array");
+    }
+    return value.dump();
 }
 
 std::string definition_compatibility_module_id(NodeDefinitionEntry const& definition)
@@ -257,6 +270,7 @@ struct NodeInstances::CacheEntry {
     std::optional<ChannelLayout> tiled_layout{};
     std::size_t argument_hash = 0;
     std::vector<OwnedConfigurationArgument> key_arguments{};
+    std::vector<ProjectNodeReplacement> subtree_replacements{};
 };
 
 struct NodeInstances::ExpressionCacheEntry {
@@ -266,11 +280,24 @@ struct NodeInstances::ExpressionCacheEntry {
 };
 
 struct NodeInstances::ConfigurationContext {
+    struct SemanticScope {
+        struct InvocationCount {
+            std::vector<ProjectNodePathSelector> scope_path{};
+            std::string source_identity{};
+            std::size_t next_member = 0;
+        };
+
+        NodeAddress address{};
+        std::vector<InvocationCount> invocation_counts{};
+    };
+
     NodeInstances* owner = nullptr;
     std::shared_ptr<NodeDefinitionsSnapshot const> snapshot{};
+    std::vector<ProjectNodeReplacement> replacements{};
     std::vector<std::string> stack{};
     std::vector<std::vector<std::shared_ptr<ConfiguredNodeInstance const>>*>
         dependency_frames{};
+    std::vector<SemanticScope> semantic_scopes{};
 };
 
 NodeInstances::NodeInstances()
@@ -367,6 +394,74 @@ void NodeInstances::publish_instance_declarations_changed() const
         list_instances());
 }
 
+IvModuleRequiredDefinitionsChanged
+NodeInstances::rebuild_required_definitions_locked()
+{
+    std::unordered_map<std::string, IvModuleRequiredDefinition> next;
+    auto add = [&](std::string const& definition_id,
+                   std::filesystem::path package_root) {
+        if (definitions_snapshot_) {
+            if (auto definition = definitions_snapshot_->by_id.find(definition_id);
+                definition != definitions_snapshot_->by_id.end()) {
+                package_root = definition_package_root(definition->second);
+            }
+        }
+        if (package_root.empty()) return;
+        auto [found, inserted] = next.emplace(
+            definition_id,
+            IvModuleRequiredDefinition{
+                .definition_id = definition_id,
+                .package_root = package_root,
+            });
+        if (!inserted && found->second.package_root != package_root) {
+            throw std::invalid_argument(
+                "node definition has conflicting package roots: "
+                + definition_id);
+        }
+    };
+
+    for (auto& [_, desired] : desired_instances_by_id_) {
+        if (definitions_snapshot_) {
+            if (auto definition = definitions_snapshot_->by_id.find(
+                    desired.definition_id);
+                definition != definitions_snapshot_->by_id.end()) {
+                desired.package_root = definition_package_root(definition->second);
+            }
+        }
+        add(desired.definition_id, desired.package_root);
+    }
+    for (auto& replacement : desired_node_replacements_) {
+        auto package_root = replacement.package_root.value_or(
+            std::filesystem::path{});
+        if (definitions_snapshot_) {
+            if (auto definition = definitions_snapshot_->by_id.find(
+                    replacement.definition_id);
+                definition != definitions_snapshot_->by_id.end()) {
+                package_root = definition_package_root(definition->second);
+                replacement.package_root = package_root;
+            }
+        }
+        add(replacement.definition_id, std::move(package_root));
+    }
+
+    IvModuleRequiredDefinitionsChanged diff;
+    for (auto const& [definition_id, value] : next) {
+        auto const current = required_definitions_by_id_.find(definition_id);
+        if (current == required_definitions_by_id_.end()) {
+            diff.created.push_back(value);
+        } else if (current->second.package_root != value.package_root) {
+            diff.updated.push_back(value);
+        }
+    }
+    for (auto const& [definition_id, _] : required_definitions_by_id_) {
+        if (!next.contains(definition_id)) {
+            diff.deleted_definition_ids.push_back(definition_id);
+        }
+    }
+    required_definitions_by_id_ = std::move(next);
+    return diff;
+}
+
 std::string NodeInstances::create_instance(
     std::string_view definition_id,
     std::filesystem::path package_root,
@@ -402,6 +497,17 @@ std::string NodeInstances::create_instance(
             throw std::runtime_error("duplicate node instance id: " + instance_id);
         }
 
+        for (auto& [_, desired] : desired_instances_by_id_) {
+            if (desired.definition_id == definition_key) {
+                desired.package_root = normalized_root;
+            }
+        }
+        for (auto& replacement : desired_node_replacements_) {
+            if (replacement.definition_id == definition_key) {
+                replacement.package_root = normalized_root;
+            }
+        }
+
         desired_instances_by_id_.emplace(instance_id, DesiredInstance{
             .instance_id = instance_id,
             .definition_id = definition_key,
@@ -410,18 +516,7 @@ std::string NodeInstances::create_instance(
             .configuration_source = std::move(configuration_source),
         });
 
-        if (auto required = required_definitions_by_id_.find(definition_key);
-            required == required_definitions_by_id_.end()) {
-            auto value = IvModuleRequiredDefinition{
-                .definition_id = definition_key,
-                .package_root = normalized_root,
-            };
-            required_definitions_by_id_.emplace(definition_key, value);
-            required_diff.created.push_back(std::move(value));
-        } else if (required->second.package_root != normalized_root) {
-            required->second.package_root = normalized_root;
-            required_diff.updated.push_back(required->second);
-        }
+        required_diff = rebuild_required_definitions_locked();
 
         if (definitions_snapshot_) {
             if (auto definition = definitions_snapshot_->by_id.find(definition_key);
@@ -431,7 +526,8 @@ std::string NodeInstances::create_instance(
         }
     }
 
-    if (!required_diff.created.empty() || !required_diff.updated.empty()) {
+    if (!required_diff.created.empty() || !required_diff.updated.empty()
+        || !required_diff.deleted_definition_ids.empty()) {
         IV_INVOKE_LINKER_EVENT(
             iv_runtime_iv_module_required_definitions_changed_event,
             required_diff);
@@ -451,25 +547,25 @@ void NodeInstances::remove_instance(std::string const& instance_id)
         std::scoped_lock lock(mutex_);
         auto desired = desired_instances_by_id_.find(instance_id);
         if (desired == desired_instances_by_id_.end()) return;
-        auto const definition_id = desired->second.definition_id;
         desired_instances_by_id_.erase(desired);
+        std::erase_if(
+            desired_node_replacements_,
+            [&](ProjectNodeReplacement const& replacement) {
+                return replacement.address.instance_id == instance_id;
+            });
         changed = true;
 
         if (published_instances_by_id_.erase(instance_id) > 0) {
             instance_diff.deleted_instance_ids.push_back(instance_id);
         }
 
-        auto const still_required = std::ranges::any_of(
-            desired_instances_by_id_,
-            [&](auto const& entry) { return entry.second.definition_id == definition_id; });
-        if (!still_required && required_definitions_by_id_.erase(definition_id) > 0) {
-            required_diff.deleted_definition_ids.push_back(definition_id);
-        }
+        required_diff = rebuild_required_definitions_locked();
     }
 
     publish_instance_changes(std::move(instance_diff), changed);
     if (changed) publish_instance_declarations_changed();
-    if (!required_diff.deleted_definition_ids.empty()) {
+    if (!required_diff.created.empty() || !required_diff.updated.empty()
+        || !required_diff.deleted_definition_ids.empty()) {
         IV_INVOKE_LINKER_EVENT(
             iv_runtime_iv_module_required_definitions_changed_event,
             required_diff);
@@ -567,8 +663,15 @@ std::vector<ProjectNodeInstanceDeclaration> NodeInstances::desired_instances() c
     return result;
 }
 
+std::vector<ProjectNodeReplacement> NodeInstances::desired_node_replacements() const
+{
+    std::scoped_lock lock(mutex_);
+    return desired_node_replacements_;
+}
+
 std::shared_ptr<NodeInstances::CacheEntry> NodeInstances::configure_cached(
     ConfigurationContext& context,
+    NodeAddress const& address,
     std::string_view definition_id,
     std::optional<ChannelLayout> tiled_layout,
     std::span<details::ConfigurationArgument> arguments)
@@ -596,6 +699,18 @@ std::shared_ptr<NodeInstances::CacheEntry> NodeInstances::configure_cached(
             + "' returned no construction signature");
     }
     details::validate_registered_signature(definition_id, *signature, arguments);
+
+    auto const is_path_prefix = [](auto const& prefix, auto const& value) {
+        return prefix.size() <= value.size()
+            && std::equal(prefix.begin(), prefix.end(), value.begin());
+    };
+    std::vector<ProjectNodeReplacement> subtree_replacements;
+    for (auto const& replacement : context.replacements) {
+        if (replacement.address.instance_id == address.instance_id
+            && is_path_prefix(address.path, replacement.address.path)) {
+            subtree_replacements.push_back(replacement);
+        }
+    }
 
     bool ownable = true;
     bool cacheable = true;
@@ -641,6 +756,7 @@ std::shared_ptr<NodeInstances::CacheEntry> NodeInstances::configure_cached(
                 || configured.definition_id != definition.definition_id
                 || candidate->tiled_layout != tiled_layout
                 || candidate->argument_hash != argument_hash
+                || candidate->subtree_replacements != subtree_replacements
                 || candidate->key_arguments.size() != arguments.size()) {
                 continue;
             }
@@ -694,12 +810,16 @@ std::shared_ptr<NodeInstances::CacheEntry> NodeInstances::configure_cached(
             .definitions = revision->provider_definitions,
             .config_pointer_fields = revision->config_pointer_fields,
             .retained_globals = revision->retained_globals,
+            .node_message_handlers = revision->node_message_handlers,
+            .module_message_handlers = revision->module_message_handlers,
             .node_state_structures = revision->node_state_structures,
         });
     }
     details::set_builder_packages(session.get(), packages);
     details::set_builder_definition_resolver(
         session.get(), &context, &NodeInstances::resolve_builder_definition);
+    details::set_builder_concrete_node_replacement_resolver(
+        session.get(), &NodeInstances::resolve_builder_concrete_node_replacement);
 
     std::vector<std::shared_ptr<ConfiguredNodeInstance const>> dependencies;
     context.dependency_frames.push_back(&dependencies);
@@ -707,6 +827,14 @@ std::shared_ptr<NodeInstances::CacheEntry> NodeInstances::configure_cached(
         ConfigurationContext& context;
         ~DependencyFrameGuard() { context.dependency_frames.pop_back(); }
     } dependency_frame_guard{context};
+
+    context.semantic_scopes.push_back(ConfigurationContext::SemanticScope{
+        .address = address,
+    });
+    struct SemanticScopeGuard {
+        ConfigurationContext& context;
+        ~SemanticScopeGuard() { context.semantic_scopes.pop_back(); }
+    } semantic_scope_guard{context};
 
     GraphBuilder builder(session.get());
     auto root = details::configure_package_definition_provider(
@@ -716,6 +844,7 @@ std::shared_ptr<NodeInstances::CacheEntry> NodeInstances::configure_cached(
         invocation_arguments);
     auto const local_root = root.node_bundle_handle();
     builder.outputs();
+    auto message_handlers = details::take_builder_message_handlers(session.get());
     auto graph = std::make_shared<ConfiguredGraph const>(
         details::take_built_graph(session.get()));
 
@@ -727,6 +856,7 @@ std::shared_ptr<NodeInstances::CacheEntry> NodeInstances::configure_cached(
         .definitions = context.snapshot,
         .configuration_lifetime = std::move(argument_lifetime),
         .dependencies = std::move(dependencies),
+        .message_handlers = std::move(message_handlers),
         .graph = std::move(graph),
     });
     auto entry = std::make_shared<CacheEntry>();
@@ -734,6 +864,7 @@ std::shared_ptr<NodeInstances::CacheEntry> NodeInstances::configure_cached(
     entry->tiled_layout = tiled_layout;
     entry->argument_hash = argument_hash;
     entry->key_arguments = std::move(key_arguments);
+    entry->subtree_replacements = std::move(subtree_replacements);
 
     if (cacheable) {
         // Equality/hash callbacks belong to package code and may execute user
@@ -749,10 +880,79 @@ std::shared_ptr<NodeInstances::CacheEntry> NodeInstances::configure_cached(
     }
     return entry;
 }
+
+std::optional<NodeBundleHandle>
+NodeInstances::resolve_builder_concrete_node_replacement(
+    void* opaque_context,
+    GraphBuilder& builder,
+    std::span<ProjectNodePathSelector const> relative_path)
+{
+    if (!opaque_context) {
+        throw std::logic_error(
+            "concrete node replacement resolver has no batch context");
+    }
+    auto& context = *static_cast<ConfigurationContext*>(opaque_context);
+    if (context.semantic_scopes.empty()) {
+        throw std::logic_error(
+            "concrete node replacement has no semantic parent scope");
+    }
+    // The empty relative path is the root concrete node of the definition
+    // currently being configured. Its replacement, if any, was already
+    // selected by the top-level request or resolve_builder_definition().
+    if (relative_path.empty()) return std::nullopt;
+
+    NodeAddress address = context.semantic_scopes.back().address;
+    address.path.insert(
+        address.path.end(), relative_path.begin(), relative_path.end());
+    auto const replacement = std::ranges::find(
+        context.replacements,
+        address,
+        &ProjectNodeReplacement::address);
+    if (replacement == context.replacements.end()) return std::nullopt;
+
+    auto const definition = context.snapshot->by_id.find(
+        replacement->definition_id);
+    if (definition == context.snapshot->by_id.end()) {
+        throw std::runtime_error(
+            "node replacement definition is unavailable: "
+            + replacement->definition_id);
+    }
+    auto const& provider = definition_provider(definition->second);
+    auto const* signature = provider.signature ? provider.signature() : nullptr;
+    if (!signature) {
+        throw std::logic_error(
+            "node replacement definition has no construction signature: "
+            + replacement->definition_id);
+    }
+    auto arguments = evaluate_configuration_json_arguments(
+        nlohmann::ordered_json::parse(
+            replacement->configuration_arguments_json),
+        *signature);
+    auto cached = context.owner->configure_cached(
+        context,
+        address,
+        replacement->definition_id,
+        std::nullopt,
+        arguments.arguments());
+    details::register_builder_embedded_message_handlers(
+        builder,
+        relative_path,
+        cached->configured->message_handlers);
+    if (!context.dependency_frames.empty()) {
+        context.dependency_frames.back()->push_back(cached->configured);
+    }
+    auto embedding = builder.embed(
+        *cached->configured->graph,
+        "Replaced concrete node");
+    return embedding.node_bundle(cached->configured->local_root);
+}
+
 NodeRef NodeInstances::resolve_builder_definition(
     void* opaque_context,
     GraphBuilder& builder,
     std::string_view definition_id,
+    std::string_view source_identity,
+    std::span<ProjectNodePathSelector const> scope_path,
     std::optional<ChannelLayout> tiled_layout,
     std::span<details::ConfigurationArgument> arguments)
 {
@@ -760,19 +960,107 @@ NodeRef NodeInstances::resolve_builder_definition(
         throw std::logic_error("node configuration resolver has no batch context");
     }
     auto& context = *static_cast<ConfigurationContext*>(opaque_context);
+    if (context.semantic_scopes.empty()) {
+        throw std::logic_error(
+            "nested node configuration has no semantic parent scope");
+    }
+    auto& parent = context.semantic_scopes.back();
+    auto count = std::ranges::find_if(
+        parent.invocation_counts,
+        [&](ConfigurationContext::SemanticScope::InvocationCount const& value) {
+            return value.scope_path
+                    == std::vector<ProjectNodePathSelector>(
+                        scope_path.begin(), scope_path.end())
+                && value.source_identity == source_identity;
+        });
+    if (count == parent.invocation_counts.end()) {
+        parent.invocation_counts.push_back({
+            .scope_path = {scope_path.begin(), scope_path.end()},
+            .source_identity = std::string(source_identity),
+        });
+        count = std::prev(parent.invocation_counts.end());
+    }
+    auto const member_index = count->next_member++;
+    NodeAddress child_address = parent.address;
+    child_address.path.insert(
+        child_address.path.end(), scope_path.begin(), scope_path.end());
+    child_address.path.push_back(ProjectVirtualNodeSelector{
+        .source_identity = std::string(source_identity),
+    });
+    child_address.path.push_back(ProjectVirtualMemberSelector{
+        .index = member_index,
+    });
+
+    std::optional<EvaluatedConfigurationArguments> replacement_arguments;
+    auto configured_definition_id = std::string(definition_id);
+    auto configured_arguments = arguments;
+    auto const replacement = std::ranges::find(
+        context.replacements,
+        child_address,
+        &ProjectNodeReplacement::address);
+    if (replacement != context.replacements.end()) {
+        configured_definition_id = replacement->definition_id;
+        auto const definition = context.snapshot->by_id.find(
+            configured_definition_id);
+        if (definition == context.snapshot->by_id.end()) {
+            throw std::runtime_error(
+                "node replacement definition is unavailable: "
+                + configured_definition_id);
+        }
+        auto const& provider = definition_provider(definition->second);
+        auto const* signature = provider.signature ? provider.signature() : nullptr;
+        if (!signature) {
+            throw std::logic_error(
+                "node replacement definition has no construction signature: "
+                + configured_definition_id);
+        }
+        replacement_arguments.emplace(evaluate_configuration_json_arguments(
+            nlohmann::ordered_json::parse(
+                replacement->configuration_arguments_json),
+            *signature));
+        configured_arguments = replacement_arguments->arguments();
+    }
+
     auto cached = context.owner->configure_cached(
-        context, definition_id, tiled_layout, arguments);
+        context,
+        child_address,
+        configured_definition_id,
+        tiled_layout,
+        configured_arguments);
+    std::vector<ProjectNodePathSelector> child_relative_path(
+        scope_path.begin(), scope_path.end());
+    child_relative_path.push_back(ProjectVirtualNodeSelector{
+        .source_identity = std::string(source_identity),
+    });
+    child_relative_path.push_back(ProjectVirtualMemberSelector{
+        .index = member_index,
+    });
+    details::register_builder_embedded_message_handlers(
+        builder,
+        child_relative_path,
+        cached->configured->message_handlers);
     if (!context.dependency_frames.empty()) {
         context.dependency_frames.back()->push_back(cached->configured);
     }
     auto embedding = builder.embed(*cached->configured->graph, "Cached node instance");
-    return NodeRef(builder, embedding.node_bundle(cached->configured->local_root));
+    NodeRef result(
+        builder,
+        embedding.node_bundle(cached->configured->local_root));
+    std::array<ProjectNodePathSelector, 2> message_path{
+        ProjectVirtualNodeSelector{
+            .source_identity = std::string(source_identity),
+        },
+        ProjectVirtualMemberSelector{.index = member_index},
+    };
+    result._set_semantic_message_path(message_path);
+    return result;
 }
 
 NodeInstancesBatchResult NodeInstances::configure_and_embed(
     std::shared_ptr<NodeDefinitionsSnapshot const> snapshot,
     GraphBuilder& root_builder,
-    std::span<NodeInstanceConfigurationRequest const> requests)
+    std::span<NodeInstanceConfigurationRequest const> requests,
+    std::vector<ProjectNodeReplacement> const* replacement_override)
 {
     if (!snapshot) {
         throw std::invalid_argument("NodeInstances batch requires a definitions snapshot");
@@ -781,6 +1069,12 @@ NodeInstancesBatchResult NodeInstances::configure_and_embed(
         .owner = this,
         .snapshot = std::move(snapshot),
     };
+    if (replacement_override) {
+        context.replacements = *replacement_override;
+    } else {
+        std::scoped_lock lock(mutex_);
+        context.replacements = desired_node_replacements_;
+    }
     NodeInstancesBatchResult result;
     std::unordered_set<std::string> seen_ids;
     for (auto const& request : requests) {
@@ -803,6 +1097,12 @@ NodeInstancesBatchResult NodeInstances::configure_and_embed(
         try {
             std::optional<EvaluatedConfigurationArguments> evaluated;
             auto arguments = request.arguments;
+            if (request.configuration_source
+                && request.configuration_arguments_json) {
+                throw std::invalid_argument(
+                    "node instance request has both authored source and "
+                    "replacement arguments");
+            }
             if (request.configuration_source) {
                 auto definition = context.snapshot->by_id.find(request.definition_id);
                 if (definition == context.snapshot->by_id.end()) {
@@ -826,9 +1126,31 @@ NodeInstancesBatchResult NodeInstances::configure_and_embed(
                 evaluated.emplace(evaluate_configuration_expression_list(
                     parsed->parsed, *signature));
                 arguments = evaluated->arguments();
+            } else if (request.configuration_arguments_json) {
+                auto definition = context.snapshot->by_id.find(request.definition_id);
+                if (definition == context.snapshot->by_id.end()) {
+                    throw std::runtime_error(
+                        "node definition '" + request.definition_id
+                        + "' is unavailable in this definitions snapshot");
+                }
+                auto const& provider = definition_provider(definition->second);
+                auto const* signature = provider.signature
+                    ? provider.signature()
+                    : nullptr;
+                if (!signature) {
+                    throw std::logic_error(
+                        "node definition '" + request.definition_id
+                        + "' has no construction signature");
+                }
+                evaluated.emplace(evaluate_configuration_json_arguments(
+                    nlohmann::ordered_json::parse(
+                        *request.configuration_arguments_json),
+                    *signature));
+                arguments = evaluated->arguments();
             }
             auto cached = configure_cached(
                 context,
+                NodeAddress{.instance_id = request.instance_id},
                 request.definition_id,
                 request.tiled_layout,
                 arguments);
@@ -876,6 +1198,7 @@ void NodeInstances::handle_node_definitions_snapshot_changed(
     {
         std::scoped_lock lock(mutex_);
         definitions_snapshot_ = change.snapshot;
+        (void)rebuild_required_definitions_locked();
         minimum_cache_generation_ = std::max(
             minimum_cache_generation_, change.snapshot->generation);
         std::vector<std::shared_ptr<CacheEntry>> retained_cache_entries;
@@ -1038,6 +1361,59 @@ void NodeInstances::handle_project_graph_transaction(
                     }
                 }
 
+                std::vector<ProjectNodeReplacement> replacements;
+                replacements.reserve(mutation.node_replacements.size());
+                for (auto replacement : mutation.node_replacements) {
+                    if (replacement.address.instance_id.empty()
+                        || !instance_ids.contains(replacement.address.instance_id)) {
+                        throw std::invalid_argument(
+                            "node replacement addresses an unknown project instance: "
+                            + replacement.address.instance_id);
+                    }
+                    if (replacement.definition_id.empty()) {
+                        throw std::invalid_argument(
+                            "node replacement definition id must not be empty");
+                    }
+                    replacement.configuration_arguments_json =
+                        canonical_replacement_arguments(
+                            replacement.configuration_arguments_json);
+                    if (std::ranges::any_of(
+                            replacements,
+                            [&](ProjectNodeReplacement const& existing) {
+                                return existing.address == replacement.address;
+                            })) {
+                        throw std::invalid_argument(
+                            "duplicate node replacement address in replacement batch");
+                    }
+                    if (auto definition = request.snapshot->by_id.find(
+                            replacement.definition_id);
+                        definition != request.snapshot->by_id.end()) {
+                        replacement.package_root =
+                            definition_package_root(definition->second);
+                    } else if (replacement.package_root
+                               && !replacement.package_root->empty()) {
+                        replacement.package_root = normalize_path(
+                            *replacement.package_root);
+                    }
+                    if (replacement.package_root
+                        && !replacement.package_root->empty()) {
+                        auto [required_it, inserted] = required.emplace(
+                            replacement.definition_id,
+                            IvModuleRequiredDefinition{
+                                .definition_id = replacement.definition_id,
+                                .package_root = *replacement.package_root,
+                            });
+                        if (!inserted
+                            && required_it->second.package_root
+                                != *replacement.package_root) {
+                            throw std::invalid_argument(
+                                "node replacement definition has conflicting package roots: "
+                                + replacement.definition_id);
+                        }
+                    }
+                    replacements.push_back(std::move(replacement));
+                }
+
                 IvModuleRequiredDefinitionsChanged required_diff;
                 IvModuleInstancesChanged instance_diff;
                 bool list_changed = false;
@@ -1099,6 +1475,7 @@ void NodeInstances::handle_project_graph_transaction(
                     }
 
                     desired_instances_by_id_ = std::move(desired);
+                    desired_node_replacements_ = std::move(replacements);
                     required_definitions_by_id_ = std::move(required);
                     published_instances_by_id_ = std::move(published);
                 }
@@ -1112,32 +1489,151 @@ void NodeInstances::handle_project_graph_transaction(
                 }
                 publish_instance_changes(std::move(instance_diff), list_changed);
                 if (list_changed) publish_instance_declarations_changed();
+            } else if constexpr (std::same_as<
+                                     Mutation,
+                                     NodeReplacementPreviewMutation>) {
+                std::vector<NodeAddress> addresses;
+                addresses.reserve(mutation.replacements.size());
+                for (auto const& replacement : mutation.replacements) {
+                    if (replacement.address.instance_id.empty()
+                        || replacement.definition_id.empty()) {
+                        throw std::invalid_argument(
+                            "node replacement preview has an incomplete replacement");
+                    }
+                    if (!request.snapshot->by_id.contains(
+                            replacement.definition_id)) {
+                        throw std::runtime_error(
+                            "node replacement definition is not loaded: "
+                            + replacement.definition_id);
+                    }
+                    (void)canonical_replacement_arguments(
+                        replacement.configuration_arguments_json);
+                    if (std::ranges::contains(
+                            addresses, replacement.address)) {
+                        throw std::invalid_argument(
+                            "node replacement preview contains a duplicate address");
+                    }
+                    addresses.push_back(replacement.address);
+                }
+                std::scoped_lock lock(mutex_);
+                for (auto const& replacement : mutation.replacements) {
+                    if (!desired_instances_by_id_.contains(
+                            replacement.address.instance_id)) {
+                        throw std::runtime_error(
+                            "node replacement addresses an unknown project instance: "
+                            + replacement.address.instance_id);
+                    }
+                }
+            } else if constexpr (std::same_as<
+                                     Mutation,
+                                     NodeReplacementsReplaceMutation>) {
+                auto replacements = mutation.replacements;
+                std::vector<NodeAddress> addresses;
+                addresses.reserve(replacements.size());
+                for (auto& replacement : replacements) {
+                    if (replacement.address.instance_id.empty()
+                        || replacement.definition_id.empty()) {
+                        throw std::invalid_argument(
+                            "node replacement set has an incomplete replacement");
+                    }
+                    replacement.configuration_arguments_json =
+                        canonical_replacement_arguments(
+                            replacement.configuration_arguments_json);
+                    auto const definition = request.snapshot->by_id.find(
+                        replacement.definition_id);
+                    if (definition == request.snapshot->by_id.end()) {
+                        throw std::runtime_error(
+                            "node replacement definition is not loaded: "
+                            + replacement.definition_id);
+                    }
+                    replacement.package_root =
+                        definition_package_root(definition->second);
+                    if (std::ranges::contains(
+                            addresses, replacement.address)) {
+                        throw std::invalid_argument(
+                            "node replacement set contains a duplicate address");
+                    }
+                    addresses.push_back(replacement.address);
+                }
+
+                IvModuleRequiredDefinitionsChanged required_diff;
+                {
+                    std::scoped_lock lock(mutex_);
+                    for (auto const& replacement : replacements) {
+                        if (!desired_instances_by_id_.contains(
+                                replacement.address.instance_id)) {
+                            throw std::runtime_error(
+                                "node replacement addresses an unknown project instance: "
+                                + replacement.address.instance_id);
+                        }
+                    }
+                    if (desired_node_replacements_ != replacements) {
+                        desired_node_replacements_ = std::move(replacements);
+                    }
+                    required_diff = rebuild_required_definitions_locked();
+                }
+                if (!required_diff.created.empty()
+                    || !required_diff.updated.empty()
+                    || !required_diff.deleted_definition_ids.empty()) {
+                    IV_INVOKE_LINKER_EVENT(
+                        iv_runtime_iv_module_required_definitions_changed_event,
+                        required_diff);
+                }
             }
         },
         request.mutation);
+
+    std::vector<ProjectNodeReplacement> replacements_for_realization;
+    if (auto const* preview = std::get_if<NodeReplacementPreviewMutation>(
+            &request.mutation)) {
+        replacements_for_realization = preview->replacements;
+    } else {
+        std::scoped_lock lock(mutex_);
+        replacements_for_realization = desired_node_replacements_;
+    }
+    request.realized_node_replacements = replacements_for_realization;
 
     std::vector<NodeInstanceConfigurationRequest> configuration_requests;
     {
         std::scoped_lock lock(mutex_);
         configuration_requests.reserve(desired_instances_by_id_.size());
         for (auto const& [instance_id, desired] : desired_instances_by_id_) {
+            auto const replacement = std::ranges::find_if(
+                replacements_for_realization,
+                [&](ProjectNodeReplacement const& candidate) {
+                    return candidate.address.instance_id == instance_id
+                        && candidate.address.path.empty();
+                });
             configuration_requests.push_back(NodeInstanceConfigurationRequest{
                 .instance_id = instance_id,
-                .definition_id = desired.definition_id,
-                .configuration_source = desired.configuration_source,
+                .definition_id = replacement == replacements_for_realization.end()
+                    ? desired.definition_id
+                    : replacement->definition_id,
+                .configuration_source = replacement == replacements_for_realization.end()
+                    ? std::optional<std::string>(desired.configuration_source)
+                    : std::nullopt,
+                .configuration_arguments_json =
+                    replacement == replacements_for_realization.end()
+                    ? std::nullopt
+                    : std::optional<std::string>(
+                        replacement->configuration_arguments_json),
             });
         }
     }
     std::ranges::sort(
         configuration_requests, {}, &NodeInstanceConfigurationRequest::instance_id);
     request.result = configure_and_embed(
-        request.snapshot, *request.root_builder, configuration_requests);
+        request.snapshot,
+        *request.root_builder,
+        configuration_requests,
+        &replacements_for_realization);
 }
 
 void NodeInstances::handle_project_persistence_collect_state(
     ProjectPersistenceBuilder& builder) const
 {
     builder.add_node_instances(desired_instances());
+    builder.add_node_replacements(desired_node_replacements());
 }
 
 void NodeInstances::handle_socket_rpc_get_node_instances(

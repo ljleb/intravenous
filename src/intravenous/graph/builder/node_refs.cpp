@@ -7,6 +7,20 @@
 #include <vector>
 
 namespace iv {
+NodeAddress node_message_target(
+    NodeAddress const& context_address,
+    NodeRef const& target)
+{
+    if (!target._has_semantic_message_path()) {
+        details::error(
+            "captured NodeRef has no stable semantic path for node-message dispatch");
+    }
+    auto result = context_address;
+    auto const path = target._semantic_message_path();
+    result.path.insert(result.path.end(), path.begin(), path.end());
+    return result;
+}
+
 namespace details {
 SamplePortRef make_tiled_sample_port(
     ChannelTypeId type, SamplePortRef const* members, size_t member_count)
@@ -159,9 +173,30 @@ NodeRef NodeRef::node_ref() const
     return _clone_handle();
 }
 
+NodeRef::NodeRef(NodeRef const& other)
+    : _graph_builder(other._graph_builder)
+    , _index(other._index)
+    , _has_source_identity(other._has_source_identity)
+    , _has_message_path(other._has_message_path)
+    , _message_path(other._message_path)
+{}
+
+NodeRef::NodeRef(NodeRef&& other) noexcept
+    : _graph_builder(std::exchange(other._graph_builder, nullptr))
+    , _index(std::exchange(other._index, 0))
+    , _has_source_identity(std::exchange(other._has_source_identity, false))
+    , _has_message_path(std::exchange(other._has_message_path, false))
+    , _message_path(std::move(other._message_path))
+{}
+
 NodeRef NodeRef::_clone_handle() const
 {
-    return _graph_builder ? NodeRef(*_graph_builder, _index) : NodeRef{};
+    if (!_graph_builder) return NodeRef{};
+    NodeRef result(*_graph_builder, _index);
+    result._has_source_identity = _has_source_identity;
+    result._has_message_path = _has_message_path;
+    result._message_path = _message_path;
+    return result;
 }
 
 SamplePortRef NodeRef::operator[](size_t port) const
@@ -359,7 +394,8 @@ std::string NodeRef::to_string() const
 NodeRef& NodeRef::operator=(NodeRef const& rhs)
 {
     if (this == &rhs) return *this;
-    if (_graph_builder || _has_source_identity) {
+    if (_graph_builder || _has_source_identity || _has_message_path
+        || !_message_path.empty()) {
         details::error("cannot reassign an initialized NodeRef");
     }
     if (!rhs._graph_builder) {
@@ -368,13 +404,16 @@ NodeRef& NodeRef::operator=(NodeRef const& rhs)
     _graph_builder = rhs._graph_builder;
     _index = rhs._index;
     _has_source_identity = rhs._has_source_identity;
+    _has_message_path = rhs._has_message_path;
+    _message_path = rhs._message_path;
     return *this;
 }
 
 NodeRef& NodeRef::operator=(NodeRef&& rhs)
 {
     if (this == &rhs) return *this;
-    if (_graph_builder || _has_source_identity) {
+    if (_graph_builder || _has_source_identity || _has_message_path
+        || !_message_path.empty()) {
         details::error("cannot reassign an initialized NodeRef");
     }
     if (!rhs._graph_builder) {
@@ -383,9 +422,13 @@ NodeRef& NodeRef::operator=(NodeRef&& rhs)
     _graph_builder = rhs._graph_builder;
     _index = rhs._index;
     _has_source_identity = rhs._has_source_identity;
+    _has_message_path = rhs._has_message_path;
+    _message_path = std::move(rhs._message_path);
     rhs._graph_builder = nullptr;
     rhs._index = 0;
     rhs._has_source_identity = false;
+    rhs._has_message_path = false;
+    rhs._message_path.clear();
     return *this;
 }
 

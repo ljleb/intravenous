@@ -1,5 +1,7 @@
 #pragma once
 
+#include <intravenous/node/address.h>
+
 #include <array>
 #include <cmath>
 #include <concepts>
@@ -29,6 +31,7 @@ enum class ConfigurationExpressionTypeKind : unsigned char {
     aggregate,
     sequence,
     node_reference,
+    node_address,
 };
 
 enum class ConfigurationExpressionScalarKind : unsigned char {
@@ -84,10 +87,14 @@ struct ConfigurationExpressionTypeSchema {
     ConfigurationExpressionTypeSchema const* element_type = nullptr;
     std::size_t fixed_element_count = 0;
     void (*construct_scalar)(void*, ConfigurationExpressionScalar const&) = nullptr;
+    void (*read_scalar)(void const*, ConfigurationExpressionScalar&) = nullptr;
     void (*default_construct)(void*) = nullptr;
     void (*destroy)(void*) noexcept = nullptr;
     void (*assign_element)(void*, std::size_t, void*) = nullptr;
     void (*append_element)(void*, void*) = nullptr;
+    std::size_t (*element_count)(void const*) = nullptr;
+    void const* (*element_at)(void const*, std::size_t) = nullptr;
+    void (*construct_node_address)(void*, NodeAddress const&) = nullptr;
 };
 static_assert(std::is_standard_layout_v<ConfigurationExpressionTypeSchema>);
 static_assert(std::is_trivially_copyable_v<ConfigurationExpressionTypeSchema>);
@@ -318,6 +325,72 @@ void default_construct(void* destination)
 
 template<class T>
 [[gnu::used]]
+void read_scalar(void const* source, ConfigurationExpressionScalar& result)
+{
+    using Value = std::remove_cvref_t<T>;
+    auto const& value = *static_cast<Value const*>(source);
+    if constexpr (std::same_as<Value, bool>) {
+        result.kind = ConfigurationExpressionScalarKind::boolean;
+        result.boolean = value;
+    } else if constexpr (std::is_enum_v<Value>) {
+        using Underlying = std::underlying_type_t<Value>;
+        if constexpr (std::is_signed_v<Underlying>) {
+            result.kind = ConfigurationExpressionScalarKind::signed_integer;
+            result.signed_integer = static_cast<std::int64_t>(
+                static_cast<Underlying>(value));
+        } else {
+            result.kind = ConfigurationExpressionScalarKind::unsigned_integer;
+            result.unsigned_integer = static_cast<std::uint64_t>(
+                static_cast<Underlying>(value));
+        }
+    } else if constexpr (std::integral<Value> && std::is_signed_v<Value>) {
+        result.kind = ConfigurationExpressionScalarKind::signed_integer;
+        result.signed_integer = static_cast<std::int64_t>(value);
+    } else if constexpr (std::integral<Value>) {
+        result.kind = ConfigurationExpressionScalarKind::unsigned_integer;
+        result.unsigned_integer = static_cast<std::uint64_t>(value);
+    } else if constexpr (std::floating_point<Value>) {
+        auto const converted = static_cast<double>(value);
+        if (!std::isfinite(converted)) {
+            throw std::invalid_argument(
+                "configuration floating-point value is not finite");
+        }
+        result.kind = ConfigurationExpressionScalarKind::floating_point;
+        result.floating_point = converted;
+    } else if constexpr (std::same_as<Value, std::string>) {
+        result.kind = ConfigurationExpressionScalarKind::string;
+        result.string_data = value.data();
+        result.string_size = value.size();
+    } else if constexpr (requires { static_cast<std::string_view>(value); }) {
+        auto const converted = static_cast<std::string_view>(value);
+        result.kind = ConfigurationExpressionScalarKind::string;
+        result.string_data = converted.data();
+        result.string_size = converted.size();
+    } else if constexpr (requires { static_cast<double>(value); }) {
+        auto const converted = static_cast<double>(value);
+        if (!std::isfinite(converted)) {
+            throw std::invalid_argument(
+                "configuration converted scalar is not finite");
+        }
+        result.kind = ConfigurationExpressionScalarKind::floating_point;
+        result.floating_point = converted;
+    } else if constexpr (requires { static_cast<std::int64_t>(value); }) {
+        result.kind = ConfigurationExpressionScalarKind::signed_integer;
+        result.signed_integer = static_cast<std::int64_t>(value);
+    } else if constexpr (requires { static_cast<std::uint64_t>(value); }) {
+        result.kind = ConfigurationExpressionScalarKind::unsigned_integer;
+        result.unsigned_integer = static_cast<std::uint64_t>(value);
+    } else if constexpr (requires { static_cast<bool>(value); }) {
+        result.kind = ConfigurationExpressionScalarKind::boolean;
+        result.boolean = static_cast<bool>(value);
+    } else {
+        throw std::invalid_argument(
+            "configuration converted scalar has no reversible scalar representation");
+    }
+}
+
+template<class T>
+[[gnu::used]]
 void destroy(void* value) noexcept
 {
     using Value = std::remove_cvref_t<T>;
@@ -373,6 +446,47 @@ void assign_element(void* destination, std::size_t index, void* source)
     } else {
         throw std::invalid_argument(
             "configuration sequence does not support indexed assignment");
+    }
+}
+
+template<class T>
+[[gnu::used]]
+std::size_t element_count(void const* source)
+{
+    using Value = std::remove_cvref_t<T>;
+    if constexpr (requires(Value const& value) { value.size(); }) {
+        return static_cast<Value const*>(source)->size();
+    } else {
+        throw std::invalid_argument(
+            "configuration sequence has no size operation");
+    }
+}
+
+template<class T>
+[[gnu::used]]
+void const* element_at(void const* source, std::size_t index)
+{
+    using Value = std::remove_cvref_t<T>;
+    if constexpr (requires(Value const& value, std::size_t position) {
+        std::addressof(value[position]);
+    }) {
+        return std::addressof((*static_cast<Value const*>(source))[index]);
+    } else {
+        throw std::invalid_argument(
+            "configuration sequence has no indexed read operation");
+    }
+}
+
+template<class T>
+[[gnu::used]]
+void construct_node_address(void* destination, NodeAddress const& address)
+{
+    using Value = std::remove_cvref_t<T>;
+    if constexpr (std::same_as<Value, NodeAddress>) {
+        ::new (destination) Value(address);
+    } else {
+        throw std::invalid_argument(
+            "configuration type is not a NodeAddress");
     }
 }
 } // namespace configuration_expression_details

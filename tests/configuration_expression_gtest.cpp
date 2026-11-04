@@ -1,6 +1,8 @@
 #include <intravenous/runtime/configuration_expression.h>
+#include <intravenous/node/message.h>
 
 #include <gtest/gtest.h>
+#include <nlohmann/json.hpp>
 
 #include <array>
 #include <cstddef>
@@ -29,6 +31,7 @@ ConfigurationExpressionTypeSchema const double_schema{
     .size = sizeof(double),
     .alignment = alignof(double),
     .construct_scalar = &configuration_expression_details::construct_scalar<double>,
+    .read_scalar = &configuration_expression_details::read_scalar<double>,
     .default_construct = &configuration_expression_details::default_construct<double>,
     .destroy = &configuration_expression_details::destroy<double>,
 };
@@ -86,6 +89,7 @@ ConfigurationExpressionTypeSchema const mode_schema{
     .enumerators = mode_enumerators.data(),
     .enumerator_count = mode_enumerators.size(),
     .construct_scalar = &configuration_expression_details::construct_scalar<Mode>,
+    .read_scalar = &configuration_expression_details::read_scalar<Mode>,
     .default_construct = &configuration_expression_details::default_construct<Mode>,
     .destroy = &configuration_expression_details::destroy<Mode>,
 };
@@ -121,6 +125,10 @@ ConfigurationExpressionTypeSchema const bands_schema{
     .destroy = &configuration_expression_details::destroy<std::vector<Band>>,
     .append_element =
         &configuration_expression_details::append_element<std::vector<Band>>,
+    .element_count =
+        &configuration_expression_details::element_count<std::vector<Band>>,
+    .element_at =
+        &configuration_expression_details::element_at<std::vector<Band>>,
 };
 
 std::array filter_fields{
@@ -240,6 +248,25 @@ ConfigurationTypeIdentity const node_reference_identity{
     .display_name = "NodeRef",
     .display_name_size = 7,
     .expression_schema = &node_reference_schema,
+};
+
+ConfigurationExpressionTypeSchema const node_address_schema{
+    .kind = ConfigurationExpressionTypeKind::node_address,
+    .size = sizeof(iv::NodeAddress),
+    .alignment = alignof(iv::NodeAddress),
+    .destroy = &configuration_expression_details::destroy<iv::NodeAddress>,
+    .construct_node_address =
+        &configuration_expression_details::construct_node_address<iv::NodeAddress>,
+};
+
+ConfigurationTypeIdentity const node_address_identity{
+    .nominal_id = "test.NodeAddress",
+    .nominal_id_size = 16,
+    .definition_fingerprint = "node-address",
+    .definition_fingerprint_size = 12,
+    .display_name = "NodeAddress",
+    .display_name_size = 11,
+    .expression_schema = &node_address_schema,
 };
 
 ConfigurationTypeIdentity const* node_reference_parameter_types[]{
@@ -365,4 +392,149 @@ TEST(ConfigurationExpression, RefusesToInventACrossSessionLiveNodeHandle)
             std::string_view(error.what()).find("Front 12"),
             std::string_view::npos);
     }
+}
+
+TEST(ConfigurationExpression, ConstructsGeneratedEventValuesFromJson)
+{
+    auto value = iv::evaluate_configuration_json_value(
+        nlohmann::ordered_json{
+            {"cutoff", 1800.0},
+            {"mode", "highpass"},
+            {"bands", nlohmann::ordered_json::array({
+                nlohmann::ordered_json{{"frequency", 200.0}, {"gain", -3.0}},
+                nlohmann::ordered_json{{"frequency", 2000.0}, {"gain", 2.5}},
+            })},
+        },
+        filter_identity);
+
+    ASSERT_EQ(value.type(), &filter_identity);
+    auto const& configuration =
+        *static_cast<FilterConfiguration const*>(value.data());
+    EXPECT_DOUBLE_EQ(configuration.cutoff, 1800.0);
+    EXPECT_EQ(configuration.mode, Mode::highpass);
+    ASSERT_EQ(configuration.bands.size(), 2u);
+    EXPECT_DOUBLE_EQ(configuration.bands[1].gain, 2.5);
+}
+
+TEST(ConfigurationExpression, ConstructsCompleteTypedArgumentListFromJson)
+{
+    auto values = iv::evaluate_configuration_json_arguments(
+        nlohmann::ordered_json::array({
+            nlohmann::ordered_json{
+                {"cutoff", 1800.0},
+                {"mode", "highpass"},
+                {"bands", nlohmann::ordered_json::array({
+                    nlohmann::ordered_json{
+                        {"frequency", 200.0}, {"gain", -3.0}},
+                })},
+            },
+        }),
+        signature);
+
+    ASSERT_EQ(values.arguments().size(), 1u);
+    auto const& configuration =
+        *static_cast<FilterConfiguration const*>(values.arguments()[0].data);
+    EXPECT_DOUBLE_EQ(configuration.cutoff, 1800.0);
+    EXPECT_EQ(configuration.mode, Mode::highpass);
+    ASSERT_EQ(configuration.bands.size(), 1u);
+    EXPECT_DOUBLE_EQ(configuration.bands[0].frequency, 200.0);
+    EXPECT_DOUBLE_EQ(configuration.bands[0].gain, -3.0);
+}
+
+TEST(ConfigurationExpression, RejectsReplacementArgumentCountMismatch)
+{
+    EXPECT_THROW(
+        (void)iv::evaluate_configuration_json_arguments(
+            nlohmann::ordered_json::array(), signature),
+        std::invalid_argument);
+    EXPECT_THROW(
+        (void)iv::evaluate_configuration_json_arguments(
+            nlohmann::ordered_json::object(), signature),
+        std::invalid_argument);
+}
+
+TEST(ConfigurationExpression, SerializesSuppliedReplacementArgumentsAsOneArray)
+{
+    iv::NodeAddress const address{
+        .instance_id = "instance:source",
+        .path = {
+            iv::ProjectVirtualNodeSelector{
+                .source_identity = "processor",
+                .type_identity = "filter",
+            },
+            iv::ProjectVirtualMemberSelector{.index = 2},
+        },
+    };
+    auto const serialized = nlohmann::ordered_json::parse(
+        iv::details::configuration_arguments_json(
+            7, std::string("successor"), std::vector<int>{3, 5}, address));
+
+    ASSERT_TRUE(serialized.is_array());
+    ASSERT_EQ(serialized.size(), 4u);
+    EXPECT_EQ(serialized[0], 7);
+    EXPECT_EQ(serialized[1], "successor");
+    EXPECT_EQ(serialized[2], nlohmann::ordered_json::array({3, 5}));
+    EXPECT_EQ(serialized[3]["instanceId"], "instance:source");
+    ASSERT_EQ(serialized[3]["path"].size(), 2u);
+    EXPECT_EQ(serialized[3]["path"][0]["sourceIdentity"], "processor");
+    EXPECT_EQ(serialized[3]["path"][0]["typeIdentity"], "filter");
+    EXPECT_EQ(serialized[3]["path"][1]["index"], 2u);
+}
+
+TEST(ConfigurationExpression, GeneratedSchemaSerializesStructuredReplacementValue)
+{
+    FilterConfiguration const source{
+        .cutoff = 1200.0,
+        .mode = Mode::highpass,
+        .bands = {
+            {.frequency = 200.0, .gain = -3.0},
+            {.frequency = 2000.0, .gain = 2.5},
+        },
+    };
+
+    auto const json = nlohmann::ordered_json::parse(
+        iv::details::configuration_schema_json_value(&source, filter_schema));
+
+    EXPECT_EQ(json["cutoff"], 1200.0);
+    EXPECT_EQ(json["mode"], "highpass");
+    ASSERT_EQ(json["bands"].size(), 2u);
+    EXPECT_EQ(json["bands"][0]["frequency"], 200.0);
+    EXPECT_EQ(json["bands"][0]["gain"], -3.0);
+    EXPECT_EQ(json["bands"][1]["frequency"], 2000.0);
+    EXPECT_EQ(json["bands"][1]["gain"], 2.5);
+}
+
+TEST(ConfigurationExpression, ConstructsNodeAddressEventFieldsFromJson)
+{
+    auto value = iv::evaluate_configuration_json_value(
+        nlohmann::ordered_json{
+            {"instanceId", "instance:source"},
+            {"path", nlohmann::ordered_json::array({
+                nlohmann::ordered_json{
+                    {"kind", "virtualNode"},
+                    {"sourceIdentity", "processor"},
+                },
+                nlohmann::ordered_json{
+                    {"kind", "virtualMember"},
+                    {"index", 1},
+                },
+            })},
+        },
+        node_address_identity);
+
+    auto const& address = *static_cast<iv::NodeAddress const*>(value.data());
+    EXPECT_EQ(address.instance_id, "instance:source");
+    ASSERT_EQ(address.path.size(), 2u);
+    EXPECT_EQ(
+        std::get<iv::ProjectVirtualMemberSelector>(address.path[1]).index,
+        1u);
+}
+
+TEST(ConfigurationExpression, RejectsUnknownGeneratedEventFields)
+{
+    EXPECT_THROW(
+        (void)iv::evaluate_configuration_json_value(
+            nlohmann::ordered_json{{"cutoff", 440.0}, {"typo", true}},
+            filter_identity),
+        std::invalid_argument);
 }

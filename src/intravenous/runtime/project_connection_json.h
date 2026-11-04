@@ -17,4 +17,12 @@ enum class ProjectConnectionJsonNames {
 [[nodiscard]] ProjectConnection parse_project_connection_json(
     nlohmann::ordered_json const& json,
     ProjectConnectionJsonNames names);
+
+[[nodiscard]] nlohmann::ordered_json node_address_json(
+    NodeAddress const& address,
+    ProjectConnectionJsonNames names);
+
+[[nodiscard]] NodeAddress parse_node_address_json(
+    nlohmann::ordered_json const& json,
+    ProjectConnectionJsonNames names);
 } // namespace iv

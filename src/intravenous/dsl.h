@@ -107,6 +107,15 @@ namespace iv {
         return ref;
     }
 
+    constexpr void _prepare_node_source_identity_before_statement(
+        GraphBuilder* builder,
+        char const* declaration_identity,
+        char const* authored_name)
+    {
+        details::iv_builder_prepare_node_source_identity(
+            builder, declaration_identity, authored_name);
+    }
+
     template<class Ref>
     requires SourceInfoAnnotatableRef<Ref>
     constexpr Ref&& _annotate_node_source_info(

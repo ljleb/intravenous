@@ -2,7 +2,9 @@
 
 _Status: normative Front 9 design and implementation status. Parsing, generated type
 metadata, ordinary typed-value construction, durable configuration source, and shared
-semantic path resolution are implemented. Live `NodeRef` materialization and its
+semantic path resolution are implemented. The same generated metadata converts typed
+Front 13 replacement arguments to durable JSON and reconstructs them against the
+successor signature. Live `NodeRef` materialization and its
 project-revision dependencies remain at the explicit Front 12 boundary._
 
 This document defines the restricted language for project-authored node configuration.
@@ -34,6 +36,8 @@ The language must support these operations:
 - Pass existing project nodes as construction arguments.
 - Refer to semantic descendants of existing project nodes.
 - Preserve structured values for later argument updates.
+- Convert complete typed replacement argument lists to and from a durable ordered
+  JSON array without a node-authored serializer.
 
 The language does not contain statements, declarations, assignments, loops, lambdas,
 templates, allocation APIs, or arbitrary function calls. It cannot access the file

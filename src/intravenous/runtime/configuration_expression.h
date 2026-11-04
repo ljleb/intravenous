@@ -11,6 +11,8 @@
 #include <variant>
 #include <vector>
 
+#include <nlohmann/json_fwd.hpp>
+
 namespace iv {
 struct ConfigurationExpression;
 using ConfigurationExpressionPtr = std::shared_ptr<ConfigurationExpression const>;
@@ -100,6 +102,31 @@ private:
     friend EvaluatedConfigurationArguments evaluate_configuration_expression_list(
         ParsedConfigurationExpressionList,
         details::RegisteredSignature const&);
+    friend EvaluatedConfigurationArguments evaluate_configuration_json_arguments(
+        nlohmann::ordered_json const&,
+        details::RegisteredSignature const&);
+};
+
+class EvaluatedConfigurationValue {
+public:
+    EvaluatedConfigurationValue();
+    ~EvaluatedConfigurationValue();
+    EvaluatedConfigurationValue(EvaluatedConfigurationValue&&) noexcept;
+    EvaluatedConfigurationValue& operator=(
+        EvaluatedConfigurationValue&&) noexcept;
+    EvaluatedConfigurationValue(EvaluatedConfigurationValue const&) = delete;
+    EvaluatedConfigurationValue& operator=(
+        EvaluatedConfigurationValue const&) = delete;
+
+    [[nodiscard]] void const* data() const noexcept;
+    [[nodiscard]] details::ConfigurationTypeIdentity const* type() const noexcept;
+
+private:
+    struct Implementation;
+    std::unique_ptr<Implementation> implementation_;
+    friend EvaluatedConfigurationValue evaluate_configuration_json_value(
+        nlohmann::ordered_json const&,
+        details::ConfigurationTypeIdentity const&);
 };
 
 [[nodiscard]] EvaluatedConfigurationArguments evaluate_configuration_expression_list(
@@ -109,4 +136,12 @@ private:
 [[nodiscard]] EvaluatedConfigurationArguments compile_configuration_expression_list(
     std::string source,
     details::RegisteredSignature const& signature);
+
+[[nodiscard]] EvaluatedConfigurationArguments evaluate_configuration_json_arguments(
+    nlohmann::ordered_json const& value,
+    details::RegisteredSignature const& signature);
+
+[[nodiscard]] EvaluatedConfigurationValue evaluate_configuration_json_value(
+    nlohmann::ordered_json const& value,
+    details::ConfigurationTypeIdentity const& type);
 } // namespace iv

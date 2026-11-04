@@ -44,8 +44,7 @@ namespace iv {
 
         void declare(DeclarationContext<NlmsPredictor> const& ctx) const
         {
-            auto const& state = ctx.state();
-            ctx.local_array(state.w, Order);
+            ctx.template local_array<&State::w>(Order);
         }
 
         void initialize(InitializationContext<NlmsPredictor> const& ctx) const
@@ -120,11 +119,10 @@ namespace iv {
 
         void declare(DeclarationContext<TanhResidualPredictor> const& ctx) const
         {
-            auto const& state = ctx.state();
-            ctx.local_array(state.W1, Hidden * (Order + ArOrder));
-            ctx.local_array(state.W2, Hidden);
-            ctx.local_array(state.b1, Hidden);
-            ctx.local_array(state.a, Hidden);
+            ctx.template local_array<&State::W1>(Hidden * (Order + ArOrder));
+            ctx.template local_array<&State::W2>(Hidden);
+            ctx.template local_array<&State::b1>(Hidden);
+            ctx.template local_array<&State::a>(Hidden);
         }
 
         void initialize(InitializationContext<TanhResidualPredictor> const& ctx) const
@@ -224,14 +222,13 @@ namespace iv {
 
         void declare(DeclarationContext<TanhResidualAR2Predictor> const& ctx) const
         {
-            auto const& state = ctx.state();
-            ctx.local_array(state.W1, Hidden1 * (Order + ArOrder));
-            ctx.local_array(state.b1, Hidden1);
-            ctx.local_array(state.W2, Hidden2 * Hidden1);
-            ctx.local_array(state.b2, Hidden2);
-            ctx.local_array(state.W3, Hidden2);
-            ctx.local_array(state.a1, Hidden1);
-            ctx.local_array(state.a2, Hidden2);
+            ctx.template local_array<&State::W1>(Hidden1 * (Order + ArOrder));
+            ctx.template local_array<&State::b1>(Hidden1);
+            ctx.template local_array<&State::W2>(Hidden2 * Hidden1);
+            ctx.template local_array<&State::b2>(Hidden2);
+            ctx.template local_array<&State::W3>(Hidden2);
+            ctx.template local_array<&State::a1>(Hidden1);
+            ctx.template local_array<&State::a2>(Hidden2);
         }
 
         void initialize(InitializationContext<TanhResidualAR2Predictor> const& ctx) const

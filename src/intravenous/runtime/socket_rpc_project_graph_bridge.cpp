@@ -25,4 +25,12 @@ IV_SUBSCRIBE_LINKER_EVENT(
     socket_rpc_project_graph_bridge,
     iv_socket_rpc_delete_graph_connection_event,
     &ProjectGraph::handle_socket_rpc_delete_graph_connection)
+IV_SUBSCRIBE_LINKER_EVENT(
+    socket_rpc_project_graph_bridge,
+    iv_socket_rpc_get_node_event_protocol_event,
+    &ProjectGraph::handle_socket_rpc_get_node_event_protocol)
+IV_SUBSCRIBE_LINKER_EVENT(
+    socket_rpc_project_graph_bridge,
+    iv_socket_rpc_dispatch_node_message_event,
+    &ProjectGraph::handle_socket_rpc_dispatch_node_message)
 } // namespace iv

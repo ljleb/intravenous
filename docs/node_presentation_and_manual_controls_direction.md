@@ -1,7 +1,8 @@
 # Node Presentation And Manual Controls Direction
 
 > **Communication model:** backend-node typed events, shared `PresentationState`,
-> Vue `useNode()` semantics, generated TypeScript protocol types, and live
+> Vue `useNode()` semantics, the language-neutral backend protocol plus
+> frontend-owned language bindings, and live
 > presentation-subscription constraints are now consolidated in
 > [Node Interaction And Presentation Communication Direction](./node_interaction_and_presentation_communication_direction.md).
 > This document remains the home for display modes, interaction lifetime,

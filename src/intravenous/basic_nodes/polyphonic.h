@@ -86,8 +86,7 @@ namespace iv {
 
         void declare(DeclarationContext<MidiPitch> const& ctx) const
         {
-            auto const& state = ctx.state();
-            ctx.local_array(state.block, ctx.max_block_size());
+            ctx.local_array<&State::block>(ctx.max_block_size());
         }
 
         static void push_note(State& state, std::uint8_t note)
@@ -184,8 +183,7 @@ namespace iv {
 
         void declare(DeclarationContext<MidiGate> const& ctx) const
         {
-            auto const& state = ctx.state();
-            ctx.local_array(state.block, ctx.max_block_size());
+            ctx.local_array<&State::block>(ctx.max_block_size());
         }
 
         static Sample current_gate(State const& state)

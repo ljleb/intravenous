@@ -267,10 +267,8 @@ namespace iv {
 
         void declare(DeclarationContext<UniformToPower> const& ctx) const
         {
-            auto const& state = ctx.state();
-
             size_t range = static_cast<size_t>(std::abs(_max - _min)) + 1;
-            ctx.local_array(state.weights, range);
+            ctx.local_array<&State::weights>(range);
         }
 
         void initialize(InitializationContext<UniformToPower> const& ctx) const

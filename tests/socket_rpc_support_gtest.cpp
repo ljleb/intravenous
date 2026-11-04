@@ -8,10 +8,12 @@
 #include <array>
 #include <cstdint>
 #include <limits>
+#include <memory>
 #include <optional>
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <utility>
 
 namespace {
     using Json = nlohmann::ordered_json;
@@ -246,6 +248,40 @@ TEST(SocketRpcRequestParser, ParsesGraphConnectionDeleteMutation)
     EXPECT_EQ(request->connection_id, "sample:main");
 }
 
+TEST(SocketRpcRequestParser, ParsesTypedNodeMessageDispatch)
+{
+    auto const parsed = iv::parse_socket_rpc_request(
+        R"({"jsonrpc":"2.0","id":41,"method":"nodeMessages.dispatch","params":{"target":{"instanceId":"instance:voice","path":[{"kind":"virtualNode","sourceIdentity":"filter"},{"kind":"virtualMember","index":2}]},"eventTypeNominalId":"c:@S@SetCutoff","eventTypeDefinitionFingerprint":"0123456789abcdef","payload":{"cutoff":1800.0}}})");
+
+    auto const* request = std::get_if<iv::DispatchNodeMessageRequest>(
+        &parsed.payload);
+    ASSERT_NE(request, nullptr);
+    EXPECT_EQ(parsed.request_id, 41);
+    EXPECT_EQ(request->target.instance_id, "instance:voice");
+    ASSERT_EQ(request->target.path.size(), 2u);
+    auto const* member = std::get_if<iv::ProjectVirtualMemberSelector>(
+        &request->target.path[1]);
+    ASSERT_NE(member, nullptr);
+    EXPECT_EQ(member->index, 2u);
+    EXPECT_EQ(request->event_type_nominal_id, "c:@S@SetCutoff");
+    EXPECT_EQ(
+        request->event_type_definition_fingerprint,
+        "0123456789abcdef");
+    ASSERT_NE(request->payload, nullptr);
+    EXPECT_EQ((*request->payload)["cutoff"], 1800.0);
+}
+
+TEST(SocketRpcRequestParser, ParsesNodeEventProtocolQuery)
+{
+    auto const parsed = iv::parse_socket_rpc_request(
+        R"({"jsonrpc":"2.0","id":43,"method":"nodeMessages.getProtocol","params":{}})");
+
+    EXPECT_EQ(parsed.request_id, 43);
+    EXPECT_NE(
+        std::get_if<iv::GetNodeEventProtocolRequest>(&parsed.payload),
+        nullptr);
+}
+
 TEST(SocketRpcRequestParser, RejectsUnknownStructuredConnectionSelectorsAndTypes)
 {
     EXPECT_THROW(
@@ -299,6 +335,92 @@ TEST(SocketRpcAckResponseBuilder, BuildsErrorAfterFailure)
     EXPECT_EQ(response["id"], 12);
     EXPECT_EQ(response["error"]["code"], -32055);
     EXPECT_EQ(response["error"]["message"], "bad news");
+}
+
+TEST(SocketRpcNodeMessageResultBuilder, SerializesSuccessfulDiagnostics)
+{
+    iv::SocketRpcNodeMessageResultBuilder builder;
+    builder.succeed({iv::SocketRpcNodeMessageDiagnostic{
+        .target = iv::NodeAddress{
+            .instance_id = "instance:voice",
+            .path = {iv::ProjectTiledChildSelector{.name = "right"}},
+        },
+        .message = "selected concrete node does not implement the event",
+    }});
+
+    auto const response = parse_json_line(builder.build(42));
+
+    EXPECT_EQ(response["result"]["ok"], true);
+    ASSERT_EQ(response["result"]["diagnostics"].size(), 1u);
+    EXPECT_EQ(
+        response["result"]["diagnostics"][0]["target"]["instanceId"],
+        "instance:voice");
+    EXPECT_EQ(
+        response["result"]["diagnostics"][0]["target"]["path"][0]["name"],
+        "right");
+}
+
+TEST(SocketRpcNodeEventProtocolResultBuilder, SerializesNeutralSchemasAndReceivers)
+{
+    iv::SocketRpcNodeEventProtocolResultBuilder builder;
+    auto field = std::make_shared<iv::NodeEventValueSchema const>(
+        iv::NodeEventValueSchema{
+            .kind = iv::NodeEventValueKind::floating_point,
+            .integer_bit_width = 64,
+        });
+    builder.succeed(iv::NodeEventProtocolSnapshot{
+        .project_graph_generation = 12,
+        .definitions_generation = 7,
+        .event_types = {{
+            .id = {
+                .nominal_id = "c:@S@SetCutoff",
+                .definition_fingerprint = "event-v2",
+            },
+            .display_name = "SetCutoff",
+            .payload = {
+                .kind = iv::NodeEventValueKind::aggregate,
+                .fields = {{.name = "cutoff", .value = std::move(field)}},
+            },
+        }},
+        .definitions = {{
+            .definition_id = "iv.example.filter",
+            .supported_event_types = {{
+                .nominal_id = "c:@S@SetCutoff",
+                .definition_fingerprint = "event-v2",
+            }},
+        }},
+        .receivers = {{
+            .address = {.instance_id = "instance:filter"},
+            .supported_event_types = {{
+                .nominal_id = "c:@S@SetCutoff",
+                .definition_fingerprint = "event-v2",
+            }},
+        }},
+    });
+
+    auto const response = parse_json_line(builder.build(44));
+    auto const& protocol = response["result"];
+    EXPECT_EQ(protocol["formatVersion"], 1);
+    EXPECT_EQ(protocol["projectGraphGeneration"], 12);
+    EXPECT_EQ(protocol["definitionsGeneration"], 7);
+    ASSERT_EQ(protocol["eventTypes"].size(), 1u);
+    EXPECT_EQ(protocol["eventTypes"][0]["nominalId"], "c:@S@SetCutoff");
+    EXPECT_EQ(protocol["eventTypes"][0]["payload"]["kind"], "aggregate");
+    EXPECT_EQ(
+        protocol["eventTypes"][0]["payload"]["fields"][0]["value"]["kind"],
+        "floatingPoint");
+    ASSERT_EQ(protocol["definitions"].size(), 1u);
+    EXPECT_EQ(
+        protocol["definitions"][0]["definitionId"],
+        "iv.example.filter");
+    ASSERT_EQ(protocol["receivers"].size(), 1u);
+    EXPECT_EQ(
+        protocol["receivers"][0]["address"]["instanceId"],
+        "instance:filter");
+    auto const serialized = protocol.dump();
+    EXPECT_EQ(serialized.find("NodeCodeKey"), std::string::npos);
+    EXPECT_EQ(serialized.find("byteOffset"), std::string::npos);
+    EXPECT_EQ(serialized.find("llvm"), std::string::npos);
 }
 
 TEST(SocketRpcGraphQueryResultBuilder, RequiresExplicitResult)

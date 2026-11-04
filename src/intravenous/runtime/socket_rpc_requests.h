@@ -4,11 +4,14 @@
 #include <intravenous/runtime/project_connection_types.h>
 
 #include <filesystem>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
 #include <variant>
 #include <vector>
+
+#include <nlohmann/json_fwd.hpp>
 
 namespace iv {
 struct GraphQueryBySpansRequest {
@@ -45,6 +48,14 @@ struct UpdateNodeInstancesRequest {
 struct UpsertGraphConnectionRequest { ProjectConnection connection{}; };
 struct DeleteGraphConnectionRequest { std::string connection_id{}; };
 
+struct DispatchNodeMessageRequest {
+    NodeAddress target{};
+    std::string event_type_nominal_id{};
+    std::string event_type_definition_fingerprint{};
+    std::shared_ptr<nlohmann::ordered_json const> payload{};
+};
+struct GetNodeEventProtocolRequest {};
+
 struct GetAudioDevicesRequest {};
 struct SetAudioDevicesRequest {
     std::optional<std::string> output_device_id {};
@@ -70,6 +81,8 @@ using SocketRpcRequestPayload = std::variant<
     UpdateNodeInstancesRequest,
     UpsertGraphConnectionRequest,
     DeleteGraphConnectionRequest,
+    GetNodeEventProtocolRequest,
+    DispatchNodeMessageRequest,
     GetAudioDevicesRequest,
     SetAudioDevicesRequest,
     SaveProjectRequest,

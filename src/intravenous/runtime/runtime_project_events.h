@@ -4,6 +4,7 @@
 #include <intravenous/linker_event.h>
 #include <intravenous/runtime/project_connection_types.h>
 #include <intravenous/runtime/project_node_instance_types.h>
+#include <intravenous/runtime/project_node_replacement_types.h>
 #include <intravenous/runtime/runtime_project_api_types.h>
 
 #include <filesystem>
@@ -70,6 +71,7 @@ struct ProjectDeleteGraphConnectionRequest {
 
 struct ProjectReplaceGraphRequest {
     std::vector<ProjectNodeInstanceDeclaration> instances{};
+    std::vector<ProjectNodeReplacement> node_replacements{};
     std::vector<ProjectConnection> connections{};
 };
 

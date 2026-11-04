@@ -28,9 +28,8 @@ namespace iv {
 
         void declare(DeclarationContext<Latency> const& ctx) const
         {
-            auto const& state = ctx.state();
             size_t const min_size = _latency + ctx.max_block_size();
-            ctx.local_array(state.memory, next_power_of_2(min_size));
+            ctx.local_array<&State::memory>(next_power_of_2(min_size));
         }
 
         void initialize(InitializationContext<Latency> const& ctx) const

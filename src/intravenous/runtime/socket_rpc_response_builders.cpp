@@ -1,10 +1,12 @@
 #include <intravenous/runtime/socket_rpc_response_builders.h>
 #include <intravenous/runtime/socket_rpc_json_serialization.h>
+#include <intravenous/runtime/project_connection_json.h>
 
 #include <nlohmann/json.hpp>
 
 #include <stdexcept>
 #include <string>
+#include <string_view>
 
 namespace iv {
 namespace {
@@ -72,7 +74,197 @@ Json audio_devices_snapshot_json(AudioDevicesSnapshot const &snapshot)
         {"selectedInput", audio_device_selection_json(snapshot.selected_input)},
     };
 }
+
+std::string_view node_event_value_kind_json(NodeEventValueKind kind)
+{
+    switch (kind) {
+    case NodeEventValueKind::unsupported: return "unsupported";
+    case NodeEventValueKind::boolean: return "boolean";
+    case NodeEventValueKind::signed_integer: return "signedInteger";
+    case NodeEventValueKind::unsigned_integer: return "unsignedInteger";
+    case NodeEventValueKind::floating_point: return "floatingPoint";
+    case NodeEventValueKind::string: return "string";
+    case NodeEventValueKind::converted_scalar: return "convertedScalar";
+    case NodeEventValueKind::enumeration: return "enumeration";
+    case NodeEventValueKind::aggregate: return "aggregate";
+    case NodeEventValueKind::sequence: return "sequence";
+    case NodeEventValueKind::node_address: return "nodeAddress";
+    }
+    throw std::logic_error("unknown NodeEventValueKind");
+}
+
+Json node_event_type_id_json(NodeEventTypeId const& id)
+{
+    return Json{
+        {"nominalId", id.nominal_id},
+        {"definitionFingerprint", id.definition_fingerprint},
+    };
+}
+
+Json node_event_value_schema_json(NodeEventValueSchema const& schema)
+{
+    Json result{{"kind", node_event_value_kind_json(schema.kind)}};
+    if (!schema.unsupported_reason.empty()) {
+        result["reason"] = schema.unsupported_reason;
+    }
+    if (schema.integer_bit_width != 0) {
+        result["bitWidth"] = schema.integer_bit_width;
+    }
+    if (schema.kind == NodeEventValueKind::enumeration) {
+        result["signed"] = schema.integer_is_signed;
+    }
+    if (!schema.enumerators.empty()) {
+        auto values = Json::array();
+        for (auto const& value : schema.enumerators) {
+            values.push_back(Json{
+                {"name", value.name},
+                {"value", value.value},
+            });
+        }
+        result["enumerators"] = std::move(values);
+    }
+    if (!schema.fields.empty()) {
+        auto fields = Json::array();
+        for (auto const& field : schema.fields) {
+            if (!field.value) {
+                throw std::logic_error(
+                    "NodeEventFieldSchema has no value schema");
+            }
+            fields.push_back(Json{
+                {"name", field.name},
+                {"value", node_event_value_schema_json(*field.value)},
+            });
+        }
+        result["fields"] = std::move(fields);
+    }
+    if (schema.element) {
+        result["element"] = node_event_value_schema_json(*schema.element);
+    }
+    if (schema.fixed_element_count != 0) {
+        result["fixedElementCount"] = schema.fixed_element_count;
+    }
+    if (schema.kind == NodeEventValueKind::converted_scalar) {
+        result["jsonKinds"] = Json::array({"boolean", "number", "string"});
+        result["providerValidated"] = true;
+    }
+    return result;
+}
+
+Json node_event_protocol_json(NodeEventProtocolSnapshot const& protocol)
+{
+    auto event_types = Json::array();
+    for (auto const& event : protocol.event_types) {
+        event_types.push_back(Json{
+            {"nominalId", event.id.nominal_id},
+            {"definitionFingerprint", event.id.definition_fingerprint},
+            {"displayName", event.display_name},
+            {"payload", node_event_value_schema_json(event.payload)},
+        });
+    }
+    auto definitions = Json::array();
+    for (auto const& definition : protocol.definitions) {
+        auto supported = Json::array();
+        for (auto const& id : definition.supported_event_types) {
+            supported.push_back(node_event_type_id_json(id));
+        }
+        definitions.push_back(Json{
+            {"definitionId", definition.definition_id},
+            {"supportedEventTypes", std::move(supported)},
+        });
+    }
+    auto receivers = Json::array();
+    for (auto const& receiver : protocol.receivers) {
+        auto supported = Json::array();
+        for (auto const& id : receiver.supported_event_types) {
+            supported.push_back(node_event_type_id_json(id));
+        }
+        receivers.push_back(Json{
+            {"address", node_address_json(
+                receiver.address, ProjectConnectionJsonNames::socket_rpc)},
+            {"supportedEventTypes", std::move(supported)},
+        });
+    }
+    return Json{
+        {"formatVersion", protocol.format_version},
+        {"projectGraphGeneration", protocol.project_graph_generation},
+        {"definitionsGeneration", protocol.definitions_generation},
+        {"eventTypes", std::move(event_types)},
+        {"definitions", std::move(definitions)},
+        {"receivers", std::move(receivers)},
+    };
+}
 } // namespace
+
+void SocketRpcNodeEventProtocolResultBuilder::succeed(
+    NodeEventProtocolSnapshot value)
+{
+    result = std::move(value);
+}
+
+void SocketRpcNodeEventProtocolResultBuilder::fail(std::string message)
+{
+    fail(-32000, std::move(message));
+}
+
+void SocketRpcNodeEventProtocolResultBuilder::fail(
+    int code,
+    std::string message)
+{
+    error_code = code;
+    error_message = std::move(message);
+}
+
+std::string SocketRpcNodeEventProtocolResultBuilder::build(int request_id) const
+{
+    if (!error_message.empty()) {
+        return jsonrpc_error(request_id, error_code, error_message);
+    }
+    if (!result) {
+        throw_unbuilt_response("SocketRpcNodeEventProtocolResultBuilder");
+    }
+    return jsonrpc_result(request_id, node_event_protocol_json(*result));
+}
+
+void SocketRpcNodeMessageResultBuilder::succeed(
+    std::vector<SocketRpcNodeMessageDiagnostic> diagnostics)
+{
+    diagnostics_ = std::move(diagnostics);
+    has_response_ = true;
+}
+
+void SocketRpcNodeMessageResultBuilder::fail(std::string message)
+{
+    fail(-32000, std::move(message));
+}
+
+void SocketRpcNodeMessageResultBuilder::fail(int code, std::string message)
+{
+    error_code = code;
+    error_message = std::move(message);
+    has_response_ = true;
+}
+
+std::string SocketRpcNodeMessageResultBuilder::build(int request_id) const
+{
+    if (!has_response_) {
+        throw_unbuilt_response("SocketRpcNodeMessageResultBuilder");
+    }
+    if (!error_message.empty()) {
+        return jsonrpc_error(request_id, error_code, error_message);
+    }
+    Json diagnostics = Json::array();
+    for (auto const& diagnostic : diagnostics_) {
+        diagnostics.push_back(Json{
+            {"target", node_address_json(
+                diagnostic.target, ProjectConnectionJsonNames::socket_rpc)},
+            {"message", diagnostic.message},
+        });
+    }
+    return jsonrpc_result(request_id, Json{
+        {"ok", true},
+        {"diagnostics", std::move(diagnostics)},
+    });
+}
 
 void SocketRpcAckResponseBuilder::succeed() noexcept {
     has_response_ = true;

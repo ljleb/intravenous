@@ -196,8 +196,7 @@ latest intended mutation may disappear.
 
 ## Leaf-node handlers
 
-A leaf node can receive a typed event directly. The exact API names remain
-provisional, but the intended shape is:
+A leaf node can receive a typed event directly through this public member shape:
 
 ```cpp
 void on_message(
@@ -210,12 +209,10 @@ The semantic contract is:
 - dispatch is by the C++ event type;
 - the handler is associated with the receiving backend node;
 - the handler may mutate/reconfigure/replace only that node;
-- when replacing/reconfiguring itself, the handler can inspect the predecessor's
-  current configured argument values and preserve all arguments except the selected
-  values/subvalues it intentionally changes;
-- structured/list/container arguments remain first-class values so a node or module can
-  automate an evolving construction-argument set without rebuilding it from unrelated
-  callback captures;
+- a replacement supplies the successor definition and its complete typed argument
+  list;
+- the leaf-node handler reads values that it preserves through `this`;
+- structured, list, and container arguments remain first-class successor arguments;
 - the handler may send further typed events to semantic node targets;
 - the public context exposes no `NodeStorage`, concrete node indices, graph
   generations, RPC details, sockets, or editor/webview plumbing;
@@ -224,38 +221,82 @@ The semantic contract is:
 ## Module-node handlers
 
 A module node is simultaneously a semantic backend node that can be presented and
-an authored scope containing descendants. It needs the equivalent typed-handler
-capability, registered while constructing that scope. The exact syntax remains
-provisional, but the intended capability is represented by:
+an authored scope containing descendants. A module that receives semantic node
+messages is a class registered with `IV_MODULE_CLASS`. Its constructor receives the
+registered construction arguments. Its `build_graph(GraphBuilder&) const` member
+creates the authored graph. Public, const `on_message` overloads receive typed events:
 
 ```cpp
-auto filter = g.node<"filter">(...);
-auto envelope = g.node<"envelope">(...);
+class FilterVoice {
+public:
+    explicit FilterVoice(float cutoff) : cutoff_(cutoff) {}
 
-g.on_message(
-    [filter, envelope](ModuleMessageContext& ctx,
-                       SomeEvent const& event) {
-        ctx.send(filter, ...);
-        ctx.send(envelope, ...);
-    });
+    void build_graph(GraphBuilder& g) const
+    {
+        auto filter = g.node<"filter">(cutoff_);
+        auto envelope = g.node<"envelope">();
+        filter("cutoff"_P = envelope);
+        g.outputs("out"_P = filter);
+    }
+
+    void on_message(
+        ModuleMessageContext<FilterVoice>& ctx,
+        ResetEnvelope const& event) const
+    {
+        ctx.send(ctx.ref<"envelope">(), event);
+    }
+
+private:
+    float cutoff_;
+};
+
+IV_MODULE_CLASS("iv.example.filter_voice", FilterVoice);
 ```
 
-A module handler may coordinate its descendants only by sending them events. It
-should be able to capture authored `NodeRef`s that are already in lexical scope;
-a module author should not have to reconstruct those identities through string
-selectors merely because dispatch happens later at runtime.
+`ModuleMessageContext<Module>` is a separate public type from
+`NodeMessageContext<Node>`. `ctx.ref<"name">()` accepts a compile-time string and
+selects a graph-significant local declared with that name in `build_graph()`. The
+compiler records the local's `ProjectVirtualNodeSelector`. The returned
+`ModuleMessageTarget` can append `ProjectVirtualMemberSelector` with `.member(n)` or
+`ProjectTiledChildSelector` with `.tiled_child<"name">()`. It does not expose a
+`NodeBundleHandle` or retain a `NodeRef` after graph construction.
 
-That requires the captured reference to contain/read a stable semantic identity
-rather than dereferencing a stale builder/session pointer when the handler runs.
+A module handler may coordinate descendants only by sending them events. It reads
+construction values from the retained class instance through `this`. A function
+registered with `IV_MODULE` remains the shorter form for a module with no message
+handlers.
 
-Captured values remain useful for ordinary handler-specific policy, but they should not
-be the only way to remember a node's prior construction arguments. Replacement needs a
-first-class view of the predecessor's typed/structured configuration values so a
-handler can express "change these arguments, preserve the rest". The same value model
-must handle nested initialization-list/container arguments used by module automation.
-The exact replacement/update spelling remains provisional.
+The replacement call supplies a complete typed successor argument list. Package
+code converts that list to one ordered JSON argument array before the handler returns.
+Generated `ConfigurationExpressionTypeSchema` operations read scalar values,
+aggregate fields, and sequence elements. The node author does not provide a separate
+JSON serializer for ordinary Front 9 values. The application does not inspect
+package-owned C++ fields.
+
+The same value model handles list and container arguments used by module automation.
 Front 9 owns this structured configuration value model. See
 [Configuration Expression Language Direction](./configuration_expression_language_direction.md).
+
+The intended replacement shape is:
+
+```cpp
+ctx.replace<"iv.example.successor">(
+    successor_argument_1,
+    successor_argument_2);
+```
+
+For a leaf node, the preserved values are ordinary members available through `this`.
+For a class module, the preserved values are ordinary members available through
+`this`.
+
+A successful replacement is the new semantic node. It is not a temporary modifier
+applied to one `ConfiguredGraph`. The application stores the successor definition and
+its complete structured configuration under the node's stable `NodeAddress`, reapplies
+that replacement whenever `NodeInstances` reconstructs the project graph, and includes
+it in project save/load. Later graph edits and package rebuilds therefore reconstruct
+the replacement rather than silently restoring the node originally authored by the
+enclosing module. A subsequent replacement replaces this complete record; it does not
+accumulate an unordered stack of modifiers.
 
 ## Event types are ordinary reusable C++ types
 
@@ -531,9 +572,9 @@ where:
 Vue should not know concrete node indices, `NodeStorage`, graph generations,
 sockets, JSON-RPC method names, or other transport/runtime plumbing.
 
-## Events are strongly typed in TypeScript
+## Events are strongly typed in frontend bindings
 
-Generated frontend event APIs must not degrade to a string event name plus an
+A language-specific frontend binding must not degrade to a string event name plus an
 untyped/raw JSON object such as:
 
 ```ts
@@ -541,10 +582,12 @@ untyped/raw JSON object such as:
 node.send("SetCutoff", { cutoff: 800 })
 ```
 
-The source-introspection layer should generate concrete strongly typed TypeScript
-event values/types from the authoritative C++ event definitions. `node.send(...)`
-accepts those typed values (the exact generated construction syntax remains open).
-For example, possible generated ergonomics could look like:
+The backend compiler discovers the authoritative C++ event definitions and emits a
+language-neutral schema. A TypeScript/Vue adapter can generate concrete event values,
+types, codecs, and factories from that schema. A future C++/Vulkan frontend can consume
+the same schema without retaining a dependency on TypeScript. `node.send(...)` in each
+frontend accepts that frontend's typed values. For example, one possible TypeScript
+adapter could expose:
 
 ```ts
 const event: SetCutoff = { cutoff: 800 }
@@ -553,42 +596,61 @@ node.send(event)
 
 or an equivalently strongly typed generated constructor/API.
 
-JSON is a transport representation, not the programming model. JSON conversion
-functions/codecs for each generated event type should be generated automatically
-from the same authoritative C++ schema. Vue authors should neither select event
-types with raw strings nor manually serialize/deserialize their payload objects.
+JSON is the current transport representation, not the programming model. The adapter
+generates or implements the JSON codecs from the neutral schema. Vue authors should
+neither select event types with raw strings nor manually serialize their payload
+objects. The same rule applies to authors of another frontend.
 
 The same principle applies in the reverse direction to generated presentation
 schemas.
 
-## TypeScript generation comes from authoritative C++ definitions
+## The backend publishes a language-neutral event protocol
 
-The mandatory source-introspection/compiler layer should generate the frontend
-protocol artifacts rather than requiring parallel hand-maintained C++ and
-TypeScript schemas.
+The mandatory source-introspection/compiler layer emits a
+`<package>.ivpkg.bc.node-events.json` sidecar for each finalized package. This artifact
+contains the stable nominal ID, definition fingerprint, diagnostic display name, and
+JSON payload structure of every event used by a discovered handler. It also maps each
+registered leaf or module definition ID to its supported event types. An unregistered
+inner leaf type has no stable public definition ID and therefore appears only through
+the runtime address catalog. The sidecar permits offline binding generation without
+loading the package into a running server.
 
-The generated surface is expected to cover, where relevant:
+The runtime method `nodeMessages.getProtocol` returns a coherent snapshot containing:
 
-- concrete strongly typed event/message types;
-- generated JSON encode/decode functions or equivalent codecs for those types;
-- `NodeAddress` and its codec;
-- node `PresentationState` types and codecs;
-- static information describing which event types a statically known node type
-  supports;
-- future live-subscription schema/capability types once that model is settled.
+- `formatVersion`;
+- `projectGraphGeneration` and `definitionsGeneration`;
+- the event schemas retained by the accepted package revisions;
+- registered leaf/module definition IDs and their supported event types;
+- each active `NodeAddress` and its `supportedEventTypes`.
 
-Generated frontend protocol code must not expose backend ABI information such as
-state-field offsets, packed `NodeStorage` layout, concrete node indices, migration
-metadata, or compiled realization details.
+Event classes remain independent C++ types. They are not nested in leaf-node or
+module-node types, and several node types can reuse the same event identity and schema.
+The active-address list represents that many-to-many relationship directly.
 
-The source-introspection layer may know both sets of facts, but backend ABI metadata
-and frontend semantic protocol metadata are different generated artifacts.
+The backend owns C++ event discovery, the neutral schema, payload validation and
+deserialization, active-address compatibility, dispatch, and generation identity. A
+frontend adapter or supplementary plugin owns language-specific types, codecs,
+factories, naming/collision rules, imports, and GUI integration. The backend must not
+contain TypeScript or Vue generation rules.
+
+The neutral protocol must not expose state-field offsets, packed `NodeStorage` layout,
+`NodeCodeKey`, LLVM symbols, function pointers, concrete node indices, migration
+metadata, or compiled realization details. Source introspection may know those ABI
+facts, but it emits them only to backend artifacts. The protocol uses nominal ID plus
+definition fingerprint for compatibility; `displayName` is diagnostic only.
+
+`convertedScalar` is the one intentionally provider-validated payload kind. Its schema
+lists the JSON scalar forms that can reach the provider constructor and marks
+`providerValidated: true`; the exact C++ constructor can reject a listed form. A binding
+generator must preserve that validation boundary instead of claiming that every listed
+form constructs every provider-defined scalar. Primitive numeric, Boolean, string,
+enumeration, aggregate, sequence, and `NodeAddress` schemas remain structurally exact.
 
 ## Static event compatibility should be preserved where possible
 
-Because source introspection discovers typed handlers, a statically known
-presentation/node type should expose an event-send surface that rejects unsupported
-events at TypeScript compile time where practical.
+Because source introspection discovers typed handlers, a language-specific adapter for
+a statically known presentation/node type should expose an event-send surface that
+rejects unsupported events at that language's compile time where practical.
 
 Likewise, statically known C++ `NodeRef` targets can be diagnosed when an event is
 known not to be supported. Runtime diagnostics remain necessary for dynamic
@@ -749,11 +811,13 @@ settled contracts above:
 - the exact transaction/journal representation used to prepare and replay one
   ordered root interaction at a pass boundary;
 - partial/successor `NodeStorage` migration details;
-- exact spelling of `NodeMessageContext`, `ModuleMessageContext`, `on_message`,
-  `g.on_message`, selectors, or replacement APIs;
 - exact C++ declaration/projection syntax for `PresentationState`;
-- exact generated TypeScript construction syntax for event values, beyond the hard
-  requirement that it remain strongly typed rather than string/raw-JSON based;
+- exact language-specific construction syntax for event values. This belongs to each
+  frontend adapter or supplementary binding-generator plugin, not the backend;
+- how a Vue adapter watches `projectGraphGeneration` / `definitionsGeneration`,
+  regenerates or reloads bindings during development, and integrates them into its
+  build tool. These are frontend integration choices over the settled neutral
+  package/runtime protocol;
 - the exact live-subscription API and terminology;
 - the catalog/discovery representation for framework-provided and node-provided
   live capabilities;

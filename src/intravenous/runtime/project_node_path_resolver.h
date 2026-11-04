@@ -29,6 +29,18 @@ struct ProjectNodePathMatch {
     NodeBundleHandle subject,
     std::span<ProjectNodePathSelector const> path);
 
+[[nodiscard]] std::vector<ProjectNodePathMatch> resolve_node_address(
+    ConfiguredGraph const& graph,
+    std::unordered_map<std::string, NodeInstancePlacement> const& placements,
+    NodeAddress const& address);
+
+// Expand a resolved semantic match into the concrete NodeBundle handles to
+// which one handler delivery would be addressed. Order follows the authored
+// virtual-member order and duplicates are removed without reordering.
+[[nodiscard]] std::vector<NodeBundleHandle> concrete_node_address_matches(
+    ConfiguredGraph const& graph,
+    std::span<ProjectNodePathMatch const> matches);
+
 // Resolve the durable project instance ID first, then apply the same path
 // operations used by GraphConnections. An unknown instance ID has no matches.
 [[nodiscard]] std::vector<ProjectNodePathMatch> resolve_project_node_path(

@@ -2138,12 +2138,19 @@ Provider-generated operations may still be used for clone/destroy/equality/hash 
 for safe construction of provider-defined value types; that does not require compiling
 arbitrary user-authored C++.
 
-The expression/value representation should also support **argument-preserving node
-replacement**. An `on_message` handler that replaces its own semantic node must be able
-to inspect/reuse the predecessor's configured argument values and replace only selected
-arguments rather than reconstructing the complete configuration from unrelated copied
-captures. Lists and other structured argument values must remain ordinary first-class
-values so module-node automation can evolve a dynamic set of construction arguments.
+The expression/value representation must also support durable node replacement.
+An `on_message` handler supplies the successor definition and its complete typed
+argument list. A leaf-node handler reads values that it preserves through `this`.
+A class-module handler reads values that it preserves through the retained class
+instance. Package code converts
+the supplied successor arguments to one ordered JSON argument array before the
+handler returns. The generated `ConfigurationExpressionTypeSchema` reads scalar,
+aggregate-field, and sequence-element values. Node authors do not write a second
+serializer for ordinary Front 9 values. `NodeInstances` later reconstructs the typed
+arguments from that array and the successor definition's `RegisteredSignature`.
+
+Lists and other structured argument values remain ordinary first-class values. A
+handler can pass them as successor arguments when a registered definition uses them.
 
 This front should expose a stable parsed/value representation that fronts 10 and 13 can
 use for persistence and semantic replacement without duplicating parsers.
@@ -2227,8 +2234,8 @@ restricted parser lands.
 **Primary ownership:** artifact ownership across built-in, common, and project-local
 packages.
 
-**Implementation status (2026-11-02): implementation complete; collaborator build
-and test verification pending.** `PackageProvenance` now travels from
+**Implementation status (2026-11-03): complete and verified.** The collaborator's
+full build and test suite passed. `PackageProvenance` now travels from
 `PackageDiscoveryRoot` through `IvPackageDeclaration`, `PackageBuildRequest`,
 `PackageRevision`, `PackageDefinitions`, JSON-RPC, and the VS Code module view.
 Overlapping roots emit one declaration with explicit ownership. CMake prebuilds the
@@ -2291,24 +2298,77 @@ This front owns:
 - validation and stable identity for declared `State`/`TockState` fields;
 - member-pointer-based declaration validation;
 - typed node-message handler discovery;
-- generated event serializers/deserializers and frontend type metadata;
+- generated event serializers/deserializers and language-neutral event schemas;
 - stable `NodeAddress` and selector semantics;
 - leaf and module-node handlers;
 - ordered one-way node-to-node event dispatch;
 - graph-revision-safe semantic addressing;
 - node-local replace/reconfigure operations;
-- exposing the predecessor node's current configuration arguments to a replacement
-  handler and allowing selected arguments/structured subvalues to be replaced while
-  preserving the rest;
+- accepting the successor definition and its complete typed construction arguments
+  from a replacement handler;
+- converting those supplied arguments to durable Front 9 values before package-owned
+  C++ objects can expire;
 - interaction journaling/commit integration without exposing realtime storage to the
   public handler context.
 
-The actual configuration values and expression/value manipulation used by replacement
-come from front 9. This front owns event semantics and replacement transactionality,
-not the configuration grammar.
+A successful node-local replacement is durable canonical project state keyed by stable
+`NodeAddress`. It stores the successor definition and complete structured configuration,
+is reapplied by `NodeInstances` during every later reconstruction, and participates in
+`ProjectPersistence` save/load. It is not a temporary overlay on one `ConfiguredGraph`,
+and successive replacements replace the prior complete record rather than accumulating
+configuration modifiers.
+
+The replacement handler owns preservation of unchanged values. A leaf-node handler
+can read them through `this`. A class-module handler can read them through `this`.
+Front 13 does
+not recover predecessor arguments from `ConfiguredNodeInstance`.
+
+Front 9 supplies the durable value representation and reconstruction. Front 13 owns
+typed successor argument submission, event semantics, and replacement
+transactionality. It does not own the configuration grammar.
 
 The live-observation/presentation telemetry API remains separate and may stay unresolved
 until front 14 needs concrete capabilities.
+
+**Backend implementation status (2026-11-03): implementation complete; collaborator
+build and test verification pending.** The source now implements compiler-discovered leaf handlers,
+compiler-discovered class-module handlers, stable `NodeAddress` dispatch, ordered send/replace
+execution, one delivery per concrete node in one root interaction, complete typed
+successor arguments, durable replacement records, reconstruction after later graph
+builds, project save/load, and the serialized `nodeMessages.dispatch` transport. A
+replace followed by a send to the successor at the same stable address is treated as
+two different concrete nodes. A replacement of an ancestor similarly creates a new
+concrete descendant world, while an unrelated replacement does not permit a second
+delivery to an unchanged node.
+
+**Class-module decision (2026-11-03):** a module that receives semantic messages is
+registered with `IV_MODULE_CLASS`. Its constructor receives configuration arguments,
+`build_graph(GraphBuilder&) const` creates its graph, and compiler-discovered public
+const `on_message(ModuleMessageContext<Module>&, Event const&)` overloads receive
+events. `ctx.ref<"local">()` maps an authored local name from `build_graph()` to its
+compiler-generated `ProjectVirtualNodeSelector`; `.member(n)` and
+`.tiled_child<"name">()` append the existing selector types. The configured handler
+retains the class instance and semantic selector map. It never retains a
+builder-local `NodeRef` or `NodeBundleHandle`. `IV_MODULE` remains the handler-free
+function form.
+
+This makes both leaf and class-module handler sets package metadata. Each finalized
+package emits a language-neutral `.node-events.json` schema beside its `.ivpkg.bc`
+artifact. The sidecar maps registered leaf/module definition IDs to their supported
+event types without exposing `NodeCodeKey`. `nodeMessages.getProtocol` combines the
+event types retained by the accepted package revisions with the exact event types
+supported by each active `NodeAddress` in the current `ProjectGraphGeneration`.
+Its `projectGraphGeneration` and `definitionsGeneration` fields define the snapshot
+lifetime.
+
+The backend does not generate TypeScript, Vue components, or another frontend-language
+API. A frontend adapter or supplementary plugin consumes the neutral package/runtime
+schemas and owns its language-specific types, codecs, event factories, naming rules,
+and imports. This permits the Vue frontend to be replaced by a C++/Vulkan frontend
+without changing the semantic backend protocol. The neutral schema excludes
+`NodeCodeKey`, LLVM symbols, function pointers, storage offsets, and other backend ABI
+facts. The nominal ID plus definition fingerprint remains the event compatibility
+identity; `displayName` is diagnostic only.
 
 ## Front 14: presentation and persistent manual controls
 

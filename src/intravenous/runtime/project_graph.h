@@ -5,18 +5,26 @@
 #include <intravenous/runtime/graph_jit.h>
 #include <intravenous/runtime/node_definition_types.h>
 #include <intravenous/runtime/node_instances.h>
+#include <intravenous/runtime/node_event_protocol_types.h>
+#include <intravenous/node/message.h>
 
 #include <cstdint>
 #include <memory>
 #include <mutex>
 #include <unordered_map>
+#include <unordered_set>
+#include <utility>
 #include <vector>
+
+#include <nlohmann/json_fwd.hpp>
 
 namespace iv {
 class ProjectAckBuilder;
 class ProjectStringBuilder;
 class SocketRpcAckResponseBuilder;
 class SocketRpcCreateNodeInstanceResultBuilder;
+class SocketRpcNodeMessageResultBuilder;
+class SocketRpcNodeEventProtocolResultBuilder;
 struct CreateNodeInstanceRequest;
 struct DeleteNodeInstanceRequest;
 struct NodeDefinitionsSnapshotChanged;
@@ -29,6 +37,8 @@ struct ProjectReplaceGraphRequest;
 struct UpdateNodeInstancesRequest;
 struct UpsertGraphConnectionRequest;
 struct DeleteGraphConnectionRequest;
+struct DispatchNodeMessageRequest;
+struct GetNodeEventProtocolRequest;
 
 // One immutable root-configuration generation produced by ProjectGraph. GraphJit
 // will consume this object (plus its pinned definition provenance) in the next
@@ -45,8 +55,26 @@ struct ProjectGraphGeneration {
     bool graph_jit_attempted = false;
     std::shared_ptr<CompiledGraph const> compiled_graph{};
     std::vector<GraphJitDiagnostic> graph_jit_diagnostics{};
+    std::vector<BoundNodeMessageHandler> message_handlers{};
+    std::vector<ProjectNodeReplacement> node_replacements{};
     bool graph_executor_attempted = false;
     bool graph_executor_accepted = false;
+};
+
+struct NodeMessageDiagnostic {
+    NodeAddress target{};
+    std::string message{};
+};
+
+struct NodeMessageDispatchResult {
+    std::vector<NodeMessageDiagnostic> diagnostics{};
+    bool project_state_changed = false;
+};
+
+struct SerializedNodeMessage {
+    std::string event_type_nominal_id{};
+    std::string event_type_definition_fingerprint{};
+    std::shared_ptr<nlohmann::ordered_json const> payload{};
 };
 
 // Root-graph transaction coordinator. It deliberately does not own desired
@@ -54,6 +82,7 @@ struct ProjectGraphGeneration {
 // canonical sibling owners and are each invoked once per transaction through
 // ProjectGraph child edges.
 class ProjectGraph {
+    struct NodeMessageInteraction;
     struct RebuildResult {
         std::shared_ptr<ProjectGraphGeneration const> generation{};
         std::vector<std::string> created_instance_ids{};
@@ -67,7 +96,17 @@ class ProjectGraph {
 
     RebuildResult rebuild_locked(
         NodeInstancesMutation instance_mutation,
-        GraphConnectionsMutation connection_mutation);
+        GraphConnectionsMutation connection_mutation,
+        bool publish_execution = true);
+    void dispatch_node_message_locked(
+        NodeAddress const& target,
+        OwnedNodeMessage message,
+        NodeMessageInteraction& interaction,
+        NodeMessageDispatchResult& result);
+    void dispatch_root_node_message_locked(
+        NodeAddress const& target,
+        OwnedNodeMessage message,
+        NodeMessageDispatchResult& result);
 
 public:
     ProjectGraph();
@@ -77,6 +116,11 @@ public:
 
     [[nodiscard]] std::shared_ptr<ProjectGraphGeneration const> current_generation() const;
     [[nodiscard]] std::shared_ptr<NodeDefinitionsSnapshot const> definitions_snapshot() const;
+    [[nodiscard]] NodeMessageDispatchResult dispatch_node_message(
+        NodeAddress const& target, OwnedNodeMessage message);
+    [[nodiscard]] NodeMessageDispatchResult dispatch_node_message(
+        NodeAddress const& target, SerializedNodeMessage const& message);
+    [[nodiscard]] NodeEventProtocolSnapshot node_event_protocol() const;
 
     void handle_node_definitions_snapshot_changed(NodeDefinitionsSnapshotChanged const& change);
     void handle_project_create_node_instance(
@@ -114,5 +158,11 @@ public:
     void handle_socket_rpc_delete_graph_connection(
         DeleteGraphConnectionRequest const& request,
         SocketRpcAckResponseBuilder& builder);
+    void handle_socket_rpc_dispatch_node_message(
+        DispatchNodeMessageRequest const& request,
+        SocketRpcNodeMessageResultBuilder& builder);
+    void handle_socket_rpc_get_node_event_protocol(
+        GetNodeEventProtocolRequest const& request,
+        SocketRpcNodeEventProtocolResultBuilder& builder);
 };
 } // namespace iv

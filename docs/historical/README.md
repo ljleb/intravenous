@@ -62,6 +62,9 @@ These documents are retained because they record deleted architectures, supersed
 
 ## Completed migrations, experiments, and checkpoints
 
+- [Front 13 Backend TypeScript Generation Before the Language-Neutral Protocol, 2026-11-03](./front_13_backend_typescript_generation_before_neutral_protocol_2026-11-03.md)
+- [Front 13 Dynamic Module-Message Registration Before Class Modules, 2026-11-03](./front_13_dynamic_module_message_registration_2026-11-03.md)
+- [Front 13 Predecessor Argument Introspection False Start, 2026-11-03](./front_13_predecessor_argument_introspection_false_start_2026-11-03.md)
 - [Front 9 Status Before Implementation, 2026-11-02](./front_9_status_before_implementation_2026-11-02.md)
 - [Front 9 Reference Syntax Before 2026-11-02](./front_9_configuration_reference_syntax_before_2026-11-02.md)
 - [Front 10 Pre-Implementation Checkpoint, 2026-11-02](./front_10_pre_implementation_checkpoint_2026-11-02.md)

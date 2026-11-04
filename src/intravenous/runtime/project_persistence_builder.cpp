@@ -57,6 +57,12 @@ void ProjectPersistenceBuilder::add_node_instances(
     node_instances_ = std::move(instances);
 }
 
+void ProjectPersistenceBuilder::add_node_replacements(
+    std::vector<ProjectNodeReplacement> replacements)
+{
+    node_replacements_ = std::move(replacements);
+}
+
 void ProjectPersistenceBuilder::add_graph_connections(
     std::vector<ProjectConnection> connections)
 {
@@ -141,6 +147,29 @@ std::vector<ProjectCommand> ProjectPersistenceBuilder::build() const
                 {"display_name", instance.display_name
                     ? Json(*instance.display_name) : Json(nullptr)},
                 {"configuration_source", instance.configuration_source},
+            },
+        });
+    }
+
+    auto replacements = node_replacements_;
+    std::ranges::sort(replacements, {}, [](ProjectNodeReplacement const& replacement) {
+        return node_address_json(
+            replacement.address,
+            ProjectConnectionJsonNames::project_file).dump();
+    });
+    for (auto const& replacement : replacements) {
+        commands.push_back(ProjectCommand{
+            .command = "nodeReplacements.upsert",
+            .args = Json{
+                {"address", node_address_json(
+                    replacement.address,
+                    ProjectConnectionJsonNames::project_file)},
+                {"definition_id", replacement.definition_id},
+                {"package_root", replacement.package_root
+                        && !replacement.package_root->empty()
+                    ? Json(relativize_path(*replacement.package_root)) : Json(nullptr)},
+                {"configuration_arguments", Json::parse(
+                    replacement.configuration_arguments_json)},
             },
         });
     }

@@ -4,8 +4,10 @@
 #include <intravenous/runtime/configuration_expression.h>
 
 #include <gtest/gtest.h>
+#include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <fstream>
 #include <optional>
 #include <string_view>
 #include <utility>
@@ -574,7 +576,21 @@ TEST(ModuleLoaderPackages, RegisteredNodeAndModuleUseProviderConstructionArgumen
         "    iv::GraphBuilder& g, iv::SampleStreamLayout)\n"
         "{ g.outputs(); }\n"
         "IV_MODULE(\"iv.test.framework_enum_provider_module\",\n"
-        "    framework_enum_provider_module);\n");
+        "    framework_enum_provider_module);\n"
+        "struct ClassProviderModule {\n"
+        "    iv::Sample gain;\n"
+        "    explicit ClassProviderModule(iv::Sample gain_) : gain(gain_) {}\n"
+        "    void build_graph(iv::GraphBuilder& g) const\n"
+        "    {\n"
+        "        auto source = g.node<\"iv.test.configured_provider_node\">(gain);\n"
+        "        g.outputs(source);\n"
+        "    }\n"
+        "    void on_message(\n"
+        "        iv::ModuleMessageContext<ClassProviderModule>& ctx,\n"
+        "        iv::Sample const& event) const\n"
+        "    { ctx.send(ctx.ref<\"source\">(), event); }\n"
+        "};\n"
+        "IV_MODULE_CLASS(\"iv.test.class_provider_module\", ClassProviderModule);\n");
     iv::test::write_text(
         consumer_package / "iv_package.json",
         "{\"schema\":2,\"entry\":\"module.cpp\"}\n");
@@ -605,16 +621,63 @@ TEST(ModuleLoaderPackages, RegisteredNodeAndModuleUseProviderConstructionArgumen
         "{\n"
         "    g.outputs(g.node<\"iv.test.configured_provider_module\">());\n"
         "}\n"
+        "void class_module_reference(iv::GraphBuilder& g)\n"
+        "{\n"
+        "    g.outputs(g.node<\"iv.test.class_provider_module\">(iv::Sample{0.25f}));\n"
+        "}\n"
         "IV_MODULE(\"iv.test.direct_configured_node\", direct_configured_node);\n"
         "IV_MODULE(\"iv.test.configured_module_reference\", configured_module_reference);\n"
         "IV_MODULE(\"iv.test.required_configured_node\", required_configured_node);\n"
         "IV_MODULE(\"iv.test.required_configured_module\", required_configured_module);\n"
         "IV_MODULE(\"iv.test.string_literal_configuration\", string_literal_configuration);\n"
         "IV_MODULE(\"iv.test.default_configured_module_reference\", "
-        "default_configured_module_reference);\n");
+        "default_configured_module_reference);\n"
+        "IV_MODULE(\"iv.test.class_module_reference\", class_module_reference);\n");
 
     auto loader = iv::test::make_loader();
-    auto provider_definitions = loader.load_project_package_definitions(provider_package);
+    auto provider_package_revision = loader.load_project_package(provider_package);
+    ASSERT_TRUE(std::filesystem::is_regular_file(
+        provider_package_revision.compiler_artifact.node_event_protocol_path));
+    std::ifstream event_protocol_stream(
+        provider_package_revision.compiler_artifact.node_event_protocol_path);
+    ASSERT_TRUE(event_protocol_stream);
+    auto const event_protocol = nlohmann::ordered_json::parse(
+        event_protocol_stream);
+    EXPECT_EQ(event_protocol["formatVersion"], 1);
+    ASSERT_EQ(event_protocol["eventTypes"].size(), 1u);
+    EXPECT_FALSE(event_protocol["eventTypes"][0]["nominalId"]
+        .get<std::string>().empty());
+    EXPECT_FALSE(event_protocol["eventTypes"][0]["definitionFingerprint"]
+        .get<std::string>().empty());
+    EXPECT_EQ(
+        event_protocol["eventTypes"][0]["payload"]["kind"],
+        "convertedScalar");
+    ASSERT_EQ(event_protocol["definitions"].size(), 1u);
+    EXPECT_EQ(
+        event_protocol["definitions"][0]["definitionId"],
+        "iv.test.class_provider_module");
+    ASSERT_EQ(
+        event_protocol["definitions"][0]["supportedEventTypes"].size(),
+        1u);
+    EXPECT_EQ(
+        event_protocol["definitions"][0]["supportedEventTypes"][0]
+            ["nominalId"],
+        event_protocol["eventTypes"][0]["nominalId"]);
+    auto const protocol_text = event_protocol.dump();
+    EXPECT_EQ(protocol_text.find("nodeCodeKey"), std::string::npos);
+    EXPECT_EQ(protocol_text.find("methodSymbol"), std::string::npos);
+    EXPECT_EQ(protocol_text.find("bitOffset"), std::string::npos);
+    auto const& provider_definitions = provider_package_revision.definitions;
+    ASSERT_EQ(provider_package_revision.module_message_handlers.size(), 1u);
+    auto const& class_handler =
+        provider_package_revision.module_message_handlers.front();
+    EXPECT_EQ(
+        std::string_view(
+            static_cast<char const*>(class_handler.definition_id.data),
+            class_handler.definition_id.size),
+        "iv.test.class_provider_module");
+    EXPECT_NE(class_handler.event_type, nullptr);
+    EXPECT_NE(class_handler.invoke, nullptr);
     auto const provider_definition = std::ranges::find(
         provider_definitions,
         "iv.test.configured_provider_module",
@@ -704,9 +767,17 @@ TEST(ModuleLoaderPackages, RegisteredNodeAndModuleUseProviderConstructionArgumen
             "interleaved", *framework_enum_signature);
         EXPECT_EQ(values.arguments().size(), 1u);
     });
+    auto const class_definition = std::ranges::find(
+        provider_definitions,
+        "iv.test.class_provider_module",
+        &iv::ModuleLoader::LoadedDefinition::module_id);
+    ASSERT_NE(class_definition, provider_definitions.end());
+    auto const* class_signature = class_definition->provider.signature();
+    ASSERT_NE(class_signature, nullptr);
+    ASSERT_EQ(class_signature->argument_count, 1u);
     auto loaded = loader.load_project_package_definitions(consumer_package);
 
-    ASSERT_EQ(loaded.size(), 6u);
+    ASSERT_EQ(loaded.size(), 7u);
     EXPECT_NE(std::ranges::find(
         loaded, "iv.test.direct_configured_node", &iv::ModuleLoader::LoadedDefinition::module_id),
         loaded.end());
@@ -732,12 +803,17 @@ TEST(ModuleLoaderPackages, RegisteredNodeAndModuleUseProviderConstructionArgumen
         loaded.end());
     EXPECT_NE(std::ranges::find(
         loaded,
+        "iv.test.class_module_reference",
+        &iv::ModuleLoader::LoadedDefinition::module_id),
+        loaded.end());
+    EXPECT_NE(std::ranges::find(
+        loaded,
         "iv.test.default_configured_module_reference",
         &iv::ModuleLoader::LoadedDefinition::module_id),
         loaded.end());
 
-    auto provider_loaded = loader.load_project_package_definitions(provider_package);
-    ASSERT_EQ(provider_loaded.size(), 4u);
+    auto const& provider_loaded = provider_package_revision.definitions;
+    ASSERT_EQ(provider_loaded.size(), 5u);
     auto const required_provider = std::ranges::find(
         provider_loaded,
         "iv.test.required_provider_module",

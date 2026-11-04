@@ -102,6 +102,8 @@ struct LoadedPackageCode {
     std::vector<details::PackageDefinition> definitions{};
     std::vector<NodeConfigPointerFieldData> config_pointer_fields{};
     std::vector<RetainedGlobalData> retained_globals{};
+    std::vector<NodeMessageHandlerData> node_message_handlers{};
+    std::vector<ModuleMessageHandlerData> module_message_handlers{};
     std::vector<details::BuilderNodeStateStructures> node_state_structures{};
     ModuleDependency dependency{};
 
@@ -1012,6 +1014,13 @@ class ModuleLoader::Impl {
             throw std::runtime_error(
                 "IV package build did not produce expected LLVM '" + artifact.string() + "'");
         }
+        auto const node_event_protocol = std::filesystem::path(
+            artifact.string() + ".node-events.json");
+        if (!std::filesystem::exists(node_event_protocol)) {
+            throw std::runtime_error(
+                "IV package build did not produce semantic event protocol '"
+                + node_event_protocol.string() + "'");
+        }
 
         // The signature is part of the filename. A changed IV package produces new
         // LLVM while configured graphs keep the previous ORC resources alive
@@ -1179,6 +1188,12 @@ public:
             auto const retained_globals_fn =
                 symbol.template operator()<iv_package_retained_globals_fn>(
                     "iv_package_retained_globals");
+            auto const node_message_handlers_fn =
+                symbol.template operator()<iv_package_node_message_handlers_fn>(
+                    "iv_package_node_message_handlers");
+            auto const module_message_handlers_fn =
+                symbol.template operator()<iv_package_module_message_handlers_fn>(
+                    "iv_package_module_message_handlers");
             auto const node_state_structures_fn =
                 symbol.template operator()<iv_package_node_state_structures_fn>(
                     "iv_package_node_state_structures");
@@ -1212,6 +1227,14 @@ public:
                 retained_globals_fn(),
                 static_cast<RetainedGlobalData*>(nullptr),
                 "retained LLVM global");
+            package->node_message_handlers = copy_table(
+                node_message_handlers_fn(),
+                static_cast<NodeMessageHandlerData*>(nullptr),
+                "node message handler");
+            package->module_message_handlers = copy_table(
+                module_message_handlers_fn(),
+                static_cast<ModuleMessageHandlerData*>(nullptr),
+                "module message handler");
             auto const state_structures = copy_table(
                 node_state_structures_fn(),
                 static_cast<NodeStateStructureData*>(nullptr),
@@ -1266,6 +1289,9 @@ public:
                 for (auto const& field : fields) {
                     structure.fields.push_back({
                         .name = copy_text(field.name, "node-state field name"),
+                        .nominal_id = copy_text(
+                            field.nominal_id,
+                            "node-state field nominal ID"),
                         .type_name = copy_text(
                             field.type_name, "node-state field type name"),
                         .bit_offset = field.bit_offset,
@@ -1380,11 +1406,15 @@ public:
             .dependencies = std::move(dependencies),
             .compiler_artifact = {
                 .bitcode_path = package->bitcode_path,
+                .node_event_protocol_path = std::filesystem::path(
+                    package->bitcode_path.string() + ".node-events.json"),
                 .dynamic_libraries = package->dynamic_libraries,
             },
             .provider_definitions = package->definitions,
             .config_pointer_fields = package->config_pointer_fields,
             .retained_globals = package->retained_globals,
+            .node_message_handlers = package->node_message_handlers,
+            .module_message_handlers = package->module_message_handlers,
             .node_state_structures = package->node_state_structures,
             .package_code = package,
         };
@@ -1411,6 +1441,8 @@ public:
                 .definitions = package->definitions,
                 .config_pointer_fields = package->config_pointer_fields,
                 .retained_globals = package->retained_globals,
+                .node_message_handlers = package->node_message_handlers,
+                .module_message_handlers = package->module_message_handlers,
                 .node_state_structures = package->node_state_structures,
             });
         }

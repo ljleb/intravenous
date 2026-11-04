@@ -266,6 +266,26 @@ void SocketRpcServer::handle_client(int fd) {
                             builder.fail("project graph service is unavailable");
                         }
                         response = builder.build(request_id);
+                    } else if constexpr (std::same_as<Request, GetNodeEventProtocolRequest>) {
+                        SocketRpcNodeEventProtocolResultBuilder builder;
+                        IV_INVOKE_LINKER_EVENT(
+                            iv_socket_rpc_get_node_event_protocol_event,
+                            event_request,
+                            builder);
+                        if (!builder.has_response()) {
+                            builder.fail("project graph service is unavailable");
+                        }
+                        response = builder.build(request_id);
+                    } else if constexpr (std::same_as<Request, DispatchNodeMessageRequest>) {
+                        SocketRpcNodeMessageResultBuilder builder;
+                        IV_INVOKE_LINKER_EVENT(
+                            iv_socket_rpc_dispatch_node_message_event,
+                            event_request,
+                            builder);
+                        if (!builder.has_response()) {
+                            builder.fail("project graph service is unavailable");
+                        }
+                        response = builder.build(request_id);
                     } else if constexpr (std::same_as<Request, GetAudioDevicesRequest>) {
                         SocketRpcAudioDevicesResultBuilder builder;
                         IV_INVOKE_LINKER_EVENT(

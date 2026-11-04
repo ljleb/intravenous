@@ -250,6 +250,7 @@ function(_iv_package_define_finalizer target)
     list(REMOVE_DUPLICATES _iv_dependencies)
     list(REMOVE_DUPLICATES _iv_file_dependencies)
     set(_iv_dynamic_manifest "${_iv_output}.dynamic-libraries")
+    set(_iv_node_event_protocol "${_iv_output}.node-events.json")
     get_filename_component(_iv_output_dir "${_iv_output}" DIRECTORY)
     get_filename_component(_iv_output_name "${_iv_output}" NAME)
     file(MAKE_DIRECTORY "${_iv_output_dir}")
@@ -263,6 +264,7 @@ function(_iv_package_define_finalizer target)
 
     add_custom_command(
         OUTPUT "${_iv_output}"
+        BYPRODUCTS "${_iv_node_event_protocol}"
         COMMAND "${CMAKE_COMMAND}" -E make_directory "${_iv_output_dir}"
         COMMAND "${_iv_finalizer}"
             "--metadata-dir=${_iv_metadata_dir}"

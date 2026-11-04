@@ -98,6 +98,10 @@ PackageJitBatchResult PackageJit::build(
                 .provider_definitions = std::move(loaded_package.provider_definitions),
                 .config_pointer_fields = std::move(loaded_package.config_pointer_fields),
                 .retained_globals = std::move(loaded_package.retained_globals),
+                .node_message_handlers =
+                    std::move(loaded_package.node_message_handlers),
+                .module_message_handlers =
+                    std::move(loaded_package.module_message_handlers),
                 .node_state_structures = std::move(loaded_package.node_state_structures),
                 .dependencies = std::move(loaded_package.dependencies),
             };

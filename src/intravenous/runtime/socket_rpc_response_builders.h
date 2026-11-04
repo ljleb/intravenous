@@ -1,7 +1,9 @@
 #pragma once
 
 
+#include <intravenous/node/address.h>
 #include <intravenous/runtime/node_instances.h>
+#include <intravenous/runtime/node_event_protocol_types.h>
 #include <intravenous/runtime/package_definitions.h>
 #include <intravenous/runtime/runtime_project_api_types.h>
 #include <intravenous/devices/audio_device.h>
@@ -11,6 +13,43 @@
 #include <vector>
 
 namespace iv {
+    class SocketRpcNodeEventProtocolResultBuilder {
+        int error_code = -32000;
+        std::string error_message{};
+        std::optional<NodeEventProtocolSnapshot> result{};
+
+    public:
+        void succeed(NodeEventProtocolSnapshot value);
+        void fail(std::string message);
+        void fail(int code, std::string message);
+
+        [[nodiscard]] bool has_response() const noexcept
+        {
+            return result.has_value() || !error_message.empty();
+        }
+
+        [[nodiscard]] std::string build(int request_id) const;
+    };
+
+    struct SocketRpcNodeMessageDiagnostic {
+        NodeAddress target{};
+        std::string message{};
+    };
+
+    class SocketRpcNodeMessageResultBuilder {
+        bool has_response_ = false;
+        std::vector<SocketRpcNodeMessageDiagnostic> diagnostics_{};
+        int error_code = -32000;
+        std::string error_message{};
+
+    public:
+        void succeed(std::vector<SocketRpcNodeMessageDiagnostic> diagnostics);
+        void fail(std::string message);
+        void fail(int code, std::string message);
+        [[nodiscard]] bool has_response() const noexcept { return has_response_; }
+        [[nodiscard]] std::string build(int request_id) const;
+    };
+
     class SocketRpcAckResponseBuilder {
         int error_code = -32000;
         std::string error_message;

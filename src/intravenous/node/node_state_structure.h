@@ -29,6 +29,7 @@ namespace iv {
 
     struct NodeStateFieldStructure {
         std::string name {};
+        std::string nominal_id {};
         std::string type_name {};
         size_t bit_offset = 0;
         size_t size_bits = 0;

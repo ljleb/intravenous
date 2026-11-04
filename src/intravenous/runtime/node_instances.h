@@ -5,6 +5,7 @@
 #include <intravenous/runtime/iv_module_instance_types.h>
 #include <intravenous/runtime/node_definition_types.h>
 #include <intravenous/runtime/project_node_instance_types.h>
+#include <intravenous/runtime/project_node_replacement_types.h>
 
 #include <cstdint>
 #include <filesystem>
@@ -60,6 +61,7 @@ struct NodeInstanceConfigurationRequest {
     std::string definition_id{};
     std::span<details::ConfigurationArgument> arguments{};
     std::optional<std::string> configuration_source{};
+    std::optional<std::string> configuration_arguments_json{};
     std::optional<ChannelLayout> tiled_layout{};
 };
 
@@ -84,6 +86,10 @@ struct ConfiguredNodeInstance {
     // evaluated. This is required even when a nested invocation is deliberately
     // not reusable because its value type has no safe equality/hash operation.
     std::vector<std::shared_ptr<ConfiguredNodeInstance const>> dependencies{};
+    // Paths are relative to `local_root`, so a cached configured result can be
+    // embedded at any durable project NodeAddress without capturing its first
+    // placement.
+    std::vector<ConfiguredNodeMessageHandler> message_handlers{};
     std::shared_ptr<ConfiguredGraph const> graph{};
 };
 
@@ -128,6 +134,17 @@ struct NodeInstanceUpdateMutation {
 
 struct NodeInstanceReplaceAllMutation {
     std::vector<ProjectNodeInstanceDeclaration> instances{};
+    std::vector<ProjectNodeReplacement> node_replacements{};
+};
+
+// Transaction-local semantic realization. This never changes the canonical
+// desired replacement set owned by NodeInstances.
+struct NodeReplacementPreviewMutation {
+    std::vector<ProjectNodeReplacement> replacements{};
+};
+
+struct NodeReplacementsReplaceMutation {
+    std::vector<ProjectNodeReplacement> replacements{};
 };
 
 using NodeInstancesMutation = std::variant<
@@ -135,7 +152,9 @@ using NodeInstancesMutation = std::variant<
     NodeInstanceCreateMutation,
     NodeInstanceDeleteMutation,
     NodeInstanceUpdateMutation,
-    NodeInstanceReplaceAllMutation>;
+    NodeInstanceReplaceAllMutation,
+    NodeReplacementPreviewMutation,
+    NodeReplacementsReplaceMutation>;
 
 // Synchronous ProjectGraph -> NodeInstances transaction request. ProjectGraph
 // supplies one pinned definition world and one fresh root builder. NodeInstances
@@ -147,6 +166,7 @@ struct NodeInstancesProjectGraphRequest {
     NodeInstancesMutation mutation{};
     NodeInstancesBatchResult result{};
     std::vector<std::string> created_instance_ids{};
+    std::vector<ProjectNodeReplacement> realized_node_replacements{};
     bool handled = false;
 };
 
@@ -176,6 +196,7 @@ private:
 
     mutable std::mutex mutex_;
     std::unordered_map<std::string, DesiredInstance> desired_instances_by_id_;
+    std::vector<ProjectNodeReplacement> desired_node_replacements_{};
     std::unordered_map<std::string, IvModuleRequiredDefinition> required_definitions_by_id_;
     std::unordered_map<std::string, IvModuleInstance> published_instances_by_id_;
     std::shared_ptr<NodeDefinitionsSnapshot const> definitions_snapshot_{};
@@ -189,8 +210,10 @@ private:
         IvModuleInstancesChanged& diff);
     void publish_instance_changes(IvModuleInstancesChanged diff, bool list_changed) const;
     void publish_instance_declarations_changed() const;
+    IvModuleRequiredDefinitionsChanged rebuild_required_definitions_locked();
     std::shared_ptr<CacheEntry> configure_cached(
         ConfigurationContext& context,
+        NodeAddress const& address,
         std::string_view definition_id,
         std::optional<ChannelLayout> tiled_layout,
         std::span<details::ConfigurationArgument> arguments);
@@ -202,8 +225,14 @@ private:
         void* context,
         GraphBuilder& builder,
         std::string_view definition_id,
+        std::string_view source_identity,
+        std::span<ProjectNodePathSelector const> scope_path,
         std::optional<ChannelLayout> tiled_layout,
         std::span<details::ConfigurationArgument> arguments);
+    static std::optional<NodeBundleHandle> resolve_builder_concrete_node_replacement(
+        void* context,
+        GraphBuilder& builder,
+        std::span<ProjectNodePathSelector const> relative_path);
 
 public:
     NodeInstances();
@@ -222,6 +251,8 @@ public:
     [[nodiscard]] std::vector<IvModuleInstanceInfo> list_instances() const;
     [[nodiscard]] std::vector<ProjectNodeInstanceDeclaration>
     desired_instances() const;
+    [[nodiscard]] std::vector<ProjectNodeReplacement>
+    desired_node_replacements() const;
 
     // Synchronous configuration/embedding primitive intended for ProjectGraph.
     // Every request in the batch resolves recursively through exactly `snapshot`.
@@ -230,7 +261,8 @@ public:
     NodeInstancesBatchResult configure_and_embed(
         std::shared_ptr<NodeDefinitionsSnapshot const> snapshot,
         GraphBuilder& root_builder,
-        std::span<NodeInstanceConfigurationRequest const> requests);
+        std::span<NodeInstanceConfigurationRequest const> requests,
+        std::vector<ProjectNodeReplacement> const* replacement_override = nullptr);
     [[nodiscard]] std::size_t configuration_cache_size() const;
 
     void handle_node_definitions_snapshot_changed(

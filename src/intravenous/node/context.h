@@ -288,6 +288,26 @@ namespace iv {
             auto const field_address = reinterpret_cast<uintptr_t>(field);
             return static_cast<ptrdiff_t>(field_address - base);
         }
+
+        template<typename>
+        struct NodeStateMemberPointer;
+
+        template<typename Member, typename Owner>
+        struct NodeStateMemberPointer<Member Owner::*>
+        {
+            using member_type = Member;
+            using owner_type = Owner;
+        };
+
+        template<typename>
+        struct NodeStateSpan;
+
+        template<typename Element, std::size_t Extent>
+        struct NodeStateSpan<std::span<Element, Extent>>
+        {
+            using element_type = Element;
+            static constexpr std::size_t extent = Extent;
+        };
     }
 
     template<typename Node>
@@ -502,16 +522,22 @@ namespace iv {
             return output<details::static_output_declaration_index<Node, Name>()>();
         }
 
-        NoCopy<State> const& state() const
-        requires(!std::is_void_v<State>)
+        template<auto Member>
+        void local_array(size_t count) const
         {
-            return reinterpret_cast<NoCopy<State> const&>(*_state_marker);
-        }
-
-        template<typename A>
-        void local_array(std::span<A> const& span, size_t count) const
-        {
-            auto const location = field_location(&span);
+            using Pointer = decltype(Member);
+            static_assert(std::is_member_object_pointer_v<Pointer>,
+                "local_array requires a pointer to a State data member");
+            using MemberInfo = details::NodeStateMemberPointer<Pointer>;
+            static_assert(std::same_as<typename MemberInfo::owner_type, State>,
+                "local_array member must belong directly to Node::State");
+            using Span = std::remove_cv_t<typename MemberInfo::member_type>;
+            using SpanInfo = details::NodeStateSpan<Span>;
+            static_assert(SpanInfo::extent == std::dynamic_extent,
+                "local_array requires a dynamic-extent std::span State member");
+            using A = typename SpanInfo::element_type;
+            auto const location = field_location(
+                std::addressof(_state_marker->*Member));
             details::declare_local_array(*_builder, {
                 .owner_node = _node_index,
                 .state_field_offset = location.offset,
@@ -529,10 +555,22 @@ namespace iv {
             });
         }
 
-        template<typename A>
-        void export_array(std::string id, std::span<A> const& span) const
+        template<auto Member>
+        void export_array(std::string id) const
         {
-            auto const location = field_location(&span);
+            using Pointer = decltype(Member);
+            static_assert(std::is_member_object_pointer_v<Pointer>,
+                "export_array requires a pointer to a State data member");
+            using MemberInfo = details::NodeStateMemberPointer<Pointer>;
+            static_assert(std::same_as<typename MemberInfo::owner_type, State>,
+                "export_array member must belong directly to Node::State");
+            using Span = std::remove_cv_t<typename MemberInfo::member_type>;
+            using SpanInfo = details::NodeStateSpan<Span>;
+            static_assert(SpanInfo::extent == std::dynamic_extent,
+                "export_array requires a dynamic-extent std::span State member");
+            using A = typename SpanInfo::element_type;
+            auto const location = field_location(
+                std::addressof(_state_marker->*Member));
             details::declare_export_array(*_builder, std::move(id), {
                 .owner_node = _node_index,
                 .state_field_offset = location.offset,
@@ -551,10 +589,22 @@ namespace iv {
             });
         }
 
-        template<typename A>
-        void import_array(std::string id, std::span<A> const& span) const
+        template<auto Member>
+        void import_array(std::string id) const
         {
-            auto const location = field_location(&span);
+            using Pointer = decltype(Member);
+            static_assert(std::is_member_object_pointer_v<Pointer>,
+                "import_array requires a pointer to a State data member");
+            using MemberInfo = details::NodeStateMemberPointer<Pointer>;
+            static_assert(std::same_as<typename MemberInfo::owner_type, State>,
+                "import_array member must belong directly to Node::State");
+            using Span = std::remove_cv_t<typename MemberInfo::member_type>;
+            using SpanInfo = details::NodeStateSpan<Span>;
+            static_assert(SpanInfo::extent == std::dynamic_extent,
+                "import_array requires a dynamic-extent std::span State member");
+            using A = typename SpanInfo::element_type;
+            auto const location = field_location(
+                std::addressof(_state_marker->*Member));
             details::declare_import_array(*_builder, std::move(id), {
                 .owner_node = _node_index,
                 .state_field_offset = location.offset,
@@ -596,16 +646,28 @@ namespace iv {
                 *_builder, id, details::node_layout_type_token<A>());
         }
 
-        void nested_node_states(
-            std::span<std::span<std::byte>> const& nodes) const
+        template<auto Member>
+        void nested_node_states() const
         {
+            using Pointer = decltype(Member);
+            static_assert(std::is_member_object_pointer_v<Pointer>,
+                "nested_node_states requires a pointer to a State data member");
+            using MemberInfo = details::NodeStateMemberPointer<Pointer>;
+            static_assert(std::same_as<typename MemberInfo::owner_type, State>,
+                "nested_node_states member must belong directly to Node::State");
+            static_assert(std::same_as<
+                std::remove_cv_t<typename MemberInfo::member_type>,
+                std::span<std::span<std::byte>>>,
+                "nested_node_states requires a std::span<std::span<std::byte>> State member");
             IV_ASSERT(
                 !_nested_nodes_region_index.has_value(),
                 "nested_node_states must only be declared once per node");
             _nested_nodes_region_index = details::declare_nested_node_states(
                 *_builder,
                 _node_index,
-                details::node_layout_field_offset(_state_marker, &nodes));
+                details::node_layout_field_offset(
+                    _state_marker,
+                    std::addressof(_state_marker->*Member)));
         }
 
         void declare_reflected_child(

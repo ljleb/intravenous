@@ -11,6 +11,7 @@
 #include <intravenous/graph/builder/subgraphs.hpp>
 #include <intravenous/graph/source_info.h>
 #include <intravenous/node/build_request.h>
+#include <intravenous/node/message.h>
 #include <intravenous/module/configuration_argument.h>
 
 #include <array>
@@ -35,6 +36,10 @@ class GraphBuilderState;
 
 namespace details {
 struct BuilderSession;
+void register_builder_module_class_message_handlers(
+    GraphBuilder&, std::shared_ptr<void const> receiver);
+void attach_builder_node_message_path(
+    BuilderSession*, NodeRef&, NodeBundleHandle);
 NodeRef configure_package_definition(
     GraphBuilder&, std::string_view, std::span<ConfigurationArgument>);
 NodeRef configure_tiled_package_definition(
@@ -59,12 +64,20 @@ NodeRef configure_runtime_binary_op(
     GraphBuilder&, SamplePortRef, SamplePortRef, std::string_view);
 GraphBuilderState& builder_graph_state(GraphBuilder&);
 bool builder_session_has_packages(BuilderSession const*) noexcept;
+void iv_builder_prepare_node_source_identity(
+    GraphBuilder*,
+    std::string_view source_identity,
+    std::string_view authored_name);
 NodeBundleHandle iv_builder_append_node(
     GraphBuilder&, NodeBuildRequest const&);
 NodeBundleHandle iv_builder_append_tiled_node(
     GraphBuilder&, NodeBuildRequest const&, ChannelLayout);
 NodeBundleHandle iv_builder_append_tiled_node_bundles(
     GraphBuilder&, std::span<NodeBundleHandle const>, ChannelLayout);
+void register_builder_embedded_message_handlers(
+    GraphBuilder&,
+    std::span<ProjectNodePathSelector const>,
+    std::span<ConfiguredNodeMessageHandler const>);
 // A tiled registered IV_MODULE first configures its independent child graphs,
 // then validates their public interfaces before any child is embedded in the
 // caller. This prevents a rejected tile request from leaving partial subgraphs
@@ -134,12 +147,20 @@ template<RegisteredContinuousValue... Types>
 class GraphBuilder {
   friend struct details::BuilderSession;
   friend GraphBuilderState& details::builder_graph_state(GraphBuilder&);
+  friend void details::iv_builder_prepare_node_source_identity(
+      GraphBuilder*, std::string_view, std::string_view);
+  friend void details::register_builder_module_class_message_handlers(
+      GraphBuilder&, std::shared_ptr<void const>);
   friend NodeBundleHandle details::iv_builder_append_node(
       GraphBuilder&, details::NodeBuildRequest const&);
   friend NodeBundleHandle details::iv_builder_append_tiled_node(
       GraphBuilder&, details::NodeBuildRequest const&, ChannelLayout);
   friend NodeBundleHandle details::iv_builder_append_tiled_node_bundles(
       GraphBuilder&, std::span<NodeBundleHandle const>, ChannelLayout);
+  friend void details::register_builder_embedded_message_handlers(
+      GraphBuilder&,
+      std::span<ProjectNodePathSelector const>,
+      std::span<ConfiguredNodeMessageHandler const>);
   friend NodeRef details::configure_package_definition(
       GraphBuilder&, std::string_view,
       std::span<details::ConfigurationArgument>);
@@ -455,9 +476,13 @@ node_ref_for_t<Node> configure_concrete_node(GraphBuilder& builder, Args&&... ar
     auto handle = iv_builder_append_node(
         builder, make_node_build_request(*value));
     if constexpr (should_preserve_node_type_v<StoredNode>) {
-      return TypedNodeRef<StoredNode>(builder, handle);
+      TypedNodeRef<StoredNode> result(builder, handle);
+      attach_builder_node_message_path(builder._session, result, handle);
+      return result;
     } else {
-      return NodeRef(builder, handle);
+      NodeRef result(builder, handle);
+      attach_builder_node_message_path(builder._session, result, handle);
+      return result;
     }
   } catch (...) {
     iv_builder_discard_node_config(builder._session, value);
@@ -482,7 +507,9 @@ TiledNodeRef<Node, ChannelType> configure_concrete_tiled_node(
           .channel_type = ChannelTypeTraits<ChannelType>::id,
           .sample_layout = SampleStreamLayout::planar,
         });
-    return TiledNodeRef<StoredNode, ChannelType>(builder, handle);
+    TiledNodeRef<StoredNode, ChannelType> result(builder, handle);
+    attach_builder_node_message_path(builder._session, result, handle);
+    return result;
   } catch (...) {
     iv_builder_discard_node_config(builder._session, value);
     throw;
@@ -503,7 +530,9 @@ NodeRef configure_concrete_node_tiled(
     std::construct_at(value, std::forward<Args>(args)...);
     auto handle = iv_builder_append_tiled_node(
         builder, make_node_build_request(*value), layout);
-    return NodeRef(builder, handle);
+    NodeRef result(builder, handle);
+    attach_builder_node_message_path(builder._session, result, handle);
+    return result;
   } catch (...) {
     iv_builder_discard_node_config(builder._session, value);
     throw;

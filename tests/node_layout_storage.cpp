@@ -59,9 +59,8 @@ namespace {
 
         void declare(iv::DeclarationContext<Producer> const& ctx) const
         {
-            auto const& state = ctx.state();
-            ctx.local_array(state.values, 4);
-            ctx.export_array("values", state.values);
+            ctx.local_array<&State::values>(4);
+            ctx.export_array<&State::values>("values");
         }
 
         void initialize(iv::InitializationContext<Producer> const& ctx) const
@@ -92,8 +91,7 @@ namespace {
 
         void declare(iv::DeclarationContext<Consumer> const& ctx) const
         {
-            auto const& state = ctx.state();
-            ctx.import_array("values", state.imported);
+            ctx.import_array<&State::imported>("values");
         }
 
         void initialize(iv::InitializationContext<Consumer> const& ctx) const
@@ -127,8 +125,7 @@ namespace {
 
         void declare(iv::DeclarationContext<LocalOnly> const& ctx) const
         {
-            auto const& state = ctx.state();
-            ctx.local_array(state.scratch, 3);
+            ctx.local_array<&State::scratch>(3);
         }
 
         void initialize(iv::InitializationContext<LocalOnly> const& ctx) const
@@ -151,8 +148,7 @@ namespace {
 
         void declare(iv::DeclarationContext<Movable> const& ctx) const
         {
-            auto const& state = ctx.state();
-            ctx.local_array(state.scratch, 2);
+            ctx.local_array<&State::scratch>(2);
         }
 
         void initialize(iv::InitializationContext<Movable> const& ctx) const
@@ -191,8 +187,7 @@ namespace {
 
         void declare(iv::DeclarationContext<AutoMovable> const& ctx) const
         {
-            auto const& state = ctx.state();
-            ctx.local_array(state.scratch, 2);
+            ctx.local_array<&State::scratch>(2);
         }
 
         void initialize(iv::InitializationContext<AutoMovable> const& ctx) const
@@ -235,8 +230,7 @@ namespace {
 
         void declare(iv::DeclarationContext<IdentifiedMovable> const& ctx) const
         {
-            auto const& state = ctx.state();
-            ctx.local_array(state.scratch, 2);
+            ctx.local_array<&State::scratch>(2);
         }
 
         std::string identity() const
@@ -331,12 +325,11 @@ namespace {
 
         void declare(iv::DeclarationContext<NestedParent> const& ctx) const
         {
-            auto const& state = ctx.state();
             NestedLeaf a;
             NestedLeaf b;
             do_declare(a, ctx, {});
             do_declare(b, ctx, {});
-            ctx.nested_node_states(state.nested);
+            ctx.nested_node_states<&State::nested>();
         }
     };
 

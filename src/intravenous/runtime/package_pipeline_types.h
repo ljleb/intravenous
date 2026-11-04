@@ -52,6 +52,8 @@ struct PackageRevision {
     std::vector<details::PackageDefinition> provider_definitions{};
     std::vector<NodeConfigPointerFieldData> config_pointer_fields{};
     std::vector<RetainedGlobalData> retained_globals{};
+    std::vector<NodeMessageHandlerData> node_message_handlers{};
+    std::vector<ModuleMessageHandlerData> module_message_handlers{};
     std::vector<details::BuilderNodeStateStructures> node_state_structures{};
     std::vector<ModuleDependency> dependencies{};
     std::vector<PackageModuleDefinition> module_definitions{};

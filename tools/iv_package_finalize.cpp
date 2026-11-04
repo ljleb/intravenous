@@ -24,6 +24,7 @@
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/FileSystem.h"
+#include "llvm/Support/FormatVariadic.h"
 #include "llvm/Support/JSON.h"
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/Path.h"
@@ -43,6 +44,7 @@
 #include <fstream>
 #include <memory>
 #include <limits>
+#include <map>
 #include <optional>
 #include <set>
 #include <span>
@@ -50,6 +52,7 @@
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <tuple>
 #include <unordered_set>
 #include <utility>
 #include <vector>
@@ -422,10 +425,14 @@ struct ConfigurationSchemaMetadata {
     bool integer_is_signed = false;
     std::size_t integer_bit_width = 0;
     std::string construct_scalar_symbol;
+    std::string read_scalar_symbol;
     std::string default_construct_symbol;
     std::string destroy_symbol;
     std::string element_assign_symbol;
     std::string append_element_symbol;
+    std::string element_count_symbol;
+    std::string element_at_symbol;
+    std::string construct_node_address_symbol;
     std::size_t fixed_element_count = 0;
     std::vector<ConfigurationFieldMetadata> fields;
     std::vector<ConfigurationEnumeratorMetadata> enumerators;
@@ -448,11 +455,25 @@ struct PackageDefinitionMetadata {
     std::optional<iv::NodeCodeKey> node_code_key;
 };
 
+struct NodeMessageHandlerMetadata {
+    enum class OwnerKind {
+        node,
+        module,
+    };
+
+    OwnerKind owner_kind = OwnerKind::node;
+    std::optional<iv::NodeCodeKey> node_code_key{};
+    std::string definition_id{};
+    std::string method_symbol;
+    std::string event_type_symbol;
+};
+
 struct CompilerMetadata {
     std::vector<StateMetadata> states;
     std::vector<StateMetadata> background_states;
     std::vector<ConfigPointerMetadata> config_pointers;
     std::vector<ConfigurationTypeMetadata> configuration_types;
+    std::vector<NodeMessageHandlerMetadata> node_message_handlers;
     std::vector<PackageDefinitionMetadata> package_definitions;
 };
 
@@ -493,12 +514,20 @@ ConfigurationSchemaMetadata parse_configuration_schema(
     }
     if (auto value = object.getString("construct_scalar_symbol"))
         result.construct_scalar_symbol = value->str();
+    if (auto value = object.getString("read_scalar_symbol"))
+        result.read_scalar_symbol = value->str();
     if (auto value = object.getString("default_construct_symbol"))
         result.default_construct_symbol = value->str();
     if (auto value = object.getString("element_assign_symbol"))
         result.element_assign_symbol = value->str();
     if (auto value = object.getString("append_element_symbol"))
         result.append_element_symbol = value->str();
+    if (auto value = object.getString("element_count_symbol"))
+        result.element_count_symbol = value->str();
+    if (auto value = object.getString("element_at_symbol"))
+        result.element_at_symbol = value->str();
+    if (auto value = object.getString("construct_node_address_symbol"))
+        result.construct_node_address_symbol = value->str();
     if (auto value = object.getInteger("fixed_element_count")) {
         result.fixed_element_count = metadata_size(
             *value, metadata_path, "configuration schema fixed_element_count");
@@ -569,10 +598,15 @@ bool same_configuration_schema(
         || lhs.integer_is_signed != rhs.integer_is_signed
         || lhs.integer_bit_width != rhs.integer_bit_width
         || lhs.construct_scalar_symbol != rhs.construct_scalar_symbol
+        || lhs.read_scalar_symbol != rhs.read_scalar_symbol
         || lhs.default_construct_symbol != rhs.default_construct_symbol
         || lhs.destroy_symbol != rhs.destroy_symbol
         || lhs.element_assign_symbol != rhs.element_assign_symbol
         || lhs.append_element_symbol != rhs.append_element_symbol
+        || lhs.element_count_symbol != rhs.element_count_symbol
+        || lhs.element_at_symbol != rhs.element_at_symbol
+        || lhs.construct_node_address_symbol
+            != rhs.construct_node_address_symbol
         || lhs.fixed_element_count != rhs.fixed_element_count
         || lhs.fields.size() != rhs.fields.size()
         || lhs.enumerators.size() != rhs.enumerators.size()
@@ -631,6 +665,11 @@ CompilerMetadata load_metadata(std::filesystem::path const& directory)
             fail("metadata has no configuration-type array in '"
                  + entry.path().string() + "'");
         }
+        auto* node_message_handlers = object->getArray("node_message_handlers");
+        if (!node_message_handlers) {
+            fail("metadata has no node-message-handler array in '"
+                 + entry.path().string() + "'");
+        }
         auto* package_definitions = object->getArray("package_definitions");
         if (!package_definitions) {
             fail("metadata has no package-definition array in '"
@@ -678,6 +717,65 @@ CompilerMetadata load_metadata(std::filesystem::path const& directory)
                     metadata_type.expression_schema)) {
                 fail("conflicting configuration-type metadata for LLVM symbol '"
                      + duplicate->symbol + "'");
+            }
+        }
+        for (auto const& handler_value : *node_message_handlers) {
+            auto const* handler = handler_value.getAsObject();
+            auto kind = handler ? handler->getString("kind") : std::nullopt;
+            auto method_symbol = handler
+                ? handler->getString("method_symbol") : std::nullopt;
+            auto event_type_symbol = handler
+                ? handler->getString("event_type_symbol") : std::nullopt;
+            if (!handler || !kind
+                || (kind->str() != "node" && kind->str() != "module")
+                || !method_symbol || method_symbol->empty()
+                || !event_type_symbol || event_type_symbol->empty()) {
+                fail("incomplete node-message-handler metadata in '"
+                     + entry.path().string() + "'");
+            }
+            NodeMessageHandlerMetadata metadata_handler{
+                .owner_kind = kind->str() == "node"
+                    ? NodeMessageHandlerMetadata::OwnerKind::node
+                    : NodeMessageHandlerMetadata::OwnerKind::module,
+                .method_symbol = method_symbol->str(),
+                .event_type_symbol = event_type_symbol->str(),
+            };
+            if (metadata_handler.owner_kind
+                == NodeMessageHandlerMetadata::OwnerKind::node) {
+                auto const* key = handler->getObject("node_code_key");
+                auto low = key ? key->getString("low") : std::nullopt;
+                auto high = key ? key->getString("high") : std::nullopt;
+                if (!key || !low || !high) {
+                    fail("node message handler has no NodeCodeKey in '"
+                         + entry.path().string() + "'");
+                }
+                metadata_handler.node_code_key = iv::NodeCodeKey{
+                    .low = parse_hex_u64(
+                        *low, entry.path(), "node message NodeCodeKey.low"),
+                    .high = parse_hex_u64(
+                        *high, entry.path(), "node message NodeCodeKey.high"),
+                };
+            } else {
+                auto definition_id = handler->getString("definition_id");
+                if (!definition_id || definition_id->empty()) {
+                    fail("module message handler has no definition ID in '"
+                         + entry.path().string() + "'");
+                }
+                metadata_handler.definition_id = definition_id->str();
+            }
+            auto const duplicate = std::ranges::find_if(
+                result.node_message_handlers,
+                [&](NodeMessageHandlerMetadata const& existing) {
+                    return existing.owner_kind == metadata_handler.owner_kind
+                        && existing.node_code_key == metadata_handler.node_code_key
+                        && existing.definition_id == metadata_handler.definition_id
+                        && existing.method_symbol == metadata_handler.method_symbol
+                        && existing.event_type_symbol
+                            == metadata_handler.event_type_symbol;
+                });
+            if (duplicate == result.node_message_handlers.end()) {
+                result.node_message_handlers.push_back(
+                    std::move(metadata_handler));
             }
         }
         for (auto const& definition_value : *package_definitions) {
@@ -787,17 +885,20 @@ CompilerMetadata load_metadata(std::filesystem::path const& directory)
                              + entry.path().string() + "'");
                     }
                     auto name = field->getString("name");
+                    auto nominal_id = field->getString("nominal_id");
                     auto field_type_usr = field->getString("type_usr");
                     auto bit_offset = field->getInteger("bit_offset");
                     auto field_size = field->getInteger("size_bits");
                     auto field_alignment = field->getInteger("alignment_bits");
-                    if (!name || !field_type_usr || !bit_offset || !field_size
+                    if (!name || !nominal_id || nominal_id->empty()
+                        || !field_type_usr || !bit_offset || !field_size
                         || !field_alignment) {
                         fail("incomplete " + std::string(label)
                              + " field metadata in '" + entry.path().string() + "'");
                     }
                     iv::NodeStateFieldStructure item{
                         .name = name->str(),
+                        .nominal_id = nominal_id->str(),
                         .type_name = field_type_usr->str(),
                         .bit_offset = metadata_size(
                             *bit_offset, entry.path(), "field bit_offset"),
@@ -1068,8 +1169,17 @@ void validate_package_definitions(
             if (isa<ConstantPointerNull>(record->getOperand(7))) {
                 fail("IV module '" + id + "' has no configuration callback");
             }
-            (void)definition_callback(record->getOperand(10), "construction signature");
-            (void)definition_callback(record->getOperand(7), "module configuration");
+            auto const* signature = definition_callback(
+                record->getOperand(10), "construction signature");
+            auto const* configuration = definition_callback(
+                record->getOperand(7), "module configuration");
+            if (configuration->getName().contains(
+                    "iv_package_module_class_configuration_pending")
+                || signature->getName().contains(
+                    "iv_package_module_class_signature_pending")) {
+                fail("IV module class '" + id
+                    + "' was not processed by the IV Clang registration plugin");
+            }
         }
 
         auto const compiler = std::find_if(
@@ -1095,6 +1205,14 @@ void validate_package_definitions(
         if (!runtime_definitions.contains({definition.kind, definition.id})) {
             fail("compiler metadata describes " + definition.kind + " '"
                 + definition.id + "' but the IV package definition table did not");
+        }
+    }
+    for (auto const& handler : metadata.node_message_handlers) {
+        if (handler.owner_kind
+                == NodeMessageHandlerMetadata::OwnerKind::module
+            && !runtime_definitions.contains({"module", handler.definition_id})) {
+            fail("module message handler references unavailable IV module '"
+                + handler.definition_id + "'");
         }
     }
 }
@@ -1237,6 +1355,7 @@ public:
               byte_type_, size_type_, size_type_, byte_type_, size_type_,
               pointer_type_, size_type_, pointer_type_, size_type_,
               pointer_type_, size_type_, pointer_type_, pointer_type_,
+              pointer_type_, pointer_type_, pointer_type_, pointer_type_,
               pointer_type_, pointer_type_, pointer_type_))
     {
         auto const& layout = module_.getDataLayout();
@@ -1326,10 +1445,14 @@ public:
             element,
             ConstantInt::get(size_type_, metadata.fixed_element_count),
             function_pointer(metadata.construct_scalar_symbol, false),
+            function_pointer(metadata.read_scalar_symbol, false),
             function_pointer(metadata.default_construct_symbol, false),
             function_pointer(metadata.destroy_symbol, true),
             function_pointer(metadata.element_assign_symbol, false),
             function_pointer(metadata.append_element_symbol, false),
+            function_pointer(metadata.element_count_symbol, false),
+            function_pointer(metadata.element_at_symbol, false),
+            function_pointer(metadata.construct_node_address_symbol, false),
         });
         auto* global = new GlobalVariable(
             module_, schema_type_, true, GlobalValue::PrivateLinkage,
@@ -1402,6 +1525,8 @@ private:
         if (value == "sequence") return static_cast<unsigned>(Kind::sequence);
         if (value == "node_reference")
             return static_cast<unsigned>(Kind::node_reference);
+        if (value == "node_address")
+            return static_cast<unsigned>(Kind::node_address);
         if (value == "unsupported")
             return static_cast<unsigned>(Kind::unsupported);
         fail("unknown configuration expression schema kind '" + std::string(value) + "'");
@@ -1447,8 +1572,16 @@ void inject_configuration_type_identities(
     for (std::size_t index = 0; index < metadata.configuration_types.size(); ++index) {
         auto const& metadata_type = metadata.configuration_types[index];
         auto* identity = module.getGlobalVariable(metadata_type.symbol, true);
-        if (!identity || identity->isDeclaration() || !identity->hasInitializer()) {
-            fail("compiler metadata names missing configuration identity global '"
+        if (!identity) {
+            identity = new GlobalVariable(
+                module,
+                identity_abi_type,
+                false,
+                GlobalValue::PrivateLinkage,
+                UndefValue::get(identity_abi_type),
+                metadata_type.symbol);
+        } else if (identity->isDeclaration() || !identity->hasInitializer()) {
+            fail("compiler metadata names incomplete configuration identity global '"
                  + metadata_type.symbol + "'");
         }
         auto* identity_type = dyn_cast<StructType>(identity->getValueType());
@@ -1586,6 +1719,215 @@ Constant* string_view_constant(
         ConstantInt::get(size_type, value.size()));
 }
 
+void inject_node_message_handler_table(
+    Module& module,
+    CompilerMetadata const& metadata)
+{
+    auto& context = module.getContext();
+    auto* pointer_type = PointerType::getUnqual(context);
+    auto* i64 = Type::getInt64Ty(context);
+    auto* code_key_type = StructType::get(i64, i64);
+    auto* record_type = StructType::get(
+        code_key_type, pointer_type, pointer_type);
+    auto const record_size = module.getDataLayout().getTypeAllocSize(record_type);
+    if (record_size.isScalable()
+        || record_size.getFixedValue() != sizeof(iv::NodeMessageHandlerData)) {
+        fail("node-message-handler ABI does not match NodeMessageHandlerData");
+    }
+    auto* context_type = StructType::get(pointer_type, pointer_type);
+    auto* wrapper_type = FunctionType::get(
+        Type::getVoidTy(context),
+        {pointer_type, pointer_type, pointer_type, pointer_type, pointer_type},
+        false);
+
+    std::vector<Constant*> records;
+    for (auto const& handler : metadata.node_message_handlers) {
+        if (handler.owner_kind
+            != NodeMessageHandlerMetadata::OwnerKind::node) continue;
+        if (!handler.node_code_key) {
+            fail("node message handler has no NodeCodeKey");
+        }
+        auto* method = module.getFunction(handler.method_symbol);
+        if (!method || method->isDeclaration()
+            || !method->getReturnType()->isVoidTy()
+            || method->arg_size() != 3) {
+            fail("node message method has incompatible LLVM ABI: '"
+                 + handler.method_symbol + "'");
+        }
+        auto* event_type = module.getGlobalVariable(
+            handler.event_type_symbol, true);
+        if (!event_type || event_type->isDeclaration()) {
+            fail("node message handler has no event type identity: '"
+                 + handler.event_type_symbol + "'");
+        }
+
+        auto* wrapper = Function::Create(
+            wrapper_type,
+            GlobalValue::PrivateLinkage,
+            "iv.node_message_handler." + std::to_string(records.size()),
+            module);
+        auto argument = wrapper->arg_begin();
+        auto* receiver = &*argument++;
+        auto* operations = &*argument++;
+        auto* address = &*argument++;
+        ++argument; // ModuleMessageLocalRefs is unused for leaf-node handlers.
+        auto* event = &*argument;
+        auto* block = BasicBlock::Create(context, "entry", wrapper);
+        IRBuilder<> builder(block);
+        auto* message_context = builder.CreateAlloca(
+            context_type, nullptr, "node.message.context");
+        builder.CreateStore(
+            operations,
+            builder.CreateStructGEP(context_type, message_context, 0));
+        builder.CreateStore(
+            address,
+            builder.CreateStructGEP(context_type, message_context, 1));
+        auto* call = builder.CreateCall(
+            method,
+            {receiver, message_context, event});
+        call->setCallingConv(method->getCallingConv());
+        builder.CreateRetVoid();
+
+        records.push_back(ConstantStruct::get(
+            record_type,
+            ConstantStruct::get(
+                code_key_type,
+                ConstantInt::get(i64, handler.node_code_key->low),
+                ConstantInt::get(i64, handler.node_code_key->high)),
+            ConstantExpr::getPointerCast(event_type, pointer_type),
+            ConstantExpr::getPointerCast(wrapper, pointer_type)));
+    }
+    if (records.empty()) {
+        emit_view_accessor(
+            module,
+            "iv_package_node_message_handlers",
+            ConstantPointerNull::get(pointer_type),
+            0);
+        return;
+    }
+    auto* table_type = ArrayType::get(record_type, records.size());
+    auto* table = new GlobalVariable(
+        module,
+        table_type,
+        true,
+        GlobalValue::PrivateLinkage,
+        ConstantArray::get(table_type, records),
+        "iv.package_node_message_handlers");
+    emit_view_accessor(
+        module,
+        "iv_package_node_message_handlers",
+        ConstantExpr::getPointerCast(table, pointer_type),
+        records.size() * record_size.getFixedValue());
+}
+
+void inject_module_message_handler_table(
+    Module& module,
+    CompilerMetadata const& metadata)
+{
+    auto& context = module.getContext();
+    auto* pointer_type = PointerType::getUnqual(context);
+    auto const pointer_bits = module.getDataLayout().getPointerSizeInBits();
+    auto* size_type = IntegerType::get(context, pointer_bits);
+    auto* view_type = StructType::get(pointer_type, size_type);
+    auto* record_type = StructType::get(
+        view_type, pointer_type, pointer_type);
+    auto const record_size = module.getDataLayout().getTypeAllocSize(record_type);
+    if (record_size.isScalable()
+        || record_size.getFixedValue() != sizeof(iv::ModuleMessageHandlerData)) {
+        fail("module-message-handler ABI does not match ModuleMessageHandlerData");
+    }
+    auto* context_type = StructType::get(
+        pointer_type, pointer_type, pointer_type);
+    auto* wrapper_type = FunctionType::get(
+        Type::getVoidTy(context),
+        {pointer_type, pointer_type, pointer_type, pointer_type, pointer_type},
+        false);
+
+    std::vector<Constant*> records;
+    for (auto const& handler : metadata.node_message_handlers) {
+        if (handler.owner_kind
+            != NodeMessageHandlerMetadata::OwnerKind::module) continue;
+        if (handler.definition_id.empty()) {
+            fail("module message handler has no definition ID");
+        }
+        auto* method = module.getFunction(handler.method_symbol);
+        if (!method || method->isDeclaration()
+            || !method->getReturnType()->isVoidTy()
+            || method->arg_size() != 3) {
+            fail("module message method has incompatible LLVM ABI: '"
+                 + handler.method_symbol + "'");
+        }
+        auto* event_type = module.getGlobalVariable(
+            handler.event_type_symbol, true);
+        if (!event_type || event_type->isDeclaration()) {
+            fail("module message handler has no event type identity: '"
+                 + handler.event_type_symbol + "'");
+        }
+
+        auto* wrapper = Function::Create(
+            wrapper_type,
+            GlobalValue::PrivateLinkage,
+            "iv.module_message_handler." + std::to_string(records.size()),
+            module);
+        auto argument = wrapper->arg_begin();
+        auto* receiver = &*argument++;
+        auto* operations = &*argument++;
+        auto* address = &*argument++;
+        auto* local_refs = &*argument++;
+        auto* event = &*argument;
+        auto* block = BasicBlock::Create(context, "entry", wrapper);
+        IRBuilder<> builder(block);
+        auto* message_context = builder.CreateAlloca(
+            context_type, nullptr, "module.message.context");
+        builder.CreateStore(
+            operations,
+            builder.CreateStructGEP(context_type, message_context, 0));
+        builder.CreateStore(
+            address,
+            builder.CreateStructGEP(context_type, message_context, 1));
+        builder.CreateStore(
+            local_refs,
+            builder.CreateStructGEP(context_type, message_context, 2));
+        auto* call = builder.CreateCall(
+            method,
+            {receiver, message_context, event});
+        call->setCallingConv(method->getCallingConv());
+        builder.CreateRetVoid();
+
+        records.push_back(ConstantStruct::get(
+            record_type,
+            string_view_constant(
+                module,
+                view_type,
+                "iv.module_message_handler.definition_id."
+                    + std::to_string(records.size()),
+                handler.definition_id),
+            ConstantExpr::getPointerCast(event_type, pointer_type),
+            ConstantExpr::getPointerCast(wrapper, pointer_type)));
+    }
+    if (records.empty()) {
+        emit_view_accessor(
+            module,
+            "iv_package_module_message_handlers",
+            ConstantPointerNull::get(pointer_type),
+            0);
+        return;
+    }
+    auto* table_type = ArrayType::get(record_type, records.size());
+    auto* table = new GlobalVariable(
+        module,
+        table_type,
+        true,
+        GlobalValue::PrivateLinkage,
+        ConstantArray::get(table_type, records),
+        "iv.package_module_message_handlers");
+    emit_view_accessor(
+        module,
+        "iv_package_module_message_handlers",
+        ConstantExpr::getPointerCast(table, pointer_type),
+        records.size() * record_size.getFixedValue());
+}
+
 void inject_package_configuration_metadata(
     Module& module,
     CompilerMetadata const& metadata,
@@ -1672,7 +2014,14 @@ void inject_package_configuration_metadata(
     }
 
     auto* state_field_type = StructType::get(
-        view_type, view_type, size_type, size_type, size_type, size_type, i8);
+        view_type,
+        view_type,
+        view_type,
+        size_type,
+        size_type,
+        size_type,
+        size_type,
+        i8);
     auto const state_field_size = module.getDataLayout().getTypeAllocSize(state_field_type);
     if (state_field_size.isScalable()
         || state_field_size.getFixedValue() != sizeof(iv::NodeStateFieldData)) {
@@ -1713,6 +2062,11 @@ void inject_package_configuration_metadata(
                 fields.push_back(ConstantStruct::get(
                     state_field_type,
                     string_view_constant(module, view_type, prefix + ".name", field.name),
+                    string_view_constant(
+                        module,
+                        view_type,
+                        prefix + ".nominal",
+                        field.nominal_id),
                     string_view_constant(module, view_type, prefix + ".type", field.type_name),
                     ConstantInt::get(size_type, field.bit_offset),
                     ConstantInt::get(size_type, field.size_bits),
@@ -1786,11 +2140,13 @@ void inject_package_configuration_metadata(
 
 void preserve_package_code(Module& module)
 {
-    static constexpr std::array<StringRef, 6> entry_points{
+    static constexpr std::array<StringRef, 8> entry_points{
         "iv_package_abi_version",
         "iv_package_definitions",
         "iv_package_node_config_pointer_fields",
         "iv_package_retained_globals",
+        "iv_package_node_message_handlers",
+        "iv_package_module_message_handlers",
         "iv_package_node_state_structures",
         "iv_package_node_background_state_structures",
     };
@@ -1877,6 +2233,221 @@ void write_package_bitcode(Module& module, std::filesystem::path const& path)
     }
 }
 
+json::Object node_event_value_schema_json(
+    ConfigurationSchemaMetadata const& schema)
+{
+    json::Object result;
+    auto const set_kind = [&](std::string_view kind) {
+        result["kind"] = std::string(kind);
+    };
+
+    if (schema.kind == "boolean") {
+        set_kind("boolean");
+    } else if (schema.kind == "signed_integer") {
+        set_kind("signedInteger");
+        result["bitWidth"] = static_cast<std::int64_t>(schema.integer_bit_width);
+    } else if (schema.kind == "unsigned_integer") {
+        set_kind("unsignedInteger");
+        result["bitWidth"] = static_cast<std::int64_t>(schema.integer_bit_width);
+    } else if (schema.kind == "floating_point") {
+        set_kind("floatingPoint");
+        result["bitWidth"] = static_cast<std::int64_t>(schema.size_bits);
+    } else if (schema.kind == "string") {
+        set_kind("string");
+    } else if (schema.kind == "converted_scalar") {
+        set_kind("convertedScalar");
+        // The configuration-expression boundary accepts each JSON scalar form
+        // and lets the provider constructor perform its exact validation.
+        json::Array json_kinds;
+        json_kinds.push_back("boolean");
+        json_kinds.push_back("number");
+        json_kinds.push_back("string");
+        result["jsonKinds"] = std::move(json_kinds);
+        result["providerValidated"] = true;
+    } else if (schema.kind == "enumeration") {
+        set_kind("enumeration");
+        result["bitWidth"] = static_cast<std::int64_t>(schema.integer_bit_width);
+        result["signed"] = schema.integer_is_signed;
+        json::Array enumerators;
+        for (auto const& enumerator : schema.enumerators) {
+            enumerators.push_back(json::Object{
+                {"name", enumerator.name},
+                {"value", schema.integer_is_signed
+                    ? std::to_string(enumerator.signed_value)
+                    : std::to_string(enumerator.unsigned_value)},
+            });
+        }
+        result["enumerators"] = std::move(enumerators);
+    } else if (schema.kind == "aggregate") {
+        set_kind("aggregate");
+        json::Array fields;
+        for (auto const& field : schema.fields) {
+            if (!field.type) {
+                fail("event aggregate field '" + field.name + "' has no type schema");
+            }
+            fields.push_back(json::Object{
+                {"name", field.name},
+                {"value", node_event_value_schema_json(*field.type)},
+            });
+        }
+        result["fields"] = std::move(fields);
+    } else if (schema.kind == "sequence") {
+        set_kind("sequence");
+        if (!schema.element_type) {
+            fail("event sequence has no element type schema");
+        }
+        result["element"] = node_event_value_schema_json(*schema.element_type);
+        if (schema.fixed_element_count != 0) {
+            result["fixedElementCount"] = static_cast<std::int64_t>(
+                schema.fixed_element_count);
+        }
+    } else if (schema.kind == "node_address") {
+        set_kind("nodeAddress");
+    } else if (schema.kind == "node_reference") {
+        set_kind("unsupported");
+        result["reason"] =
+            "project NodeRef values cannot cross nodeMessages.dispatch";
+    } else {
+        set_kind("unsupported");
+        result["reason"] = "provider type has no semantic event JSON representation";
+    }
+    return result;
+}
+
+std::filesystem::path node_event_protocol_path(
+    std::filesystem::path const& bitcode_path)
+{
+    return bitcode_path.string() + ".node-events.json";
+}
+
+void write_node_event_protocol(
+    CompilerMetadata const& metadata,
+    std::filesystem::path const& bitcode_path)
+{
+    std::unordered_set<std::string> event_symbols;
+    for (auto const& handler : metadata.node_message_handlers) {
+        event_symbols.insert(handler.event_type_symbol);
+    }
+
+    auto const event_type = [&](std::string const& symbol)
+        -> ConfigurationTypeMetadata const& {
+        auto const found = std::ranges::find_if(
+            metadata.configuration_types,
+            [&](ConfigurationTypeMetadata const& type) {
+                return type.symbol == symbol;
+            });
+        if (found == metadata.configuration_types.end()) {
+            fail("node-message event type '" + symbol
+                + "' has no configuration type metadata");
+        }
+        return *found;
+    };
+
+    std::vector<ConfigurationTypeMetadata const*> events;
+    events.reserve(event_symbols.size());
+    for (auto const& symbol : event_symbols) {
+        events.push_back(std::addressof(event_type(symbol)));
+    }
+    std::ranges::sort(events, [](auto const* lhs, auto const* rhs) {
+        return std::tie(lhs->nominal_id, lhs->definition_fingerprint)
+            < std::tie(rhs->nominal_id, rhs->definition_fingerprint);
+    });
+
+    json::Array event_json;
+    for (std::size_t index = 0; index < events.size(); ++index) {
+        auto const& event = *events[index];
+        if (index != 0) {
+            auto const& previous = *events[index - 1];
+            if (event.nominal_id == previous.nominal_id
+                && event.definition_fingerprint == previous.definition_fingerprint) {
+                if (!same_configuration_schema(
+                        event.expression_schema, previous.expression_schema)) {
+                    fail("semantic event identity '" + event.nominal_id
+                        + "' has conflicting payload schemas");
+                }
+                continue;
+            }
+        }
+        event_json.push_back(json::Object{
+            {"nominalId", event.nominal_id},
+            {"definitionFingerprint", event.definition_fingerprint},
+            {"displayName", event.display_name},
+            {"payload", node_event_value_schema_json(event.expression_schema)},
+        });
+    }
+
+    using EventIdentity = std::pair<std::string, std::string>;
+    std::map<std::string, std::vector<EventIdentity>> definition_events;
+    for (auto const& handler : metadata.node_message_handlers) {
+        std::string definition_id;
+        if (handler.owner_kind == NodeMessageHandlerMetadata::OwnerKind::module) {
+            definition_id = handler.definition_id;
+        } else if (handler.node_code_key) {
+            auto const definition = std::ranges::find_if(
+                metadata.package_definitions,
+                [&](PackageDefinitionMetadata const& value) {
+                    return value.kind == "node"
+                        && value.node_code_key == handler.node_code_key;
+                });
+            if (definition != metadata.package_definitions.end()) {
+                definition_id = definition->id;
+            }
+        }
+        // An unregistered leaf type has no stable public definition ID. Its
+        // concrete support remains available from the runtime address catalog.
+        if (definition_id.empty()) continue;
+        auto const& event = event_type(handler.event_type_symbol);
+        definition_events[definition_id].emplace_back(
+            event.nominal_id, event.definition_fingerprint);
+    }
+    json::Array definition_json;
+    for (auto& [definition_id, supported] : definition_events) {
+        std::ranges::sort(supported);
+        auto const duplicate = std::ranges::unique(supported);
+        supported.erase(duplicate.begin(), duplicate.end());
+        json::Array supported_json;
+        for (auto const& [nominal_id, fingerprint] : supported) {
+            supported_json.push_back(json::Object{
+                {"nominalId", nominal_id},
+                {"definitionFingerprint", fingerprint},
+            });
+        }
+        definition_json.push_back(json::Object{
+            {"definitionId", definition_id},
+            {"supportedEventTypes", std::move(supported_json)},
+        });
+    }
+
+    auto const path = node_event_protocol_path(bitcode_path);
+    auto temporary = path;
+    temporary += ".tmp";
+    std::ofstream output(temporary, std::ios::binary | std::ios::trunc);
+    if (!output) {
+        fail("cannot create semantic event protocol '" + temporary.string() + "'");
+    }
+    output << formatv("{0:2}", json::Value(json::Object{
+        {"formatVersion", std::int64_t{1}},
+        {"eventTypes", std::move(event_json)},
+        {"definitions", std::move(definition_json)},
+    })).str() << '\n';
+    output.flush();
+    if (!output) {
+        fail("cannot finish semantic event protocol '" + temporary.string() + "'");
+    }
+    output.close();
+    std::error_code error;
+    std::filesystem::rename(temporary, path, error);
+    if (error) {
+        std::filesystem::remove(path, error);
+        error.clear();
+        std::filesystem::rename(temporary, path, error);
+        if (error) {
+            fail("cannot publish semantic event protocol '" + path.string()
+                + "': " + error.message());
+        }
+    }
+}
+
 int finalize(Options options)
 {
     TimingReport timings;
@@ -1908,6 +2479,8 @@ int finalize(Options options)
     stage_started_at = timings.start_stage();
     inject_package_abi_version(package);
     inject_configuration_type_identities(package, metadata);
+    inject_node_message_handler_table(package, metadata);
+    inject_module_message_handler_table(package, metadata);
     inject_package_definition_table(package, definitions);
     inject_package_configuration_metadata(
         package,
@@ -1922,6 +2495,10 @@ int finalize(Options options)
     stage_started_at = timings.start_stage();
     write_package_bitcode(package, options.output);
     timings.finish_stage("package_bitcode_write", stage_started_at);
+
+    stage_started_at = timings.start_stage();
+    write_node_event_protocol(metadata, options.output);
+    timings.finish_stage("node_event_protocol_write", stage_started_at);
 
     if (options.timings_file) timings.write(*options.timings_file);
     return 0;

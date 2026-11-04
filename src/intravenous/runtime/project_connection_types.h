@@ -1,6 +1,7 @@
 #pragma once
 
 #include <intravenous/channel_ports.h>
+#include <intravenous/node/address.h>
 #include <intravenous/ports.h>
 
 #include <cstddef>
@@ -10,30 +11,6 @@
 #include <vector>
 
 namespace iv {
-// Structured recursive selectors for persistent whole-project node paths.
-// These are semantic project identities; they never store builder-local
-// NodeBundle handles.
-struct ProjectVirtualNodeSelector {
-    std::string source_identity{};
-    std::optional<std::string> type_identity{};
-    bool operator==(ProjectVirtualNodeSelector const&) const = default;
-};
-
-struct ProjectVirtualMemberSelector {
-    std::size_t index = 0;
-    bool operator==(ProjectVirtualMemberSelector const&) const = default;
-};
-
-struct ProjectTiledChildSelector {
-    std::string name{};
-    bool operator==(ProjectTiledChildSelector const&) const = default;
-};
-
-using ProjectNodePathSelector = std::variant<
-    ProjectVirtualNodeSelector,
-    ProjectVirtualMemberSelector,
-    ProjectTiledChildSelector>;
-
 // Omitting name and index means "all ports" of the requested kind/direction.
 // Supplying both requires both predicates to match. `channel` is a semantic
 // sample-channel selector and is deliberately separate from tiled-child path

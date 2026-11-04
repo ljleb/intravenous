@@ -45,7 +45,7 @@ struct SerializedConfiguredGraph {
 namespace iv::binary_wire_details {
 
 inline constexpr std::uint32_t archive_magic = 0x49564147; // IVAG
-inline constexpr std::uint32_t archive_version = 11;
+inline constexpr std::uint32_t archive_version = 12;
 
 class Writer {
 public:
@@ -734,7 +734,8 @@ inline void write_state(Writer& w, NodeStateStructure const& value)
     w.string(value.type_identity.display_name);
     w.size(value.size_bits); w.size(value.alignment_bits);
     w.list(value.fields, [&](NodeStateFieldStructure const& field) {
-        w.string(field.name); w.string(field.type_name); w.size(field.bit_offset); w.size(field.size_bits);
+        w.string(field.name); w.string(field.nominal_id); w.string(field.type_name);
+        w.size(field.bit_offset); w.size(field.size_bits);
         w.size(field.alignment_bits); w.flag(field.bit_width.has_value());
         if (field.bit_width) w.size(*field.bit_width);
     });
@@ -752,7 +753,8 @@ inline NodeStateStructure read_state(Reader& r)
         .alignment_bits = r.size(),
     };
     result.fields = read_list<NodeStateFieldStructure>(r, [&] {
-        NodeStateFieldStructure field{.name = r.string(), .type_name = r.string(), .bit_offset = r.size(),
+        NodeStateFieldStructure field{.name = r.string(), .nominal_id = r.string(),
+            .type_name = r.string(), .bit_offset = r.size(),
             .size_bits = r.size(), .alignment_bits = r.size()};
         if (r.flag()) field.bit_width = r.size();
         return field;
