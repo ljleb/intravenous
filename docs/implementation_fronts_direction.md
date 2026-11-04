@@ -2416,8 +2416,10 @@ This front owns:
 This front consumes project mutations from front 10 and semantic node events from front
 13. It should not invent domain-specific graph semantics in the transport layer.
 
-Implementation status (2026-11-04): the core project-session work is present in
-source and awaits the repository owner's build and full-suite verification.
+Implementation status (2026-11-04): the core project-session work is complete in
+source. The repository owner's complete C++ build and test suite passes. The VS Code
+client typecheck and tests are pending because the local npm dependencies, including
+`tsc`, are not installed.
 `SocketRpcRouteRegistry` owns route metadata and typed event dispatch.
 `SocketRpcServer` owns multiple clients, bounded per-client output queues, ordered
 commands and notifications, revisions, expected-revision rejection, replay, topic
@@ -2429,6 +2431,11 @@ snapshot, and does not stop the server when the client exits.
 snapshot. The route also reads the current package, node-instance, audio-device,
 autosave, and node-message records through their typed application events. The
 inherited `--rpc-fd` path remains as a trusted compatibility and test transport.
+
+The C++ session-server tests cover multiple clients, ordered revision publication,
+stale-mutation rejection, topic-filtered replay, bounded-output backpressure, local
+authentication/election, and complete `session.snapshot` aggregation through the
+typed application events.
 
 The optional remote-audio lease and WebRTC relay remain unimplemented. This optional
 media work does not block completion of the core multi-client session server.

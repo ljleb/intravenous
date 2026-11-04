@@ -112,6 +112,56 @@ namespace {
         builder.succeed(graph_query_result);
         }
 
+        void handle_get_session_project_state(
+            iv::SessionSnapshotRequest const&,
+            iv::SocketRpcSessionProjectStateResultBuilder& builder)
+        {
+            builder.succeed({iv::ProjectCommand{
+                .command = "nodeInstances.update",
+                .args = nlohmann::ordered_json{
+                    {"instance_id", "snapshot-instance"}},
+            }});
+        }
+
+        void handle_get_autosave_state(
+            iv::SessionSnapshotRequest const&,
+            iv::SocketRpcAutosaveStateResultBuilder& builder)
+        {
+            builder.succeed(true);
+        }
+
+        void handle_get_node_instances(
+            iv::GetNodeInstancesRequest const&,
+            iv::SocketRpcNodeInstancesResultBuilder& builder)
+        {
+            builder.succeed({iv::IvModuleInstanceInfo{
+                .instance_id = "snapshot-instance",
+                .definition_id = "iv.test.snapshot.module",
+                .display_name = "Snapshot instance",
+                .realized = true,
+            }});
+        }
+
+        void handle_get_package_definitions(
+            iv::GetIvPackageDefinitionsRequest const&,
+            iv::SocketRpcIvPackageDefinitionsResultBuilder& builder)
+        {
+            builder.succeed({iv::IvPackageInfo{
+                .package_id = "iv.test.snapshot",
+                .package_root = "/tmp/iv-test-snapshot",
+            }});
+        }
+
+        void handle_get_node_event_protocol(
+            iv::GetNodeEventProtocolRequest const&,
+            iv::SocketRpcNodeEventProtocolResultBuilder& builder)
+        {
+            builder.succeed(iv::NodeEventProtocolSnapshot{
+                .project_graph_generation = 12,
+                .definitions_generation = 7,
+            });
+        }
+
     };
 
     SocketRpcTestState socket_rpc_test_state;
@@ -126,6 +176,26 @@ namespace {
         socket_rpc_server_test_state_bridge,
         iv_socket_rpc_graph_query_by_spans_event,
         &SocketRpcTestState::handle_graph_query_by_spans)
+    IV_SUBSCRIBE_LINKER_EVENT(
+        socket_rpc_server_test_state_bridge,
+        iv_socket_rpc_get_session_project_state_event,
+        &SocketRpcTestState::handle_get_session_project_state)
+    IV_SUBSCRIBE_LINKER_EVENT(
+        socket_rpc_server_test_state_bridge,
+        iv_socket_rpc_get_autosave_state_event,
+        &SocketRpcTestState::handle_get_autosave_state)
+    IV_SUBSCRIBE_LINKER_EVENT(
+        socket_rpc_server_test_state_bridge,
+        iv_socket_rpc_get_node_instances_event,
+        &SocketRpcTestState::handle_get_node_instances)
+    IV_SUBSCRIBE_LINKER_EVENT(
+        socket_rpc_server_test_state_bridge,
+        iv_socket_rpc_get_iv_package_definitions_event,
+        &SocketRpcTestState::handle_get_package_definitions)
+    IV_SUBSCRIBE_LINKER_EVENT(
+        socket_rpc_server_test_state_bridge,
+        iv_socket_rpc_get_node_event_protocol_event,
+        &SocketRpcTestState::handle_get_node_event_protocol)
     std::filesystem::path make_server_workspace()
     {
         auto const* info = ::testing::UnitTest::GetInstance()->current_test_info();
@@ -406,6 +476,43 @@ TEST(SocketRpcServer, DispatchesAudioDeviceGetAndSetRequests)
     auto const snapshot = harness.system_audio_devices.audio_devices_snapshot();
     EXPECT_EQ(snapshot.selected_output.device_id, std::optional<std::string>{"out-1"});
     EXPECT_FALSE(snapshot.selected_input.device_id.has_value());
+}
+
+TEST(SocketRpcServer, AggregatesApplicationStateIntoASessionSnapshot)
+{
+    socket_rpc_test_state.reset();
+    auto harness = SocketRpcHarness(make_server_workspace());
+    ASSERT_FALSE(harness.read_line().empty());
+
+    harness.write_request(
+        R"({"jsonrpc":"2.0","id":10,"method":"session.snapshot","params":{}})"
+        "\n");
+    auto const response = nlohmann::ordered_json::parse(
+        harness.read_response(10));
+
+    ASSERT_TRUE(response.contains("result")) << response;
+    auto const& result = response["result"];
+    EXPECT_EQ(result["sessionRevision"], 0);
+    ASSERT_EQ(result["project"]["commands"].size(), 1u);
+    EXPECT_EQ(
+        result["project"]["commands"][0]["command"],
+        "nodeInstances.update");
+    EXPECT_EQ(result["autosave"]["enabled"], true);
+    ASSERT_EQ(result["nodeInstances"]["instances"].size(), 1u);
+    EXPECT_EQ(
+        result["nodeInstances"]["instances"][0]["instanceId"],
+        "snapshot-instance");
+    ASSERT_EQ(result["packages"]["packages"].size(), 1u);
+    EXPECT_EQ(
+        result["packages"]["packages"][0]["packageId"],
+        "iv.test.snapshot");
+    EXPECT_FALSE(result["audioDevices"]["outputDevices"].empty());
+    EXPECT_EQ(
+        result["nodeEventProtocol"]["projectGraphGeneration"],
+        12);
+    EXPECT_EQ(
+        result["nodeEventProtocol"]["definitionsGeneration"],
+        7);
 }
 
 TEST(SocketRpcServer, DeliversOneOrderedNotificationToEverySubscribedClient)
