@@ -54,6 +54,13 @@ void ProjectAutosave::handle_socket_rpc_disable_project_autosave(
     builder.succeed();
 }
 
+void ProjectAutosave::handle_socket_rpc_get_autosave_state(
+    SessionSnapshotRequest const&,
+    SocketRpcAutosaveStateResultBuilder& builder) const
+{
+    builder.succeed(enabled());
+}
+
 void ProjectAutosave::handle_project_state_changed()
 {
     project_state_changed();

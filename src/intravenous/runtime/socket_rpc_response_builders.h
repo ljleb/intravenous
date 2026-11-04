@@ -5,6 +5,7 @@
 #include <intravenous/runtime/node_instances.h>
 #include <intravenous/runtime/node_event_protocol_types.h>
 #include <intravenous/runtime/package_definitions.h>
+#include <intravenous/runtime/project_persistence_builder.h>
 #include <intravenous/runtime/runtime_project_api_types.h>
 #include <intravenous/devices/audio_device.h>
 
@@ -13,6 +14,40 @@
 #include <vector>
 
 namespace iv {
+    class SocketRpcAutosaveStateResultBuilder {
+        int error_code = -32000;
+        std::string error_message{};
+        std::optional<bool> result{};
+
+    public:
+        void succeed(bool enabled);
+        void fail(std::string message);
+        void fail(int code, std::string message);
+        [[nodiscard]] bool has_response() const noexcept
+        {
+            return result.has_value() || !error_message.empty();
+        }
+        [[nodiscard]] std::string build(int request_id) const;
+    };
+
+    class SocketRpcSessionProjectStateResultBuilder {
+        int error_code = -32000;
+        std::string error_message{};
+        std::optional<std::vector<ProjectCommand>> result{};
+
+    public:
+        void succeed(std::vector<ProjectCommand> value);
+        void fail(std::string message);
+        void fail(int code, std::string message);
+
+        [[nodiscard]] bool has_response() const noexcept
+        {
+            return result.has_value() || !error_message.empty();
+        }
+
+        [[nodiscard]] std::string build(int request_id) const;
+    };
+
     class SocketRpcNodeEventProtocolResultBuilder {
         int error_code = -32000;
         std::string error_message{};

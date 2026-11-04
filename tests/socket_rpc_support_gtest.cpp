@@ -58,6 +58,21 @@ TEST(ServerOptions, RejectsMissingWorkspaceRoot)
         std::runtime_error);
 }
 
+TEST(ServerOptions, AllowsProjectSessionDiscoveryWithoutInheritedRpcFd)
+{
+    char arg0[] = "intravenous";
+    char arg1[] = "--server";
+    char arg2[] = "--workspace-root";
+    char arg3[] = "/tmp/workspace";
+    std::array<char*, 4> argv { arg0, arg1, arg2, arg3 };
+
+    auto const options = iv::ServerOptions::parse(
+        static_cast<int>(argv.size()), argv.data());
+
+    EXPECT_EQ(options.workspace_root, "/tmp/workspace");
+    EXPECT_EQ(options.rpc_fd, -1);
+}
+
 TEST(ServerOptions, RejectsInvalidRpcFd)
 {
     char arg0[] = "intravenous";
@@ -146,6 +161,42 @@ TEST(SocketRpcRequestParser, ParsesProjectAutosaveRequests)
     EXPECT_NE(
         std::get_if<iv::DisableProjectAutosaveRequest>(&disable.payload),
         nullptr);
+}
+
+TEST(SocketRpcRequestParser, ParsesSessionHandshakeSubscriptionAndSnapshot)
+{
+    auto const hello = iv::parse_socket_rpc_request(
+        R"({"jsonrpc":"2.0","id":50,"method":"session.hello","params":{"clientId":"editor:one","localCapability":"secret"}})");
+    auto const* hello_request = std::get_if<iv::SessionHelloRequest>(
+        &hello.payload);
+    ASSERT_NE(hello_request, nullptr);
+    EXPECT_EQ(hello_request->client_id, "editor:one");
+    EXPECT_EQ(hello_request->local_capability, "secret");
+
+    auto const subscribe = iv::parse_socket_rpc_request(
+        R"({"jsonrpc":"2.0","id":51,"method":"session.subscribe","params":{"afterRevision":18446744073709551615,"topics":["graph.nodesUpdated"]}})");
+    auto const* subscribe_request = std::get_if<iv::SessionSubscribeRequest>(
+        &subscribe.payload);
+    ASSERT_NE(subscribe_request, nullptr);
+    EXPECT_EQ(
+        subscribe_request->after_revision,
+        std::numeric_limits<std::uint64_t>::max());
+    EXPECT_EQ(
+        subscribe_request->topics,
+        std::vector<std::string>{"graph.nodesUpdated"});
+
+    auto const snapshot = iv::parse_socket_rpc_request(
+        R"({"jsonrpc":"2.0","id":52,"method":"session.snapshot","params":{}})");
+    EXPECT_NE(
+        std::get_if<iv::SessionSnapshotRequest>(&snapshot.payload), nullptr);
+}
+
+TEST(SocketRpcRequestParser, PreservesExpectedRevisionOnMutation)
+{
+    auto const parsed = iv::parse_socket_rpc_request(
+        R"({"jsonrpc":"2.0","id":53,"method":"nodeInstances.delete","params":{"instanceId":"instance:one","expectedRevision":17}})");
+
+    EXPECT_EQ(parsed.expected_revision, 17u);
 }
 
 TEST(SocketRpcRequestParser, ParsesCreateNodeInstanceRequest)
@@ -322,6 +373,25 @@ TEST(SocketRpcAckResponseBuilder, BuildsOkByDefault)
     EXPECT_EQ(response["jsonrpc"], "2.0");
     EXPECT_EQ(response["id"], 11);
     EXPECT_EQ(response["result"]["ok"], true);
+}
+
+TEST(SocketRpcSessionProjectStateResultBuilder, SerializesCanonicalCommands)
+{
+    iv::SocketRpcSessionProjectStateResultBuilder builder;
+    builder.succeed({iv::ProjectCommand{
+        .command = "graphConnections.upsert",
+        .args = Json{{"connection_id", "sample:main"}},
+    }});
+
+    auto const response = parse_json_line(builder.build(54));
+
+    ASSERT_EQ(response["result"]["commands"].size(), 1u);
+    EXPECT_EQ(
+        response["result"]["commands"][0]["command"],
+        "graphConnections.upsert");
+    EXPECT_EQ(
+        response["result"]["commands"][0]["args"]["connection_id"],
+        "sample:main");
 }
 
 TEST(SocketRpcAckResponseBuilder, BuildsErrorAfterFailure)

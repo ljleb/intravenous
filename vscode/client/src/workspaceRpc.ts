@@ -8,7 +8,39 @@ export type SourceQueryRange = {
 
 
 export class WorkspaceRpc {
-    constructor(private readonly client: JsonRpcSocketClient) {}
+    constructor(
+        private readonly client: JsonRpcSocketClient,
+        private readonly currentRevision: () => number = () => 0,
+    ) {}
+
+    private mutationParams(
+        params: Record<string, unknown>,
+    ): Record<string, unknown> {
+        return {...params, expectedRevision: this.currentRevision()};
+    }
+
+    hello(clientId: string, localCapability: string): Promise<{
+        protocolVersion: number;
+        clientId: string;
+        capabilities: string[];
+        sessionRevision: number;
+    }> {
+        return this.client.request("session.hello", { clientId, localCapability });
+    }
+
+    subscribe(afterRevision: number, topics: string[] = []): Promise<{
+        currentRevision: number;
+        oldestAvailableRevision: number;
+        snapshotRequired: boolean;
+        replayedNotificationCount: number;
+        sessionRevision: number;
+    }> {
+        return this.client.request("session.subscribe", { afterRevision, topics });
+    }
+
+    snapshot(): Promise<Record<string, unknown> & { sessionRevision?: number }> {
+        return this.client.request("session.snapshot", {});
+    }
 
     getNodeInstances(sourceFilePath: string | null = null): Promise<{ instances?: Array<Record<string, unknown>> }> {
         return this.client.request("nodeInstances.get", sourceFilePath ? { sourceFilePath } : {});
@@ -30,11 +62,15 @@ export class WorkspaceRpc {
         if (configurationSource.length > 0) {
             params.configurationSource = configurationSource;
         }
-        return this.client.request("nodeInstances.create", params);
+        return this.client.request(
+            "nodeInstances.create", this.mutationParams(params));
     }
 
     deleteNodeInstance(instanceId: string): Promise<void> {
-        return this.client.request("nodeInstances.delete", { instanceId });
+        return this.client.request(
+            "nodeInstances.delete",
+            this.mutationParams({ instanceId }),
+        );
     }
 
     updateNodeInstances(
@@ -44,15 +80,18 @@ export class WorkspaceRpc {
             configurationSource?: string | null;
         }>,
     ): Promise<void> {
-        return this.client.request("nodeInstances.update", { updates });
+        return this.client.request(
+            "nodeInstances.update", this.mutationParams({ updates }));
     }
 
     upsertGraphConnection(connection: Record<string, unknown>): Promise<void> {
-        return this.client.request("graphConnections.upsert", { connection });
+        return this.client.request(
+            "graphConnections.upsert", this.mutationParams({ connection }));
     }
 
     deleteGraphConnection(connectionId: string): Promise<void> {
-        return this.client.request("graphConnections.delete", { connectionId });
+        return this.client.request(
+            "graphConnections.delete", this.mutationParams({ connectionId }));
     }
 
     getIvPackageDefinitions(): Promise<{ packages?: Array<Record<string, unknown>> }> {
@@ -60,7 +99,8 @@ export class WorkspaceRpc {
     }
 
     createIvPackage(name: string): Promise<{ package: Record<string, unknown> }> {
-        return this.client.request("ivPackages.create", { name });
+        return this.client.request(
+            "ivPackages.create", this.mutationParams({ name }));
     }
 
     shutdown(): Promise<void> {
@@ -72,11 +112,13 @@ export class WorkspaceRpc {
     }
 
     enableProjectAutosave(): Promise<void> {
-        return this.client.request("project.enableAutosave", {});
+        return this.client.request(
+            "project.enableAutosave", this.mutationParams({}));
     }
 
     disableProjectAutosave(): Promise<void> {
-        return this.client.request("project.disableAutosave", {});
+        return this.client.request(
+            "project.disableAutosave", this.mutationParams({}));
     }
 
     queryNodesBySpans(

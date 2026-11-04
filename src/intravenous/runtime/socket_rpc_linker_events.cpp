@@ -20,4 +20,10 @@ IV_DEFINE_LINKER_EVENT(SocketRpcSetAudioDevicesEvent, iv_socket_rpc_set_audio_de
 IV_DEFINE_LINKER_EVENT(SocketRpcSaveProjectEvent, iv_socket_rpc_save_project_event)
 IV_DEFINE_LINKER_EVENT(SocketRpcEnableProjectAutosaveEvent, iv_socket_rpc_enable_project_autosave_event)
 IV_DEFINE_LINKER_EVENT(SocketRpcDisableProjectAutosaveEvent, iv_socket_rpc_disable_project_autosave_event)
+IV_DEFINE_LINKER_EVENT(
+    SocketRpcGetSessionProjectStateEvent,
+    iv_socket_rpc_get_session_project_state_event)
+IV_DEFINE_LINKER_EVENT(
+    SocketRpcGetAutosaveStateEvent,
+    iv_socket_rpc_get_autosave_state_event)
 } // namespace iv

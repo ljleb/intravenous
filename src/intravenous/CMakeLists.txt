@@ -446,6 +446,7 @@ add_library(intravenous_tooling_runtime_objects OBJECT
     runtime/socket_rpc_json_serialization.cpp
     runtime/socket_rpc_requests.cpp
     runtime/socket_rpc_response_builders.cpp
+    runtime/socket_rpc_routes.cpp
     runtime/socket_rpc_server.cpp
     runtime/startup_config.cpp
     runtime/uuid.cpp

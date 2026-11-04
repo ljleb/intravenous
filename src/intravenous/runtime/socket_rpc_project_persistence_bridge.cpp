@@ -13,6 +13,10 @@ IV_SUBSCRIBE_LINKER_EVENT(
     &ProjectPersistence::handle_socket_rpc_save_project)
 IV_SUBSCRIBE_LINKER_EVENT(
     socket_rpc_project_persistence_bridge,
+    iv_socket_rpc_get_session_project_state_event,
+    &ProjectPersistence::handle_socket_rpc_get_session_project_state)
+IV_SUBSCRIBE_LINKER_EVENT(
+    socket_rpc_project_persistence_bridge,
     iv_runtime_project_notification_event,
     &SocketRpcServer::handle_project_notification)
 } // namespace iv

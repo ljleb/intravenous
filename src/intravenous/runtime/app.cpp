@@ -418,12 +418,18 @@ int run_server_mode(int argc, char** argv)
     startup_log("starting socket rpc server");
     server.start();
     if (!server.wait_until_ready(std::chrono::seconds(10))) {
-        throw std::runtime_error("socket rpc server did not deliver server.ready");
+        throw std::runtime_error("socket rpc server did not become ready");
     }
 
     startup_log("starting IV package watcher");
     package_watcher_service.start();
-    std::cout << "Intravenous server connected on rpc fd " << options.rpc_fd << '\n';
+    if (auto const endpoint = server.endpoint()) {
+        std::cout << "Intravenous project session listening on "
+                  << endpoint->string() << '\n';
+    } else {
+        std::cout << "Intravenous server connected on rpc fd "
+                  << options.rpc_fd << '\n';
+    }
     server.wait();
 
     package_watcher_service.request_shutdown();

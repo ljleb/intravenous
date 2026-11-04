@@ -286,7 +286,7 @@ TEST(SocketRpcNotificationBridge, PublishedPackageDefinitionsRefreshThePackageCa
     ASSERT_FALSE(line.empty());
     auto const json = parse_json_line(line);
     EXPECT_EQ(json["method"], "ivPackages.updated");
-    EXPECT_EQ(json["params"], Json::object());
+    EXPECT_EQ(json["params"], Json::object({{"revision", 1}}));
 }
 
 } // namespace iv

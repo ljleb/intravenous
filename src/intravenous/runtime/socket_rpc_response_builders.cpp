@@ -195,6 +195,71 @@ Json node_event_protocol_json(NodeEventProtocolSnapshot const& protocol)
 }
 } // namespace
 
+void SocketRpcAutosaveStateResultBuilder::succeed(bool enabled)
+{
+    result = enabled;
+    error_message.clear();
+}
+
+void SocketRpcAutosaveStateResultBuilder::fail(std::string message)
+{
+    fail(-32000, std::move(message));
+}
+
+void SocketRpcAutosaveStateResultBuilder::fail(int code, std::string message)
+{
+    result.reset();
+    error_code = code;
+    error_message = std::move(message);
+}
+
+std::string SocketRpcAutosaveStateResultBuilder::build(int request_id) const
+{
+    if (!error_message.empty()) {
+        return jsonrpc_error(request_id, error_code, error_message);
+    }
+    if (!result) throw_unbuilt_response("SocketRpcAutosaveStateResultBuilder");
+    return jsonrpc_result(request_id, Json{{"enabled", *result}});
+}
+
+void SocketRpcSessionProjectStateResultBuilder::succeed(
+    std::vector<ProjectCommand> value)
+{
+    result = std::move(value);
+    error_message.clear();
+}
+
+void SocketRpcSessionProjectStateResultBuilder::fail(std::string message)
+{
+    fail(-32000, std::move(message));
+}
+
+void SocketRpcSessionProjectStateResultBuilder::fail(
+    int code, std::string message)
+{
+    result.reset();
+    error_code = code;
+    error_message = std::move(message);
+}
+
+std::string SocketRpcSessionProjectStateResultBuilder::build(int request_id) const
+{
+    if (!error_message.empty()) {
+        return jsonrpc_error(request_id, error_code, error_message);
+    }
+    if (!result) {
+        throw_unbuilt_response("SocketRpcSessionProjectStateResultBuilder");
+    }
+    auto commands = Json::array();
+    for (auto const& command : *result) {
+        commands.push_back(Json{
+            {"command", command.command},
+            {"args", command.args},
+        });
+    }
+    return jsonrpc_result(request_id, Json{{"commands", std::move(commands)}});
+}
+
 void SocketRpcNodeEventProtocolResultBuilder::succeed(
     NodeEventProtocolSnapshot value)
 {

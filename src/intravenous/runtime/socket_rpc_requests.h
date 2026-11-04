@@ -4,6 +4,7 @@
 #include <intravenous/runtime/project_connection_types.h>
 
 #include <filesystem>
+#include <cstdint>
 #include <memory>
 #include <optional>
 #include <string>
@@ -65,6 +66,15 @@ struct SetAudioDevicesRequest {
 struct SaveProjectRequest {};
 struct EnableProjectAutosaveRequest {};
 struct DisableProjectAutosaveRequest {};
+struct SessionHelloRequest {
+    std::string client_id{};
+    std::string local_capability{};
+};
+struct SessionSubscribeRequest {
+    std::uint64_t after_revision = 0;
+    std::vector<std::string> topics{};
+};
+struct SessionSnapshotRequest {};
 struct ServerShutdownRequest {};
 struct UnsupportedSocketRpcRequest { std::string method{}; };
 
@@ -88,11 +98,16 @@ using SocketRpcRequestPayload = std::variant<
     SaveProjectRequest,
     EnableProjectAutosaveRequest,
     DisableProjectAutosaveRequest,
+    SessionHelloRequest,
+    SessionSubscribeRequest,
+    SessionSnapshotRequest,
     ServerShutdownRequest,
     UnsupportedSocketRpcRequest>;
 
 struct ParsedSocketRpcRequest {
     int request_id = 0;
+    std::string method{};
+    std::optional<std::uint64_t> expected_revision{};
     SocketRpcRequestPayload payload{};
 };
 

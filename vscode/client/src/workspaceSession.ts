@@ -1,9 +1,9 @@
 import * as vscode from "vscode";
 import * as childProcess from "child_process";
+import * as crypto from "crypto";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
-import { Duplex } from "stream";
 
 import { collectPrimarySourceSpans, QueryShape, sortNodesByRelevance } from "./graphQueryModel";
 import {
@@ -22,6 +22,10 @@ import {
 } from "./graphModel";
 import { LiveGraphControlMessage } from "./liveGraphProtocol";
 import { JsonRpcSocketClient } from "./rpcClient";
+import {
+    ProjectSessionDescriptor,
+    readProjectSessionDescriptor,
+} from "./projectSessionDiscovery";
 import { NodeSpanHighlighter } from "./nodeSpanHighlighter";
 import { autoDetectedServerDirectoriesForWorkspaceRoot } from "./serverBinaryPaths";
 import { WorkspaceNotificationRouter } from "./workspaceNotifications";
@@ -106,15 +110,17 @@ export class WorkspaceSession {
     private lastQuery: QueryShape | null = null;
     private startInFlight: Promise<boolean> | null = null;
     private lastTerminalStatusMessage = "";
-    private serverStdoutLines: string[] = [];
-    private serverStderrLines: string[] = [];
     private readonly maxCapturedServerLogLines = 20;
+    private serverDiagnosticLogOffset = 0;
     private readonly serverDiagnosticLogPath = process.env.IV_LOG_FILE
         || path.join(
             fs.mkdtempSync(path.join(os.tmpdir(), "intravenous-server-")),
             "diagnostics.log",
         );
     private serverReadyReceived = false;
+    private lastSessionRevision = 0;
+    private sessionDescriptorIdentity = "";
+    private shuttingDown = false;
     private serverReadyWaiters: Array<{
         resolve: () => void;
         reject: (error: Error) => void;
@@ -689,14 +695,18 @@ export class WorkspaceSession {
         this.lastTerminalStatusMessage = "";
         this.resetServerReadyState();
 
+        const existing = readProjectSessionDescriptor(this.workspaceRoot());
+        if (existing && await this.attachToProjectSession(existing)) {
+            await this.loadInitialSessionState();
+            return true;
+        }
+
         const binary = this.serverBinaryPath();
         const serverDir = path.dirname(binary);
         const args = [
             "--server",
             "--workspace-root",
             this.workspaceRoot(),
-            "--rpc-fd",
-            "3",
         ];
         const childEnv = {
             ...process.env,
@@ -710,56 +720,203 @@ export class WorkspaceSession {
         this.outputChannel.appendLine(
             `Intravenous server diagnostic log: ${this.serverDiagnosticLogPath}`,
         );
-        this.process = childProcess.spawn(binary, args, {
-            cwd: this.workspaceRoot(),
-            env: childEnv,
-            stdio: ["ignore", "pipe", "pipe", "pipe"],
-        });
-        this.attachServerOutputCapture(this.process);
+        const processLog = fs.openSync(this.serverDiagnosticLogPath, "a");
+        try {
+            this.process = childProcess.spawn(binary, args, {
+                cwd: this.workspaceRoot(),
+                env: childEnv,
+                detached: true,
+                stdio: ["ignore", processLog, processLog],
+            });
+        } finally {
+            fs.closeSync(processLog);
+        }
+        const spawnedProcess = this.process;
+        spawnedProcess.unref();
         this.outputChannel.appendLine("Intravenous startup: server process spawned");
 
-        const rpcStream = this.process.stdio[3];
-        if (!this.isDuplexStream(rpcStream)) {
-            throw new Error("Intravenous startup failed: child rpc fd 3 was not exposed as a duplex stream");
-        }
-
-        this.client = new JsonRpcSocketClient(rpcStream, (method, params) => {
-            void this.notifications.dispatch(method, params);
-        });
-        this.outputChannel.appendLine("Intravenous startup: attaching client RPC socket");
-        await this.client.connect();
-        this.outputChannel.appendLine("Intravenous startup: client RPC socket attached");
-        this.rpc = new WorkspaceRpc(this.client);
-
-        this.process.on("error", (error) => {
-            this.rejectServerReadyWaiters(new Error(`Intravenous server spawn failed: ${error.message}`));
+        spawnedProcess.on("error", (error) => {
             this.outputChannel.appendLine(`Intravenous server spawn failed: ${error.message}`);
         });
-        this.process.on("exit", (code, signal) => {
-            this.process = null;
+        spawnedProcess.on("exit", (code, signal) => {
+            if (this.process === spawnedProcess) this.process = null;
             this.rebuildStatusBar.hide();
             this.outputChannel.appendLine(`Intravenous server exited: code=${code} signal=${signal}`);
-            this.logCapturedServerFailureContext();
-            if (!this.serverReadyReceived) {
-                this.rejectServerReadyWaiters(
-                    new Error(`Intravenous server exited before reporting ready: code=${code} signal=${signal}`),
-                );
-            }
         });
 
-        this.outputChannel.appendLine("Intravenous startup: waiting for server.ready");
-        await this.waitForServerReady(10000);
-        if (this.rpc) {
-            const result = await this.rpc.getNodeInstances();
-            this.ivModuleInstances = this.parseIvModuleInstances(result.instances);
-            this.projectModuleInstances = this.ivModuleInstances;
-            this.refreshVisibleInstances();
-            const realizedCount = this.ivModuleInstances.filter((instance) => instance.realized).length;
-            this.outputChannel.appendLine(
-                `Intravenous instances after ready: total=${this.ivModuleInstances.length} realized=${realizedCount} selected=${this.selectedInstanceId ?? "[none]"}`,
+        if (!(await this.attachToAvailableProjectSession(10000))) {
+            this.logCapturedServerFailureContext();
+            throw new Error(
+                "Intravenous project session did not accept a connection before timeout",
             );
         }
+        await this.loadInitialSessionState();
         return true;
+    }
+
+    private async attachToProjectSession(
+        descriptor: ProjectSessionDescriptor,
+    ): Promise<boolean> {
+        this.resetServerReadyState();
+        let attached = false;
+        const descriptorIdentity =
+            `${descriptor.pid}:${descriptor.startupTimeUnixMs}:${descriptor.localCapability}`;
+        const afterRevision = descriptorIdentity === this.sessionDescriptorIdentity
+            ? this.lastSessionRevision
+            : 0;
+        let client: JsonRpcSocketClient;
+        client = new JsonRpcSocketClient(
+            descriptor.endpoint.path,
+            (method, params) => {
+                if (typeof params.revision === "number") {
+                    this.lastSessionRevision = Math.max(
+                        this.lastSessionRevision, params.revision);
+                }
+                void this.notifications.dispatch(method, params);
+            },
+            (error) => {
+                if (attached) this.handleProjectSessionDisconnect(client, error);
+            },
+            (revision) => {
+                this.lastSessionRevision = revision;
+            },
+        );
+        try {
+            this.outputChannel.appendLine(
+                `Intravenous startup: attaching to project session ${descriptor.endpoint.path}`,
+            );
+            await client.connect(1000);
+            this.client = client;
+            this.rpc = new WorkspaceRpc(client, () => this.lastSessionRevision);
+            await this.waitForServerReady(3000);
+            await this.rpc.hello(
+                `vscode-${process.pid}-${crypto.randomUUID()}`,
+                descriptor.localCapability,
+            );
+            const subscription = await this.rpc.subscribe(afterRevision);
+            this.lastSessionRevision = subscription.currentRevision;
+            if (subscription.snapshotRequired) {
+                const snapshot = await this.rpc.snapshot();
+                this.applySessionSnapshot(snapshot);
+                if (typeof snapshot.sessionRevision === "number") {
+                    this.lastSessionRevision = snapshot.sessionRevision;
+                }
+                const resumed = await this.rpc.subscribe(this.lastSessionRevision);
+                this.lastSessionRevision = resumed.currentRevision;
+                if (resumed.snapshotRequired) {
+                    throw new Error(
+                        "project session replay window advanced while applying a snapshot",
+                    );
+                }
+            }
+            this.outputChannel.appendLine(
+                `Intravenous startup: attached at session revision ${subscription.currentRevision}`,
+            );
+            this.sessionDescriptorIdentity = descriptorIdentity;
+            attached = true;
+            return true;
+        } catch (error) {
+            attached = false;
+            client.dispose();
+            if (this.client === client) this.client = null;
+            this.rpc = null;
+            this.outputChannel.appendLine(
+                `Intravenous startup: project session attachment failed: ${error instanceof Error ? error.message : String(error)}`,
+            );
+            return false;
+        }
+    }
+
+    private handleProjectSessionDisconnect(
+        client: JsonRpcSocketClient,
+        error: Error,
+    ): void {
+        if (this.shuttingDown || this.client !== client) return;
+        this.outputChannel.appendLine(
+            `Intravenous project session disconnected: ${error.message}; reconnecting`,
+        );
+        this.client = null;
+        this.rpc = null;
+        this.resetServerReadyState();
+        const priorStart = this.startInFlight;
+        void (async () => {
+            if (priorStart) {
+                try {
+                    await priorStart;
+                } catch {
+                }
+            }
+            while (!this.shuttingDown && !this.rpc) {
+                try {
+                    await this.start();
+                } catch (reconnectError) {
+                    this.outputChannel.appendLine(
+                        `Intravenous project session reconnect attempt failed: ${reconnectError instanceof Error ? reconnectError.message : String(reconnectError)}`,
+                    );
+                }
+                if (!this.shuttingDown && !this.rpc) {
+                    await new Promise<void>((resolve) => setTimeout(resolve, 1000));
+                }
+            }
+        })().catch((reconnectError) => {
+                this.outputChannel.appendLine(
+                    `Intravenous project session reconnect failed: ${reconnectError instanceof Error ? reconnectError.message : String(reconnectError)}`,
+                );
+            });
+    }
+
+    private async attachToAvailableProjectSession(
+        timeoutMs: number,
+    ): Promise<boolean> {
+        const deadline = Date.now() + timeoutMs;
+        let lastEndpoint = "";
+        for (;;) {
+            const descriptor = readProjectSessionDescriptor(this.workspaceRoot());
+            if (descriptor) {
+                if (descriptor.endpoint.path !== lastEndpoint) {
+                    lastEndpoint = descriptor.endpoint.path;
+                    this.outputChannel.appendLine(
+                        `Intravenous startup: discovered project session ${lastEndpoint}`,
+                    );
+                }
+                if (await this.attachToProjectSession(descriptor)) return true;
+            }
+            if (Date.now() >= deadline) return false;
+            await new Promise<void>((resolve) => setTimeout(resolve, 50));
+        }
+    }
+
+    private async loadInitialSessionState(): Promise<void> {
+        if (!this.rpc) return;
+        const result = await this.rpc.getNodeInstances();
+        this.ivModuleInstances = this.parseIvModuleInstances(result.instances);
+        this.projectModuleInstances = this.ivModuleInstances;
+        this.refreshVisibleInstances();
+        const realizedCount = this.ivModuleInstances.filter(
+            (instance) => instance.realized,
+        ).length;
+        this.outputChannel.appendLine(
+            `Intravenous instances after ready: total=${this.ivModuleInstances.length} realized=${realizedCount} selected=${this.selectedInstanceId ?? "[none]"}`,
+        );
+    }
+
+    private applySessionSnapshot(snapshot: Record<string, unknown>): void {
+        const nodeInstances = snapshot.nodeInstances as
+            | { instances?: unknown[] }
+            | undefined;
+        if (Array.isArray(nodeInstances?.instances)) {
+            this.ivModuleInstances = this.parseIvModuleInstances(
+                nodeInstances.instances);
+            this.projectModuleInstances = this.ivModuleInstances;
+            this.refreshVisibleInstances();
+        }
+        const packages = snapshot.packages as
+            | { packages?: unknown[] }
+            | undefined;
+        if (Array.isArray(packages?.packages)) {
+            this.ivPackages = this.parseIvPackageDefinitions(packages.packages);
+            this.refreshModulesPanelState();
+        }
     }
 
     private async waitForServerReady(timeoutMs: number): Promise<void> {
@@ -1153,56 +1310,31 @@ export class WorkspaceSession {
     }
 
     private resetCapturedServerLogs(): void {
-        this.serverStdoutLines = [];
-        this.serverStderrLines = [];
-    }
-
-    private attachServerOutputCapture(process: childProcess.ChildProcess): void {
-        process.stdout?.setEncoding("utf8");
-        process.stderr?.setEncoding("utf8");
-        process.stdout?.on("data", (chunk: string | Buffer) => {
-            this.captureServerOutput(this.serverStdoutLines, chunk.toString());
-        });
-        process.stderr?.on("data", (chunk: string | Buffer) => {
-            this.captureServerOutput(this.serverStderrLines, chunk.toString());
-        });
-    }
-
-    private captureServerOutput(target: string[], text: string): void {
-        for (const line of text.split(/\r?\n/)) {
-            const normalized = line.trim();
-            if (normalized.length === 0) {
-                continue;
-            }
-            target.push(normalized);
-        }
-        if (target.length > this.maxCapturedServerLogLines) {
-            target.splice(0, target.length - this.maxCapturedServerLogLines);
+        try {
+            this.serverDiagnosticLogOffset = fs.statSync(
+                this.serverDiagnosticLogPath).size;
+        } catch {
+            this.serverDiagnosticLogOffset = 0;
         }
     }
 
     private logCapturedServerFailureContext(): void {
-        if (this.serverStderrLines.length > 0) {
+        let text = "";
+        try {
+            text = fs.readFileSync(this.serverDiagnosticLogPath, "utf8")
+                .slice(this.serverDiagnosticLogOffset);
+        } catch {
+            return;
+        }
+        const lines = text.split(/\r?\n/)
+            .map((line) => line.trim())
+            .filter((line) => line.length > 0)
+            .slice(-this.maxCapturedServerLogLines);
+        if (lines.length > 0) {
             this.outputChannel.appendLine("Intravenous server failure details:");
-            for (const line of this.serverStderrLines) {
-                this.outputChannel.appendLine(`  stderr: ${line}`);
-            }
-        } else if (this.serverStdoutLines.length > 0) {
-            this.outputChannel.appendLine("Intravenous server recent stdout:");
-            for (const line of this.serverStdoutLines) {
-                this.outputChannel.appendLine(`  stdout: ${line}`);
-            }
+            for (const line of lines) this.outputChannel.appendLine(`  ${line}`);
         }
         this.resetCapturedServerLogs();
-    }
-
-    private isDuplexStream(value: unknown): value is Duplex {
-        return !!value
-            && typeof value === "object"
-            && "on" in value
-            && typeof (value as { on?: unknown }).on === "function"
-            && "write" in value
-            && typeof (value as { write?: unknown }).write === "function";
     }
 
     private resetServerReadyState(): void {
@@ -1229,26 +1361,20 @@ export class WorkspaceSession {
     }
 
     async shutdown(): Promise<void> {
+        this.shuttingDown = true;
         this.rebuildStatusBar.dispose();
         this.clangdDatabaseWatcher.dispose();
         if (this.clangdRestartTimer) {
             clearTimeout(this.clangdRestartTimer);
             this.clangdRestartTimer = null;
         }
-        if (this.rpc) {
-            try {
-                await this.rpc.shutdown();
-            } catch {
-            }
-        }
         if (this.client) {
             this.client.dispose();
             this.client = null;
         }
         this.rpc = null;
-        if (this.process) {
-            this.process.kill();
-            this.process = null;
-        }
+        // A client does not own the project session merely because it won the
+        // create-or-connect race and started the server process.
+        this.process = null;
     }
 }

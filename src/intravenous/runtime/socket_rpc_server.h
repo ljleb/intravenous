@@ -9,14 +9,12 @@
 #include <intravenous/sample.h>
 
 #include <chrono>
-#include <condition_variable>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
-#include <mutex>
+#include <memory>
 #include <optional>
 #include <string>
-#include <thread>
 #include <vector>
 
 namespace iv {
@@ -66,6 +64,12 @@ namespace iv {
         void (*)(EnableProjectAutosaveRequest const &, SocketRpcAckResponseBuilder &);
     using SocketRpcDisableProjectAutosaveEvent =
         void (*)(DisableProjectAutosaveRequest const &, SocketRpcAckResponseBuilder &);
+    using SocketRpcGetSessionProjectStateEvent =
+        void (*)(SessionSnapshotRequest const&,
+                 SocketRpcSessionProjectStateResultBuilder&);
+    using SocketRpcGetAutosaveStateEvent =
+        void (*)(SessionSnapshotRequest const&,
+                 SocketRpcAutosaveStateResultBuilder&);
 
     IV_DECLARE_LINKER_EVENT(SocketRpcGraphQueryBySpansEvent, iv_socket_rpc_graph_query_by_spans_event);
     IV_DECLARE_LINKER_EVENT(SocketRpcGraphQueryActiveRegionsEvent, iv_socket_rpc_graph_query_active_regions_event);
@@ -86,34 +90,17 @@ namespace iv {
     IV_DECLARE_LINKER_EVENT(SocketRpcSaveProjectEvent, iv_socket_rpc_save_project_event);
     IV_DECLARE_LINKER_EVENT(SocketRpcEnableProjectAutosaveEvent, iv_socket_rpc_enable_project_autosave_event);
     IV_DECLARE_LINKER_EVENT(SocketRpcDisableProjectAutosaveEvent, iv_socket_rpc_disable_project_autosave_event);
+    IV_DECLARE_LINKER_EVENT(SocketRpcGetSessionProjectStateEvent, iv_socket_rpc_get_session_project_state_event);
+    IV_DECLARE_LINKER_EVENT(SocketRpcGetAutosaveStateEvent, iv_socket_rpc_get_autosave_state_event);
 
     class SocketRpcServer {
-        std::filesystem::path workspace_root;
-        int rpc_fd_value = -1;
-
-        mutable std::mutex mutex;
-        mutable std::mutex client_mutex;
-        mutable std::mutex write_mutex;
-        mutable std::mutex deferred_notification_mutex;
-        mutable std::condition_variable ready_cv;
-        mutable std::condition_variable stopped_cv;
-        bool ready = false;
-        bool stopped = false;
-        int client_fd = -1;
-        bool defer_current_request_notifications = false;
-        std::thread::id deferred_notification_thread{};
-        std::vector<std::string> deferred_notifications;
-        std::optional<std::jthread> worker_thread;
-
-        bool send_message(int fd, std::string const &message);
-        void begin_deferring_current_request_notifications();
-        std::vector<std::string> finish_deferring_current_request_notifications();
-        void handle_client(int fd);
+        struct Impl;
+        std::unique_ptr<Impl> impl_;
 
     public:
         explicit SocketRpcServer(
             std::filesystem::path workspace_root,
-            int rpc_fd);
+            int initial_rpc_fd = -1);
         ~SocketRpcServer();
         SocketRpcServer(SocketRpcServer &&) = delete;
         SocketRpcServer &operator=(SocketRpcServer &&) = delete;
@@ -122,9 +109,14 @@ namespace iv {
         SocketRpcServer &operator=(SocketRpcServer const &) = delete;
 
         void start();
+        void attach_client(int connected_fd, bool trusted = true);
         bool wait_until_ready(std::chrono::milliseconds timeout) const;
         void wait();
         void request_shutdown();
+
+        [[nodiscard]] std::uint64_t revision() const noexcept;
+        [[nodiscard]] std::size_t client_count() const;
+        [[nodiscard]] std::optional<std::filesystem::path> endpoint() const;
 
         void send_server_message(SocketRpcServerMessage const &notification);
         void send_server_status(SocketRpcServerStatus const &notification);

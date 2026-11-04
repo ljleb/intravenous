@@ -369,11 +369,24 @@ void ProjectPersistence::load()
     IV_INVOKE_LINKER_EVENT(iv_runtime_project_loaded_event);
 }
 
+std::vector<ProjectCommand> ProjectPersistence::collect_commands() const
+{
+    ProjectPersistenceBuilder builder(workspace_root_, startup_);
+    IV_INVOKE_LINKER_EVENT(
+        iv_runtime_project_persistence_collect_state_event, builder);
+    return builder.build();
+}
+
+std::vector<ProjectCommand> ProjectPersistence::snapshot() const
+{
+    std::lock_guard lock(save_mutex_);
+    return collect_commands();
+}
+
 void ProjectPersistence::save() const
 {
     std::lock_guard lock(save_mutex_);
-    ProjectPersistenceBuilder builder(workspace_root_, startup_);
-    IV_INVOKE_LINKER_EVENT(iv_runtime_project_persistence_collect_state_event, builder);
+    auto const commands = collect_commands();
 
     auto const project_file = project_file_path();
     auto const temporary_file = project_file.parent_path()
@@ -382,7 +395,7 @@ void ProjectPersistence::save() const
     if (!out) {
         throw std::runtime_error("failed to write " + temporary_file.string());
     }
-    for (auto const &command : builder.build()) {
+    for (auto const &command : commands) {
         out << Json{{"command", command.command}, {"args", command.args}}.dump() << '\n';
     }
     out.close();
@@ -411,6 +424,17 @@ void ProjectPersistence::handle_socket_rpc_save_project(
         save();
         builder.succeed();
     } catch (std::exception const &error) {
+        builder.fail(error.what());
+    }
+}
+
+void ProjectPersistence::handle_socket_rpc_get_session_project_state(
+    SessionSnapshotRequest const&,
+    SocketRpcSessionProjectStateResultBuilder& builder) const
+{
+    try {
+        builder.succeed(snapshot());
+    } catch (std::exception const& error) {
         builder.fail(error.what());
     }
 }
