@@ -34,9 +34,27 @@ public:
 
   PublicSampleInputRef input();
   template<fixed_string Name, class ChannelType = mono>
-  TypedPublicSampleInputRef<ChannelType> input(Sample default_value = 0.0,
+    requires requires { ChannelTypeTraits<ChannelType>::id; }
+  TypedPublicSampleInputRef<ChannelType> input();
+  template<fixed_string Name, class ChannelType = mono>
+    requires requires { ChannelTypeTraits<ChannelType>::id; }
+  TypedPublicSampleInputRef<ChannelType> input(Sample default_value,
       std::optional<Sample> min = std::nullopt,
       std::optional<Sample> max = std::nullopt);
+  template<fixed_string Name, RegisteredContinuousValue... Types>
+    requires(sizeof...(Types) != 0)
+  PublicSampleInputRef input();
+  template<fixed_string Name, RegisteredContinuousValue... Types>
+    requires(sizeof...(Types) != 0)
+  PublicSampleInputRef input(
+      typename ContinuousValueType<Types>::BoundaryInputOptions...);
+  template<RegisteredContinuousValue... Types>
+    requires(sizeof...(Types) != 0)
+  PublicSampleInputRef input();
+  template<RegisteredContinuousValue... Types>
+    requires(sizeof...(Types) != 0)
+  PublicSampleInputRef input(
+      typename ContinuousValueType<Types>::BoundaryInputOptions...);
   PublicSampleInputRef input(Sample default_value,
       std::optional<Sample> min = std::nullopt,
       std::optional<Sample> max = std::nullopt);

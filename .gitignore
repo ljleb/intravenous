@@ -6,10 +6,12 @@ build-release/
 /.direnv
 /.codex
 /.claude
+/.clangd
 .intravenous-tooling/
 compile_commands.json
 intravenious
 /scripts/benchmark.txt*
+/intravenous-source.zip
 node_modules
 *.vsix
 vscode/client/dist

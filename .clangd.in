@@ -1,0 +1,7 @@
+CompileFlags:
+  Add: [-std=c++23]
+  CompilationDatabase: "@CMAKE_BINARY_DIR@"
+Diagnostics:
+  Suppress:
+    - unused-comparison
+  UnusedIncludes: None

@@ -4,6 +4,7 @@
 #include <intravenous/graph/builder/output_refs.h>
 #include <intravenous/graph/error.h>
 #include <intravenous/graph/node_ports.h>
+#include <intravenous/node/address.h>
 #include <intravenous/node/static_port_access.h>
 
 #include <concepts>
@@ -11,10 +12,12 @@
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <type_traits>
 #include <utility>
+#include <vector>
 
 namespace iv {
     class GraphBuilder;
@@ -35,20 +38,20 @@ namespace iv {
         enum class NodeCallInputTarget : uint8_t {
             positional,
             named,
-            explicit_ordinal,
+            explicit_index,
         };
 
         struct NodeCallSampleInput {
             SamplePortRef source;
             std::string_view name;
-            size_t input_ordinal;
+            size_t input_index;
             NodeCallInputTarget target;
         };
 
         struct NodeCallEventInput {
             EventPortRef source;
             std::string_view name;
-            size_t input_ordinal;
+            size_t input_index;
             NodeCallInputTarget target;
         };
 
@@ -87,6 +90,8 @@ namespace iv {
         // table. The façade only needs this bit to preserve the one-time
         // initialization rule for annotated virtual refs.
         mutable bool _has_source_identity = false;
+        bool _has_message_path = false;
+        std::vector<ProjectNodePathSelector> _message_path{};
 
         friend class GraphBuilder;
         friend class GraphBuilderAnnotations;
@@ -97,8 +102,8 @@ namespace iv {
 
     public:
         constexpr NodeRef() = default;
-        NodeRef(NodeRef const&) = delete;
-        NodeRef(NodeRef&&) noexcept = default;
+        NodeRef(NodeRef const&);
+        NodeRef(NodeRef&&) noexcept;
         constexpr explicit NodeRef(GraphBuilder& graph_builder, size_t index) :
             _graph_builder(&graph_builder),
             _index(index)
@@ -122,7 +127,7 @@ namespace iv {
         auto operator[](Member member) const
         requires requires {
             typename std::remove_cvref_t<Member>::channel_type;
-            std::remove_cvref_t<Member>::channel_ordinal;
+            std::remove_cvref_t<Member>::channel_index;
         }
         {
             // An erased node only knows its output layout at build time.  Its
@@ -160,6 +165,18 @@ namespace iv {
         NodeRef ttl(size_t samples) const;
         NodeRef no_ttl() const;
         std::string to_string() const;
+        [[nodiscard]] bool _has_semantic_message_path() const noexcept
+        {
+            return _has_message_path;
+        }
+        [[nodiscard]] std::span<ProjectNodePathSelector const>
+        _semantic_message_path() const noexcept { return _message_path; }
+        void _set_semantic_message_path(
+            std::span<ProjectNodePathSelector const> path)
+        {
+            _message_path.assign(path.begin(), path.end());
+            _has_message_path = true;
+        }
         void _annotate_source_info(
             std::string_view declaration_identity,
             std::string_view file_path,
@@ -204,7 +221,11 @@ namespace iv {
             if (!this->_graph_builder) {
                 return Derived{};
             }
-            return Derived(*this->_graph_builder, this->_index);
+            Derived result(*this->_graph_builder, this->_index);
+            result._has_source_identity = this->_has_source_identity;
+            result._has_message_path = this->_has_message_path;
+            result._message_path = this->_message_path;
+            return result;
         }
 
         Derived ttl(size_t samples) const
@@ -257,9 +278,13 @@ namespace iv {
         using Base::_index;
         using Base::to_string;
 
-        TypedNodeRef(TypedNodeRef const&) = delete;
+        TypedNodeRef(TypedNodeRef const&) = default;
         TypedNodeRef(TypedNodeRef&&) noexcept = default;
-        TypedNodeRef& operator=(TypedNodeRef const&) = delete;
+        TypedNodeRef& operator=(TypedNodeRef const& rhs)
+        {
+            Base::operator=(rhs);
+            return *this;
+        }
         TypedNodeRef& operator=(TypedNodeRef&& rhs)
         {
             Base::operator=(std::move(rhs));
@@ -305,7 +330,9 @@ namespace iv {
         TypedNodeRef connect_event_input(size_t input_port, EventPortRef value) const;
         TypedNodeRef connect_event_input(std::string_view input_name, EventPortRef value) const;
 
-        SamplePortRef detach(size_t loop_extra_latency = 1) const;
+        SamplePortRef detach(
+            size_t loop_extra_latency = 1,
+            std::optional<Sample> initial_value = std::nullopt) const;
 
         template<size_t I>
         auto static_output() const
@@ -346,10 +373,14 @@ namespace iv {
         constexpr explicit TypedNodeRef(GraphBuilder& graph_builder, NodeBundleHandle handle) :
             Base(graph_builder, handle) {}
 
-        TypedNodeRef(TypedNodeRef const&) = delete;
+        TypedNodeRef(TypedNodeRef const&) = default;
         TypedNodeRef(TypedNodeRef&&) noexcept = default;
 
-        TypedNodeRef& operator=(TypedNodeRef const&) = delete;
+        TypedNodeRef& operator=(TypedNodeRef const& rhs)
+        {
+            Base::operator=(rhs);
+            return *this;
+        }
         TypedNodeRef& operator=(TypedNodeRef&& rhs)
         {
             Base::operator=(std::move(rhs));
@@ -361,7 +392,11 @@ namespace iv {
             if (!this->_graph_builder) {
                 return Self {};
             }
-            return Self(*this->_graph_builder, this->_index);
+            Self result(*this->_graph_builder, this->_index);
+            result._has_source_identity = this->_has_source_identity;
+            result._has_message_path = this->_has_message_path;
+            result._message_path = this->_message_path;
+            return result;
         }
 
         // Keep the dynamic output selectors available without importing the
@@ -397,10 +432,19 @@ namespace iv {
             if (!this->_graph_builder) {
                 details::error("attempted to select a tile from a null tiled node ref");
             }
-            return ConcreteRef(
+            ConcreteRef result(
                 *this->_graph_builder,
                 this->_graph_builder->tiled_member(
-                    this->_index, MemberType::channel_ordinal));
+                    this->_index, MemberType::channel_index));
+            if (this->_has_message_path) {
+                auto path = this->_message_path;
+                path.push_back(ProjectTiledChildSelector{
+                    .name = std::string(
+                        ChannelType::channel_names[MemberType::channel_index]),
+                });
+                result._set_semantic_message_path(path);
+            }
+            return result;
         }
 
         template<size_t I>
@@ -428,9 +472,9 @@ namespace iv {
             return static_output<I>();
         }
 
-        EventPortRef event_port(size_t output_ordinal) const
+        EventPortRef event_port(size_t output_index) const
         {
-            return NodeRef::event_port(output_ordinal);
+            return NodeRef::event_port(output_index);
         }
 
         EventPortRef event_port(std::string_view name) const
@@ -438,9 +482,9 @@ namespace iv {
             return NodeRef::event_port(name);
         }
 
-        Self connect_event_input(size_t input_ordinal, EventPortRef source) const
+        Self connect_event_input(size_t input_index, EventPortRef source) const
         {
-            return Base::connect_event_input(input_ordinal, std::move(source));
+            return Base::connect_event_input(input_index, std::move(source));
         }
 
         Self connect_event_input(std::string_view name, EventPortRef source) const
@@ -474,9 +518,9 @@ namespace iv {
             TypedNodeRef<std::remove_cvref_t<Node>>, NodeRef>;
     }
 
-    template<fixed_string Name, class ChannelType, size_t ChannelOrdinal>
+    template<fixed_string Name, class ChannelType, size_t ChannelIndex>
     template<class T>
-    constexpr auto ChannelPortName<Name, ChannelType, ChannelOrdinal>::operator=(T&& value) const
+    constexpr auto ChannelPortName<Name, ChannelType, ChannelIndex>::operator=(T&& value) const
     {
         using Value = std::remove_cvref_t<T>;
         // Channel qualification carries the static information needed for a
@@ -485,20 +529,20 @@ namespace iv {
         // keeps variadic node/output call instantiations independent of the
         // particular typed-ref facade that produced the sample expression.
         if constexpr (std::convertible_to<Value, SamplePortRef>) {
-            return ChannelNamedArg<Name, ChannelType, ChannelOrdinal, SamplePortRef>{
+            return ChannelNamedArg<Name, ChannelType, ChannelIndex, SamplePortRef>{
                 .value = static_cast<SamplePortRef>(std::forward<T>(value)),
             };
         } else if constexpr (std::same_as<Value, EventPortRef>) {
-            return ChannelNamedArg<Name, ChannelType, ChannelOrdinal, EventPortRef>{
+            return ChannelNamedArg<Name, ChannelType, ChannelIndex, EventPortRef>{
                 .value = std::forward<T>(value),
             };
         } else if constexpr (requires(Value const& ref) { ref._clone_handle(); }) {
             using Handle = decltype(value._clone_handle());
-            return ChannelNamedArg<Name, ChannelType, ChannelOrdinal, Handle>{
+            return ChannelNamedArg<Name, ChannelType, ChannelIndex, Handle>{
                 .value = value._clone_handle(),
             };
         } else {
-            return ChannelNamedArg<Name, ChannelType, ChannelOrdinal, Value>{
+            return ChannelNamedArg<Name, ChannelType, ChannelIndex, Value>{
                 .value = std::forward<T>(value),
             };
         }

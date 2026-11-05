@@ -62,6 +62,53 @@ shape is not a sufficient foundation for this direction.
 Threading and atomicity belong at this server boundary. Extension-side locks
 cannot make concurrent clients coherent.
 
+## Current core implementation
+
+`SocketRpcRouteRegistry` owns the mapping from each parsed request type to its
+typed application event. `SocketRpcServer` does not contain the old request
+type switch.
+
+`SocketRpcServer` now supports these session operations:
+
+- It accepts multiple clients.
+- It gives each client a bounded output queue and a writer thread.
+- It runs requests and external notifications through one ordered command queue.
+- It assigns one revision to each successful mutation.
+- It applies `expectedRevision` before a mutation callback runs.
+- It records complete notification revisions in a bounded replay log.
+- It supports topic filters and replay through `session.subscribe`.
+- It returns durable project commands and current runtime records through
+  `session.snapshot`.
+
+The snapshot contains the commands from `ProjectPersistence::snapshot()`. These
+commands include node instances, node replacements, graph connections, project
+toolchain values, and audio-device selection. The snapshot also contains the
+current package list, realized node instances, audio-device state, autosave
+state, and node-message protocol.
+
+On Linux, a server without `--rpc-fd` owns the project lock and publishes
+`descriptor.json` plus `server.sock`. The descriptor contains the canonical
+project root, protocol version, PID, startup time, Unix socket path, and local
+capability. The descriptor and socket permit access by the current user only.
+
+The VS Code client now uses create-or-connect behavior. It discovers an existing
+descriptor before it starts a server. It authenticates with `session.hello`,
+subscribes from its last revision, and requests a snapshot when replay is not
+possible. If the connection closes, it discovers or starts a session again.
+Extension shutdown closes only the client connection. It does not stop the
+shared server.
+
+The inherited `--rpc-fd` transport remains available for tests and compatible
+launchers. It creates one trusted client and does not publish a project endpoint.
+
+As of 2026-11-04, the repository owner's complete C++ build and test suite passes for
+this core implementation. The VS Code client typecheck and npm tests also pass.
+
+The optional remote-audio lease and WebRTC relay are not part of this core
+implementation. They remain separate optional work because they add media
+processes and transport dependencies. They do not change the session protocol
+rules above.
+
 ## Local discovery and election
 
 Live process data should not be committed or treated as durable project data.

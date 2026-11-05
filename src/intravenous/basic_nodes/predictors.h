@@ -1,6 +1,7 @@
 #pragma once
 
 #include <intravenous/node/lifecycle.h>
+#include <intravenous/node/port_constraints.h>
 
 #include <cmath>
 #include <ranges>
@@ -27,18 +28,23 @@ namespace iv {
 
         static constexpr auto inputs()
         {
-            return std::array { sample_input({}, {.history = Order - 1}) };
+            return std::array { input<Sample>("", InputAccess::sequential) };
         }
 
         static constexpr auto outputs()
         {
-            return std::array { sample_output({}, {.history = LookAhead}) };
+            return std::array { output<Sample>("", OutputProduction::tick) };
+        }
+
+        void constrain_ports(ConstrainPortsContext<NlmsPredictor>& ctx) const
+        {
+            ctx.template input<"">().history() = Order - 1;
+            ctx.template output<"">().history() = LookAhead;
         }
 
         void declare(DeclarationContext<NlmsPredictor> const& ctx) const
         {
-            auto const& state = ctx.state();
-            ctx.local_array(state.w, Order);
+            ctx.template local_array<&State::w>(Order);
         }
 
         void initialize(InitializationContext<NlmsPredictor> const& ctx) const
@@ -51,8 +57,8 @@ namespace iv {
         void tick(TickSampleContext<NlmsPredictor> const& ctx) const
         {
             auto& state = ctx.state();
-            auto& in = ctx.inputs[0];
-            auto& out = ctx.outputs[0];
+            auto in = ctx.template input<0>();
+            auto out = ctx.template output<0>();
 
             Sample y = 0.f;
             for (size_t k = 0; k < Order; ++k) {
@@ -97,21 +103,26 @@ namespace iv {
 
         static constexpr auto inputs()
         {
-            return std::array { sample_input({}, {.history = Order - 1}) };
+            return std::array { input<Sample>("", InputAccess::sequential) };
         }
 
         static constexpr auto outputs()
         {
-            return std::array { sample_output({}, {.history = LookAhead + ArOrder}) };
+            return std::array { output<Sample>("", OutputProduction::tick) };
+        }
+
+        void constrain_ports(ConstrainPortsContext<TanhResidualPredictor>& ctx) const
+        {
+            ctx.template input<"">().history() = Order - 1;
+            ctx.template output<"">().history() = LookAhead + ArOrder;
         }
 
         void declare(DeclarationContext<TanhResidualPredictor> const& ctx) const
         {
-            auto const& state = ctx.state();
-            ctx.local_array(state.W1, Hidden * (Order + ArOrder));
-            ctx.local_array(state.W2, Hidden);
-            ctx.local_array(state.b1, Hidden);
-            ctx.local_array(state.a, Hidden);
+            ctx.template local_array<&State::W1>(Hidden * (Order + ArOrder));
+            ctx.template local_array<&State::W2>(Hidden);
+            ctx.template local_array<&State::b1>(Hidden);
+            ctx.template local_array<&State::a>(Hidden);
         }
 
         void initialize(InitializationContext<TanhResidualPredictor> const& ctx) const
@@ -125,8 +136,8 @@ namespace iv {
         void tick(TickSampleContext<TanhResidualPredictor> const& ctx) const
         {
             State& s = ctx.state();
-            auto& in = ctx.inputs[0];
-            auto& out = ctx.outputs[0];
+            auto in = ctx.template input<0>();
+            auto out = ctx.template output<0>();
 
             auto x = [&](size_t k) { return in.get(k); };
             auto r_prev = [&](size_t j) { return out.get(LookAhead + j); };
@@ -195,24 +206,29 @@ namespace iv {
 
         static constexpr auto inputs()
         {
-            return std::array { sample_input({}, {.history = Order - 1}) };
+            return std::array { input<Sample>("", InputAccess::sequential) };
         }
 
         static constexpr auto outputs()
         {
-            return std::array { sample_output({}, {.latency = 0, .history = LookAhead + ArOrder}) };
+            return std::array { output<Sample>("", OutputProduction::tick) };
+        }
+
+        void constrain_ports(ConstrainPortsContext<TanhResidualAR2Predictor>& ctx) const
+        {
+            ctx.template input<"">().history() = Order - 1;
+            ctx.template output<"">().history() = LookAhead + ArOrder;
         }
 
         void declare(DeclarationContext<TanhResidualAR2Predictor> const& ctx) const
         {
-            auto const& state = ctx.state();
-            ctx.local_array(state.W1, Hidden1 * (Order + ArOrder));
-            ctx.local_array(state.b1, Hidden1);
-            ctx.local_array(state.W2, Hidden2 * Hidden1);
-            ctx.local_array(state.b2, Hidden2);
-            ctx.local_array(state.W3, Hidden2);
-            ctx.local_array(state.a1, Hidden1);
-            ctx.local_array(state.a2, Hidden2);
+            ctx.template local_array<&State::W1>(Hidden1 * (Order + ArOrder));
+            ctx.template local_array<&State::b1>(Hidden1);
+            ctx.template local_array<&State::W2>(Hidden2 * Hidden1);
+            ctx.template local_array<&State::b2>(Hidden2);
+            ctx.template local_array<&State::W3>(Hidden2);
+            ctx.template local_array<&State::a1>(Hidden1);
+            ctx.template local_array<&State::a2>(Hidden2);
         }
 
         void initialize(InitializationContext<TanhResidualAR2Predictor> const& ctx) const
@@ -228,8 +244,8 @@ namespace iv {
         void tick(TickSampleContext<TanhResidualAR2Predictor> const& ctx) const
         {
             State& state = ctx.state();
-            auto& in = ctx.inputs[0];
-            auto& out = ctx.outputs[0];
+            auto in = ctx.template input<0>();
+            auto out = ctx.template output<0>();
 
             auto x = [&](size_t k) { return in.get(k); };
             auto r_p = [&](size_t j) { return out.get(LookAhead + j); };
@@ -326,12 +342,18 @@ namespace iv {
 
         static constexpr auto inputs()
         {
-            return std::array { sample_input({}, {.history = Order - 1}) };
+            return std::array { input<Sample>("", InputAccess::sequential) };
         }
 
         static constexpr auto outputs()
         {
-            return std::array { sample_output({}, {.history = LookAhead}) };
+            return std::array { output<Sample>("", OutputProduction::tick) };
+        }
+
+        void constrain_ports(ConstrainPortsContext<PolyResidualPredictor>& ctx) const
+        {
+            ctx.template input<"">().history() = Order - 1;
+            ctx.template output<"">().history() = LookAhead;
         }
 
         template<typename A>
@@ -345,8 +367,8 @@ namespace iv {
         void tick(TickSampleContext<PolyResidualPredictor> const& ctx) const
         {
             State& s = st(ctx.buffer);
-            auto& in = ctx.inputs[0];
-            auto& out = ctx.outputs[0];
+            auto in = ctx.template input<0>();
+            auto out = ctx.template output<0>();
 
             auto x = [&](size_t k) { return in.get(k); };
 

@@ -11,6 +11,7 @@
 #include <intravenous/module/source_annotations.h>
 #include <intravenous/module/package_definitions.h>
 #include <intravenous/node/module_api.h>
+#include <intravenous/node/presentation.h>
 
 #include <cstddef>
 
@@ -107,6 +108,15 @@ namespace iv {
         return ref;
     }
 
+    constexpr void _prepare_node_source_identity_before_statement(
+        GraphBuilder* builder,
+        char const* declaration_identity,
+        char const* authored_name)
+    {
+        details::iv_builder_prepare_node_source_identity(
+            builder, declaration_identity, authored_name);
+    }
+
     template<class Ref>
     requires SourceInfoAnnotatableRef<Ref>
     constexpr Ref&& _annotate_node_source_info(
@@ -163,13 +173,13 @@ namespace iv {
     constexpr void _annotate_public_output_after_statement(
         GraphBuilder* builder,
         bool event,
-        size_t ordinal,
+        size_t index,
         char const* file_path,
         uint32_t begin,
         uint32_t end)
     {
         details::iv_builder_annotate_public_output_source_span(
-            builder, event, ordinal, file_path, begin, end);
+            builder, event, index, file_path, begin, end);
     }
 
     template<fixed_string Name>
@@ -319,7 +329,7 @@ namespace iv {
         std::floating_point<std::remove_cvref_t<T>> ||
         std::is_same_v<std::remove_cvref_t<T>, Sample>;
 
-    // Binary operators synthesize connection-aware, runtime-tiled nodes. They
+    // Binary operators generate connection-aware, runtime-tiled nodes. They
     // are compiler/DSL internals rather than a second public node-creation
     // API: the registered-ID API deliberately accepts construction arguments,
     // while these operands are graph connections. Once package definitions can
@@ -487,6 +497,16 @@ namespace iv {
     constexpr SamplePortRef operator~(SamplePortRef&& sample_port)
     {
         return sample_port.detach();
+    }
+
+    constexpr EventPortRef operator~(EventPortRef const& event_port)
+    {
+        return event_port.detach();
+    }
+
+    constexpr EventPortRef operator~(EventPortRef&& event_port)
+    {
+        return event_port.detach();
     }
 
     template<class T>

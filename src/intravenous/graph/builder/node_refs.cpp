@@ -7,34 +7,29 @@
 #include <vector>
 
 namespace iv {
+NodeAddress node_message_target(
+    NodeAddress const& context_address,
+    NodeRef const& target)
+{
+    if (!target._has_semantic_message_path()) {
+        details::error(
+            "captured NodeRef has no stable semantic path for node-message dispatch");
+    }
+    auto result = context_address;
+    auto const path = target._semantic_message_path();
+    result.path.insert(result.path.end(), path.begin(), path.end());
+    return result;
+}
+
 namespace details {
 SamplePortRef make_tiled_sample_port(
     ChannelTypeId type, SamplePortRef const* members, size_t member_count)
 {
-    if (member_count == 0) {
-        error("cannot tile an empty sample output");
-    }
-
+    if (member_count == 0) error("cannot tile an empty sample output");
     auto* const builder = members[0].graph_builder;
-    if (!builder) {
-        error("cannot tile an empty sample output");
-    }
-
-    std::vector<SampleOutputChannelId> channels;
-    channels.reserve(member_count);
-    for (size_t i = 0; i < member_count; ++i) {
-        auto const& member = members[i];
-        if (member.graph_builder != builder) {
-            error("cannot tile sample outputs from different builders");
-        }
-        auto const member_channels = member.channels();
-        if (member.channel_type != ChannelTypeId::mono
-            || member_channels.size() != 1) {
-            error("each g.tile channel must be a scalar sample expression");
-        }
-        channels.push_back(member_channels.front());
-    }
-    return SamplePortRef(*builder, type, channels);
+    if (!builder) error("cannot tile an empty sample output");
+    return builder->make_tiled_sample_port(
+        type, std::span<SamplePortRef const>(members, member_count));
 }
 } // namespace details
 
@@ -63,19 +58,15 @@ SamplePortRef SamplePortRef::select_channel(size_t channel) const
 {
     if (!graph_builder)
         details::error("attempted to select a channel from an empty sample port");
-    auto const semantic_channels = channels();
-    if (channel >= semantic_channels.size())
-        details::error("sample channel ordinal is out of bounds");
-    return SamplePortRef(
-        *graph_builder, ChannelTypeId::mono,
-        std::array{semantic_channels[channel]});
+    return graph_builder->select_sample_port_channel(*this, channel);
 }
 
-SamplePortRef SamplePortRef::detach(size_t latency) const
+SamplePortRef SamplePortRef::detach(
+    size_t latency, std::optional<Sample> initial_value) const
 {
     if (!graph_builder)
         details::error("attempted to detach an empty sample port");
-    return graph_builder->detach_sample_port(*this, latency);
+    return graph_builder->detach_sample_port(*this, latency, initial_value);
 }
 
 std::string SamplePortRef::to_string() const
@@ -117,11 +108,24 @@ EventPortRef::EventPortRef(
     *this = builder.make_event_port(type, sources);
 }
 
+EventPortRef::EventPortRef(
+    GraphBuilder& builder, std::span<EventPortRef const> sources)
+{
+    *this = builder.make_event_port(sources);
+}
+
 std::span<EventOutputPortId const> EventPortRef::sources() const
 {
     if (!graph_builder)
         details::error("attempted to read sources from an empty event port");
     return graph_builder->event_port_sources(*this);
+}
+
+EventPortRef EventPortRef::detach(size_t latency) const
+{
+    if (!graph_builder)
+        details::error("attempted to detach an empty event port");
+    return graph_builder->detach_event_port(*this, latency);
 }
 
 std::string EventPortRef::to_string() const
@@ -169,9 +173,30 @@ NodeRef NodeRef::node_ref() const
     return _clone_handle();
 }
 
+NodeRef::NodeRef(NodeRef const& other)
+    : _graph_builder(other._graph_builder)
+    , _index(other._index)
+    , _has_source_identity(other._has_source_identity)
+    , _has_message_path(other._has_message_path)
+    , _message_path(other._message_path)
+{}
+
+NodeRef::NodeRef(NodeRef&& other) noexcept
+    : _graph_builder(std::exchange(other._graph_builder, nullptr))
+    , _index(std::exchange(other._index, 0))
+    , _has_source_identity(std::exchange(other._has_source_identity, false))
+    , _has_message_path(std::exchange(other._has_message_path, false))
+    , _message_path(std::move(other._message_path))
+{}
+
 NodeRef NodeRef::_clone_handle() const
 {
-    return _graph_builder ? NodeRef(*_graph_builder, _index) : NodeRef{};
+    if (!_graph_builder) return NodeRef{};
+    NodeRef result(*_graph_builder, _index);
+    result._has_source_identity = _has_source_identity;
+    result._has_message_path = _has_message_path;
+    result._message_path = _message_path;
+    return result;
 }
 
 SamplePortRef NodeRef::operator[](size_t port) const
@@ -248,20 +273,20 @@ void NodeRef::apply_node_call(
         case details::NodeCallInputTarget::positional:
             {
                 auto const port = _graph_builder->input_port_at(
-                    _index, input.input_ordinal);
+                    _index, input.input_index);
                 if (port.port_kind != PortKind::sample) {
                     details::error(
                         "positional sample argument does not match the declared input order");
                 }
-                input_port = port.port_ordinal;
+                input_port = port.port_index;
             }
             break;
         case details::NodeCallInputTarget::named:
             input_port = _graph_builder->sample_port_index(
                 _index, true, input.name);
             break;
-        case details::NodeCallInputTarget::explicit_ordinal:
-            input_port = input.input_ordinal;
+        case details::NodeCallInputTarget::explicit_index:
+            input_port = input.input_index;
             break;
         }
         if (input_port >= sample_input_count()) {
@@ -281,20 +306,20 @@ void NodeRef::apply_node_call(
         case details::NodeCallInputTarget::positional:
             {
                 auto const port = _graph_builder->input_port_at(
-                    _index, input.input_ordinal);
+                    _index, input.input_index);
                 if (port.port_kind != PortKind::event) {
                     details::error(
                         "positional event argument does not match the declared input order");
                 }
-                input_port = port.port_ordinal;
+                input_port = port.port_index;
             }
             break;
         case details::NodeCallInputTarget::named:
             input_port = _graph_builder->event_port_index(
                 _index, true, input.name);
             break;
-        case details::NodeCallInputTarget::explicit_ordinal:
-            input_port = input.input_ordinal;
+        case details::NodeCallInputTarget::explicit_index:
+            input_port = input.input_index;
             break;
         }
         if (input_port >= event_input_count()) {
@@ -369,7 +394,8 @@ std::string NodeRef::to_string() const
 NodeRef& NodeRef::operator=(NodeRef const& rhs)
 {
     if (this == &rhs) return *this;
-    if (_graph_builder || _has_source_identity) {
+    if (_graph_builder || _has_source_identity || _has_message_path
+        || !_message_path.empty()) {
         details::error("cannot reassign an initialized NodeRef");
     }
     if (!rhs._graph_builder) {
@@ -378,13 +404,16 @@ NodeRef& NodeRef::operator=(NodeRef const& rhs)
     _graph_builder = rhs._graph_builder;
     _index = rhs._index;
     _has_source_identity = rhs._has_source_identity;
+    _has_message_path = rhs._has_message_path;
+    _message_path = rhs._message_path;
     return *this;
 }
 
 NodeRef& NodeRef::operator=(NodeRef&& rhs)
 {
     if (this == &rhs) return *this;
-    if (_graph_builder || _has_source_identity) {
+    if (_graph_builder || _has_source_identity || _has_message_path
+        || !_message_path.empty()) {
         details::error("cannot reassign an initialized NodeRef");
     }
     if (!rhs._graph_builder) {
@@ -393,9 +422,13 @@ NodeRef& NodeRef::operator=(NodeRef&& rhs)
     _graph_builder = rhs._graph_builder;
     _index = rhs._index;
     _has_source_identity = rhs._has_source_identity;
+    _has_message_path = rhs._has_message_path;
+    _message_path = std::move(rhs._message_path);
     rhs._graph_builder = nullptr;
     rhs._index = 0;
     rhs._has_source_identity = false;
+    rhs._has_message_path = false;
+    rhs._message_path.clear();
     return *this;
 }
 

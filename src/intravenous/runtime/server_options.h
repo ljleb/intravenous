@@ -2,6 +2,7 @@
 
 #include <cstdlib>
 #include <filesystem>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -21,7 +22,8 @@ namespace iv {
                 } else if (arg == "--rpc-fd" && i + 1 < argc) {
                     char *end = nullptr;
                     long const value = std::strtol(argv[++i], &end, 10);
-                    if (end == nullptr || *end != '\0' || value < 0) {
+                    if (end == nullptr || *end != '\0' || value < 0
+                        || value > std::numeric_limits<int>::max()) {
                         throw std::runtime_error("--rpc-fd must be a non-negative integer");
                     }
                     options.rpc_fd = static_cast<int>(value);
@@ -32,9 +34,6 @@ namespace iv {
 
             if (options.workspace_root.empty()) {
                 throw std::runtime_error("--server requires --workspace-root <path>");
-            }
-            if (options.rpc_fd < 0) {
-                throw std::runtime_error("--server requires --rpc-fd <fd>");
             }
             return options;
         }

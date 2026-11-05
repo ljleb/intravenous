@@ -1,5 +1,6 @@
 #include "clang/AST/ASTContext.h"
 #include "clang/AST/ASTMutationListener.h"
+#include "clang/AST/Attr.h"
 #include "clang/AST/Decl.h"
 #include "clang/AST/DeclCXX.h"
 #include "clang/AST/DeclTemplate.h"
@@ -36,6 +37,7 @@
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <tuple>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -188,6 +190,16 @@ void append_type_definition_fingerprint(
     if (auto const* record = type->getAsCXXRecordDecl()) {
         auto const* definition = record->getDefinition();
         material += definition_text(definition);
+        if (definition) {
+            for (auto const& base : definition->bases()) {
+                append_type_definition_fingerprint(
+                    context, base.getType(), visited, material);
+            }
+            for (auto const* field : definition->fields()) {
+                append_type_definition_fingerprint(
+                    context, field->getType(), visited, material);
+            }
+        }
     } else if (auto const* enumeration = type->getAs<EnumType>()) {
         if (auto const* definition = enumeration->getDecl()->getDefinition()) {
             material += definition_text(definition);
@@ -243,11 +255,20 @@ std::string mangled_global_name(ASTContext& context, VarDecl const* declaration)
     return names.getName(declaration);
 }
 
+std::string mangled_function_name(
+    ASTContext& context,
+    FunctionDecl const* declaration)
+{
+    if (!declaration) return {};
+    ASTNameGenerator names(context);
+    return names.getName(declaration);
+}
+
 std::uint64_t node_code_key_hash(
     std::string_view value,
-    std::uint64_t seed)
+    std::uint64_t initial_hash)
 {
-    std::uint64_t hash = seed;
+    std::uint64_t hash = initial_hash;
     for (auto const ch : value) {
         hash ^= static_cast<unsigned char>(ch);
         hash *= 1099511628211ull;
@@ -442,6 +463,7 @@ struct RefAnnotation {
     std::string declaration_identity;
     SourceSpanRecord span;
     bool refers_to_enclosing_variable_or_capture = false;
+    Expr* node_builder = nullptr;
 };
 
 struct NodeInputPortAnnotation {
@@ -456,7 +478,7 @@ struct NodeInputPortAnnotation {
 struct PublicOutputAnnotation {
     Expr* builder = nullptr;
     bool event = false;
-    std::size_t ordinal = 0;
+    std::size_t index = 0;
     SourceSpanRecord span;
 };
 
@@ -505,7 +527,12 @@ public:
 
             // Source provenance is intentionally token-shaped: the declared
             // identifier is active, but the initializer expression is not.
-            append_ref({variable, identity, *span});
+            append_ref({
+                .declaration = variable,
+                .declaration_identity = identity,
+                .span = *span,
+                .node_builder = node_call_builder(variable->getInit()),
+            });
             append_named_port_argument_spans(
                 variable, identity, variable->getInit(), false);
         }
@@ -551,7 +578,14 @@ public:
                     // empty. Once the assignment has completed, attach its
                     // declaration identifier as provenance too. The LHS use is
                     // picked up independently by VisitDeclRefExpr.
-                    append_ref({variable, identity, *declaration_source});
+                    append_ref({
+                        .declaration = variable,
+                        .declaration_identity = identity,
+                        .span = *declaration_source,
+                        .node_builder = call->getNumArgs() > 1
+                            ? node_call_builder(call->getArg(1))
+                            : nullptr,
+                    });
                 }
                 if (!identity.empty() && call->getNumArgs() > 1) {
                     append_named_port_argument_spans(
@@ -595,7 +629,7 @@ public:
                 result_.public_outputs.push_back({
                     .builder = builder,
                     .event = method_name == "event_outputs",
-                    .ordinal = i,
+                    .index = i,
                     .span = binding->span,
                 });
             }
@@ -670,6 +704,20 @@ private:
             if (next == expression) return expression;
             expression = next;
         }
+    }
+
+    static Expr* node_call_builder(Expr* expression)
+    {
+        expression = peel_expression(expression);
+        auto* call = dyn_cast_or_null<CXXMemberCallExpr>(expression);
+        if (!call) return nullptr;
+        auto const* method = call->getMethodDecl();
+        if (!method || method->getNameAsString() != "node"
+            || method->getParent()->getQualifiedNameAsString()
+                != "iv::GraphBuilder") {
+            return nullptr;
+        }
+        return call->getImplicitObjectArgument();
     }
 
     static bool expression_refers_to_capture(Expr* expression)
@@ -824,7 +872,9 @@ public:
     {
         if (!declaration) return true;
         auto const name = declaration->getNameAsString();
-        if (name == "_annotate_public_output_after_statement")
+        if (name == "_prepare_node_source_identity_before_statement")
+            node_source_preparation = declaration;
+        else if (name == "_annotate_public_output_after_statement")
             public_output_annotation = declaration;
         else if (name == "_annotate_node_input_source_info_after_statement")
             node_input_annotation = declaration;
@@ -832,6 +882,7 @@ public:
     }
 
     FunctionTemplateDecl* source_annotation = nullptr;
+    FunctionDecl* node_source_preparation = nullptr;
     FunctionDecl* node_input_annotation = nullptr;
     FunctionDecl* public_output_annotation = nullptr;
 };
@@ -840,9 +891,10 @@ class FunctionInstrumenter {
 public:
     FunctionInstrumenter(
         CompilerInstance& compiler,
-        SourceModel const& sources)
+        SourceModel const& sources,
+        bool source_annotations)
         : compiler_(compiler), context_(compiler.getASTContext()),
-          sources_(sources)
+          sources_(sources), source_annotations_(source_annotations)
     {}
 
     void instrument(FunctionDecl* function)
@@ -852,8 +904,11 @@ public:
             || !sources_.is_user_source(function->getLocation()))
             return;
         ensure_helpers();
-        if (!source_annotation_template_ || !node_input_annotation_function_
-            || !public_output_annotation_function_) {
+        if (!node_source_preparation_function_
+            || (source_annotations_
+                && (!source_annotation_template_
+                    || !node_input_annotation_function_
+                    || !public_output_annotation_function_))) {
             auto id = compiler_.getDiagnostics().getCustomDiagID(
                 DiagnosticsEngine::Error,
                 "IV package annotation helpers were not found; include <intravenous/dsl.h> before configured module code");
@@ -863,7 +918,7 @@ public:
         instrumented_.insert(function);
         // ASTConsumer callbacks run after the parser has restored Sema's
         // translation-unit context.  Re-enter the owning function while
-        // synthesizing the annotations so Sema performs ordinary local-name
+        // generating the annotations so Sema performs ordinary local-name
         // lookup and builds a well-formed call expression for CodeGen.
         Sema::ContextRAII function_context(sema(), function);
         function->setBody(transform_statement(function->getBody()));
@@ -873,8 +928,10 @@ private:
     CompilerInstance& compiler_;
     ASTContext& context_;
     SourceModel const& sources_;
+    bool source_annotations_ = true;
     llvm::DenseSet<FunctionDecl*> instrumented_;
     FunctionTemplateDecl* source_annotation_template_ = nullptr;
+    FunctionDecl* node_source_preparation_function_ = nullptr;
     FunctionDecl* node_input_annotation_function_ = nullptr;
     FunctionDecl* public_output_annotation_function_ = nullptr;
     bool helpers_searched_ = false;
@@ -890,6 +947,7 @@ private:
         HelperFinder finder;
         finder.TraverseDecl(context_.getTranslationUnitDecl());
         source_annotation_template_ = finder.source_annotation;
+        node_source_preparation_function_ = finder.node_source_preparation;
         node_input_annotation_function_ = finder.node_input_annotation;
         public_output_annotation_function_ = finder.public_output_annotation;
     }
@@ -916,22 +974,30 @@ private:
         body.reserve(compound->size());
         for (auto* original : compound->body()) {
             auto* statement = transform_statement(original);
-            body.push_back(statement);
 
             StatementAnalysis analysis;
             StatementAnalyzer analyzer(context_, sources_, analysis, graph_locals_);
             analyzer.TraverseStmt(statement);
             for (auto const& ref : analysis.refs) {
-                if (auto* annotation = build_ref_annotation(ref))
-                    body.push_back(annotation);
+                if (ref.node_builder) {
+                    if (auto* preparation = build_node_source_preparation(ref))
+                        body.push_back(preparation);
+                }
             }
-            for (auto const& port : analysis.node_input_ports) {
-                if (auto* annotation = build_node_input_annotation(port))
-                    body.push_back(annotation);
-            }
-            for (auto const& output : analysis.public_outputs) {
-                if (auto* annotation = build_public_output_annotation(output))
-                    body.push_back(annotation);
+            body.push_back(statement);
+            if (source_annotations_) {
+                for (auto const& ref : analysis.refs) {
+                    if (auto* annotation = build_ref_annotation(ref))
+                        body.push_back(annotation);
+                }
+                for (auto const& port : analysis.node_input_ports) {
+                    if (auto* annotation = build_node_input_annotation(port))
+                        body.push_back(annotation);
+                }
+                for (auto const& output : analysis.public_outputs) {
+                    if (auto* annotation = build_public_output_annotation(output))
+                        body.push_back(annotation);
+                }
             }
         }
         return CompoundStmt::Create(
@@ -1040,6 +1106,53 @@ private:
         return result.isInvalid() ? nullptr : result.get();
     }
 
+    Stmt* build_node_source_preparation(RefAnnotation const& annotation)
+    {
+        auto const location = annotation.declaration->getLocation();
+        auto* pointer = builder_pointer(annotation.node_builder, location);
+        if (!pointer) return nullptr;
+        auto* callee = make_decl_ref(
+            node_source_preparation_function_, location);
+        if (!callee) return nullptr;
+        llvm::SmallVector<Expr*, 3> arguments{
+            pointer,
+            make_string(annotation.declaration_identity, location),
+            make_string(
+                is_direct_module_build_graph_local(annotation.declaration)
+                    ? annotation.declaration->getNameAsString()
+                    : std::string{},
+                location),
+        };
+        auto result = sema().BuildCallExpr(
+            nullptr, callee, location, arguments, location);
+        return result.isInvalid() ? nullptr : result.get();
+    }
+
+    static bool is_direct_module_build_graph_local(
+        VarDecl const* declaration)
+    {
+        if (!declaration) return false;
+        auto const* context = declaration->getDeclContext();
+        while (context
+            && !isa<FunctionDecl>(Decl::castFromDeclContext(context))) {
+            context = context->getParent();
+        }
+        auto const* method = context
+            ? dyn_cast<CXXMethodDecl>(Decl::castFromDeclContext(context))
+            : nullptr;
+        if (!method || method->getNameAsString() != "build_graph"
+            || !method->isConst() || method->getNumParams() != 1) {
+            return false;
+        }
+        auto const* builder_reference = method->getParamDecl(0)
+            ->getType()->getAs<LValueReferenceType>();
+        auto const* builder_record = builder_reference
+            ? builder_reference->getPointeeType()->getAsCXXRecordDecl()
+            : nullptr;
+        return builder_record
+            && builder_record->getQualifiedNameAsString() == "iv::GraphBuilder";
+    }
+
     Stmt* build_node_input_annotation(NodeInputPortAnnotation const& annotation)
     {
         auto const location = annotation.declaration->getLocation();
@@ -1105,7 +1218,7 @@ private:
         llvm::SmallVector<Expr*, 6> arguments{
             pointer,
             new (context_) CXXBoolLiteralExpr(output.event, context_.BoolTy, location),
-            make_size(output.ordinal, location),
+            make_size(output.index, location),
             make_string(output.span.file, location),
             make_u32(output.span.begin, location),
             make_u32(output.span.end, location),
@@ -1116,42 +1229,51 @@ private:
     }
 };
 
-std::optional<QualType> direct_node_state_type(
+std::optional<QualType> direct_node_nested_type(
     ASTContext& context,
-    CXXRecordDecl const* node)
+    CXXRecordDecl const* node,
+    StringRef name)
 {
     if (!node) return std::nullopt;
     for (auto const* declaration : node->decls()) {
-        auto const* type = dyn_cast<TypeDecl>(declaration);
-        if (type && type->getName() == "State")
-            return context.getTypeDeclType(type);
+        auto const* named = dyn_cast<NamedDecl>(declaration);
+        if (!named || named->getName() != name) continue;
+        if (auto const* record = dyn_cast<CXXRecordDecl>(declaration)) {
+            return context.getCanonicalTagType(record);
+        }
+        if (auto const* alias = dyn_cast<TypedefNameDecl>(declaration)) {
+            return context.getCanonicalType(alias->getUnderlyingType());
+        }
     }
     return std::nullopt;
 }
 
-std::optional<QualType> node_state_type(
+std::optional<QualType> node_nested_type(
     ASTContext& context,
     CXXRecordDecl const* node,
+    StringRef name,
     std::set<CXXRecordDecl const*>& visited)
 {
     if (!node || !visited.insert(node).second) return std::nullopt;
-    if (auto state = direct_node_state_type(context, node)) return state;
-    // `typename Node::State` uses normal base-class lookup too. Follow that
-    // same lookup here so inherited aliases and nested State records receive
-    // metadata keyed by the derived node that actually uses them.
+    if (auto type = direct_node_nested_type(context, node, name)) return type;
+    // `typename Node::State` / `typename Node::TockState` use normal
+    // base-class lookup too. Follow that lookup so inherited aliases and
+    // nested records are keyed by the derived node that actually uses them.
     for (auto const& base : node->bases()) {
         auto const* base_record = base.getType()->getAsCXXRecordDecl();
-        if (auto state = node_state_type(context, base_record, visited)) return state;
+        if (auto type = node_nested_type(context, base_record, name, visited))
+            return type;
     }
     return std::nullopt;
 }
 
-std::optional<QualType> node_state_type(
+std::optional<QualType> node_nested_type(
     ASTContext& context,
-    CXXRecordDecl const* node)
+    CXXRecordDecl const* node,
+    StringRef name)
 {
     std::set<CXXRecordDecl const*> visited;
-    return node_state_type(context, node, visited);
+    return node_nested_type(context, node, name, visited);
 }
 
 class StateMetadataCollector final {
@@ -1163,15 +1285,43 @@ public:
     void record_node(CXXRecordDecl const* node)
     {
         if (!node || !node->isCompleteDefinition() || node->isLambda()) return;
-        // An uninstantiated class template has no concrete State ABI. Asking
-        // Clang for its layout recursively instantiates its own dependent
-        // members (for example MidiVoiceAllocator's voice-count arrays),
-        // exhausting the frontend stack. A concrete specialization can retain
-        // a dependent pattern in its nested declarations, so the node itself
-        // is the discriminator.
+        // An uninstantiated class template has no concrete state ABI. Asking
+        // Clang for its layout recursively instantiates dependent members, so
+        // only concrete specializations participate in source metadata.
         if (!has_concrete_template_arguments(node)) return;
 
-        auto state_type = node_state_type(context_, node);
+        auto const node_type = context_.getCanonicalTagType(node);
+        auto const node_type_name = type_string(context_, node_type);
+        // The canonical declaration of every specialization is the primary
+        // class template. Deduplicate by concrete spelling so each NodeCodeKey
+        // receives exactly one pair of State/TockState records.
+        if (!seen_node_types_.insert(node_type_name).second) return;
+
+        auto const node_type_usr = declaration_usr(context_, node);
+        record_state(
+            node, node_type, node_type_name, node_type_usr,
+            "State", states_);
+        record_state(
+            node, node_type, node_type_name, node_type_usr,
+            "TockState", background_states_);
+    }
+
+    llvm::json::Array take_states() { return std::move(states_); }
+    llvm::json::Array take_background_states()
+    {
+        return std::move(background_states_);
+    }
+
+private:
+    void record_state(
+        CXXRecordDecl const* node,
+        QualType node_type,
+        std::string const& node_type_name,
+        std::string const& node_type_usr,
+        StringRef state_name,
+        llvm::json::Array& output)
+    {
+        auto state_type = node_nested_type(context_, node, state_name);
         if (!state_type) return;
         auto const canonical_state_type = state_type->getCanonicalType();
         auto const* state_record = canonical_state_type->getAsCXXRecordDecl();
@@ -1180,18 +1330,11 @@ public:
         if (state_record && state_record->getNumBases() != 0) {
             auto id = context_.getDiagnostics().getCustomDiagID(
                 DiagnosticsEngine::Error,
-                "Node::State must not have base classes");
-            context_.getDiagnostics().Report(state_record->getLocation(), id);
+                "Node::%0 must not have base classes");
+            context_.getDiagnostics().Report(state_record->getLocation(), id)
+                << state_name;
             return;
         }
-
-        auto const node_type = context_.getCanonicalTagType(node);
-        auto const node_type_name = type_string(context_, node_type);
-        auto const node_type_usr = declaration_usr(context_, node);
-        // The canonical declaration of every specialization is the primary
-        // class template. Deduplicate by the concrete spelling instead so
-        // each NodeCodeKey receives exactly one State record.
-        if (!seen_node_types_.insert(node_type_name).second) return;
 
         llvm::json::Array fields;
         if (state_record) {
@@ -1201,6 +1344,7 @@ public:
                 auto const type = field->getType();
                 llvm::json::Object field_record{
                     {"name", field->getNameAsString()},
+                    {"nominal_id", declaration_usr(context_, field)},
                     {"type_usr", type_usr(context_, type)},
                     {"type", type_string(context_, type)},
                     {"bit_offset", static_cast<std::int64_t>(layout.getFieldOffset(index++))},
@@ -1214,22 +1358,24 @@ public:
                 fields.push_back(std::move(field_record));
             }
         }
-        states_.push_back(llvm::json::Object{
+
+        output.push_back(llvm::json::Object{
             {"node_code_key", node_code_key(context_, node_type)},
             {"node_type_usr", node_type_usr},
             {"node_type", node_type_name},
-            {"state_type_usr", type_usr(context_, canonical_state_type)},
+            {"type_usr", type_usr(context_, canonical_state_type)},
+            {"type", type_string(context_, canonical_state_type)},
+            {"definition_fingerprint",
+             type_definition_fingerprint(context_, canonical_state_type)},
             {"size_bits", static_cast<std::int64_t>(context_.getTypeSize(canonical_state_type))},
             {"alignment_bits", static_cast<std::int64_t>(context_.getTypeAlign(canonical_state_type))},
             {"fields", std::move(fields)},
         });
     }
 
-    llvm::json::Array take_states() && { return std::move(states_); }
-
-private:
     ASTContext& context_;
     llvm::json::Array states_;
+    llvm::json::Array background_states_;
     std::set<std::string> seen_node_types_;
 };
 
@@ -1396,12 +1542,67 @@ private:
     std::vector<CXXRecordDecl const*> nodes_;
 };
 
+class ConfigurationExpressionAdapterFinder final
+    : public RecursiveASTVisitor<ConfigurationExpressionAdapterFinder> {
+public:
+    bool VisitFunctionTemplateDecl(FunctionTemplateDecl* declaration)
+    {
+        if (!declaration) return true;
+        auto const name = declaration->getQualifiedNameAsString();
+        if (name == "iv::details::configuration_expression_details::construct_scalar")
+            construct_scalar = declaration;
+        else if (name == "iv::details::configuration_expression_details::read_scalar")
+            read_scalar = declaration;
+        else if (name == "iv::details::configuration_expression_details::default_construct")
+            default_construct = declaration;
+        else if (name == "iv::details::configuration_expression_details::destroy")
+            destroy = declaration;
+        else if (name == "iv::details::configuration_expression_details::assign")
+            assign = declaration;
+        else if (name == "iv::details::configuration_expression_details::append_element")
+            append_element = declaration;
+        else if (name == "iv::details::configuration_expression_details::assign_element")
+            assign_element = declaration;
+        else if (name == "iv::details::configuration_expression_details::element_count")
+            element_count = declaration;
+        else if (name == "iv::details::configuration_expression_details::element_at")
+            element_at = declaration;
+        else if (name == "iv::details::configuration_expression_details::construct_node_address")
+            construct_node_address = declaration;
+        return true;
+    }
+
+    FunctionTemplateDecl* construct_scalar = nullptr;
+    FunctionTemplateDecl* read_scalar = nullptr;
+    FunctionTemplateDecl* default_construct = nullptr;
+    FunctionTemplateDecl* destroy = nullptr;
+    FunctionTemplateDecl* assign = nullptr;
+    FunctionTemplateDecl* append_element = nullptr;
+    FunctionTemplateDecl* assign_element = nullptr;
+    FunctionTemplateDecl* element_count = nullptr;
+    FunctionTemplateDecl* element_at = nullptr;
+    FunctionTemplateDecl* construct_node_address = nullptr;
+};
+
 class ConfigurationTypeIdentityCollector final
     : public RecursiveASTVisitor<ConfigurationTypeIdentityCollector> {
 public:
-    explicit ConfigurationTypeIdentityCollector(ASTContext& context)
-        : context_(context)
-    {}
+    explicit ConfigurationTypeIdentityCollector(CompilerInstance& compiler)
+        : compiler_(compiler), context_(compiler.getASTContext())
+    {
+        ConfigurationExpressionAdapterFinder finder;
+        finder.TraverseDecl(context_.getTranslationUnitDecl());
+        construct_scalar_ = finder.construct_scalar;
+        read_scalar_ = finder.read_scalar;
+        default_construct_ = finder.default_construct;
+        destroy_ = finder.destroy;
+        assign_ = finder.assign;
+        append_element_ = finder.append_element;
+        assign_element_ = finder.assign_element;
+        element_count_ = finder.element_count;
+        element_at_ = finder.element_at;
+        construct_node_address_ = finder.construct_node_address;
+    }
 
     bool VisitVarTemplateSpecializationDecl(
         VarTemplateSpecializationDecl* specialization)
@@ -1420,9 +1621,25 @@ public:
         auto const symbol = mangled_global_name(context_, specialization);
         if (symbol.empty() || !seen_.insert(symbol).second) return true;
         auto metadata = configuration_type_metadata(context_, arguments.front().getAsType());
+        metadata["expression_schema"] = schema_metadata(
+            arguments.front().getAsType(), specialization->getLocation());
         metadata["symbol"] = symbol;
         identities_.push_back(std::move(metadata));
         return true;
+    }
+
+    void record_type(
+        QualType type,
+        SourceLocation location,
+        std::string symbol)
+    {
+        type = transported_configuration_type(type);
+        if (symbol.empty() || !seen_.insert(symbol).second) return;
+        auto metadata = configuration_type_metadata(context_, type);
+        metadata["expression_schema"] = schema_metadata(type, location);
+        metadata["symbol"] = std::move(symbol);
+        metadata["synthesized"] = true;
+        identities_.push_back(std::move(metadata));
     }
 
     llvm::json::Array take_identities() &&
@@ -1436,9 +1653,412 @@ public:
     }
 
 private:
+    FunctionDecl* specialize(
+        FunctionTemplateDecl* function_template,
+        QualType type,
+        SourceLocation location)
+    {
+        if (!function_template) return nullptr;
+        TemplateArgumentListInfo explicit_arguments(location, location);
+        explicit_arguments.addArgument(compiler_.getSema().getTrivialTemplateArgumentLoc(
+            TemplateArgument(type), QualType{}, location));
+        sema::TemplateDeductionInfo deduction(location);
+        FunctionDecl* specialization = nullptr;
+        auto const result = compiler_.getSema().DeduceTemplateArguments(
+            function_template, &explicit_arguments, specialization, deduction, false);
+        if (result != TemplateDeductionResult::Success || !specialization) {
+            auto id = compiler_.getDiagnostics().getCustomDiagID(
+                DiagnosticsEngine::Error,
+                "cannot generate configuration-expression adapter for type '%0'");
+            compiler_.getDiagnostics().Report(location, id)
+                << type_string(context_, type);
+            return nullptr;
+        }
+        if (!specialization->hasAttr<UsedAttr>())
+            specialization->addAttr(UsedAttr::CreateImplicit(context_));
+        if (!specialization->doesThisDeclarationHaveABody()) {
+            compiler_.getSema().MarkFunctionReferenced(location, specialization);
+            compiler_.getSema().InstantiateFunctionDefinition(
+                location, specialization, true, true);
+        }
+        return specialization;
+    }
+
+    std::string adapter_symbol(
+        FunctionTemplateDecl* function_template,
+        QualType type,
+        SourceLocation location)
+    {
+        auto* function = specialize(function_template, type, location);
+        if (!function) return {};
+        ASTNameGenerator names(context_);
+        return names.getName(function);
+    }
+
+    static ClassTemplateSpecializationDecl const* template_specialization(
+        QualType type)
+    {
+        type = transported_configuration_type(type);
+        auto const* record = type->getAsCXXRecordDecl();
+        return dyn_cast_or_null<ClassTemplateSpecializationDecl>(record);
+    }
+
+    llvm::json::Object schema_metadata(QualType type, SourceLocation location)
+    {
+        std::vector<Type const*> active_types;
+        return schema_metadata(type, location, active_types);
+    }
+
+    llvm::json::Object schema_metadata(
+        QualType type,
+        SourceLocation location,
+        std::vector<Type const*>& active_types)
+    {
+        type = transported_configuration_type(type);
+        llvm::json::Object result{
+            {"display_name", type_string(context_, type)},
+            {"size_bits", static_cast<std::int64_t>(context_.getTypeSize(type))},
+            {"alignment_bits", static_cast<std::int64_t>(context_.getTypeAlign(type))},
+            {"destroy_symbol", adapter_symbol(destroy_, type, location)},
+        };
+        auto const* canonical_type = context_.getCanonicalType(type).getTypePtr();
+        if (std::ranges::contains(active_types, canonical_type)) {
+            result["kind"] = "unsupported";
+            result["reason"] =
+                "recursive configuration value schemas are not supported";
+            return result;
+        }
+        active_types.push_back(canonical_type);
+        struct ActiveTypeGuard {
+            std::vector<Type const*>& values;
+            ~ActiveTypeGuard() { values.pop_back(); }
+        } guard{active_types};
+
+        if (type->isBooleanType()) {
+            result["kind"] = "boolean";
+            result["construct_scalar_symbol"] =
+                adapter_symbol(construct_scalar_, type, location);
+            result["read_scalar_symbol"] =
+                adapter_symbol(read_scalar_, type, location);
+            return result;
+        }
+        if (auto const* enumeration = type->getAs<EnumType>()) {
+            result["kind"] = "enumeration";
+            auto const underlying = enumeration->getDecl()->getIntegerType();
+            if (context_.getTypeSize(underlying) > 64) {
+                result["kind"] = "unsupported";
+                result["reason"] = "enum underlying type is wider than 64 bits";
+                return result;
+            }
+            result["integer_is_signed"] = underlying->isSignedIntegerType();
+            result["integer_bit_width"] =
+                static_cast<std::int64_t>(context_.getTypeSize(underlying));
+            result["construct_scalar_symbol"] =
+                adapter_symbol(construct_scalar_, type, location);
+            result["read_scalar_symbol"] =
+                adapter_symbol(read_scalar_, type, location);
+            llvm::json::Array values;
+            if (auto const* definition = enumeration->getDecl()->getDefinition()) {
+                for (auto const* enumerator : definition->enumerators()) {
+                    auto const value = enumerator->getInitVal();
+                    llvm::json::Object item{{"name", enumerator->getNameAsString()}};
+                    if (underlying->isSignedIntegerType())
+                        item["signed_value"] = value.getSExtValue();
+                    else
+                        item["unsigned_value"] =
+                            std::to_string(value.getZExtValue());
+                    values.push_back(std::move(item));
+                }
+            }
+            result["enumerators"] = std::move(values);
+            return result;
+        }
+        if (type->isSignedIntegerType() || type->isUnsignedIntegerType()) {
+            result["kind"] = type->isSignedIntegerType()
+                ? "signed_integer" : "unsigned_integer";
+            result["integer_is_signed"] = type->isSignedIntegerType();
+            result["integer_bit_width"] =
+                static_cast<std::int64_t>(context_.getTypeSize(type));
+            result["construct_scalar_symbol"] =
+                adapter_symbol(construct_scalar_, type, location);
+            result["read_scalar_symbol"] =
+                adapter_symbol(read_scalar_, type, location);
+            return result;
+        }
+        if (type->isRealFloatingType()) {
+            result["kind"] = "floating_point";
+            result["construct_scalar_symbol"] =
+                adapter_symbol(construct_scalar_, type, location);
+            result["read_scalar_symbol"] =
+                adapter_symbol(read_scalar_, type, location);
+            return result;
+        }
+        if (auto const* specialization = template_specialization(type)) {
+            auto const template_name = specialization->getSpecializedTemplate()
+                ->getQualifiedNameAsString();
+            auto const arguments = specialization->getTemplateArgs().asArray();
+            if (template_name.ends_with("::basic_string") && !arguments.empty()
+                && arguments.front().getKind() == TemplateArgument::Type
+                && context_.hasSameType(
+                    arguments.front().getAsType(), context_.CharTy)) {
+                result["kind"] = "string";
+                result["construct_scalar_symbol"] =
+                    adapter_symbol(construct_scalar_, type, location);
+                result["read_scalar_symbol"] =
+                    adapter_symbol(read_scalar_, type, location);
+                return result;
+            }
+            if ((template_name == "std::vector" || template_name == "std::array")
+                && !arguments.empty()
+                && arguments.front().getKind() == TemplateArgument::Type) {
+                auto const element = arguments.front().getAsType();
+                result["kind"] = "sequence";
+                result["default_construct_symbol"] =
+                    adapter_symbol(default_construct_, type, location);
+                result["element_count_symbol"] =
+                    adapter_symbol(element_count_, type, location);
+                result["element_at_symbol"] =
+                    adapter_symbol(element_at_, type, location);
+                if (template_name == "std::vector") {
+                    result["append_element_symbol"] =
+                        adapter_symbol(append_element_, type, location);
+                } else if (arguments.size() > 1
+                    && arguments[1].getKind() == TemplateArgument::Integral) {
+                    result["element_assign_symbol"] =
+                        adapter_symbol(assign_element_, type, location);
+                    result["fixed_element_count"] = static_cast<std::int64_t>(
+                        arguments[1].getAsIntegral().getZExtValue());
+                }
+                result["element_type"] = schema_metadata(
+                    element, location, active_types);
+                return result;
+            }
+        }
+
+        auto const name = record_name(type);
+        if (name == "NodeRef" || name == "TypedNodeRef") {
+            result["kind"] = "node_reference";
+            return result;
+        }
+        if (auto const* record = type->getAsCXXRecordDecl(); record
+            && record->getQualifiedNameAsString() == "iv::NodeAddress") {
+            result["kind"] = "node_address";
+            result["construct_node_address_symbol"] =
+                adapter_symbol(construct_node_address_, type, location);
+            return result;
+        }
+
+        if (auto const* record = type->getAsCXXRecordDecl(); record
+            && record->getDefinition() && record->getDefinition()->isAggregate()) {
+            auto const* definition = record->getDefinition();
+            if (definition->isUnion() || definition->getNumBases() != 0) {
+                result["kind"] = "unsupported";
+                result["reason"] =
+                    "aggregate unions and aggregate base classes are not supported";
+                return result;
+            }
+            result["kind"] = "aggregate";
+            result["default_construct_symbol"] =
+                adapter_symbol(default_construct_, type, location);
+            auto const& layout = context_.getASTRecordLayout(definition);
+            llvm::json::Array fields;
+            std::size_t index = 0;
+            for (auto const* field : definition->fields()) {
+                if (field->isBitField() || field->getType()->isReferenceType()
+                    || field->getType().isConstQualified()
+                    || field->getName().empty()) {
+                    result["kind"] = "unsupported";
+                    result["reason"] =
+                        "aggregate has a const, bit-field, reference, or unnamed member";
+                    return result;
+                }
+                auto const field_type = transported_configuration_type(field->getType());
+                fields.push_back(llvm::json::Object{
+                    {"name", field->getNameAsString()},
+                    {"bit_offset", static_cast<std::int64_t>(
+                        layout.getFieldOffset(index++))},
+                    {"assign_symbol", adapter_symbol(assign_, field_type, location)},
+                    {"type", schema_metadata(field_type, location, active_types)},
+                });
+            }
+            result["fields"] = std::move(fields);
+            return result;
+        }
+
+        if (type->getAsCXXRecordDecl()) {
+            result["kind"] = "converted_scalar";
+            result["construct_scalar_symbol"] =
+                adapter_symbol(construct_scalar_, type, location);
+            result["read_scalar_symbol"] =
+                adapter_symbol(read_scalar_, type, location);
+            return result;
+        }
+        result["kind"] = "unsupported";
+        result["reason"] = "type is not a supported configuration-expression value";
+        return result;
+    }
+
+    CompilerInstance& compiler_;
     ASTContext& context_;
     llvm::json::Array identities_;
     std::set<std::string> seen_;
+    FunctionTemplateDecl* construct_scalar_ = nullptr;
+    FunctionTemplateDecl* read_scalar_ = nullptr;
+    FunctionTemplateDecl* default_construct_ = nullptr;
+    FunctionTemplateDecl* destroy_ = nullptr;
+    FunctionTemplateDecl* assign_ = nullptr;
+    FunctionTemplateDecl* append_element_ = nullptr;
+    FunctionTemplateDecl* assign_element_ = nullptr;
+    FunctionTemplateDecl* element_count_ = nullptr;
+    FunctionTemplateDecl* element_at_ = nullptr;
+    FunctionTemplateDecl* construct_node_address_ = nullptr;
+};
+
+class NodeMessageHandlerCollector final {
+public:
+    NodeMessageHandlerCollector(
+        CompilerInstance& compiler,
+        ConfigurationTypeIdentityCollector& configuration_types)
+        : compiler_(compiler)
+        , context_(compiler.getASTContext())
+        , configuration_types_(configuration_types)
+    {}
+
+    void record_node(CXXRecordDecl const* node)
+    {
+        if (!node) return;
+        record(
+            node,
+            "iv::NodeMessageContext",
+            false,
+            {});
+    }
+
+    void record_module(
+        std::string_view definition_id,
+        CXXRecordDecl const* module)
+    {
+        if (!module) return;
+        record(
+            module,
+            "iv::ModuleMessageContext",
+            true,
+            definition_id);
+    }
+
+    llvm::json::Array take_handlers() &&
+    {
+        std::ranges::sort(handlers_, [](auto const& lhs, auto const& rhs) {
+            auto const* a = lhs.getAsObject();
+            auto const* b = rhs.getAsObject();
+            return std::tuple{
+                a->getString("kind")->str(),
+                a->getString("method_symbol")->str(),
+                a->getString("event_type_symbol")->str()}
+                < std::tuple{
+                b->getString("kind")->str(),
+                b->getString("method_symbol")->str(),
+                b->getString("event_type_symbol")->str()};
+        });
+        return std::move(handlers_);
+    }
+
+private:
+    void record(
+        CXXRecordDecl const* owner,
+        StringRef context_template_name,
+        bool module,
+        std::string_view definition_id)
+    {
+        if (!owner || !owner->isCompleteDefinition() || owner->isLambda()
+            || !has_concrete_template_arguments(owner)) {
+            return;
+        }
+        auto const owner_type = context_.getCanonicalTagType(owner);
+        for (auto const* candidate : owner->methods()) {
+            if (!candidate || candidate->getNameAsString() != "on_message") continue;
+            auto* method = const_cast<CXXMethodDecl*>(candidate);
+            auto reject = [&](StringRef message) {
+                auto id = context_.getDiagnostics().getCustomDiagID(
+                    DiagnosticsEngine::Error, "%0");
+                context_.getDiagnostics().Report(method->getLocation(), id)
+                    << message;
+            };
+            if (method->isStatic() || method->getDescribedFunctionTemplate()
+                || method->getAccess() != AS_public || !method->isConst()
+                || !method->getReturnType()->isVoidType()
+                || method->getNumParams() != 2 || !method->hasBody()) {
+                reject(
+                    "on_message must be a public, non-template, const member with a void return, a typed message-context reference, and one const event reference");
+                continue;
+            }
+            auto const* context_reference = method->getParamDecl(0)
+                ->getType()->getAs<LValueReferenceType>();
+            auto const* context_record = context_reference
+                ? context_reference->getPointeeType()->getAsCXXRecordDecl()
+                : nullptr;
+            auto const* context_specialization =
+                dyn_cast_or_null<ClassTemplateSpecializationDecl>(
+                    context_record);
+            auto const context_arguments = context_specialization
+                ? context_specialization->getTemplateArgs().asArray()
+                : ArrayRef<TemplateArgument>{};
+            if (!context_specialization
+                || context_specialization->getSpecializedTemplate()
+                       ->getQualifiedNameAsString() != context_template_name
+                || context_arguments.size() != 1
+                || context_arguments.front().getKind()
+                    != TemplateArgument::Type
+                || !context_.hasSameType(
+                    context_.getCanonicalType(
+                        context_arguments.front().getAsType()),
+                    context_.getCanonicalType(owner_type))) {
+                reject(
+                    "on_message first parameter must use the matching typed message context");
+                continue;
+            }
+            auto const* event_reference = method->getParamDecl(1)
+                ->getType()->getAs<LValueReferenceType>();
+            if (!event_reference
+                || !event_reference->getPointeeType().isConstQualified()) {
+                reject("on_message event parameter must be Event const&");
+                continue;
+            }
+            auto const event_type = transported_configuration_type(
+                event_reference->getPointeeType());
+            auto const method_symbol = mangled_function_name(context_, method);
+            if (method_symbol.empty()) {
+                reject("cannot generate the LLVM symbol for on_message");
+                continue;
+            }
+            auto const identity_material = type_usr(context_, event_type) + ":"
+                + type_definition_fingerprint(context_, event_type);
+            auto const event_type_symbol = "__iv_node_message_type_"
+                + hex_u64(fingerprint_hash(identity_material));
+            configuration_types_.record_type(
+                event_type, method->getLocation(), event_type_symbol);
+
+            if (!method->hasAttr<UsedAttr>()) {
+                method->addAttr(UsedAttr::CreateImplicit(context_));
+            }
+            compiler_.getSema().MarkFunctionReferenced(
+                method->getLocation(), method);
+            llvm::json::Object handler{
+                {"kind", module ? "module" : "node"},
+            };
+            if (!module) {
+                handler["node_code_key"] = node_code_key(context_, owner_type);
+            }
+            else handler["definition_id"] = std::string(definition_id);
+            handler["method_symbol"] = method_symbol;
+            handler["event_type_symbol"] = event_type_symbol;
+            handlers_.push_back(std::move(handler));
+        }
+    }
+    CompilerInstance& compiler_;
+    ASTContext& context_;
+    ConfigurationTypeIdentityCollector& configuration_types_;
+    llvm::json::Array handlers_;
 };
 
 class RegisteredNodeAdapterFinder final
@@ -1452,17 +2072,28 @@ public:
             configure = declaration;
         } else if (name == "iv::details::node_constructor_signature") {
             signature = declaration;
+        } else if (name == "iv::details::configure_module_class_constructor") {
+            module_configure = declaration;
+        } else if (name == "iv::details::module_class_constructor_signature") {
+            module_signature = declaration;
         }
         return true;
     }
 
     FunctionTemplateDecl* configure = nullptr;
     FunctionTemplateDecl* signature = nullptr;
+    FunctionTemplateDecl* module_configure = nullptr;
+    FunctionTemplateDecl* module_signature = nullptr;
 };
 
 class PackageDefinitionCollector final
     : public RecursiveASTVisitor<PackageDefinitionCollector> {
 public:
+    struct RegisteredModuleClass {
+        std::string definition_id{};
+        CXXRecordDecl const* type = nullptr;
+    };
+
     explicit PackageDefinitionCollector(CompilerInstance& compiler)
         : compiler_(compiler), context_(compiler.getASTContext())
     {}
@@ -1478,7 +2109,11 @@ public:
         }
 
         auto const variable_name = declaration->getName();
-        bool const is_module = variable_name.starts_with("iv_package_module_definition_");
+        bool const is_module_function =
+            variable_name.starts_with("iv_package_module_definition_");
+        bool const is_module_class =
+            variable_name.starts_with("iv_package_module_class_definition_");
+        bool const is_module = is_module_function || is_module_class;
         bool const is_node = variable_name.starts_with("iv_package_node_definition_");
         if (!is_module && !is_node) return true;
 
@@ -1502,7 +2137,7 @@ public:
             return true;
         }
         llvm::json::Object metadata{
-            {"id", std::move(id)},
+            {"id", id},
             {"kind", is_module ? "module" : "node"},
             {"declaration_usr", declaration_usr(context_, declaration)},
         };
@@ -1518,6 +2153,23 @@ public:
             if (auto const* reference = dyn_cast<DeclRefExpr>(implementation)) {
                 metadata["implementation_usr"] = declaration_usr(
                     context_, reference->getDecl());
+            }
+            if (is_module_class) {
+                auto const* module = module_class_type(expression(10));
+                if (!module) {
+                    auto diagnostic = compiler_.getDiagnostics().getCustomDiagID(
+                        DiagnosticsEngine::Error,
+                        "cannot identify the IV_MODULE_CLASS implementation type");
+                    compiler_.getDiagnostics().Report(
+                        declaration->getLocation(), diagnostic);
+                } else {
+                    metadata["module_type_usr"] = declaration_usr(context_, module);
+                    module_classes_.push_back({
+                        .definition_id = id,
+                        .type = module,
+                    });
+                    install_module_adapter(initializer, declaration, module);
+                }
             }
         } else {
             Expr const* compiler_record = expression(9);
@@ -1550,11 +2202,17 @@ public:
         return std::move(definitions_);
     }
 
+    std::span<RegisteredModuleClass const> module_classes() const noexcept
+    {
+        return module_classes_;
+    }
+
 private:
     CompilerInstance& compiler_;
     ASTContext& context_;
     llvm::json::Array definitions_;
     std::set<std::string> seen_;
+    std::vector<RegisteredModuleClass> module_classes_;
 
     Sema& sema() { return compiler_.getSema(); }
 
@@ -1566,6 +2224,29 @@ private:
         finder.TraverseDecl(context_.getTranslationUnitDecl());
         node_configure_template_ = finder.configure;
         node_signature_template_ = finder.signature;
+        module_configure_template_ = finder.module_configure;
+        module_signature_template_ = finder.module_signature;
+    }
+
+    CXXRecordDecl const* module_class_type(Expr const* expression) const
+    {
+        if (!expression) return nullptr;
+        expression = expression->IgnoreParenImpCasts();
+        if (auto const* address = dyn_cast<UnaryOperator>(expression)) {
+            expression = address->getSubExpr()->IgnoreParenImpCasts();
+        }
+        auto const* reference = dyn_cast<DeclRefExpr>(expression);
+        auto const* function = reference
+            ? dyn_cast<FunctionDecl>(reference->getDecl())
+            : nullptr;
+        auto const* arguments = function
+            ? function->getTemplateSpecializationArgs()
+            : nullptr;
+        if (!arguments || arguments->size() == 0
+            || arguments->get(0).getKind() != TemplateArgument::Type) {
+            return nullptr;
+        }
+        return arguments->get(0).getAsType()->getAsCXXRecordDecl();
     }
 
     FunctionDecl* specialize(
@@ -1588,7 +2269,7 @@ private:
         }
         auto id = compiler_.getDiagnostics().getCustomDiagID(
             DiagnosticsEngine::Error,
-            "cannot synthesize IV_NODE constructor adapter");
+            "cannot generate IV_NODE constructor adapter");
         compiler_.getDiagnostics().Report(location, id);
         return nullptr;
     }
@@ -1605,7 +2286,8 @@ private:
 
     std::optional<std::vector<QualType>> visible_node_constructor_parameters(
         CXXRecordDecl const* node,
-        SourceLocation location)
+        SourceLocation location,
+        bool module_class = false)
     {
         std::vector<CXXConstructorDecl*> constructors;
         for (auto* constructor : node->ctors()) {
@@ -1624,18 +2306,22 @@ private:
         if (constructors.empty()) return std::vector<QualType>{};
         if (constructors.size() != 1) {
             auto id = compiler_.getDiagnostics().getCustomDiagID(
-                DiagnosticsEngine::Error,
-                "IV_NODE requires exactly one non-copy, non-move constructor");
-            compiler_.getDiagnostics().Report(location, id);
+                DiagnosticsEngine::Error, "%0");
+            compiler_.getDiagnostics().Report(location, id)
+                << (module_class
+                    ? "IV_MODULE_CLASS requires exactly one non-copy, non-move constructor"
+                    : "IV_NODE requires exactly one non-copy, non-move constructor");
             return std::nullopt;
         }
         auto* constructor = constructors.front();
         if (constructor->getDescribedFunctionTemplate()
             || constructor->getAccess() != AS_public) {
             auto id = compiler_.getDiagnostics().getCustomDiagID(
-                DiagnosticsEngine::Error,
-                "IV_NODE constructor must be a public non-template constructor");
-            compiler_.getDiagnostics().Report(location, id);
+                DiagnosticsEngine::Error, "%0");
+            compiler_.getDiagnostics().Report(location, id)
+                << (module_class
+                    ? "IV_MODULE_CLASS constructor must be a public non-template constructor"
+                    : "IV_NODE constructor must be a public non-template constructor");
             return std::nullopt;
         }
         std::vector<QualType> parameters;
@@ -1678,9 +2364,44 @@ private:
         initializer->setInit(10, signature_pointer);
     }
 
+    void install_module_adapter(
+        InitListExpr* initializer,
+        VarDecl* declaration,
+        CXXRecordDecl const* module)
+    {
+        ensure_node_adapter_templates();
+        auto const location = declaration->getLocation();
+        if (!module_configure_template_ || !module_signature_template_) {
+            auto id = compiler_.getDiagnostics().getCustomDiagID(
+                DiagnosticsEngine::Error,
+                "IV_MODULE_CLASS adapter templates were not found; include <intravenous/dsl.h>");
+            compiler_.getDiagnostics().Report(location, id);
+            return;
+        }
+        auto parameters = visible_node_constructor_parameters(
+            module, location, true);
+        if (!parameters) return;
+
+        std::vector<QualType> arguments;
+        arguments.reserve(1 + parameters->size());
+        arguments.push_back(context_.getCanonicalTagType(module));
+        arguments.insert(arguments.end(), parameters->begin(), parameters->end());
+        auto* configure = specialize(
+            module_configure_template_, arguments, location);
+        auto* signature = specialize(
+            module_signature_template_, arguments, location);
+        auto* configure_pointer = function_pointer(configure, location);
+        auto* signature_pointer = function_pointer(signature, location);
+        if (!configure_pointer || !signature_pointer) return;
+        initializer->setInit(7, configure_pointer);
+        initializer->setInit(10, signature_pointer);
+    }
+
     bool helpers_searched_ = false;
     FunctionTemplateDecl* node_configure_template_ = nullptr;
     FunctionTemplateDecl* node_signature_template_ = nullptr;
+    FunctionTemplateDecl* module_configure_template_ = nullptr;
+    FunctionTemplateDecl* module_signature_template_ = nullptr;
 };
 
 std::filesystem::path metadata_path(
@@ -1704,7 +2425,9 @@ void write_state_metadata(
     StateMetadataCollector state_collector(context);
     NodeConfigMetadataCollector node_config_collector(context);
     ReflectedNodeDiscovery reflected_node_discovery(context);
-    ConfigurationTypeIdentityCollector configuration_type_collector(context);
+    ConfigurationTypeIdentityCollector configuration_type_collector(compiler);
+    NodeMessageHandlerCollector node_message_collector(
+        compiler, configuration_type_collector);
     PackageDefinitionCollector package_definition_collector(compiler);
     // IV_NODE rewrites materialize the constructor-adapter specializations
     // that reference configuration_type_identity_storage<T>. Discover those
@@ -1720,6 +2443,12 @@ void write_state_metadata(
     for (auto const* node : reflected_node_discovery.nodes()) {
         state_collector.record_node(node);
         node_config_collector.record_node(node);
+        node_message_collector.record_node(node);
+    }
+    for (auto const& module : package_definition_collector.module_classes()) {
+        node_message_collector.record_module(
+            module.definition_id,
+            module.type);
     }
 
     std::error_code error;
@@ -1741,12 +2470,17 @@ void write_state_metadata(
         compiler.getDiagnostics().Report(id) << output.string() << error.message();
         return;
     }
+    auto node_message_handlers =
+        std::move(node_message_collector).take_handlers();
+    auto configuration_types =
+        std::move(configuration_type_collector).take_identities();
     stream << llvm::formatv(
         "{0:2}", llvm::json::Value(llvm::json::Object{
-            {"version", 8},
-            {"states", std::move(state_collector).take_states()},
+            {"states", state_collector.take_states()},
+            {"background_states", state_collector.take_background_states()},
             {"config_pointers", std::move(node_config_collector).take_fields()},
-            {"configuration_types", std::move(configuration_type_collector).take_identities()},
+            {"configuration_types", std::move(configuration_types)},
+            {"node_message_handlers", std::move(node_message_handlers)},
             {"package_definitions", std::move(package_definition_collector).take_definitions()},
         }));
     stream << '\n';
@@ -1776,7 +2510,8 @@ public:
         FunctionInstrumenter* instrumenter)
         : compiler_(compiler),
           metadata_dir_(std::move(metadata_dir)),
-          instrumenter_(instrumenter)
+          instrumenter_(instrumenter),
+          configuration_type_collector_(compiler)
     {}
 
     void FunctionDefinitionInstantiated(FunctionDecl const* definition) override
@@ -1804,6 +2539,14 @@ public:
                 && variable_template->getCanonicalDecl()->getQualifiedNameAsString()
                     == "iv::details::configuration_type_identity_storage";
         };
+        if (is_configuration_identity()) {
+            // Materialize schema callbacks while the parser still owns a
+            // valid translation-unit scope. Doing this for the first time in
+            // HandleTranslationUnit is too late for implicit special-member
+            // definitions such as std::array's assignment operator.
+            configuration_type_collector_.VisitVarTemplateSpecializationDecl(
+                const_cast<VarTemplateSpecializationDecl*>(specialization));
+        }
         if (initial_snapshot_written_
             && (node_type_from_compiler_record_specialization(specialization)
                 || is_configuration_identity())) {
@@ -1830,6 +2573,7 @@ private:
     CompilerInstance& compiler_;
     std::filesystem::path metadata_dir_;
     FunctionInstrumenter* instrumenter_ = nullptr;
+    ConfigurationTypeIdentityCollector configuration_type_collector_;
     bool initial_snapshot_written_ = false;
 };
 
@@ -1840,14 +2584,14 @@ public:
         std::filesystem::path core_source_dir,
         std::filesystem::path metadata_dir,
         bool source_introspection)
-        : sources_(compiler.getASTContext(), std::move(core_source_dir)),
-          instrumenter_(compiler, sources_),
+        : compiler_(compiler),
+          sources_(compiler.getASTContext(), std::move(core_source_dir)),
+          instrumenter_(compiler, sources_, source_introspection),
           mutation_listener_(
               compiler,
               std::move(metadata_dir),
-              source_introspection ? &instrumenter_ : nullptr),
-          package_definition_rewriter_(compiler),
-          source_introspection_(source_introspection)
+              &instrumenter_),
+          package_definition_rewriter_(compiler)
     {}
 
     bool HandleTopLevelDecl(DeclGroupRef declarations) override
@@ -1860,7 +2604,6 @@ public:
             package_definition_rewriter_.TraverseDecl(declaration);
         }
 
-        if (!source_introspection_) return true;
         FunctionDiscovery discovery(instrumenter_);
         for (auto* declaration : declarations) {
             discovery.TraverseDecl(declaration);
@@ -1870,7 +2613,15 @@ public:
 
     void HandleInlineFunctionDefinition(FunctionDecl* declaration) override
     {
-        if (!source_introspection_) return;
+        if (auto* method = dyn_cast_or_null<CXXMethodDecl>(declaration);
+            method && method->getNameAsString() == "on_message") {
+            if (!method->hasAttr<UsedAttr>()) {
+                method->addAttr(UsedAttr::CreateImplicit(
+                    compiler_.getASTContext()));
+            }
+            compiler_.getSema().MarkFunctionReferenced(
+                method->getLocation(), method);
+        }
         instrumenter_.instrument(declaration);
     }
 
@@ -1881,13 +2632,13 @@ public:
 
     void HandleTranslationUnit(ASTContext& context) override
     {
-        if (source_introspection_) {
-            // Template instantiations can be materialized after their owning
-            // top-level declaration was first seen. Catch any remaining
-            // configured function bodies before the frontend finishes.
-            FunctionDiscovery discovery(instrumenter_);
-            discovery.TraverseDecl(context.getTranslationUnitDecl());
-        }
+        // Template instantiations can be materialized after their owning
+        // top-level declaration was first seen. Catch any remaining configured
+        // function bodies before the frontend finishes. Source-identity
+        // preparation is mandatory even when optional source annotations are
+        // disabled.
+        FunctionDiscovery discovery(instrumenter_);
+        discovery.TraverseDecl(context.getTranslationUnitDecl());
         // AddBeforeMainAction reaches this point before CodeGen. It contains
         // all ordinary node compiler records. Deferred ones update the same
         // sidecar through AddedCXXTemplateSpecialization above.
@@ -1895,11 +2646,11 @@ public:
     }
 
 private:
+    CompilerInstance& compiler_;
     SourceModel sources_;
     FunctionInstrumenter instrumenter_;
     ModuleMutationListener mutation_listener_;
     PackageDefinitionCollector package_definition_rewriter_;
-    bool source_introspection_ = true;
 };
 
 class ModulePlugin final : public PluginASTAction {

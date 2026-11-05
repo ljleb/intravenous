@@ -3,10 +3,14 @@
 #include <intravenous/module/abi.h>
 #include <intravenous/module/package_definitions.h>
 #include <intravenous/node/config_relocations.h>
+#include <intravenous/node/address.h>
+#include <intravenous/node/message.h>
 #include <intravenous/node/node_state_structure.h>
+#include <intravenous/graph/configured_graph.hpp>
 
 #include <cstddef>
 #include <memory>
+#include <optional>
 #include <span>
 #include <string_view>
 #include <vector>
@@ -14,6 +18,7 @@
 namespace iv {
 class GraphBuilder;
 class GraphBuilderState;
+class NodeRef;
 struct ConfiguredGraph;
 
 namespace details {
@@ -21,9 +26,9 @@ namespace details {
 // these views from the IV packages that are loaded for the configuration; the
 // BuilderSession copies the records so nested iv-module calls use one stable
 // lookup set even if other packages are reloaded concurrently.
-struct BuilderNodeStateStructure {
+struct BuilderNodeStateStructures {
     NodeCodeKey code_key{};
-    NodeStateStructure structure{};
+    NodeStateStructures structures{};
 };
 
 struct BuilderPackageView {
@@ -31,7 +36,9 @@ struct BuilderPackageView {
     std::span<PackageDefinition const> definitions{};
     std::span<NodeConfigPointerFieldData const> config_pointer_fields{};
     std::span<RetainedGlobalData const> retained_globals{};
-    std::span<BuilderNodeStateStructure const> node_state_structures{};
+    std::span<NodeMessageHandlerData const> node_message_handlers{};
+    std::span<ModuleMessageHandlerData const> module_message_handlers{};
+    std::span<BuilderNodeStateStructures const> node_state_structures{};
 };
 
 struct BuilderDefinition {
@@ -40,6 +47,75 @@ struct BuilderDefinition {
 };
 
 struct BuilderSession;
+
+using BuilderDefinitionResolver = NodeRef (*)(
+    void* context,
+    GraphBuilder&,
+    std::string_view id,
+    std::string_view source_identity,
+    std::span<ProjectNodePathSelector const> scope_path,
+    std::optional<ChannelLayout> tiled_layout,
+    std::span<ConfigurationArgument> arguments);
+
+using BuilderConcreteNodeReplacementResolver = std::optional<NodeBundleHandle> (*)(
+    void* context,
+    GraphBuilder&,
+    std::span<ProjectNodePathSelector const> relative_path);
+
+void set_builder_definition_resolver(
+    BuilderSession*, void* context, BuilderDefinitionResolver resolver) noexcept;
+void set_builder_concrete_node_replacement_resolver(
+    BuilderSession*,
+    BuilderConcreteNodeReplacementResolver resolver) noexcept;
+BuilderDefinitionResolver builder_definition_resolver(BuilderSession const*) noexcept;
+void* builder_definition_resolver_context(BuilderSession const*) noexcept;
+struct BuilderNodeSourceIdentity {
+    std::string source_identity{};
+    std::string authored_name{};
+};
+void prepare_builder_node_source_identity(
+    BuilderSession*,
+    std::string_view source_identity,
+    std::string_view authored_name);
+[[nodiscard]] BuilderNodeSourceIdentity
+consume_builder_node_source_identity(BuilderSession*);
+void set_builder_semantic_scope_path(
+    BuilderSession*, std::span<ProjectNodePathSelector const> path);
+[[nodiscard]] std::span<ProjectNodePathSelector const>
+builder_semantic_scope_path(BuilderSession const*) noexcept;
+void record_builder_module_message_local_ref(
+    BuilderSession*, BuilderNodeSourceIdentity const&);
+void register_builder_module_class_message_handlers(
+    GraphBuilder&, std::shared_ptr<void const> receiver);
+[[nodiscard]] std::vector<std::vector<ProjectNodePathSelector>>
+claim_builder_concrete_node_paths(
+    BuilderSession*, std::optional<ChannelLayout> tiled_layout = std::nullopt);
+[[nodiscard]] std::optional<NodeBundleHandle>
+resolve_builder_concrete_node_replacement(
+    BuilderSession*,
+    GraphBuilder&,
+    std::span<ProjectNodePathSelector const> relative_path);
+void register_builder_concrete_node_message_handlers(
+    BuilderSession*,
+    NodeCodeKey,
+    std::shared_ptr<void const> receiver,
+    std::span<ProjectNodePathSelector const> relative_path);
+void record_builder_node_message_path(
+    BuilderSession*,
+    NodeBundleHandle,
+    std::span<ProjectNodePathSelector const> relative_path);
+void attach_builder_node_message_path(
+    BuilderSession*, NodeRef&, NodeBundleHandle);
+void register_builder_embedded_message_handlers(
+    BuilderSession*,
+    std::span<ProjectNodePathSelector const> prefix,
+    std::span<ConfiguredNodeMessageHandler const> handlers);
+void register_builder_embedded_message_handlers(
+    GraphBuilder&,
+    std::span<ProjectNodePathSelector const> prefix,
+    std::span<ConfiguredNodeMessageHandler const> handlers);
+[[nodiscard]] std::vector<ConfiguredNodeMessageHandler>
+take_builder_message_handlers(BuilderSession*);
 
 extern "C" BuilderSession* iv_builder_session_create();
 extern "C" void iv_builder_session_destroy(BuilderSession*) noexcept;
@@ -66,7 +142,7 @@ void end_builder_module(BuilderSession*) noexcept;
 
 NodeConfigRelocations capture_node_config(
     BuilderSession*, NodeCodeKey, void const*, std::size_t);
-std::shared_ptr<NodeStateStructure const> copy_builder_node_state_structure(
+std::shared_ptr<NodeStateStructures const> copy_builder_node_state_structures(
     BuilderSession*, NodeCodeKey);
 
 // Module-side node constructors request storage from the shared builder and

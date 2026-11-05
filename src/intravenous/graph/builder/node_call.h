@@ -48,8 +48,8 @@ namespace iv::details {
     template<class T>
     struct is_channel_named_arg : std::false_type {};
 
-    template<fixed_string Name, class ChannelType, size_t ChannelOrdinal, class T>
-    struct is_channel_named_arg<ChannelNamedArg<Name, ChannelType, ChannelOrdinal, T>> : std::true_type {};
+    template<fixed_string Name, class ChannelType, size_t ChannelIndex, class T>
+    struct is_channel_named_arg<ChannelNamedArg<Name, ChannelType, ChannelIndex, T>> : std::true_type {};
 
     template<class T>
     inline constexpr bool is_channel_named_arg_v = is_channel_named_arg<std::remove_cvref_t<T>>::value;
@@ -57,8 +57,8 @@ namespace iv::details {
     template<class T>
     struct is_default_channel_named_arg : std::false_type {};
 
-    template<class ChannelType, size_t ChannelOrdinal, class T>
-    struct is_default_channel_named_arg<DefaultChannelNamedArg<ChannelType, ChannelOrdinal, T>> : std::true_type {};
+    template<class ChannelType, size_t ChannelIndex, class T>
+    struct is_default_channel_named_arg<DefaultChannelNamedArg<ChannelType, ChannelIndex, T>> : std::true_type {};
 
     template<class T>
     inline constexpr bool is_default_channel_named_arg_v = is_default_channel_named_arg<std::remove_cvref_t<T>>::value;

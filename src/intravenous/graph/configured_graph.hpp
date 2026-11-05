@@ -2,11 +2,11 @@
 
 #include <intravenous/graph/builder/annotations.hpp>
 #include <intravenous/graph/builder/connections.hpp>
-#include <intravenous/graph/builder/detach.hpp>
 #include <intravenous/graph/builder/identity.h>
 #include <intravenous/graph/builder/node_bundles.hpp>
 #include <intravenous/graph/builder/public_ports.hpp>
 #include <intravenous/graph/builder/virtual_nodes.hpp>
+#include <intravenous/node/manual_control.h>
 
 namespace iv {
 
@@ -17,9 +17,13 @@ struct ConfiguredGraph {
   GraphBuilderNodeBundles node_bundles{};
   GraphBuilderConnections connections{};
   GraphBuilderPublicPorts public_ports{0};
-  GraphBuilderDetach detach{};
   GraphBuilderAnnotations annotations{};
   GraphBuilderVirtualNodes virtual_nodes{};
+  // ProjectGraph resolves durable ManualControlId values into concrete input
+  // ports after GraphBuilder::finish(). GraphJit consumes these records as
+  // input contributions; authored graphs do not contain synthetic control
+  // nodes.
+  std::vector<ConfiguredManualControl> manual_controls{};
 };
 
 } // namespace iv

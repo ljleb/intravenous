@@ -7,7 +7,15 @@
 #include <type_traits>
 
 namespace iv {
-inline constexpr std::uint32_t IV_PACKAGE_ABI_VERSION = 1;
+struct NodeAddress;
+struct NodeMessageContextOperations;
+struct ModuleMessageLocalRefs;
+namespace details {
+struct ConfigurationTypeIdentity;
+}
+// Invalidate package compilation caches when the compiler-record or
+// configured-graph wire contract changes (including the replay flag).
+inline constexpr std::uint32_t IV_PACKAGE_ABI_VERSION = 4;
 
 struct ModuleDataView {
     void const* data = nullptr;
@@ -22,11 +30,34 @@ struct NodeConfigPointerFieldData {
 struct RetainedGlobalData {
     void const* address = nullptr;
     std::size_t size = 0;
-    std::size_t ordinal = 0;
+    std::size_t index = 0;
+};
+
+struct NodeMessageHandlerData {
+    NodeCodeKey code_key{};
+    details::ConfigurationTypeIdentity const* event_type = nullptr;
+    void (*invoke)(
+        void const*,
+        NodeMessageContextOperations const&,
+        NodeAddress const&,
+        ModuleMessageLocalRefs const*,
+        void const*) = nullptr;
+};
+
+struct ModuleMessageHandlerData {
+    ModuleDataView definition_id{};
+    details::ConfigurationTypeIdentity const* event_type = nullptr;
+    void (*invoke)(
+        void const*,
+        NodeMessageContextOperations const&,
+        NodeAddress const&,
+        ModuleMessageLocalRefs const*,
+        void const*) = nullptr;
 };
 
 struct NodeStateFieldData {
     ModuleDataView name{};
+    ModuleDataView nominal_id{};
     ModuleDataView type_name{};
     std::size_t bit_offset = 0;
     std::size_t size_bits = 0;
@@ -37,6 +68,9 @@ struct NodeStateFieldData {
 
 struct NodeStateStructureData {
     NodeCodeKey code_key{};
+    ModuleDataView nominal_id{};
+    ModuleDataView definition_fingerprint{};
+    ModuleDataView display_name{};
     std::size_t size_bits = 0;
     std::size_t alignment_bits = 0;
     ModuleDataView fields{};
@@ -48,6 +82,10 @@ static_assert(std::is_standard_layout_v<NodeConfigPointerFieldData>);
 static_assert(std::is_trivially_copyable_v<NodeConfigPointerFieldData>);
 static_assert(std::is_standard_layout_v<RetainedGlobalData>);
 static_assert(std::is_trivially_copyable_v<RetainedGlobalData>);
+static_assert(std::is_standard_layout_v<NodeMessageHandlerData>);
+static_assert(std::is_trivially_copyable_v<NodeMessageHandlerData>);
+static_assert(std::is_standard_layout_v<ModuleMessageHandlerData>);
+static_assert(std::is_trivially_copyable_v<ModuleMessageHandlerData>);
 static_assert(std::is_standard_layout_v<NodeStateFieldData>);
 static_assert(std::is_trivially_copyable_v<NodeStateFieldData>);
 static_assert(std::is_standard_layout_v<NodeStateStructureData>);
@@ -57,7 +95,11 @@ static_assert(std::is_trivially_copyable_v<NodeStateStructureData>);
 extern "C" {
 using iv_package_abi_version_fn = std::uint32_t (*)();
 using iv_package_definitions_fn = iv::ModuleDataView (*)();
+using iv_package_node_presentations_fn = iv::ModuleDataView (*)();
 using iv_package_node_config_pointer_fields_fn = iv::ModuleDataView (*)();
 using iv_package_retained_globals_fn = iv::ModuleDataView (*)();
+using iv_package_node_message_handlers_fn = iv::ModuleDataView (*)();
+using iv_package_module_message_handlers_fn = iv::ModuleDataView (*)();
 using iv_package_node_state_structures_fn = iv::ModuleDataView (*)();
+using iv_package_node_background_state_structures_fn = iv::ModuleDataView (*)();
 }

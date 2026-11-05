@@ -14,6 +14,4 @@
 #include <intravenous/basic_nodes/routing.h>
 #include <intravenous/basic_nodes/shaping.h>
 #include <intravenous/basic_nodes/timing.h>
-#include <intravenous/basic_nodes/type_erased.h>
-#include <intravenous/basic_nodes/weak_type_erased.h>
 #include <intravenous/juce/vst_wrapper.h>

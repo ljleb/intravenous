@@ -51,10 +51,10 @@ TEST(ModulePackageDependencies, DeferredCustomCmakeLinksStaticAndDynamicDependen
         "package_dependencies_deferred_cmake", "package_dependencies");
 
     auto loader = iv::test::make_loader();
-    auto loaded = loader.load_package_definitions(workspace);
+    auto loaded = loader.load_project_package_definitions(workspace);
     ASSERT_EQ(loaded.size(), 1u);
     EXPECT_EQ(loaded.front().module_id, "iv.test.package_dependencies");
-    EXPECT_TRUE(static_cast<bool>(loaded.front().root));
+    EXPECT_NE(loaded.front().configured_graph, nullptr);
 
     // The module builder calls functions from the transitive static archive and
     // from the shared library. A successful configuration proves that deferred
@@ -96,7 +96,7 @@ TEST(ModulePackageDependencies, DynamicLibraryManifestAdversarialCorpus)
     auto const workspace = iv::test::mutable_module_fixture_workspace(
         "package_dependencies_manifest_corpus", "package_dependencies");
     auto loader = iv::test::make_loader();
-    ASSERT_NO_THROW((void)loader.load_package_definitions(workspace));
+    ASSERT_NO_THROW((void)loader.load_project_package_definitions(workspace));
 
     auto const artifact = finalized_package_bitcode(workspace);
     ASSERT_FALSE(artifact.empty());
@@ -112,7 +112,7 @@ TEST(ModulePackageDependencies, DynamicLibraryManifestAdversarialCorpus)
         manifest,
         "\r\n" + original.front() + "\r\n" + original.front() + "\n\n");
     auto duplicate_loader = iv::test::make_loader();
-    ASSERT_NO_THROW((void)duplicate_loader.load_package_definitions(workspace));
+    ASSERT_NO_THROW((void)duplicate_loader.load_project_package_definitions(workspace));
 
     // Fuzz a compact deterministic corpus of hostile-but-plausible paths. The
     // loader must fail closed before it creates a JITDylib or loads any code.
@@ -127,7 +127,7 @@ TEST(ModulePackageDependencies, DynamicLibraryManifestAdversarialCorpus)
         iv::test::write_text(manifest, entry);
         auto malformed_loader = iv::test::make_loader();
         expect_failure_contains(
-            [&] { (void)malformed_loader.load_package_definitions(workspace); },
+            [&] { (void)malformed_loader.load_project_package_definitions(workspace); },
             "IV package dynamic library listed");
     }
 }
@@ -148,6 +148,6 @@ TEST(ModulePackageDependencies, NativeStaticArchiveWithoutBitcodeFailsClosed)
     // because the static library is a native archive rather than silently
     // discarding that requested dependency as the old finalizer did.
     expect_failure_contains(
-        [&] { (void)loader.load_package_definitions(workspace); },
+        [&] { (void)loader.load_project_package_definitions(workspace); },
         "command failed");
 }

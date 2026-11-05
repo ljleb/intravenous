@@ -71,7 +71,7 @@ inline Sample read_fractional_delay(
 // 1. StereoSourceGeometry
 //
 // center_azimuth : interaural-polar azimuth, degrees
-// width          : physical lateral source width, metres
+// width          : lateral source width, metres
 // distance       : listener -> each source channel, metres, stereo
 //
 // output:
@@ -88,17 +88,17 @@ struct StereoSourceGeometry
 {
     static constexpr auto inputs()
     {
-        return std::array<InputConfig, 3>{
-            sample_input("center_azimuth"),
-            sample_input("width"),
-            sample_input("distance", {.channel_layout = stereo_planar}),
+        return std::array{
+            input<Sample>("center_azimuth", InputAccess::sequential),
+            input<Sample>("width", InputAccess::sequential),
+            input<Sample>("distance", InputAccess::sequential, {.channel_layout = stereo_planar}),
         };
     }
 
     static constexpr auto outputs()
     {
-        return std::array<OutputConfig, 1>{
-            sample_output("azimuth", {.channel_layout = stereo_planar}),
+        return std::array{
+            output<Sample>("azimuth", OutputProduction::tick, {.channel_layout = stereo_planar}),
         };
     }
 
@@ -217,24 +217,24 @@ struct BrownDudaParameters
 
     static constexpr auto inputs()
     {
-        return std::array<InputConfig, 2>{
-            sample_input("azimuth"),
-            sample_input("elevation"),
+        return std::array{
+            input<Sample>("azimuth", InputAccess::sequential),
+            input<Sample>("elevation", InputAccess::sequential),
         };
     }
 
     static constexpr auto outputs()
     {
-        return std::array<OutputConfig, 9>{
-            sample_output("head_b0", {.channel_layout = stereo_planar}),
-            sample_output("head_b1", {.channel_layout = stereo_planar}),
-            sample_output("head_feedback"),
-            sample_output("head_delay", {.channel_layout = stereo_planar}),
-            sample_output("d2", {.channel_layout = stereo_planar}),
-            sample_output("d3", {.channel_layout = stereo_planar}),
-            sample_output("d4", {.channel_layout = stereo_planar}),
-            sample_output("d5", {.channel_layout = stereo_planar}),
-            sample_output("d6", {.channel_layout = stereo_planar}),
+        return std::array{
+            output<Sample>("head_b0", OutputProduction::tick, {.channel_layout = stereo_planar}),
+            output<Sample>("head_b1", OutputProduction::tick, {.channel_layout = stereo_planar}),
+            output<Sample>("head_feedback", OutputProduction::tick),
+            output<Sample>("head_delay", OutputProduction::tick, {.channel_layout = stereo_planar}),
+            output<Sample>("d2", OutputProduction::tick, {.channel_layout = stereo_planar}),
+            output<Sample>("d3", OutputProduction::tick, {.channel_layout = stereo_planar}),
+            output<Sample>("d4", OutputProduction::tick, {.channel_layout = stereo_planar}),
+            output<Sample>("d5", OutputProduction::tick, {.channel_layout = stereo_planar}),
+            output<Sample>("d6", OutputProduction::tick, {.channel_layout = stereo_planar}),
         };
     }
 
@@ -595,17 +595,22 @@ struct OnePoleOneZero
 {
     static constexpr auto inputs()
     {
-        return std::array<InputConfig, 4>{
-            sample_input("in", {.history = 1}),
-            sample_input("b0"),
-            sample_input("b1"),
-            sample_input("feedback"),
+        return std::array{
+            input<Sample>("in", InputAccess::sequential),
+            input<Sample>("b0", InputAccess::sequential),
+            input<Sample>("b1", InputAccess::sequential),
+            input<Sample>("feedback", InputAccess::sequential),
         };
+    }
+
+    void constrain_ports(ConstrainPortsContext<OnePoleOneZero>& ctx) const
+    {
+        ctx.input<"in">().history() = 1;
     }
 
     static constexpr auto outputs()
     {
-        return std::array<OutputConfig, 1>{sample_output("out")};
+        return std::array{output<Sample>("out", OutputProduction::tick)};
     }
 
     void tick_block(
@@ -669,15 +674,20 @@ struct SampleDelay
 
     static constexpr auto inputs()
     {
-        return std::array<InputConfig, 2>{
-            sample_input("in", {.history = max_delay_samples}),
-            sample_input("delay_samples"),
+        return std::array{
+            input<Sample>("in", InputAccess::sequential),
+            input<Sample>("delay_samples", InputAccess::sequential),
         };
+    }
+
+    void constrain_ports(ConstrainPortsContext<SampleDelay>& ctx) const
+    {
+        ctx.input<"in">().history() = max_delay_samples;
     }
 
     static constexpr auto outputs()
     {
-        return std::array<OutputConfig, 1>{sample_output("out")};
+        return std::array{output<Sample>("out", OutputProduction::tick)};
     }
 
     void tick_block(
@@ -737,19 +747,24 @@ struct BrownDudaPinna
 
     static constexpr auto inputs()
     {
-        return std::array<InputConfig, 6>{
-            sample_input("in", {.history = max_delay_samples}),
-            sample_input("d2"),
-            sample_input("d3"),
-            sample_input("d4"),
-            sample_input("d5"),
-            sample_input("d6"),
+        return std::array{
+            input<Sample>("in", InputAccess::sequential),
+            input<Sample>("d2", InputAccess::sequential),
+            input<Sample>("d3", InputAccess::sequential),
+            input<Sample>("d4", InputAccess::sequential),
+            input<Sample>("d5", InputAccess::sequential),
+            input<Sample>("d6", InputAccess::sequential),
         };
+    }
+
+    void constrain_ports(ConstrainPortsContext<BrownDudaPinna>& ctx) const
+    {
+        ctx.input<"in">().history() = max_delay_samples;
     }
 
     static constexpr auto outputs()
     {
-        return std::array<OutputConfig, 1>{sample_output("out")};
+        return std::array{output<Sample>("out", OutputProduction::tick)};
     }
 
     void tick_block(

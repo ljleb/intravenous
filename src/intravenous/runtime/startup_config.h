@@ -4,13 +4,14 @@
 #include <intravenous/module/loader.h>
 
 #include <filesystem>
+#include <optional>
 #include <vector>
 
 namespace iv {
 struct StartupConfigState {
     std::filesystem::path workspace_root{};
     std::filesystem::path discovery_start{};
-    std::vector<std::filesystem::path> search_roots{};
+    std::vector<PackageDiscoveryRoot> package_roots{};
     ModuleLoaderToolchainConfig toolchain{};
     RuntimeExecutionConfig execution{};
     std::optional<std::string> output_device_id{std::optional<std::string>("default")};
@@ -20,13 +21,13 @@ struct StartupConfigState {
 class StartupConfig {
     std::filesystem::path workspace_root;
     std::filesystem::path discovery_start;
-    std::vector<std::filesystem::path> extra_search_roots;
+    std::vector<std::filesystem::path> extra_common_package_roots;
 
 public:
     explicit StartupConfig(
         std::filesystem::path workspace_root,
         std::filesystem::path discovery_start,
-        std::vector<std::filesystem::path> extra_search_roots = {});
+        std::vector<std::filesystem::path> extra_common_package_roots = {});
 
     [[nodiscard]] StartupConfigState initialize() const;
 };

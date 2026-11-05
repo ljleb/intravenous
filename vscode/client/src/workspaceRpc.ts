@@ -6,65 +6,105 @@ export type SourceQueryRange = {
     end: { line: number; column: number };
 };
 
-type LaneViewParams = {
-    viewId: string;
-    filter: { query?: string; kind?: string };
-    startIndex: number;
-    visibleLaneCount: number;
-    firstSampleIndex?: number;
-    lastSampleIndex?: number;
-    displaySampleCount?: number;
-};
 
 export class WorkspaceRpc {
-    constructor(private readonly client: JsonRpcSocketClient) {}
+    constructor(
+        private readonly client: JsonRpcSocketClient,
+        private readonly currentRevision: () => number = () => 0,
+    ) {}
 
-    getIvModuleInstances(sourceFilePath: string | null = null): Promise<{ instances?: Array<Record<string, unknown>> }> {
-        return this.client.request("ivModuleInstances.get", sourceFilePath ? { sourceFilePath } : {});
+    private mutationParams(
+        params: Record<string, unknown>,
+    ): Record<string, unknown> {
+        return {...params, expectedRevision: this.currentRevision()};
     }
 
-    createIvModuleInstance(moduleId: string, displayName: string | null = null): Promise<{ instanceId: string }> {
-        const params: Record<string, unknown> = { moduleId };
+    hello(clientId: string, localCapability: string): Promise<{
+        protocolVersion: number;
+        clientId: string;
+        capabilities: string[];
+        sessionRevision: number;
+    }> {
+        return this.client.request("session.hello", { clientId, localCapability });
+    }
+
+    subscribe(afterRevision: number, topics: string[] = []): Promise<{
+        currentRevision: number;
+        oldestAvailableRevision: number;
+        snapshotRequired: boolean;
+        replayedNotificationCount: number;
+        sessionRevision: number;
+    }> {
+        return this.client.request("session.subscribe", { afterRevision, topics });
+    }
+
+    snapshot(): Promise<Record<string, unknown> & { sessionRevision?: number }> {
+        return this.client.request("session.snapshot", {});
+    }
+
+    getNodeInstances(sourceFilePath: string | null = null): Promise<{ instances?: Array<Record<string, unknown>> }> {
+        return this.client.request("nodeInstances.get", sourceFilePath ? { sourceFilePath } : {});
+    }
+
+    createNodeInstance(
+        definitionId: string,
+        displayName: string | null = null,
+        configurationSource = "",
+        instanceId: string | null = null,
+    ): Promise<{ instanceId: string }> {
+        const params: Record<string, unknown> = { definitionId };
+        if (instanceId != null) {
+            params.instanceId = instanceId;
+        }
         if (displayName != null) {
             params.displayName = displayName;
         }
-        return this.client.request("ivModuleInstances.create", params);
+        if (configurationSource.length > 0) {
+            params.configurationSource = configurationSource;
+        }
+        return this.client.request(
+            "nodeInstances.create", this.mutationParams(params));
     }
 
-    deleteIvModuleInstance(instanceId: string): Promise<void> {
-        return this.client.request("ivModuleInstances.delete", { instanceId });
+    deleteNodeInstance(instanceId: string): Promise<void> {
+        return this.client.request(
+            "nodeInstances.delete",
+            this.mutationParams({ instanceId }),
+        );
     }
 
-    updateIvModuleInstances(
-        updates: Array<{ instanceId: string; displayName?: string | null; defaultSilenceTtlSamples?: number | null }>,
+    updateNodeInstances(
+        updates: Array<{
+            instanceId: string;
+            displayName?: string | null;
+            configurationSource?: string | null;
+        }>,
     ): Promise<void> {
-        return this.client.request("ivModuleInstances.update", { updates });
+        return this.client.request(
+            "nodeInstances.update", this.mutationParams({ updates }));
     }
 
-    getIvPackages(): Promise<{ packages?: Array<Record<string, unknown>> }> {
+    upsertGraphConnection(connection: Record<string, unknown>): Promise<void> {
+        return this.client.request(
+            "graphConnections.upsert", this.mutationParams({ connection }));
+    }
+
+    deleteGraphConnection(connectionId: string): Promise<void> {
+        return this.client.request(
+            "graphConnections.delete", this.mutationParams({ connectionId }));
+    }
+
+    getIvPackageDefinitions(): Promise<{ packages?: Array<Record<string, unknown>> }> {
         return this.client.request("ivPackages.list", {});
     }
 
     createIvPackage(name: string): Promise<{ package: Record<string, unknown> }> {
-        return this.client.request("ivPackages.create", { name });
+        return this.client.request(
+            "ivPackages.create", this.mutationParams({ name }));
     }
 
     shutdown(): Promise<void> {
         return this.client.request("server.shutdown", {});
-    }
-
-    pausePlayback(): Promise<void> {
-        return this.client.request("playback.pause", {});
-    }
-
-    resumePlayback(startIndex: number): Promise<void> {
-        return this.client.request("playback.resume", {
-            startIndex,
-        });
-    }
-
-    seekPlayback(sampleIndex: number): Promise<void> {
-        return this.client.request("playback.seek", { sampleIndex });
     }
 
     saveProject(): Promise<void> {
@@ -72,11 +112,13 @@ export class WorkspaceRpc {
     }
 
     enableProjectAutosave(): Promise<void> {
-        return this.client.request("project.enableAutosave", {});
+        return this.client.request(
+            "project.enableAutosave", this.mutationParams({}));
     }
 
     disableProjectAutosave(): Promise<void> {
-        return this.client.request("project.disableAutosave", {});
+        return this.client.request(
+            "project.disableAutosave", this.mutationParams({}));
     }
 
     queryNodesBySpans(
@@ -96,131 +138,8 @@ export class WorkspaceRpc {
         return this.client.request("graph.queryActiveRegions", { filePath });
     }
 
-    setSampleInputValue(nodeId: string, inputOrdinal: number, value: unknown, memberOrdinal: number | null): Promise<void> {
-        const params: Record<string, unknown> = { nodeId, inputOrdinal, value };
-        if (memberOrdinal != null) {
-            params.memberOrdinal = memberOrdinal;
-        }
-        return this.client.request("graph.setSampleInputValue", params);
-    }
 
-    setSampleInputState(nodeId: string, inputOrdinal: number, state: string, memberOrdinal: number | null): Promise<void> {
-        const params: Record<string, unknown> = { nodeId, inputOrdinal, state };
-        if (memberOrdinal != null) {
-            params.memberOrdinal = memberOrdinal;
-        }
-        return this.client.request("graph.setSampleInputState", params);
-    }
 
-    setEventInputState(nodeId: string, inputOrdinal: number, state: string, memberOrdinal: number | null): Promise<void> {
-        const params: Record<string, unknown> = { nodeId, inputOrdinal, state };
-        if (memberOrdinal != null) {
-            params.memberOrdinal = memberOrdinal;
-        }
-        return this.client.request("graph.setEventInputState", params);
-    }
 
-    setSampleOutputState(nodeId: string, outputOrdinal: number, state: string, memberOrdinal: number | null): Promise<void> {
-        const params: Record<string, unknown> = { nodeId, outputOrdinal, state };
-        if (memberOrdinal != null) {
-            params.memberOrdinal = memberOrdinal;
-        }
-        return this.client.request("graph.setSampleOutputState", params);
-    }
 
-    setEventOutputState(nodeId: string, outputOrdinal: number, state: string, memberOrdinal: number | null): Promise<void> {
-        const params: Record<string, unknown> = { nodeId, outputOrdinal, state };
-        if (memberOrdinal != null) {
-            params.memberOrdinal = memberOrdinal;
-        }
-        return this.client.request("graph.setEventOutputState", params);
-    }
-
-    setTimelineLaneUiState(
-        laneId: string,
-        serializedState: string,
-        expectedRevision?: number,
-    ): Promise<void> {
-        const params: Record<string, unknown> = { laneId, serializedState };
-        if (expectedRevision != null) params.expectedRevision = expectedRevision;
-        return this.client.request("timeline.setLaneUiState", params);
-    }
-
-    setTimelineLaneName(laneId: string, name: string): Promise<void> {
-        return this.client.request("timeline.setLaneUiState", { laneId, name });
-    }
-
-    createTimelineLane(typeId: string): Promise<void> {
-        return this.client.request("timeline.createLane", { typeId });
-    }
-
-    deleteTimelineLane(laneId: string): Promise<void> {
-        return this.client.request("timeline.deleteLane", { laneId });
-    }
-
-    duplicateTimelineLane(laneId: string): Promise<void> {
-        return this.client.request("timeline.duplicateLane", { laneId });
-    }
-
-    connectTimelineLanes(
-        sourceLaneId: string,
-        targetLaneId: string,
-        portDomain: "realtime" | "compiled",
-        portKind: "sample" | "event",
-        portOrdinal: number,
-    ): Promise<void> {
-        return this.client.request("timeline.connectLanes", {
-            sourceLaneId,
-            targetLaneId,
-            portDomain,
-            portKind,
-            portOrdinal,
-        });
-    }
-
-    disconnectTimelineLanes(
-        sourceLaneId: string,
-        targetLaneId: string,
-        portDomain: "realtime" | "compiled",
-        portKind: "sample" | "event",
-        portOrdinal: number,
-    ): Promise<void> {
-        return this.client.request("timeline.disconnectLanes", {
-            sourceLaneId, targetLaneId, portDomain, portKind, portOrdinal,
-        });
-    }
-
-    getTimelineLaneTypes(): Promise<{ laneTypes?: Array<{
-        typeId: string; category: string; label: string; description: string;
-    }> }> {
-        return this.client.request("timeline.laneTypes", {});
-    }
-
-    openLaneView(params: LaneViewParams): Promise<Record<string, unknown>> {
-        return this.client.request("timeline.openLaneView", params);
-    }
-
-    updateLaneView(params: LaneViewParams): Promise<Record<string, unknown>> {
-        return this.client.request("timeline.updateLaneView", params);
-    }
-
-    closeLaneView(viewId: string): Promise<void> {
-        return this.client.request("timeline.closeLaneView", { viewId });
-    }
-
-    getLaneQuerySchema(): Promise<{ revision?: number; entries?: Array<{ key?: string; type?: string }> }> {
-        return this.client.request("timeline.getLaneQuerySchema", {});
-    }
-
-    completeLaneQuery(
-        source: string,
-        cursorOffset: number,
-        schemaRevision: number,
-    ): Promise<Record<string, unknown>> {
-        return this.client.request("timeline.completeLaneQuery", {
-            source,
-            cursorOffset,
-            schemaRevision,
-        });
-    }
 }

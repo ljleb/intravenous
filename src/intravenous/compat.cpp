@@ -61,6 +61,26 @@ std::string wrap_exception(std::string_view context, std::exception const& cause
     return wrapped;
 }
 
+[[noreturn]] IV_NOINLINE void terminate_node_lifecycle_exception(
+    char const* operation,
+    char const* node_type,
+    std::size_t node_index) noexcept
+{
+    // Keep reporting off the success path and preserve the authored exception
+    // as std::current_exception() for the installed terminate handler. Logging
+    // failure must not replace that exception or prevent process termination.
+    try {
+        auto& out = diagnostic_stream();
+        out << "\nfatal node lifecycle exception"
+            << "\noperation: " << (operation ? operation : "unknown")
+            << "\nnode type: " << (node_type ? node_type : "unknown")
+            << "\nnode index: " << node_index << '\n';
+        out.flush();
+    } catch (...) {
+    }
+    std::terminate();
+}
+
 [[noreturn]] void assertion_failed(
     char const* expression,
     char const* message,

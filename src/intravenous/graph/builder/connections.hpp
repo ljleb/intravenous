@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <ranges>
+#include <optional>
 #include <span>
 #include <string>
 #include <utility>
@@ -19,7 +20,7 @@ struct NodeBundlePortIdHash {
     auto result = constexpr_hash_combine(0, value.node_bundle_handle);
     result = constexpr_hash_combine(
         result, static_cast<size_t>(value.port_kind));
-    return constexpr_hash_combine(result, value.port_ordinal);
+    return constexpr_hash_combine(result, value.port_index);
   }
 };
 } // namespace details
@@ -30,13 +31,13 @@ class GraphBuilderVirtualNodes;
 struct GraphBuilderVacantSampleInput {
   NodeBundlePortId target{};
   std::string virtual_node_id{};
-  size_t member_ordinal = 0;
-  SampleInputConfig config{};
+  size_t member_index = 0;
+  ContinuousInputConfig config{};
 };
 struct GraphBuilderVacantEventInput {
   NodeBundlePortId target{};
   std::string virtual_node_id{};
-  size_t member_ordinal = 0;
+  size_t member_index = 0;
   EventInputConfig config{};
 };
 struct GraphBuilderVacantInputs {
@@ -47,14 +48,14 @@ struct GraphBuilderVacantInputs {
 struct GraphBuilderVirtualSampleInput {
   NodeBundlePortId target{};
   std::string virtual_node_id{};
-  size_t member_ordinal = 0;
-  SampleInputConfig config{};
+  size_t member_index = 0;
+  ContinuousInputConfig config{};
   bool has_existing_connection = false;
 };
 struct GraphBuilderVirtualEventInput {
   NodeBundlePortId target{};
   std::string virtual_node_id{};
-  size_t member_ordinal = 0;
+  size_t member_index = 0;
   EventInputConfig config{};
   bool has_existing_connection = false;
 };
@@ -69,10 +70,10 @@ struct GraphBuilderVirtualSampleInputChannel {
 };
 struct GraphBuilderVirtualSampleInputFamily {
   std::string virtual_node_id{};
-  size_t member_ordinal = 0;
-  size_t family_ordinal = 0;
+  size_t member_index = 0;
+  size_t family_index = 0;
   std::string family_name{};
-  SampleInputConfig config{};
+  ContinuousInputConfig config{};
   ChannelTypeId channel_type = ChannelTypeId::mono;
   std::vector<GraphBuilderVirtualSampleInputChannel> channels{};
 };
@@ -83,14 +84,14 @@ struct GraphBuilderVirtualSampleInputFamilies {
 struct GraphBuilderVirtualSampleOutput {
   NodeBundlePortId source{};
   std::string virtual_node_id{};
-  size_t member_ordinal = 0;
-  SampleOutputConfig config{};
+  size_t member_index = 0;
+  ContinuousOutputConfig config{};
   bool has_existing_downstream_connection = false;
 };
 struct GraphBuilderVirtualEventOutput {
   NodeBundlePortId source{};
   std::string virtual_node_id{};
-  size_t member_ordinal = 0;
+  size_t member_index = 0;
   EventOutputConfig config{};
   bool has_existing_downstream_connection = false;
 };
@@ -105,10 +106,10 @@ struct GraphBuilderVirtualSampleOutputChannel {
 };
 struct GraphBuilderVirtualSampleOutputFamily {
   std::string virtual_node_id{};
-  size_t member_ordinal = 0;
-  size_t family_ordinal = 0;
+  size_t member_index = 0;
+  size_t family_index = 0;
   std::string family_name{};
-  SampleOutputConfig config{};
+  ContinuousOutputConfig config{};
   ChannelTypeId channel_type = ChannelTypeId::mono;
   std::vector<GraphBuilderVirtualSampleOutputChannel> channels{};
 };
@@ -116,9 +117,23 @@ struct GraphBuilderVirtualSampleOutputFamilies {
   std::vector<GraphBuilderVirtualSampleOutputFamily> families{};
 };
 
+struct ConfiguredSampleConnectionDetach {
+  size_t loop_extra_latency = 1;
+  std::optional<Sample> initial_value_override{};
+  bool operator==(ConfiguredSampleConnectionDetach const&) const = default;
+};
+
+struct ConfiguredSampleConnectionSource {
+  SampleOutputChannelId channel{};
+  // A value marks this dependency for removal when GraphJit forms the
+  // execution DAG. It does not identify or prescribe runtime storage.
+  std::optional<ConfiguredSampleConnectionDetach> detach{};
+  bool operator==(ConfiguredSampleConnectionSource const&) const = default;
+};
+
 struct ConfiguredSampleConnection {
   ChannelTypeId source_type = ChannelTypeId::mono;
-  std::vector<SampleOutputChannelId> source_channels{};
+  std::vector<ConfiguredSampleConnectionSource> source_channels{};
   ChannelTypeId target_type = ChannelTypeId::mono;
   std::vector<SampleInputChannelId> target_channels{};
   bool operator==(ConfiguredSampleConnection const&) const = default;
@@ -133,9 +148,22 @@ struct SampleLoweringPlan {
   std::vector<SampleLoweringGroup> groups{};
 };
 
+struct ConfiguredEventConnectionDetach {
+  size_t loop_extra_latency = 1;
+  bool operator==(ConfiguredEventConnectionDetach const&) const = default;
+};
+
+struct ConfiguredEventConnectionSource {
+  EventOutputPortId port{};
+  // A value marks this dependency for removal when GraphJit forms the
+  // execution DAG. It does not identify or prescribe runtime storage.
+  std::optional<ConfiguredEventConnectionDetach> detach{};
+  bool operator==(ConfiguredEventConnectionSource const&) const = default;
+};
+
 struct ConfiguredEventConnection {
   EventTypeId source_type = EventTypeId::empty;
-  std::vector<EventOutputPortId> sources{};
+  std::vector<ConfiguredEventConnectionSource> sources{};
   EventTypeId target_type = EventTypeId::empty;
   std::vector<EventInputPortId> targets{};
   bool operator==(ConfiguredEventConnection const&) const = default;
@@ -201,7 +229,11 @@ constexpr bool GraphBuilderConnections::sample_input_is_connected(
 constexpr bool GraphBuilderConnections::sample_output_is_connected(
     SampleOutputChannelId source) const {
   return std::ranges::any_of(_configured_sample_connections,
-      [&](auto const& c) { return std::ranges::contains(c.source_channels, source); });
+      [&](auto const& c) {
+        return std::ranges::any_of(c.source_channels, [&](auto const& candidate) {
+          return candidate.channel == source;
+        });
+      });
 }
 constexpr bool GraphBuilderConnections::event_input_is_connected(
     EventInputPortId target) const {
@@ -211,7 +243,11 @@ constexpr bool GraphBuilderConnections::event_input_is_connected(
 constexpr bool GraphBuilderConnections::event_output_is_connected(
     EventOutputPortId source) const {
   return std::ranges::any_of(_configured_event_connections,
-      [&](auto const& c) { return std::ranges::contains(c.sources, source); });
+      [&](auto const& c) {
+        return std::ranges::any_of(c.sources, [&](auto const& candidate) {
+          return candidate.port == source;
+        });
+      });
 }
 
 constexpr std::span<ConfiguredSampleConnection const>
@@ -330,7 +366,7 @@ GraphBuilderConnections::collect_virtual_sample_input_families(
       auto const first = mapping.channels.front();
       auto config = bundles.resolve_sample_input(
           {first.bundle, PortKind::sample, first.port}).config;
-      config.channel_layout = mapping.channel_layout;
+      set_continuous_channel_layout(config, mapping.channel_layout);
       auto const channel_total = channel_count(mapping.channel_layout.channel_type);
       std::vector<GraphBuilderVirtualSampleInputChannel> channels(channel_total);
       for (auto const target : mapping.channels) {
@@ -342,7 +378,7 @@ GraphBuilderConnections::collect_virtual_sample_input_families(
       }
       result.families.push_back({
           .virtual_node_id = virtual_node.id,
-          .family_ordinal = mapping.ordinal,
+          .family_index = mapping.index,
           .family_name = mapping.name,
           .config = std::move(config),
           .channel_type = mapping.channel_layout.channel_type,
@@ -396,7 +432,7 @@ GraphBuilderConnections::collect_virtual_sample_output_families(
       auto const first = mapping.channels.front();
       auto config = bundles.resolve_sample_output(
           {first.bundle, PortKind::sample, first.port}).config;
-      config.channel_layout = mapping.channel_layout;
+      set_continuous_channel_layout(config, mapping.channel_layout);
       auto const channel_total = channel_count(mapping.channel_layout.channel_type);
       std::vector<GraphBuilderVirtualSampleOutputChannel> channels(channel_total);
       for (auto const source : mapping.channels) {
@@ -408,7 +444,7 @@ GraphBuilderConnections::collect_virtual_sample_output_families(
       }
       result.families.push_back({
           .virtual_node_id = virtual_node.id,
-          .family_ordinal = mapping.ordinal,
+          .family_index = mapping.index,
           .family_name = mapping.name,
           .config = std::move(config),
           .channel_type = mapping.channel_layout.channel_type,
@@ -422,12 +458,13 @@ GraphBuilderConnections::collect_virtual_sample_output_families(
 constexpr void GraphBuilderConnections::import_child(
     GraphBuilderConnections const& child, size_t bundle_offset) {
   for (auto connection : child._configured_sample_connections) {
-    for (auto& channel : connection.source_channels) channel.bundle += bundle_offset;
+    for (auto& source : connection.source_channels)
+      source.channel.bundle += bundle_offset;
     for (auto& channel : connection.target_channels) channel.bundle += bundle_offset;
     _configured_sample_connections.push_back(std::move(connection));
   }
   for (auto connection : child._configured_event_connections) {
-    for (auto& source : connection.sources) source.bundle += bundle_offset;
+    for (auto& source : connection.sources) source.port.bundle += bundle_offset;
     for (auto& target : connection.targets) target.bundle += bundle_offset;
     _configured_event_connections.push_back(std::move(connection));
   }

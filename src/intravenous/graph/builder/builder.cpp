@@ -5,12 +5,28 @@
 #include <intravenous/graph/reflected_node_description.h>
 #include <intravenous/module/builder_session.h>
 
+#include <algorithm>
 #include <array>
 #include <stdexcept>
 #include <string>
 #include <utility>
 
 namespace iv {
+namespace details {
+void iv_builder_prepare_node_source_identity(
+    GraphBuilder* builder,
+    std::string_view source_identity,
+    std::string_view authored_name)
+{
+    if (!builder) {
+        throw std::invalid_argument(
+            "node source identity requires a GraphBuilder");
+    }
+    prepare_builder_node_source_identity(
+        builder->_session, source_identity, authored_name);
+}
+} // namespace details
+
 namespace {
 GraphBuilderState& state(GraphBuilder& builder)
 {
@@ -38,12 +54,12 @@ ReflectedNodeDescription materialize_node_build_request(
         request.config_size);
     auto description = details::materialize_node_description(
         request, std::move(storage), std::move(relocations));
-    description.state_structure_storage =
-        details::copy_builder_node_state_structure(
+    description.state_structures_storage =
+        details::copy_builder_node_state_structures(
             session, request.compiler_record->code_key);
-    description.operations.runtime.state_structure =
-        description.state_structure_storage
-            ? description.state_structure_storage.get()
+    description.operations.runtime.state_structures =
+        description.state_structures_storage
+            ? description.state_structures_storage.get()
             : nullptr;
     return description;
 }
@@ -53,16 +69,108 @@ namespace details {
 NodeBundleHandle iv_builder_append_node(
     GraphBuilder& builder, NodeBuildRequest const& request)
 {
-    return state(builder).append_node_description(
-        materialize_node_build_request(builder._session, request));
+    auto paths = claim_builder_concrete_node_paths(builder._session);
+    if (paths.size() != 1) {
+        throw std::logic_error("a concrete node did not produce one semantic path");
+    }
+    if (auto replacement = resolve_builder_concrete_node_replacement(
+            builder._session, builder, paths.front())) {
+        iv_builder_discard_node_config(
+            builder._session, const_cast<void*>(request.config));
+        record_builder_node_message_path(
+            builder._session, *replacement, paths.front());
+        return *replacement;
+    }
+    auto description = materialize_node_build_request(builder._session, request);
+    register_builder_concrete_node_message_handlers(
+        builder._session,
+        request.compiler_record->code_key,
+        description.node_storage,
+        paths.front());
+    auto const handle = state(builder).append_node_description(
+        std::move(description));
+    record_builder_node_message_path(
+        builder._session, handle, paths.front());
+    return handle;
 }
 
 NodeBundleHandle iv_builder_append_tiled_node(
     GraphBuilder& builder, NodeBuildRequest const& request,
     ChannelLayout layout)
 {
+    auto paths = claim_builder_concrete_node_paths(builder._session, layout);
+    if (paths.size() != channel_count(layout.channel_type)) {
+        throw std::logic_error(
+            "a tiled concrete node produced the wrong semantic path count");
+    }
+
+    std::vector<std::optional<NodeBundleHandle>> replacements;
+    replacements.reserve(paths.size());
+    bool has_replacement = false;
+    for (auto const& path : paths) {
+        replacements.push_back(resolve_builder_concrete_node_replacement(
+            builder._session, builder, path));
+        has_replacement = has_replacement || replacements.back().has_value();
+    }
+    auto const all_replaced = std::ranges::all_of(
+        replacements,
+        [](auto const& replacement) { return replacement.has_value(); });
+    if (all_replaced) {
+        iv_builder_discard_node_config(
+            builder._session, const_cast<void*>(request.config));
+        std::vector<NodeBundleHandle> members;
+        members.reserve(replacements.size());
+        for (auto const& replacement : replacements) {
+            members.push_back(*replacement);
+        }
+        auto const handle = state(builder).append_tiled_node_bundles(
+            members, layout);
+        auto parent_path = paths.front();
+        parent_path.pop_back();
+        record_builder_node_message_path(
+            builder._session, handle, parent_path);
+        return handle;
+    }
+
     auto description = materialize_node_build_request(builder._session, request);
-    return state(builder).append_tiled_node_description(description, layout);
+    if (!has_replacement) {
+        for (auto const& path : paths) {
+            register_builder_concrete_node_message_handlers(
+                builder._session,
+                request.compiler_record->code_key,
+                description.node_storage,
+                path);
+        }
+        auto const handle = state(builder).append_tiled_node_description(
+            description, layout);
+        auto parent_path = paths.front();
+        parent_path.pop_back();
+        record_builder_node_message_path(
+            builder._session, handle, parent_path);
+        return handle;
+    }
+
+    std::vector<NodeBundleHandle> members;
+    members.reserve(paths.size());
+    for (std::size_t index = 0; index < paths.size(); ++index) {
+        if (replacements[index]) {
+            members.push_back(*replacements[index]);
+            continue;
+        }
+        register_builder_concrete_node_message_handlers(
+            builder._session,
+            request.compiler_record->code_key,
+            description.node_storage,
+            paths[index]);
+        members.push_back(state(builder).append_node_description(description));
+    }
+    auto const handle = state(builder).append_tiled_node_bundles(
+        members, layout);
+    auto parent_path = paths.front();
+    parent_path.pop_back();
+    record_builder_node_message_path(
+        builder._session, handle, parent_path);
+    return handle;
 }
 
 NodeBundleHandle iv_builder_append_tiled_node_bundles(
@@ -171,27 +279,27 @@ GraphBuilder& GraphBuilder::operator=(GraphBuilder&& other) noexcept
     return *this;
 }
 
-PublicSampleInputRef GraphBuilder::input() { return input(Sample{0.0f}); }
+PublicSampleInputRef GraphBuilder::input()
+{
+    return state(*this).input(
+        details::make_default_boundary_input_config({}));
+}
 PublicSampleInputRef GraphBuilder::input(
     Sample value, std::optional<Sample> min, std::optional<Sample> max)
 {
-    return state(*this).input(value, min, max);
+    return state(*this).input(details::make_sample_boundary_input_config({}, {
+        .channel_type = ChannelTypeId::mono,
+        .sample_layout = SampleStreamLayout::planar,
+    }, value, min, max));
 }
 PublicEventInputRef GraphBuilder::event_input(EventTypeId type)
 {
     return state(*this).event_input(type);
 }
 PublicSampleInputRef GraphBuilder::input_named(
-    std::string_view name, Sample value,
-    std::optional<Sample> min, std::optional<Sample> max)
+    std::string_view name, ContinuousInputConfig config)
 {
-    return state(*this).input_named(name, value, min, max);
-}
-PublicSampleInputRef GraphBuilder::input_named(
-    std::string_view name, ChannelLayout layout, Sample value,
-    std::optional<Sample> min, std::optional<Sample> max)
-{
-    return state(*this).input_named(name, layout, value, min, max);
+    return state(*this).input_named(name, std::move(config));
 }
 PublicEventInputRef GraphBuilder::event_input_named(
     std::string_view name, EventTypeId type)
@@ -256,12 +364,12 @@ NodeRef GraphBuilder::configure_runtime_binary_op(
     std::array<details::NodeCallSampleInput, 2> inputs{{
         {.source = std::move(lhs),
          .name = {},
-         .input_ordinal = 0,
-         .target = details::NodeCallInputTarget::explicit_ordinal},
+         .input_index = 0,
+         .target = details::NodeCallInputTarget::explicit_index},
         {.source = std::move(rhs),
          .name = {},
-         .input_ordinal = 1,
-         .target = details::NodeCallInputTarget::explicit_ordinal},
+         .input_index = 1,
+         .target = details::NodeCallInputTarget::explicit_index},
     }};
     result.apply_node_call(
         {.data = inputs.data(), .size = inputs.size()}, {});
@@ -343,7 +451,7 @@ NodeBundlePortId GraphBuilder::input_port_at(
     return state(*this).input_port_at(handle, position);
 }
 
-SampleInputConfig GraphBuilder::sample_input_config(
+ContinuousInputConfig GraphBuilder::sample_input_config(
     NodeBundleHandle handle, size_t port) const
 {
     return state(*this).sample_input_config(handle, port);
@@ -376,6 +484,16 @@ SamplePortRef GraphBuilder::make_sample_port(
 {
     return state(*this).make_sample_port(type, channels);
 }
+SamplePortRef GraphBuilder::make_tiled_sample_port(
+    ChannelTypeId type, std::span<SamplePortRef const> members)
+{
+    return state(*this).make_tiled_sample_port(type, members);
+}
+SamplePortRef GraphBuilder::select_sample_port_channel(
+    SamplePortRef const& port, size_t channel)
+{
+    return state(*this).select_sample_port_channel(port, channel);
+}
 std::span<SampleOutputChannelId const>
 GraphBuilder::sample_port_channels(SamplePortRef const& ref) const
 {
@@ -386,15 +504,26 @@ EventPortRef GraphBuilder::make_event_port(
 {
     return state(*this).make_event_port(type, sources);
 }
+EventPortRef GraphBuilder::make_event_port(
+    std::span<EventPortRef const> sources)
+{
+    return state(*this).make_event_port(sources);
+}
 std::span<EventOutputPortId const>
 GraphBuilder::event_port_sources(EventPortRef const& ref) const
 {
     return state(*this).event_port_sources(ref);
 }
 SamplePortRef GraphBuilder::detach_sample_port(
-    SamplePortRef const& source, size_t latency)
+    SamplePortRef const& source, size_t latency,
+    std::optional<Sample> initial_value)
 {
-    return state(*this).detach_sample_port(source, latency);
+    return state(*this).detach_sample_port(source, latency, initial_value);
+}
+EventPortRef GraphBuilder::detach_event_port(
+    EventPortRef const& source, size_t latency)
+{
+    return state(*this).detach_event_port(source, latency);
 }
 void GraphBuilder::apply_ttl(NodeBundleHandle handle, size_t samples)
 {
@@ -449,21 +578,28 @@ void GraphBuilder::annotate_public_event_output_source_info(
     state(*this).annotate_public_event_output_source_info(infos);
 }
 void GraphBuilder::annotate_public_sample_output_source_info(
-    size_t ordinal, SourceInfo info)
+    size_t index, SourceInfo info)
 {
-    state(*this).annotate_public_sample_output_source_info(ordinal, std::move(info));
+    state(*this).annotate_public_sample_output_source_info(index, std::move(info));
 }
 void GraphBuilder::annotate_public_event_output_source_info(
-    size_t ordinal, SourceInfo info)
+    size_t index, SourceInfo info)
 {
-    state(*this).annotate_public_event_output_source_info(ordinal, std::move(info));
+    state(*this).annotate_public_event_output_source_info(index, std::move(info));
 }
 
 NodeRef GraphBuilder::embed_child(GraphBuilder& child, std::string_view kind)
 {
     auto& graph = state(*this);
     auto& child_graph = state(child);
-    return graph.embed_subgraph(child_graph, kind);
+    auto embedding = graph.embed_subgraph(child_graph, kind);
+    return NodeRef(*this, embedding.root_scope);
+}
+
+ConfiguredGraphEmbedding GraphBuilder::embed(
+    ConfiguredGraph const& child, std::string_view kind)
+{
+    return state(*this).embed_configured_graph(child, kind);
 }
 
 details::SubgraphBuildScope* GraphBuilder::begin_subgraph()
@@ -493,12 +629,10 @@ void GraphBuilder::abandon_subgraph(
 }
 
 PublicSampleInputRef GraphBuilder::subgraph_input(
-    details::SubgraphBuildScope* scope, std::string_view name,
-    ChannelLayout layout, Sample value, std::optional<Sample> min,
-    std::optional<Sample> max)
+    details::SubgraphBuildScope* scope, ContinuousInputConfig config)
 {
     if (!scope) details::error("subgraph build scope is no longer active");
-    return state(*this).subgraph_input(*scope, name, layout, value, min, max);
+    return state(*this).subgraph_input(*scope, std::move(config));
 }
 
 PublicEventInputRef GraphBuilder::subgraph_event_input(

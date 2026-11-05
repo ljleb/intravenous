@@ -1,10 +1,14 @@
 #pragma once
 
-#include <intravenous/basic_nodes/weak_type_erased.h>
 #include <intravenous/graph/build_types.h>
 #include <intravenous/module/abi.h>
 #include <intravenous/module/dependency.h>
+#include <intravenous/module/package_compiler_artifact.h>
+#include <intravenous/module/package_definitions.h>
+#include <intravenous/module/package_provenance.h>
+#include <intravenous/module/builder_session.h>
 #include <intravenous/node/compiler_record.h>
+#include <intravenous/node/presentation.h>
 
 #include <filesystem>
 #include <functional>
@@ -39,33 +43,23 @@ namespace iv {
     public:
         using LogSink = std::function<void(std::string const&)>;
 
-        // Package artifacts remain O0 regardless of this setting. This controls
-        // only optimization of the in-memory compatibility ORC copy after a
-        // package is loaded.
-        enum class OptimizationLevel {
-            O0,
-            O1,
-            O2,
-            O3,
-        };
-
         struct LoadedDefinition {
             std::vector<ModuleRef> module_refs;
-            WeakTypeErasedNode root;
             GraphIntrospectionMetadata introspection;
             std::filesystem::path package_path;
             std::string module_id;
+            details::PackageDefinition provider{};
             std::vector<ModuleDependency> dependencies;
-            // The configured graph is retained above the compatibility GraphLowerer
-            // path so whole-project compilation can consume it directly.
+            // The configured graph is the lossless module product consumed by
+            // whole-project compilation.
             std::shared_ptr<ConfiguredGraph const> configured_graph;
 
             LoadedDefinition(
                 std::vector<ModuleRef> module_refs_,
-                WeakTypeErasedNode root_,
                 GraphIntrospectionMetadata introspection_,
                 std::filesystem::path package_path_,
                 std::string module_id_,
+                details::PackageDefinition provider_,
                 std::vector<ModuleDependency> dependencies_,
                 std::shared_ptr<ConfiguredGraph const> configured_graph_
             );
@@ -76,6 +70,7 @@ namespace iv {
             // belong to the loaded IV package code held alive by module_refs.
             std::string node_type_id;
             details::NodeCompilerRecord compiler_record{};
+            details::PackageDefinition provider{};
             std::filesystem::path package_path;
             std::vector<ModuleRef> module_refs;
         };
@@ -84,6 +79,19 @@ namespace iv {
             std::vector<LoadedDefinition> definitions;
             std::vector<LoadedNodeType> node_types;
             std::vector<ModuleDependency> dependencies;
+            // Exact finalized package compiler inputs. These are kept separate
+            // from package_code so whole-project compilation does not need to
+            // reach through the loader's opaque ORC ownership object.
+            PackageCompilerArtifact compiler_artifact{};
+            // Complete package-side configuration tables used to create a stable
+            // BuilderSession later from an immutable NodeDefinitions snapshot.
+            std::vector<details::PackageDefinition> provider_definitions{};
+            std::vector<NodePresentationDescriptor> node_presentations{};
+            std::vector<NodeConfigPointerFieldData> config_pointer_fields{};
+            std::vector<RetainedGlobalData> retained_globals{};
+            std::vector<NodeMessageHandlerData> node_message_handlers{};
+            std::vector<ModuleMessageHandlerData> module_message_handlers{};
+            std::vector<details::BuilderNodeStateStructures> node_state_structures{};
             // Opaque ownership of this IV package's ORC resources. Definitions and
             // configured graphs retain it while callbacks or retained LLVM globals
             // from this package can still be referenced.
@@ -106,10 +114,8 @@ namespace iv {
 
         explicit ModuleLoader(
             std::filesystem::path discovery_start = std::filesystem::current_path(),
-            std::vector<std::filesystem::path> extra_search_roots = {},
             ModuleLoaderToolchainConfig toolchain = ModuleLoaderToolchainConfig(),
-            LogSink log_sink = {},
-            OptimizationLevel optimization_level = OptimizationLevel::O3
+            LogSink log_sink = {}
         );
         ~ModuleLoader();
         ModuleLoader(ModuleLoader&&) noexcept;
@@ -124,15 +130,19 @@ namespace iv {
         // to establish a fresh multi-package candidate set, including every
         // provider that is not already active.
         LoadedPackage load_package(
+            PackageBuildRequest const& package
+        ) const;
+
+        LoadedPackage load_project_package(
             std::filesystem::path const& package_path
         ) const;
 
-        // Compiles only `package_paths`, then configures each successful
+        // Compiles only `packages`, then configures each successful
         // candidate against that batch and the last valid revisions of all
         // other packages. It deliberately does not scan and rebuild every
         // package discoverable from the project directory.
         std::vector<PackageLoadResult> load_packages(
-            std::vector<std::filesystem::path> const& package_paths
+            std::vector<PackageBuildRequest> const& packages
         ) const;
 
         // Removes a package from the active definition/configuration set after
@@ -141,11 +151,19 @@ namespace iv {
         void remove_package(std::filesystem::path const& package_path) const;
 
         std::vector<LoadedDefinition> load_package_definitions(
+            PackageBuildRequest const& package
+        ) const;
+
+        std::vector<LoadedDefinition> load_project_package_definitions(
             std::filesystem::path const& package_path
         ) const;
 
         // Builds finalized O0 LLVM for the IV package without adding it to the shared ORC JIT.
         std::filesystem::path compile_package(
+            PackageBuildRequest const& package
+        ) const;
+
+        std::filesystem::path compile_project_package(
             std::filesystem::path const& package_path
         ) const;
 
@@ -153,6 +171,5 @@ namespace iv {
         // replacing the shared ORC instance or invalidating loaded package code.
         void set_toolchain_config(ModuleLoaderToolchainConfig toolchain);
 
-        std::vector<std::filesystem::path> const& extra_search_roots() const;
     };
 }

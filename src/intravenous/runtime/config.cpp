@@ -110,9 +110,9 @@ ProjectConfig load_runtime_installation_config(std::filesystem::path const &work
             auto assign_path = [&](std::optional<std::filesystem::path> &target) {
                 target = parse_path_value(value, defaults_path.parent_path());
             };
-            auto append_package_root = [&] {
+            auto append_path = [&](std::vector<std::filesystem::path>& target) {
                 if (auto root = parse_path_value(value, defaults_path.parent_path())) {
-                    config.default_package_roots.push_back(std::move(*root));
+                    target.push_back(std::move(*root));
                 }
             };
             auto assign_size = [&](size_t &target) {
@@ -139,14 +139,16 @@ ProjectConfig load_runtime_installation_config(std::filesystem::path const &work
                 assign_path(config.toolchain.juce_dir);
             } else if (key == "iv_package_pch") {
                 assign_path(config.toolchain.iv_package_pch);
-            } else if (key == "iv_package_search_root") {
-                append_package_root();
+            } else if (key == "iv_builtin_package_root") {
+                append_path(config.builtin_package_roots);
+            } else if (key == "iv_builtin_package_artifact_root") {
+                assign_path(config.builtin_package_artifact_root);
+            } else if (key == "iv_common_package_root") {
+                append_path(config.common_package_roots);
             } else if (key == "sample_rate") {
                 assign_size(config.execution.sample_rate);
             } else if (key == "block_size") {
                 assign_size(config.execution.block_size);
-            } else if (key == "compiled_sample_cache_chunk_size_multiplier") {
-                assign_size(config.execution.compiled_sample_cache_chunk_size_multiplier);
             } else if (key == "output_device_id") {
                 config.output_device_id =
                     value.empty() ? std::nullopt : std::optional(value);

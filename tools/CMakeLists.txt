@@ -45,3 +45,9 @@ target_link_libraries(iv_package_finalize PRIVATE
     ${IV_PACKAGE_FINALIZER_LLVM_LIBS})
 target_compile_options(iv_package_finalize PRIVATE
     -Wall -Wextra -Wpedantic)
+
+add_executable(iv_package_prebuild iv_package_prebuild.cpp)
+iv_configure_intravenous_target(iv_package_prebuild PRIVATE)
+target_link_libraries(iv_package_prebuild PRIVATE
+    intravenous_module_loader
+    iv_builder)

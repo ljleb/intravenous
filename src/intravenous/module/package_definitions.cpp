@@ -43,7 +43,7 @@ public:
 };
 } // namespace
 
-NodeRef configure_package_definition_impl(
+NodeRef configure_package_definition_provider(
     GraphBuilder& builder,
     std::string_view id,
     std::optional<ChannelLayout> tiled_layout,
@@ -99,6 +99,13 @@ NodeRef configure_package_definition_impl(
         children.reserve(member_count);
         for (std::size_t channel = 0; channel < member_count; ++channel) {
             child_sessions.push_back(make_child_session());
+            auto const& channel_name =
+                channel_type_info(tiled_layout->channel_type).channel_names[channel];
+            ProjectNodePathSelector const selector = ProjectTiledChildSelector{
+                .name = std::string(channel_name),
+            };
+            set_builder_semantic_scope_path(
+                child_sessions.back().get(), std::span{&selector, 1});
             auto child = std::make_unique<GraphBuilder>(child_sessions.back().get());
             definition.module_build(*child, arguments);
             children.push_back(std::move(child));
@@ -124,6 +131,32 @@ NodeRef configure_package_definition_impl(
     definition.module_build(child, arguments);
     return builder.embed_child(child, "IV module definition");
 }
+NodeRef configure_package_definition_impl(
+    GraphBuilder& builder,
+    std::string_view id,
+    std::optional<ChannelLayout> tiled_layout,
+    std::span<ConfigurationArgument> arguments)
+{
+    if (!builder._session) {
+        throw std::logic_error("IV package definition requires a BuilderSession");
+    }
+    auto const prepared = consume_builder_node_source_identity(builder._session);
+    record_builder_module_message_local_ref(builder._session, prepared);
+    auto const& source_identity = prepared.source_identity;
+    if (auto resolver = builder_definition_resolver(builder._session)) {
+        return resolver(
+            builder_definition_resolver_context(builder._session),
+            builder,
+            id,
+            source_identity,
+            builder_semantic_scope_path(builder._session),
+            tiled_layout,
+            arguments);
+    }
+    return configure_package_definition_provider(
+        builder, id, tiled_layout, arguments);
+}
+
 NodeRef configure_package_definition(
     GraphBuilder& builder,
     std::string_view id,
