@@ -18,6 +18,7 @@
 #include <llvm/Support/Alignment.h>
 
 #include <algorithm>
+#include <bit>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -1837,6 +1838,314 @@ void stage_tick_sequential_sample_timelines(
     }
 }
 
+// Adds every participating manual control to the target input timeline. The
+// destination is always target-owned storage: an ordinary producer alias is
+// copied first, and the node implementation's existing Sequential combine
+// operation then receives the scalar manual contribution.
+void stage_manual_control_sample_timelines(
+    llvm::IRBuilder<>& builder,
+    std::size_t primitive_index,
+    std::span<detail::ManualControlPlan const> manual_controls,
+    std::span<detail::PrimitiveSampleInputBindingPlan const> inputs,
+    detail::SampleStoragePlan const& sample_storage,
+    EmittedRealtimeStorage const& realtime_storage,
+    llvm::Value* root_index,
+    llvm::Value* sample_index,
+    llvm::Value* block_size,
+    llvm::Value* callback_index,
+    llvm::Value* callback_block_size,
+    std::string_view combine_symbol)
+{
+    auto& context = builder.getContext();
+    auto* module = builder.GetInsertBlock()->getModule();
+    auto* function = builder.GetInsertBlock()->getParent();
+    auto* byte_type = llvm::Type::getInt8Ty(context);
+    auto* i32_type = llvm::Type::getInt32Ty(context);
+    auto* float_type = llvm::Type::getFloatTy(context);
+    auto* size_type = llvm::IntegerType::get(
+        context, static_cast<unsigned>(sizeof(std::size_t) * 8));
+    auto constant = [&](std::size_t value) {
+        return llvm::ConstantInt::get(size_type, value);
+    };
+    auto representation_channel = [&] (
+        detail::PrimitiveSampleInputChannelBindingPlan const& channel,
+        llvm::Twine const& name) {
+        IV_ASSERT(channel.storage < sample_storage.representations.size()
+                && channel.storage
+                    < realtime_storage.sample_representations.size(),
+            "GraphJit manual input names missing sample storage");
+        auto const& representation =
+            sample_storage.representations[channel.storage];
+        auto const channels = channel_count(representation.channel_layout);
+        IV_ASSERT(channel.representation_channel < channels,
+            "GraphJit manual input channel is outside its storage");
+        auto const planar = representation.channel_layout.sample_layout
+            == SampleStreamLayout::planar;
+        auto const value_size = representation.geometry.value_size_bytes;
+        auto const value_offset = planar
+            ? channel.representation_channel * representation.frame_capacity
+            : channel.representation_channel;
+        struct Address {
+            llvm::Value* storage;
+            std::size_t capacity;
+            std::size_t stride;
+            std::size_t delay;
+        };
+        return Address{
+            .storage = byte_offset_pointer(
+                builder,
+                realtime_storage.sample_representations[channel.storage],
+                value_offset * value_size,
+                name + ".storage"),
+            .capacity = representation.frame_capacity,
+            .stride = planar ? value_size : channels * value_size,
+            .delay = channel.frame_delay,
+        };
+    };
+
+    for (auto const& control : manual_controls) {
+        if (control.primitive_index != primitive_index) continue;
+        IV_ASSERT(control.input_index < inputs.size(),
+            "GraphJit manual control lost its primitive input");
+        auto const& planned = inputs[control.input_index];
+        auto* state = byte_offset_pointer(
+            builder,
+            realtime_storage.persistent_base,
+            control.state_storage_offset,
+            "manual.control.state");
+        auto* target_pointer = byte_offset_pointer(
+            builder,
+            state,
+            offsetof(ManualControlRuntimeState, target_bits),
+            "manual.control.target.ptr");
+        auto* effective_pointer = byte_offset_pointer(
+            builder,
+            state,
+            offsetof(ManualControlRuntimeState, effective_bits),
+            "manual.control.effective.ptr");
+        auto const settled_bits = std::bit_cast<std::uint32_t>(
+            control.configured.settled_value.value);
+        auto* settled_bits_value = llvm::ConstantInt::get(
+            i32_type, settled_bits);
+        if (!control.configured.dynamic || !control.stages_timeline) {
+            // Constant code owns the effective interpolation origin but never
+            // overwrites target_bits, which may already contain the first
+            // interaction value awaiting dynamic-code activation.
+            builder.CreateStore(settled_bits_value, effective_pointer);
+        }
+        if (!control.stages_timeline) continue;
+
+        IV_ASSERT(planned.manual_control
+                && *planned.manual_control
+                    < manual_controls.size()
+                && planned.manual_timeline_channels.size()
+                    == channel_count(planned.channel_layout)
+                && planned.geometry.value_type
+                    == ContinuousValueTypeId::sample
+                && planned.geometry.value_size_bytes == sizeof(Sample),
+            "GraphJit manual control lost its target timeline");
+        auto* combine = module->getFunction(
+            llvm::StringRef(combine_symbol.data(), combine_symbol.size()));
+        IV_ASSERT(combine && !combine->isDeclaration(),
+            "GraphJit manual input has no materialized combination callback");
+        llvm::Value* target_bits = settled_bits_value;
+        llvm::Value* effective_bits = settled_bits_value;
+        if (control.configured.dynamic) {
+            auto* target_load = builder.CreateLoad(
+                i32_type, target_pointer, "manual.control.target.bits");
+            target_load->setAtomic(llvm::AtomicOrdering::Monotonic);
+            target_load->setAlignment(
+                llvm::Align(alignof(std::uint32_t)));
+            target_bits = target_load;
+            effective_bits = builder.CreateLoad(
+                i32_type,
+                effective_pointer,
+                "manual.control.effective.bits");
+        }
+        auto* target_value = builder.CreateBitCast(
+            target_bits, float_type, "manual.control.target");
+        auto* effective_value = builder.CreateBitCast(
+            effective_bits, float_type, "manual.control.effective");
+        auto const projection = emit_lattice_projection(
+            builder,
+            sample_index,
+            block_size,
+            planned.absolute_pace_exponent,
+            "manual.control.projection");
+        auto const callback_projection = emit_lattice_projection(
+            builder,
+            callback_index,
+            callback_block_size,
+            planned.absolute_pace_exponent,
+            "manual.control.callback.projection");
+        auto const callback_prefix = emit_lattice_projection(
+            builder,
+            callback_index,
+            builder.CreateSub(
+                sample_index,
+                callback_index,
+                "manual.control.callback.prefix.extent"),
+            planned.absolute_pace_exponent,
+            "manual.control.callback.prefix");
+        auto* timeline_begin = emit_sequential_begin_ordinal(
+            builder,
+            sample_storage,
+            realtime_storage,
+            root_index,
+            sample_index,
+            planned.absolute_pace_exponent,
+            "manual.control.ordinal");
+        auto* stage = llvm::BasicBlock::Create(
+            context, "manual.control.stage", function);
+        auto* done = llvm::BasicBlock::Create(
+            context, "manual.control.done", function);
+        builder.CreateCondBr(
+            builder.CreateICmpNE(
+                projection.value_count, constant(0),
+                "manual.control.nonempty"),
+            stage,
+            done);
+        builder.SetInsertPoint(stage);
+
+        auto* manual_value = builder.CreateAlloca(
+            float_type, nullptr, "manual.control.value");
+        manual_value->setAlignment(llvm::Align(alignof(Sample)));
+        auto const channel_total = channel_count(planned.channel_layout);
+        auto const has_existing_value = planned.invocation_supplied
+            || !planned.manual_operand_channels.empty();
+        if (!planned.manual_operand_channels.empty()) {
+            IV_ASSERT(planned.manual_operand_channels.size() == channel_total,
+                "GraphJit manual input operand has the wrong channel count");
+        }
+        for (std::size_t channel = 0; channel < channel_total; ++channel) {
+            auto const target = representation_channel(
+                planned.manual_timeline_channels[channel],
+                "manual.control.target");
+            std::optional<std::remove_cvref_t<decltype(target)>> operand;
+            if (!planned.manual_operand_channels.empty()) {
+                operand = representation_channel(
+                    planned.manual_operand_channels[channel],
+                    "manual.control.operand");
+            }
+            auto* loop = llvm::BasicBlock::Create(
+                context, "manual.control.loop", function);
+            auto* body = llvm::BasicBlock::Create(
+                context, "manual.control.body", function);
+            auto* channel_done = llvm::BasicBlock::Create(
+                context, "manual.control.channel.done", function);
+            auto* preheader = builder.GetInsertBlock();
+            builder.CreateBr(loop);
+            builder.SetInsertPoint(loop);
+            auto* index = builder.CreatePHI(
+                size_type, 2, "manual.control.index");
+            index->addIncoming(constant(0), preheader);
+            builder.CreateCondBr(
+                builder.CreateICmpULT(index, projection.value_count),
+                body,
+                channel_done);
+            builder.SetInsertPoint(body);
+            auto pointer = [&](auto const& address,
+                               llvm::Twine const& name) {
+                auto* ordinal = builder.CreateSub(
+                    builder.CreateAdd(timeline_begin, index),
+                    constant(address.delay),
+                    name + ".ordinal");
+                auto* slot = builder.CreateAnd(
+                    ordinal,
+                    constant(address.capacity - 1),
+                    name + ".index");
+                return builder.CreateInBoundsGEP(
+                    byte_type,
+                    address.storage,
+                    builder.CreateMul(slot, constant(address.stride)),
+                    name + ".value");
+            };
+            auto* destination = pointer(target, "manual.control.destination");
+            if (operand) {
+                builder.CreateMemCpy(
+                    destination,
+                    llvm::Align(planned.geometry.element_alignment),
+                    pointer(*operand, "manual.control.source"),
+                    llvm::Align(planned.geometry.element_alignment),
+                    planned.geometry.value_size_bytes);
+            }
+            llvm::Value* value = target_value;
+            if (control.configured.dynamic) {
+                auto* numerator = builder.CreateUIToFP(
+                    builder.CreateAdd(
+                        builder.CreateAdd(
+                            callback_prefix.value_count,
+                            index,
+                            "manual.control.ramp.position"),
+                        constant(1)),
+                    float_type,
+                    "manual.control.ramp.numerator");
+                auto* denominator = builder.CreateUIToFP(
+                    callback_projection.value_count,
+                    float_type,
+                    "manual.control.ramp.denominator");
+                auto* ratio = builder.CreateFDiv(
+                    numerator, denominator, "manual.control.ramp.ratio");
+                value = builder.CreateFAdd(
+                    effective_value,
+                    builder.CreateFMul(
+                        builder.CreateFSub(target_value, effective_value),
+                        ratio),
+                    "manual.control.ramp.value");
+            }
+            builder.CreateStore(value, manual_value);
+            if (has_existing_value) {
+                auto* accepted = builder.CreateCall(
+                    combine,
+                    {constant(control.input_index),
+                     llvm::ConstantInt::get(
+                         llvm::Type::getInt8Ty(context),
+                         static_cast<std::uint8_t>(
+                             ContinuousValueTypeId::sample)),
+                     destination,
+                     manual_value,
+                     constant(sizeof(Sample)),
+                     constant(1)},
+                    "manual.control.combined");
+                auto* accepted_block = llvm::BasicBlock::Create(
+                    context, "manual.control.accepted", function);
+                auto* rejected_block = llvm::BasicBlock::Create(
+                    context, "manual.control.rejected", function);
+                builder.CreateCondBr(accepted, accepted_block, rejected_block);
+                builder.SetInsertPoint(rejected_block);
+                builder.CreateCall(llvm::Intrinsic::getOrInsertDeclaration(
+                    module, llvm::Intrinsic::trap));
+                builder.CreateUnreachable();
+                builder.SetInsertPoint(accepted_block);
+            } else {
+                builder.CreateStore(value, destination);
+            }
+            auto* next = builder.CreateAdd(index, constant(1));
+            auto* body_block = builder.GetInsertBlock();
+            builder.CreateBr(loop);
+            index->addIncoming(next, body_block);
+            builder.SetInsertPoint(channel_done);
+        }
+        auto* callback_values_through_slice = builder.CreateAdd(
+            callback_prefix.value_count,
+            projection.value_count,
+            "manual.control.callback.values.through.slice");
+        auto* completes_callback = builder.CreateICmpUGE(
+            callback_values_through_slice,
+            callback_projection.value_count,
+            "manual.control.callback.complete");
+        builder.CreateStore(
+            builder.CreateSelect(
+                completes_callback,
+                target_bits,
+                effective_bits,
+                "manual.control.effective.next"),
+            effective_pointer);
+        builder.CreateBr(done);
+        builder.SetInsertPoint(done);
+    }
+}
+
 // Inserts the current window of every slot-fed event input that owns a
 // timeline ring. A pure input receives its TickInvocationCall window; a mixed
 // input receives the current window of the deterministic merge of its realtime
@@ -2178,11 +2487,13 @@ struct EmittedPrimitiveTickContext {
 
 EmittedPrimitiveTickContext emit_primitive_tick_context(
     llvm::IRBuilder<>& builder,
+    std::size_t primitive_index,
     EmittedNodeConfiguration const& configuration,
     detail::PrimitiveStoragePlan const& storage,
     EmittedPrimitiveSamplePorts const& sample_ports,
     EmittedPrimitiveEventPorts const& event_ports,
     detail::PrimitiveSamplePortPlan const& sample_plan,
+    std::span<detail::ManualControlPlan const> manual_controls,
     detail::SampleStoragePlan const& sample_storage,
     detail::PrimitiveEventPortPlan const& event_plan,
     detail::EventPortBindingPlan const& event_storage,
@@ -2193,6 +2504,8 @@ EmittedPrimitiveTickContext emit_primitive_tick_context(
     llvm::Value* root_index,
     llvm::Value* sample_index,
     llvm::Value* block_size,
+    llvm::Value* callback_index,
+    llvm::Value* callback_block_size,
     std::string_view combine_sequential_input_values_symbol)
 {
     auto* storage_base = realtime_storage.persistent_base;
@@ -2254,6 +2567,19 @@ EmittedPrimitiveTickContext emit_primitive_tick_context(
                 block_size,
                 combine_sequential_input_values_symbol);
         }
+        stage_manual_control_sample_timelines(
+            builder,
+            primitive_index,
+            manual_controls,
+            sample_plan.inputs,
+            sample_storage,
+            realtime_storage,
+            root_index,
+            sample_index,
+            block_size,
+            callback_index,
+            callback_block_size,
+            combine_sequential_input_values_symbol);
         for (std::size_t input = 0; input < sample_plan.inputs.size(); ++input) {
             auto const& input_plan = sample_plan.inputs[input];
             if (input_plan.random_access) continue;
@@ -2849,11 +3175,13 @@ void emit_primitive_call(
     ActivityEmissionCache& activity_cache,
     detail::PrimitiveActivityPlan const* activity,
     bool force_skip,
+    std::size_t primitive_index,
     EmittedNodeConfiguration const& configuration,
     detail::PrimitiveStoragePlan const& storage,
     EmittedPrimitiveSamplePorts const& sample_ports,
     EmittedPrimitiveEventPorts const& event_ports,
     detail::PrimitiveSamplePortPlan const& sample_plan,
+    std::span<detail::ManualControlPlan const> manual_controls,
     detail::SampleStoragePlan const& sample_storage,
     detail::PrimitiveEventPortPlan const& event_plan,
     detail::EventPortBindingPlan const& event_storage,
@@ -2864,15 +3192,19 @@ void emit_primitive_call(
     llvm::Value* root_index,
     llvm::Value* sample_index,
     llvm::Value* block_size,
+    llvm::Value* callback_index,
+    llvm::Value* callback_block_size,
     std::string_view combine_sequential_input_values_symbol)
 {
     auto const emitted_context = emit_primitive_tick_context(
         builder,
+        primitive_index,
         configuration,
         storage,
         sample_ports,
         event_ports,
         sample_plan,
+        manual_controls,
         sample_storage,
         event_plan,
         event_storage,
@@ -2883,6 +3215,8 @@ void emit_primitive_call(
         root_index,
         sample_index,
         block_size,
+        callback_index,
+        callback_block_size,
         combine_sequential_input_values_symbol);
     auto* context_storage = emitted_context.storage;
     auto* continuous_input_bindings =
@@ -2963,11 +3297,13 @@ void emit_sliced_primitive_calls(
     ActivityEmissionCache& activity_cache,
     detail::PrimitiveActivityPlan const* activity,
     bool force_skip,
+    std::size_t primitive_index,
     EmittedNodeConfiguration const& configuration,
     detail::PrimitiveStoragePlan const& storage,
     EmittedPrimitiveSamplePorts const& sample_ports,
     EmittedPrimitiveEventPorts const& event_ports,
     detail::PrimitiveSamplePortPlan const& sample_plan,
+    std::span<detail::ManualControlPlan const> manual_controls,
     detail::SampleStoragePlan const& sample_storage,
     detail::PrimitiveEventPortPlan const& event_plan,
     detail::EventPortBindingPlan const& event_storage,
@@ -3014,11 +3350,13 @@ void emit_sliced_primitive_calls(
         activity_cache,
         activity,
         force_skip,
+        primitive_index,
         configuration,
         storage,
         sample_ports,
         event_ports,
         sample_plan,
+        manual_controls,
         sample_storage,
         event_plan,
         event_storage,
@@ -3029,6 +3367,8 @@ void emit_sliced_primitive_calls(
         root_index,
         slice_index,
         slice_size,
+        sample_index,
+        block_size,
         combine_sequential_input_values_symbol);
 
     auto* next_offset = builder.CreateAdd(
@@ -6248,11 +6588,13 @@ std::expected<void, std::string> emit_execution_step(
             activity_cache,
             activity,
             skip,
+            step.configuration_index,
             configurations[step.configuration_index],
             plan.declarations.primitive_storage[step.storage_index],
             sample_bindings.primitives[step.configuration_index],
             event_bindings.primitives[step.configuration_index],
             plan.sample_ports.primitives[step.configuration_index],
+            plan.sample_ports.manual_controls,
             plan.sample_ports.storage,
             plan.event_ports.primitives[step.configuration_index],
             plan.event_ports,
@@ -6274,11 +6616,13 @@ std::expected<void, std::string> emit_execution_step(
             activity_cache,
             activity,
             skip,
+            step.configuration_index,
             configurations[step.configuration_index],
             plan.declarations.primitive_storage[step.storage_index],
             sample_bindings.primitives[step.configuration_index],
             event_bindings.primitives[step.configuration_index],
             plan.sample_ports.primitives[step.configuration_index],
+            plan.sample_ports.manual_controls,
             plan.sample_ports.storage,
             plan.event_ports.primitives[step.configuration_index],
             plan.event_ports,
@@ -6287,6 +6631,8 @@ std::expected<void, std::string> emit_execution_step(
             invocation,
             realtime_storage,
             root_index,
+            sample_index,
+            block_size,
             sample_index,
             block_size,
             primitive_callbacks.combine_sequential_input_values);
@@ -6613,11 +6959,13 @@ std::expected<void, std::string> emit_execution_batch(
         auto const& step = *lane.step;
         auto const tick_context = emit_primitive_tick_context(
             builder,
+            step.configuration_index,
             configurations[step.configuration_index],
             plan.declarations.primitive_storage[step.storage_index],
             sample_bindings.primitives[step.configuration_index],
             event_bindings.primitives[step.configuration_index],
             plan.sample_ports.primitives[step.configuration_index],
+            plan.sample_ports.manual_controls,
             plan.sample_ports.storage,
             plan.event_ports.primitives[step.configuration_index],
             plan.event_ports,
@@ -6626,6 +6974,8 @@ std::expected<void, std::string> emit_execution_batch(
             invocation,
             realtime_storage,
             root_index,
+            sample_index,
+            block_size,
             sample_index,
             block_size,
             plan.imports.primitive_callbacks[step.configuration_index]
@@ -9148,6 +9498,15 @@ std::expected<LoweringOutput, std::string> emit_lowering_plan(
     auto const has_transition_root = transition
         && (!transition->output.state_transition.sample_expiry_cursors.empty()
             || transition->output.state_transition.event_expiry_samples != 0);
+    std::vector<ManualControlRuntimeBinding> manual_controls;
+    manual_controls.reserve(plan.sample_ports.manual_controls.size());
+    for (auto const& control : plan.sample_ports.manual_controls) {
+        manual_controls.push_back(ManualControlRuntimeBinding{
+            .configured = control.configured,
+            .state_storage_offset = control.state_storage_offset,
+            .participates = control.participates,
+        });
+    }
     return LoweringOutput{
         .port_realization = std::move(plan.port_realization),
         .node_layout = std::move(plan.declarations.node_layout),
@@ -9157,6 +9516,7 @@ std::expected<LoweringOutput, std::string> emit_lowering_plan(
             std::move(plan.connections.realtime_port_states),
         .realtime_port_state_realizations =
             std::move(plan.realtime_port_state_realizations),
+        .manual_controls = std::move(manual_controls),
         .transition = transition
             ? std::optional<LoweredGraphTransition>{
                 std::move(transition->output)}

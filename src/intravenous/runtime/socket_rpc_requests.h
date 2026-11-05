@@ -2,6 +2,7 @@
 
 #include <intravenous/runtime/runtime_project_api_types.h>
 #include <intravenous/runtime/project_connection_types.h>
+#include <intravenous/node/manual_control.h>
 
 #include <filesystem>
 #include <cstdint>
@@ -48,6 +49,25 @@ struct UpdateNodeInstancesRequest {
 };
 struct UpsertGraphConnectionRequest { ProjectConnection connection{}; };
 struct DeleteGraphConnectionRequest { std::string connection_id{}; };
+struct UpsertManualControlRequest { ProjectManualControl control{}; };
+struct DeleteManualControlRequest { ManualControlId id{}; };
+struct SetManualControlHoverRequest {
+    std::string client_id{};
+    std::optional<ManualControlId> id{};
+};
+struct BeginManualControlInteractionRequest {
+    ManualControlInteractionId interaction{};
+    ManualControlId id{};
+    Sample value{};
+};
+struct UpdateManualControlInteractionRequest {
+    ManualControlInteractionId interaction{};
+    Sample value{};
+};
+struct EndManualControlInteractionRequest {
+    ManualControlInteractionId interaction{};
+    Sample value{};
+};
 
 struct DispatchNodeMessageRequest {
     NodeAddress target{};
@@ -91,6 +111,12 @@ using SocketRpcRequestPayload = std::variant<
     UpdateNodeInstancesRequest,
     UpsertGraphConnectionRequest,
     DeleteGraphConnectionRequest,
+    UpsertManualControlRequest,
+    DeleteManualControlRequest,
+    SetManualControlHoverRequest,
+    BeginManualControlInteractionRequest,
+    UpdateManualControlInteractionRequest,
+    EndManualControlInteractionRequest,
     GetNodeEventProtocolRequest,
     DispatchNodeMessageRequest,
     GetAudioDevicesRequest,

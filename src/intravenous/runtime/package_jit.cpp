@@ -96,6 +96,7 @@ PackageJitBatchResult PackageJit::build(
                 .compiler_artifact = std::move(loaded_package.compiler_artifact),
                 .package_code = std::move(loaded_package.package_code),
                 .provider_definitions = std::move(loaded_package.provider_definitions),
+                .node_presentations = std::move(loaded_package.node_presentations),
                 .config_pointer_fields = std::move(loaded_package.config_pointer_fields),
                 .retained_globals = std::move(loaded_package.retained_globals),
                 .node_message_handlers =

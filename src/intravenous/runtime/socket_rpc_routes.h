@@ -14,6 +14,9 @@ struct SocketRpcRouteResult {
 };
 
 struct SocketRpcRouteContext {
+    // Server-assigned identity of this attached client. Domain routes use
+    // this value instead of trusting a client-supplied identity parameter.
+    std::string client_id{};
     std::function<void(std::string const&)> authorize{};
     std::function<void(bool)> before_invoke{};
     std::function<std::string(int, SessionHelloRequest const&)> hello{};

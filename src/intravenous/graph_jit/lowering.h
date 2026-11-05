@@ -147,6 +147,7 @@ struct LoweringOutput {
     BackgroundEvaluationPlan background_evaluation_plan{};
     RealtimePortStateRequirements realtime_port_state_requirements{};
     RealtimePortStateRealizations realtime_port_state_realizations{};
+    std::vector<ManualControlRuntimeBinding> manual_controls{};
     std::optional<LoweredGraphTransition> transition{};
     LoweredGraphRootSymbols root_symbols{};
 };

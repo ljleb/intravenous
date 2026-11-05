@@ -44,6 +44,7 @@ namespace iv {
             std::string backing_node_id {};
             std::string kind {};
             std::string type_identity {};
+            std::string definition_id {};
             std::vector<IntrospectionContinuousPortInfo> continuous_inputs {};
             std::vector<IntrospectionContinuousPortInfo> continuous_outputs {};
             std::vector<IntrospectionEventPortInfo> event_inputs {};
@@ -54,6 +55,7 @@ namespace iv {
         std::string kind {};
         std::string source_identity {};
         std::string type_identity {};
+        std::string definition_id {};
         std::vector<SourceSpan> source_spans {};
         std::vector<IntrospectionContinuousPortInfo> continuous_inputs {};
         std::vector<IntrospectionContinuousPortInfo> continuous_outputs {};

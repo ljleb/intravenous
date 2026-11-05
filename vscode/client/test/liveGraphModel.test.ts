@@ -11,6 +11,7 @@ function continuousNode(): VirtualNode {
     return {
         id: "node-1",
         kind: "Oscillator",
+        definitionId: "iv.test.oscillator",
         packageIdentity: "module@Oscillator",
         memberCount: 2,
         continuousInputs: [{
@@ -58,6 +59,7 @@ function continuousNode(): VirtualNode {
             index: 7,
             backingNodeId: "backing-1",
             kind: "Oscillator",
+            definitionId: "iv.test.oscillator",
             continuousInputs: [{
                 index: 1,
                 name: "frequency",
@@ -119,6 +121,8 @@ test("serializeLiveGraphNodes exposes declared types and static bindings", () =>
     assert.equal(virtualEventInput.index, 3);
     assert.equal(virtualEventOutput.index, 4);
     assert.equal(node.members[0].index, 7);
+    assert.equal(node.definitionId, "iv.test.oscillator");
+    assert.equal(node.members[0].definitionId, "iv.test.oscillator");
     assert.equal(memberContinuousInput.index, 1);
 
     assert.equal(virtualContinuousInput.typeSummary, "Sample • mono");

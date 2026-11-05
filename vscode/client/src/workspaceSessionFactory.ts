@@ -3,6 +3,7 @@ import { injectable } from "tsyringe";
 
 import { LiveGraphControlHandler } from "./liveGraphProtocol";
 import { NodeSpanHighlighter } from "./nodeSpanHighlighter";
+import { NodePresentationDescriptor } from "./nodePresentation";
 import { ModulesViewProvider } from "./modulesViewProvider";
 import { WorkspaceSession } from "./workspaceSession";
 
@@ -13,6 +14,7 @@ type LiveGraphProviderLike = {
     upsertNodes(nodes: unknown[], replaceInstanceIds?: string[]): void;
     setSelectedInstanceId(instanceId: string | null): void;
     setPackageRoot(packageRoot: string | null): void;
+    setNodePresentationDescriptors(descriptors: NodePresentationDescriptor[]): void;
 };
 
 type ModulesViewProviderLike = Pick<ModulesViewProvider, "setState">;

@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <ranges>
+#include <tuple>
 
 namespace iv {
 namespace {
@@ -67,6 +68,12 @@ void ProjectPersistenceBuilder::add_graph_connections(
     std::vector<ProjectConnection> connections)
 {
     graph_connections_ = std::move(connections);
+}
+
+void ProjectPersistenceBuilder::add_manual_controls(
+    std::vector<ProjectManualControl> controls)
+{
+    manual_controls_ = std::move(controls);
 }
 
 std::string ProjectPersistenceBuilder::relativize_path(
@@ -183,6 +190,33 @@ std::vector<ProjectCommand> ProjectPersistenceBuilder::build() const
             .command = "graphConnections.upsert",
             .args = project_connection_json(
                 connection, ProjectConnectionJsonNames::project_file),
+        });
+    }
+
+    auto controls = manual_controls_;
+    std::ranges::sort(controls, [](auto const& lhs, auto const& rhs) {
+        auto const lhs_address = node_address_json(
+            lhs.id.node, ProjectConnectionJsonNames::project_file).dump();
+        auto const rhs_address = node_address_json(
+            rhs.id.node, ProjectConnectionJsonNames::project_file).dump();
+        return std::tie(lhs_address, lhs.id.input_name)
+            < std::tie(rhs_address, rhs.id.input_name);
+    });
+    for (auto const& control : controls) {
+        commands.push_back(ProjectCommand{
+            .command = "manualControls.upsert",
+            .args = Json{
+                {"node", node_address_json(
+                    control.id.node,
+                    ProjectConnectionJsonNames::project_file)},
+                {"input_name", control.id.input_name},
+                {"value", static_cast<float>(control.stored_value)},
+                {"participation", control.participation
+                        == ManualControlParticipation::disconnected_only
+                    ? "disconnected_only"
+                    : "participate_with_connections"},
+                {"enabled", control.enabled},
+            },
         });
     }
 

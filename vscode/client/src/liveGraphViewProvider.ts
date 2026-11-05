@@ -4,6 +4,13 @@ import * as path from "path";
 
 import { VirtualNode } from "./graphModel";
 import {
+    frameworkDefaultNodePresentationProvider,
+    NodePresentationDescriptor,
+    NodePresentationProvider,
+    NodePresentationRegistry,
+    NodePresentationSelection,
+} from "./nodePresentation";
+import {
     LiveGraphInstance,
     serializeLiveGraphInstances,
     serializeLiveGraphNodes,
@@ -33,6 +40,11 @@ export class LiveGraphViewProvider {
     private selectedInstanceId: string | null = null;
     private packageRoot: string | null = null;
     private controlHandler: LiveGraphControlHandler | null = null;
+    private nodePresentationDescriptors: NodePresentationDescriptor[] = [];
+    private readonly nodePresentationRegistry =
+        new NodePresentationRegistry<NodePresentationProvider>(
+            frameworkDefaultNodePresentationProvider,
+        );
 
     constructor(extensionUri: vscode.Uri) {
         this.extensionUri = extensionUri;
@@ -72,6 +84,33 @@ export class LiveGraphViewProvider {
             packageRoot,
         };
         void this.view.webview.postMessage(message);
+    }
+
+    setNodePresentationDescriptors(
+        descriptors: NodePresentationDescriptor[],
+    ): void {
+        this.nodePresentationDescriptors = Array.isArray(descriptors)
+            ? [...descriptors]
+            : [];
+    }
+
+    registerNodePresentationProvider(provider: NodePresentationProvider): void {
+        this.nodePresentationRegistry.register(provider);
+    }
+
+    unregisterNodePresentationProvider(presentationId: string): void {
+        this.nodePresentationRegistry.unregister(presentationId);
+    }
+
+    selectNodePresentation(
+        definitionId: string,
+        preferredPresentationId?: string,
+    ): NodePresentationSelection<NodePresentationProvider> {
+        return this.nodePresentationRegistry.select(
+            definitionId,
+            this.nodePresentationDescriptors,
+            preferredPresentationId,
+        );
     }
 
     upsertNodes(nodes: VirtualNode[], replaceInstanceIds: string[] = []): void {

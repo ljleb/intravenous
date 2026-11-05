@@ -19,6 +19,7 @@ export type SerializedLiveGraphMember = {
     index: number;
     backingNodeId: string;
     kind: string;
+    definitionId: string;
     description: string;
     groups: SerializedLiveGraphGroup[];
 };
@@ -27,6 +28,7 @@ export type SerializedLiveGraphNode = {
     id: string;
     instanceId: string;
     kind: string;
+    definitionId: string;
     description: string;
     tooltip: string;
     memberCount: number;

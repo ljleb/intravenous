@@ -21,6 +21,7 @@ struct IvPackageInfo {
     PackageProvenance provenance = PackageProvenance::project_local;
     std::vector<std::string> module_ids = {};
     std::vector<std::string> node_type_ids = {};
+    std::vector<NodePresentationDescriptor> node_presentations = {};
     PackageBuildState build_state = PackageBuildState::queued;
     std::string build_message = {};
     std::string publication_message = {};

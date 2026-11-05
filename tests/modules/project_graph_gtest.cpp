@@ -15,6 +15,7 @@
 #include <nlohmann/json.hpp>
 
 #include <atomic>
+#include <array>
 #include <filesystem>
 #include <iterator>
 #include <memory>
@@ -46,6 +47,8 @@ constexpr char selector_sender_definition_id[] =
     "iv.test.project_graph.selector_sender";
 constexpr char leaf_receiver_definition_id[] =
     "iv.test.project_graph.leaf_receiver";
+constexpr char manual_control_leaf_definition_id[] =
+    "iv.test.project_graph.manual_control_leaf";
 std::atomic<int> successor_configure_calls{0};
 std::atomic<int> successor_value{0};
 
@@ -415,6 +418,20 @@ struct LeafReceiver {
     }
 };
 
+struct ManualControlLeaf {
+    static constexpr auto inputs()
+    {
+        return std::array{
+            iv::input<iv::Sample>(
+                "gain", iv::InputAccess::sequential),
+        };
+    }
+
+    static constexpr auto outputs() { return std::tuple{}; }
+
+    void tick(iv::TickSampleContext<ManualControlLeaf> const&) const {}
+};
+
 template<class Module>
 void configure_module_class(
     iv::GraphBuilder& graph,
@@ -488,6 +505,19 @@ iv::NodeRef configure_leaf_receiver(
             graph, *tiled_layout);
     }
     return iv::details::configure_concrete_node<LeafReceiver>(graph).node_ref();
+}
+
+iv::NodeRef configure_manual_control_leaf(
+    iv::GraphBuilder& graph,
+    std::span<ConfigurationArgument>,
+    iv::ChannelLayout const* tiled_layout)
+{
+    if (tiled_layout) {
+        return iv::details::configure_concrete_node_tiled<ManualControlLeaf>(
+            graph, *tiled_layout);
+    }
+    return iv::details::configure_concrete_node<ManualControlLeaf>(graph)
+        .node_ref();
 }
 
 RegisteredSignature const* one_int_signature_callback()
@@ -625,6 +655,19 @@ std::shared_ptr<iv::NodeDefinitionsSnapshot const> make_replacement_snapshot(
         .node_build = &configure_leaf_receiver,
         .node_compiler_record =
             &iv::details::node_compiler_record<LeafReceiver>,
+        .signature = &signature_callback,
+    });
+    revision->provider_definitions.push_back(PackageDefinition{
+        .kind = PackageDefinitionKind::node,
+        .id = manual_control_leaf_definition_id,
+        .id_size = sizeof(manual_control_leaf_definition_id) - 1,
+        .source_file = source_file,
+        .source_file_size = sizeof(source_file) - 1,
+        .package_root = package_root,
+        .package_root_size = sizeof(package_root) - 1,
+        .node_build = &configure_manual_control_leaf,
+        .node_compiler_record =
+            &iv::details::node_compiler_record<ManualControlLeaf>,
         .signature = &signature_callback,
     });
     add_module_message_handler<
@@ -816,6 +859,24 @@ std::shared_ptr<iv::NodeDefinitionsSnapshot const> make_replacement_snapshot(
             .compiler_record = iv::details::node_compiler_record<LeafReceiver>,
         },
     });
+    snapshot->by_id.emplace(
+        manual_control_leaf_definition_id,
+        iv::NodeDefinitionEntry{
+            .definition_id = manual_control_leaf_definition_id,
+            .kind = iv::NodeDefinitionKind::leaf,
+            .version = generation,
+            .definition = iv::LeafNodeDefinition{
+                .definition_id = manual_control_leaf_definition_id,
+                .package_id = revision->package_id,
+                .package_root = revision->package_root,
+                .provider = iv::NodeDefinitionProvider{
+                    .leaf_build = &configure_manual_control_leaf,
+                    .signature = &signature_callback,
+                },
+                .compiler_record =
+                    iv::details::node_compiler_record<ManualControlLeaf>,
+            },
+        });
     return snapshot;
 }
 
@@ -1634,6 +1695,155 @@ TEST_F(ProjectGraphFixture, ReplaceGraphReplaysNodesAndConnectionsInOneGeneratio
     EXPECT_TRUE(instances.desired_instances().empty());
     EXPECT_TRUE(connections.desired_connections().empty());
     EXPECT_EQ(project_graph.current_generation()->generation, 3u);
+}
+
+TEST_F(ProjectGraphFixture,
+       ManualControlsResolveStableAddressesAndInputNamesPerGeneration)
+{
+    project_graph.handle_node_definitions_snapshot_changed(
+        iv::NodeDefinitionsSnapshotChanged{
+            .snapshot = make_replacement_snapshot(1),
+        });
+
+    iv::ProjectAckBuilder builder;
+    project_graph.handle_project_replace_graph(
+        iv::ProjectReplaceGraphRequest{
+            .instances = {{
+                .instance_id = "instance:manual",
+                .definition_id = manual_control_leaf_definition_id,
+            }},
+            .manual_controls = {
+                iv::ProjectManualControl{
+                    .id = {
+                        .node = {.instance_id = "instance:manual"},
+                        .input_name = "gain",
+                    },
+                    .stored_value = iv::Sample{0.625f},
+                    .participation = iv::ManualControlParticipation::
+                        participate_with_connections,
+                },
+                iv::ProjectManualControl{
+                    .id = {
+                        .node = {.instance_id = "instance:manual"},
+                        .input_name = "missing",
+                    },
+                    .stored_value = iv::Sample{0.25f},
+                },
+            },
+        },
+        builder);
+    EXPECT_NO_THROW(builder.build());
+
+    auto const generation = project_graph.current_generation();
+    ASSERT_TRUE(generation);
+    ASSERT_EQ(generation->manual_controls.size(), 2u);
+    ASSERT_EQ(generation->graph->manual_controls.size(), 1u);
+    auto const& configured = generation->graph->manual_controls.front();
+    EXPECT_EQ(configured.id.input_name, "gain");
+    EXPECT_FLOAT_EQ(static_cast<float>(configured.settled_value), 0.625f);
+    EXPECT_EQ(
+        configured.participation,
+        iv::ManualControlParticipation::participate_with_connections);
+    EXPECT_FALSE(configured.dynamic);
+    EXPECT_EQ(
+        generation->graph->node_bundles
+            .resolve_sample_input(configured.input)
+            .config.name,
+        "gain");
+    ASSERT_EQ(generation->manual_control_diagnostics.size(), 1u);
+    EXPECT_EQ(
+        generation->manual_control_diagnostics.front().id.input_name,
+        "missing");
+}
+
+TEST_F(ProjectGraphFixture,
+       DisconnectInvalidatesClientOwnedManualControlInteraction)
+{
+    project_graph.handle_node_definitions_snapshot_changed(
+        iv::NodeDefinitionsSnapshotChanged{
+            .snapshot = make_replacement_snapshot(1),
+        });
+    auto const control_id = iv::ManualControlId{
+        .node = {.instance_id = "instance:manual"},
+        .input_name = "gain",
+    };
+    iv::ProjectAckBuilder replacement;
+    project_graph.handle_project_replace_graph(
+        iv::ProjectReplaceGraphRequest{
+            .instances = {{
+                .instance_id = "instance:manual",
+                .definition_id = manual_control_leaf_definition_id,
+            }},
+            .manual_controls = {{.id = control_id}},
+        },
+        replacement);
+    ASSERT_NO_THROW(replacement.build());
+
+    auto const interaction = iv::ManualControlInteractionId{
+        .client_id = "socket:17",
+        .interaction_id = "pointer:3",
+    };
+    iv::ProjectAckBuilder begin;
+    project_graph.handle_project_begin_manual_control_interaction(
+        iv::ProjectBeginManualControlInteractionRequest{
+            .interaction = interaction,
+            .id = control_id,
+            .value = iv::Sample{0.25f},
+        },
+        begin);
+    ASSERT_NO_THROW(begin.build());
+
+    project_graph.handle_socket_rpc_client_disconnected("socket:17");
+
+    // The disconnected client's interaction identity is no longer active.
+    iv::ProjectAckBuilder update;
+    EXPECT_THROW(
+        project_graph.handle_project_update_manual_control_interaction(
+            iv::ProjectUpdateManualControlInteractionRequest{
+                .interaction = interaction,
+                .value = iv::Sample{0.5f},
+            },
+            update),
+        std::invalid_argument);
+
+    iv::ProjectAckBuilder begin_again;
+    project_graph.handle_project_begin_manual_control_interaction(
+        iv::ProjectBeginManualControlInteractionRequest{
+            .interaction = interaction,
+            .id = control_id,
+            .value = iv::Sample{0.75f},
+        },
+        begin_again);
+    EXPECT_NO_THROW(begin_again.build());
+
+    iv::ProjectAckBuilder remove_target;
+    project_graph.handle_project_delete_node_instance(
+        iv::ProjectDeleteNodeInstanceRequest{
+            .instance_id = "instance:manual",
+        },
+        remove_target);
+    ASSERT_NO_THROW(remove_target.build());
+
+    iv::ProjectAckBuilder update_after_removal;
+    EXPECT_THROW(
+        project_graph.handle_project_update_manual_control_interaction(
+            iv::ProjectUpdateManualControlInteractionRequest{
+                .interaction = interaction,
+                .value = iv::Sample{1.0f},
+            },
+            update_after_removal),
+        std::invalid_argument);
+
+    iv::ProjectAckBuilder begin_after_removal;
+    EXPECT_THROW(
+        project_graph.handle_project_begin_manual_control_interaction(
+            iv::ProjectBeginManualControlInteractionRequest{
+                .interaction = interaction,
+                .id = control_id,
+                .value = iv::Sample{1.0f},
+            },
+            begin_after_removal),
+        std::invalid_argument);
 }
 
 TEST_F(ProjectGraphFixture, InvalidReplacementDoesNotChangeEitherDesiredOwner)

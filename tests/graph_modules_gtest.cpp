@@ -141,12 +141,20 @@ ConfiguredGraph configure_introspection_regression()
     auto input = g.input<"in">(0.25f);
     auto event = g.event_input<"event">(EventTypeId::empty);
     auto sum = details::configure_concrete_node<Sum<mono, SampleStreamLayout::planar, 1>>(g);
+    auto const sum_handle = sum.node_bundle_handle();
     auto annotated = _annotate_node_source_info(sum.node_ref(), "sum");
     sum(input);
     g.outputs("out"_P = sum);
     (void)annotated;
     (void)event;
-    return std::move(g).finish();
+    auto configured = std::move(g).finish();
+    configured.node_bundles.set_registered_node_type_identity(
+        sum_handle,
+        RegisteredNodeTypeIdentity{
+            .node_type_id = "iv.test.introspection.sum",
+            .provider_package_root = "/tmp/iv-test-provider",
+        });
+    return configured;
 }
 
 ConfiguredGraph configure_continuous_domain_introspection()
@@ -162,6 +170,7 @@ struct IntrospectionRegressionSnapshot {
     bool virtual_node_is_preserved = false;
     bool continuous_ports_are_preserved = false;
     bool event_ports_are_preserved = false;
+    bool registered_definition_id_is_preserved = false;
 };
 
 IntrospectionRegressionSnapshot introspection_regression_snapshot()
@@ -174,6 +183,13 @@ IntrospectionRegressionSnapshot introspection_regression_snapshot()
         && metadata.virtual_nodes.front().source_identity == "sum"
         && metadata.virtual_nodes.front().continuous_inputs.size() == 1
         && metadata.virtual_nodes.front().continuous_outputs.size() == 1;
+    result.registered_definition_id_is_preserved =
+        metadata.virtual_nodes.size() == 1
+        && metadata.virtual_nodes.front().definition_id
+            == "iv.test.introspection.sum"
+        && metadata.virtual_nodes.front().members.size() == 1
+        && metadata.virtual_nodes.front().members.front().definition_id
+            == "iv.test.introspection.sum";
 
     result.continuous_ports_are_preserved =
         metadata.public_continuous_inputs.size() == 1
@@ -491,6 +507,7 @@ TEST(GraphModules, RuntimeIntrospectionPreservesVirtualAndPublicPorts)
     EXPECT_TRUE(snapshot.virtual_node_is_preserved);
     EXPECT_TRUE(snapshot.continuous_ports_are_preserved);
     EXPECT_TRUE(snapshot.event_ports_are_preserved);
+    EXPECT_TRUE(snapshot.registered_definition_id_is_preserved);
 }
 
 TEST(GraphModules, RuntimeIntrospectionPreservesContinuousValueTypeDomains)

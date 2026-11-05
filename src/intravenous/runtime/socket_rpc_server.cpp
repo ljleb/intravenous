@@ -314,6 +314,11 @@ struct SocketRpcServer::Impl {
         : workspace_root(normalize_path(root)), initial_rpc_fd(fd)
     {}
 
+    static std::string connected_client_id(std::uint64_t key)
+    {
+        return "socket:" + std::to_string(key);
+    }
+
     ~Impl()
     {
         request_shutdown();
@@ -834,6 +839,7 @@ struct SocketRpcServer::Impl {
             auto const request = parse_socket_rpc_request(command.line);
             request_id = request.request_id;
             route = routes.dispatch(request, SocketRpcRouteContext{
+                .client_id = connected_client_id(command.client->key),
                 .authorize = [this, client = command.client](
                     std::string const& required) {
                     authorize(client, required);
@@ -925,6 +931,11 @@ struct SocketRpcServer::Impl {
                         retired = std::move(position->second);
                         clients.erase(position);
                     }
+                }
+                if (retired) {
+                    IV_INVOKE_LINKER_EVENT(
+                        iv_socket_rpc_client_disconnected_event,
+                        connected_client_id(retired->key));
                 }
                 retired.reset();
             } else if (command.is_notification()) {

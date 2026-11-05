@@ -375,10 +375,15 @@ twice are diagnosed.
 
 The rule also encourages logical batching:
 
+The following type illustrates only the shape of one event payload. It does not
+define a node constructor or say that `attack` and `release` should be construction
+arguments. A node whose envelope parameters are continuous controls should normally
+expose them as input ports.
+
 ```cpp
-struct ConfigureOscillator {
-    float frequency;
-    float gain;
+struct ConfigureEnvelope {
+    float attack;
+    float release;
 };
 ```
 

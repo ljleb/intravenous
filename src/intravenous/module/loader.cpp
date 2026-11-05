@@ -37,9 +37,11 @@
 #include <mutex>
 #include <ranges>
 #include <regex>
+#include <set>
 #include <sstream>
 #include <stdexcept>
 #include <type_traits>
+#include <tuple>
 #include <atomic>
 #include <unordered_map>
 #include <unordered_set>
@@ -100,6 +102,7 @@ struct LoadedPackageCode {
     llvm::orc::JITDylib* jit_dylib = nullptr;
     llvm::orc::ResourceTrackerSP resources{};
     std::vector<details::PackageDefinition> definitions{};
+    std::vector<NodePresentationDescriptor> node_presentations{};
     std::vector<NodeConfigPointerFieldData> config_pointer_fields{};
     std::vector<RetainedGlobalData> retained_globals{};
     std::vector<NodeMessageHandlerData> node_message_handlers{};
@@ -1182,6 +1185,9 @@ public:
             auto const definitions_fn =
                 symbol.template operator()<iv_package_definitions_fn>(
                     "iv_package_definitions");
+            auto const node_presentations_fn =
+                symbol.template operator()<iv_package_node_presentations_fn>(
+                    "iv_package_node_presentations");
             auto const pointer_fields_fn =
                 symbol.template operator()<iv_package_node_config_pointer_fields_fn>(
                     "iv_package_node_config_pointer_fields");
@@ -1219,6 +1225,10 @@ public:
                 definitions_fn(),
                 static_cast<details::PackageDefinition*>(nullptr),
                 "definition");
+            auto const node_presentations = copy_table(
+                node_presentations_fn(),
+                static_cast<details::PackageNodePresentation*>(nullptr),
+                "node presentation");
             package->config_pointer_fields = copy_table(
                 pointer_fields_fn(),
                 static_cast<NodeConfigPointerFieldData*>(nullptr),
@@ -1252,6 +1262,66 @@ public:
                 return std::string(
                     static_cast<char const*>(view.data), view.size);
             };
+            auto copy_record_text = [](char const* data, std::size_t size,
+                                       std::string_view what) {
+                if (size == 0) return std::string{};
+                if (!data && size != 0) {
+                    throw std::runtime_error(
+                        "IV package " + std::string(what) + " has null data");
+                }
+                return std::string(data, size);
+            };
+            package->node_presentations.reserve(node_presentations.size());
+            std::unordered_set<std::string> presentation_definition_ids;
+            for (auto const& definition : package->definitions) {
+                if (definition.id && definition.id_size != 0) {
+                    presentation_definition_ids.emplace(
+                        definition.id, definition.id_size);
+                }
+            }
+            std::set<std::pair<std::string, std::string>> presentation_keys;
+            for (auto const& presentation : node_presentations) {
+                NodePresentationDescriptor descriptor{
+                    .definition_id = copy_record_text(
+                        presentation.definition_id,
+                        presentation.definition_id_size,
+                        "node presentation definition ID"),
+                    .presentation_id = copy_record_text(
+                        presentation.presentation_id,
+                        presentation.presentation_id_size,
+                        "node presentation ID"),
+                    .display_name = copy_record_text(
+                        presentation.display_name,
+                        presentation.display_name_size,
+                        "node presentation display name"),
+                };
+                if (descriptor.definition_id.empty()
+                    || descriptor.presentation_id.empty()) {
+                    throw std::runtime_error(
+                        "IV package node presentation has an empty stable ID");
+                }
+                if (!presentation_definition_ids.contains(
+                        descriptor.definition_id)) {
+                    throw std::runtime_error(
+                        "IV package node presentation names an unavailable definition '"
+                        + descriptor.definition_id + "'");
+                }
+                if (!presentation_keys.emplace(
+                        descriptor.definition_id,
+                        descriptor.presentation_id).second) {
+                    throw std::runtime_error(
+                        "IV package contains a duplicate node presentation for '"
+                        + descriptor.definition_id + "' and '"
+                        + descriptor.presentation_id + "'");
+                }
+                package->node_presentations.push_back(std::move(descriptor));
+            }
+            std::ranges::sort(
+                package->node_presentations,
+                [](auto const& lhs, auto const& rhs) {
+                    return std::tie(lhs.definition_id, lhs.presentation_id)
+                        < std::tie(rhs.definition_id, rhs.presentation_id);
+                });
             auto copy_state_structure = [&](NodeStateStructureData const& state,
                                                 std::string_view label) {
                 if (!state.fields.data && state.fields.size != 0) {
@@ -1411,6 +1481,7 @@ public:
                 .dynamic_libraries = package->dynamic_libraries,
             },
             .provider_definitions = package->definitions,
+            .node_presentations = package->node_presentations,
             .config_pointer_fields = package->config_pointer_fields,
             .retained_globals = package->retained_globals,
             .node_message_handlers = package->node_message_handlers,

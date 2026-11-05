@@ -6,6 +6,7 @@
 #include <intravenous/runtime/project_node_instance_types.h>
 #include <intravenous/runtime/project_node_replacement_types.h>
 #include <intravenous/runtime/runtime_project_api_types.h>
+#include <intravenous/node/manual_control.h>
 
 #include <filesystem>
 #include <optional>
@@ -73,6 +74,36 @@ struct ProjectReplaceGraphRequest {
     std::vector<ProjectNodeInstanceDeclaration> instances{};
     std::vector<ProjectNodeReplacement> node_replacements{};
     std::vector<ProjectConnection> connections{};
+    std::vector<ProjectManualControl> manual_controls{};
+};
+
+struct ProjectUpsertManualControlRequest {
+    ProjectManualControl control{};
+};
+
+struct ProjectDeleteManualControlRequest {
+    ManualControlId id{};
+};
+
+struct ProjectSetManualControlHoverRequest {
+    std::string client_id{};
+    std::optional<ManualControlId> id{};
+};
+
+struct ProjectBeginManualControlInteractionRequest {
+    ManualControlInteractionId interaction{};
+    ManualControlId id{};
+    Sample value{};
+};
+
+struct ProjectUpdateManualControlInteractionRequest {
+    ManualControlInteractionId interaction{};
+    Sample value{};
+};
+
+struct ProjectEndManualControlInteractionRequest {
+    ManualControlInteractionId interaction{};
+    Sample value{};
 };
 
 struct ProjectSetAudioDevicesRequest {
@@ -113,6 +144,18 @@ using ProjectDeleteGraphConnectionRequestedEvent =
     void (*)(ProjectDeleteGraphConnectionRequest const&, ProjectAckBuilder&);
 using ProjectReplaceGraphRequestedEvent =
     void (*)(ProjectReplaceGraphRequest const&, ProjectAckBuilder&);
+using ProjectUpsertManualControlRequestedEvent =
+    void (*)(ProjectUpsertManualControlRequest const&, ProjectAckBuilder&);
+using ProjectDeleteManualControlRequestedEvent =
+    void (*)(ProjectDeleteManualControlRequest const&, ProjectAckBuilder&);
+using ProjectSetManualControlHoverRequestedEvent =
+    void (*)(ProjectSetManualControlHoverRequest const&, ProjectAckBuilder&);
+using ProjectBeginManualControlInteractionRequestedEvent = void (*)(
+    ProjectBeginManualControlInteractionRequest const&, ProjectAckBuilder&);
+using ProjectUpdateManualControlInteractionRequestedEvent = void (*)(
+    ProjectUpdateManualControlInteractionRequest const&, ProjectAckBuilder&);
+using ProjectEndManualControlInteractionRequestedEvent = void (*)(
+    ProjectEndManualControlInteractionRequest const&, ProjectAckBuilder&);
 using ProjectSetAudioDevicesRequestedEvent =
     void (*)(ProjectSetAudioDevicesRequest const&, ProjectAudioDevicesBuilder&);
 using ProjectOverrideSettingsRequestedEvent =
@@ -145,6 +188,24 @@ IV_DECLARE_LINKER_EVENT(
 IV_DECLARE_LINKER_EVENT(
     ProjectReplaceGraphRequestedEvent,
     iv_runtime_project_replace_graph_requested_event);
+IV_DECLARE_LINKER_EVENT(
+    ProjectUpsertManualControlRequestedEvent,
+    iv_runtime_project_upsert_manual_control_requested_event);
+IV_DECLARE_LINKER_EVENT(
+    ProjectDeleteManualControlRequestedEvent,
+    iv_runtime_project_delete_manual_control_requested_event);
+IV_DECLARE_LINKER_EVENT(
+    ProjectSetManualControlHoverRequestedEvent,
+    iv_runtime_project_set_manual_control_hover_requested_event);
+IV_DECLARE_LINKER_EVENT(
+    ProjectBeginManualControlInteractionRequestedEvent,
+    iv_runtime_project_begin_manual_control_interaction_requested_event);
+IV_DECLARE_LINKER_EVENT(
+    ProjectUpdateManualControlInteractionRequestedEvent,
+    iv_runtime_project_update_manual_control_interaction_requested_event);
+IV_DECLARE_LINKER_EVENT(
+    ProjectEndManualControlInteractionRequestedEvent,
+    iv_runtime_project_end_manual_control_interaction_requested_event);
 IV_DECLARE_LINKER_EVENT(
     ProjectSetAudioDevicesRequestedEvent,
     iv_runtime_project_set_audio_devices_requested_event);

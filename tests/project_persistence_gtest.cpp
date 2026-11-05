@@ -257,9 +257,23 @@ TEST(ProjectPersistenceBuilder, SerializesOnlyDurableConfiguredStateInStableOrde
             .port = {.name = "main"},
         }},
     }});
+    builder.add_manual_controls({iv::ProjectManualControl{
+        .id = {
+            .node = {
+                .instance_id = "instance:b",
+                .path = {iv::ProjectVirtualNodeSelector{
+                    .source_identity = "processor",
+                }},
+            },
+            .input_name = "gain",
+        },
+        .stored_value = iv::Sample{0.625f},
+        .participation =
+            iv::ManualControlParticipation::participate_with_connections,
+    }});
 
     auto const commands = builder.build();
-    ASSERT_EQ(commands.size(), 4u);
+    ASSERT_EQ(commands.size(), 5u);
     EXPECT_EQ(commands[0].command, "project.overrideSettings");
     EXPECT_EQ(commands[0].args["cmake_generator"], "Unix Makefiles");
     EXPECT_EQ(commands[0].args["c_compiler"], "toolchain/clang");
@@ -294,6 +308,19 @@ TEST(ProjectPersistenceBuilder, SerializesOnlyDurableConfiguredStateInStableOrde
     EXPECT_EQ(output["path"][2]["kind"], "tiledChild");
     EXPECT_EQ(output["path"][2]["name"], "right");
     EXPECT_EQ(output["port"]["channel"], 1u);
+
+    EXPECT_EQ(commands[4].command, "manualControls.upsert");
+    EXPECT_EQ(commands[4].args["node"]["instance_id"], "instance:b");
+    ASSERT_EQ(commands[4].args["node"]["path"].size(), 1u);
+    EXPECT_EQ(
+        commands[4].args["node"]["path"][0]["source_identity"],
+        "processor");
+    EXPECT_EQ(commands[4].args["input_name"], "gain");
+    EXPECT_FLOAT_EQ(commands[4].args["value"].get<float>(), 0.625f);
+    EXPECT_EQ(
+        commands[4].args["participation"],
+        "participate_with_connections");
+    EXPECT_TRUE(commands[4].args["enabled"]);
 
     for (auto const &command : commands) {
         EXPECT_FALSE(command.args.contains("graph_input"));
@@ -393,6 +420,9 @@ TEST(ProjectPersistence, LoadContinuesAfterBadCommandAndReplaysLaterInstance)
         R"({"command":"nodeInstances.upsert","args":{"instance_id":"instance:removed","definition_id":"iv.test.removed","package_root":null,"display_name":null,"configuration_source":""}})" "\n"
         R"({"command":"nodeInstances.delete","args":{"instance_id":"instance:removed"}})" "\n"
         R"({"command":"nodeInstances.upsert","args":{"instance_id":"instance:1","definition_id":"iv.test.replayed","package_root":"modules/replayed","display_name":"Replayed","configuration_source":"12 + 4"}})" "\n"
+        R"({"command":"manualControls.upsert","args":{"node":{"instance_id":"instance:0","path":[{"kind":"virtualNode","source_identity":"processor"}]},"input_name":"gain","value":0.75,"participation":"participate_with_connections","enabled":true}})" "\n"
+        R"({"command":"manualControls.upsert","args":{"node":{"instance_id":"instance:1","path":[]},"input_name":"removed","value":0.5,"participation":"disconnected_only","enabled":true}})" "\n"
+        R"({"command":"manualControls.delete","args":{"node":{"instance_id":"instance:1","path":[]},"input_name":"removed"}})" "\n"
         R"({"command":"nodeReplacements.upsert","args":{"address":{"instance_id":"instance:0","path":[{"kind":"virtualNode","source_identity":"processor"}]},"definition_id":"iv.test.successor","package_root":"modules/successor","configuration_arguments":[17,{"mode":"highpass"}]}})" "\n"
         R"({"command":"graphConnections.upsert","args":{"kind":"event","connection_id":"event:removed","source_type":"trigger","outputs":[{"instance_id":"instance:0","path":[],"port":{"name":"out"}}],"target_type":"empty","inputs":[{"instance_id":"instance:1","path":[],"port":{"index":0}}]}})" "\n"
         R"({"command":"graphConnections.delete","args":{"connection_id":"event:removed"}})" "\n"
@@ -450,6 +480,18 @@ TEST(ProjectPersistence, LoadContinuesAfterBadCommandAndReplaysLaterInstance)
     auto const generation = project_graph.current_generation();
     ASSERT_TRUE(generation);
     EXPECT_EQ(generation->generation, 1u);
+    ASSERT_EQ(generation->manual_controls.size(), 1u);
+    EXPECT_EQ(
+        generation->manual_controls[0].id.node.instance_id,
+        "instance:0");
+    ASSERT_EQ(generation->manual_controls[0].id.node.path.size(), 1u);
+    EXPECT_EQ(generation->manual_controls[0].id.input_name, "gain");
+    EXPECT_FLOAT_EQ(
+        static_cast<float>(generation->manual_controls[0].stored_value),
+        0.75f);
+    EXPECT_EQ(
+        generation->manual_controls[0].participation,
+        iv::ManualControlParticipation::participate_with_connections);
     EXPECT_TRUE(std::ranges::any_of(witness.messages, [](auto const &message) {
         return message.level == "error"
             && message.message.contains("unknown project command: removed.timelineCommand");

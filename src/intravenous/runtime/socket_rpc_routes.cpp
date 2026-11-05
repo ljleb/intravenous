@@ -221,6 +221,74 @@ SocketRpcRouteRegistry::SocketRpcRouteRegistry()
             if (!builder.has_response()) builder.fail("project graph service is unavailable");
             return builder.build(id);
         });
+    impl_->add<UpsertManualControlRequest>(
+        "manualControls.upsert", "project.write", true, false,
+        [](auto const& request, int id, Context const&) {
+            SocketRpcAckResponseBuilder builder;
+            IV_INVOKE_LINKER_EVENT(
+                iv_socket_rpc_upsert_manual_control_event, request, builder);
+            if (!builder.has_response()) builder.fail("project graph service is unavailable");
+            return builder.build(id);
+        });
+    impl_->add<DeleteManualControlRequest>(
+        "manualControls.delete", "project.write", true, false,
+        [](auto const& request, int id, Context const&) {
+            SocketRpcAckResponseBuilder builder;
+            IV_INVOKE_LINKER_EVENT(
+                iv_socket_rpc_delete_manual_control_event, request, builder);
+            if (!builder.has_response()) builder.fail("project graph service is unavailable");
+            return builder.build(id);
+        });
+    impl_->add<SetManualControlHoverRequest>(
+        "manualControls.hover", "project.write", false, false,
+        [](auto const& request, int id, Context const& context) {
+            SocketRpcAckResponseBuilder builder;
+            auto bound = request;
+            bound.client_id = context.client_id;
+            IV_INVOKE_LINKER_EVENT(
+                iv_socket_rpc_set_manual_control_hover_event, bound, builder);
+            if (!builder.has_response()) builder.fail("project graph service is unavailable");
+            return builder.build(id);
+        });
+    impl_->add<BeginManualControlInteractionRequest>(
+        "manualControls.begin", "project.write", true, false,
+        [](auto const& request, int id, Context const& context) {
+            SocketRpcAckResponseBuilder builder;
+            auto bound = request;
+            bound.interaction.client_id = context.client_id;
+            IV_INVOKE_LINKER_EVENT(
+                iv_socket_rpc_begin_manual_control_interaction_event,
+                bound,
+                builder);
+            if (!builder.has_response()) builder.fail("project graph service is unavailable");
+            return builder.build(id);
+        });
+    impl_->add<UpdateManualControlInteractionRequest>(
+        "manualControls.update", "project.write", true, false,
+        [](auto const& request, int id, Context const& context) {
+            SocketRpcAckResponseBuilder builder;
+            auto bound = request;
+            bound.interaction.client_id = context.client_id;
+            IV_INVOKE_LINKER_EVENT(
+                iv_socket_rpc_update_manual_control_interaction_event,
+                bound,
+                builder);
+            if (!builder.has_response()) builder.fail("project graph service is unavailable");
+            return builder.build(id);
+        });
+    impl_->add<EndManualControlInteractionRequest>(
+        "manualControls.end", "project.write", true, false,
+        [](auto const& request, int id, Context const& context) {
+            SocketRpcAckResponseBuilder builder;
+            auto bound = request;
+            bound.interaction.client_id = context.client_id;
+            IV_INVOKE_LINKER_EVENT(
+                iv_socket_rpc_end_manual_control_interaction_event,
+                bound,
+                builder);
+            if (!builder.has_response()) builder.fail("project graph service is unavailable");
+            return builder.build(id);
+        });
     impl_->add<GetNodeEventProtocolRequest>(
         "nodeMessages.getProtocol", "project.read", false, false,
         [](auto const& request, int id, Context const&) {

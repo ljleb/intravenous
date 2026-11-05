@@ -144,6 +144,7 @@ struct CompiledGraph {
     // semantic port state before activating a replacement realization.
     graph_jit::RealtimePortStateRequirements realtime_port_state_requirements{};
     graph_jit::RealtimePortStateRealizations realtime_port_state_realizations{};
+    std::vector<ManualControlRuntimeBinding> manual_controls{};
     std::optional<CompiledGraphCutover> cutover{};
     CompiledGraphRootOperations root_operations{};
     CompiledGraphBackgroundOperations background_operations{};

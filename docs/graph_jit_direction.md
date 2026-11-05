@@ -1795,6 +1795,10 @@ region that exceeds its compiled block contract.
 
 ### Value specialization over immutable temporal data
 
+This section describes a later general specialization capability. Front 14 does not
+need a cache of compiled variants or a catalog of temporal value tuples. Its initial
+manual-control policy is defined in the next section.
+
 GraphJit may later generate several code specializations inside one structural
 compiled graph while all variants share the same `NodeLayout`, `NodeStorage`,
 initialization, lifecycle, and persistent bindings. Switching specialization must
@@ -1824,22 +1828,36 @@ Only code-only facts are eligible for this scheme. A value that changes
 `NodeLayout`, state identity, initialization, lifecycle, or graph structure is a
 structural recompilation input instead.
 
-### Manual-control dynamic-input variants
+### Manual-control dynamic-input compilation
 
-The planned manual-control application of this mechanism is specified in
+The manual-control policy is specified in
 [node_presentation_and_manual_controls_direction.md](./node_presentation_and_manual_controls_direction.md).
-A settled participating manual value is a constant-specialization candidate.
-Hover/gesture intent may request a code variant whose exact `dynamic_inputs` set
-contains the controls that must be read dynamically; simultaneous gestures form a
-set rather than one optional control. Stale LLVM results carry exact request/revision
-identity and are discarded when superseded. On release, a settled constant variant
-is requested again while the current dynamic variant may continue reading the final
-unchanged scalar until replacement is ready.
+A settled participating manual value is a constant-specialization candidate. Hover
+requests compilation with an exact `dynamic_inputs` set, but hover does not activate
+the result.
 
-All such variants are code-only variants of one structural realization: they share
-the same canonical `NodeLayout`/`NodeStorage` and must preserve compatible persistent-
-state semantics, not merely identical offsets. No recent-variant cache is required
-initially; add one only if later profiling justifies it.
+Front 14 initially keeps one active executable graph and one logically current
+replacement request. An interaction can start before compilation finishes. In that
+case, the UI retains the latest desired value while the active graph keeps using its
+existing constant value. There is no generic execution path that applies a dynamic
+value to code that does not support it.
+
+The `dynamic_inputs` set contains every control with an ongoing interaction. A later
+hover can supersede predictive work, but it cannot remove an input that an ongoing
+interaction requires. Each compilation carries exact request and project-revision
+identity. The worker cancels obsolete work when possible and otherwise discards its
+result.
+
+After manual updates remain idle for the defined debounce interval, GraphJit captures
+the latest settled values and compiles a constant-specialized replacement. The active
+dynamic code continues during compilation. Pointer release is not the only idle
+trigger.
+
+The active and replacement code share the canonical `NodeLayout` and `NodeStorage`.
+They must preserve compatible persistent-state semantics, not only identical offsets.
+Temporary code overlap exists only for safe activation and reclamation. Front 14 does
+not keep a cache of old control specializations. Front 16 can add reuse only after
+measurements show a benefit.
 
 ## Lowering boundary
 

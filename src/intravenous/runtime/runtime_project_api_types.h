@@ -73,6 +73,7 @@ namespace iv {
         std::string backing_node_id{};
         std::string kind{};
         std::string type_identity{};
+        std::string definition_id{};
         std::vector<VirtualContinuousPortInfo> continuous_inputs{};
         std::vector<VirtualContinuousPortInfo> continuous_outputs{};
         std::vector<VirtualEventPortInfo> event_inputs{};
@@ -85,6 +86,7 @@ namespace iv {
         std::string kind{};
         std::string source_identity{};
         std::string type_identity{};
+        std::string definition_id{};
         std::vector<LiveSourceSpan> source_spans{};
         std::vector<VirtualContinuousPortInfo> continuous_inputs{};
         std::vector<VirtualContinuousPortInfo> continuous_outputs{};

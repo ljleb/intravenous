@@ -6,6 +6,7 @@
 #include <gtest/gtest.h>
 
 #include <array>
+#include <bit>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -938,6 +939,27 @@ iv::NodeLayout persistent_raw_layout(std::size_t& offset)
     return layout;
 }
 
+iv::ManualControlId manual_control_id()
+{
+    return {
+        .node = {.instance_id = "instance:manual"},
+        .input_name = "value",
+    };
+}
+
+iv::NodeLayout manual_control_layout(std::size_t& offset)
+{
+    iv::NodeLayoutBuilder builder(64);
+    auto const region = builder.declare_raw_region(
+        sizeof(iv::ManualControlRuntimeState),
+        alignof(iv::ManualControlRuntimeState),
+        "graph-executor-test-manual-control",
+        initialize_zero_raw_region);
+    auto layout = std::move(builder).build();
+    offset = layout.regions[region.index].storage_offset;
+    return layout;
+}
+
 class GraphExecutorFixture : public testing::Test {
 protected:
     iv::ResourceContext resources_{};
@@ -1106,6 +1128,70 @@ TEST_F(GraphExecutorFixture, StagesActivatesAndDispatchesOnlyActiveGeneration)
     EXPECT_EQ(second_tick.sample_index, index(65));
     EXPECT_EQ(second_tick.block_size, 64u);
     EXPECT_FALSE(executor.activate_pending(index(129)));
+}
+
+TEST_F(GraphExecutorFixture,
+       CompatibleRealtimeCodeKeepsNodeStorageAndAppliesTheLatestTarget)
+{
+    iv::GraphExecutor executor;
+    std::size_t state_offset = 0;
+    auto initial = std::const_pointer_cast<iv::CompiledGraph>(compiled_graph(
+        1, &observe_first, manual_control_layout(state_offset)));
+    initial->manual_controls.push_back(iv::ManualControlRuntimeBinding{
+        .configured = {
+            .id = manual_control_id(),
+            .input = {0, iv::PortKind::sample, 0},
+        },
+        .state_storage_offset = state_offset,
+        .participates = true,
+    });
+
+    ASSERT_EQ(executor.stage(initial), iv::GraphExecutorStageResult::accepted);
+    EXPECT_TRUE(executor.set_manual_control_target(
+        1, manual_control_id(), iv::Sample{0.25f}));
+    ASSERT_TRUE(executor.activate_pending(index(0)));
+    executor.tick_block(index(0), 16);
+    ASSERT_NE(first_tick.storage, nullptr);
+    auto* initial_storage = first_tick.storage;
+    iv::ManualControlRuntimeState state{};
+    std::memcpy(
+        &state,
+        initial_storage + state_offset,
+        sizeof(state));
+    EXPECT_FLOAT_EQ(std::bit_cast<float>(state.target_bits), 0.25f);
+
+    auto replacement = std::make_shared<iv::CompiledGraph>(*initial);
+    replacement->root_operations.tick_block = &observe_second;
+    ASSERT_EQ(
+        executor.stage_realtime_code(replacement),
+        iv::GraphExecutorStageResult::accepted);
+    EXPECT_TRUE(executor.set_manual_control_target(
+        1, manual_control_id(), iv::Sample{0.75f}));
+
+    executor.tick_block(index(16), 16);
+    EXPECT_EQ(first_tick.calls, 2u);
+    EXPECT_EQ(second_tick.calls, 0u);
+    ASSERT_TRUE(executor.activate_pending(index(32)));
+    executor.tick_block(index(32), 16);
+    EXPECT_EQ(second_tick.calls, 1u);
+    EXPECT_EQ(second_tick.storage, initial_storage);
+    std::memcpy(
+        &state,
+        second_tick.storage + state_offset,
+        sizeof(state));
+    EXPECT_FLOAT_EQ(std::bit_cast<float>(state.target_bits), 0.75f);
+
+    auto incompatible = std::make_shared<iv::CompiledGraph>(*replacement);
+    incompatible->node_layout = iv::NodeLayoutBuilder(64).build();
+    EXPECT_THROW(
+        (void)executor.stage_realtime_code(std::move(incompatible)),
+        std::invalid_argument);
+
+    auto stale = std::make_shared<iv::CompiledGraph>(*replacement);
+    stale->project_generation = 2;
+    EXPECT_EQ(
+        executor.stage_realtime_code(std::move(stale)),
+        iv::GraphExecutorStageResult::ignored_stale);
 }
 
 TEST_F(GraphExecutorFixture, PreservesEveryAcceptedGenerationBeforeActivation)

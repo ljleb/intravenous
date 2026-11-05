@@ -194,10 +194,33 @@ struct PrimitiveSampleInputBindingPlan {
     bool combines_invocation_supplied = false;
     std::vector<PrimitiveSampleInputChannelBindingPlan>
         realtime_operand_channels{};
+    // A participating manual control writes the current block into this
+    // input's retained timeline. For an ordinary realtime-only connection,
+    // manual_operand_channels names the already-composed input that is copied
+    // before the node-specific combine operation adds the manual contribution.
+    // Slot-fed inputs are staged first by the existing invocation path.
+    std::optional<std::size_t> manual_control{};
+    // Canonical retained timeline shared by constant and dynamic control code.
+    // Constant disconnected code can keep history current here while the
+    // node-facing binding remains an immutable compiler constant.
+    std::vector<PrimitiveSampleInputChannelBindingPlan>
+        manual_timeline_channels{};
+    std::vector<PrimitiveSampleInputChannelBindingPlan>
+        manual_operand_channels{};
     // A Random Access input reads only its TickInvocationCall Random Access
     // view. Its declared entry in the reflected Sequential binding array has
     // no storage and is never read by node code.
     bool random_access = false;
+};
+
+struct ManualControlPlan {
+    ConfiguredManualControl configured{};
+    std::size_t primitive_index = 0;
+    std::size_t input_index = 0;
+    bool participates = false;
+    bool stages_timeline = false;
+    NodeLayout::RegionHandle state_region{};
+    std::size_t state_storage_offset = 0;
 };
 
 struct PrimitiveSampleOutputBindingPlan {
@@ -221,6 +244,7 @@ struct SamplePortBindingPlan {
     SampleStoragePlan storage{};
     // One entry per analyzed concrete primitive.
     std::vector<PrimitiveSamplePortPlan> primitives{};
+    std::vector<ManualControlPlan> manual_controls{};
     std::size_t contiguous_input_scratch_size = 0;
     std::size_t contiguous_input_scratch_alignment = 1;
 

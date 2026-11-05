@@ -192,6 +192,37 @@ SourceRangeMatchMode parse_match_mode(Json const &params) {
     throw std::runtime_error("graph.queryBySpans match must be 'union' or 'intersection'");
 }
 
+ManualControlId parse_manual_control_id(Json const& params)
+{
+    auto const node = params.find("node");
+    if (node == params.end() || !node->is_object()) {
+        throw std::runtime_error(
+            "manual control request requires object param 'node'");
+    }
+    return {
+        .node = parse_node_address_json(
+            *node, ProjectConnectionJsonNames::socket_rpc),
+        .input_name = parse_string_param(params, "inputName"),
+    };
+}
+
+Sample parse_manual_control_value(Json const& params)
+{
+    auto const value = params.find("value");
+    if (value == params.end() || !value->is_number()) {
+        throw std::runtime_error(
+            "manual control request requires numeric param 'value'");
+    }
+    return value->get<float>();
+}
+
+ManualControlInteractionId parse_manual_interaction_id(Json const& params)
+{
+    return {
+        .interaction_id = parse_string_param(params, "interactionId"),
+    };
+}
+
 } // namespace
 
 ParsedSocketRpcRequest parse_socket_rpc_request(std::string_view line)
@@ -294,6 +325,70 @@ ParsedSocketRpcRequest parse_socket_rpc_request(std::string_view line)
         return parsed(DeleteGraphConnectionRequest{
                 .connection_id = parse_string_param(params, "connectionId"),
             });
+    }
+    if (method == "manualControls.upsert") {
+        auto const participation = parse_string_param(params, "participation");
+        ManualControlParticipation parsed_participation{};
+        if (participation == "disconnectedOnly") {
+            parsed_participation =
+                ManualControlParticipation::disconnected_only;
+        } else if (participation == "participateWithConnections") {
+            parsed_participation =
+                ManualControlParticipation::participate_with_connections;
+        } else {
+            throw std::runtime_error(
+                "manual control participation must be 'disconnectedOnly' or 'participateWithConnections'");
+        }
+        auto const enabled = params.find("enabled");
+        if (enabled != params.end() && !enabled->is_boolean()) {
+            throw std::runtime_error(
+                "manual control param 'enabled' must be boolean");
+        }
+        return parsed(UpsertManualControlRequest{
+            .control = {
+                .id = parse_manual_control_id(params),
+                .stored_value = parse_manual_control_value(params),
+                .participation = parsed_participation,
+                .enabled = enabled == params.end() || enabled->get<bool>(),
+            },
+        });
+    }
+    if (method == "manualControls.delete") {
+        return parsed(DeleteManualControlRequest{
+            .id = parse_manual_control_id(params),
+        });
+    }
+    if (method == "manualControls.hover") {
+        auto const node = params.find("node");
+        auto const input = params.find("inputName");
+        auto id = std::optional<ManualControlId>{};
+        if ((node == params.end()) != (input == params.end())) {
+            throw std::runtime_error(
+                "manual control hover requires both 'node' and 'inputName', or neither");
+        }
+        if (node != params.end()) id = parse_manual_control_id(params);
+        return parsed(SetManualControlHoverRequest{
+            .id = std::move(id),
+        });
+    }
+    if (method == "manualControls.begin") {
+        return parsed(BeginManualControlInteractionRequest{
+            .interaction = parse_manual_interaction_id(params),
+            .id = parse_manual_control_id(params),
+            .value = parse_manual_control_value(params),
+        });
+    }
+    if (method == "manualControls.update") {
+        return parsed(UpdateManualControlInteractionRequest{
+            .interaction = parse_manual_interaction_id(params),
+            .value = parse_manual_control_value(params),
+        });
+    }
+    if (method == "manualControls.end") {
+        return parsed(EndManualControlInteractionRequest{
+            .interaction = parse_manual_interaction_id(params),
+            .value = parse_manual_control_value(params),
+        });
     }
     if (method == "nodeMessages.getProtocol") {
         return parsed(GetNodeEventProtocolRequest{});

@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <bit>
 #include <cstring>
 #include <limits>
 #include <span>
@@ -32,6 +33,163 @@ ProducerCapacityPolicy producer_capacity_policy(
         .high_watermark = maximum_blocks_per_callback
             * config.high_watermark_callbacks,
     };
+}
+
+bool compatible_realtime_code(
+    CompiledGraph const& structural,
+    CompiledGraph const& replacement) noexcept
+{
+    if (replacement.cutover
+        || replacement.project_generation != structural.project_generation
+        || replacement.definitions_generation
+            != structural.definitions_generation
+        || replacement.specialization.sample_rate
+            != structural.specialization.sample_rate
+        || replacement.specialization.block_size
+            != structural.specialization.block_size
+        || replacement.node_layout.storage_size
+            != structural.node_layout.storage_size
+        || replacement.node_layout.steady_storage_size
+            != structural.node_layout.steady_storage_size
+        || replacement.node_layout.storage_alignment
+            != structural.node_layout.storage_alignment
+        || replacement.node_layout.max_block_size
+            != structural.node_layout.max_block_size
+        || replacement.node_layout.default_silence_ttl_samples
+            != structural.node_layout.default_silence_ttl_samples
+        || replacement.node_layout.nodes.size()
+            != structural.node_layout.nodes.size()
+        || replacement.node_layout.regions.size()
+            != structural.node_layout.regions.size()
+        || replacement.node_layout.imported_arrays.size()
+            != structural.node_layout.imported_arrays.size()
+        || replacement.node_layout.exported_arrays.size()
+            != structural.node_layout.exported_arrays.size()
+        || replacement.node_layout.initialize_order
+            != structural.node_layout.initialize_order
+        || replacement.manual_controls.size()
+            != structural.manual_controls.size()
+        || !replacement.root_operations.valid()) {
+        return false;
+    }
+    for (std::size_t i = 0; i < structural.node_layout.nodes.size(); ++i) {
+        auto const& lhs = structural.node_layout.nodes[i];
+        auto const& rhs = replacement.node_layout.nodes[i];
+        if (lhs.node_type != rhs.node_type
+            || lhs.state_structure != rhs.state_structure
+            || lhs.state_offset != rhs.state_offset
+            || lhs.state_size != rhs.state_size
+            || lhs.state_alignment != rhs.state_alignment
+            || lhs.dependencies != rhs.dependencies
+            || lhs.lifecycle.move_fn != rhs.lifecycle.move_fn
+            || lhs.lifecycle.initialize_fn != rhs.lifecycle.initialize_fn
+            || lhs.lifecycle.release_fn != rhs.lifecycle.release_fn
+            || lhs.lifecycle.default_construct_state_fn
+                != rhs.lifecycle.default_construct_state_fn
+            || lhs.lifecycle.destroy_state_fn
+                != rhs.lifecycle.destroy_state_fn
+            || lhs.lifecycle.identity_fn != rhs.lifecycle.identity_fn) {
+            return false;
+        }
+    }
+    auto owns_manual_control_state = [](
+        CompiledGraph const& graph,
+        NodeLayout::Region const& region) {
+        return region.kind == NodeLayout::Region::Kind::raw
+            && region.size == sizeof(ManualControlRuntimeState)
+            && std::ranges::any_of(
+                graph.manual_controls,
+                [&](ManualControlRuntimeBinding const& binding) {
+                    return binding.state_storage_offset
+                        == region.storage_offset;
+                });
+    };
+    for (std::size_t i = 0; i < structural.node_layout.regions.size(); ++i) {
+        auto const& lhs = structural.node_layout.regions[i];
+        auto const& rhs = replacement.node_layout.regions[i];
+        auto const lhs_manual = owns_manual_control_state(structural, lhs);
+        auto const rhs_manual = owns_manual_control_state(replacement, rhs);
+        if (lhs.kind != rhs.kind
+            || lhs.owner_node != rhs.owner_node
+            || lhs.storage_offset != rhs.storage_offset
+            || lhs.size != rhs.size
+            || lhs.alignment != rhs.alignment
+            || lhs.state_field_offset != rhs.state_field_offset
+            || lhs.element_count != rhs.element_count
+            || lhs.transition_only != rhs.transition_only
+            || lhs.migration_identity != rhs.migration_identity
+            || lhs.raw_initialize_fn != rhs.raw_initialize_fn
+            || lhs.element_type != rhs.element_type
+            || lhs.assign_span_fn != rhs.assign_span_fn
+            || lhs.nested_node_indices != rhs.nested_node_indices
+            || lhs_manual != rhs_manual
+            || (!lhs_manual
+                && lhs.raw_initialize_data != rhs.raw_initialize_data)) {
+            return false;
+        }
+    }
+    auto arrays_match = [](auto const& lhs, auto const& rhs) {
+        return lhs.owner_node == rhs.owner_node
+            && lhs.id == rhs.id
+            && lhs.state_field_offset == rhs.state_field_offset
+            && lhs.element_type == rhs.element_type
+            && lhs.element_size == rhs.element_size
+            && lhs.assign_span_fn == rhs.assign_span_fn
+            && lhs.read_span_fn == rhs.read_span_fn;
+    };
+    if (!std::ranges::equal(
+            structural.node_layout.imported_arrays,
+            replacement.node_layout.imported_arrays,
+            arrays_match)
+        || !std::ranges::equal(
+            structural.node_layout.exported_arrays,
+            replacement.node_layout.exported_arrays,
+            arrays_match)) {
+        return false;
+    }
+    for (std::size_t i = 0; i < structural.manual_controls.size(); ++i) {
+        auto const& lhs = structural.manual_controls[i];
+        auto const& rhs = replacement.manual_controls[i];
+        if (lhs.configured.id != rhs.configured.id
+            || lhs.configured.input != rhs.configured.input
+            || lhs.configured.concrete_selection_index
+                != rhs.configured.concrete_selection_index
+            || lhs.configured.participation != rhs.configured.participation
+            || lhs.state_storage_offset != rhs.state_storage_offset
+            || lhs.participates != rhs.participates) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool write_manual_control_target(
+    CompiledGraph const& graph,
+    NodeStorage& node_storage,
+    ManualControlId const& id,
+    Sample value)
+{
+    auto storage = node_storage.buffer();
+    auto const bits = std::bit_cast<std::uint32_t>(value.value);
+    bool updated = false;
+    for (auto const& binding : graph.manual_controls) {
+        if (binding.configured.id != id) continue;
+        auto const offset = binding.state_storage_offset
+            + offsetof(ManualControlRuntimeState, target_bits);
+        if (offset > storage.size()
+            || sizeof(std::uint32_t) > storage.size() - offset
+            || reinterpret_cast<std::uintptr_t>(storage.data() + offset)
+                % alignof(std::uint32_t) != 0) {
+            throw std::logic_error(
+                "GraphExecutor manual-control state lies outside NodeStorage");
+        }
+        auto& target = *reinterpret_cast<std::uint32_t*>(
+            storage.data() + offset);
+        std::atomic_ref<std::uint32_t>(target).store(
+            bits, std::memory_order_relaxed);
+        updated = true;
+    }
+    return updated;
 }
 
 std::vector<PersistedOutputHandle> retired_persisted_outputs(
@@ -226,6 +384,8 @@ GraphExecutor::ExecutionGeneration::ExecutionGeneration(
     RealtimeProducerCapacityConfig const& capacity_policy,
     AsyncWorkSignal& background_work_signal)
     : graph(std::move(compiled_graph))
+    , realtime_code(graph.get())
+    , active_realtime_code_owner(graph)
     , realtime(
         *graph, resources, data, capacity_manager, capacity_policy)
     , background(*graph, resources, realtime, background_work_signal)
@@ -382,6 +542,9 @@ void GraphExecutor::ExecutionGeneration::commit_realtime_migration(
             std::memory_order_release);
     }
     realtime_initialized = true;
+    for (auto const& [id, value] : manual_control_targets) {
+        (void)write_manual_control_target(*graph, realtime.storage, id, value);
+    }
 }
 
 void GraphExecutor::ExecutionGeneration::update_realtime_phase(
@@ -598,6 +761,22 @@ GraphExecutor::BackgroundExecutor::generation()
         throw std::logic_error("BackgroundExecutor has no generation");
     }
     return *generation_chain_;
+}
+
+GraphExecutor::ExecutionGeneration* GraphExecutor::find_accepted_generation(
+    std::uint64_t project_generation) noexcept
+{
+    if (realtime_active_
+        && realtime_active_->graph->project_generation == project_generation) {
+        return realtime_active_;
+    }
+    for (auto* pending = pending_head_; pending;
+         pending = pending->successor_owner.get()) {
+        if (pending->graph->project_generation == project_generation) {
+            return pending;
+        }
+    }
+    return nullptr;
 }
 
 GraphExecutorReclaimedSnapshots
@@ -869,6 +1048,67 @@ GraphExecutorStageResult GraphExecutor::stage(
     return GraphExecutorStageResult::accepted;
 }
 
+GraphExecutorStageResult GraphExecutor::stage_realtime_code(
+    std::shared_ptr<CompiledGraph const> compiled_graph)
+{
+    struct Unlock {
+        GraphExecutor* executor;
+        ~Unlock() { executor->unlock_accepted_chain(); }
+    };
+    lock_accepted_chain();
+    Unlock unlock{this};
+    if (!compiled_graph) {
+        throw std::invalid_argument(
+            "GraphExecutor cannot stage an empty realtime-code replacement");
+    }
+    auto* target = find_accepted_generation(
+        compiled_graph->project_generation);
+    if (!target) return GraphExecutorStageResult::ignored_stale;
+    if (!compatible_realtime_code(*target->graph, *compiled_graph)) {
+        throw std::invalid_argument(
+            "GraphExecutor realtime-code replacement is not layout-compatible");
+    }
+    target->pending_realtime_code_owner = std::move(compiled_graph);
+    return GraphExecutorStageResult::accepted;
+}
+
+bool GraphExecutor::set_manual_control_target(
+    std::uint64_t project_generation,
+    ManualControlId const& id,
+    Sample value)
+{
+    struct Unlock {
+        GraphExecutor* executor;
+        ~Unlock() { executor->unlock_accepted_chain(); }
+    };
+    lock_accepted_chain();
+    Unlock unlock{this};
+    auto* generation = find_accepted_generation(project_generation);
+    if (!generation) return false;
+    if (!std::ranges::any_of(
+            generation->graph->manual_controls,
+            [&](ManualControlRuntimeBinding const& binding) {
+                return binding.configured.id == id;
+            })) {
+        return false;
+    }
+    auto target = std::ranges::find(
+        generation->manual_control_targets, id,
+        [](auto const& entry) -> ManualControlId const& {
+            return entry.first;
+        });
+    if (target == generation->manual_control_targets.end()) {
+        generation->manual_control_targets.emplace_back(id, value);
+    } else {
+        target->second = value;
+    }
+    if (generation->realtime_initialized) {
+        return write_manual_control_target(
+            *generation->graph, generation->realtime.storage, id, value);
+    }
+    return true;
+}
+
 ProjectGraphGraphExecutorResult GraphExecutor::handle_project_graph_transaction(
     std::shared_ptr<CompiledGraph const> const& compiled_graph)
 {
@@ -892,7 +1132,24 @@ bool GraphExecutor::activate_pending(GlobalIndex sample_index)
         GraphExecutor* executor;
         ~Unlock() { executor->unlock_accepted_chain(); }
     } unlock{this};
-    if (!pending_head_) return false;
+    auto activate_realtime_code = [&](ExecutionGeneration& generation) {
+        generation.update_realtime_phase();
+        if (!generation.pending_realtime_code_owner
+            || generation.realtime_phase.load(std::memory_order_relaxed)
+                != CompiledGraphRealtimePhase::steady) {
+            return false;
+        }
+        generation.realtime_code.store(
+            generation.pending_realtime_code_owner.get(),
+            std::memory_order_release);
+        generation.active_realtime_code_owner =
+            std::move(generation.pending_realtime_code_owner);
+        return true;
+    };
+    if (!pending_head_) {
+        return realtime_active_
+            && activate_realtime_code(*realtime_active_);
+    }
     if (!realtime_active_) {
         if (!pending_head_->initial_persisted_state
             || !pending_head_->initial_persisted_state->capture_initial()) {
@@ -907,6 +1164,7 @@ bool GraphExecutor::activate_pending(GlobalIndex sample_index)
             first->graph->project_generation);
         pending_head_ = first->successor_owner.get();
         if (!pending_head_) pending_tail_ = nullptr;
+        (void)activate_realtime_code(*first);
         return true;
     }
 
@@ -944,6 +1202,7 @@ bool GraphExecutor::activate_pending(GlobalIndex sample_index)
     pending_head_ = next->successor_owner.get();
     if (!pending_head_) pending_tail_ = nullptr;
     background_executor_.notify_generation_cutover();
+    (void)activate_realtime_code(*next);
     return true;
 }
 
@@ -1239,10 +1498,12 @@ void GraphExecutor::tick_block(GlobalIndex sample_index, std::size_t block_size)
         generation.realtime.tick_invocation,
         sample_index,
         block_size};
-    auto const tick = generation.realtime_phase.load(std::memory_order_relaxed)
-            == CompiledGraphRealtimePhase::transition
+    auto const phase = generation.realtime_phase.load(std::memory_order_relaxed);
+    auto const* realtime_code = generation.realtime_code.load(
+        std::memory_order_acquire);
+    auto const tick = phase == CompiledGraphRealtimePhase::transition
         ? generation.graph->root_operations.transition_tick_block
-        : generation.graph->root_operations.tick_block;
+        : realtime_code->root_operations.tick_block;
     if (!tick) {
         throw std::logic_error(
             "GraphExecutor active realtime realization has no root operation");

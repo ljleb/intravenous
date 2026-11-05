@@ -152,6 +152,13 @@ class GraphExecutor {
     // never share mutable NodeStorage or generation-local workspaces.
     struct ExecutionGeneration {
         std::shared_ptr<CompiledGraph const> graph{};
+        // The structural graph owns layout, background state, and transition
+        // metadata. A compatible steady-code replacement changes only the
+        // generated realtime operations used after the transition phase.
+        std::atomic<CompiledGraph const*> realtime_code{nullptr};
+        std::shared_ptr<CompiledGraph const> active_realtime_code_owner{};
+        std::shared_ptr<CompiledGraph const> pending_realtime_code_owner{};
+        std::vector<std::pair<ManualControlId, Sample>> manual_control_targets{};
         RealtimeGeneration realtime;
         BackgroundGeneration background;
         std::unique_ptr<RealtimePersistedState> initial_persisted_state{};
@@ -327,6 +334,8 @@ class GraphExecutor {
     reclaim_retired_snapshots_on_background();
     void lock_accepted_chain() noexcept;
     void unlock_accepted_chain() noexcept;
+    [[nodiscard]] ExecutionGeneration* find_accepted_generation(
+        std::uint64_t project_generation) noexcept;
 
 public:
     explicit GraphExecutor(
@@ -344,6 +353,20 @@ public:
     // accepted, the generation cannot be replaced by a later submission.
     GraphExecutorStageResult stage(
         std::shared_ptr<CompiledGraph const> compiled_graph);
+
+    // Keeps the accepted structural generation and its NodeStorage. The
+    // replacement must have the same project generation and canonical layout;
+    // a newer compatible request replaces an older unactivated request.
+    GraphExecutorStageResult stage_realtime_code(
+        std::shared_ptr<CompiledGraph const> compiled_graph);
+
+    // Atomically changes target_bits in the accepted generation selected by
+    // project_generation. One semantic ManualControlId can update several
+    // concrete selected inputs.
+    [[nodiscard]] bool set_manual_control_target(
+        std::uint64_t project_generation,
+        ManualControlId const& id,
+        Sample value);
 
     ProjectGraphGraphExecutorResult handle_project_graph_transaction(
         std::shared_ptr<CompiledGraph const> const& compiled_graph);

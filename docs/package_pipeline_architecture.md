@@ -329,6 +329,12 @@ It owns application state such as:
 - the latest build diagnostics;
 - global-publication diagnostics returned by `NodeDefinitions`.
 
+An accepted `PackageRevision` also retains its `NodePresentationDescriptor` values.
+After `NodeDefinitions` publishes the global definition namespace,
+`IvPackageInfo::node_presentations` exposes only descriptors whose `definition_id` is
+present in that package's published module or leaf IDs. A definition namespace
+conflict cannot publish a presentation descriptor for the rejected definition.
+
 The operational watcher copy of detected declarations is not a competing source
 of application truth: `PackageWatcher` needs source declarations to maintain
 filesystem state, while `PackageDefinitions` retains the corresponding

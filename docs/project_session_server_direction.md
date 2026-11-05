@@ -102,8 +102,7 @@ The inherited `--rpc-fd` transport remains available for tests and compatible
 launchers. It creates one trusted client and does not publish a project endpoint.
 
 As of 2026-11-04, the repository owner's complete C++ build and test suite passes for
-this core implementation. The VS Code client typecheck and tests are pending because
-the local npm dependencies are not installed.
+this core implementation. The VS Code client typecheck and npm tests also pass.
 
 The optional remote-audio lease and WebRTC relay are not part of this core
 implementation. They remain separate optional work because they add media

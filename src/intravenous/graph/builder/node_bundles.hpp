@@ -317,6 +317,8 @@ public:
   constexpr NodeBundleHandle tiled_member(
       NodeBundleHandle, size_t channel) const;
   constexpr NodeLifetime const &concrete_lifetime(NodeBundleHandle) const;
+  constexpr RegisteredNodeTypeIdentity const* registered_node_type_identity(
+      NodeBundleHandle) const;
   constexpr void set_registered_node_type_identity(
       NodeBundleHandle, RegisteredNodeTypeIdentity);
   constexpr ReflectedNodeDescription materialize_concrete_description(
@@ -1189,6 +1191,35 @@ constexpr NodeLifetime const &GraphBuilderNodeBundles::concrete_lifetime(
   auto const *payload = b._payload ? std::get_if<NodeBundle::ConcreteNodeBundle>(&*b._payload) : nullptr;
   if (!payload) details::error("NodeBundle is not concrete");
   return payload->lifetime;
+}
+
+constexpr RegisteredNodeTypeIdentity const*
+GraphBuilderNodeBundles::registered_node_type_identity(
+    NodeBundleHandle handle) const {
+  auto const& target = bundle(handle);
+  if (auto const* concrete = target._payload
+          ? std::get_if<NodeBundle::ConcreteNodeBundle>(&*target._payload)
+          : nullptr) {
+    return concrete->registered_node_type_identity
+        ? std::addressof(*concrete->registered_node_type_identity)
+        : nullptr;
+  }
+  if (auto const* tiled = target._payload
+          ? std::get_if<NodeBundle::TiledNodeBundle>(&*target._payload)
+          : nullptr) {
+    RegisteredNodeTypeIdentity const* result = nullptr;
+    for (auto const member : tiled->member_bundles) {
+      auto const* identity = registered_node_type_identity(member);
+      if (!identity) return nullptr;
+      if (!result) {
+        result = identity;
+      } else if (*result != *identity) {
+        return nullptr;
+      }
+    }
+    return result;
+  }
+  return nullptr;
 }
 
 constexpr void GraphBuilderNodeBundles::set_registered_node_type_identity(

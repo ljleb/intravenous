@@ -56,22 +56,39 @@ TEST(ModuleLoaderPackages, CanonicalPackageManifestLoads)
         "void module_main(iv::GraphBuilder& g) { g.outputs(); }\n"
         "void module_secondary(iv::GraphBuilder& g) { g.outputs(); }\n"
         "IV_MODULE(\"iv.test.canonical_source\", module_main);\n"
-        "IV_MODULE(\"iv.test.canonical_source.secondary\", module_secondary);\n");
+        "IV_MODULE(\"iv.test.canonical_source.secondary\", module_secondary);\n"
+        "IV_NODE_PRESENTATION(\"iv.test.canonical_source\", "
+            "\"iv.test.presentation\", \"Canonical controls\");\n"
+        "IV_NODE_PRESENTATION(\"iv.test.canonical_source.secondary\", "
+            "\"iv.test.presentation\", \"Secondary controls\");\n");
 
     auto loader = iv::test::make_loader();
-    auto loaded = loader.load_project_package_definitions(runtime_root);
+    auto loaded = loader.load_project_package(runtime_root);
 
-    ASSERT_EQ(loaded.size(), 2);
+    ASSERT_EQ(loaded.definitions.size(), 2);
     auto const primary = std::ranges::find(
-        loaded, "iv.test.canonical_source", &iv::ModuleLoader::LoadedDefinition::module_id);
+        loaded.definitions,
+        "iv.test.canonical_source",
+        &iv::ModuleLoader::LoadedDefinition::module_id);
     auto const secondary = std::ranges::find(
-        loaded,
+        loaded.definitions,
         "iv.test.canonical_source.secondary",
         &iv::ModuleLoader::LoadedDefinition::module_id);
-    ASSERT_NE(primary, loaded.end());
-    ASSERT_NE(secondary, loaded.end());
+    ASSERT_NE(primary, loaded.definitions.end());
+    ASSERT_NE(secondary, loaded.definitions.end());
     EXPECT_NE(primary->configured_graph, nullptr);
     EXPECT_NE(secondary->configured_graph, nullptr);
+    ASSERT_EQ(loaded.node_presentations.size(), 2u);
+    EXPECT_EQ(loaded.node_presentations[0], (iv::NodePresentationDescriptor{
+        .definition_id = "iv.test.canonical_source",
+        .presentation_id = "iv.test.presentation",
+        .display_name = "Canonical controls",
+    }));
+    EXPECT_EQ(loaded.node_presentations[1], (iv::NodePresentationDescriptor{
+        .definition_id = "iv.test.canonical_source.secondary",
+        .presentation_id = "iv.test.presentation",
+        .display_name = "Secondary controls",
+    }));
 }
 
 TEST(ModuleLoaderPackages, BuiltinPackageUsesExecutableOwnedArtifactRoot)

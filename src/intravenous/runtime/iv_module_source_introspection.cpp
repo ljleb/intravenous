@@ -288,6 +288,7 @@ VirtualNodeInfo IvModuleSourceIntrospection::to_virtual_node(
     live.kind = node.kind;
     live.source_identity = node.source_identity;
     live.type_identity = node.type_identity;
+    live.definition_id = node.definition_id;
     live.continuous_inputs = to_live_ports<VirtualContinuousPortInfo>(
         std::span{node.continuous_inputs}, VirtualPortBinding::interface);
     live.continuous_outputs = to_live_ports<VirtualContinuousPortInfo>(
@@ -304,6 +305,7 @@ VirtualNodeInfo IvModuleSourceIntrospection::to_virtual_node(
         live_member.backing_node_id = member.backing_node_id;
         live_member.kind = member.kind;
         live_member.type_identity = member.type_identity;
+        live_member.definition_id = member.definition_id;
         live_member.continuous_inputs =
             to_live_ports_with_bindings<VirtualContinuousPortInfo>(
                 std::span{member.continuous_inputs}, [](auto const& port) {

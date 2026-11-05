@@ -4,6 +4,7 @@
 #include <intravenous/runtime/project_node_instance_types.h>
 #include <intravenous/runtime/project_node_replacement_types.h>
 #include <intravenous/runtime/startup_config.h>
+#include <intravenous/node/manual_control.h>
 
 #include <filesystem>
 #include <optional>
@@ -29,6 +30,7 @@ class ProjectPersistenceBuilder {
     std::vector<ProjectNodeInstanceDeclaration> node_instances_{};
     std::vector<ProjectNodeReplacement> node_replacements_{};
     std::vector<ProjectConnection> graph_connections_{};
+    std::vector<ProjectManualControl> manual_controls_{};
 
     [[nodiscard]] std::string relativize_path(std::filesystem::path const &path) const;
 
@@ -44,6 +46,7 @@ public:
     void add_node_instances(std::vector<ProjectNodeInstanceDeclaration> instances);
     void add_node_replacements(std::vector<ProjectNodeReplacement> replacements);
     void add_graph_connections(std::vector<ProjectConnection> connections);
+    void add_manual_controls(std::vector<ProjectManualControl> controls);
 
     [[nodiscard]] std::vector<ProjectCommand> build() const;
 };

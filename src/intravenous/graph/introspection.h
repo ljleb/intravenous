@@ -334,6 +334,8 @@ constexpr void append_configured_virtual_node_metadata(
             auto const handle = record.node_bundle_handles[bundle_index];
             auto const& bundle = node_bundles.bundle(handle);
             auto const type = std::string(bundle.type_identity());
+            auto const* registered =
+                node_bundles.registered_node_type_identity(handle);
             if (node.kind.empty()) node.kind = type;
             if (node.type_identity.empty()) node.type_identity = type;
             auto const backing_id = "node-bundle:" + record.id + ":"
@@ -344,6 +346,9 @@ constexpr void append_configured_virtual_node_metadata(
                 .backing_node_id = backing_id,
                 .kind = type,
                 .type_identity = type,
+                .definition_id = registered
+                    ? registered->node_type_id
+                    : std::string{},
                 .continuous_inputs = project_bundle_introspection_continuous_ports(
                     record.sample_inputs, node_bundles, connectivity, handle),
                 .continuous_outputs = project_bundle_introspection_continuous_ports(
@@ -353,6 +358,16 @@ constexpr void append_configured_virtual_node_metadata(
                 .event_outputs = project_bundle_introspection_event_ports(
                     record.event_outputs, connectivity, handle, false),
             });
+        }
+        if (!node.members.empty()
+            && !node.members.front().definition_id.empty()
+            && std::ranges::all_of(
+                node.members,
+                [&](auto const& member) {
+                    return member.definition_id
+                        == node.members.front().definition_id;
+                })) {
+            node.definition_id = node.members.front().definition_id;
         }
     }
 }

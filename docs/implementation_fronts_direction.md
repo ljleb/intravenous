@@ -2327,11 +2327,11 @@ Front 9 supplies the durable value representation and reconstruction. Front 13 o
 typed successor argument submission, event semantics, and replacement
 transactionality. It does not own the configuration grammar.
 
-The live-observation/presentation telemetry API remains separate and may stay unresolved
-until front 14 needs concrete capabilities.
+The live-observation and presentation telemetry API remains separate and unresolved.
+Front 14 does not own it.
 
-**Backend implementation status (2026-11-03): implementation complete; collaborator
-build and test verification pending.** The source now implements compiler-discovered leaf handlers,
+**Backend implementation status (2026-11-04): complete and verified.** The repository
+owner's full 747-test suite passes. The source implements compiler-discovered leaf handlers,
 compiler-discovered class-module handlers, stable `NodeAddress` dispatch, ordered send/replace
 execution, one delivery per concrete node in one root interaction, complete typed
 successor arguments, durable replacement records, reconstruction after later graph
@@ -2375,6 +2375,34 @@ identity; `displayName` is diagnostic only.
 **Primary ownership:** semantic presentation definitions and user-controlled dynamic
 inputs.
 
+**Accepted scheduling simplification (2026-11-04):** Front 14 uses predictive
+compilation, demand-driven activation, one current replacement request, and a
+debounced return to constant specialization. It does not use a variant cache or a
+generic execution path during compilation.
+
+**Source implementation status (2026-11-04):** the persistent manual-control and
+GraphJit specialization portion is implemented and awaits the repository owner's
+build and test run. It includes stable `ManualControlId` resolution, project
+persistence, socket RPC with server-owned client identities, disconnect cleanup,
+participation through the existing Sequential combination callback, callback-wide
+scrub interpolation, predictive/required compilation, stale-result rejection,
+debounced constant specialization, and compatible code-only activation that retains
+`NodeStorage`. The initial authored value surface supports scalar `Sample` Sequential
+Tick inputs; this is an implementation limit rather than a general presentation
+contract.
+
+The presentation registration and selection portion is implemented in source and
+awaits the repository owner's build and test run. `IV_NODE_PRESENTATION` records only
+the target definition ID, a nominal presentation ID, and a diagnostic display name.
+The package finalizer and loader preserve this record. `PackageRevision`,
+`IvPackageInfo`, and socket RPC publish it without a frontend component name.
+
+The VS Code frontend owns `NodePresentationRegistry`. The registry intersects package
+descriptors with installed frontend providers and uses
+`frameworkDefaultNodePresentationProvider` when no provider matches. The display mode
+is one of `compact`, `nano`, `mini`, or `editable`. The backend does not select the
+mode or import a frontend implementation.
+
 This front owns:
 
 - `NodePresentation` and framework default presentation;
@@ -2386,13 +2414,27 @@ This front owns:
 - manual values as Tick/ephemeral inputs;
 - scrub-only interpolation;
 - dynamic-input sets;
-- predictive JIT requests;
-- constant/dynamic compatible code variants and stale-compile rejection;
-- eventual live-observation capability/subscription APIs once concrete requirements are
-  settled.
+- predictive hover compilation without activation on hover;
+- one active executable graph and one logically current replacement request;
+- demand-driven dynamic activation after compilation;
+- latest-request-wins scheduling and stale-result rejection;
+- an explicit idle/debounce policy for return to constant specialization;
+- compatible code-only activation with no state reconstruction.
 
-**Dependencies:** semantic identity/events from front 13; revision continuity from
-front 6; later specialization benefits from front 12 and the mature executor.
+Front 14 does not own the undefined live-observation API. Its capability,
+subscription, representation, and scheduling questions remain future design work.
+Front 14 also does not add a cache of old control specializations. The prior policy is
+preserved in
+[historical documentation](./historical/front_14_manual_control_jit_policy_before_demand_activation_2026-11-04.md).
+
+Compilation below approximately 200 ms is a target from an early proof of concept. It
+is not a guaranteed latency. Front 16 can add reuse or more scheduling machinery after
+measurements show a benefit.
+
+**Dependencies:** stable `NodeAddress` and selector semantics from Front 13, revision
+continuity from Front 6, durable project mutations from Front 10, and graph activation
+from Front 8. Front 12 can improve later scoped construction but does not block Front
+14.
 
 ## Front 15: RPC route layer and multi-client project session server
 
@@ -2417,9 +2459,8 @@ This front consumes project mutations from front 10 and semantic node events fro
 13. It should not invent domain-specific graph semantics in the transport layer.
 
 Implementation status (2026-11-04): the core project-session work is complete in
-source. The repository owner's complete C++ build and test suite passes. The VS Code
-client typecheck and tests are pending because the local npm dependencies, including
-`tsc`, are not installed.
+source and verified. The repository owner's complete C++ build passed all 747 tests.
+The VS Code client typecheck and npm tests also pass.
 `SocketRpcRouteRegistry` owns route metadata and typed event dispatch.
 `SocketRpcServer` owns multiple clients, bounded per-client output queues, ordered
 commands and notifications, revisions, expected-revision rejection, replay, topic

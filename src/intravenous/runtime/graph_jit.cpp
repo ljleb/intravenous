@@ -1471,6 +1471,7 @@ public:
                     std::move(lowering->realtime_port_state_requirements),
                 .realtime_port_state_realizations =
                     std::move(lowering->realtime_port_state_realizations),
+                .manual_controls = std::move(lowering->manual_controls),
                 .cutover = std::move(cutover),
                 .root_operations = materialized.root_operations,
                 .background_operations = materialized.background_operations,

@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <ranges>
 #include <system_error>
+#include <tuple>
 #include <unordered_map>
 #include <utility>
 
@@ -244,6 +245,7 @@ void ProjectPersistence::load()
     std::unordered_map<std::string, ProjectNodeInstanceDeclaration> instances;
     std::unordered_map<std::string, ProjectNodeReplacement> node_replacements;
     std::unordered_map<std::string, ProjectConnection> connections;
+    std::unordered_map<std::string, ProjectManualControl> manual_controls;
     for (auto const &command : read_commands()) {
         try {
             auto const& args = command.args;
@@ -319,6 +321,61 @@ void ProjectPersistence::load()
                 connections[project_connection_id(connection)] = std::move(connection);
             } else if (command.command == "graphConnections.delete") {
                 connections.erase(require_string(args, "connection_id"));
+            } else if (command.command == "manualControls.upsert") {
+                auto const node = args.find("node");
+                auto const value = args.find("value");
+                auto const enabled = args.find("enabled");
+                auto const participation = require_string(args, "participation");
+                if (node == args.end()) {
+                    throw std::runtime_error(
+                        "manual control args are missing object key 'node'");
+                }
+                if (value == args.end() || !value->is_number()) {
+                    throw std::runtime_error(
+                        "manual control args are missing numeric key 'value'");
+                }
+                if (enabled != args.end() && !enabled->is_boolean()) {
+                    throw std::runtime_error(
+                        "manual control args key 'enabled' must be boolean");
+                }
+                ManualControlParticipation parsed_participation{};
+                if (participation == "disconnected_only") {
+                    parsed_participation =
+                        ManualControlParticipation::disconnected_only;
+                } else if (participation == "participate_with_connections") {
+                    parsed_participation =
+                        ManualControlParticipation::participate_with_connections;
+                } else {
+                    throw std::runtime_error(
+                        "manual control participation is not recognized");
+                }
+                ProjectManualControl control{
+                    .id = {
+                        .node = parse_node_address_json(
+                            *node, ProjectConnectionJsonNames::project_file),
+                        .input_name = require_string(args, "input_name"),
+                    },
+                    .stored_value = value->get<float>(),
+                    .participation = parsed_participation,
+                    .enabled = enabled == args.end() || enabled->get<bool>(),
+                };
+                auto key = node_address_json(
+                    control.id.node,
+                    ProjectConnectionJsonNames::project_file).dump()
+                    + "\n" + control.id.input_name;
+                manual_controls[std::move(key)] = std::move(control);
+            } else if (command.command == "manualControls.delete") {
+                auto const node = args.find("node");
+                if (node == args.end()) {
+                    throw std::runtime_error(
+                        "manual control args are missing object key 'node'");
+                }
+                auto key = node_address_json(
+                    parse_node_address_json(
+                        *node, ProjectConnectionJsonNames::project_file),
+                    ProjectConnectionJsonNames::project_file).dump()
+                    + "\n" + require_string(args, "input_name");
+                manual_controls.erase(key);
             } else {
                 throw std::runtime_error("unknown project command: " + command.command);
             }
@@ -343,6 +400,10 @@ void ProjectPersistence::load()
     for (auto& [_, replacement] : node_replacements) {
         request.node_replacements.push_back(std::move(replacement));
     }
+    request.manual_controls.reserve(manual_controls.size());
+    for (auto& [_, control] : manual_controls) {
+        request.manual_controls.push_back(std::move(control));
+    }
     std::ranges::sort(
         request.instances, {}, &ProjectNodeInstanceDeclaration::instance_id);
     std::ranges::sort(request.connections, {}, [](ProjectConnection const& connection) {
@@ -355,6 +416,16 @@ void ProjectPersistence::load()
             return node_address_json(
                 replacement.address,
                 ProjectConnectionJsonNames::project_file).dump();
+        });
+    std::ranges::sort(
+        request.manual_controls,
+        [](ProjectManualControl const& lhs, ProjectManualControl const& rhs) {
+            auto const lhs_address = node_address_json(
+                lhs.id.node, ProjectConnectionJsonNames::project_file).dump();
+            auto const rhs_address = node_address_json(
+                rhs.id.node, ProjectConnectionJsonNames::project_file).dump();
+            return std::tie(lhs_address, lhs.id.input_name)
+                < std::tie(rhs_address, rhs.id.input_name);
         });
     try {
         ProjectAckBuilder builder;

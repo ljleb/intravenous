@@ -62,6 +62,8 @@ These documents are retained because they record deleted architectures, supersed
 
 ## Completed migrations, experiments, and checkpoints
 
+- [Front 14 Presentation Contract Before Concrete Records, 2026-11-04](./front_14_presentation_contract_before_concrete_records_2026-11-04.md)
+- [Front 14 Manual-Control JIT Policy Before Demand-Driven Activation, 2026-11-04](./front_14_manual_control_jit_policy_before_demand_activation_2026-11-04.md)
 - [Front 13 Backend TypeScript Generation Before the Language-Neutral Protocol, 2026-11-03](./front_13_backend_typescript_generation_before_neutral_protocol_2026-11-03.md)
 - [Front 13 Dynamic Module-Message Registration Before Class Modules, 2026-11-03](./front_13_dynamic_module_message_registration_2026-11-03.md)
 - [Front 13 Predecessor Argument Introspection False Start, 2026-11-03](./front_13_predecessor_argument_introspection_false_start_2026-11-03.md)

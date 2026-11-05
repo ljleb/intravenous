@@ -172,6 +172,8 @@ constexpr char graph_jit_event_activity_module_id[] =
 constexpr char graph_jit_ported_module_id[] = "iv.test.graph_jit.state_context.ported_module";
 constexpr char graph_jit_direct_sample_module_id[] = "iv.test.graph_jit.state_context.direct_sample_module";
 constexpr char graph_jit_disconnected_sample_input_module_id[] = "iv.test.graph_jit.state_context.disconnected_sample_input_module";
+constexpr char graph_jit_manual_control_slice_module_id[] =
+    "iv.test.graph_jit.state_context.manual_control_slice_module";
 constexpr char graph_jit_disconnected_sample_output_module_id[] = "iv.test.graph_jit.state_context.disconnected_sample_output_module";
 constexpr char graph_jit_transient_sample_module_id[] = "iv.test.graph_jit.state_context.transient_sample_module";
 constexpr char graph_jit_reused_sample_arena_module_id[] = "iv.test.graph_jit.state_context.reused_sample_arena_module";
@@ -837,6 +839,13 @@ struct DisconnectedSampleInputProbeStateMirror {
     float block_last = 0.0f;
     float block_sum = 0.0f;
     std::uint32_t marker = 0;
+};
+
+struct ManualControlSliceProbeStateMirror {
+    std::uint64_t calls = 0;
+    std::uint64_t value_count = 0;
+    std::array<float, 12> values{};
+    std::array<float, 6> history_before_slice{};
 };
 
 struct StereoHistoryConsumerStateMirror {
@@ -4600,6 +4609,50 @@ struct DisconnectedSampleInputProbe {
     }
 };
 
+struct ManualControlSliceProbe {
+    struct State {
+        std::uint64_t calls = 0;
+        std::uint64_t value_count = 0;
+        std::array<float, 12> values{};
+        std::array<float, 6> history_before_slice{};
+    };
+
+    static constexpr auto inputs()
+    {
+        return std::array{
+            iv::input<iv::Sample>("value", iv::InputAccess::sequential),
+        };
+    }
+
+    static constexpr auto outputs() { return std::tuple{}; }
+
+    std::size_t max_block_size() const { return 2; }
+
+    void constrain_ports(
+        iv::ConstrainPortsContext<ManualControlSliceProbe>& ctx) const
+    {
+        ctx.input<"value">().history() = 4;
+    }
+
+    void tick_block(
+        iv::TickBlockContext<ManualControlSliceProbe> const& ctx) const
+    {
+        auto& state = ctx.state();
+        auto const input = ctx.input<"value">();
+        auto const values = input.block();
+        if (state.calls < state.history_before_slice.size()) {
+            state.history_before_slice[state.calls] = input.get(1);
+        }
+        ++state.calls;
+        for (auto const value : values) {
+            if (state.value_count < state.values.size()) {
+                state.values[state.value_count] = value;
+            }
+            ++state.value_count;
+        }
+    }
+};
+
 struct TriggerEventSource {
     static constexpr auto inputs()
     {
@@ -5633,6 +5686,13 @@ void disconnected_sample_input_module(iv::GraphBuilder& graph)
     graph.outputs();
 }
 
+void manual_control_slice_module(iv::GraphBuilder& graph)
+{
+    (void)graph.node<
+        "iv.test.graph_jit.state_context.manual_control_slice_probe">();
+    graph.outputs();
+}
+
 void disconnected_sample_output_module(iv::GraphBuilder& graph)
 {
     auto source =
@@ -5928,6 +5988,7 @@ IV_NODE("iv.test.graph_jit.state_context.five_sample_delay", FiveSampleDelay);
 IV_NODE("iv.test.graph_jit.state_context.latency_compensation_probe", LatencyCompensationProbe);
 IV_NODE("iv.test.graph_jit.state_context.interleaved_latency_compensation_probe", InterleavedLatencyCompensationProbe);
 IV_NODE("iv.test.graph_jit.state_context.disconnected_sample_input_probe", DisconnectedSampleInputProbe);
+IV_NODE("iv.test.graph_jit.state_context.manual_control_slice_probe", ManualControlSliceProbe);
 IV_NODE("iv.test.graph_jit.state_context.trigger_event_source", TriggerEventSource);
 IV_NODE("iv.test.graph_jit.state_context.midi_event_source", MidiEventSource);
 IV_NODE("iv.test.graph_jit.state_context.limited_trigger_event_source", LimitedTriggerEventSource);
@@ -5965,6 +6026,7 @@ IV_MODULE("iv.test.graph_jit.state_context.multiple_module", multiple_module);
 IV_MODULE("iv.test.graph_jit.state_context.skippable_pair_module", skippable_pair_module);
 IV_MODULE("iv.test.graph_jit.state_context.limited_block_module", limited_block_module);
 IV_MODULE("iv.test.graph_jit.state_context.disconnected_sample_input_module", disconnected_sample_input_module);
+IV_MODULE("iv.test.graph_jit.state_context.manual_control_slice_module", manual_control_slice_module);
 IV_MODULE("iv.test.graph_jit.state_context.disconnected_sample_output_module", disconnected_sample_output_module);
 IV_MODULE("iv.test.graph_jit.state_context.tick_capture_module", tick_capture_module);
 IV_MODULE("iv.test.graph_jit.state_context.direct_sample_module", direct_sample_module);
@@ -11174,6 +11236,197 @@ TEST_F(GraphJitRuntimeFixture, DisconnectedSampleInputUsesDeclaredDefault)
     EXPECT_FLOAT_EQ(state->history_left, 0.375f);
     EXPECT_FLOAT_EQ(state->history_right, 0.375f);
     EXPECT_FLOAT_EQ(state->block_sum, 6.0f);
+}
+
+TEST_F(GraphJitRuntimeFixture,
+       DynamicManualControlInterpolatesAcrossAllPrimitiveSlices)
+{
+    auto const base = configured_module_graph(
+        *revision, graph_jit_manual_control_slice_module_id);
+    ASSERT_TRUE(base);
+
+    auto with_manual_control = [&](bool dynamic) {
+        auto graph = std::make_shared<iv::ConfiguredGraph>(*base);
+        std::optional<iv::NodeBundleHandle> target;
+        for (iv::NodeBundleHandle bundle = 0;
+             bundle < graph->node_bundles.size(); ++bundle) {
+            if (!graph->node_bundles.bundle(bundle).is_concrete()) continue;
+            auto const inputs = graph->node_bundles
+                .typed_ports(bundle).sample_inputs();
+            if (inputs.size() == 1 && inputs.front().name == "value") {
+                target = bundle;
+                break;
+            }
+        }
+        EXPECT_TRUE(target.has_value());
+        if (target) {
+            graph->manual_controls.push_back(iv::ConfiguredManualControl{
+                .id = {
+                    .node = {.instance_id = "instance:manual"},
+                    .input_name = "value",
+                },
+                .input = {*target, iv::PortKind::sample, 0},
+                .settled_value = iv::Sample{0.25f},
+                .dynamic = dynamic,
+            });
+        }
+        return std::shared_ptr<iv::ConfiguredGraph const>(std::move(graph));
+    };
+
+    auto constant = compile_graph(with_manual_control(false), 270);
+    ASSERT_TRUE(constant.succeeded())
+        << (constant.diagnostics.empty()
+                ? ""
+                : constant.diagnostics.front().message);
+    auto dynamic = compile_graph(with_manual_control(true), 270);
+    ASSERT_TRUE(dynamic.succeeded())
+        << (dynamic.diagnostics.empty()
+                ? ""
+                : dynamic.diagnostics.front().message);
+    ASSERT_EQ(constant.compiled_graph->manual_controls.size(), 1u);
+    ASSERT_EQ(dynamic.compiled_graph->manual_controls.size(), 1u);
+    EXPECT_FALSE(constant.compiled_graph->manual_controls[0].configured.dynamic);
+    EXPECT_TRUE(dynamic.compiled_graph->manual_controls[0].configured.dynamic);
+    EXPECT_EQ(
+        constant.compiled_graph->node_layout.storage_size,
+        dynamic.compiled_graph->node_layout.storage_size);
+    ASSERT_EQ(
+        constant.compiled_graph->node_layout.regions.size(),
+        dynamic.compiled_graph->node_layout.regions.size());
+    for (std::size_t region = 0;
+         region < constant.compiled_graph->node_layout.regions.size();
+         ++region) {
+        auto const& lhs = constant.compiled_graph->node_layout.regions[region];
+        auto const& rhs = dynamic.compiled_graph->node_layout.regions[region];
+        EXPECT_EQ(lhs.kind, rhs.kind);
+        EXPECT_EQ(lhs.storage_offset, rhs.storage_offset);
+        EXPECT_EQ(lhs.size, rhs.size);
+        EXPECT_EQ(lhs.alignment, rhs.alignment);
+        EXPECT_EQ(lhs.migration_identity, rhs.migration_identity);
+    }
+
+    auto constant_storage = constant.compiled_graph
+        ->node_layout.create_storage(resources);
+    constant_storage.initialize();
+    auto* constant_state = static_cast<ManualControlSliceProbeStateMirror*>(
+        constant_storage.state_ptr(0));
+    ASSERT_NE(constant_state, nullptr);
+    constant.compiled_graph->root_operations.tick_block(
+        constant_storage.buffer().data(),
+        &empty_tick_invocation,
+        index(0),
+        4);
+    EXPECT_EQ(constant_state->calls, 2u);
+    ASSERT_EQ(constant_state->value_count, 4u);
+    for (std::size_t i = 0; i < 4; ++i) {
+        EXPECT_FLOAT_EQ(constant_state->values[i], 0.25f);
+    }
+    EXPECT_FLOAT_EQ(constant_state->history_before_slice[0], 0.25f);
+    EXPECT_FLOAT_EQ(constant_state->history_before_slice[1], 0.25f);
+
+    // Code-only activation keeps this NodeStorage. Constant code maintained
+    // the canonical shadow timeline while exposing an immutable input to the
+    // node, so dynamic code sees the correct preceding history immediately.
+    auto const state_offset = dynamic.compiled_graph
+        ->manual_controls.front().state_storage_offset;
+    EXPECT_EQ(
+        state_offset,
+        constant.compiled_graph->manual_controls.front().state_storage_offset);
+    auto* runtime_state = reinterpret_cast<iv::ManualControlRuntimeState*>(
+        constant_storage.buffer().data() + state_offset);
+    std::atomic_ref<std::uint32_t>(runtime_state->target_bits).store(
+        std::bit_cast<std::uint32_t>(1.0f), std::memory_order_relaxed);
+
+    dynamic.compiled_graph->root_operations.tick_block(
+        constant_storage.buffer().data(),
+        &empty_tick_invocation,
+        index(4),
+        4);
+    EXPECT_EQ(constant_state->calls, 4u);
+    ASSERT_EQ(constant_state->value_count, 8u);
+    EXPECT_FLOAT_EQ(constant_state->history_before_slice[2], 0.25f);
+    EXPECT_FLOAT_EQ(constant_state->history_before_slice[3], 0.625f);
+    EXPECT_FLOAT_EQ(constant_state->values[4], 0.4375f);
+    EXPECT_FLOAT_EQ(constant_state->values[5], 0.625f);
+    EXPECT_FLOAT_EQ(constant_state->values[6], 0.8125f);
+    EXPECT_FLOAT_EQ(constant_state->values[7], 1.0f);
+    EXPECT_FLOAT_EQ(
+        std::bit_cast<float>(runtime_state->effective_bits), 1.0f);
+
+    dynamic.compiled_graph->root_operations.tick_block(
+        constant_storage.buffer().data(),
+        &empty_tick_invocation,
+        index(8),
+        4);
+    EXPECT_EQ(constant_state->calls, 6u);
+    ASSERT_EQ(constant_state->value_count, 12u);
+    for (std::size_t i = 8; i < 12; ++i) {
+        EXPECT_FLOAT_EQ(constant_state->values[i], 1.0f);
+    }
+
+    auto connected_graph = std::make_shared<iv::ConfiguredGraph>(
+        *configured_module_graph(*revision, graph_jit_reused_sample_arena_module_id));
+    std::vector<iv::NodeBundleHandle> connected_targets;
+    for (iv::NodeBundleHandle bundle = 0;
+         bundle < connected_graph->node_bundles.size(); ++bundle) {
+        if (!connected_graph->node_bundles.bundle(bundle).is_concrete()) continue;
+        auto const inputs = connected_graph->node_bundles
+            .typed_ports(bundle).sample_inputs();
+        if (inputs.size() == 1 && inputs.front().name == "in") {
+            connected_targets.push_back(bundle);
+        }
+    }
+    ASSERT_EQ(connected_targets.size(), 2u);
+    connected_graph->manual_controls.push_back(iv::ConfiguredManualControl{
+        .id = {
+            .node = {.instance_id = "instance:connected"},
+            .input_name = "in",
+        },
+        .input = {connected_targets[0], iv::PortKind::sample, 0},
+        .settled_value = iv::Sample{0.5f},
+        .participation =
+            iv::ManualControlParticipation::participate_with_connections,
+    });
+    connected_graph->manual_controls.push_back(iv::ConfiguredManualControl{
+        .id = {
+            .node = {.instance_id = "instance:disconnected-only"},
+            .input_name = "in",
+        },
+        .input = {connected_targets[1], iv::PortKind::sample, 0},
+        .settled_value = iv::Sample{0.5f},
+        .participation =
+            iv::ManualControlParticipation::disconnected_only,
+    });
+    auto connected = compile_graph(std::move(connected_graph), 271);
+    ASSERT_TRUE(connected.succeeded())
+        << (connected.diagnostics.empty()
+                ? ""
+                : connected.diagnostics.front().message);
+    auto connected_storage = connected.compiled_graph
+        ->node_layout.create_storage(resources);
+    connected_storage.initialize();
+    connected.compiled_graph->root_operations.tick_block(
+        connected_storage.buffer().data(),
+        &empty_tick_invocation,
+        index(0),
+        4);
+    std::vector<SampleConsumerProbeStateMirror const*> consumer_states;
+    for (std::size_t node = 0;
+         node < connected.compiled_graph->node_layout.nodes.size(); ++node) {
+        if (connected.compiled_graph->node_layout.nodes[node].state_size
+            == sizeof(SampleConsumerProbeStateMirror)) {
+            consumer_states.push_back(
+                static_cast<SampleConsumerProbeStateMirror const*>(
+                    connected_storage.state_ptr(node)));
+        }
+    }
+    ASSERT_EQ(consumer_states.size(), 2u);
+    auto sums = std::array{
+        consumer_states[0]->sum,
+        consumer_states[1]->sum,
+    };
+    std::ranges::sort(sums);
+    EXPECT_EQ(sums, (std::array<float, 2>{6.0f, 8.0f}));
 }
 
 TEST_F(GraphJitRuntimeFixture, DisconnectedSampleOutputKeepsDeclaredHistory)

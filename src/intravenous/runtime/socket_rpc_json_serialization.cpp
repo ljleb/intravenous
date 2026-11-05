@@ -4,6 +4,7 @@
 
 #include <string>
 #include <string_view>
+#include <utility>
 
 namespace iv {
 namespace {
@@ -138,12 +139,21 @@ SocketRpcJson iv_module_instances_json(std::vector<IvModuleInstanceInfo> const &
 
 SocketRpcJson iv_package_json(IvPackageInfo const &package)
 {
+    SocketRpcJson presentations = SocketRpcJson::array();
+    for (auto const& presentation : package.node_presentations) {
+        presentations.push_back(SocketRpcJson{
+            {"definitionId", presentation.definition_id},
+            {"presentationId", presentation.presentation_id},
+            {"displayName", presentation.display_name},
+        });
+    }
     return SocketRpcJson{
         {"packageId", package.package_id},
         {"packageRoot", package.package_root.generic_string()},
         {"provenance", package_provenance_json(package.provenance)},
         {"moduleIds", package.module_ids},
         {"nodeTypeIds", package.node_type_ids},
+        {"nodePresentations", std::move(presentations)},
         {"buildState", package_build_state_json(package.build_state)},
         {"buildMessage", package.build_message},
         {"publicationMessage", package.publication_message},
@@ -243,6 +253,7 @@ SocketRpcJson virtual_node_member_json(VirtualNodeMemberInfo const &member)
         {"backingNodeId", member.backing_node_id},
         {"kind", member.kind},
         {"typeIdentity", member.type_identity},
+        {"definitionId", member.definition_id},
         {"continuousInputs", virtual_continuous_ports_json(
             member.continuous_inputs)},
         {"continuousOutputs", virtual_continuous_ports_json(
@@ -269,6 +280,7 @@ SocketRpcJson virtual_node_json(VirtualNodeInfo const &node)
         {"kind", node.kind},
         {"sourceIdentity", node.source_identity},
         {"typeIdentity", node.type_identity},
+        {"definitionId", node.definition_id},
         {"sourceSpans", live_source_spans_json(node.source_spans)},
         {"continuousInputs", virtual_continuous_ports_json(
             node.continuous_inputs)},

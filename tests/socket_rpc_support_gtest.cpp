@@ -146,6 +146,58 @@ TEST(SocketRpcRequestParser, ParsesProjectSaveRequest)
     ASSERT_NE(request, nullptr);
 }
 
+TEST(SocketRpcRequestParser, ParsesManualControlDurableAndInteractionRequests)
+{
+    auto const upsert = iv::parse_socket_rpc_request(
+        R"({"jsonrpc":"2.0","id":40,"method":"manualControls.upsert","params":{"node":{"instanceId":"instance:synth","path":[{"kind":"virtualNode","sourceIdentity":"voice"}]},"inputName":"gain","value":0.625,"participation":"participateWithConnections","enabled":true}})");
+    auto const* durable = std::get_if<iv::UpsertManualControlRequest>(
+        &upsert.payload);
+    ASSERT_NE(durable, nullptr);
+    EXPECT_EQ(durable->control.id.node.instance_id, "instance:synth");
+    ASSERT_EQ(durable->control.id.node.path.size(), 1u);
+    EXPECT_EQ(durable->control.id.input_name, "gain");
+    EXPECT_FLOAT_EQ(static_cast<float>(durable->control.stored_value), 0.625f);
+    EXPECT_EQ(
+        durable->control.participation,
+        iv::ManualControlParticipation::participate_with_connections);
+    EXPECT_TRUE(durable->control.enabled);
+
+    auto const hover = iv::parse_socket_rpc_request(
+        R"({"jsonrpc":"2.0","id":41,"method":"manualControls.hover","params":{"node":{"instanceId":"instance:synth","path":[]},"inputName":"gain"}})");
+    auto const* hovered = std::get_if<iv::SetManualControlHoverRequest>(
+        &hover.payload);
+    ASSERT_NE(hovered, nullptr);
+    EXPECT_TRUE(hovered->client_id.empty());
+    ASSERT_TRUE(hovered->id);
+    EXPECT_EQ(hovered->id->input_name, "gain");
+
+    auto const begin = iv::parse_socket_rpc_request(
+        R"({"jsonrpc":"2.0","id":42,"method":"manualControls.begin","params":{"interactionId":"pointer:3","node":{"instanceId":"instance:synth","path":[]},"inputName":"gain","value":0.75}})");
+    auto const* started =
+        std::get_if<iv::BeginManualControlInteractionRequest>(&begin.payload);
+    ASSERT_NE(started, nullptr);
+    EXPECT_TRUE(started->interaction.client_id.empty());
+    EXPECT_EQ(started->interaction.interaction_id, "pointer:3");
+    EXPECT_EQ(started->id.input_name, "gain");
+    EXPECT_FLOAT_EQ(static_cast<float>(started->value), 0.75f);
+
+    auto const update = iv::parse_socket_rpc_request(
+        R"({"jsonrpc":"2.0","id":43,"method":"manualControls.update","params":{"interactionId":"pointer:3","value":0.875}})");
+    auto const* changed =
+        std::get_if<iv::UpdateManualControlInteractionRequest>(&update.payload);
+    ASSERT_NE(changed, nullptr);
+    EXPECT_EQ(changed->interaction.interaction_id, "pointer:3");
+    EXPECT_FLOAT_EQ(static_cast<float>(changed->value), 0.875f);
+
+    auto const end = iv::parse_socket_rpc_request(
+        R"({"jsonrpc":"2.0","id":44,"method":"manualControls.end","params":{"interactionId":"pointer:3","value":1.0}})");
+    auto const* stopped =
+        std::get_if<iv::EndManualControlInteractionRequest>(&end.payload);
+    ASSERT_NE(stopped, nullptr);
+    EXPECT_TRUE(stopped->interaction.client_id.empty());
+    EXPECT_FLOAT_EQ(static_cast<float>(stopped->value), 1.0f);
+}
+
 TEST(SocketRpcRequestParser, ParsesProjectAutosaveRequests)
 {
     auto const enable = iv::parse_socket_rpc_request(
@@ -509,6 +561,7 @@ TEST(SocketRpcGraphQueryResultBuilder, SerializesNodes)
         .kind = "Oscillator",
         .source_identity = "src-1",
         .type_identity = "Oscillator",
+        .definition_id = "iv.test.oscillator",
         .source_spans = {
             iv::LiveSourceSpan {
                 .file_path = "/tmp/module.cpp",
@@ -597,6 +650,7 @@ TEST(SocketRpcGraphQueryResultBuilder, SerializesNodes)
     EXPECT_EQ(node["eventInputs"][0]["eventType"], "trigger");
     EXPECT_EQ(node["eventInputs"][0]["binding"], "virtualInput");
     EXPECT_EQ(node["members"][0]["index"], 4);
+    EXPECT_EQ(node["definitionId"], "iv.test.oscillator");
 }
 
 
@@ -618,7 +672,7 @@ TEST(SocketRpcCreateNodeInstanceResultBuilder, SerializesCreatedInstanceId)
     EXPECT_EQ(response["result"]["instanceId"], "instance:7");
 }
 
-TEST(SocketRpcIvPackageDefinitionsResultBuilder, SerializesPackageProvenance)
+TEST(SocketRpcIvPackageDefinitionsResultBuilder, SerializesProvenanceAndNodePresentations)
 {
     iv::SocketRpcIvPackageDefinitionsResultBuilder builder;
     builder.succeed({
@@ -626,6 +680,11 @@ TEST(SocketRpcIvPackageDefinitionsResultBuilder, SerializesPackageProvenance)
             .package_id = "iv.builtin",
             .package_root = "/tmp/builtin",
             .provenance = iv::PackageProvenance::built_in,
+            .node_presentations = {{
+                .definition_id = "iv.builtin.oscillator",
+                .presentation_id = "iv.frontend.oscillator",
+                .display_name = "Oscillator",
+            }},
         },
         iv::IvPackageInfo{
             .package_id = "iv.common",
@@ -646,6 +705,14 @@ TEST(SocketRpcIvPackageDefinitionsResultBuilder, SerializesPackageProvenance)
     EXPECT_EQ(packages[1]["provenance"], "common");
     EXPECT_EQ(packages[2]["provenance"], "projectLocal");
     EXPECT_FALSE(packages[0].contains("projectLocal"));
+    ASSERT_EQ(packages[0]["nodePresentations"].size(), 1u);
+    EXPECT_EQ(
+        packages[0]["nodePresentations"][0],
+        Json::object({
+            {"definitionId", "iv.builtin.oscillator"},
+            {"presentationId", "iv.frontend.oscillator"},
+            {"displayName", "Oscillator"},
+        }));
 }
 
 TEST(SocketRpcAudioDevicesResultBuilder, SerializesSnapshot)

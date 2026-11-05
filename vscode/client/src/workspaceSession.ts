@@ -27,6 +27,7 @@ import {
     readProjectSessionDescriptor,
 } from "./projectSessionDiscovery";
 import { NodeSpanHighlighter } from "./nodeSpanHighlighter";
+import { NodePresentationDescriptor } from "./nodePresentation";
 import { autoDetectedServerDirectoriesForWorkspaceRoot } from "./serverBinaryPaths";
 import { WorkspaceNotificationRouter } from "./workspaceNotifications";
 import { WorkspaceRpc } from "./workspaceRpc";
@@ -43,6 +44,7 @@ type LiveGraphProviderLike = {
     upsertNodes(nodes: VirtualNode[], replaceInstanceIds?: string[]): void;
     setSelectedInstanceId(instanceId: string | null): void;
     setPackageRoot(packageRoot: string | null): void;
+    setNodePresentationDescriptors(descriptors: NodePresentationDescriptor[]): void;
 };
 
 type ModulesProviderLike = {
@@ -53,6 +55,7 @@ type IvPackageInfo = {
     packageId: string;
     moduleIds: string[];
     nodeTypeIds: string[];
+    nodePresentations: NodePresentationDescriptor[];
     buildState: "queued" | "building" | "built" | "failed";
     buildMessage: string;
     publicationMessage: string;
@@ -313,10 +316,30 @@ export class WorkspaceSession {
         const stringArray = (value: unknown): string[] => Array.isArray(value)
             ? value.filter((item): item is string => typeof item === "string")
             : [];
+        const nodePresentations = Array.isArray(packageInfo.nodePresentations)
+            ? packageInfo.nodePresentations.flatMap((value): NodePresentationDescriptor[] => {
+                if (!value || typeof value !== "object") return [];
+                const descriptor = value as Record<string, unknown>;
+                if (typeof descriptor.definitionId !== "string"
+                    || descriptor.definitionId.length === 0
+                    || typeof descriptor.presentationId !== "string"
+                    || descriptor.presentationId.length === 0) {
+                    return [];
+                }
+                return [{
+                    definitionId: descriptor.definitionId,
+                    presentationId: descriptor.presentationId,
+                    displayName: typeof descriptor.displayName === "string"
+                        ? descriptor.displayName
+                        : "",
+                }];
+            })
+            : [];
         return {
             packageId: packageInfo.packageId,
             moduleIds: stringArray(packageInfo.moduleIds),
             nodeTypeIds: stringArray(packageInfo.nodeTypeIds),
+            nodePresentations,
             buildState: packageInfo.buildState === "building"
                 || packageInfo.buildState === "built"
                 || packageInfo.buildState === "failed"
@@ -370,6 +393,9 @@ export class WorkspaceSession {
     }
 
     private refreshModulesPanelState(): void {
+        this.provider.setNodePresentationDescriptors(
+            this.ivPackages.flatMap((packageInfo) => packageInfo.nodePresentations),
+        );
         this.modulesProvider.setState(this.modulePanelModules(), this.modulePanelInstances(), this.selectedInstanceId);
     }
 
@@ -574,6 +600,7 @@ export class WorkspaceSession {
             backingNodeId: typeof candidate.backingNodeId === "string" ? candidate.backingNodeId : undefined,
             kind: typeof candidate.kind === "string" ? candidate.kind : undefined,
             typeIdentity: typeof candidate.typeIdentity === "string" ? candidate.typeIdentity : undefined,
+            definitionId: typeof candidate.definitionId === "string" ? candidate.definitionId : undefined,
             continuousInputs: Array.isArray(candidate.continuousInputs)
                 ? candidate.continuousInputs.map((port) => this.parseVirtualContinuousPort(port)).filter((port): port is VirtualContinuousPort => port !== null)
                 : undefined,
@@ -610,6 +637,7 @@ export class WorkspaceSession {
                 kind: typeof candidate.kind === "string" ? candidate.kind : undefined,
                 packageIdentity: typeof candidate.packageIdentity === "string" ? candidate.packageIdentity : undefined,
                 typeIdentity: typeof candidate.typeIdentity === "string" ? candidate.typeIdentity : undefined,
+                definitionId: typeof candidate.definitionId === "string" ? candidate.definitionId : undefined,
                 sourceSpans,
                 continuousInputs: Array.isArray(candidate.continuousInputs)
                     ? candidate.continuousInputs.map((port) => this.parseVirtualContinuousPort(port)).filter((port): port is VirtualContinuousPort => port !== null)

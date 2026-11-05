@@ -33,6 +33,15 @@ void initialize_zero_raw_region(
     std::ranges::fill(storage, std::byte{});
 }
 
+void initialize_copy_raw_region(
+    std::span<std::byte> storage,
+    std::span<std::byte const> data)
+{
+    IV_ASSERT(storage.size() == data.size(),
+        "raw region initializer data has the wrong size");
+    std::ranges::copy(data, storage.begin());
+}
+
 struct PrimitiveBundle {
     std::size_t node_bundle = 0;
     std::size_t node_size = 0;
@@ -658,6 +667,24 @@ std::string activity_migration_identity(
     return std::move(out).str();
 }
 
+std::string manual_control_migration_identity(
+    PlannedGraphNode const& planned,
+    ConfiguredManualControl const& control)
+{
+    if (!planned.stable_identity) return {};
+    auto const& stable = *planned.stable_identity;
+    std::ostringstream out;
+    out << "graphjit.manual_control:graph=" << stable.graph.size() << ':'
+        << stable.graph
+        << ":node=" << stable.virtual_node.size() << ':'
+        << stable.virtual_node
+        << ":member=" << stable.direct_member
+        << ":input=" << control.id.input_name.size() << ':'
+        << control.id.input_name
+        << ":port=" << control.input.port_index;
+    return std::move(out).str();
+}
+
 std::expected<DeclarationPlan, std::string> plan_declarations(
     LoweringInput const& input,
     GraphAnalysis const& analysis,
@@ -858,6 +885,31 @@ std::expected<DeclarationPlan, std::string> plan_declarations(
         }
     }
 
+    for (auto& control : sample_ports.manual_controls) {
+        auto const planned = std::ranges::find(
+            connections.nodes,
+            analysis.primitives[control.primitive_index].bundle.node_bundle,
+            &PlannedGraphNode::bundle);
+        if (planned == connections.nodes.end()) {
+            return std::unexpected(
+                "GraphJit manual control lost its planned concrete node");
+        }
+        auto const bits = std::bit_cast<std::uint32_t>(
+            control.configured.settled_value.value);
+        ManualControlRuntimeState initial{
+            .target_bits = bits,
+            .effective_bits = bits,
+        };
+        std::vector<std::byte> initial_bytes(sizeof(initial));
+        std::memcpy(initial_bytes.data(), &initial, sizeof(initial));
+        control.state_region = layout_builder.declare_raw_region(
+            sizeof(ManualControlRuntimeState),
+            alignof(ManualControlRuntimeState),
+            manual_control_migration_identity(*planned, control.configured),
+            initialize_copy_raw_region,
+            std::move(initial_bytes));
+    }
+
     std::vector<std::optional<PrimitiveActivityPlan>> primitive_activity(
         analysis.primitives.size());
     std::vector<std::size_t> activity_storage_sizes(
@@ -906,7 +958,12 @@ std::expected<DeclarationPlan, std::string> plan_declarations(
              input_index < sample_plan.inputs.size(); ++input_index) {
             auto const& input_plan = sample_plan.inputs[input_index];
             auto const externally_bound = input_plan.invocation_supplied;
-            auto static_constant = !externally_bound;
+            // Constant and dynamic manual-control specializations must
+            // declare one canonical activity state. Treat the selected input
+            // as runtime-observed in both variants even when constant code
+            // binds an immutable value.
+            auto static_constant = !externally_bound
+                && !input_plan.manual_control.has_value();
             for (auto const& channel : input_plan.channels) {
                 if (channel.storage >= sample_ports.storage.representations.size()
                     || !sample_ports.storage.representations[channel.storage]
@@ -1115,10 +1172,17 @@ std::expected<DeclarationPlan, std::string> plan_declarations(
                 return activity && activity->region.valid()
                     && activity->region.index == region_index;
             });
+        auto const manual_control_owns_region = std::ranges::any_of(
+            sample_ports.manual_controls,
+            [&](ManualControlPlan const& control) {
+                return control.state_region.valid()
+                    && control.state_region.index == region_index;
+            });
         if (region.kind == NodeLayout::Region::Kind::raw
             && (sample_storage_owns_region(region_index)
                 || event_storage_owns_region
-                || activity_owns_region)) {
+                || activity_owns_region
+                || manual_control_owns_region)) {
             continue;
         }
         return std::unexpected(
@@ -1217,6 +1281,25 @@ std::expected<DeclarationPlan, std::string> plan_declarations(
             return std::unexpected(
                 "GraphJit derived event storage unexpectedly owns producer telemetry");
         }
+    }
+
+    for (auto& control : sample_ports.manual_controls) {
+        if (!control.state_region.valid()
+            || control.state_region.index >= node_layout.regions.size()) {
+            return std::unexpected(
+                "GraphJit manual control lost its persistent raw region");
+        }
+        auto const& region = node_layout.regions[control.state_region.index];
+        if (region.kind != NodeLayout::Region::Kind::raw
+            || region.size != sizeof(ManualControlRuntimeState)
+            || region.alignment != alignof(ManualControlRuntimeState)
+            || region.raw_initialize_fn != initialize_copy_raw_region
+            || region.raw_initialize_data.size()
+                != sizeof(ManualControlRuntimeState)) {
+            return std::unexpected(
+                "GraphJit manual control state disagrees with finalized NodeLayout");
+        }
+        control.state_storage_offset = region.storage_offset;
     }
 
 
@@ -2925,6 +3008,7 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
     struct TimelineSampleInput {
         std::size_t primitive = 0;
         std::size_t port = 0;
+        bool bind = true;
     };
     std::vector<DisconnectedSampleInput> disconnected_inputs;
     std::vector<DisconnectedSampleOutput> disconnected_outputs;
@@ -2932,6 +3016,78 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
     std::vector<SampleSinkStorageRequest> sink_requests;
     std::vector<TimelineSampleInput> timeline_inputs;
     std::vector<SampleInputTimelineRequest> timeline_requests;
+
+    auto has_authored_connection = [&](std::size_t primitive, std::size_t port) {
+        auto const target = NodeBundlePortId{
+            analysis.primitives[primitive].bundle.node_bundle,
+            PortKind::sample,
+            port,
+        };
+        return std::ranges::any_of(
+            connections.sample_connections,
+            [&](SampleConnectionPlan const& connection) {
+                return connection.target_port == target;
+            });
+    };
+    for (auto const& configured : input.graph.manual_controls) {
+        auto const primitive = primitive_index_for_bundle(
+            configured.input.node_bundle_handle);
+        if (!primitive || configured.input.port_kind != PortKind::sample
+            || configured.input.port_index
+                >= plan.primitives[*primitive].inputs.size()) {
+            return std::unexpected(
+                "GraphJit manual control does not select a Tick continuous input");
+        }
+        auto const& analyzed = analysis.primitives[*primitive];
+        if (!analyzed.implementation
+            || analyzed.implementation->tick_block == nullptr) {
+            return std::unexpected(
+                "GraphJit manual controls require a Tick node input");
+        }
+        auto const port = configured.input.port_index;
+        auto const input_config = input.graph.node_bundles.resolve_sample_input(
+            configured.input).config;
+        auto const& binding = plan.primitives[*primitive].inputs[port];
+        if (!is_sequential(input_config)) {
+            return std::unexpected(
+                "GraphJit manual controls require a Sequential continuous input");
+        }
+        if (binding.geometry.value_type != ContinuousValueTypeId::sample
+            || binding.geometry.elements_per_value != 1
+            || binding.geometry.value_size_bytes != sizeof(Sample)) {
+            return std::unexpected(
+                "GraphJit manual controls currently require a scalar Sample input");
+        }
+        if (std::ranges::any_of(
+                plan.manual_controls,
+                [&](ManualControlPlan const& previous) {
+                    return previous.primitive_index == *primitive
+                        && previous.input_index == port;
+                })) {
+            return std::unexpected(
+                "GraphJit manual controls contain two values for one concrete input");
+        }
+        auto const connected = has_authored_connection(*primitive, port);
+        auto const participates = !connected
+            || configured.participation
+                == ManualControlParticipation::participate_with_connections;
+        auto const control_index = plan.manual_controls.size();
+        plan.manual_controls.push_back(ManualControlPlan{
+            .configured = configured,
+            .primitive_index = *primitive,
+            .input_index = port,
+            .participates = participates,
+            .stages_timeline = participates
+                && (connected
+                    || configured.dynamic
+                    || realization.input(
+                        configured.input.node_bundle_handle, port).history != 0),
+        });
+        if (participates) {
+            plan.primitives[*primitive].inputs[port].manual_control =
+                control_index;
+        }
+    }
 
     auto initialized_input_value = [&](
         std::size_t primitive_index,
@@ -2973,8 +3129,19 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
     auto request_input_timeline = [&](
         std::size_t primitive_index,
         std::size_t port,
-        std::size_t execution_position)
+        std::size_t execution_position,
+        bool bind = true)
         -> std::expected<void, std::string> {
+        auto existing = std::ranges::find_if(
+            timeline_inputs,
+            [&](TimelineSampleInput const& input) {
+                return input.primitive == primitive_index
+                    && input.port == port;
+            });
+        if (existing != timeline_inputs.end()) {
+            existing->bind = existing->bind || bind;
+            return {};
+        }
         auto const& binding = plan.primitives[primitive_index].inputs[port];
         auto neutral = initialized_input_value(
             primitive_index,
@@ -2990,7 +3157,11 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
         if (!migration_identity) {
             return std::unexpected(std::move(migration_identity.error()));
         }
-        timeline_inputs.push_back({.primitive = primitive_index, .port = port});
+        timeline_inputs.push_back({
+            .primitive = primitive_index,
+            .port = port,
+            .bind = bind,
+        });
         timeline_requests.push_back(SampleInputTimelineRequest{
             .channel_layout = binding.channel_layout,
             .geometry = binding.geometry,
@@ -3075,6 +3246,25 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
                 binding.channel_layout = config.channel_layout;
                 continue;
             }
+            auto const manual_control =
+                plan.primitives[primitive_index].inputs[port].manual_control;
+            if (manual_control
+                && plan.manual_controls[*manual_control].configured.dynamic) {
+                auto& binding = plan.primitives[primitive_index].inputs[port];
+                binding.channel_layout = config.channel_layout;
+                binding.history = realization.input(bundle, port).history;
+                binding.read_latency = 0;
+                auto requested = request_input_timeline(
+                    primitive_index, port, *execution_position);
+                if (!requested) {
+                    return std::unexpected(std::move(requested.error()));
+                }
+                continue;
+            }
+            auto& binding = plan.primitives[primitive_index].inputs[port];
+            binding.channel_layout = config.channel_layout;
+            binding.history = realization.input(bundle, port).history;
+            binding.read_latency = 0;
             disconnected_inputs.push_back(DisconnectedSampleInput{
                 .primitive = primitive_index,
                 .port = port,
@@ -3089,6 +3279,12 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
             if (!default_value) {
                 return std::unexpected(std::move(default_value.error()));
             }
+            if (manual_control) {
+                auto const value = plan.manual_controls[*manual_control]
+                    .configured.settled_value;
+                std::memcpy(
+                    default_value->data(), &value, sizeof(value));
+            }
             constant_input_requests.push_back(SampleConstantInputRequest{
                 .channel_layout = config.channel_layout,
                 .geometry = input_plan.geometry,
@@ -3096,6 +3292,17 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
                 .default_value = std::move(*default_value),
                 .execution_position = *execution_position,
             });
+            if (manual_control) {
+                // Constant code still declares the same input timeline as its
+                // dynamic replacement and binds the immutable constant. When
+                // history is retained, lowering also keeps this shadow
+                // timeline current so dynamic code can reuse it immediately.
+                auto requested = request_input_timeline(
+                    primitive_index, port, *execution_position, false);
+                if (!requested) {
+                    return std::unexpected(std::move(requested.error()));
+                }
+            }
         }
 
         for (std::size_t port = 0;
@@ -3148,6 +3355,32 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
         if (!position) return std::unexpected(std::move(position.error()));
         auto requested = request_input_timeline(
             target.target_primitive, target.target_port, *position);
+        if (!requested) return std::unexpected(std::move(requested.error()));
+    }
+
+    // A participating manual control on a connected input needs a private
+    // target timeline even when the ordinary connection would otherwise be a
+    // direct producer alias. Slot-fed inputs use this same timeline after the
+    // existing invocation staging has written their ordinary contribution.
+    for (auto const& control : plan.manual_controls) {
+        if (!control.participates
+            || !has_authored_connection(
+                control.primitive_index, control.input_index)) {
+            continue;
+        }
+        auto& binding = plan.primitives[control.primitive_index]
+            .inputs[control.input_index];
+        auto const config = input.graph.node_bundles.resolve_sample_input(
+            control.configured.input).config;
+        binding.channel_layout = config.channel_layout;
+        binding.history = realization.input(
+            control.configured.input.node_bundle_handle,
+            control.input_index).history;
+        auto const position = execution_position_for_bundle(
+            control.configured.input.node_bundle_handle);
+        if (!position) return std::unexpected(std::move(position.error()));
+        auto requested = request_input_timeline(
+            control.primitive_index, control.input_index, *position);
         if (!requested) return std::unexpected(std::move(requested.error()));
     }
 
@@ -3435,22 +3668,30 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
         }
         auto& binding = plan.primitives[timeline_input.primitive]
             .inputs[timeline_input.port];
-        // The callback reads only the timeline; a mixed input's connection
-        // storage becomes the realtime operand of its per-block combination.
-        if (binding.combines_invocation_supplied) {
-            binding.realtime_operand_channels = std::move(binding.channels);
-        }
-        binding.channels.clear();
-        binding.read_latency = 0;
         auto const channels = channel_count(binding.channel_layout);
-        binding.channels.reserve(channels);
+        std::vector<PrimitiveSampleInputChannelBindingPlan> timeline_channels;
+        timeline_channels.reserve(channels);
         for (std::size_t channel = 0; channel < channels; ++channel) {
-            binding.channels.push_back(PrimitiveSampleInputChannelBindingPlan{
+            timeline_channels.push_back(PrimitiveSampleInputChannelBindingPlan{
                 .storage = representation_index,
                 .representation_channel = channel,
                 .frame_delay = 0,
             });
         }
+        if (binding.manual_control) {
+            binding.manual_timeline_channels = timeline_channels;
+        }
+        if (!timeline_input.bind) continue;
+        // The callback reads only the timeline; a mixed input's connection
+        // storage becomes the realtime operand of its per-block combination.
+        if (binding.combines_invocation_supplied) {
+            binding.realtime_operand_channels = std::move(binding.channels);
+        } else if (binding.manual_control && !binding.invocation_supplied) {
+            binding.manual_operand_channels = std::move(binding.channels);
+        }
+        binding.channels.clear();
+        binding.read_latency = 0;
+        binding.channels = std::move(timeline_channels);
     }
 
     for (auto const& primitive : plan.primitives) {
@@ -3464,6 +3705,13 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
                         return binding.invocation_supplied && bound
                             && binding.realtime_operand_channels.size()
                                 == channels;
+                    }
+                    if (binding.manual_control) {
+                        return bound
+                            && (binding.invocation_supplied
+                                || binding.manual_operand_channels.empty()
+                                || binding.manual_operand_channels.size()
+                                    == channels);
                     }
                     if (binding.random_access) {
                         return binding.channels.empty() && channels != 0;

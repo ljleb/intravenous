@@ -15,7 +15,7 @@ struct ConfigurationTypeIdentity;
 }
 // Invalidate package compilation caches when the compiler-record or
 // configured-graph wire contract changes (including the replay flag).
-inline constexpr std::uint32_t IV_PACKAGE_ABI_VERSION = 3;
+inline constexpr std::uint32_t IV_PACKAGE_ABI_VERSION = 4;
 
 struct ModuleDataView {
     void const* data = nullptr;
@@ -95,6 +95,7 @@ static_assert(std::is_trivially_copyable_v<NodeStateStructureData>);
 extern "C" {
 using iv_package_abi_version_fn = std::uint32_t (*)();
 using iv_package_definitions_fn = iv::ModuleDataView (*)();
+using iv_package_node_presentations_fn = iv::ModuleDataView (*)();
 using iv_package_node_config_pointer_fields_fn = iv::ModuleDataView (*)();
 using iv_package_retained_globals_fn = iv::ModuleDataView (*)();
 using iv_package_node_message_handlers_fn = iv::ModuleDataView (*)();

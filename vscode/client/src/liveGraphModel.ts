@@ -104,6 +104,7 @@ export function serializeLiveGraphNodes(nodes: VirtualNode[]): SerializedLiveGra
         id: node.id || "",
         instanceId: node.instanceId || "",
         kind: node.kind || node.id || "",
+        definitionId: node.definitionId || "",
         description: Number(node.memberCount || 0) > 1
             ? (() => {
                 const identity = virtualIdentitySummary(node);
@@ -130,6 +131,7 @@ export function serializeLiveGraphNodes(nodes: VirtualNode[]): SerializedLiveGra
                 index: Number(member.index || 0),
                 backingNodeId: member.backingNodeId || "",
                 kind: member.kind || node.kind || "",
+                definitionId: member.definitionId || "",
                 description: `concrete ${Number(member.index || 0)}`,
                 groups: [
                     makePortGroup(

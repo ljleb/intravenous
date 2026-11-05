@@ -68,6 +68,7 @@ export type VirtualNodeMember = {
     backingNodeId?: string;
     kind?: string;
     typeIdentity?: string;
+    definitionId?: string;
     continuousInputs?: VirtualContinuousPort[];
     continuousOutputs?: VirtualContinuousPort[];
     eventInputs?: VirtualEventPort[];
@@ -80,6 +81,7 @@ export type VirtualNode = {
     kind?: string;
     packageIdentity?: string;
     typeIdentity?: string;
+    definitionId?: string;
     sourceSpans?: SourceSpan[];
     continuousInputs?: VirtualContinuousPort[];
     continuousOutputs?: VirtualContinuousPort[];
