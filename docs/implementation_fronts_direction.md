@@ -2615,7 +2615,7 @@ Observations and decisions (implementation status, not normative changes):
   the catch were already unwound. Otherwise it falls back to the handler's stack.
   The process terminate handler uses the same lookup, so lifecycle crash logs
   now show where the exception was thrown, not `invoke_node_lifecycle()`'s
-  catch. Linux only; other platforms keep the handler stack.
+  catch.
 
   Implemented representation: `BuilderSession::failure` (message, context lines,
   `std::stacktrace`) is set by `record_builder_failure()`, and

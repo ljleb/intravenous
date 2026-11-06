@@ -28,12 +28,8 @@ TEST(ThrowSite, CapturesTheFramesThatUnwindingRemoved)
     } catch (...) {
         auto const handler = std::stacktrace::current();
         auto const site = iv::throw_site_stacktrace(std::current_exception());
-#if defined(__linux__)
         ASSERT_TRUE(site.has_value());
         EXPECT_GE(site->size(), handler.size() + 8);
-#else
-        EXPECT_FALSE(site.has_value());
-#endif
     }
 }
 
@@ -59,10 +55,6 @@ TEST(ThrowSite, RethrowingKeepsTheOriginalSite)
         failure = std::current_exception();
     }
     auto const site = iv::throw_site_stacktrace(failure);
-#if defined(__linux__)
     ASSERT_TRUE(site.has_value());
     EXPECT_GE(site->size(), std::stacktrace::current().size() + 4);
-#else
-    EXPECT_FALSE(site.has_value());
-#endif
 }

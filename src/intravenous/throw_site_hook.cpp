@@ -7,8 +7,6 @@
 // executable that links it, so this definition also serves package libraries
 // loaded later. `RTLD_NEXT` then finds the C++ runtime's definition.
 
-#if defined(__linux__)
-
 #include <dlfcn.h>
 
 #include <cstdlib>
@@ -32,5 +30,3 @@ __attribute__((visibility("default"), noreturn)) void __cxa_throw(
     __builtin_unreachable();
 }
 }
-
-#endif

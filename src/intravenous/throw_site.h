@@ -6,9 +6,9 @@
 
 namespace iv {
 // The stack captured where `failure` was thrown, before any frame unwound.
-// Available when the throw went through the process's `__cxa_throw` hook
-// (Itanium C++ ABI on Linux), the exception derives from std::exception, and it
-// is still among the most recent throws of the calling thread. A catch handler
+// Available when the throw went through the process's `__cxa_throw` hook, the
+// exception derives from std::exception, and it is still among the most recent
+// throws of the calling thread. A catch handler
 // that asks for `std::stacktrace::current()` instead sees only the frames that
 // survived unwinding.
 [[nodiscard]] std::optional<std::stacktrace> throw_site_stacktrace(
