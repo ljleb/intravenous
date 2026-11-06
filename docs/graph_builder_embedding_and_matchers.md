@@ -19,6 +19,15 @@ substantial optimization/profiling iteration has been completed.
 
 ## Implemented embedding checkpoint
 
+> **Front 12 status (2026-11-06):** the scoped-builder migration is implemented in
+> source pending verification. A newly constructed module scope is finalized in place
+> in its `BuilderSession`; only frozen `ConfiguredGraph` placement still goes through
+> the importer described below. A registered-definition cache hit places the cached
+> contents directly in the caller's scope without a synthetic wrapper subgraph, and
+> imported virtual-node IDs are qualified by their placement path or by their
+> subgraph handle relative to the enclosing module, rather than by a session handle.
+> The text below records the checkpoint that preceded the migration.
+
 The builder now imports a frozen `ConfiguredGraph` directly; it does not rebuild
 a temporary child `GraphBuilder`. Live-child and frozen-child insertion use the
 same component importer for node bundles, sample/event connections, detach

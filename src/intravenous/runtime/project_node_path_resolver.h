@@ -24,6 +24,19 @@ struct ProjectNodePathMatch {
     bool operator==(ProjectNodePathMatch const&) const = default;
 };
 
+// The two graph tables a semantic path consults. A live builder session and
+// a finished ConfiguredGraph both provide them, so configuration references
+// and project connections share one resolver.
+struct ProjectNodePathGraph {
+    GraphBuilderNodeBundles const& node_bundles;
+    GraphBuilderVirtualNodes const& virtual_nodes;
+};
+
+[[nodiscard]] std::vector<ProjectNodePathMatch> resolve_project_node_path(
+    ProjectNodePathGraph graph,
+    NodeBundleHandle subject,
+    std::span<ProjectNodePathSelector const> path);
+
 [[nodiscard]] std::vector<ProjectNodePathMatch> resolve_project_node_path(
     ConfiguredGraph const& graph,
     NodeBundleHandle subject,

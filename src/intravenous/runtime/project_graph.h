@@ -67,7 +67,6 @@ struct ProjectGraphGeneration {
     std::shared_ptr<NodeDefinitionsSnapshot const> definitions{};
     std::shared_ptr<ConfiguredGraph const> graph{};
     std::unordered_map<std::string, NodeInstancePlacement> placements{};
-    std::vector<NodeInstanceDiagnostic> diagnostics{};
     std::vector<std::string> applied_connection_ids{};
     std::vector<GraphConnectionDiagnostic> connection_diagnostics{};
     bool graph_jit_attempted = false;
@@ -83,6 +82,19 @@ struct ProjectGraphGeneration {
     std::vector<ManualControlDiagnostic> manual_control_diagnostics{};
     bool graph_executor_attempted = false;
     bool graph_executor_accepted = false;
+};
+
+// The latest configuration pass that failed. The desired revision it tried to
+// realize stays owned by NodeInstances and GraphConnections; the previous
+// generation stays current and keeps running. Cleared by the next successful
+// pass.
+struct ProjectGraphConfigurationFailure {
+    std::uint64_t definitions_generation = 0;
+    // Every problem found before construction, or the first construction
+    // failure.
+    std::vector<NodeInstanceDiagnostic> node_instance_diagnostics{};
+    // A resolved, compatible project connection that failed to apply.
+    std::optional<GraphConnectionDiagnostic> connection_failure{};
 };
 
 struct NodeMessageDiagnostic {
@@ -108,8 +120,10 @@ struct SerializedNodeMessage {
 class ProjectGraph {
     struct NodeMessageInteraction;
     struct RebuildResult {
+        // Null when the configuration pass failed.
         std::shared_ptr<ProjectGraphGeneration const> generation{};
         std::vector<std::string> created_instance_ids{};
+        std::shared_ptr<ProjectGraphConfigurationFailure const> failure{};
     };
     struct ActiveManualControlInteraction {
         ManualControlInteractionId interaction{};
@@ -138,6 +152,7 @@ class ProjectGraph {
     mutable std::mutex mutex_;
     std::shared_ptr<NodeDefinitionsSnapshot const> definitions_snapshot_{};
     std::shared_ptr<ProjectGraphGeneration const> current_generation_{};
+    std::shared_ptr<ProjectGraphConfigurationFailure const> configuration_failure_{};
     std::shared_ptr<CompiledGraph const> accepted_execution_graph_{};
     std::vector<ProjectManualControl> manual_controls_{};
     std::vector<ManualControlId> dynamic_inputs_{};
@@ -192,6 +207,11 @@ public:
     ProjectGraph& operator=(ProjectGraph const&) = delete;
 
     [[nodiscard]] std::shared_ptr<ProjectGraphGeneration const> current_generation() const;
+    // The failure of the latest configuration pass, or null when it succeeded.
+    [[nodiscard]] std::shared_ptr<ProjectGraphConfigurationFailure const>
+    configuration_failure() const;
+    // The desired manual controls, which outlive a failed configuration pass.
+    [[nodiscard]] std::vector<ProjectManualControl> manual_controls() const;
     [[nodiscard]] std::shared_ptr<NodeDefinitionsSnapshot const> definitions_snapshot() const;
     [[nodiscard]] NodeMessageDispatchResult dispatch_node_message(
         NodeAddress const& target, OwnedNodeMessage message);

@@ -11,10 +11,12 @@
 #include <intravenous/graph/configured_graph.hpp>
 #include <intravenous/graph/builder/connections.hpp>
 #include <intravenous/graph/builder/identity.h>
+#include <intravenous/graph/builder/mark.h>
 #include <intravenous/graph/builder/node_refs.h>
 #include <intravenous/graph/builder/node_bundles.hpp>
 #include <intravenous/graph/reflected_node_description.h>
 #include <intravenous/graph/builder/public_ports.hpp>
+#include <intravenous/graph/builder/snapshot_error.h>
 #include <intravenous/graph/builder/subgraphs.hpp>
 #include <intravenous/graph/builder/virtual_nodes.hpp>
 
@@ -26,6 +28,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cxxabi.h>
+#include <expected>
 #include <functional>
 #include <initializer_list>
 #include <limits>
@@ -46,83 +49,79 @@
 #include <vector>
 
 namespace iv {
-class GraphBuilderState;
-namespace details {
-struct SubgraphBuildScope {
-  GraphBuilderState* owner;
-  GraphBuilderPublicPorts ports;
-  size_t child_begin;
-  bool finished = false;
 
-  SubgraphBuildScope(
-      GraphBuilderState& owner_, NodeBundleHandle boundary, size_t child_begin_)
-      : owner(&owner_), ports(boundary), child_begin(child_begin_) {}
+
+// A closed copy of the graph contributed by one registered-definition
+// invocation. Bundle 0 is an empty boundary; bundles 1.. are the invocation's
+// contents in construction order, and `local_root` is its result.
+struct GraphBuilderInvocationSnapshot {
+  ConfiguredGraph graph{};
+  NodeBundleHandle local_root = 0;
 };
-} // namespace details
 
 class GraphBuilderState {
-  friend class GraphBuilder;
-  friend class NodeRef;
-  template<class Derived> friend class NodeRefCrtp;
-  template<class Node, class PortProjection> friend class TypedNodeRef;
-  friend struct SamplePortRef;
-  friend struct EventPortRef;
   friend class GraphBuilderChildEmbedder;
-  friend class GraphBuilderConnections;
-  friend class GraphBuilderAnnotations;
-  friend class GraphBuilderVirtualNodes;
   friend class GraphBuilderPublicPorts;
-  friend class SubgraphBuilder;
-
-  GraphBuilderIdentity _identity;
-  GraphBuilderNodeBundles _node_bundles;
-  GraphBuilderConnections _connections;
-  GraphBuilderPublicPorts _public_ports;
-  GraphBuilderAnnotations _annotations;
-  GraphBuilderVirtualNodes _virtual_nodes;
-  struct SamplePortExpression {
-    ChannelTypeId channel_type = ChannelTypeId::mono;
-    std::vector<SampleOutputChannelId> channels{};
-    std::vector<std::optional<ConfiguredSampleConnectionDetach>> detaches{};
-  };
-  struct EventPortExpression {
-    EventTypeId type = EventTypeId::empty;
-    std::vector<EventOutputPortId> sources{};
-    std::vector<std::optional<ConfiguredEventConnectionDetach>> detaches{};
-  };
-  // SamplePortRef intentionally stores only an index into this session-owned
-  // table. Variable-length expressions never live in module-generated code.
-  std::vector<SamplePortExpression> _sample_port_expressions;
-  std::vector<EventPortExpression> _event_port_expressions;
-  // Ref values must point at the module-facing façade that issued them.  A
-  // state object never escapes the session, so this is set only while a
-  // facade is actively building into the session.
-  GraphBuilder* _facade = nullptr;
-
-  GraphBuilder& facade() const {
-    if (!_facade) details::error("builder state has no active GraphBuilder facade");
-    return *_facade;
-  }
-
-  ConfiguredGraphEmbedding embed_graph_components(
-      GraphBuilderPublicPorts const& child_public_ports,
-      GraphBuilderNodeBundles const& child_bundles,
-      GraphBuilderConnections const& child_connections,
-      GraphBuilderVirtualNodes const& child_virtual_nodes,
-      std::string_view kind);
-
-  constexpr explicit GraphBuilderState(GraphBuilderIdentity identity);
-  ConfiguredGraphEmbedding embed_subgraph(
-      GraphBuilderState const& child, std::string_view kind = "Subgraph");
-  ConfiguredGraphEmbedding embed_configured_graph(
-      ConfiguredGraph const& child, std::string_view kind = "Configured graph");
-  constexpr PublicSampleInputRef input_named(
-      std::string_view name, ContinuousInputConfig config);
-  PublicEventInputRef event_input_named(std::string_view name, EventTypeId type);
 
 public:
-  void bind(GraphBuilder& builder) noexcept { _facade = &builder; }
-  constexpr GraphBuilderState();
+  struct ScopeFrame {
+    details::BuilderScopeId id = details::root_builder_scope_id;
+    details::BuilderScopeKind kind = details::BuilderScopeKind::root;
+    GraphBuilderPublicPorts ports{0};
+    // Root and definition scopes own a virtual-record namespace. Subgraph
+    // scopes share the namespace of their enclosing definition, so repeated
+    // declarations of one module source group as they always have.
+    std::uint64_t virtual_namespace = 0;
+    // First bundle of the namespace owner. Frozen embeddings qualify their
+    // records relative to it, so the qualification is the same wherever the
+    // owning module is constructed or imported.
+    NodeBundleHandle namespace_begin = 0;
+    // Records created while this scope is open start here.
+    std::size_t record_begin = 0;
+  };
+
+  explicit GraphBuilderState(
+      details::BuilderSession* session,
+      GraphBuilderIdentity identity = GraphBuilderIdentity("root"));
+
+  [[nodiscard]] details::BuilderSession* session() const noexcept { return _session; }
+
+  [[nodiscard]] GraphBuilderMark mark() const noexcept;
+
+  // ---- scopes ------------------------------------------------------------
+  details::BuilderScopeId push_scope(details::BuilderScopeKind);
+  // Finalizes the top scope in place and returns its subgraph bundle. The
+  // records created inside a definition scope, including the declarations of
+  // its public inputs, are qualified by `qualifier`; without one they are
+  // qualified by the subgraph's handle relative to the enclosing namespace,
+  // exactly as embed_configured_graph() qualifies a frozen placement.
+  NodeBundleHandle finish_scope(
+      details::BuilderScopeId, std::string_view kind,
+      std::optional<std::string_view> qualifier);
+  [[nodiscard]] std::vector<SourceInfo> subgraph_boundary_source_infos(
+      NodeBundleHandle subgraph) const;
+  [[nodiscard]] bool scope_is_open(details::BuilderScopeId) const noexcept;
+  [[nodiscard]] details::BuilderScopeId current_scope_id() const noexcept;
+  [[nodiscard]] std::size_t open_scope_count() const noexcept { return _scopes.size(); }
+  [[nodiscard]] bool scope_sample_outputs_defined(details::BuilderScopeId) const;
+  [[nodiscard]] NodeBundleHandle scope_boundary(details::BuilderScopeId) const;
+
+  PublicSampleInputRef scope_input(details::BuilderScopeId, ContinuousInputConfig);
+  PublicEventInputRef scope_event_input(
+      details::BuilderScopeId, std::string_view name, EventTypeId);
+  void scope_outputs(details::BuilderScopeId, std::span<SampleOutputRequest const>);
+  void scope_outputs(details::BuilderScopeId, std::span<NamedRef const>);
+  void scope_event_outputs(details::BuilderScopeId, std::span<EventOutputRequest const>);
+  void annotate_scope_sample_output_source_info(
+      details::BuilderScopeId, std::span<SourceInfo const>);
+  void annotate_scope_event_output_source_info(
+      details::BuilderScopeId, std::span<SourceInfo const>);
+  void annotate_scope_sample_output_source_info(
+      details::BuilderScopeId, std::size_t index, SourceInfo);
+  void annotate_scope_event_output_source_info(
+      details::BuilderScopeId, std::size_t index, SourceInfo);
+
+  // ---- node construction -------------------------------------------------
   NodeBundleHandle append_node_description(ReflectedNodeDescription);
   NodeBundleHandle append_tiled_node_description(
       ReflectedNodeDescription const&, ChannelLayout);
@@ -130,46 +129,76 @@ public:
       std::span<NodeBundleHandle const>, ChannelLayout);
   void set_registered_node_type_identity(
       NodeBundleHandle, RegisteredNodeTypeIdentity);
-  void validate_tiled_module_interfaces(
-      std::span<GraphBuilderState* const>) const;
-  PublicSampleInputRef input(ContinuousInputConfig config);
-  PublicEventInputRef event_input(EventTypeId type);
+  // Members are finished definition-scope subgraphs of one tiled invocation.
+  void validate_tiled_module_interfaces(std::span<NodeBundleHandle const>) const;
 
-  details::SubgraphBuildScope* begin_subgraph();
-  NodeRef finish_subgraph(
-      details::SubgraphBuildScope&, std::string_view kind);
-  void abandon_subgraph(details::SubgraphBuildScope*) noexcept;
-  PublicSampleInputRef subgraph_input(
-      details::SubgraphBuildScope&, ContinuousInputConfig);
-  PublicEventInputRef subgraph_event_input(
-      details::SubgraphBuildScope&, std::string_view, EventTypeId);
-  void subgraph_outputs(
-      details::SubgraphBuildScope&, std::span<SampleOutputRequest const>);
-  void subgraph_outputs(
-      details::SubgraphBuildScope&, std::span<NamedRef const>);
-  void subgraph_event_outputs(
-      details::SubgraphBuildScope&, std::span<EventOutputRequest const>);
+  // ---- frozen graphs -----------------------------------------------------
+  // Imports a closed graph as one new subgraph scope of the current scope.
+  ConfiguredGraphEmbedding embed_configured_graph(
+      ConfiguredGraph const& child, std::string_view kind = "Configured graph");
+  // Copies the contents of an invocation (bundles appended since `begin`)
+  // into a closed graph. Returns nothing when the contents are not
+  // independently representable.
+  [[nodiscard]] std::optional<GraphBuilderInvocationSnapshot> snapshot_contents(
+      GraphBuilderMark const& begin, NodeBundleHandle result) const;
+  // Places a snapshot produced by snapshot_contents into the current scope
+  // without a synthetic wrapper. Returns the live handle of `local_root`.
+  NodeBundleHandle import_contents(
+      ConfiguredGraph const&, NodeBundleHandle local_root, std::string_view qualifier);
+  // Non-destructive closedness-checked copy of an open scope.
+  [[nodiscard]] std::expected<ConfiguredGraph, ConfiguredGraphSnapshotError>
+  snapshot_scope(details::BuilderScopeId) const;
+  void qualify_virtual_records(std::size_t begin, std::string_view qualifier);
 
-  void annotate_public_sample_input_source_info(PublicSampleInputRef const&,
+  // ---- refs and connections ---------------------------------------------
+  [[nodiscard]] SamplePortRef require_sample_port(SamplePortRef const&) const;
+  [[nodiscard]] EventPortRef require_event_port(EventPortRef const&) const;
+  void connect_sample_input(NodeBundlePortId target, SamplePortRef const& source);
+  void connect_sample_input(SampleInputChannelId target, SamplePortRef const& source);
+  void connect_sample_input(NodeBundlePortId target, std::span<SamplePortRef const> sources);
+  void connect_event_input(NodeBundlePortId target, EventPortRef const& source);
+  bool sample_input_is_connected(NodeBundlePortId target) const;
+  bool event_input_is_connected(NodeBundlePortId target) const;
+  size_t sample_port_index(NodeBundleHandle, bool inputs, std::string_view name) const;
+  size_t event_port_index(NodeBundleHandle, bool inputs, std::string_view name) const;
+  size_t sample_input_count(NodeBundleHandle) const;
+  size_t sample_output_count(NodeBundleHandle) const;
+  size_t event_input_count(NodeBundleHandle) const;
+  size_t event_output_count(NodeBundleHandle) const;
+  NodeBundlePortId input_port_at(NodeBundleHandle, size_t) const;
+  ContinuousInputConfig sample_input_config(NodeBundleHandle, size_t) const;
+  EventInputConfig event_input_config(NodeBundleHandle, size_t) const;
+  NodeBundleHandle tiled_member(NodeBundleHandle, size_t) const;
+  NodePorts const& typed_ports(NodeBundleHandle) const;
+  SamplePortRef sample_port_from_output(NodeBundlePortId);
+  EventPortRef event_port_from_output(NodeBundlePortId);
+  SamplePortRef make_sample_port(ChannelTypeId, std::span<SampleOutputChannelId const>);
+  SamplePortRef make_tiled_sample_port(ChannelTypeId, std::span<SamplePortRef const>);
+  SamplePortRef select_sample_port_channel(SamplePortRef const&, size_t);
+  std::span<SampleOutputChannelId const> sample_port_channels(SamplePortRef const&) const;
+  EventPortRef make_event_port(EventTypeId, std::span<EventOutputPortId const>);
+  EventPortRef make_event_port(std::span<EventPortRef const>);
+  std::span<EventOutputPortId const> event_port_sources(EventPortRef const&) const;
+  SamplePortRef detach_sample_port(
+      SamplePortRef const&, size_t loop_extra_latency, std::optional<Sample> initial_value);
+  EventPortRef detach_event_port(EventPortRef const&, size_t loop_extra_latency);
+  void apply_ttl(NodeBundleHandle, size_t);
+
+  // ---- annotations ------------------------------------------------------
+  void annotate_node(NodeBundleHandle, std::string_view, std::string_view,
+      uint32_t, uint32_t);
+  void annotate_node_input_source_info(NodeBundleHandle, PortKind,
+      std::string_view, std::string_view, std::string_view, uint32_t, uint32_t);
+  void annotate_public_sample_input_source_info(SamplePortRef const&,
       std::string_view, std::string_view, uint32_t, uint32_t);
-  void annotate_public_event_input_source_info(PublicEventInputRef const&,
+  void annotate_public_event_input_source_info(EventPortRef const&,
       std::string_view, std::string_view, uint32_t, uint32_t);
   void annotate_sample_port_source_info(SamplePortRef const&,
       std::string_view, std::string_view, uint32_t, uint32_t);
   void annotate_event_port_source_info(EventPortRef const&,
       std::string_view, std::string_view, uint32_t, uint32_t);
-  void annotate_public_sample_output_source_info(std::span<SourceInfo const> infos);
-  void annotate_public_event_output_source_info(std::span<SourceInfo const> infos);
-  void annotate_public_sample_output_source_info(
-      size_t index, SourceInfo info);
-  void annotate_public_event_output_source_info(
-      size_t index, SourceInfo info);
 
-  void event_outputs(std::span<EventOutputRequest const> refs);
-  constexpr void outputs(std::initializer_list<NamedRef> refs);
-  void outputs(std::span<SampleOutputRequest const> refs);
-  constexpr void outputs(std::span<NamedRef const> refs);
-
+  // ---- host introspection -----------------------------------------------
   using VacantSampleInput = GraphBuilderVacantSampleInput;
   using VacantEventInput = GraphBuilderVacantEventInput;
   using VacantInputs = GraphBuilderVacantInputs;
@@ -193,413 +222,84 @@ public:
   VirtualOutputs virtual_outputs() const;
   VirtualSampleOutputFamilies virtual_sample_output_families() const;
   VirtualPorts virtual_ports() const;
-  constexpr GraphBuilderPublicContinuousPortFamilies public_sample_input_families() const;
-  constexpr bool public_sample_input_is_connected(size_t port_index) const;
-  constexpr std::vector<GraphBuilderPublicEventInput> public_event_inputs() const;
-  constexpr bool public_event_input_is_connected(size_t port_index) const;
-  constexpr std::span<SourceInfo const> public_event_input_source_infos(size_t) const;
-  constexpr GraphBuilderPublicContinuousPortFamilies public_sample_output_families() const;
-  constexpr std::vector<GraphBuilderPublicEventOutput> public_event_outputs() const;
+  GraphBuilderPublicContinuousPortFamilies public_sample_input_families() const;
+  bool public_sample_input_is_connected(size_t port_index) const;
+  std::vector<GraphBuilderPublicEventInput> public_event_inputs() const;
+  bool public_event_input_is_connected(size_t port_index) const;
+  std::span<SourceInfo const> public_event_input_source_infos(size_t) const;
+  GraphBuilderPublicContinuousPortFamilies public_sample_output_families() const;
+  std::vector<GraphBuilderPublicEventOutput> public_event_outputs() const;
 
-  constexpr void connect_sample_input(
-      NodeBundlePortId target, SamplePortRef source);
-  constexpr void connect_sample_input(
-      SampleInputChannelId target, SamplePortRef source);
-  void connect_sample_input(NodeBundlePortId target, std::span<SamplePortRef const> sources);
-  void connect_event_input(NodeBundlePortId target, EventPortRef source);
-  bool sample_input_is_connected(NodeBundlePortId target) const;
-  bool event_input_is_connected(NodeBundlePortId target) const;
-  void connect_sample_output(NodeBundlePortId source, NodeRef const& target);
-  EventPortRef event_output(NodeBundlePortId source) const;
-  size_t sample_port_index(NodeBundleHandle, bool inputs, std::string_view name) const;
-  size_t event_port_index(NodeBundleHandle, bool inputs, std::string_view name) const;
-  size_t sample_input_count(NodeBundleHandle) const;
-  size_t sample_output_count(NodeBundleHandle) const;
-  size_t event_input_count(NodeBundleHandle) const;
-  size_t event_output_count(NodeBundleHandle) const;
-  NodeBundlePortId input_port_at(NodeBundleHandle, size_t) const;
-  ContinuousInputConfig sample_input_config(NodeBundleHandle, size_t) const;
-  EventInputConfig event_input_config(NodeBundleHandle, size_t) const;
-  NodeBundleHandle tiled_member(NodeBundleHandle, size_t) const;
-  NodePorts const& typed_ports(NodeBundleHandle) const;
-  SamplePortRef sample_port_from_output(NodeBundlePortId);
-  EventPortRef event_port_from_output(NodeBundlePortId) const;
-  void apply_ttl(NodeBundleHandle, size_t);
-  void annotate_node(NodeBundleHandle, std::string_view, std::string_view,
-      uint32_t, uint32_t);
-  void annotate_node_input_source_info(NodeBundleHandle, PortKind,
-      std::string_view, std::string_view, std::string_view, uint32_t, uint32_t);
-  constexpr ConfiguredGraph finish() const &;
-  constexpr ConfiguredGraph finish() &&;
+  [[nodiscard]] std::size_t bundle_count() const noexcept { return _node_bundles.size(); }
+  [[nodiscard]] std::size_t virtual_record_count() const noexcept { return _virtual_nodes.size(); }
+  // Live graph tables, for host-side semantic path resolution while the
+  // session is still constructing.
+  [[nodiscard]] GraphBuilderNodeBundles const& node_bundles() const noexcept { return _node_bundles; }
+  [[nodiscard]] GraphBuilderVirtualNodes const& virtual_nodes() const noexcept { return _virtual_nodes; }
+
+  // The root scope is the complete graph. Finishing requires every nested
+  // scope to be closed.
+  ConfiguredGraph finish() const &;
+  ConfiguredGraph finish() &&;
+
+  void record_configured_sample_connection(NodeBundlePortId, SamplePortRef const&);
+  void record_configured_sample_connection(SampleInputChannelId, SamplePortRef const&);
+  void record_configured_event_connection(NodeBundlePortId, EventPortRef const&);
 
 private:
-  constexpr SamplePortRef detach_sample_port(
-      SamplePortRef const&, size_t loop_extra_latency,
-      std::optional<Sample> initial_value);
-  EventPortRef detach_event_port(
-      EventPortRef const&, size_t loop_extra_latency);
-  SamplePortRef make_sample_port(
-      ChannelTypeId, std::span<SampleOutputChannelId const>);
-  SamplePortRef make_tiled_sample_port(
-      ChannelTypeId, std::span<SamplePortRef const>);
-  SamplePortRef select_sample_port_channel(SamplePortRef const&, size_t);
-  std::span<SampleOutputChannelId const> sample_port_channels(
-      SamplePortRef const&) const;
-  EventPortRef make_event_port(
-      EventTypeId, std::span<EventOutputPortId const>);
-  EventPortRef make_event_port(std::span<EventPortRef const>);
-  std::span<EventOutputPortId const> event_port_sources(
-      EventPortRef const&) const;
-  constexpr void record_configured_sample_connection(
-      NodeBundlePortId, SamplePortRef const&);
-  constexpr void record_configured_sample_connection(SampleInputChannelId, SamplePortRef const&);
-  void record_configured_sample_connection(NodeBundlePortId, std::span<SamplePortRef const>);
-  void record_configured_event_connection(NodeBundlePortId, EventPortRef const&);
-  constexpr SamplePortRef lift_to_sample_port(
-      SamplePortRef const& sample_port);
-  constexpr SamplePortRef lift_to_sample_port(SamplePortRef&& sample_port);
-  constexpr void populate_public_introspection_metadata(
-      GraphIntrospectionMetadata& metadata) const;
-  constexpr SamplePortRef lift_to_sample_port(NamedRef const& ref);
-  details::SubgraphBuildScope& require_subgraph_scope(
-      details::SubgraphBuildScope&);
+  struct SamplePortExpression {
+    ChannelTypeId channel_type = ChannelTypeId::mono;
+    std::vector<SampleOutputChannelId> channels{};
+    std::vector<std::optional<ConfiguredSampleConnectionDetach>> detaches{};
+  };
+  struct EventPortExpression {
+    EventTypeId type = EventTypeId::empty;
+    std::vector<EventOutputPortId> sources{};
+    std::vector<std::optional<ConfiguredEventConnectionDetach>> detaches{};
+  };
+
+  ScopeFrame& frame(details::BuilderScopeId);
+  ScopeFrame const& frame(details::BuilderScopeId) const;
+  std::size_t frame_index(details::BuilderScopeId) const;
+  [[nodiscard]] std::uint64_t current_namespace() const noexcept;
+
+
+  // Namespace-aware get-or-create for live virtual records.
+  VirtualNodeHandle virtual_record(std::string_view source_identity, std::string_view type_identity);
+  VirtualNodeHandle append_virtual_record(
+      std::string_view source_identity, std::string_view type_identity,
+      std::uint64_t name_space);
+  void index_imported_records(std::size_t begin);
+  static std::string virtual_record_key(
+      std::uint64_t name_space, std::string_view source_identity,
+      std::string_view type_identity);
+  void attach_virtual_bundle_member(
+      NodeBundleHandle, std::string_view source_identity, SourceInfo const*);
+  void attach_virtual_input_source_info(
+      NodeBundleHandle, std::string_view source_identity, PortKind,
+      std::string_view port_name, SourceInfo const&);
+
+  SamplePortRef lift_named_sample(NamedRef const&);
+  std::string relative_scope_qualifier(NodeBundleHandle subgraph) const;
+
+  details::BuilderSession* _session = nullptr;
+  GraphBuilderIdentity _identity;
+  GraphBuilderNodeBundles _node_bundles;
+  GraphBuilderConnections _connections;
+  GraphBuilderAnnotations _annotations;
+  GraphBuilderVirtualNodes _virtual_nodes;
+  // Parallel to the virtual-node records: the live namespace that may still
+  // coalesce new members into each record. Imported records receive a
+  // namespace of their own and never coalesce with live declarations.
+  std::vector<std::uint64_t> _virtual_namespaces;
+  std::unordered_map<std::string, VirtualNodeHandle> _virtual_record_index;
+  std::vector<ScopeFrame> _scopes;
+  details::BuilderScopeId _next_scope_id = 1;
+  std::uint64_t _next_namespace = 1;
+  // SamplePortRef intentionally stores only an index into this session-owned
+  // table. Variable-length expressions never live in module-generated code.
+  std::vector<SamplePortExpression> _sample_port_expressions;
+  std::vector<EventPortExpression> _event_port_expressions;
 };
-
-constexpr void GraphBuilderState::outputs(std::initializer_list<NamedRef> refs) {
-  outputs(std::span<NamedRef const>(refs.begin(), refs.size()));
-}
-
-constexpr void GraphBuilderState::outputs(std::span<NamedRef const> refs) {
-  _public_ports.define_sample_outputs_from_named_refs(
-      *this, _node_bundles, _identity,
-      [&](auto&& value) {
-        return lift_to_sample_port(std::forward<decltype(value)>(value));
-      },
-      refs);
-}
-
-constexpr void GraphBuilderPublicPorts::define_sample_outputs(
-    GraphBuilderState& builder, GraphBuilderNodeBundles& bundles,
-    GraphBuilderIdentity const& identity, std::span<OutputRefConfig const> refs) {
-  _last_sample_output_port_indices.clear();
-  bool require_names = refs.size() > 1;
-  for (size_t i = 0; i < refs.size(); ++i) {
-    auto const& ref = refs[i].ref; auto const& config = refs[i].config;
-    if (!ref.graph_builder) details::error("builder " + identity.value + ": outputs(...): empty SamplePortRef");
-    if (ref.graph_builder != &builder.facade()) details::error("builder " + identity.value + ": outputs(...): SamplePortRef belongs to another builder");
-    if (require_names && config.name.empty()) details::error("builder " + identity.value + ": outputs(...) requires names when exposing more than one sample output");
-    auto existing = !refs[i].public_member.family_name.empty()
-      ? std::find_if(_sample_output_members.begin(), _sample_output_members.end(), [&](auto const& m) {
-          auto const& n = refs[i].public_member; return m.family_name == n.family_name && m.channel_type == n.channel_type && m.channel_index == n.channel_index && m.whole_stream == n.whole_stream; })
-      : _sample_output_members.end();
-    size_t output = existing == _sample_output_members.end()
-      ? bundles.bundle(_boundary).boundary_sample_outputs().size()
-      : static_cast<size_t>(existing - _sample_output_members.begin());
-    if (existing == _sample_output_members.end()) {
-      IV_ASSERT(bundles.bundle(_boundary).append_boundary_sample_output(config) == output, "public output metadata mismatch");
-      _sample_output_members.push_back(refs[i].public_member); _sample_output_source_infos.emplace_back();
-    }
-    NodeBundlePortId const target{_boundary, PortKind::sample, output};
-    if (refs[i].target_channel_index) {
-      auto channels = bundles.sample_input_channels(target); auto channel = *refs[i].target_channel_index;
-      if (channel >= channels.size()) details::error("public sample output channel index is out of bounds");
-      builder.record_configured_sample_connection(channels[channel], ref);
-    } else builder.record_configured_sample_connection(target, ref);
-    _last_sample_output_port_indices.push_back(output);
-  }
-  _sample_outputs_defined = true;
-}
-
-constexpr void GraphBuilderPublicPorts::define_event_outputs(
-    GraphBuilderState& builder, GraphBuilderNodeBundles& bundles,
-    GraphBuilderIdentity const& identity,
-    std::span<EventOutputRefConfig const> refs)
-{
-  auto& boundary = bundles.bundle(_boundary);
-  boundary.clear_boundary_event_outputs();
-  _event_output_source_infos.resize(refs.size());
-  bool const require_names = refs.size() > 1;
-  for (size_t i = 0; i < refs.size(); ++i) {
-    auto const& ref = refs[i].ref;
-    if (!ref.graph_builder)
-      details::error(
-          "builder " + identity.value +
-          ": event_outputs(...): empty EventPortRef");
-    if (ref.graph_builder != &builder.facade())
-      details::error(
-          "builder " + identity.value +
-          ": event_outputs(...): EventPortRef belongs to another builder");
-    if (require_names && refs[i].config.name.empty())
-      details::error(
-          "builder " + identity.value +
-          ": event_outputs(...) requires names when exposing more than one "
-          "event output");
-    auto config = refs[i].config;
-    config.type = ref.type;
-    auto output = boundary.append_boundary_event_output(std::move(config));
-    builder.record_configured_event_connection(
-        {_boundary, PortKind::event, output}, ref);
-  }
-}
-
-constexpr GraphBuilderState::GraphBuilderState(GraphBuilderIdentity identity)
-    : _identity(std::move(identity))
-    , _public_ports(_node_bundles.append_boundary())
-{}
-
-constexpr GraphBuilderState::GraphBuilderState()
-    : GraphBuilderState(GraphBuilderIdentity("root"))
-{}
-
-constexpr PublicSampleInputRef GraphBuilderState::input_named(
-    std::string_view name, ContinuousInputConfig config) {
-  config.name = name;
-  return input(std::move(config));
-}
-
-constexpr GraphBuilderPublicContinuousPortFamilies
-GraphBuilderState::public_sample_input_families() const {
-  return _public_ports.sample_input_families(_node_bundles);
-}
-
-constexpr bool GraphBuilderState::public_sample_input_is_connected(size_t i) const {
-  auto channels = _node_bundles.sample_output_channels(
-      {_public_ports.boundary_handle(), PortKind::sample, i});
-  return std::ranges::any_of(channels, [&](auto c) {
-    return _connections.sample_output_is_connected(c);
-  });
-}
-
-constexpr std::vector<GraphBuilderPublicEventInput>
-GraphBuilderState::public_event_inputs() const {
-  return _public_ports.collected_event_inputs(_node_bundles);
-}
-
-constexpr bool GraphBuilderState::public_event_input_is_connected(size_t i) const {
-  auto ports = _node_bundles.event_output_ports(
-      {_public_ports.boundary_handle(), PortKind::event, i});
-  return std::ranges::any_of(ports, [&](auto p) {
-    return _connections.event_output_is_connected(p);
-  });
-}
-
-constexpr std::span<SourceInfo const>
-GraphBuilderState::public_event_input_source_infos(size_t i) const {
-  return _public_ports.event_input_source_infos(i);
-}
-
-constexpr GraphBuilderPublicContinuousPortFamilies
-GraphBuilderState::public_sample_output_families() const {
-  return _public_ports.sample_output_families(_node_bundles);
-}
-
-constexpr std::vector<GraphBuilderPublicEventOutput>
-GraphBuilderState::public_event_outputs() const {
-  return _public_ports.collected_event_outputs(_node_bundles);
-}
-
-constexpr void GraphBuilderState::populate_public_introspection_metadata(
-    GraphIntrospectionMetadata& metadata) const
-{
-  auto sample_inputs = public_sample_input_families();
-  for (auto& family : sample_inputs.families) {
-    family.configured_connected = std::ranges::any_of(
-        family.channels, [&](auto const& channel) {
-          return std::ranges::any_of(
-              channel.port_indices, [&](auto index) {
-                return public_sample_input_is_connected(index);
-              });
-        });
-  }
-  metadata.public_continuous_inputs = std::move(sample_inputs.families);
-  metadata.public_event_inputs = public_event_inputs();
-  for (auto& input : metadata.public_event_inputs)
-    input.graph_connected = public_event_input_is_connected(input.port_index);
-  metadata.public_continuous_outputs = public_sample_output_families().families;
-  metadata.public_event_outputs = public_event_outputs();
-}
-
-constexpr ConfiguredGraph GraphBuilderState::finish() const & {
-  return {
-      .identity = _identity,
-      .node_bundles = _node_bundles,
-      .connections = _connections,
-      .public_ports = _public_ports,
-      .annotations = _annotations,
-      .virtual_nodes = _virtual_nodes,
-  };
-}
-
-constexpr ConfiguredGraph GraphBuilderState::finish() && {
-  return {
-      .identity = std::move(_identity),
-      .node_bundles = std::move(_node_bundles),
-      .connections = std::move(_connections),
-      .public_ports = std::move(_public_ports),
-      .annotations = std::move(_annotations),
-      .virtual_nodes = std::move(_virtual_nodes),
-  };
-}
-
-constexpr SamplePortRef GraphBuilderState::lift_to_sample_port(
-    SamplePortRef const& port)
-{
-  if (port.graph_builder != &facade())
-    details::error("sample port belongs to another builder");
-  return port;
-}
-
-constexpr SamplePortRef GraphBuilderState::lift_to_sample_port(
-    SamplePortRef&& port)
-{
-  if (port.graph_builder != &facade())
-    details::error("sample port belongs to another builder");
-  return std::move(port);
-}
-
-constexpr void GraphBuilderState::record_configured_sample_connection(
-    NodeBundlePortId target,
-    SamplePortRef const& source)
-{
-  if (target.port_kind != PortKind::sample || !source.graph_builder
-      || source.graph_builder != &facade()
-      || source.handle >= _sample_port_expressions.size())
-    details::error("invalid configured sample connection");
-  auto descriptor = _node_bundles.resolve_sample_input(target);
-  auto const& expression = _sample_port_expressions[source.handle];
-  if (expression.channel_type != source.channel_type)
-    details::error("sample port has an invalid semantic channel type");
-  std::vector<ConfiguredSampleConnectionSource> configured_sources;
-  configured_sources.reserve(expression.channels.size());
-  for (std::size_t i = 0; i < expression.channels.size(); ++i) {
-    configured_sources.push_back({
-        .channel = expression.channels[i],
-        .detach = expression.detaches[i],
-    });
-  }
-  _connections.record_configured_sample_connection({
-      .source_type = source.channel_type,
-      .source_channels = std::move(configured_sources),
-      .target_type = descriptor.config.channel_layout.channel_type,
-      .target_channels = _node_bundles.sample_input_channels(target),
-  });
-}
-
-constexpr void GraphBuilderState::record_configured_sample_connection(
-    SampleInputChannelId target,
-    SamplePortRef const& source)
-{
-  if (!source.graph_builder || source.graph_builder != &facade()
-      || source.handle >= _sample_port_expressions.size())
-    details::error("invalid configured sample channel connection");
-  auto channels = _node_bundles.sample_input_channels(
-      {target.bundle, PortKind::sample, target.port});
-  if (target.channel >= channels.size() || channels[target.channel] != target)
-    details::error("sample input channel does not belong to its NodeBundle port");
-  auto const& expression = _sample_port_expressions[source.handle];
-  if (expression.channel_type != source.channel_type)
-    details::error("sample port has an invalid semantic channel type");
-  std::vector<ConfiguredSampleConnectionSource> configured_sources;
-  configured_sources.reserve(expression.channels.size());
-  for (std::size_t i = 0; i < expression.channels.size(); ++i) {
-    configured_sources.push_back({
-        .channel = expression.channels[i],
-        .detach = expression.detaches[i],
-    });
-  }
-  _connections.record_configured_sample_connection({
-      .source_type = source.channel_type,
-      .source_channels = std::move(configured_sources),
-      .target_type = ChannelTypeId::mono,
-      .target_channels = {target},
-  });
-}
-
-constexpr void GraphBuilderState::connect_sample_input(
-    NodeBundlePortId target,
-    SamplePortRef source)
-{
-  record_configured_sample_connection(target, source);
-}
-
-constexpr void GraphBuilderState::connect_sample_input(
-    SampleInputChannelId target,
-    SamplePortRef source)
-{
-  record_configured_sample_connection(target, source);
-}
-
-constexpr SamplePortRef GraphBuilderState::detach_sample_port(
-    SamplePortRef const& source, size_t latency,
-    std::optional<Sample> initial_value) {
-  if (!source.graph_builder || source.graph_builder != &facade()
-      || source.handle >= _sample_port_expressions.size())
-    details::error("cannot detach a sample port from another builder");
-  if (latency < 1)
-    details::error("detach loop extra latency must be at least 1");
-  auto const expression = _sample_port_expressions[source.handle];
-  ConfiguredSampleConnectionDetach const requested{
-      .loop_extra_latency = latency,
-      .initial_value_override = initial_value,
-  };
-  if (std::ranges::any_of(expression.detaches, [](auto const& detach) {
-        return detach.has_value();
-      }))
-    details::error("cannot detach an already detached sample channel");
-  auto detaches = expression.detaches;
-  std::ranges::fill(detaches, requested);
-  auto const handle = _sample_port_expressions.size();
-  _sample_port_expressions.push_back({
-      .channel_type = expression.channel_type,
-      .channels = expression.channels,
-      .detaches = std::move(detaches),
-  });
-  auto result = source;
-  result.handle = handle;
-  return result;
-}
-
-inline EventPortRef GraphBuilderState::detach_event_port(
-    EventPortRef const& source, size_t latency) {
-  if (!source.graph_builder || source.graph_builder != &facade()
-      || source.handle >= _event_port_expressions.size())
-    details::error("cannot detach an event port from another builder");
-  if (latency < 1)
-    details::error("detach loop extra latency must be at least 1");
-  auto const expression = _event_port_expressions[source.handle];
-  ConfiguredEventConnectionDetach const requested{
-      .loop_extra_latency = latency,
-  };
-  if (std::ranges::any_of(expression.detaches, [](auto const& detach) {
-        return detach.has_value();
-      }))
-    details::error("cannot detach an already detached event source");
-  auto detaches = expression.detaches;
-  std::ranges::fill(detaches, requested);
-  auto const handle = _event_port_expressions.size();
-  _event_port_expressions.push_back({
-      .type = expression.type,
-      .sources = expression.sources,
-      .detaches = std::move(detaches),
-  });
-  auto result = source;
-  result.handle = handle;
-  return result;
-}
-
-constexpr SamplePortRef GraphBuilderState::lift_to_sample_port(
-    NamedRef const& ref) {
-  return std::visit(
-      [&](auto const& value) -> SamplePortRef {
-        using T = std::remove_cvref_t<decltype(value)>;
-        if constexpr (std::same_as<T, EventPortRef>)
-          details::error("expected sample value, got event");
-        else if constexpr (std::same_as<T, Sample>)
-          return facade().lift_to_sample_port(value);
-        else
-          return lift_to_sample_port(value);
-      },
-      ref.value);
-}
 
 } // namespace iv

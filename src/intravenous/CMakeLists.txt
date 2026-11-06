@@ -220,6 +220,8 @@ add_custom_target(intravenous_builtin_package_assets
 add_library(intravenous_graph_builder OBJECT
     basic_nodes/debug_probe.cpp
     compat.cpp
+    throw_site.cpp
+    throw_site_hook.cpp
     graph/builder/builder.cpp
     graph/builder/node_refs.cpp
     graph/builder/state.cpp

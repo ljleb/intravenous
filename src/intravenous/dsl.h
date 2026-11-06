@@ -204,7 +204,7 @@ namespace iv {
 
     constexpr SamplePortRef lift(SamplePortRef s)
     {
-        if (!s.graph_builder) {
+        if (!s.session) {
             details::error("cannot lift an empty sample port");
         }
         return s;
@@ -339,24 +339,28 @@ namespace iv {
     requires ((SamplePortLike<L> || ScalarLike<L>) && (SamplePortLike<R> || ScalarLike<R>))
     constexpr auto make_binary_op(L&& lhs, R&& rhs, std::string_view op_name)
     {
-        GraphBuilder* g = nullptr;
+        details::BuilderSession* session = nullptr;
 
         if constexpr (SamplePortLike<L>) {
             SamplePortRef s = static_cast<SamplePortRef>(lhs);
-            g = s.graph_builder;
+            session = s.session;
         }
 
         if constexpr (SamplePortLike<R>) {
             SamplePortRef s = static_cast<SamplePortRef>(rhs);
-            if (!g) {
-                g = s.graph_builder;
+            if (!session) {
+                session = s.session;
             }
         }
 
-        if (!g) {
+        if (!session) {
             details::error(std::string(op_name) + ": at least one operand must be a sample port");
         }
 
+        // The generated node belongs to the session's current scope, whichever
+        // view created the operands.
+        GraphBuilder builder(session);
+        auto* const g = &builder;
         SamplePortRef lhs_sample_port = lift_sample_operand(*g, std::forward<L>(lhs));
         SamplePortRef rhs_sample_port = lift_sample_operand(*g, std::forward<R>(rhs));
 

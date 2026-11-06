@@ -7,6 +7,17 @@ the then-current graph configuration/build pipeline. After that optimization
 pass, this GraphBuilder API/state migration is the next planned builder-level
 architectural step._
 
+> **Implementation status (2026-11-06):** the measurement gate was satisfied by the
+> builder/configuration baseline recorded under Front 12 in
+> [implementation_fronts_direction.md](./implementation_fronts_direction.md), and the
+> migration in this document is implemented in source pending the repository owner's
+> build and test run. That record lists the implementation decisions taken within
+> this direction (path-qualified virtual IDs, wrapper-free registered invocations)
+> and the remaining `node_reference` extension. The transactional rollback this
+> direction originally required was replaced on 2026-11-06 by stopping the
+> configuration pass on failure; see "Construction failure stops the configuration
+> pass" below.
+
 This document defines the intended successor to the current child-session/live-
 child embedding model. It supplements the implemented behavior described in
 [graph_builder_embedding_and_matchers.md](./graph_builder_embedding_and_matchers.md),
@@ -68,8 +79,8 @@ The redesign is governed by these invariants.
 9. Cache misses execute directly in the live session. Cache hits may substitute
    a direct `ConfiguredGraph` import. Those two paths must have equivalent graph
    semantics.
-10. Construction failure is transactional. Same-session nested construction
-    requires real rollback rather than merely abandoning a scope object.
+10. Construction failure stops the configuration pass. Nothing a failed
+    construction did is undone in place; the pass's `BuilderSession` is discarded.
 
 ## Object model
 
@@ -88,7 +99,7 @@ BuilderSession
         configuration lifetimes
         package/definition configuration context
         nested scope stack
-        rollback checkpoints
+        first construction failure
 
         |-- GraphBuilder view
         |       BuilderSession*
@@ -173,7 +184,6 @@ struct ScopeFrame {
     NodeBundleHandle boundary;
     size_t child_begin;
     ScopeIdentity semantic_identity;
-    SessionCheckpoint rollback_checkpoint;
     // scope-local interface/finalization state...
 };
 ```
@@ -243,30 +253,45 @@ part of live-reference identity.
 Refs from genuinely different sessions remain incompatible. The redesign does
 not introduce cross-session live wiring.
 
-## One SubgraphClosure surface, three materially different paths
+## One subgraph concept: two closure alternatives and in-place scope finalization
 
-The source-level subgraph API should converge on one semantic overload:
+_Accepted design change (2026-11-06): a nested live `GraphBuilder` is no longer a
+`SubgraphClosure` alternative; it is finalized by its own `g.subgraph` overload. The
+superseded three-alternative text and its rationale are preserved in
+[Front 12 SubgraphClosure With A Live GraphBuilder Alternative](./historical/front_12_subgraph_closure_live_builder_alternative_2026-11-06.md)._
+
+Every source-level subgraph is one concept: `g.subgraph(...)` returns a `NodeRef` to
+one subgraph bundle placed in the session's current scope. It accepts two kinds of
+argument:
 
 ```cpp
-NodeRef GraphBuilder::subgraph(SubgraphClosure /* cv/ref form TBD */);
+NodeRef GraphBuilder::subgraph(SubgraphClosure&);    // reusable through an lvalue
+NodeRef GraphBuilder::subgraph(SubgraphClosure&&);
+NodeRef GraphBuilder::subgraph(GraphBuilder&& nested); // finalize a nested live scope
 ```
 
-`SubgraphClosure` is a variant-backed type with implicit construction from three
-semantic alternatives:
+`SubgraphClosure` is a move-only, variant-backed value with implicit construction
+from two semantic alternatives:
 
 ```text
-ConfiguredGraph
-GraphBuilder
-ErasedSubgraphFunction   // callable with SubgraphBuilder&
+ConfiguredGraph          // frozen; borrowed or shared ownership
+ErasedSubgraphFunction   // move-only callable with SubgraphBuilder&
 ```
 
-The exact ownership wrappers/cv-ref signature may be selected during
-implementation so that move-only closures are supported and reusable alternatives
-can be invoked repeatedly. The important contract is the three alternatives and
-one source-level subgraph concept.
+Both alternatives are reusable: every invocation places a fresh scope with fresh
+bundles. A `SubgraphClosure` is therefore the value that can be stored and passed
+through module scopes as a construction argument:
 
-Do **not** normalize all three alternatives to a child `GraphBuilder` merely for
-implementation uniformity. Each path has distinct efficiency/correctness needs.
+```cpp
+SubgraphClosure voice = [&](SubgraphBuilder& boundary) { /* ... */ };
+auto bank = g.node<"voice_bank">(voice);
+```
+
+A callable passed directly to `g.subgraph` is the same callable alternative without
+type erasure.
+
+Do **not** normalize these paths to a child `GraphBuilder` merely for implementation
+uniformity. Each path has distinct efficiency/correctness needs.
 
 ### ConfiguredGraph alternative
 
@@ -286,19 +311,6 @@ g.subgraph(configured)
 
 Each placement creates fresh live bundles with an explicit local-to-session
 translation.
-
-### Live GraphBuilder alternative
-
-A nested `GraphBuilder` represents state that already exists in the same
-`BuilderSession`. Attaching/finishing that subgraph closes/finalizes the existing
-scope **in place**. Its bundles are not copied and are not removed/reintroduced.
-
-This alternative is effectively one-shot as a scope-finalization operation: once
-the represented live scope is closed, that same live scope cannot be attached a
-second time. This does not mean its graph contents are consumed; they remain in
-the owning session.
-
-The normal cache-miss module path should use this behavior internally.
 
 ### C++ construction-closure alternative
 
@@ -320,6 +332,22 @@ those nodes in the just-opened subgraph.
 The erased callable should not be forced through `std::function` if that would
 exclude useful move-only captures. A suitable move-only erased callable is
 preferred where the toolchain permits it.
+
+### Finalizing a nested live GraphBuilder in place
+
+A nested `GraphBuilder` represents state that already exists in the same
+`BuilderSession`. `g.subgraph(std::move(nested))` closes and finalizes that existing
+scope **in place**. Its bundles are not copied and are not removed/reintroduced.
+
+This is a one-shot scope-finalization operation, not a closure value. While the
+nested scope is open it is the session's current scope, so every node constructed
+anywhere in the session belongs to it. It cannot be passed into another node's
+construction, whose own scope would open inside it; it can only be finalized at the
+level where it is open. Once closed, the same live scope cannot be attached again.
+Its graph contents are not consumed; they remain in the owning session.
+
+The normal cache-miss module path finalizes its definition scope in place through the
+same scope operation.
 
 ## Higher-order SubgraphClosure arguments
 
@@ -551,48 +579,83 @@ configuration argument storage, and dependency lifetimes around a
 `ConfiguredGraph`; this direction does not require those metadata/lifetime
 concerns to become fields of `ConfiguredGraph` itself.
 
-## Same-session construction requires transactional rollback
+## Construction failure stops the configuration pass
 
-Independent child sessions currently provide an implicit failure boundary: a
-failed child can be destroyed without contaminating its parent graph. Direct
-same-session construction removes that accidental safety mechanism.
+_Accepted design change (2026-11-06): this replaces the transactional rollback this
+direction originally required. The superseded section and its rationale are preserved
+in [Front 12 Transactional Construction Rollback](./historical/front_12_transactional_rollback_2026-11-06.md)._
 
-Every opened construction scope therefore needs a real session checkpoint.
-Rollback must restore every append-only or scope-mutated structure affected by
-construction, including at least:
+Independent child sessions used to provide an implicit failure boundary: a failed
+child could be destroyed without contaminating its parent graph. Same-session
+construction does not replace that boundary with rollback. A failed construction is
+not recovered inside its `BuilderSession`. Its failure stops the whole configuration
+pass, and the pass's session is discarded.
 
-```text
-node-bundle count/state
-sample connection state
-event connection state
-sample-expression table
-event-expression table
-virtual-node/introspection state
-annotations/source state
-public/scope boundary state
-configuration allocations/lifetimes
-package/definition-use bookkeeping where transaction-local
-other future scope-local tables
-```
+A construction failure is an exception that leaves any of these:
 
-If an inner scope connects to an existing outer node and later throws, rollback
-must remove that connection too.
+- a session operation, such as creating, connecting, or annotating a node, looking
+  up a port, declaring an interface, or finalizing a scope or the root;
+- a module or leaf construction factory;
+- a `SubgraphClosure` invocation;
+- a registered call (`g.node<"id">(...)`).
 
-Tiled module construction needs an outer transaction checkpoint around the whole
-tile set:
+The exception may come from the library, for example an unknown port name, a missing
+nested definition, a definition cycle, or tiled members with incompatible interfaces.
+It may also come from authored provider code. Newly settled detail (2026-11-06): an
+error raised by a session operation fails the session whoever called it, host code
+included. Without rollback, the operation may already have changed the session.
 
-```text
-checkpoint
-    construct member 0
-    construct member 1
-    ...
-    validate compatible interfaces
-commit
-```
+The first failure is recorded on the session before the exception leaves the
+library boundary it crosses. A session with a recorded failure refuses every further
+construction operation. Module code therefore cannot resume construction by catching
+the exception: its next builder call fails again. A factory that returns normally
+after a failure was recorded still fails its pass. An exception that authored code
+raises and handles itself, without involving the builder, is not a construction
+failure.
 
-Any member/configuration/interface failure rolls back the complete tiled attempt.
-This preserves the present no-partial-tile guarantee without requiring independent
-child sessions.
+At the pass boundary:
+
+- `NodeInstances` first checks every request for problems that need no
+  construction: configuration source that does not parse or type-check, an unknown
+  definition, or a project-node reference to an instance the batch does not declare.
+  It reports all of them together. A source that contains project-node references
+  is type-checked only once the instances it references are placed, so its type
+  errors are construction failures. Any such problem fails the pass before
+  construction starts. Otherwise, the first construction failure stops construction
+  and is reported.
+- A recorded project connection that does not currently resolve to compatible
+  ports remains retained intent with a diagnostic, as before. Either a matcher
+  resolves to no port, or the resolved ports' types differ from the connection's.
+  Resolution and type compatibility are checked before any mutation. A failure
+  while applying a resolved, compatible connection fails the pass. Newly settled
+  detail (2026-11-06): a type mismatch is treated like a missing endpoint, so a
+  package update that retypes a port behaves like one that removes it.
+- `ProjectGraph` discards the root `BuilderSession`, retains the desired revision
+  and the diagnostics, publishes no new configured generation, and sends nothing to
+  either executor. The previous configured and executable generations remain
+  current, as they do after a `GraphJit` compile failure. On a project's first build
+  there is no previous generation, so nothing runs until the failure is fixed.
+
+A failure diagnostic contains the failure message, the construction context (the
+project instance ID, the chain of definition IDs being configured, and the semantic
+path), and a stack trace that shows where the failure was raised. A library-detected
+error can capture that stack where it is detected. An exception raised by authored
+code is already unwound by the time a boundary catches it, so its stack must be
+captured when it is thrown, for example by intercepting `__cxa_throw` on Itanium-ABI
+platforms.
+
+Consequences:
+
+- No ref can denote discarded state, because nothing is truncated and reused.
+- A `GraphBuilder::nested()` view destroyed without being finalized records a
+  failure.
+- Tiled module construction is all-or-nothing without its own checkpoint: a member,
+  configuration, or interface failure fails the pass, so no partial tile is
+  published.
+- A failed invocation populates no cache entry. Entries populated by nested
+  invocations that succeeded before the failure remain valid reusable values.
+- Snapshot closedness (see the snapshot API section) is purely structural. No
+  transaction exists whose effects outside the scope a snapshot could miss.
 
 ## Virtual-node identity must become scope-aware
 
@@ -773,13 +836,14 @@ has established the performance baseline, the intended builder migration order i
 1. introduce session-level live-ref identity and remove dependence on
    `GraphBuilder*` façade identity;
 2. make `GraphBuilder`/`SubgraphBuilder` explicit non-owning session/scope views;
-3. add the session-owned LIFO construction-scope stack and real transactional
-   checkpoints/rollback;
+3. add the session-owned LIFO construction-scope stack (the transactional
+   checkpoints/rollback originally planned here were replaced on 2026-11-06 by
+   stopping the configuration pass on failure);
 4. make virtual-node identity scope-aware before cache misses can construct
    multiple independent modules directly in one session;
 5. add `SubgraphClosure` and the single semantic `g.subgraph(...)` surface while
-   retaining separate direct implementations for frozen, live, and callable
-   alternatives;
+   retaining separate direct implementations for the frozen and callable closure
+   alternatives and for in-place finalization of a nested live scope;
 6. add the non-destructive, closedness-checked `GraphBuilder -> ConfiguredGraph`
    snapshot API;
 7. split configuration argument constructibility/retention/cache-keyability in
@@ -810,8 +874,8 @@ This direction is complete when all of the following are true:
   independently snapshotted;
 - `NodeRef`/sample/event refs remain valid across different builder views of the
   same session and reject different sessions;
-- nested construction rollback leaves no partial nodes, connections,
-  expressions, annotations, or configuration allocations;
+- a construction failure stops the configuration pass, module code cannot resume
+  a session after one, and no partial graph from a failed pass is published;
 - direct cache misses and frozen cache hits produce equivalent nested/virtual
   identity visible to project matchers and introspection;
 - higher-order `SubgraphClosure` arguments can be invoked repeatedly in deeper

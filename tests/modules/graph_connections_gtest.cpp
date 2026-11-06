@@ -143,7 +143,6 @@ iv::NodeInstancePlacement embed_as_instance(
     auto embedding = root.embed(graph, kind);
     auto const instance_root = embedding.root_scope;
     return iv::NodeInstancePlacement{
-        .embedding = std::move(embedding),
         .root = instance_root,
     };
 }
@@ -563,7 +562,6 @@ TEST(GraphConnections, TiledChildPathSelectorChoosesNodeBeforePortResolution)
     auto source_embedding = root.embed(source_fixture.graph, "source");
     auto const source_root = source_embedding.node_bundle(source_fixture.local_root);
     placements.emplace("source", iv::NodeInstancePlacement{
-        .embedding = std::move(source_embedding),
         .root = source_root,
     });
     placements.emplace("sink", embed_as_instance(root, sink_graph, "sink"));
@@ -597,7 +595,6 @@ TEST(GraphConnections, ConfigurationReferenceAndConnectionUseTheSamePathResolver
     auto source_embedding = root.embed(source_fixture.graph, "source");
     auto const source_root = source_embedding.node_bundle(source_fixture.local_root);
     placements.emplace(source_id, iv::NodeInstancePlacement{
-        .embedding = std::move(source_embedding),
         .root = source_root,
     });
     placements.emplace("sink", embed_as_instance(root, sink_graph, "sink"));
@@ -645,7 +642,6 @@ TEST(GraphConnections, ProjectNodePathRejectsUnknownSubjectsAndSelectors)
     auto tiled_embedding = root.embed(tiled_fixture.graph, "tiled");
     auto const tiled_root = tiled_embedding.node_bundle(tiled_fixture.local_root);
     placements.emplace("tiled", iv::NodeInstancePlacement{
-        .embedding = std::move(tiled_embedding),
         .root = tiled_root,
     });
     auto configured = root.finish();

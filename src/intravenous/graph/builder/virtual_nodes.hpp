@@ -78,28 +78,35 @@ struct GraphBuilderVirtualPorts {
   std::vector<GraphBuilderVirtualEventOutputPort> event_outputs{};
 };
 
+// Virtual-node records are append-only except for member/source-info
+// accumulation. Which record a live declaration joins is decided by the
+// builder's scope namespaces, so these operations address records by handle.
 class GraphBuilderVirtualNodes {
 public:
+  constexpr VirtualNodeHandle create(
+      std::string_view source_identity, std::string_view type_identity);
   constexpr void attach_bundle_member(
-      GraphBuilderNodeBundles&, NodeBundleHandle,
-      std::string_view virtual_node_id,
+      GraphBuilderNodeBundles&, VirtualNodeHandle, NodeBundleHandle,
       SourceInfo const* source_info = nullptr);
   constexpr void attach_sample_output(
-      GraphBuilderNodeBundles&, ChannelTypeId,
-      std::span<SampleOutputChannelId const>,
-      std::string_view virtual_node_id, SourceInfo const&);
+      VirtualNodeHandle, ChannelTypeId, std::span<SampleOutputChannelId const>,
+      SourceInfo const&);
   constexpr void attach_event_output(
-      GraphBuilderNodeBundles&, EventTypeId,
-      std::span<EventOutputPortId const>,
-      std::string_view virtual_node_id, SourceInfo const&);
+      VirtualNodeHandle, EventTypeId, std::span<EventOutputPortId const>,
+      SourceInfo const&);
   constexpr void annotate_input_source_info(
-      GraphBuilderNodeBundles&, NodeBundleHandle,
-      std::string_view virtual_node_id,
+      GraphBuilderNodeBundles&, VirtualNodeHandle, NodeBundleHandle,
       PortKind, std::string_view port_name, SourceInfo const&);
+  // Imports every child record as a distinct record. `qualifier` is
+  // appended to each imported introspection ID; it names the placement
+  // relative to the enclosing semantic scope, never a session handle.
   constexpr std::vector<VirtualNodeHandle> import_child(
       GraphBuilderNodeBundles&, GraphBuilderVirtualNodes const&,
-      size_t node_bundle_offset, NodeBundleHandle root_scope);
+      size_t node_bundle_offset, std::string_view qualifier);
+  // Appends `qualifier` to the IDs of records [begin, size()).
+  constexpr void qualify(size_t begin, std::string_view qualifier);
 
+  constexpr size_t size() const { return _records.size(); }
   constexpr std::vector<VirtualNodeRecord> const& records() const;
   static constexpr GraphBuilderVirtualNodes from_configured_records(
       std::span<VirtualNodeRecord const>);
@@ -109,27 +116,11 @@ public:
   constexpr std::vector<std::string> ids_for_bundle(NodeBundle const&) const;
 
 private:
-    constexpr VirtualNodeHandle get_or_create(
-        std::string_view source_identity, std::string_view type_identity);
-    constexpr void attach_member(
-        GraphBuilderNodeBundles&, VirtualNodeHandle, NodeBundleHandle,
-        SourceInfo const*);
-
     std::vector<VirtualNodeRecord> _records {};
 };
 } // namespace iv
 namespace iv {
 namespace {
-constexpr void append_decimal(std::string& text, std::size_t value) {
-  char reversed[std::numeric_limits<std::size_t>::digits10 + 2]{};
-  std::size_t count = 0;
-  do {
-    reversed[count++] = static_cast<char>('0' + (value % 10));
-    value /= 10;
-  } while (value != 0);
-  while (count != 0) text.push_back(reversed[--count]);
-}
-
 template <class Config>
 constexpr void append_virtual_event_port_mapping(
     std::vector<VirtualEventPortMapping>& mappings, Config const& config,
@@ -200,19 +191,10 @@ constexpr void append_bundle_mappings(
 }
 } // namespace
 
-constexpr VirtualNodeHandle GraphBuilderVirtualNodes::get_or_create(
+constexpr VirtualNodeHandle GraphBuilderVirtualNodes::create(
     std::string_view source_identity, std::string_view type_identity
 )
 {
-    auto const existing = std::find_if(
-        _records.begin(), _records.end(), [&](VirtualNodeRecord const& record) {
-            return record.source_identity == source_identity &&
-                record.type_identity == type_identity;
-        }
-    );
-    if (existing != _records.end())
-        return static_cast<VirtualNodeHandle>(existing - _records.begin());
-
     auto const handle = _records.size();
     _records.push_back({
         .id = details::typed_virtual_node_id(source_identity, type_identity),
@@ -222,7 +204,7 @@ constexpr VirtualNodeHandle GraphBuilderVirtualNodes::get_or_create(
     return handle;
 }
 
-constexpr void GraphBuilderVirtualNodes::attach_member(
+constexpr void GraphBuilderVirtualNodes::attach_bundle_member(
     GraphBuilderNodeBundles& bundles, VirtualNodeHandle virtual_handle,
     NodeBundleHandle bundle_handle, SourceInfo const* source_info) {
   auto& record = _records[virtual_handle];
@@ -236,25 +218,11 @@ constexpr void GraphBuilderVirtualNodes::attach_member(
     record.source_infos.push_back(*source_info);
 }
 
-constexpr void GraphBuilderVirtualNodes::attach_bundle_member(
-    GraphBuilderNodeBundles& bundles, NodeBundleHandle bundle_handle,
-    std::string_view virtual_node_id, SourceInfo const* source_info) {
-  if (virtual_node_id.empty()) return;
-  attach_member(
-      bundles,
-      get_or_create(virtual_node_id, bundles.bundle(bundle_handle).type_identity()),
-      bundle_handle,
-      source_info
-  );
-}
-
 constexpr void GraphBuilderVirtualNodes::attach_sample_output(
-    GraphBuilderNodeBundles& bundles, ChannelTypeId channel_type,
+    VirtualNodeHandle handle, ChannelTypeId channel_type,
     std::span<SampleOutputChannelId const> channels,
-    std::string_view source_identity, SourceInfo const& source_info) {
-  if (source_identity.empty() || channels.empty()) return;
-  (void)bundles;
-  auto const handle = get_or_create(source_identity, "sample-port");
+    SourceInfo const& source_info) {
+  if (channels.empty()) return;
   auto& record = _records[handle];
   if (!std::ranges::contains(record.source_infos, source_info))
     record.source_infos.push_back(source_info);
@@ -278,12 +246,10 @@ constexpr void GraphBuilderVirtualNodes::attach_sample_output(
 }
 
 constexpr void GraphBuilderVirtualNodes::attach_event_output(
-    GraphBuilderNodeBundles& bundles, EventTypeId type,
+    VirtualNodeHandle handle, EventTypeId type,
     std::span<EventOutputPortId const> sources,
-    std::string_view source_identity, SourceInfo const& source_info) {
-  if (source_identity.empty() || sources.empty()) return;
-  (void)bundles;
-  auto const handle = get_or_create(source_identity, "event-port");
+    SourceInfo const& source_info) {
+  if (sources.empty()) return;
   auto& record = _records[handle];
   if (!std::ranges::contains(record.source_infos, source_info))
     record.source_infos.push_back(source_info);
@@ -305,15 +271,12 @@ constexpr void GraphBuilderVirtualNodes::attach_event_output(
 
 constexpr void GraphBuilderVirtualNodes::annotate_input_source_info(
     GraphBuilderNodeBundles& bundles,
+    VirtualNodeHandle handle,
     NodeBundleHandle bundle_handle,
-    std::string_view source_identity,
     PortKind port_kind,
     std::string_view port_name,
     SourceInfo const& source_info) {
-  if (source_identity.empty()) return;
-  auto const handle = get_or_create(
-      source_identity, bundles.bundle(bundle_handle).type_identity());
-  attach_member(bundles, handle, bundle_handle, nullptr);
+  attach_bundle_member(bundles, handle, bundle_handle, nullptr);
   auto& record = _records[handle];
 
   if (port_kind == PortKind::sample) {
@@ -342,7 +305,7 @@ constexpr void GraphBuilderVirtualNodes::annotate_input_source_info(
 
 constexpr std::vector<VirtualNodeHandle> GraphBuilderVirtualNodes::import_child(
     GraphBuilderNodeBundles& bundles, GraphBuilderVirtualNodes const& child,
-    size_t bundle_offset, NodeBundleHandle root_scope) {
+    size_t bundle_offset, std::string_view qualifier) {
   std::vector<VirtualNodeHandle> translation;
   translation.reserve(child._records.size());
 
@@ -360,12 +323,11 @@ constexpr std::vector<VirtualNodeHandle> GraphBuilderVirtualNodes::import_child(
     auto const handle = _records.size();
     translation.push_back(handle);
 
-    // Introspection IDs are graph-local. Qualify an imported record by the
-    // synthetic parent subgraph that owns this placement so equal local
-    // identities in two embeddings remain separate scoped virtual nodes. The
-    // source/type identities remain unchanged for structured path matching.
-    child_record.id += "@scope:";
-    append_decimal(child_record.id, root_scope);
+    // Introspection IDs are graph-local. Qualify an imported record by its
+    // placement so equal local identities in two embeddings remain separate
+    // scoped virtual nodes. The source/type identities remain unchanged for
+    // structured path matching.
+    child_record.id += qualifier;
 
     for (auto& bundle : child_record.node_bundle_handles) {
       bundle += bundle_offset;
@@ -396,6 +358,14 @@ constexpr std::vector<VirtualNodeHandle> GraphBuilderVirtualNodes::import_child(
     }
   }
   return translation;
+}
+
+constexpr void GraphBuilderVirtualNodes::qualify(
+    size_t begin, std::string_view qualifier) {
+  if (qualifier.empty()) return;
+  for (auto index = begin; index < _records.size(); ++index) {
+    _records[index].id += qualifier;
+  }
 }
 
 constexpr std::vector<VirtualNodeRecord> const&

@@ -5,6 +5,7 @@
 #include <intravenous/runtime/project_connection_types.h>
 
 #include <mutex>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <variant>
@@ -18,9 +19,14 @@ struct GraphConnectionDiagnostic {
     bool operator==(GraphConnectionDiagnostic const&) const = default;
 };
 
+// `diagnostics` describe retained intent that is not applied: a connection
+// whose matchers resolve to no ports or to incompatible ports. They do not fail
+// the configuration pass. `failure` is set when applying a resolved, compatible
+// connection failed; the pass fails and the root builder must not be used.
 struct GraphConnectionsBatchResult {
     std::vector<std::string> applied_connection_ids{};
     std::vector<GraphConnectionDiagnostic> diagnostics{};
+    std::optional<GraphConnectionDiagnostic> failure{};
 };
 
 void validate_project_connection(ProjectConnection const& connection);
@@ -47,6 +53,9 @@ using GraphConnectionsMutation = std::variant<
 // Synchronous ProjectGraph -> GraphConnections child request. ProjectGraph
 // supplies the same fresh root builder NodeInstances just populated plus the
 // complete external instance-id -> placement map for that transaction.
+// Without a root builder, the request only commits `mutation` to the desired
+// connection set: the configuration pass failed before connections could be
+// realized, but the desired revision still includes this mutation.
 struct GraphConnectionsProjectGraphRequest {
     GraphBuilder* root_builder = nullptr;
     std::unordered_map<std::string, NodeInstancePlacement> const* placements = nullptr;

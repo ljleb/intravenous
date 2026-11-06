@@ -18,6 +18,9 @@
 
 namespace iv {
 class GraphBuilder;
+namespace details {
+struct BuilderSession;
+}
 
 template<class ChannelType>
 class TypedSamplePortRef;
@@ -32,8 +35,11 @@ class TypedPublicSampleInputRef;
 
 // A sample expression is exactly the ordered semantic source channels that
 // participate in an configured connection. It has no execution/topology address.
+// Its identity is the owning BuilderSession: refs created through different
+// GraphBuilder/SubgraphBuilder views of one session are compatible, refs from
+// different sessions are not.
 struct SamplePortRef {
-  GraphBuilder* graph_builder{};
+  details::BuilderSession* session{};
   ChannelTypeId channel_type = ChannelTypeId::mono;
   // The semantic channel list belongs to the builder graph. Keeping only a
   // handle here makes copied and typed DSL references cheap and is the same
@@ -146,7 +152,7 @@ public:
             members.data(), members.size())) {}
   explicit TypedSamplePortTileRef(SamplePortRef port)
       : _port(std::move(port)) {
-    if (!_port.graph_builder ||
+    if (!_port.session ||
         _port.channel_type != ChannelTypeTraits<ChannelType>::id ||
         _port.channels().size() != ChannelType::channel_count)
       details::error("typed tiled sample output does not match its channel type");
@@ -258,7 +264,7 @@ requires requires {
   std::remove_cvref_t<Member>::channel_index;
 } {
   using ChannelType = typename std::remove_cvref_t<Member>::channel_type;
-  if (!graph_builder ||
+  if (!session ||
       channel_type != ChannelTypeTraits<ChannelType>::id ||
       channels().size() != ChannelType::channel_count) {
     details::error("sample port does not match the requested channel type");
@@ -270,7 +276,7 @@ requires requires {
 // configuration. A tiled source is one TiledNodeBundle event port; lowering expands
 // it to member execution ports when compiling the graph.
 struct EventPortRef {
-  GraphBuilder* graph_builder{};
+  details::BuilderSession* session{};
   EventTypeId type = EventTypeId::empty;
   // Like SamplePortRef, this is a session-owned semantic expression, not a
   // container embedded in every DSL value.

@@ -1302,7 +1302,7 @@ TEST_F(ProjectGraphFixture, DefinitionAndMutationTransactionsBuildWholeRootGener
     EXPECT_EQ(generation->generation, 2u);
     ASSERT_EQ(generation->placements.size(), 1u);
     EXPECT_TRUE(generation->placements.contains("instance:a"));
-    EXPECT_TRUE(generation->diagnostics.empty());
+    EXPECT_FALSE(project_graph.configuration_failure());
     EXPECT_EQ(configure_calls.load(), 1);
 
     iv::ProjectAckBuilder update_builder;
@@ -1337,7 +1337,7 @@ TEST_F(ProjectGraphFixture, DefinitionAndMutationTransactionsBuildWholeRootGener
     EXPECT_TRUE(instances.list_instances().empty());
 }
 
-TEST_F(ProjectGraphFixture, MissingDefinitionRemainsDesiredAndRealizesWhenDefinitionArrives)
+TEST_F(ProjectGraphFixture, MissingDefinitionFailsThePassAndRealizesWhenDefinitionArrives)
 {
     iv::ProjectStringBuilder builder;
     project_graph.handle_project_create_node_instance(
@@ -1349,23 +1349,69 @@ TEST_F(ProjectGraphFixture, MissingDefinitionRemainsDesiredAndRealizesWhenDefini
         builder);
     EXPECT_EQ(builder.build(), "instance:pending");
 
-    auto generation = project_graph.current_generation();
-    ASSERT_TRUE(generation);
-    EXPECT_TRUE(generation->placements.empty());
-    ASSERT_EQ(generation->diagnostics.size(), 1u);
-    EXPECT_EQ(generation->diagnostics.front().instance_id, "instance:pending");
+    // The instance stays desired, but its configuration pass fails. This is
+    // the project's first build, so no generation becomes current.
+    EXPECT_FALSE(project_graph.current_generation());
+    auto failure = project_graph.configuration_failure();
+    ASSERT_TRUE(failure);
+    ASSERT_EQ(failure->node_instance_diagnostics.size(), 1u);
+    EXPECT_EQ(failure->node_instance_diagnostics.front().instance_id, "instance:pending");
     auto listed = instances.list_instances();
     ASSERT_EQ(listed.size(), 1u);
     EXPECT_FALSE(listed.front().realized);
 
     project_graph.handle_node_definitions_snapshot_changed(
         iv::NodeDefinitionsSnapshotChanged{.snapshot = make_snapshot(1)});
-    generation = project_graph.current_generation();
+    auto generation = project_graph.current_generation();
+    ASSERT_TRUE(generation);
     ASSERT_TRUE(generation->placements.contains("instance:pending"));
-    EXPECT_TRUE(generation->diagnostics.empty());
+    EXPECT_FALSE(project_graph.configuration_failure());
     listed = instances.list_instances();
     ASSERT_EQ(listed.size(), 1u);
     EXPECT_TRUE(listed.front().realized);
+}
+
+TEST_F(ProjectGraphFixture, InvalidEditKeepsThePreviousGenerationCurrent)
+{
+    project_graph.handle_node_definitions_snapshot_changed(
+        iv::NodeDefinitionsSnapshotChanged{.snapshot = make_snapshot(1)});
+    iv::ProjectStringBuilder create_builder;
+    project_graph.handle_project_create_node_instance(
+        iv::ProjectCreateNodeInstanceRequest{
+            .instance_id = "instance:a",
+            .definition_id = definition_id,
+        },
+        create_builder);
+    EXPECT_EQ(create_builder.build(), "instance:a");
+    auto const good = project_graph.current_generation();
+    ASSERT_TRUE(good);
+    ASSERT_TRUE(good->placements.contains("instance:a"));
+
+    // A second instance of an unknown definition fails the pass; the
+    // previous generation, with instance:a, stays current.
+    iv::ProjectStringBuilder invalid_builder;
+    project_graph.handle_project_create_node_instance(
+        iv::ProjectCreateNodeInstanceRequest{
+            .instance_id = "instance:b",
+            .definition_id = "iv.test.project_graph.unknown",
+            .package_root = std::filesystem::path(package_root),
+        },
+        invalid_builder);
+    EXPECT_EQ(invalid_builder.build(), "instance:b");
+    EXPECT_EQ(project_graph.current_generation(), good);
+    auto failure = project_graph.configuration_failure();
+    ASSERT_TRUE(failure);
+    ASSERT_EQ(failure->node_instance_diagnostics.size(), 1u);
+    EXPECT_EQ(failure->node_instance_diagnostics.front().instance_id, "instance:b");
+
+    // Removing the invalid instance succeeds again and clears the failure.
+    iv::ProjectAckBuilder delete_builder;
+    project_graph.handle_project_delete_node_instance(
+        iv::ProjectDeleteNodeInstanceRequest{.instance_id = "instance:b"},
+        delete_builder);
+    EXPECT_NO_THROW(delete_builder.build());
+    EXPECT_NE(project_graph.current_generation(), good);
+    EXPECT_FALSE(project_graph.configuration_failure());
 }
 
 TEST_F(ProjectGraphFixture, NodeMessageReplacementPersistsCompleteSuccessorArguments)
@@ -1982,18 +2028,20 @@ TEST_F(ProjectGraphFixture, ReplaceGraphReplaysNodesAndConnectionsInOneGeneratio
         builder);
     EXPECT_NO_THROW(builder.build());
 
-    auto generation = project_graph.current_generation();
-    ASSERT_TRUE(generation);
-    EXPECT_EQ(generation->generation, 1u);
-    EXPECT_TRUE(generation->placements.empty());
+    // No definition is available yet, so the pass fails; the replaced
+    // instances and connection are still the desired revision.
+    EXPECT_FALSE(project_graph.current_generation());
+    auto const failure = project_graph.configuration_failure();
+    ASSERT_TRUE(failure);
+    EXPECT_EQ(failure->node_instance_diagnostics.size(), 2u);
     ASSERT_EQ(instances.desired_instances().size(), 2u);
     ASSERT_EQ(connections.desired_connections().size(), 1u);
 
     project_graph.handle_node_definitions_snapshot_changed(
         iv::NodeDefinitionsSnapshotChanged{.snapshot = make_snapshot(1)});
-    generation = project_graph.current_generation();
+    auto generation = project_graph.current_generation();
     ASSERT_TRUE(generation);
-    EXPECT_EQ(generation->generation, 2u);
+    EXPECT_EQ(generation->generation, 1u);
     EXPECT_EQ(generation->placements.size(), 2u);
     EXPECT_EQ(
         generation->applied_connection_ids,
@@ -2006,7 +2054,7 @@ TEST_F(ProjectGraphFixture, ReplaceGraphReplaysNodesAndConnectionsInOneGeneratio
     EXPECT_NO_THROW(replacement_builder.build());
     EXPECT_TRUE(instances.desired_instances().empty());
     EXPECT_TRUE(connections.desired_connections().empty());
-    EXPECT_EQ(project_graph.current_generation()->generation, 3u);
+    EXPECT_EQ(project_graph.current_generation()->generation, 2u);
 }
 
 TEST_F(ProjectGraphFixture,

@@ -36,18 +36,20 @@ public:
       : _boundary(boundary) {}
   constexpr NodeBundleHandle boundary_handle() const { return _boundary; }
 
+  // Boundary ports are appended to the boundary bundle; the returned ref
+  // belongs to the session that owns these ports.
   SamplePortRef add_continuous_input(
       GraphBuilderState&, GraphBuilderNodeBundles&, ContinuousInputConfig);
   EventPortRef add_event_input(GraphBuilderState&, GraphBuilderNodeBundles&,
       std::string_view, EventTypeId);
   constexpr bool sample_outputs_defined() const;
-  constexpr void define_sample_outputs(GraphBuilderState&, GraphBuilderNodeBundles&,
+  void define_sample_outputs(GraphBuilderState&, GraphBuilderNodeBundles&,
       GraphBuilderIdentity const&, std::span<OutputRefConfig const>);
-  constexpr void define_event_outputs(GraphBuilderState&, GraphBuilderNodeBundles&,
+  void define_event_outputs(GraphBuilderState&, GraphBuilderNodeBundles&,
       GraphBuilderIdentity const&, std::span<EventOutputRefConfig const>);
 
   template<class LiftSample>
-  constexpr void define_sample_outputs_from_named_refs(GraphBuilderState&, GraphBuilderNodeBundles&,
+  void define_sample_outputs_from_named_refs(GraphBuilderState&, GraphBuilderNodeBundles&,
       GraphBuilderIdentity const&, LiftSample&&, std::span<NamedRef const>);
 
   constexpr std::vector<ContinuousInputConfig> sample_inputs(
@@ -95,7 +97,7 @@ private:
 };
 
 template<class LiftSample>
-constexpr void GraphBuilderPublicPorts::define_sample_outputs_from_named_refs(
+void GraphBuilderPublicPorts::define_sample_outputs_from_named_refs(
     GraphBuilderState& builder, GraphBuilderNodeBundles& bundles,
     GraphBuilderIdentity const& identity, LiftSample&& lift_sample,
     std::span<NamedRef const> refs) {

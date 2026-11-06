@@ -1,4 +1,5 @@
 #include <intravenous/compat.h>
+#include <intravenous/throw_site.h>
 
 #include <fstream>
 #include <cstdlib>
@@ -51,6 +52,16 @@ void print_stacktrace(std::ostream& out)
 {
     out << std::stacktrace::current() << '\n';
     out.flush();
+}
+
+void print_stacktrace(std::ostream& out, std::exception_ptr const& thrown)
+{
+    if (auto const site = throw_site_stacktrace(thrown)) {
+        out << "thrown at:\n" << *site << '\n';
+        out.flush();
+        return;
+    }
+    print_stacktrace(out);
 }
 
 std::string wrap_exception(std::string_view context, std::exception const& cause)

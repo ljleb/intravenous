@@ -477,20 +477,23 @@ TEST(ProjectPersistence, LoadContinuesAfterBadCommandAndReplaysLaterInstance)
     EXPECT_EQ(sample->source_type, iv::ChannelTypeId::stereo);
     ASSERT_EQ(sample->outputs[0].path.size(), 3u);
     EXPECT_EQ(sample->outputs[0].port.channel, 0u);
-    auto const generation = project_graph.current_generation();
-    ASSERT_TRUE(generation);
-    EXPECT_EQ(generation->generation, 1u);
-    ASSERT_EQ(generation->manual_controls.size(), 1u);
+    // None of the loaded definitions exist, so the first configuration pass
+    // fails and no generation becomes current; the desired revision is still
+    // complete.
+    EXPECT_FALSE(project_graph.current_generation());
+    EXPECT_TRUE(project_graph.configuration_failure());
+    auto const manual_controls = project_graph.manual_controls();
+    ASSERT_EQ(manual_controls.size(), 1u);
     EXPECT_EQ(
-        generation->manual_controls[0].id.node.instance_id,
+        manual_controls[0].id.node.instance_id,
         "instance:0");
-    ASSERT_EQ(generation->manual_controls[0].id.node.path.size(), 1u);
-    EXPECT_EQ(generation->manual_controls[0].id.input_name, "gain");
+    ASSERT_EQ(manual_controls[0].id.node.path.size(), 1u);
+    EXPECT_EQ(manual_controls[0].id.input_name, "gain");
     EXPECT_FLOAT_EQ(
-        static_cast<float>(generation->manual_controls[0].stored_value),
+        static_cast<float>(manual_controls[0].stored_value),
         0.75f);
     EXPECT_EQ(
-        generation->manual_controls[0].participation,
+        manual_controls[0].participation,
         iv::ManualControlParticipation::participate_with_connections);
     EXPECT_TRUE(std::ranges::any_of(witness.messages, [](auto const &message) {
         return message.level == "error"
@@ -528,8 +531,9 @@ TEST(ProjectPersistence, LoadedReplacementConfiguresAfterDefinitionsArrive)
 
     persistence.load();
     ASSERT_EQ(instances.desired_node_replacements().size(), 1u);
-    ASSERT_TRUE(project_graph.current_generation());
-    EXPECT_TRUE(project_graph.current_generation()->placements.empty());
+    // The definitions have not arrived, so the first configuration pass fails.
+    EXPECT_FALSE(project_graph.current_generation());
+    EXPECT_TRUE(project_graph.configuration_failure());
 
     project_graph.handle_node_definitions_snapshot_changed(
         iv::NodeDefinitionsSnapshotChanged{

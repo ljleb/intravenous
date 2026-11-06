@@ -211,6 +211,12 @@ public:
 
   constexpr void import_child(
       GraphBuilderConnections const&, size_t node_bundle_offset);
+  constexpr size_t sample_connection_count() const {
+    return _configured_sample_connections.size();
+  }
+  constexpr size_t event_connection_count() const {
+    return _configured_event_connections.size();
+  }
   static constexpr GraphBuilderConnections from_configured_connections(
       std::span<ConfiguredSampleConnection const>,
       std::span<ConfiguredEventConnection const>);

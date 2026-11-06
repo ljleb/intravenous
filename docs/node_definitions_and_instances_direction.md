@@ -63,7 +63,8 @@ The first configuration-cache implementation now provides:
 - deliberate reconfiguration when an owned argument type lacks safe equality/hash;
 - transitive lifetime retention for nested configured results, including nested
   invocations that are not reusable cache entries;
-- cycle detection and batched per-instance diagnostics;
+- cycle detection and batched per-instance diagnostics (since 2026-11-06 a
+  diagnostic fails the whole batch; see step 7 below);
 - repeated placement of one cached configured result through the frozen-graph
   embedding API.
 
@@ -80,6 +81,12 @@ optimization pass is the same-session scoped construction model in
 [scoped_graph_builder_and_subgraph_closure_direction.md](./scoped_graph_builder_and_subgraph_closure_direction.md).
 Until then, the detached-session/cache behavior in this document remains the
 implemented architecture.
+
+> **Implementation status (2026-11-06):** the same-session construction model is
+> implemented in source pending verification. A cache miss constructs directly in the
+> requesting session and is copied into a `ConfiguredGraph` only when it is
+> reusable; a hit places that copy. Leaf and module definitions still share the one
+> configuration path.
 
 The **restricted configuration-expression parser/evaluator has not landed yet**. The
 new configuration core currently accepts already-typed erased arguments synchronously.
@@ -300,7 +307,19 @@ One invocation of the completed `NodeInstances` path will:
 4. detect recursive definition/configuration cycles within that one context;
 5. embed all requested instances into the supplied root builder;
 6. return a complete instance-id -> embedding mapping;
-7. return batched diagnostics for unresolved/failed requests.
+7. return the batch's diagnostics: every problem found before construction for
+   any request (unparsable or mistyped source, unknown definition, reference to
+   an undeclared instance), or otherwise the first construction failure. Any
+   diagnostic fails the whole batch. Its placements are not used, and
+   `ProjectGraph` keeps the previous generation.
+
+_Accepted design change (2026-11-06): step 7 previously returned diagnostics for the
+failed requests alongside the placements of the requests that succeeded. That per-
+request isolation is preserved in
+[Front 12 Transactional Construction Rollback](./historical/front_12_transactional_rollback_2026-11-06.md),
+together with the rollback it required. The replacement contract is "Construction
+failure stops the configuration pass" in
+[scoped_graph_builder_and_subgraph_closure_direction.md](./scoped_graph_builder_and_subgraph_closure_direction.md)._
 
 Steps 1 and 3-7 are implemented for already-typed arguments. Step 2 is the next
 checkpoint and will sit in front of the existing value-level configuration/cache

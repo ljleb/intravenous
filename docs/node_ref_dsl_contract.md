@@ -133,6 +133,11 @@ to matching mono edges only when their channel types, not merely their widths, m
 
 ## Planned post-runtime ownership migration
 
+> **Implementation status (2026-11-06):** implemented in source pending
+> verification. `NodeRef`, `SamplePortRef`, and `EventPortRef` carry their
+> `BuilderSession`; views of one session are compatible and refs from different
+> sessions are rejected.
+
 The contracts above describe the current implementation, where a live ref is tied
 to one `GraphBuilder` façade. After GraphJit and the realtime/background executors are complete and the
 planned optimization/profiling pass has established the builder-performance

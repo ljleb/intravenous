@@ -1,6 +1,7 @@
 #include <intravenous/runtime/node_instances.h>
 
 #include <intravenous/graph/configured_graph.hpp>
+#include <intravenous/graph/builder/host.hpp>
 #include <intravenous/module/builder_session.h>
 #include <intravenous/module/package_definitions.h>
 #include <intravenous/runtime/iv_module_instances_events.h>
@@ -8,6 +9,7 @@
 #include <intravenous/runtime/configuration_expression.h>
 #include <intravenous/runtime/node_definitions_events.h>
 #include <intravenous/runtime/package_pipeline_types.h>
+#include <intravenous/runtime/project_node_path_resolver.h>
 #include <intravenous/runtime/project_persistence_builder.h>
 #include <intravenous/runtime/socket_rpc_server.h>
 #include <intravenous/runtime/uuid.h>
@@ -280,15 +282,11 @@ struct NodeInstances::ExpressionCacheEntry {
 };
 
 struct NodeInstances::ConfigurationContext {
+    // The durable project address of one registered invocation being
+    // constructed. Declaration counting belongs to the builder session; this
+    // only anchors replacement lookup and nested addresses.
     struct SemanticScope {
-        struct InvocationCount {
-            std::vector<ProjectNodePathSelector> scope_path{};
-            std::string source_identity{};
-            std::size_t next_member = 0;
-        };
-
         NodeAddress address{};
-        std::vector<InvocationCount> invocation_counts{};
     };
 
     NodeInstances* owner = nullptr;
@@ -669,9 +667,11 @@ std::vector<ProjectNodeReplacement> NodeInstances::desired_node_replacements() c
     return desired_node_replacements_;
 }
 
-std::shared_ptr<NodeInstances::CacheEntry> NodeInstances::configure_cached(
+NodeInstances::RealizedInvocation NodeInstances::configure_cached(
     ConfigurationContext& context,
+    GraphBuilder& builder,
     NodeAddress const& address,
+    std::string_view qualifier,
     std::string_view definition_id,
     std::optional<ChannelLayout> tiled_layout,
     std::span<details::ConfigurationArgument> arguments)
@@ -712,19 +712,26 @@ std::shared_ptr<NodeInstances::CacheEntry> NodeInstances::configure_cached(
         }
     }
 
-    bool ownable = true;
+    // Constructibility is the validated signature. Retainability decides
+    // whether this invocation owns a copy of an argument; cache-keyability
+    // decides whether the invocation can be reused. A value that is
+    // constructible but not retainable is passed through for this synchronous
+    // construction and makes the invocation unreusable.
+    // A live NodeRef is construction environment: it refers into the session
+    // that is constructing this invocation, so it is never retained and the
+    // invocation it reaches is never reused.
+    std::vector<bool> retained(arguments.size(), false);
     bool cacheable = true;
     for (std::size_t index = 0; index < arguments.size(); ++index) {
         auto const* operations = signature->parameter_operations[index];
-        ownable = ownable
+        auto const* type = arguments[index].type;
+        bool const node_reference = type && type->expression_schema
+            && type->expression_schema->kind
+                == details::ConfigurationExpressionTypeKind::node_reference;
+        retained[index] = !node_reference
             && OwnedConfigurationArgument::can_own(arguments[index], operations);
-        cacheable = cacheable
+        cacheable = cacheable && !node_reference
             && OwnedConfigurationArgument::can_cache(arguments[index], operations);
-    }
-    if (!ownable) {
-        throw std::invalid_argument(
-            "node definition '" + std::string(definition_id)
-            + "' has a configuration argument that cannot be retained safely");
     }
 
     std::vector<OwnedConfigurationArgument> key_arguments;
@@ -772,54 +779,34 @@ std::shared_ptr<NodeInstances::CacheEntry> NodeInstances::configure_cached(
         }
         return {};
     };
-    if (auto cached = find_cached()) return cached;
+    auto* const session = builder._builder_session();
+    if (auto cached = find_cached()) {
+        // A hit substitutes the frozen contents of an equivalent earlier
+        // construction directly into the current scope.
+        auto const root = details::import_builder_invocation(
+            session, *cached->configured->graph, cached->configured->local_root,
+            qualifier);
+        return {.root = root, .configured = cached->configured};
+    }
 
     ConfigurationStackEntry const stack_entry(context.stack, definition_id);
 
-    // Invocation values are a second owned copy. Provider code is allowed to
-    // move from or mutate its arguments; the pristine key above must remain
-    // value-comparable for future cache lookups.
+    // Retained invocation values are a second owned copy. Provider code is
+    // allowed to move from or mutate its arguments; the pristine key above
+    // must remain value-comparable for future cache lookups.
     auto argument_lifetime = std::make_shared<RetainedConfigurationArguments>();
     argument_lifetime->values.reserve(arguments.size());
+    std::vector<details::ConfigurationArgument> invocation_arguments;
+    invocation_arguments.reserve(arguments.size());
     for (std::size_t index = 0; index < arguments.size(); ++index) {
+        if (!retained[index]) {
+            invocation_arguments.push_back(arguments[index]);
+            continue;
+        }
         argument_lifetime->values.push_back(OwnedConfigurationArgument::clone(
             arguments[index], signature->parameter_operations[index]));
+        invocation_arguments.push_back(argument_lifetime->values.back().argument());
     }
-    std::vector<details::ConfigurationArgument> invocation_arguments;
-    invocation_arguments.reserve(argument_lifetime->values.size());
-    for (auto& argument : argument_lifetime->values) {
-        invocation_arguments.push_back(argument.argument());
-    }
-
-    using Session = std::unique_ptr<details::BuilderSession,
-        decltype(&details::iv_builder_session_destroy)>;
-    Session session(
-        details::iv_builder_session_create(),
-        details::iv_builder_session_destroy);
-    if (!session) throw std::runtime_error("could not create node configuration session");
-
-    std::vector<std::string> package_roots;
-    std::vector<details::BuilderPackageView> packages;
-    package_roots.reserve(context.snapshot->package_revisions.size());
-    packages.reserve(context.snapshot->package_revisions.size());
-    for (auto const& revision : context.snapshot->package_revisions) {
-        if (!revision) continue;
-        package_roots.push_back(revision->package_root.generic_string());
-        packages.push_back(details::BuilderPackageView{
-            .package_root = package_roots.back(),
-            .definitions = revision->provider_definitions,
-            .config_pointer_fields = revision->config_pointer_fields,
-            .retained_globals = revision->retained_globals,
-            .node_message_handlers = revision->node_message_handlers,
-            .module_message_handlers = revision->module_message_handlers,
-            .node_state_structures = revision->node_state_structures,
-        });
-    }
-    details::set_builder_packages(session.get(), packages);
-    details::set_builder_definition_resolver(
-        session.get(), &context, &NodeInstances::resolve_builder_definition);
-    details::set_builder_concrete_node_replacement_resolver(
-        session.get(), &NodeInstances::resolve_builder_concrete_node_replacement);
 
     std::vector<std::shared_ptr<ConfiguredNodeInstance const>> dependencies;
     context.dependency_frames.push_back(&dependencies);
@@ -836,49 +823,52 @@ std::shared_ptr<NodeInstances::CacheEntry> NodeInstances::configure_cached(
         ~SemanticScopeGuard() { context.semantic_scopes.pop_back(); }
     } semantic_scope_guard{context};
 
-    GraphBuilder builder(session.get());
-    auto root = details::configure_package_definition_provider(
+    // A miss constructs directly in the caller's session. Only a successful,
+    // self-contained invocation is copied for reuse; the live construction is
+    // never extracted and reimported. A failure escapes with the session
+    // failed, and no cache entry is populated.
+    auto const invocation = details::begin_builder_invocation(session);
+    auto const root = details::configure_package_definition_provider(
         builder,
         definition_id,
         tiled_layout,
-        invocation_arguments);
-    auto const local_root = root.node_bundle_handle();
-    builder.outputs();
-    auto message_handlers = details::take_builder_message_handlers(session.get());
-    auto graph = std::make_shared<ConfiguredGraph const>(
-        details::take_built_graph(session.get()));
+        invocation_arguments).node_bundle_handle();
+    auto finished = details::finish_builder_invocation(
+        session, invocation, root, qualifier, cacheable);
 
     auto configured = std::make_shared<ConfiguredNodeInstance const>(ConfiguredNodeInstance{
         .definition_id = definition.definition_id,
         .definitions_generation = context.snapshot->generation,
         .definition_version = definition.version,
-        .local_root = local_root,
+        .local_root = finished.snapshot_root,
         .definitions = context.snapshot,
         .configuration_lifetime = std::move(argument_lifetime),
         .dependencies = std::move(dependencies),
-        .message_handlers = std::move(message_handlers),
-        .graph = std::move(graph),
+        .message_handlers = std::move(finished.message_handlers),
+        .graph = std::move(finished.snapshot),
     });
-    auto entry = std::make_shared<CacheEntry>();
-    entry->configured = std::move(configured);
-    entry->tiled_layout = tiled_layout;
-    entry->argument_hash = argument_hash;
-    entry->key_arguments = std::move(key_arguments);
-    entry->subtree_replacements = std::move(subtree_replacements);
 
-    if (cacheable) {
+    if (cacheable && configured->graph) {
+        auto entry = std::make_shared<CacheEntry>();
+        entry->configured = configured;
+        entry->tiled_layout = tiled_layout;
+        entry->argument_hash = argument_hash;
+        entry->key_arguments = std::move(key_arguments);
+        entry->subtree_replacements = std::move(subtree_replacements);
         // Equality/hash callbacks belong to package code and may execute user
         // operators. Never invoke them while holding the app-module mutex.
-        if (auto existing = find_cached()) return existing;
-        std::scoped_lock lock(mutex_);
-        // A newer definitions publication may have invalidated the cache while
-        // this older batch was still evaluating. Let the batch finish against
-        // its pinned snapshot, but do not resurrect an invalidated generation.
-        if (context.snapshot->generation >= minimum_cache_generation_) {
-            configuration_cache_.push_back(entry);
+        if (!find_cached()) {
+            std::scoped_lock lock(mutex_);
+            // A newer definitions publication may have invalidated the cache
+            // while this older batch was still evaluating. Let the batch finish
+            // against its pinned snapshot, but do not resurrect an invalidated
+            // generation.
+            if (context.snapshot->generation >= minimum_cache_generation_) {
+                configuration_cache_.push_back(std::move(entry));
+            }
         }
     }
-    return entry;
+    return {.root = root, .configured = std::move(configured)};
 }
 
 std::optional<NodeBundleHandle>
@@ -928,31 +918,29 @@ NodeInstances::resolve_builder_concrete_node_replacement(
         nlohmann::ordered_json::parse(
             replacement->configuration_arguments_json),
         *signature);
-    auto cached = context.owner->configure_cached(
+    auto realized = context.owner->configure_cached(
         context,
+        builder,
         address,
+        details::builder_invocation_qualifier(relative_path),
         replacement->definition_id,
         std::nullopt,
         arguments.arguments());
     details::register_builder_embedded_message_handlers(
         builder,
         relative_path,
-        cached->configured->message_handlers);
+        realized.configured->message_handlers);
     if (!context.dependency_frames.empty()) {
-        context.dependency_frames.back()->push_back(cached->configured);
+        context.dependency_frames.back()->push_back(realized.configured);
     }
-    auto embedding = builder.embed(
-        *cached->configured->graph,
-        "Replaced concrete node");
-    return embedding.node_bundle(cached->configured->local_root);
+    return realized.root;
 }
 
 NodeRef NodeInstances::resolve_builder_definition(
     void* opaque_context,
     GraphBuilder& builder,
     std::string_view definition_id,
-    std::string_view source_identity,
-    std::span<ProjectNodePathSelector const> scope_path,
+    std::span<ProjectNodePathSelector const> relative_path,
     std::optional<ChannelLayout> tiled_layout,
     std::span<details::ConfigurationArgument> arguments)
 {
@@ -964,32 +952,13 @@ NodeRef NodeInstances::resolve_builder_definition(
         throw std::logic_error(
             "nested node configuration has no semantic parent scope");
     }
-    auto& parent = context.semantic_scopes.back();
-    auto count = std::ranges::find_if(
-        parent.invocation_counts,
-        [&](ConfigurationContext::SemanticScope::InvocationCount const& value) {
-            return value.scope_path
-                    == std::vector<ProjectNodePathSelector>(
-                        scope_path.begin(), scope_path.end())
-                && value.source_identity == source_identity;
-        });
-    if (count == parent.invocation_counts.end()) {
-        parent.invocation_counts.push_back({
-            .scope_path = {scope_path.begin(), scope_path.end()},
-            .source_identity = std::string(source_identity),
-        });
-        count = std::prev(parent.invocation_counts.end());
+    if (relative_path.size() < 2) {
+        throw std::logic_error(
+            "a registered call path must name its declaration and member");
     }
-    auto const member_index = count->next_member++;
-    NodeAddress child_address = parent.address;
+    NodeAddress child_address = context.semantic_scopes.back().address;
     child_address.path.insert(
-        child_address.path.end(), scope_path.begin(), scope_path.end());
-    child_address.path.push_back(ProjectVirtualNodeSelector{
-        .source_identity = std::string(source_identity),
-    });
-    child_address.path.push_back(ProjectVirtualMemberSelector{
-        .index = member_index,
-    });
+        child_address.path.end(), relative_path.begin(), relative_path.end());
 
     std::optional<EvaluatedConfigurationArguments> replacement_arguments;
     auto configured_definition_id = std::string(definition_id);
@@ -1021,38 +990,25 @@ NodeRef NodeInstances::resolve_builder_definition(
         configured_arguments = replacement_arguments->arguments();
     }
 
-    auto cached = context.owner->configure_cached(
+    auto realized = context.owner->configure_cached(
         context,
+        builder,
         child_address,
+        details::builder_invocation_qualifier(relative_path),
         configured_definition_id,
         tiled_layout,
         configured_arguments);
-    std::vector<ProjectNodePathSelector> child_relative_path(
-        scope_path.begin(), scope_path.end());
-    child_relative_path.push_back(ProjectVirtualNodeSelector{
-        .source_identity = std::string(source_identity),
-    });
-    child_relative_path.push_back(ProjectVirtualMemberSelector{
-        .index = member_index,
-    });
     details::register_builder_embedded_message_handlers(
         builder,
-        child_relative_path,
-        cached->configured->message_handlers);
+        relative_path,
+        realized.configured->message_handlers);
     if (!context.dependency_frames.empty()) {
-        context.dependency_frames.back()->push_back(cached->configured);
+        context.dependency_frames.back()->push_back(realized.configured);
     }
-    auto embedding = builder.embed(*cached->configured->graph, "Cached node instance");
-    NodeRef result(
-        builder,
-        embedding.node_bundle(cached->configured->local_root));
-    std::array<ProjectNodePathSelector, 2> message_path{
-        ProjectVirtualNodeSelector{
-            .source_identity = std::string(source_identity),
-        },
-        ProjectVirtualMemberSelector{.index = member_index},
-    };
-    result._set_semantic_message_path(message_path);
+    NodeRef result(builder, realized.root);
+    // A captured NodeRef addresses its declaration and member relative to the
+    // module that made the call.
+    result._set_semantic_message_path(relative_path.last(2));
     return result;
 }
 
@@ -1075,105 +1031,242 @@ NodeInstancesBatchResult NodeInstances::configure_and_embed(
         std::scoped_lock lock(mutex_);
         context.replacements = desired_node_replacements_;
     }
+
+    // Every request is constructed directly in the root builder's session,
+    // against exactly this snapshot's package tables.
+    auto* const session = root_builder._builder_session();
+    if (!session) {
+        throw std::invalid_argument("NodeInstances batch requires a root builder session");
+    }
+    {
+        std::vector<std::string> package_roots;
+        std::vector<details::BuilderPackageView> packages;
+        package_roots.reserve(context.snapshot->package_revisions.size());
+        packages.reserve(context.snapshot->package_revisions.size());
+        for (auto const& revision : context.snapshot->package_revisions) {
+            if (!revision) continue;
+            package_roots.push_back(revision->package_root.generic_string());
+            packages.push_back(details::BuilderPackageView{
+                .package_root = package_roots.back(),
+                .definitions = revision->provider_definitions,
+                .config_pointer_fields = revision->config_pointer_fields,
+                .retained_globals = revision->retained_globals,
+                .node_message_handlers = revision->node_message_handlers,
+                .module_message_handlers = revision->module_message_handlers,
+                .node_state_structures = revision->node_state_structures,
+            });
+        }
+        details::set_builder_packages(session, packages);
+    }
+    struct ResolverInstallation {
+        details::BuilderSession* session;
+        ~ResolverInstallation()
+        {
+            details::set_builder_definition_resolver(session, nullptr, nullptr);
+            details::set_builder_concrete_node_replacement_resolver(session, nullptr);
+        }
+    } const resolver_installation{session};
+    details::set_builder_definition_resolver(
+        session, &context, &NodeInstances::resolve_builder_definition);
+    details::set_builder_concrete_node_replacement_resolver(
+        session, &NodeInstances::resolve_builder_concrete_node_replacement);
+
     NodeInstancesBatchResult result;
+    auto diagnose = [&](NodeInstanceConfigurationRequest const& request,
+                        std::string message) {
+        result.diagnostics.push_back({
+            .instance_id = request.instance_id,
+            .definition_id = request.definition_id,
+            .message = std::move(message),
+        });
+    };
+    auto signature_of = [&](std::string const& definition_id)
+        -> std::pair<NodeDefinitionEntry const*, details::RegisteredSignature const*> {
+        auto definition = context.snapshot->by_id.find(definition_id);
+        if (definition == context.snapshot->by_id.end()) {
+            throw std::runtime_error(
+                "node definition '" + definition_id
+                + "' is unavailable in this definitions snapshot");
+        }
+        auto const& provider = definition_provider(definition->second);
+        auto const* signature = provider.signature ? provider.signature() : nullptr;
+        if (!signature) {
+            throw std::logic_error(
+                "node definition '" + definition_id + "' has no construction signature");
+        }
+        return {&definition->second, signature};
+    };
+
+    // A project-node reference in authored source materializes as a live
+    // NodeRef of the root session, so a referencing request is realized after
+    // the request it references.
+    struct Pending {
+        NodeInstanceConfigurationRequest const* request = nullptr;
+        std::shared_ptr<ExpressionCacheEntry const> parsed{};
+        details::RegisteredSignature const* signature = nullptr;
+        std::vector<std::string> references{};
+        // Arguments evaluated before construction. A source with project-node
+        // references is evaluated when the instances it references are placed.
+        std::optional<EvaluatedConfigurationArguments> evaluated{};
+    };
+
+    // Phase 1: every problem that needs no construction, for every request.
+    // Any of them fails the whole batch before anything is constructed.
+    std::vector<Pending> pending;
     std::unordered_set<std::string> seen_ids;
     for (auto const& request : requests) {
         if (request.instance_id.empty()) {
-            result.diagnostics.push_back({
-                .instance_id = request.instance_id,
-                .definition_id = request.definition_id,
-                .message = "node instance request has an empty instance id",
-            });
+            diagnose(request, "node instance request has an empty instance id");
             continue;
         }
         if (!seen_ids.insert(request.instance_id).second) {
-            result.diagnostics.push_back({
-                .instance_id = request.instance_id,
-                .definition_id = request.definition_id,
-                .message = "duplicate node instance id in one configuration batch",
-            });
+            diagnose(request, "duplicate node instance id in one configuration batch");
             continue;
         }
+        Pending item{.request = &request};
         try {
-            std::optional<EvaluatedConfigurationArguments> evaluated;
-            auto arguments = request.arguments;
             if (request.configuration_source
                 && request.configuration_arguments_json) {
                 throw std::invalid_argument(
                     "node instance request has both authored source and "
                     "replacement arguments");
             }
+            auto const [definition, signature] = signature_of(request.definition_id);
+            item.signature = signature;
             if (request.configuration_source) {
-                auto definition = context.snapshot->by_id.find(request.definition_id);
-                if (definition == context.snapshot->by_id.end()) {
-                    throw std::runtime_error(
-                        "node definition '" + request.definition_id
-                        + "' is unavailable in this definitions snapshot");
-                }
-                auto const& provider = definition_provider(definition->second);
-                auto const* signature = provider.signature
-                    ? provider.signature()
-                    : nullptr;
-                if (!signature) {
-                    throw std::logic_error(
-                        "node definition '" + request.definition_id
-                        + "' has no construction signature");
-                }
-                auto parsed = parse_expression_cached(
+                item.parsed = parse_expression_cached(
                     request.definition_id,
-                    definition->second.version,
+                    definition->version,
                     *request.configuration_source);
-                evaluated.emplace(evaluate_configuration_expression_list(
-                    parsed->parsed, *signature));
-                arguments = evaluated->arguments();
+                item.references = configuration_referenced_instance_ids(
+                    item.parsed->parsed);
+                if (item.references.empty()) {
+                    item.evaluated.emplace(evaluate_configuration_expression_list(
+                        item.parsed->parsed, *signature));
+                }
             } else if (request.configuration_arguments_json) {
-                auto definition = context.snapshot->by_id.find(request.definition_id);
-                if (definition == context.snapshot->by_id.end()) {
-                    throw std::runtime_error(
-                        "node definition '" + request.definition_id
-                        + "' is unavailable in this definitions snapshot");
-                }
-                auto const& provider = definition_provider(definition->second);
-                auto const* signature = provider.signature
-                    ? provider.signature()
-                    : nullptr;
-                if (!signature) {
-                    throw std::logic_error(
-                        "node definition '" + request.definition_id
-                        + "' has no construction signature");
-                }
-                evaluated.emplace(evaluate_configuration_json_arguments(
-                    nlohmann::ordered_json::parse(
-                        *request.configuration_arguments_json),
+                item.evaluated.emplace(evaluate_configuration_json_arguments(
+                    nlohmann::ordered_json::parse(*request.configuration_arguments_json),
                     *signature));
-                arguments = evaluated->arguments();
             }
-            auto cached = configure_cached(
+        } catch (std::exception const& error) {
+            diagnose(request, error.what());
+            continue;
+        }
+        pending.push_back(std::move(item));
+    }
+    for (auto const& item : pending) {
+        for (auto const& reference : item.references) {
+            if (!seen_ids.contains(reference)) {
+                diagnose(*item.request,
+                    "configuration reference names node instance '" + reference
+                    + "', which this configuration batch does not declare");
+            }
+        }
+    }
+    // Realization order follows references; whatever cannot be ordered is a
+    // reference cycle.
+    std::vector<std::size_t> order;
+    {
+        std::vector<bool> ordered(pending.size(), false);
+        auto unordered_request = [&](std::string const& instance_id) {
+            for (std::size_t index = 0; index < pending.size(); ++index) {
+                if (!ordered[index] && pending[index].request->instance_id == instance_id) {
+                    return true;
+                }
+            }
+            return false;
+        };
+        for (bool progressed = true; progressed;) {
+            progressed = false;
+            for (std::size_t index = 0; index < pending.size(); ++index) {
+                if (ordered[index]
+                    || std::ranges::any_of(pending[index].references, unordered_request)) {
+                    continue;
+                }
+                ordered[index] = true;
+                order.push_back(index);
+                progressed = true;
+            }
+        }
+        for (std::size_t index = 0; index < pending.size(); ++index) {
+            if (!ordered[index]) {
+                diagnose(*pending[index].request,
+                    "configuration node references form a cycle");
+            }
+        }
+    }
+    if (!result.diagnostics.empty()) return result;
+
+    auto materialize_reference = [&](ConfigurationNodeReferenceExpression const& reference)
+        -> NodeRef {
+        auto const placement = result.placements.find(reference.instance_id);
+        if (placement == result.placements.end()) {
+            throw std::logic_error(
+                "configuration reference names node instance '"
+                + reference.instance_id + "', which has no placement yet");
+        }
+        auto const& state = details::builder_session_state(session);
+        auto const matches = resolve_project_node_path(
+            ProjectNodePathGraph{state.node_bundles(), state.virtual_nodes()},
+            placement->second.root,
+            reference.path);
+        auto const match = require_single_project_node_path_match(
+            matches, "configuration node reference");
+        if (match.kind == ProjectNodePathMatch::Kind::bundle) {
+            return NodeRef(session, match.bundle);
+        }
+        if (match.virtual_member_indices.size() != 1) {
+            throw std::invalid_argument(
+                "configuration node reference selects a virtual node with "
+                + std::to_string(match.virtual_member_indices.size())
+                + " direct members; select one member");
+        }
+        auto const& members = state.virtual_nodes()
+            .record(match.virtual_node).node_bundle_handles;
+        return NodeRef(session, members.at(match.virtual_member_indices.front()));
+    };
+
+    // Phase 2: construction in reference order. The first failure stops the
+    // batch; the session is failed and none of its placements may be used.
+    for (auto const index : order) {
+        auto& item = pending[index];
+        auto const& request = *item.request;
+        try {
+            if (!item.evaluated && item.parsed) {
+                ConfigurationNodeReferenceMaterializer const materializer =
+                    materialize_reference;
+                item.evaluated.emplace(evaluate_configuration_expression_list(
+                    item.parsed->parsed, *item.signature, &materializer));
+            }
+            auto const arguments = item.evaluated
+                ? item.evaluated->arguments()
+                : request.arguments;
+            auto realized = configure_cached(
                 context,
+                root_builder,
                 NodeAddress{.instance_id = request.instance_id},
+                "@&" + request.instance_id,
                 request.definition_id,
                 request.tiled_layout,
                 arguments);
-            auto embedding = root_builder.embed(
-                *cached->configured->graph, "Project node instance");
-            auto const root = embedding.node_bundle(cached->configured->local_root);
+            details::throw_if_builder_failed(session);
             result.placements.emplace(request.instance_id, NodeInstancePlacement{
-                .configured = cached->configured,
-                .embedding = std::move(embedding),
-                .root = root,
-            });
-        } catch (std::exception const& error) {
-            result.diagnostics.push_back({
-                .instance_id = request.instance_id,
-                .definition_id = request.definition_id,
-                .message = error.what(),
+                .configured = std::move(realized.configured),
+                .root = realized.root,
             });
         } catch (...) {
+            details::record_builder_failure(
+                session, std::current_exception(),
+                "in project node instance '" + request.instance_id + "'");
             result.diagnostics.push_back({
                 .instance_id = request.instance_id,
                 .definition_id = request.definition_id,
-                .message = "unknown node configuration failure",
+                .message = details::builder_failure_message(session),
+                .stacktrace = details::builder_failure_stacktrace(session),
             });
+            result.placements.clear();
+            return result;
         }
     }
     return result;

@@ -94,6 +94,12 @@ add_iv_gtest(
     intravenous_configured_graph_embedding_tests
     configured_graph_embedding_gtest.cpp)
 add_iv_gtest(
+    intravenous_scoped_graph_builder_tests
+    scoped_graph_builder_gtest.cpp)
+add_iv_gtest(
+    intravenous_throw_site_tests
+    throw_site_gtest.cpp)
+add_iv_gtest(
     intravenous_node_build_request_tests
     node_build_request_gtest.cpp)
 

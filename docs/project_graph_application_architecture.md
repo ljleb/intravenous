@@ -840,6 +840,17 @@ semantics. Tick/persisted samples are not automatically resampled or remapped to
 sample indices; an explicit sampler/resampler node preserves original timing when
 required.
 
+If configuration fails, `ProjectGraph` discards the root builder session. Failure
+here means any `NodeInstances` diagnostic, or a failure while applying a resolved,
+compatible project connection. `ProjectGraph` then retains the desired revision and the
+diagnostics and publishes no new configured generation. The previous configured and
+executable generations remain current. Before the first successful build, nothing
+runs. A connection that resolves to no ports or to incompatible ports is retained
+intent with a diagnostic, not a failure. _Accepted design change (2026-11-06):
+this replaces per-instance failure isolation; see "Construction failure stops the
+configuration pass" in
+[scoped_graph_builder_and_subgraph_closure_direction.md](./scoped_graph_builder_and_subgraph_closure_direction.md)._
+
 If synchronous `GraphJit` compilation fails, `ProjectGraph` retains the desired
 revision and diagnostics and sends no partial successor to either executor. The
 previous active realtime executable generation and previous valid background/persisted

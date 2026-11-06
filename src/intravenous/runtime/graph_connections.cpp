@@ -555,13 +555,15 @@ void GraphConnections::handle_project_graph_transaction(
     if (request.handled)
         throw std::logic_error("GraphConnections ProjectGraph request was handled more than once");
     request.handled = true;
-    if (!request.root_builder)
-        throw std::invalid_argument("GraphConnections transaction requires a root GraphBuilder");
-    if (!request.placements)
-        throw std::invalid_argument("GraphConnections transaction requires instance placements");
 
     std::scoped_lock lock(mutex_);
     auto staged = apply_mutation(desired_connections_, request.mutation);
+    if (!request.root_builder) {
+        desired_connections_ = std::move(staged);
+        return;
+    }
+    if (!request.placements)
+        throw std::invalid_argument("GraphConnections transaction requires instance placements");
 
     // Resolve against an immutable view of exactly the complete root produced
     // by NodeInstances before any project connection is added. Handles in this
@@ -588,15 +590,19 @@ void GraphConnections::handle_project_graph_transaction(
                 }
             }, connection);
         } catch (std::exception const& error) {
-            result.diagnostics.push_back({
+            // Resolution and compatibility are checked before any mutation;
+            // a throw while applying leaves the root graph partial.
+            result.failure = GraphConnectionDiagnostic{
                 .connection_id = id,
                 .message = error.what(),
-            });
+            };
+            break;
         } catch (...) {
-            result.diagnostics.push_back({
+            result.failure = GraphConnectionDiagnostic{
                 .connection_id = id,
-                .message = "unknown project connection resolution failure",
-            });
+                .message = "unknown project connection application failure",
+            };
+            break;
         }
     }
 

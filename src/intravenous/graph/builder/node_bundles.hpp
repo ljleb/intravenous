@@ -147,6 +147,10 @@ public:
   constexpr NodeBundlePortId input_port_at(
       NodeBundleHandle, size_t) const;
   constexpr void import_into(size_t node_bundle_offset);
+  // Rewrites every node-bundle handle this bundle stores (tiled members,
+  // subgraph boundary and child range) through `map`.
+  template<class Map>
+  constexpr void remap_bundle_handles(Map&& map);
 
   constexpr std::vector<size_t> &virtual_node_handles();
   constexpr std::vector<size_t> const &virtual_node_handles() const;
@@ -328,12 +332,25 @@ public:
   constexpr size_t size() const { return _bundles.size(); }
   constexpr void apply_ttl(NodeBundleHandle, size_t ttl_samples);
   constexpr size_t import_child(GraphBuilderNodeBundles const &);
+  // Imports bundles [1, size) of an invocation snapshot whose bundle 0 is an
+  // empty boundary. Local handle k becomes k + returned offset.
+  constexpr size_t import_contents(GraphBuilderNodeBundles const &);
+  // Copies [begin, end). `first_local` is the local handle of `begin`; the
+  // copy has `first_local` leading empty boundaries. Virtual-record inverse
+  // handles are rebased by `record_begin`.
+  constexpr GraphBuilderNodeBundles copy_range(
+      size_t begin, size_t end, size_t first_local, size_t record_begin) const;
   template<class Visitor>
   constexpr void for_each_configured_bundle(Visitor&& visitor) const;
   static constexpr GraphBuilderNodeBundles from_configured_records(
       std::span<ConfiguredNodeBundleRecord const>);
 
 private:
+  // Reserves room for `count` appended bundles with geometric growth. An
+  // exact reserve per import reallocates and moves every existing bundle on
+  // each of many consecutive imports into one session (F12-9).
+  constexpr void reserve_appended(size_t count);
+
   std::vector<NodeBundle> _bundles{};
 };
 
@@ -1010,6 +1027,20 @@ constexpr void NodeBundle::import_into(size_t node_bundle_offset) {
   _virtual_node_handles.clear();
 }
 
+template<class Map>
+constexpr void NodeBundle::remap_bundle_handles(Map&& map) {
+  if (!_payload) details::error("empty NodeBundle");
+  std::visit([&](auto &payload) {
+    using Bundle = std::remove_cvref_t<decltype(payload)>;
+    if constexpr (std::is_same_v<Bundle, TiledNodeBundle>) {
+      for (auto &member : payload.member_bundles) member = map(member);
+    } else if constexpr (std::is_same_v<Bundle, SubgraphNodeBundle>) {
+      payload.boundary = map(payload.boundary);
+      payload.child_begin = map(payload.child_begin);
+    }
+  }, *_payload);
+}
+
 constexpr std::vector<size_t> &NodeBundle::virtual_node_handles() {
   return _virtual_node_handles;
 }
@@ -1326,15 +1357,66 @@ constexpr void GraphBuilderNodeBundles::apply_ttl(
   details::error("cannot apply ttl to a boundary NodeBundle");
 }
 
+constexpr void GraphBuilderNodeBundles::reserve_appended(size_t count) {
+  auto const needed = _bundles.size() + count;
+  if (needed > _bundles.capacity()) {
+    _bundles.reserve(std::max(needed, 2 * _bundles.capacity()));
+  }
+}
+
 constexpr size_t GraphBuilderNodeBundles::import_child(
     GraphBuilderNodeBundles const &child) {
   auto const bundle_offset = _bundles.size();
-  _bundles.reserve(_bundles.size() + child._bundles.size());
+  reserve_appended(child._bundles.size());
   for (auto imported : child._bundles) {
     imported.import_into(bundle_offset);
     _bundles.push_back(std::move(imported));
   }
   return bundle_offset;
+}
+
+constexpr size_t GraphBuilderNodeBundles::import_contents(
+    GraphBuilderNodeBundles const &child) {
+  if (child._bundles.empty() || !child._bundles.front().is_boundary()) {
+    details::error("invocation snapshot has no leading empty boundary");
+  }
+  auto const bundle_offset = _bundles.size() - 1;
+  reserve_appended(child._bundles.size() - 1);
+  for (auto imported = std::next(child._bundles.begin());
+       imported != child._bundles.end(); ++imported) {
+    auto copy = *imported;
+    copy.import_into(bundle_offset);
+    _bundles.push_back(std::move(copy));
+  }
+  return bundle_offset;
+}
+
+constexpr GraphBuilderNodeBundles GraphBuilderNodeBundles::copy_range(
+    size_t begin, size_t end, size_t first_local, size_t record_begin) const {
+  if (begin > end || end > _bundles.size()) {
+    details::error("node-bundle copy range is out of bounds");
+  }
+  GraphBuilderNodeBundles result;
+  result._bundles.reserve(first_local + end - begin);
+  for (size_t index = 0; index < first_local; ++index) result.append_boundary();
+  auto const local = [&](NodeBundleHandle handle) {
+    if (handle < begin || handle > end) {
+      details::error("copied node bundle refers outside its copy range");
+    }
+    return handle - begin + first_local;
+  };
+  for (auto handle = begin; handle < end; ++handle) {
+    auto copy = _bundles[handle];
+    copy.remap_bundle_handles(local);
+    for (auto &record : copy._virtual_node_handles) {
+      if (record < record_begin) {
+        details::error("copied node bundle belongs to an outside virtual node");
+      }
+      record -= record_begin;
+    }
+    result._bundles.push_back(std::move(copy));
+  }
+  return result;
 }
 
 template<class Visitor>

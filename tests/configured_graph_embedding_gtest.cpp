@@ -192,16 +192,16 @@ TEST(ConfiguredGraphEmbedding, PreservesScopedVirtualIdentityInsteadOfFlattening
     EXPECT_FALSE(std::ranges::contains(right_inverse, first.virtual_node(0)));
 }
 
-TEST(ConfiguredGraphEmbedding, RejectsUnfinishedFrozenGraphWithoutMutatingParent)
+TEST(ConfiguredGraphEmbedding, RejectsUnfinishedFrozenGraphAndFailsTheParentSession)
 {
     iv::GraphBuilder unfinished;
     auto frozen = std::move(unfinished).finish();
 
     iv::GraphBuilder parent;
     EXPECT_THROW(parent.embed(frozen), std::logic_error);
-    parent.outputs();
-    auto configured = std::move(parent).finish();
-    EXPECT_EQ(configured.node_bundles.size(), 1u); // root boundary only
+    // A session operation that raised an error fails its session.
+    EXPECT_THROW(parent.outputs(), std::logic_error);
+    EXPECT_THROW((void)std::move(parent).finish(), std::logic_error);
 }
 
 TEST(ConfiguredGraphEmbedding, TranslationRejectsForeignLocalHandles)

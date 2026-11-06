@@ -1840,6 +1840,17 @@ private:
             result["kind"] = "node_reference";
             return result;
         }
+        // A subgraph closure is C++ construction behavior: it can be passed to
+        // a construction call but has no restricted-expression form, and it
+        // must not fall through to the converted-scalar record classification.
+        if (auto const* record = type->getAsCXXRecordDecl(); record
+            && record->getQualifiedNameAsString() == "iv::SubgraphClosure") {
+            result["kind"] = "unsupported";
+            result["reason"] =
+                "a SubgraphClosure is construction-time C++ behavior with no "
+                "configuration-expression form";
+            return result;
+        }
         if (auto const* record = type->getAsCXXRecordDecl(); record
             && record->getQualifiedNameAsString() == "iv::NodeAddress") {
             result["kind"] = "node_address";

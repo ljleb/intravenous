@@ -361,7 +361,7 @@ TEST(ModuleLoaderFailures, TiledRegisteredModuleRequiresMonoSampleOutputs)
         "tiled IV module members must expose only mono sample outputs");
 }
 
-TEST(ModuleLoaderPackages, RejectedTiledModuleLeavesNoPartialSubgraphs)
+TEST(ModuleLoaderPackages, CaughtTiledModuleRejectionStillFailsThePackage)
 {
     auto const package_root = iv::test::runtime_modules_root()
         / "rejected_tiled_module_has_no_partial_graph_state";
@@ -390,21 +390,18 @@ TEST(ModuleLoaderPackages, RejectedTiledModuleLeavesNoPartialSubgraphs)
         "IV_MODULE(\"iv.test.incompatible_provider\", incompatible_provider);\n"
         "IV_MODULE(\"iv.test.catches_rejected_tile\", catches_rejected_tile);\n");
 
+    // The rejected tile failed its session, so catching it cannot resume
+    // construction: the catching module fails and the package is rejected.
     auto loader = iv::test::make_loader();
-    auto loaded = loader.load_project_package_definitions(package_root);
-    auto const fallback = std::ranges::find(
-        loaded,
-        "iv.test.catches_rejected_tile",
-        &iv::ModuleLoader::LoadedDefinition::module_id);
-    ASSERT_NE(fallback, loaded.end());
-    ASSERT_NE(fallback->configured_graph, nullptr);
-
-    std::size_t subgraphs = 0;
-    fallback->configured_graph->node_bundles.for_each_configured_bundle(
-        [&](iv::ConfiguredNodeBundleView const& bundle) {
-            if (bundle.kind == iv::ConfiguredNodeBundleKind::subgraph) ++subgraphs;
-        });
-    EXPECT_EQ(subgraphs, 0u);
+    try {
+        (void)loader.load_project_package_definitions(package_root);
+        ADD_FAILURE() << "a package whose module caught a construction failure loaded";
+    } catch (std::exception const& error) {
+        EXPECT_NE(
+            std::string_view(error.what()).find(
+                "tiled IV module members must expose only mono sample inputs"),
+            std::string_view::npos) << error.what();
+    }
 }
 
 TEST(ModuleLoaderPackages, RootPackageDoesNotPublishOtherPackageDefinitions)

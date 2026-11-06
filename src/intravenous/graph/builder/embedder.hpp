@@ -8,6 +8,7 @@
 
 #include <cstddef>
 #include <numeric>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -26,17 +27,17 @@ public:
       GraphBuilderVirtualNodes& parent_virtual_nodes,
       GraphBuilderNodeBundles const& child_bundles,
       GraphBuilderConnections const& child_connections,
-      GraphBuilderVirtualNodes const& child_virtual_nodes)
+      GraphBuilderVirtualNodes const& child_virtual_nodes,
+      std::string_view qualifier)
   {
     auto const expected_bundle_offset = parent_bundles.size();
-    auto const root_scope = expected_bundle_offset + child_bundles.size();
     auto const bundle_offset = parent_bundles.import_child(child_bundles);
     IV_ASSERT(
         bundle_offset == expected_bundle_offset,
         "embedded child bundle offset changed unexpectedly");
     parent_connections.import_child(child_connections, bundle_offset);
     auto virtual_nodes = parent_virtual_nodes.import_child(
-        parent_bundles, child_virtual_nodes, bundle_offset, root_scope);
+        parent_bundles, child_virtual_nodes, bundle_offset, qualifier);
 
     std::vector<NodeBundleHandle> node_bundles(child_bundles.size());
     std::iota(node_bundles.begin(), node_bundles.end(), bundle_offset);

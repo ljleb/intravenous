@@ -2,6 +2,7 @@
 
 #include <intravenous/graph/builder/node_call.h>
 #include <intravenous/graph/builder/output_refs.h>
+#include <intravenous/graph/builder/session_ops.h>
 #include <intravenous/graph/error.h>
 #include <intravenous/graph/node_ports.h>
 #include <intravenous/node/address.h>
@@ -76,15 +77,17 @@ namespace iv {
         };
 
         template<class... Args>
-        auto make_node_call_requests(GraphBuilder&, Args&&...);
+        auto make_node_call_requests(BuilderSession*, Args&&...);
 
     }
 
     // The untyped handle is the public base for every node-bundle case.
     // It deliberately addresses a NodeBundle, never an assumed concrete node.
+    // Its identity is the owning BuilderSession, never the GraphBuilder view
+    // through which it was created.
     class NodeRef {
     protected:
-        GraphBuilder* _graph_builder{};
+        details::BuilderSession* _session{};
         size_t _index{};
         // The declaration identity itself is recorded in the host annotation
         // table. The façade only needs this bit to preserve the one-time
@@ -104,10 +107,11 @@ namespace iv {
         constexpr NodeRef() = default;
         NodeRef(NodeRef const&);
         NodeRef(NodeRef&&) noexcept;
-        constexpr explicit NodeRef(GraphBuilder& graph_builder, size_t index) :
-            _graph_builder(&graph_builder),
+        constexpr explicit NodeRef(details::BuilderSession* session, size_t index) :
+            _session(session),
             _index(index)
         {}
+        explicit NodeRef(GraphBuilder const& graph_builder, size_t index);
 
         NodeRef& operator=(NodeRef const& rhs);
         NodeRef& operator=(NodeRef&& rhs);
@@ -115,12 +119,16 @@ namespace iv {
         NodeRef node_ref() const;
         constexpr size_t node_bundle_handle() const
         {
-            if (!_graph_builder) {
+            if (!_session) {
                 details::error("attempted to use a null NodeRef");
             }
             return _index;
         }
         NodeRef _clone_handle() const;
+        [[nodiscard]] constexpr details::BuilderSession* _builder_session() const noexcept
+        {
+            return _session;
+        }
         SamplePortRef operator[](size_t output_port) const;
         SamplePortRef operator[](std::string_view output_name) const;
         template<class Member>
@@ -218,10 +226,10 @@ namespace iv {
 
         Derived _clone_handle() const
         {
-            if (!this->_graph_builder) {
+            if (!this->_session) {
                 return Derived{};
             }
-            Derived result(*this->_graph_builder, this->_index);
+            Derived result(this->_session, this->_index);
             result._has_source_identity = this->_has_source_identity;
             result._has_message_path = this->_has_message_path;
             result._message_path = this->_message_path;
@@ -274,7 +282,7 @@ namespace iv {
         using Base::operator=;
         using Base::operator[];
         using Base::event_port;
-        using Base::_graph_builder;
+        using Base::_session;
         using Base::_index;
         using Base::to_string;
 
@@ -302,7 +310,7 @@ namespace iv {
                 constexpr auto output_index = details::static_output_port_index<NodeType, Name>();
                 constexpr auto layout = details::static_output_port_layout<NodeType, Name>();
                 using ChannelType = typename RuntimeChannelTypeTraits<layout.channel_type>::type;
-                if (!this->_graph_builder) {
+                if (!this->_session) {
                     details::error("attempted to use a null NodeRef");
                 }
                 return TypedSamplePortRef<ChannelType>{
@@ -365,12 +373,15 @@ namespace iv {
         using Base::Base;
         using Base::operator=;
         using Base::event_port;
-        using Base::_graph_builder;
+        using Base::_session;
         using Base::_index;
         using Base::to_string;
 
         constexpr TypedNodeRef() = default;
-        constexpr explicit TypedNodeRef(GraphBuilder& graph_builder, NodeBundleHandle handle) :
+        constexpr explicit TypedNodeRef(
+            details::BuilderSession* session, NodeBundleHandle handle) :
+            Base(session, handle) {}
+        explicit TypedNodeRef(GraphBuilder const& graph_builder, NodeBundleHandle handle) :
             Base(graph_builder, handle) {}
 
         TypedNodeRef(TypedNodeRef const&) = default;
@@ -389,10 +400,10 @@ namespace iv {
 
         Self _clone_handle() const
         {
-            if (!this->_graph_builder) {
+            if (!this->_session) {
                 return Self {};
             }
-            Self result(*this->_graph_builder, this->_index);
+            Self result(this->_session, this->_index);
             result._has_source_identity = this->_has_source_identity;
             result._has_message_path = this->_has_message_path;
             result._message_path = this->_message_path;
@@ -429,13 +440,13 @@ namespace iv {
         {
             using ConcreteRef = TypedNodeRef<NodeType>;
             using MemberType = std::remove_cvref_t<Member>;
-            if (!this->_graph_builder) {
+            if (!this->_session) {
                 details::error("attempted to select a tile from a null tiled node ref");
             }
             ConcreteRef result(
-                *this->_graph_builder,
-                this->_graph_builder->tiled_member(
-                    this->_index, MemberType::channel_index));
+                this->_session,
+                details::iv_builder_tiled_member(
+                    this->_session, this->_index, MemberType::channel_index));
             if (this->_has_message_path) {
                 auto path = this->_message_path;
                 path.push_back(ProjectTiledChildSelector{
@@ -451,12 +462,13 @@ namespace iv {
         auto static_output() const
         {
             static_assert(I < details::static_output_count_v<NodeType>);
-            if (!this->_graph_builder) {
+            if (!this->_session) {
                 details::error("attempted to use a null tiled TypedNodeRef");
             }
             return TypedSamplePortTileRef<ChannelType>{
-                SamplePortRef{*this->_graph_builder,
-                    NodeBundlePortId{this->_index, PortKind::sample, I}}};
+                details::iv_builder_sample_port_from_output(
+                    this->_session,
+                    NodeBundlePortId{this->_index, PortKind::sample, I})};
         }
 
         operator TypedSamplePortTileRef<ChannelType>() const
@@ -497,11 +509,11 @@ namespace iv {
         requires details::valid_node_call_args_v<Args...>
         Self operator()(Args&&... args) const
         {
-            if (!this->_graph_builder) {
+            if (!this->_session) {
                 details::error("attempted to use a null tiled TypedNodeRef");
             }
             auto requests = details::make_node_call_requests(
-                *this->_graph_builder, std::forward<Args>(args)...);
+                this->_session, std::forward<Args>(args)...);
             this->apply_node_call(
                 {.data = requests.sample_inputs.data(),
                  .size = requests.sample_inputs.size()},

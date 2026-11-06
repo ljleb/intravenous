@@ -1,4 +1,5 @@
 #include <intravenous/runtime/configuration_expression.h>
+#include <intravenous/graph/builder.h>
 #include <intravenous/runtime/project_connection_json.h>
 
 #include <algorithm>
@@ -781,9 +782,11 @@ void construct_value(
     if (schema.kind == Kind::node_reference) {
         if (!std::holds_alternative<ConfigurationNodeReferenceExpression>(expression.value))
             evaluation_error(expression, "expected a project-node reference");
+        // Direct NodeRef parameters are materialized by the caller's session
+        // before reaching this schema-driven constructor.
         evaluation_error(expression,
-            "live project-node argument materialization requires the Front 12 "
-            "same-BuilderSession construction path");
+            "a project-node reference can be materialized only as a direct "
+            "NodeRef construction argument");
     }
     evaluation_error(expression,
         "configuration type is not supported by the restricted expression language");
@@ -905,12 +908,49 @@ ConfigurationExpressionPtr expression_from_json(
     throw std::invalid_argument(
         "node-message value type is not supported by generated metadata");
 }
+
+void collect_referenced_instance_ids(
+    ConfigurationExpression const& expression, std::vector<std::string>& output)
+{
+    std::visit([&](auto const& value) {
+        using Value = std::remove_cvref_t<decltype(value)>;
+        if constexpr (std::same_as<Value, ConfigurationNodeReferenceExpression>) {
+            if (!std::ranges::contains(output, value.instance_id))
+                output.push_back(value.instance_id);
+        } else if constexpr (std::same_as<Value, ConfigurationUnaryExpression>) {
+            if (value.operand) collect_referenced_instance_ids(*value.operand, output);
+        } else if constexpr (std::same_as<Value, ConfigurationBinaryExpression>) {
+            if (value.left) collect_referenced_instance_ids(*value.left, output);
+            if (value.right) collect_referenced_instance_ids(*value.right, output);
+        } else if constexpr (std::same_as<Value, ConfigurationCallExpression>) {
+            for (auto const& argument : value.arguments)
+                if (argument) collect_referenced_instance_ids(*argument, output);
+        } else if constexpr (std::same_as<Value, ConfigurationAggregateExpression>) {
+            for (auto const& element : value.elements)
+                if (element.value) collect_referenced_instance_ids(*element.value, output);
+        }
+    }, expression.value);
+}
 } // namespace
+
+std::vector<std::string> configuration_referenced_instance_ids(
+    ParsedConfigurationExpressionList const& parsed)
+{
+    std::vector<std::string> result;
+    for (auto const& argument : parsed.arguments) {
+        if (argument) collect_referenced_instance_ids(*argument, result);
+    }
+    return result;
+}
 
 struct EvaluatedConfigurationArguments::Implementation {
     struct Argument {
         details::ConfigurationTypeIdentity const* identity = nullptr;
         std::unique_ptr<OwnedValue> value{};
+        // A materialized project-node reference. NodeRef is one ABI type
+        // shared by the runtime and every package, so it is owned here rather
+        // than through the provider's schema callbacks.
+        std::unique_ptr<NodeRef> node_reference{};
     };
     ParsedConfigurationExpressionList parsed{};
     std::vector<Argument> owned{};
@@ -971,7 +1011,8 @@ EvaluatedConfigurationValue::type() const noexcept
 
 EvaluatedConfigurationArguments evaluate_configuration_expression_list(
     ParsedConfigurationExpressionList parsed,
-    details::RegisteredSignature const& signature)
+    details::RegisteredSignature const& signature,
+    ConfigurationNodeReferenceMaterializer const* node_references)
 {
     details::validate_registered_signature_shape("<configuration expression>", signature);
     if (parsed.arguments.size() < signature.required_argument_count
@@ -992,9 +1033,31 @@ EvaluatedConfigurationArguments evaluate_configuration_expression_list(
                 "configuration argument " + std::to_string(index)
                 + " has no generated expression type metadata");
         auto const& schema = *identity->expression_schema;
+        auto const& expression = *result.implementation_->parsed.arguments[index];
+        if (schema.kind == details::ConfigurationExpressionTypeKind::node_reference) {
+            auto const* reference =
+                std::get_if<ConfigurationNodeReferenceExpression>(&expression.value);
+            if (!reference)
+                evaluation_error(expression, "expected a project-node reference");
+            if (!node_references || !*node_references)
+                evaluation_error(expression,
+                    "a project-node reference requires a construction session");
+            auto node = std::make_unique<NodeRef>((*node_references)(*reference));
+            result.implementation_->arguments.push_back({
+                .data = node.get(),
+                .type = identity,
+                .is_const = false,
+                .is_rvalue = true,
+                .is_array_decay = false,
+            });
+            result.implementation_->owned.push_back({
+                .identity = identity,
+                .node_reference = std::move(node),
+            });
+            continue;
+        }
         auto value = std::make_unique<OwnedValue>(schema);
-        construct_value(
-            *value, schema, *result.implementation_->parsed.arguments[index]);
+        construct_value(*value, schema, expression);
         result.implementation_->arguments.push_back({
             .data = value->data(),
             .type = identity,

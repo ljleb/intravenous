@@ -515,7 +515,14 @@ AsyncCapacityManager::AsyncCapacityManager(
 
 AsyncCapacityManager::~AsyncCapacityManager()
 {
-    worker_.request_stop();
+    // Synchronize the stop transition with the worker's wait predicate. If
+    // request_stop() and notify_all() occur between that predicate and the
+    // worker entering its untimed wait, the notification is otherwise lost
+    // and join() never returns.
+    {
+        std::scoped_lock lock(mutex_);
+        worker_.request_stop();
+    }
     wake_.notify_all();
     if (worker_.joinable()) worker_.join();
 

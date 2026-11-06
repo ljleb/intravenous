@@ -4,6 +4,7 @@
 #include <intravenous/runtime/project_connection_types.h>
 
 #include <cstddef>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <span>
@@ -14,6 +15,7 @@
 #include <nlohmann/json_fwd.hpp>
 
 namespace iv {
+class NodeRef;
 struct ConfigurationExpression;
 using ConfigurationExpressionPtr = std::shared_ptr<ConfigurationExpression const>;
 
@@ -82,6 +84,16 @@ struct ParsedConfigurationExpressionList {
 [[nodiscard]] ParsedConfigurationExpressionList parse_configuration_expression_list(
     std::string source);
 
+// Materializes one stable project-node reference as a live NodeRef of the
+// session that will construct the configured node. Without a materializer,
+// evaluation rejects NodeRef parameters before provider invocation.
+using ConfigurationNodeReferenceMaterializer =
+    std::function<NodeRef(ConfigurationNodeReferenceExpression const&)>;
+
+// Every project-node ID referenced anywhere in the parsed arguments.
+[[nodiscard]] std::vector<std::string> configuration_referenced_instance_ids(
+    ParsedConfigurationExpressionList const&);
+
 class EvaluatedConfigurationArguments {
 public:
     EvaluatedConfigurationArguments();
@@ -101,7 +113,8 @@ private:
     std::unique_ptr<Implementation> implementation_;
     friend EvaluatedConfigurationArguments evaluate_configuration_expression_list(
         ParsedConfigurationExpressionList,
-        details::RegisteredSignature const&);
+        details::RegisteredSignature const&,
+        ConfigurationNodeReferenceMaterializer const*);
     friend EvaluatedConfigurationArguments evaluate_configuration_json_arguments(
         nlohmann::ordered_json const&,
         details::RegisteredSignature const&);
@@ -129,9 +142,12 @@ private:
         details::ConfigurationTypeIdentity const&);
 };
 
+// A direct NodeRef parameter is materialized through `node_references`; the
+// returned arguments then own that NodeRef for the synchronous construction.
 [[nodiscard]] EvaluatedConfigurationArguments evaluate_configuration_expression_list(
     ParsedConfigurationExpressionList parsed,
-    details::RegisteredSignature const& signature);
+    details::RegisteredSignature const& signature,
+    ConfigurationNodeReferenceMaterializer const* node_references = nullptr);
 
 [[nodiscard]] EvaluatedConfigurationArguments compile_configuration_expression_list(
     std::string source,

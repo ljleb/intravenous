@@ -2,6 +2,7 @@
 
 #include <intravenous/graph/builder.h>
 #include <intravenous/graph/builder/state.h>
+#include <intravenous/throw_site.h>
 
 #include <nlohmann/json.hpp>
 
@@ -13,6 +14,7 @@
 #include <new>
 #include <optional>
 #include <sstream>
+#include <stacktrace>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -262,26 +264,19 @@ std::string configuration_schema_json_value(
 }
 
 struct BuilderSession {
-    std::unique_ptr<GraphBuilderState> state = std::make_unique<GraphBuilderState>();
-    bool graph_taken = false;
-    std::shared_ptr<BuilderConfiguration> configuration =
-        std::make_shared<BuilderConfiguration>();
-    std::size_t package_index = static_cast<std::size_t>(-1);
-    void* definition_resolver_context = nullptr;
-    BuilderDefinitionResolver definition_resolver = nullptr;
-    BuilderConcreteNodeReplacementResolver concrete_node_replacement_resolver = nullptr;
-    BuilderNodeSourceIdentity pending_node_source_identity{};
-    std::vector<ModuleMessageLocalRef> module_message_local_refs{};
-    std::vector<ProjectNodePathSelector> semantic_scope_path{};
-    struct DirectNodeInvocationCount {
+    // Declaration counters and module-local refs of one semantic frame: the
+    // session root, one registered-definition invocation, or one module body.
+    struct SemanticFrame {
+        struct DeclarationCount {
+            std::vector<ProjectNodePathSelector> scope_path{};
+            std::string source_identity{};
+            std::size_t next_member = 0;
+        };
         std::vector<ProjectNodePathSelector> scope_path{};
-        std::string source_identity{};
-        std::size_t next_member = 0;
+        std::vector<DeclarationCount> concrete_node_counts{};
+        std::vector<DeclarationCount> registered_call_counts{};
+        std::vector<ModuleMessageLocalRef> module_message_local_refs{};
     };
-    std::vector<DirectNodeInvocationCount> direct_node_invocation_counts{};
-    std::vector<std::pair<
-        NodeBundleHandle,
-        std::vector<ProjectNodePathSelector>>> node_message_paths{};
 
     struct NodeConfigAllocation {
         void* storage = nullptr;
@@ -315,8 +310,109 @@ struct BuilderSession {
             }
         }
     };
+
+    // The first construction failure; see record_builder_failure().
+    struct Failure {
+        std::string message{};
+        std::vector<std::string> context{};
+        std::stacktrace stacktrace{};
+    };
+
+    struct OpenScope {
+        BuilderScopeId id = 0;
+    };
+
+    BuilderSession() : state(std::make_unique<GraphBuilderState>(this)) {}
+
+    std::unique_ptr<GraphBuilderState> state;
+    bool graph_taken = false;
+    std::shared_ptr<BuilderConfiguration> configuration =
+        std::make_shared<BuilderConfiguration>();
+    std::size_t package_index = static_cast<std::size_t>(-1);
+    void* definition_resolver_context = nullptr;
+    BuilderDefinitionResolver definition_resolver = nullptr;
+    BuilderConcreteNodeReplacementResolver concrete_node_replacement_resolver = nullptr;
+    BuilderNodeSourceIdentity pending_node_source_identity{};
+    std::vector<SemanticFrame> semantic_frames = std::vector<SemanticFrame>(1);
+    // Indexed by NodeBundleHandle: the semantic message path of a concrete
+    // node relative to the module body that created it.
+    std::vector<std::optional<std::vector<ProjectNodePathSelector>>> node_message_paths{};
     std::vector<NodeConfigAllocation> pending_node_configs{};
+    std::vector<OpenScope> open_scopes{};
+    std::optional<Failure> failure{};
+
+    SemanticFrame& semantic_frame() { return semantic_frames.back(); }
+    SemanticFrame const& semantic_frame() const { return semantic_frames.back(); }
 };
+
+namespace {
+GraphBuilderState& session_state(BuilderSession* session)
+{
+    if (!session || !session->state || session->graph_taken) {
+        throw std::logic_error("builder graph is unavailable");
+    }
+    // A failed session refuses all further construction, so authored code
+    // that caught the failure cannot resume building on partial state.
+    if (session->failure) {
+        throw std::logic_error(
+            "graph construction already failed: " + session->failure->message);
+    }
+    return *session->state;
+}
+
+std::string describe_exception(std::exception_ptr failure)
+{
+    if (!failure) return "unknown construction failure";
+    try {
+        std::rethrow_exception(failure);
+    } catch (std::exception const& error) {
+        return error.what();
+    } catch (...) {
+        return "non-standard exception";
+    }
+}
+
+std::size_t next_declaration_member(
+    std::vector<BuilderSession::SemanticFrame::DeclarationCount>& counts,
+    std::span<ProjectNodePathSelector const> scope_path,
+    std::string_view source_identity)
+{
+    auto count = std::ranges::find_if(counts, [&](auto const& value) {
+        return std::ranges::equal(value.scope_path, scope_path)
+            && value.source_identity == source_identity;
+    });
+    if (count == counts.end()) {
+        counts.push_back({
+            .scope_path = {scope_path.begin(), scope_path.end()},
+            .source_identity = std::string(source_identity),
+        });
+        count = std::prev(counts.end());
+    }
+    return count->next_member++;
+}
+
+void append_qualifier_selector(std::string& text, ProjectNodePathSelector const& selector)
+{
+    std::visit([&](auto const& concrete) {
+        using Selector = std::remove_cvref_t<decltype(concrete)>;
+        if constexpr (std::same_as<Selector, ProjectVirtualNodeSelector>) {
+            text += '.';
+            text += concrete.source_identity;
+            if (concrete.type_identity) {
+                text += ':';
+                text += *concrete.type_identity;
+            }
+        } else if constexpr (std::same_as<Selector, ProjectVirtualMemberSelector>) {
+            text += '[';
+            text += std::to_string(concrete.index);
+            text += ']';
+        } else {
+            text += '#';
+            text += concrete.name;
+        }
+    }, selector);
+}
+} // namespace
 
 extern "C" BuilderSession* iv_builder_session_create()
 {
@@ -372,20 +468,37 @@ BuilderNodeSourceIdentity consume_builder_node_source_identity(
     return std::exchange(session->pending_node_source_identity, {});
 }
 
-void set_builder_semantic_scope_path(
-    BuilderSession* session,
-    std::span<ProjectNodePathSelector const> path)
-{
-    if (!session) return;
-    session->semantic_scope_path.assign(path.begin(), path.end());
-}
-
 std::span<ProjectNodePathSelector const>
 builder_semantic_scope_path(BuilderSession const* session) noexcept
 {
     return session
-        ? std::span<ProjectNodePathSelector const>{session->semantic_scope_path}
+        ? std::span<ProjectNodePathSelector const>{session->semantic_frame().scope_path}
         : std::span<ProjectNodePathSelector const>{};
+}
+
+std::vector<ProjectNodePathSelector> claim_builder_registered_call_path(
+    BuilderSession* session, std::string_view source_identity)
+{
+    if (!session) throw std::invalid_argument("registered call requires a builder session");
+    auto& frame = session->semantic_frame();
+    auto path = frame.scope_path;
+    auto const member = next_declaration_member(
+        frame.registered_call_counts, frame.scope_path, source_identity);
+    path.push_back(ProjectVirtualNodeSelector{
+        .source_identity = std::string(source_identity),
+    });
+    path.push_back(ProjectVirtualMemberSelector{.index = member});
+    return path;
+}
+
+std::string builder_invocation_qualifier(
+    std::span<ProjectNodePathSelector const> relative_path)
+{
+    std::string result = "@";
+    for (auto const& selector : relative_path) {
+        append_qualifier_selector(result, selector);
+    }
+    return result;
 }
 
 void record_builder_module_message_local_ref(
@@ -402,8 +515,9 @@ void record_builder_module_message_local_ref(
             },
         },
     };
-    if (!std::ranges::contains(session->module_message_local_refs, local)) {
-        session->module_message_local_refs.push_back(std::move(local));
+    auto& refs = session->semantic_frame().module_message_local_refs;
+    if (!std::ranges::contains(refs, local)) {
+        refs.push_back(std::move(local));
     }
 }
 
@@ -423,7 +537,8 @@ void register_builder_module_class_message_handlers(
     }
     auto local_refs = std::make_shared<ModuleMessageLocalRefs const>(
         ModuleMessageLocalRefs{
-            .values = std::exchange(session->module_message_local_refs, {}),
+            .values = std::exchange(
+                session->semantic_frame().module_message_local_refs, {}),
         });
     auto const definition_id = session->configuration->module_stack.back();
     auto const& handlers = session->configuration
@@ -439,7 +554,7 @@ void register_builder_module_class_message_handlers(
         }
         session->configuration->message_handlers.push_back(
             ConfiguredNodeMessageHandler{
-                .relative_path = session->semantic_scope_path,
+                .relative_path = session->semantic_frame().scope_path,
                 .event_type = handler.event_type,
                 .receiver = receiver,
                 .module_local_refs = local_refs,
@@ -459,26 +574,16 @@ claim_builder_concrete_node_paths(
     auto const prepared = consume_builder_node_source_identity(session);
     record_builder_module_message_local_ref(session, prepared);
     auto const& source_identity = prepared.source_identity;
-    auto relative_path = session->semantic_scope_path;
+    auto& frame = session->semantic_frame();
+    auto relative_path = frame.scope_path;
     if (!source_identity.empty()) {
-        auto count = std::ranges::find_if(
-            session->direct_node_invocation_counts,
-            [&](BuilderSession::DirectNodeInvocationCount const& value) {
-                return value.scope_path == session->semantic_scope_path
-                    && value.source_identity == source_identity;
-            });
-        if (count == session->direct_node_invocation_counts.end()) {
-            session->direct_node_invocation_counts.push_back({
-                .scope_path = session->semantic_scope_path,
-                .source_identity = source_identity,
-            });
-            count = std::prev(session->direct_node_invocation_counts.end());
-        }
+        auto const member = next_declaration_member(
+            frame.concrete_node_counts, frame.scope_path, source_identity);
         relative_path.push_back(ProjectVirtualNodeSelector{
             .source_identity = source_identity,
         });
         relative_path.push_back(ProjectVirtualMemberSelector{
-            .index = count->next_member++,
+            .index = member,
         });
     }
     std::vector<std::vector<ProjectNodePathSelector>> result;
@@ -548,20 +653,17 @@ void record_builder_node_message_path(
     if (!session) return;
     auto path = std::vector<ProjectNodePathSelector>(
         relative_path.begin(), relative_path.end());
-    auto const scope_size = session->semantic_scope_path.size();
-    if (path.size() >= scope_size
-        && std::equal(
-            session->semantic_scope_path.begin(),
-            session->semantic_scope_path.end(),
-            path.begin())) {
-        path.erase(path.begin(), path.begin() + scope_size);
+    auto const& scope_path = session->semantic_frame().scope_path;
+    if (path.size() >= scope_path.size()
+        && std::equal(scope_path.begin(), scope_path.end(), path.begin())) {
+        path.erase(path.begin(),
+            path.begin() + static_cast<std::ptrdiff_t>(scope_path.size()));
     }
-    auto existing = std::ranges::find_if(
-        session->node_message_paths,
-        [&](auto const& entry) { return entry.first == handle; });
-    if (existing == session->node_message_paths.end()) {
-        session->node_message_paths.emplace_back(handle, std::move(path));
-    } else if (existing->second != path) {
+    auto& paths = session->node_message_paths;
+    if (paths.size() <= handle) paths.resize(handle + 1);
+    if (!paths[handle]) {
+        paths[handle] = std::move(path);
+    } else if (*paths[handle] != path) {
         throw std::logic_error(
             "one builder node bundle has two semantic message paths");
     }
@@ -572,12 +674,9 @@ void attach_builder_node_message_path(
     NodeRef& ref,
     NodeBundleHandle handle)
 {
-    if (!session) return;
-    auto const found = std::ranges::find_if(
-        session->node_message_paths,
-        [&](auto const& entry) { return entry.first == handle; });
-    if (found != session->node_message_paths.end()) {
-        ref._set_semantic_message_path(found->second);
+    if (!session || handle >= session->node_message_paths.size()) return;
+    if (auto const& path = session->node_message_paths[handle]) {
+        ref._set_semantic_message_path(*path);
     }
 }
 
@@ -620,38 +719,22 @@ extern "C" void iv_builder_session_destroy(BuilderSession* session) noexcept
     delete session;
 }
 
-BuilderSession* iv_builder_child_session_create(
-    BuilderSession* parent, std::size_t package_index)
+GraphBuilderState& builder_session_state(BuilderSession* session)
 {
-    if (!parent || !parent->configuration) {
-        throw std::invalid_argument("parent builder session is null");
-    }
-    if (package_index >= parent->configuration->packages.size()) {
-        throw std::out_of_range("builder package index is out of range");
-    }
-    auto child = std::make_unique<BuilderSession>();
-    child->configuration = parent->configuration;
-    child->package_index = package_index;
-    child->definition_resolver_context = parent->definition_resolver_context;
-    child->definition_resolver = parent->definition_resolver;
-    child->concrete_node_replacement_resolver =
-        parent->concrete_node_replacement_resolver;
-    child->semantic_scope_path = parent->semantic_scope_path;
-    // The configured graph now contains code/data produced by this package even
-    // when the nested iv module contributes no primitive node directly. Pin it.
-    child->configuration->used_packages[package_index] = true;
-    return child.release();
+    return session_state(session);
 }
 
 GraphBuilderState& builder_graph_state(GraphBuilder& builder)
 {
-    if (!builder._session || !builder._session->state
-        || builder._session->graph_taken) {
-        throw std::logic_error("builder graph is unavailable");
+    return session_state(builder._session);
+}
+
+BuilderScopeId iv_builder_current_scope(BuilderSession* session) noexcept
+{
+    if (!session || !session->state || session->graph_taken) {
+        return root_builder_scope_id;
     }
-    auto& state = *builder._session->state;
-    state.bind(builder);
-    return state;
+    return session->state->current_scope_id();
 }
 
 bool builder_session_has_packages(BuilderSession const* session) noexcept
@@ -664,9 +747,181 @@ ConfiguredGraph take_built_graph(BuilderSession* session)
     if (!session || !session->state || session->graph_taken) {
         throw std::logic_error("builder session has no unfinished graph");
     }
+    throw_if_builder_failed(session);
+    if (!session->open_scopes.empty()) {
+        throw std::logic_error(
+            "builder session cannot finish while a nested scope is open");
+    }
+    auto graph = std::move(*session->state).finish();
     session->graph_taken = true;
-    auto state = std::move(session->state);
-    return std::move(*state).finish();
+    session->state.reset();
+    return graph;
+}
+
+// ---- construction failure ------------------------------------------------
+
+void record_builder_failure(
+    BuilderSession* session, std::exception_ptr failure, std::string_view context) noexcept
+{
+    if (!session) return;
+    try {
+        if (!session->failure) {
+            // Prefer the stack from where the failure was thrown; a handler
+            // only sees the frames that survived unwinding.
+            session->failure = BuilderSession::Failure{
+                .message = describe_exception(failure),
+                .stacktrace = throw_site_stacktrace(failure)
+                    .value_or(std::stacktrace::current(1)),
+            };
+        }
+        if (!context.empty()) session->failure->context.emplace_back(context);
+    } catch (...) {
+        // Recording is best-effort; the failure itself still propagates.
+    }
+}
+
+bool builder_failed(BuilderSession const* session) noexcept
+{
+    return session && session->failure.has_value();
+}
+
+std::string builder_failure_message(BuilderSession const* session)
+{
+    if (!session || !session->failure) return {};
+    auto result = session->failure->message;
+    for (auto const& line : session->failure->context) {
+        result += "\n  ";
+        result += line;
+    }
+    return result;
+}
+
+std::string builder_failure_stacktrace(BuilderSession const* session)
+{
+    if (!session || !session->failure) return {};
+    return std::to_string(session->failure->stacktrace);
+}
+
+void throw_if_builder_failed(BuilderSession* session)
+{
+    if (session && session->failure) {
+        throw std::logic_error(
+            "graph construction already failed: " + session->failure->message);
+    }
+}
+
+BuilderScopeId begin_builder_scope(BuilderSession* session, BuilderScopeKind kind)
+{
+    auto const id = session_state(session).push_scope(kind);
+    session->open_scopes.push_back({.id = id});
+    return id;
+}
+
+NodeBundleHandle finish_builder_scope(
+    BuilderSession* session, BuilderScopeId id, std::string_view kind,
+    std::optional<std::string_view> qualifier)
+{
+    if (!session || session->open_scopes.empty()
+        || session->open_scopes.back().id != id) {
+        throw std::logic_error(
+            "a nested builder scope must be finished before its parent");
+    }
+    auto const result = session_state(session).finish_scope(id, kind, qualifier);
+    session->open_scopes.pop_back();
+    return result;
+}
+
+void abandon_builder_scope(BuilderSession* session, BuilderScopeId id) noexcept
+{
+    if (!session) return;
+    if (!std::ranges::contains(session->open_scopes, id, &BuilderSession::OpenScope::id)) {
+        return;
+    }
+    // While an exception unwinds the view, the boundary it crosses records
+    // that exception as the failure; this records only a view that authored
+    // code dropped without finalizing it.
+    if (std::uncaught_exceptions() > 0) return;
+    record_builder_failure(
+        session,
+        std::make_exception_ptr(std::logic_error(
+            "a nested builder scope was destroyed without being finalized")),
+        {});
+}
+
+bool builder_scope_sample_outputs_defined(BuilderSession* session, BuilderScopeId id)
+{
+    return session_state(session).scope_sample_outputs_defined(id);
+}
+
+void validate_builder_tiled_module_interfaces(
+    BuilderSession* session, std::span<NodeBundleHandle const> members)
+{
+    session_state(session).validate_tiled_module_interfaces(members);
+}
+
+void begin_builder_module_body(
+    BuilderSession* session, std::span<ProjectNodePathSelector const> scope_suffix)
+{
+    if (!session) throw std::invalid_argument("module body requires a builder session");
+    BuilderSession::SemanticFrame frame{
+        .scope_path = session->semantic_frame().scope_path,
+    };
+    frame.scope_path.insert(frame.scope_path.end(), scope_suffix.begin(), scope_suffix.end());
+    session->semantic_frames.push_back(std::move(frame));
+}
+
+void end_builder_module_body(BuilderSession* session) noexcept
+{
+    if (session && session->semantic_frames.size() > 1) {
+        session->semantic_frames.pop_back();
+    }
+}
+
+BuilderInvocation begin_builder_invocation(BuilderSession* session)
+{
+    auto const mark = session_state(session).mark();
+    session->semantic_frames.emplace_back();
+    return BuilderInvocation{
+        .mark = mark,
+        .message_handler_begin = session->configuration->message_handlers.size(),
+        .semantic_depth = session->semantic_frames.size(),
+    };
+}
+
+BuilderInvocationResult finish_builder_invocation(
+    BuilderSession* session, BuilderInvocation invocation, NodeBundleHandle result,
+    std::string_view qualifier, bool snapshot)
+{
+    if (!session || session->semantic_frames.size() != invocation.semantic_depth) {
+        throw std::logic_error("builder invocation finished out of order");
+    }
+    auto& state = session_state(session);
+    BuilderInvocationResult output;
+    auto& handlers = session->configuration->message_handlers;
+    output.message_handlers.assign(
+        std::make_move_iterator(handlers.begin()
+            + static_cast<std::ptrdiff_t>(invocation.message_handler_begin)),
+        std::make_move_iterator(handlers.end()));
+    if (snapshot) {
+        if (auto copy = state.snapshot_contents(invocation.mark, result)) {
+            output.snapshot_root = copy->local_root;
+            output.snapshot = std::make_shared<ConfiguredGraph const>(
+                std::move(copy->graph));
+        }
+    }
+    handlers.erase(
+        handlers.begin() + static_cast<std::ptrdiff_t>(invocation.message_handler_begin),
+        handlers.end());
+    state.qualify_virtual_records(invocation.mark.virtual_records, qualifier);
+    session->semantic_frames.pop_back();
+    return output;
+}
+
+NodeBundleHandle import_builder_invocation(
+    BuilderSession* session, ConfiguredGraph const& graph,
+    NodeBundleHandle local_root, std::string_view qualifier)
+{
+    return session_state(session).import_contents(graph, local_root, qualifier);
 }
 
 void set_builder_packages(

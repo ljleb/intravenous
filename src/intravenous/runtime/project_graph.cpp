@@ -1,5 +1,6 @@
 #include <intravenous/runtime/project_graph.h>
 
+#include <intravenous/compat.h>
 #include <intravenous/graph/builder.h>
 #include <intravenous/runtime/node_definitions_events.h>
 #include <intravenous/runtime/configuration_expression.h>
@@ -452,6 +453,29 @@ void ProjectGraph::control_compile_worker(std::stop_token stop)
     }
 }
 
+namespace {
+// Writes a failed configuration pass to the server diagnostic log, including
+// the stack where a construction failure was first recorded.
+void log_configuration_failure(ProjectGraphConfigurationFailure const& failure) noexcept
+{
+    try {
+        auto& out = diagnostic_stream();
+        out << "\nproject configuration failed; the previous generation stays current\n";
+        for (auto const& diagnostic : failure.node_instance_diagnostics) {
+            out << "node instance '" << diagnostic.instance_id << "' ("
+                << diagnostic.definition_id << "): " << diagnostic.message << '\n';
+            if (!diagnostic.stacktrace.empty()) out << diagnostic.stacktrace << '\n';
+        }
+        if (failure.connection_failure) {
+            out << "project connection '" << failure.connection_failure->connection_id
+                << "': " << failure.connection_failure->message << '\n';
+        }
+        out.flush();
+    } catch (...) {
+    }
+}
+} // namespace
+
 ProjectGraph::RebuildResult ProjectGraph::rebuild_locked(
     NodeInstancesMutation instance_mutation,
     GraphConnectionsMutation connection_mutation,
@@ -470,8 +494,27 @@ ProjectGraph::RebuildResult ProjectGraph::rebuild_locked(
         throw std::runtime_error("ProjectGraph cannot rebuild without NodeInstances");
     }
 
+    // A failed configuration pass discards the root builder and publishes no
+    // generation; the previous generation stays current and keeps running.
+    auto fail = [&](ProjectGraphConfigurationFailure failure) {
+        auto shared = std::make_shared<ProjectGraphConfigurationFailure const>(
+            std::move(failure));
+        if (publish_execution) {
+            log_configuration_failure(*shared);
+            configuration_failure_ = shared;
+        }
+        return RebuildResult{
+            .created_instance_ids = std::move(request.created_instance_ids),
+            .failure = std::move(shared),
+        };
+    };
+    auto const definitions_generation =
+        definitions_snapshot_ ? definitions_snapshot_->generation : 0;
+    // A failed instance batch leaves the root builder unusable, so connections
+    // are not realized; their mutation still joins the desired revision.
+    bool const instances_failed = !request.result.diagnostics.empty();
     GraphConnectionsProjectGraphRequest connections_request{
-        .root_builder = &root_builder,
+        .root_builder = instances_failed ? nullptr : &root_builder,
         .placements = &request.result.placements,
         .mutation = std::move(connection_mutation),
     };
@@ -481,6 +524,18 @@ ProjectGraph::RebuildResult ProjectGraph::rebuild_locked(
     if (!connections_request.handled) {
         throw std::runtime_error("ProjectGraph cannot rebuild without GraphConnections");
     }
+    if (instances_failed) {
+        return fail(ProjectGraphConfigurationFailure{
+            .definitions_generation = definitions_generation,
+            .node_instance_diagnostics = std::move(request.result.diagnostics),
+        });
+    }
+    if (connections_request.result.failure) {
+        return fail(ProjectGraphConfigurationFailure{
+            .definitions_generation = definitions_generation,
+            .connection_failure = std::move(connections_request.result.failure),
+        });
+    }
 
     root_builder.outputs();
     auto configured_graph = std::move(root_builder).finish();
@@ -489,7 +544,6 @@ ProjectGraph::RebuildResult ProjectGraph::rebuild_locked(
     generation->definitions_generation = definitions_snapshot_->generation;
     generation->definitions = definitions_snapshot_;
     generation->placements = std::move(request.result.placements);
-    generation->diagnostics = std::move(request.result.diagnostics);
     generation->applied_connection_ids =
         std::move(connections_request.result.applied_connection_ids);
     generation->connection_diagnostics =
@@ -625,6 +679,7 @@ ProjectGraph::RebuildResult ProjectGraph::rebuild_locked(
         dynamic_inputs_ = std::move(next_dynamic_inputs);
         constant_specialization_deadline_.reset();
         current_generation_ = generation;
+        configuration_failure_.reset();
         ready_control_code_.reset();
         pending_control_compile_.reset();
         latest_control_compile_request_ = next_control_compile_request_++;
@@ -668,6 +723,19 @@ std::shared_ptr<ProjectGraphGeneration const> ProjectGraph::current_generation()
 {
     std::scoped_lock lock(mutex_);
     return current_generation_;
+}
+
+std::shared_ptr<ProjectGraphConfigurationFailure const>
+ProjectGraph::configuration_failure() const
+{
+    std::scoped_lock lock(mutex_);
+    return configuration_failure_;
+}
+
+std::vector<ProjectManualControl> ProjectGraph::manual_controls() const
+{
+    std::scoped_lock lock(mutex_);
+    return manual_controls_;
 }
 
 NodeEventProtocolSnapshot ProjectGraph::node_event_protocol() const
@@ -862,14 +930,14 @@ void ProjectGraph::dispatch_node_message_locked(
                 },
                 std::monostate{},
                 false);
-            if (auto diagnostic = std::ranges::find(
-                    preview.generation->diagnostics,
-                    address.instance_id,
-                    &NodeInstanceDiagnostic::instance_id);
-                diagnostic != preview.generation->diagnostics.end()) {
+            if (preview.failure) {
+                auto const& diagnostics = preview.failure->node_instance_diagnostics;
                 throw std::runtime_error(
                     "node replacement failed to configure: "
-                    + diagnostic->message);
+                    + (!diagnostics.empty() ? diagnostics.front().message
+                        : preview.failure->connection_failure
+                        ? preview.failure->connection_failure->message
+                        : std::string("unknown configuration failure")));
             }
             state.interaction->replacements = std::move(replacements);
             state.interaction->generation = std::move(preview.generation);

@@ -13,7 +13,7 @@
 namespace iv {
 namespace {
 bool subgraph_contains(
-    ConfiguredGraph const& graph,
+    ProjectNodePathGraph const& graph,
     NodeBundleHandle subgraph,
     NodeBundleHandle candidate)
 {
@@ -25,7 +25,7 @@ bool subgraph_contains(
 }
 
 std::optional<NodeBundleHandle> immediate_parent_subgraph(
-    ConfiguredGraph const& graph,
+    ProjectNodePathGraph const& graph,
     NodeBundleHandle candidate)
 {
     std::optional<NodeBundleHandle> result;
@@ -44,7 +44,7 @@ std::optional<NodeBundleHandle> immediate_parent_subgraph(
 }
 
 void append_subject_scopes(
-    ConfiguredGraph const& graph,
+    ProjectNodePathGraph const& graph,
     NodeBundleHandle subject,
     std::vector<NodeBundleHandle>& output)
 {
@@ -59,7 +59,7 @@ void append_subject_scopes(
 }
 
 std::vector<NodeBundleHandle> subject_scopes(
-    ConfiguredGraph const& graph,
+    ProjectNodePathGraph const& graph,
     ProjectNodePathMatch const& match)
 {
     std::vector<NodeBundleHandle> result;
@@ -87,7 +87,7 @@ std::vector<NodeBundleHandle> subject_scopes(
 }
 
 bool direct_member_of_scope(
-    ConfiguredGraph const& graph,
+    ProjectNodePathGraph const& graph,
     NodeBundleHandle member,
     NodeBundleHandle scope)
 {
@@ -112,7 +112,7 @@ void append_unique(
 }
 
 std::vector<ProjectNodePathMatch> apply_selector(
-    ConfiguredGraph const& graph,
+    ProjectNodePathGraph const& graph,
     std::span<ProjectNodePathMatch const> current,
     ProjectNodePathSelector const& selector)
 {
@@ -189,6 +189,15 @@ std::vector<ProjectNodePathMatch> apply_selector(
 
 std::vector<ProjectNodePathMatch> resolve_project_node_path(
     ConfiguredGraph const& graph,
+    NodeBundleHandle subject,
+    std::span<ProjectNodePathSelector const> path)
+{
+    return resolve_project_node_path(
+        ProjectNodePathGraph{graph.node_bundles, graph.virtual_nodes}, subject, path);
+}
+
+std::vector<ProjectNodePathMatch> resolve_project_node_path(
+    ProjectNodePathGraph graph,
     NodeBundleHandle subject,
     std::span<ProjectNodePathSelector const> path)
 {

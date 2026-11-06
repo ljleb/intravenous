@@ -380,8 +380,10 @@ TEST(ConfigurationExpression, RejectsStandaloneTiledChildSelector)
         std::invalid_argument);
 }
 
-TEST(ConfigurationExpression, RefusesToInventACrossSessionLiveNodeHandle)
+TEST(ConfigurationExpression, RefusesANodeReferenceWithoutAConstructionSession)
 {
+    // A live NodeRef exists only inside the session that constructs the
+    // configured node; evaluation without that session must not invent one.
     try {
         (void)iv::compile_configuration_expression_list(
             "&550e8400-e29b-41d4-a716-446655440000",
@@ -389,7 +391,7 @@ TEST(ConfigurationExpression, RefusesToInventACrossSessionLiveNodeHandle)
         FAIL() << "expected node-reference materialization to fail";
     } catch (std::invalid_argument const& error) {
         EXPECT_NE(
-            std::string_view(error.what()).find("Front 12"),
+            std::string_view(error.what()).find("construction session"),
             std::string_view::npos);
     }
 }

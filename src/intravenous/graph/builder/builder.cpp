@@ -9,6 +9,7 @@
 #include <array>
 #include <stdexcept>
 #include <string>
+#include <type_traits>
 #include <utility>
 
 namespace iv {
@@ -17,13 +18,17 @@ void iv_builder_prepare_node_source_identity(
     GraphBuilder* builder,
     std::string_view source_identity,
     std::string_view authored_name)
-{
+try {
     if (!builder) {
         throw std::invalid_argument(
             "node source identity requires a GraphBuilder");
     }
     prepare_builder_node_source_identity(
         builder->_session, source_identity, authored_name);
+} catch (...) {
+    // An exception leaving a session operation fails the session.
+    record_builder_failure((builder ? builder->_builder_session() : nullptr), std::current_exception(), {});
+    throw;
 }
 } // namespace details
 
@@ -68,7 +73,7 @@ ReflectedNodeDescription materialize_node_build_request(
 namespace details {
 NodeBundleHandle iv_builder_append_node(
     GraphBuilder& builder, NodeBuildRequest const& request)
-{
+try {
     auto paths = claim_builder_concrete_node_paths(builder._session);
     if (paths.size() != 1) {
         throw std::logic_error("a concrete node did not produce one semantic path");
@@ -92,12 +97,16 @@ NodeBundleHandle iv_builder_append_node(
     record_builder_node_message_path(
         builder._session, handle, paths.front());
     return handle;
+} catch (...) {
+    // An exception leaving a session operation fails the session.
+    record_builder_failure(builder._builder_session(), std::current_exception(), {});
+    throw;
 }
 
 NodeBundleHandle iv_builder_append_tiled_node(
     GraphBuilder& builder, NodeBuildRequest const& request,
     ChannelLayout layout)
-{
+try {
     auto paths = claim_builder_concrete_node_paths(builder._session, layout);
     if (paths.size() != channel_count(layout.channel_type)) {
         throw std::logic_error(
@@ -171,36 +180,27 @@ NodeBundleHandle iv_builder_append_tiled_node(
     record_builder_node_message_path(
         builder._session, handle, parent_path);
     return handle;
+} catch (...) {
+    // An exception leaving a session operation fails the session.
+    record_builder_failure(builder._builder_session(), std::current_exception(), {});
+    throw;
 }
 
 NodeBundleHandle iv_builder_append_tiled_node_bundles(
     GraphBuilder& builder,
     std::span<NodeBundleHandle const> members,
     ChannelLayout layout)
-{
+try {
     return state(builder).append_tiled_node_bundles(members, layout);
-}
-
-void iv_builder_validate_tiled_module_interfaces(
-    std::span<GraphBuilder* const> children)
-{
-    std::vector<GraphBuilderState*> child_states;
-    child_states.reserve(children.size());
-    for (auto* child : children) {
-        if (!child) {
-            error("tiled IV module has a null child graph");
-        }
-        child_states.push_back(std::addressof(state(*child)));
-    }
-    if (child_states.empty()) {
-        error("tiled IV module requires child graphs");
-    }
-    child_states.front()->validate_tiled_module_interfaces(child_states);
+} catch (...) {
+    // An exception leaving a session operation fails the session.
+    record_builder_failure(builder._builder_session(), std::current_exception(), {});
+    throw;
 }
 
 bool iv_builder_connect_unary_sample(
     NodeRef const& target, SamplePortRef source, std::string_view operation)
-{
+try {
     auto const input_count = target.sample_input_count();
     auto const output_count = target.sample_output_count();
     if (input_count != 1) {
@@ -217,11 +217,15 @@ bool iv_builder_connect_unary_sample(
             + std::to_string(output_count) + " outputs on " + target.to_string());
     }
     return output_count == 1;
+} catch (...) {
+    // An exception leaving a session operation fails the session.
+    record_builder_failure(target._builder_session(), std::current_exception(), {});
+    throw;
 }
 
 EventPortRef iv_builder_connect_unary_event(
     NodeRef const& target, EventPortRef source, std::string_view operation)
-{
+try {
     auto const input_count = target.event_input_count();
     auto const output_count = target.event_output_count();
     if (input_count != 1) {
@@ -241,87 +245,621 @@ EventPortRef iv_builder_connect_unary_event(
             + std::to_string(output_count) + " event outputs on " + target.to_string());
     }
     return target.event_port(0);
+} catch (...) {
+    // An exception leaving a session operation fails the session.
+    record_builder_failure(target._builder_session(), std::current_exception(), {});
+    throw;
 }
 } // namespace details
 
+// ---- session ref operations ---------------------------------------------
+
+namespace details {
+namespace {
+GraphBuilderState& session(BuilderSession* value)
+{
+    return builder_session_state(value);
+}
+} // namespace
+
+SamplePortRef iv_builder_require_sample_port(
+    BuilderSession* value, SamplePortRef const& port)
+try {
+    return session(value).require_sample_port(port);
+} catch (...) {
+    // An exception leaving a session operation fails the session.
+    record_builder_failure(value, std::current_exception(), {});
+    throw;
+}
+void iv_builder_connect_sample_input(
+    BuilderSession* value, NodeBundlePortId target, SamplePortRef const& source)
+try {
+    session(value).connect_sample_input(target, source);
+} catch (...) {
+    // An exception leaving a session operation fails the session.
+    record_builder_failure(value, std::current_exception(), {});
+    throw;
+}
+void iv_builder_connect_sample_inputs(
+    BuilderSession* value, NodeBundlePortId target,
+    std::span<SamplePortRef const> sources)
+try {
+    session(value).connect_sample_input(target, sources);
+} catch (...) {
+    // An exception leaving a session operation fails the session.
+    record_builder_failure(value, std::current_exception(), {});
+    throw;
+}
+void iv_builder_connect_event_input(
+    BuilderSession* value, NodeBundlePortId target, EventPortRef const& source)
+try {
+    session(value).connect_event_input(target, session(value).require_event_port(source));
+} catch (...) {
+    // An exception leaving a session operation fails the session.
+    record_builder_failure(value, std::current_exception(), {});
+    throw;
+}
+bool iv_builder_sample_input_is_connected(BuilderSession* value, NodeBundlePortId target)
+try {
+    return session(value).sample_input_is_connected(target);
+} catch (...) {
+    // An exception leaving a session operation fails the session.
+    record_builder_failure(value, std::current_exception(), {});
+    throw;
+}
+bool iv_builder_event_input_is_connected(BuilderSession* value, NodeBundlePortId target)
+try {
+    return session(value).event_input_is_connected(target);
+} catch (...) {
+    // An exception leaving a session operation fails the session.
+    record_builder_failure(value, std::current_exception(), {});
+    throw;
+}
+std::size_t iv_builder_sample_port_index(
+    BuilderSession* value, NodeBundleHandle handle, bool inputs, std::string_view name)
+try {
+    return session(value).sample_port_index(handle, inputs, name);
+} catch (...) {
+    // An exception leaving a session operation fails the session.
+    record_builder_failure(value, std::current_exception(), {});
+    throw;
+}
+std::size_t iv_builder_event_port_index(
+    BuilderSession* value, NodeBundleHandle handle, bool inputs, std::string_view name)
+try {
+    return session(value).event_port_index(handle, inputs, name);
+} catch (...) {
+    // An exception leaving a session operation fails the session.
+    record_builder_failure(value, std::current_exception(), {});
+    throw;
+}
+std::size_t iv_builder_sample_input_count(BuilderSession* value, NodeBundleHandle handle)
+try {
+    return session(value).sample_input_count(handle);
+} catch (...) {
+    // An exception leaving a session operation fails the session.
+    record_builder_failure(value, std::current_exception(), {});
+    throw;
+}
+std::size_t iv_builder_sample_output_count(BuilderSession* value, NodeBundleHandle handle)
+try {
+    return session(value).sample_output_count(handle);
+} catch (...) {
+    // An exception leaving a session operation fails the session.
+    record_builder_failure(value, std::current_exception(), {});
+    throw;
+}
+std::size_t iv_builder_event_input_count(BuilderSession* value, NodeBundleHandle handle)
+try {
+    return session(value).event_input_count(handle);
+} catch (...) {
+    // An exception leaving a session operation fails the session.
+    record_builder_failure(value, std::current_exception(), {});
+    throw;
+}
+std::size_t iv_builder_event_output_count(BuilderSession* value, NodeBundleHandle handle)
+try {
+    return session(value).event_output_count(handle);
+} catch (...) {
+    // An exception leaving a session operation fails the session.
+    record_builder_failure(value, std::current_exception(), {});
+    throw;
+}
+NodeBundlePortId iv_builder_input_port_at(
+    BuilderSession* value, NodeBundleHandle handle, std::size_t position)
+try {
+    return session(value).input_port_at(handle, position);
+} catch (...) {
+    // An exception leaving a session operation fails the session.
+    record_builder_failure(value, std::current_exception(), {});
+    throw;
+}
+NodePorts const& iv_builder_typed_ports(BuilderSession* value, NodeBundleHandle handle)
+try {
+    return session(value).typed_ports(handle);
+} catch (...) {
+    // An exception leaving a session operation fails the session.
+    record_builder_failure(value, std::current_exception(), {});
+    throw;
+}
+NodeBundleHandle iv_builder_tiled_member(
+    BuilderSession* value, NodeBundleHandle handle, std::size_t channel)
+try {
+    return session(value).tiled_member(handle, channel);
+} catch (...) {
+    // An exception leaving a session operation fails the session.
+    record_builder_failure(value, std::current_exception(), {});
+    throw;
+}
+SamplePortRef iv_builder_sample_port_from_output(
+    BuilderSession* value, NodeBundlePortId port)
+try {
+    return session(value).sample_port_from_output(port);
+} catch (...) {
+    // An exception leaving a session operation fails the session.
+    record_builder_failure(value, std::current_exception(), {});
+    throw;
+}
+EventPortRef iv_builder_event_port_from_output(
+    BuilderSession* value, NodeBundlePortId port)
+try {
+    return session(value).event_port_from_output(port);
+} catch (...) {
+    // An exception leaving a session operation fails the session.
+    record_builder_failure(value, std::current_exception(), {});
+    throw;
+}
+SamplePortRef iv_builder_make_sample_port(
+    BuilderSession* value, ChannelTypeId type,
+    std::span<SampleOutputChannelId const> channels)
+try {
+    return session(value).make_sample_port(type, channels);
+} catch (...) {
+    // An exception leaving a session operation fails the session.
+    record_builder_failure(value, std::current_exception(), {});
+    throw;
+}
+SamplePortRef iv_builder_make_tiled_sample_port(
+    BuilderSession* value, ChannelTypeId type, std::span<SamplePortRef const> members)
+try {
+    return session(value).make_tiled_sample_port(type, members);
+} catch (...) {
+    // An exception leaving a session operation fails the session.
+    record_builder_failure(value, std::current_exception(), {});
+    throw;
+}
+SamplePortRef iv_builder_select_sample_port_channel(
+    SamplePortRef const& port, std::size_t channel)
+try {
+    return session(port.session).select_sample_port_channel(port, channel);
+} catch (...) {
+    // An exception leaving a session operation fails the session.
+    record_builder_failure(port.session, std::current_exception(), {});
+    throw;
+}
+std::span<SampleOutputChannelId const> iv_builder_sample_port_channels(
+    SamplePortRef const& port)
+try {
+    return session(port.session).sample_port_channels(port);
+} catch (...) {
+    // An exception leaving a session operation fails the session.
+    record_builder_failure(port.session, std::current_exception(), {});
+    throw;
+}
+EventPortRef iv_builder_make_event_port(
+    BuilderSession* value, EventTypeId type, std::span<EventOutputPortId const> sources)
+try {
+    return session(value).make_event_port(type, sources);
+} catch (...) {
+    // An exception leaving a session operation fails the session.
+    record_builder_failure(value, std::current_exception(), {});
+    throw;
+}
+EventPortRef iv_builder_merge_event_ports(
+    BuilderSession* value, std::span<EventPortRef const> operands)
+try {
+    return session(value).make_event_port(operands);
+} catch (...) {
+    // An exception leaving a session operation fails the session.
+    record_builder_failure(value, std::current_exception(), {});
+    throw;
+}
+std::span<EventOutputPortId const> iv_builder_event_port_sources(EventPortRef const& port)
+try {
+    return session(port.session).event_port_sources(port);
+} catch (...) {
+    // An exception leaving a session operation fails the session.
+    record_builder_failure(port.session, std::current_exception(), {});
+    throw;
+}
+SamplePortRef iv_builder_detach_sample_port(
+    SamplePortRef const& port, std::size_t latency, std::optional<Sample> initial_value)
+try {
+    return session(port.session).detach_sample_port(port, latency, initial_value);
+} catch (...) {
+    // An exception leaving a session operation fails the session.
+    record_builder_failure(port.session, std::current_exception(), {});
+    throw;
+}
+EventPortRef iv_builder_detach_event_port(EventPortRef const& port, std::size_t latency)
+try {
+    return session(port.session).detach_event_port(port, latency);
+} catch (...) {
+    // An exception leaving a session operation fails the session.
+    record_builder_failure(port.session, std::current_exception(), {});
+    throw;
+}
+void iv_builder_apply_ttl(BuilderSession* value, NodeBundleHandle handle, std::size_t samples)
+try {
+    session(value).apply_ttl(handle, samples);
+} catch (...) {
+    // An exception leaving a session operation fails the session.
+    record_builder_failure(value, std::current_exception(), {});
+    throw;
+}
+void iv_builder_annotate_node(
+    BuilderSession* value, NodeBundleHandle handle, std::string_view id,
+    std::string_view file, std::uint32_t begin, std::uint32_t end)
+try {
+    session(value).annotate_node(handle, id, file, begin, end);
+} catch (...) {
+    // An exception leaving a session operation fails the session.
+    record_builder_failure(value, std::current_exception(), {});
+    throw;
+}
+void iv_builder_annotate_node_input(
+    BuilderSession* value, NodeBundleHandle handle, PortKind kind,
+    std::string_view port_name, std::string_view id, std::string_view file,
+    std::uint32_t begin, std::uint32_t end)
+try {
+    session(value).annotate_node_input_source_info(
+        handle, kind, port_name, id, file, begin, end);
+} catch (...) {
+    // An exception leaving a session operation fails the session.
+    record_builder_failure(value, std::current_exception(), {});
+    throw;
+}
+void iv_builder_annotate_sample_port(
+    SamplePortRef const& port, std::string_view id, std::string_view file,
+    std::uint32_t begin, std::uint32_t end)
+try {
+    session(port.session).annotate_sample_port_source_info(port, id, file, begin, end);
+} catch (...) {
+    // An exception leaving a session operation fails the session.
+    record_builder_failure(port.session, std::current_exception(), {});
+    throw;
+}
+void iv_builder_annotate_event_port(
+    EventPortRef const& port, std::string_view id, std::string_view file,
+    std::uint32_t begin, std::uint32_t end)
+try {
+    session(port.session).annotate_event_port_source_info(port, id, file, begin, end);
+} catch (...) {
+    // An exception leaving a session operation fails the session.
+    record_builder_failure(port.session, std::current_exception(), {});
+    throw;
+}
+void iv_builder_annotate_public_sample_input(
+    SamplePortRef const& port, std::string_view id, std::string_view file,
+    std::uint32_t begin, std::uint32_t end)
+try {
+    session(port.session).annotate_public_sample_input_source_info(
+        port, id, file, begin, end);
+} catch (...) {
+    // An exception leaving a session operation fails the session.
+    record_builder_failure(port.session, std::current_exception(), {});
+    throw;
+}
+void iv_builder_annotate_public_event_input(
+    EventPortRef const& port, std::string_view id, std::string_view file,
+    std::uint32_t begin, std::uint32_t end)
+try {
+    session(port.session).annotate_public_event_input_source_info(
+        port, id, file, begin, end);
+} catch (...) {
+    // An exception leaving a session operation fails the session.
+    record_builder_failure(port.session, std::current_exception(), {});
+    throw;
+}
+
+// ---- scope operations --------------------------------------------------
+
+PublicSampleInputRef iv_builder_scope_input(
+    BuilderSession* value, BuilderScopeId scope, ContinuousInputConfig config)
+try {
+    return session(value).scope_input(scope, std::move(config));
+} catch (...) {
+    // An exception leaving a session operation fails the session.
+    record_builder_failure(value, std::current_exception(), {});
+    throw;
+}
+PublicEventInputRef iv_builder_scope_event_input(
+    BuilderSession* value, BuilderScopeId scope, std::string_view name, EventTypeId type)
+try {
+    return session(value).scope_event_input(scope, name, type);
+} catch (...) {
+    // An exception leaving a session operation fails the session.
+    record_builder_failure(value, std::current_exception(), {});
+    throw;
+}
+void iv_builder_scope_outputs(
+    BuilderSession* value, BuilderScopeId scope, std::span<SampleOutputRequest const> refs)
+try {
+    session(value).scope_outputs(scope, refs);
+} catch (...) {
+    // An exception leaving a session operation fails the session.
+    record_builder_failure(value, std::current_exception(), {});
+    throw;
+}
+void iv_builder_scope_named_outputs(
+    BuilderSession* value, BuilderScopeId scope, std::span<NamedRef const> refs)
+try {
+    session(value).scope_outputs(scope, refs);
+} catch (...) {
+    // An exception leaving a session operation fails the session.
+    record_builder_failure(value, std::current_exception(), {});
+    throw;
+}
+void iv_builder_scope_event_outputs(
+    BuilderSession* value, BuilderScopeId scope, std::span<EventOutputRequest const> refs)
+try {
+    session(value).scope_event_outputs(scope, refs);
+} catch (...) {
+    // An exception leaving a session operation fails the session.
+    record_builder_failure(value, std::current_exception(), {});
+    throw;
+}
+BuilderScopeId iv_builder_begin_subgraph_scope(BuilderSession* value)
+try {
+    return begin_builder_scope(value, BuilderScopeKind::subgraph);
+} catch (...) {
+    // An exception leaving a session operation fails the session.
+    record_builder_failure(value, std::current_exception(), {});
+    throw;
+}
+NodeRef iv_builder_finish_subgraph_scope(
+    BuilderSession* value, BuilderScopeId scope, std::string_view kind)
+try {
+    auto const handle = finish_builder_scope(value, scope, kind, std::nullopt);
+    NodeRef result(value, handle);
+    // The boundary's declaration identity annotates the finished subgraph in
+    // the enclosing scope, as an authored subgraph's backing virtual node.
+    for (auto const& info : session(value).subgraph_boundary_source_infos(handle)) {
+        result._annotate_source_info(
+            info.declaration_identity,
+            info.span.file_path, info.span.begin, info.span.end);
+    }
+    return result;
+} catch (...) {
+    // An exception leaving a session operation fails the session.
+    record_builder_failure(value, std::current_exception(), {});
+    throw;
+}
+void iv_builder_record_failure(
+    BuilderSession* value, std::exception_ptr failure, std::string_view context) noexcept
+{
+    record_builder_failure(value, std::move(failure), context);
+}
+void iv_builder_throw_if_failed(BuilderSession* value)
+{
+    throw_if_builder_failed(value);
+}
+} // namespace details
+
+// ---- GraphBuilder views --------------------------------------------------
+
 GraphBuilder::GraphBuilder()
-    : GraphBuilder(details::iv_builder_session_create(), true)
+    : GraphBuilder(details::iv_builder_session_create(),
+          details::root_builder_scope_id, true, false)
 {}
 
 GraphBuilder::GraphBuilder(details::BuilderSession* session) noexcept
-    : GraphBuilder(session, false)
+    : GraphBuilder(session, details::iv_builder_current_scope(session), false, false)
 {}
 
 GraphBuilder::GraphBuilder(
-    details::BuilderSession* session, bool owns_session) noexcept
+    details::BuilderSession* session, details::BuilderScopeId scope) noexcept
+    : GraphBuilder(session, scope, false, false)
+{}
+
+GraphBuilder::GraphBuilder(
+    details::BuilderSession* session, details::BuilderScopeId scope,
+    bool owns_session, bool owns_scope) noexcept
     : _session(session)
+    , _scope(scope)
     , _owns_session(owns_session)
+    , _owns_scope(owns_scope)
 {}
 
 GraphBuilder::~GraphBuilder()
 {
+    if (_owns_scope && _session)
+        details::abandon_builder_scope(_session, _scope);
     if (_owns_session && _session)
         details::iv_builder_session_destroy(_session);
 }
 
 GraphBuilder::GraphBuilder(GraphBuilder&& other) noexcept
     : _session(std::exchange(other._session, nullptr))
+    , _scope(std::exchange(other._scope, details::root_builder_scope_id))
     , _owns_session(std::exchange(other._owns_session, false))
+    , _owns_scope(std::exchange(other._owns_scope, false))
 {}
 
 GraphBuilder& GraphBuilder::operator=(GraphBuilder&& other) noexcept
 {
     if (this == &other) return *this;
+    if (_owns_scope && _session)
+        details::abandon_builder_scope(_session, _scope);
     if (_owns_session && _session)
         details::iv_builder_session_destroy(_session);
     _session = std::exchange(other._session, nullptr);
+    _scope = std::exchange(other._scope, details::root_builder_scope_id);
     _owns_session = std::exchange(other._owns_session, false);
+    _owns_scope = std::exchange(other._owns_scope, false);
     return *this;
 }
 
 PublicSampleInputRef GraphBuilder::input()
-{
-    return state(*this).input(
+try {
+    return details::iv_builder_scope_input(_session, _scope,
         details::make_default_boundary_input_config({}));
+} catch (...) {
+    // An exception leaving a session operation fails the session.
+    details::record_builder_failure(_session, std::current_exception(), {});
+    throw;
 }
 PublicSampleInputRef GraphBuilder::input(
     Sample value, std::optional<Sample> min, std::optional<Sample> max)
-{
-    return state(*this).input(details::make_sample_boundary_input_config({}, {
-        .channel_type = ChannelTypeId::mono,
-        .sample_layout = SampleStreamLayout::planar,
-    }, value, min, max));
+try {
+    return details::iv_builder_scope_input(_session, _scope,
+        details::make_sample_boundary_input_config({}, {
+            .channel_type = ChannelTypeId::mono,
+            .sample_layout = SampleStreamLayout::planar,
+        }, value, min, max));
+} catch (...) {
+    // An exception leaving a session operation fails the session.
+    details::record_builder_failure(_session, std::current_exception(), {});
+    throw;
 }
 PublicEventInputRef GraphBuilder::event_input(EventTypeId type)
-{
-    return state(*this).event_input(type);
+try {
+    return details::iv_builder_scope_event_input(_session, _scope, {}, type);
+} catch (...) {
+    // An exception leaving a session operation fails the session.
+    details::record_builder_failure(_session, std::current_exception(), {});
+    throw;
 }
 PublicSampleInputRef GraphBuilder::input_named(
     std::string_view name, ContinuousInputConfig config)
-{
-    return state(*this).input_named(name, std::move(config));
+try {
+    config.name = name;
+    return details::iv_builder_scope_input(_session, _scope, std::move(config));
+} catch (...) {
+    // An exception leaving a session operation fails the session.
+    details::record_builder_failure(_session, std::current_exception(), {});
+    throw;
 }
 PublicEventInputRef GraphBuilder::event_input_named(
     std::string_view name, EventTypeId type)
-{
-    return state(*this).event_input_named(name, type);
+try {
+    return details::iv_builder_scope_event_input(_session, _scope, name, type);
+} catch (...) {
+    // An exception leaving a session operation fails the session.
+    details::record_builder_failure(_session, std::current_exception(), {});
+    throw;
 }
 
 void GraphBuilder::outputs(std::initializer_list<NamedRef> refs)
-{
+try {
     outputs(std::span<NamedRef const>(refs.begin(), refs.size()));
+} catch (...) {
+    // An exception leaving a session operation fails the session.
+    details::record_builder_failure(_session, std::current_exception(), {});
+    throw;
 }
 void GraphBuilder::outputs(std::span<NamedRef const> refs)
-{
-    state(*this).outputs(refs);
+try {
+    details::iv_builder_scope_named_outputs(_session, _scope, refs);
+} catch (...) {
+    // An exception leaving a session operation fails the session.
+    details::record_builder_failure(_session, std::current_exception(), {});
+    throw;
 }
 void GraphBuilder::outputs(std::span<SampleOutputRequest const> refs)
-{
-    state(*this).outputs(refs);
+try {
+    details::iv_builder_scope_outputs(_session, _scope, refs);
+} catch (...) {
+    // An exception leaving a session operation fails the session.
+    details::record_builder_failure(_session, std::current_exception(), {});
+    throw;
 }
 void GraphBuilder::event_outputs(std::span<EventOutputRequest const> refs)
+try {
+    details::iv_builder_scope_event_outputs(_session, _scope, refs);
+} catch (...) {
+    // An exception leaving a session operation fails the session.
+    details::record_builder_failure(_session, std::current_exception(), {});
+    throw;
+}
+
+NodeRef GraphBuilder::subgraph(SubgraphClosure&& closure, std::string_view kind)
+try {
+    return subgraph(closure, kind);
+} catch (...) {
+    // An exception leaving a session operation fails the session.
+    details::record_builder_failure(_session, std::current_exception(), {});
+    throw;
+}
+
+NodeRef GraphBuilder::subgraph(SubgraphClosure& closure, std::string_view kind)
+try {
+    return std::visit([&](auto& alternative) -> NodeRef {
+        using Alternative = std::remove_cvref_t<decltype(alternative)>;
+        if constexpr (std::same_as<Alternative,
+                          std::reference_wrapper<ConfiguredGraph const>>) {
+            return NodeRef(_session, embed(alternative.get(), kind).root_scope);
+        } else if constexpr (std::same_as<Alternative,
+                                 std::shared_ptr<ConfiguredGraph const>>) {
+            return NodeRef(_session, embed(*alternative, kind).root_scope);
+        } else {
+            return subgraph(
+                [&](SubgraphBuilder& boundary) { alternative(boundary); }, kind);
+        }
+    }, closure._value);
+} catch (...) {
+    // An exception leaving a session operation fails the session.
+    details::record_builder_failure(_session, std::current_exception(), {});
+    throw;
+}
+
+NodeRef GraphBuilder::subgraph(GraphBuilder&& nested, std::string_view kind)
+try {
+    if (!nested._session || nested._session != _session) {
+        details::error(
+            "a nested GraphBuilder can only be finalized in its own builder session");
+    }
+    if (!nested._owns_scope) {
+        details::error(
+            "only an unattached GraphBuilder::nested() view can be finalized as a subgraph");
+    }
+    auto const handle = details::finish_builder_scope(
+        _session, nested._scope, kind, std::nullopt);
+    nested._owns_scope = false;
+    return NodeRef(_session, handle);
+} catch (...) {
+    // An exception leaving a session operation fails the session.
+    details::record_builder_failure(_session, std::current_exception(), {});
+    throw;
+}
+
+GraphBuilder GraphBuilder::nested()
+try {
+    auto const scope = details::begin_builder_scope(
+        _session, details::BuilderScopeKind::definition);
+    return GraphBuilder(_session, scope, false, true);
+} catch (...) {
+    // An exception leaving a session operation fails the session.
+    details::record_builder_failure(_session, std::current_exception(), {});
+    throw;
+}
+
+std::expected<ConfiguredGraph, ConfiguredGraphSnapshotError>
+GraphBuilder::configured_graph() const
+try {
+    return state(*this).snapshot_scope(_scope);
+} catch (...) {
+    // An exception leaving a session operation fails the session.
+    details::record_builder_failure(_session, std::current_exception(), {});
+    throw;
+}
+
+SubgraphClosure::SubgraphClosure(std::shared_ptr<ConfiguredGraph const> graph)
+    : _value(std::move(graph))
 {
-    state(*this).event_outputs(refs);
+    if (!std::get<std::shared_ptr<ConfiguredGraph const>>(_value)) {
+        details::error("a SubgraphClosure cannot hold an empty ConfiguredGraph");
+    }
 }
 
 NodeRef GraphBuilder::configure_runtime_binary_op(
@@ -329,10 +867,10 @@ NodeRef GraphBuilder::configure_runtime_binary_op(
     SamplePortRef rhs,
     std::string_view op_name,
     details::NodeBuildRequest const& request)
-{
-    if (lhs.graph_builder != this || rhs.graph_builder != this) {
+try {
+    if (lhs.session != _session || rhs.session != _session) {
         details::error(std::string(op_name)
-            + ": operands belong to different builders");
+            + ": operands belong to different builder sessions");
     }
     auto validate = [](SamplePortRef const& ref) {
         if (!is_valid_channel_type(ref.channel_type)
@@ -360,7 +898,7 @@ NodeRef GraphBuilder::configure_runtime_binary_op(
             .channel_type = result_type,
             .sample_layout = SampleStreamLayout::planar,
         });
-    NodeRef result(*this, handle);
+    NodeRef result(_session, handle);
     std::array<details::NodeCallSampleInput, 2> inputs{{
         {.source = std::move(lhs),
          .name = {},
@@ -374,306 +912,373 @@ NodeRef GraphBuilder::configure_runtime_binary_op(
     result.apply_node_call(
         {.data = inputs.data(), .size = inputs.size()}, {});
     return result;
+} catch (...) {
+    // An exception leaving a session operation fails the session.
+    details::record_builder_failure(_session, std::current_exception(), {});
+    throw;
 }
 
 SamplePortRef GraphBuilder::lift_to_sample_port(SamplePortRef const& value)
-{
-    return state(*this).lift_to_sample_port(value);
+try {
+    return state(*this).require_sample_port(value);
+} catch (...) {
+    // An exception leaving a session operation fails the session.
+    details::record_builder_failure(_session, std::current_exception(), {});
+    throw;
 }
 SamplePortRef GraphBuilder::lift_to_sample_port(SamplePortRef&& value)
-{
-    return state(*this).lift_to_sample_port(std::move(value));
+try {
+    return state(*this).require_sample_port(value);
+} catch (...) {
+    // An exception leaving a session operation fails the session.
+    details::record_builder_failure(_session, std::current_exception(), {});
+    throw;
 }
 SamplePortRef GraphBuilder::lift_to_sample_port(NamedRef const& value)
-{
-    return state(*this).lift_to_sample_port(value);
+try {
+    return std::visit(
+        [&](auto const& concrete) -> SamplePortRef {
+            using T = std::remove_cvref_t<decltype(concrete)>;
+            if constexpr (std::same_as<T, EventPortRef>) {
+                details::error("expected sample value, got event");
+            } else {
+                return lift_to_sample_port(concrete);
+            }
+        },
+        value.value);
+} catch (...) {
+    // An exception leaving a session operation fails the session.
+    details::record_builder_failure(_session, std::current_exception(), {});
+    throw;
 }
 
 void GraphBuilder::connect_sample_input(NodeBundlePortId target, SamplePortRef source)
-{
-    state(*this).connect_sample_input(target, std::move(source));
+try {
+    details::iv_builder_connect_sample_input(_session, target, source);
+} catch (...) {
+    // An exception leaving a session operation fails the session.
+    details::record_builder_failure(_session, std::current_exception(), {});
+    throw;
 }
 void GraphBuilder::connect_sample_input(
     NodeBundlePortId target, std::span<SamplePortRef const> sources)
-{
-    state(*this).connect_sample_input(target, sources);
+try {
+    details::iv_builder_connect_sample_inputs(_session, target, sources);
+} catch (...) {
+    // An exception leaving a session operation fails the session.
+    details::record_builder_failure(_session, std::current_exception(), {});
+    throw;
 }
 void GraphBuilder::connect_event_input(NodeBundlePortId target, EventPortRef source)
-{
-    state(*this).connect_event_input(target, std::move(source));
+try {
+    details::iv_builder_connect_event_input(_session, target, source);
+} catch (...) {
+    // An exception leaving a session operation fails the session.
+    details::record_builder_failure(_session, std::current_exception(), {});
+    throw;
 }
 bool GraphBuilder::sample_input_is_connected(NodeBundlePortId target) const
-{
-    return state(*this).sample_input_is_connected(target);
+try {
+    return details::iv_builder_sample_input_is_connected(_session, target);
+} catch (...) {
+    // An exception leaving a session operation fails the session.
+    details::record_builder_failure(_session, std::current_exception(), {});
+    throw;
 }
 bool GraphBuilder::event_input_is_connected(NodeBundlePortId target) const
-{
-    return state(*this).event_input_is_connected(target);
-}
-void GraphBuilder::connect_sample_output(NodeBundlePortId source, NodeRef const& target)
-{
-    state(*this).connect_sample_output(source, target);
+try {
+    return details::iv_builder_event_input_is_connected(_session, target);
+} catch (...) {
+    // An exception leaving a session operation fails the session.
+    details::record_builder_failure(_session, std::current_exception(), {});
+    throw;
 }
 EventPortRef GraphBuilder::event_output(NodeBundlePortId source) const
-{
-    return state(*this).event_output(source);
+try {
+    if (source.port_kind != PortKind::event)
+        details::error(
+            "attempted to read an event output from a sample NodeBundle port");
+    return details::iv_builder_event_port_from_output(_session, source);
+} catch (...) {
+    // An exception leaving a session operation fails the session.
+    details::record_builder_failure(_session, std::current_exception(), {});
+    throw;
 }
 size_t GraphBuilder::sample_port_index(
     NodeBundleHandle handle, bool inputs, std::string_view name) const
-{
-    return state(*this).sample_port_index(handle, inputs, name);
+try {
+    return details::iv_builder_sample_port_index(_session, handle, inputs, name);
+} catch (...) {
+    // An exception leaving a session operation fails the session.
+    details::record_builder_failure(_session, std::current_exception(), {});
+    throw;
 }
 size_t GraphBuilder::event_port_index(
     NodeBundleHandle handle, bool inputs, std::string_view name) const
-{
-    return state(*this).event_port_index(handle, inputs, name);
+try {
+    return details::iv_builder_event_port_index(_session, handle, inputs, name);
+} catch (...) {
+    // An exception leaving a session operation fails the session.
+    details::record_builder_failure(_session, std::current_exception(), {});
+    throw;
 }
 size_t GraphBuilder::sample_input_count(NodeBundleHandle handle) const
-{
-    return state(*this).sample_input_count(handle);
+try {
+    return details::iv_builder_sample_input_count(_session, handle);
+} catch (...) {
+    // An exception leaving a session operation fails the session.
+    details::record_builder_failure(_session, std::current_exception(), {});
+    throw;
 }
 size_t GraphBuilder::sample_output_count(NodeBundleHandle handle) const
-{
-    return state(*this).sample_output_count(handle);
+try {
+    return details::iv_builder_sample_output_count(_session, handle);
+} catch (...) {
+    // An exception leaving a session operation fails the session.
+    details::record_builder_failure(_session, std::current_exception(), {});
+    throw;
 }
 size_t GraphBuilder::event_input_count(NodeBundleHandle handle) const
-{
-    return state(*this).event_input_count(handle);
+try {
+    return details::iv_builder_event_input_count(_session, handle);
+} catch (...) {
+    // An exception leaving a session operation fails the session.
+    details::record_builder_failure(_session, std::current_exception(), {});
+    throw;
 }
 size_t GraphBuilder::event_output_count(NodeBundleHandle handle) const
-{
-    return state(*this).event_output_count(handle);
+try {
+    return details::iv_builder_event_output_count(_session, handle);
+} catch (...) {
+    // An exception leaving a session operation fails the session.
+    details::record_builder_failure(_session, std::current_exception(), {});
+    throw;
 }
-
 NodeBundlePortId GraphBuilder::input_port_at(
     NodeBundleHandle handle, size_t position) const
-{
-    return state(*this).input_port_at(handle, position);
-}
-
-ContinuousInputConfig GraphBuilder::sample_input_config(
-    NodeBundleHandle handle, size_t port) const
-{
-    return state(*this).sample_input_config(handle, port);
-}
-
-EventInputConfig GraphBuilder::event_input_config(
-    NodeBundleHandle handle, size_t port) const
-{
-    return state(*this).event_input_config(handle, port);
+try {
+    return details::iv_builder_input_port_at(_session, handle, position);
+} catch (...) {
+    // An exception leaving a session operation fails the session.
+    details::record_builder_failure(_session, std::current_exception(), {});
+    throw;
 }
 NodeBundleHandle GraphBuilder::tiled_member(
     NodeBundleHandle handle, size_t channel) const
-{
-    return state(*this).tiled_member(handle, channel);
+try {
+    return details::iv_builder_tiled_member(_session, handle, channel);
+} catch (...) {
+    // An exception leaving a session operation fails the session.
+    details::record_builder_failure(_session, std::current_exception(), {});
+    throw;
 }
 NodePorts const& GraphBuilder::typed_ports(NodeBundleHandle handle) const
-{
-    return state(*this).typed_ports(handle);
+try {
+    return details::iv_builder_typed_ports(_session, handle);
+} catch (...) {
+    // An exception leaving a session operation fails the session.
+    details::record_builder_failure(_session, std::current_exception(), {});
+    throw;
 }
 SamplePortRef GraphBuilder::sample_port_from_output(NodeBundlePortId port)
-{
-    return state(*this).sample_port_from_output(port);
+try {
+    return details::iv_builder_sample_port_from_output(_session, port);
+} catch (...) {
+    // An exception leaving a session operation fails the session.
+    details::record_builder_failure(_session, std::current_exception(), {});
+    throw;
 }
 EventPortRef GraphBuilder::event_port_from_output(NodeBundlePortId port) const
-{
-    return state(*this).event_port_from_output(port);
+try {
+    return details::iv_builder_event_port_from_output(_session, port);
+} catch (...) {
+    // An exception leaving a session operation fails the session.
+    details::record_builder_failure(_session, std::current_exception(), {});
+    throw;
 }
 SamplePortRef GraphBuilder::make_sample_port(
     ChannelTypeId type, std::span<SampleOutputChannelId const> channels)
-{
-    return state(*this).make_sample_port(type, channels);
+try {
+    return details::iv_builder_make_sample_port(_session, type, channels);
+} catch (...) {
+    // An exception leaving a session operation fails the session.
+    details::record_builder_failure(_session, std::current_exception(), {});
+    throw;
 }
 SamplePortRef GraphBuilder::make_tiled_sample_port(
     ChannelTypeId type, std::span<SamplePortRef const> members)
-{
-    return state(*this).make_tiled_sample_port(type, members);
+try {
+    return details::iv_builder_make_tiled_sample_port(_session, type, members);
+} catch (...) {
+    // An exception leaving a session operation fails the session.
+    details::record_builder_failure(_session, std::current_exception(), {});
+    throw;
 }
 SamplePortRef GraphBuilder::select_sample_port_channel(
     SamplePortRef const& port, size_t channel)
-{
-    return state(*this).select_sample_port_channel(port, channel);
+try {
+    return details::iv_builder_select_sample_port_channel(
+        state(*this).require_sample_port(port), channel);
+} catch (...) {
+    // An exception leaving a session operation fails the session.
+    details::record_builder_failure(_session, std::current_exception(), {});
+    throw;
 }
 std::span<SampleOutputChannelId const>
 GraphBuilder::sample_port_channels(SamplePortRef const& ref) const
-{
-    return state(*this).sample_port_channels(ref);
+try {
+    return details::iv_builder_sample_port_channels(
+        state(*this).require_sample_port(ref));
+} catch (...) {
+    // An exception leaving a session operation fails the session.
+    details::record_builder_failure(_session, std::current_exception(), {});
+    throw;
 }
 EventPortRef GraphBuilder::make_event_port(
     EventTypeId type, std::span<EventOutputPortId const> sources)
-{
-    return state(*this).make_event_port(type, sources);
+try {
+    return details::iv_builder_make_event_port(_session, type, sources);
+} catch (...) {
+    // An exception leaving a session operation fails the session.
+    details::record_builder_failure(_session, std::current_exception(), {});
+    throw;
 }
 EventPortRef GraphBuilder::make_event_port(
     std::span<EventPortRef const> sources)
-{
-    return state(*this).make_event_port(sources);
+try {
+    return details::iv_builder_merge_event_ports(_session, sources);
+} catch (...) {
+    // An exception leaving a session operation fails the session.
+    details::record_builder_failure(_session, std::current_exception(), {});
+    throw;
 }
 std::span<EventOutputPortId const>
 GraphBuilder::event_port_sources(EventPortRef const& ref) const
-{
-    return state(*this).event_port_sources(ref);
+try {
+    return details::iv_builder_event_port_sources(
+        state(*this).require_event_port(ref));
+} catch (...) {
+    // An exception leaving a session operation fails the session.
+    details::record_builder_failure(_session, std::current_exception(), {});
+    throw;
 }
 SamplePortRef GraphBuilder::detach_sample_port(
     SamplePortRef const& source, size_t latency,
     std::optional<Sample> initial_value)
-{
-    return state(*this).detach_sample_port(source, latency, initial_value);
+try {
+    return details::iv_builder_detach_sample_port(
+        state(*this).require_sample_port(source), latency, initial_value);
+} catch (...) {
+    // An exception leaving a session operation fails the session.
+    details::record_builder_failure(_session, std::current_exception(), {});
+    throw;
 }
 EventPortRef GraphBuilder::detach_event_port(
     EventPortRef const& source, size_t latency)
-{
-    return state(*this).detach_event_port(source, latency);
+try {
+    return details::iv_builder_detach_event_port(
+        state(*this).require_event_port(source), latency);
+} catch (...) {
+    // An exception leaving a session operation fails the session.
+    details::record_builder_failure(_session, std::current_exception(), {});
+    throw;
 }
 void GraphBuilder::apply_ttl(NodeBundleHandle handle, size_t samples)
-{
-    state(*this).apply_ttl(handle, samples);
+try {
+    details::iv_builder_apply_ttl(_session, handle, samples);
+} catch (...) {
+    // An exception leaving a session operation fails the session.
+    details::record_builder_failure(_session, std::current_exception(), {});
+    throw;
 }
 void GraphBuilder::annotate_node(
     NodeBundleHandle handle, std::string_view id, std::string_view file,
     uint32_t begin, uint32_t end)
-{
-    state(*this).annotate_node(handle, id, file, begin, end);
+try {
+    details::iv_builder_annotate_node(_session, handle, id, file, begin, end);
+} catch (...) {
+    // An exception leaving a session operation fails the session.
+    details::record_builder_failure(_session, std::current_exception(), {});
+    throw;
 }
 void GraphBuilder::annotate_node_input_source_info(
     NodeBundleHandle handle, PortKind port_kind,
     std::string_view port_name, std::string_view id,
     std::string_view file, uint32_t begin, uint32_t end)
-{
-    state(*this).annotate_node_input_source_info(
-        handle, port_kind, port_name, id, file, begin, end);
-}
-void GraphBuilder::annotate_public_sample_input_source_info(
-    PublicSampleInputRef const& ref, std::string_view id,
-    std::string_view file, uint32_t begin, uint32_t end)
-{
-    state(*this).annotate_public_sample_input_source_info(ref, id, file, begin, end);
-}
-void GraphBuilder::annotate_public_event_input_source_info(
-    PublicEventInputRef const& ref, std::string_view id,
-    std::string_view file, uint32_t begin, uint32_t end)
-{
-    state(*this).annotate_public_event_input_source_info(ref, id, file, begin, end);
-}
-void GraphBuilder::annotate_sample_port_source_info(
-    SamplePortRef const& ref, std::string_view id,
-    std::string_view file, uint32_t begin, uint32_t end)
-{
-    state(*this).annotate_sample_port_source_info(ref, id, file, begin, end);
-}
-void GraphBuilder::annotate_event_port_source_info(
-    EventPortRef const& ref, std::string_view id,
-    std::string_view file, uint32_t begin, uint32_t end)
-{
-    state(*this).annotate_event_port_source_info(ref, id, file, begin, end);
+try {
+    details::iv_builder_annotate_node_input(
+        _session, handle, port_kind, port_name, id, file, begin, end);
+} catch (...) {
+    // An exception leaving a session operation fails the session.
+    details::record_builder_failure(_session, std::current_exception(), {});
+    throw;
 }
 void GraphBuilder::annotate_public_sample_output_source_info(
     std::span<SourceInfo const> infos)
-{
-    state(*this).annotate_public_sample_output_source_info(infos);
+try {
+    state(*this).annotate_scope_sample_output_source_info(_scope, infos);
+} catch (...) {
+    // An exception leaving a session operation fails the session.
+    details::record_builder_failure(_session, std::current_exception(), {});
+    throw;
 }
 void GraphBuilder::annotate_public_event_output_source_info(
     std::span<SourceInfo const> infos)
-{
-    state(*this).annotate_public_event_output_source_info(infos);
+try {
+    state(*this).annotate_scope_event_output_source_info(_scope, infos);
+} catch (...) {
+    // An exception leaving a session operation fails the session.
+    details::record_builder_failure(_session, std::current_exception(), {});
+    throw;
 }
 void GraphBuilder::annotate_public_sample_output_source_info(
     size_t index, SourceInfo info)
-{
-    state(*this).annotate_public_sample_output_source_info(index, std::move(info));
+try {
+    state(*this).annotate_scope_sample_output_source_info(_scope, index, std::move(info));
+} catch (...) {
+    // An exception leaving a session operation fails the session.
+    details::record_builder_failure(_session, std::current_exception(), {});
+    throw;
 }
 void GraphBuilder::annotate_public_event_output_source_info(
     size_t index, SourceInfo info)
-{
-    state(*this).annotate_public_event_output_source_info(index, std::move(info));
-}
-
-NodeRef GraphBuilder::embed_child(GraphBuilder& child, std::string_view kind)
-{
-    auto& graph = state(*this);
-    auto& child_graph = state(child);
-    auto embedding = graph.embed_subgraph(child_graph, kind);
-    return NodeRef(*this, embedding.root_scope);
+try {
+    state(*this).annotate_scope_event_output_source_info(_scope, index, std::move(info));
+} catch (...) {
+    // An exception leaving a session operation fails the session.
+    details::record_builder_failure(_session, std::current_exception(), {});
+    throw;
 }
 
 ConfiguredGraphEmbedding GraphBuilder::embed(
     ConfiguredGraph const& child, std::string_view kind)
-{
+try {
     return state(*this).embed_configured_graph(child, kind);
-}
-
-details::SubgraphBuildScope* GraphBuilder::begin_subgraph()
-{
-    return state(*this).begin_subgraph();
-}
-
-NodeRef GraphBuilder::finish_subgraph(
-    details::SubgraphBuildScope* scope, std::string_view kind)
-{
-    auto& graph = state(*this);
-    try {
-        auto result = graph.finish_subgraph(*scope, kind);
-        graph.abandon_subgraph(scope);
-        return result;
-    } catch (...) {
-        graph.abandon_subgraph(scope);
-        throw;
-    }
-}
-
-void GraphBuilder::abandon_subgraph(
-    details::SubgraphBuildScope* scope) noexcept
-{
-    if (!scope) return;
-    state(*this).abandon_subgraph(scope);
-}
-
-PublicSampleInputRef GraphBuilder::subgraph_input(
-    details::SubgraphBuildScope* scope, ContinuousInputConfig config)
-{
-    if (!scope) details::error("subgraph build scope is no longer active");
-    return state(*this).subgraph_input(*scope, std::move(config));
-}
-
-PublicEventInputRef GraphBuilder::subgraph_event_input(
-    details::SubgraphBuildScope* scope, std::string_view name,
-    EventTypeId type)
-{
-    if (!scope) details::error("subgraph build scope is no longer active");
-    return state(*this).subgraph_event_input(*scope, name, type);
-}
-
-void GraphBuilder::subgraph_outputs(
-    details::SubgraphBuildScope* scope,
-    std::span<SampleOutputRequest const> refs)
-{
-    if (!scope) details::error("subgraph build scope is no longer active");
-    state(*this).subgraph_outputs(*scope, refs);
-}
-
-void GraphBuilder::subgraph_outputs(
-    details::SubgraphBuildScope* scope, std::span<NamedRef const> refs)
-{
-    if (!scope) details::error("subgraph build scope is no longer active");
-    state(*this).subgraph_outputs(*scope, refs);
-}
-
-void GraphBuilder::subgraph_event_outputs(
-    details::SubgraphBuildScope* scope,
-    std::span<EventOutputRequest const> refs)
-{
-    if (!scope) details::error("subgraph build scope is no longer active");
-    state(*this).subgraph_event_outputs(*scope, refs);
+} catch (...) {
+    // An exception leaving a session operation fails the session.
+    details::record_builder_failure(_session, std::current_exception(), {});
+    throw;
 }
 
 ConfiguredGraph GraphBuilder::finish() const &
-{
+try {
     return state(*this).finish();
+} catch (...) {
+    // An exception leaving a session operation fails the session.
+    details::record_builder_failure(_session, std::current_exception(), {});
+    throw;
 }
 ConfiguredGraph GraphBuilder::finish() &&
-{
+try {
     if (!_session) throw std::logic_error("cannot finish an empty GraphBuilder");
+    if (_scope != details::root_builder_scope_id) {
+        throw std::logic_error("only the root GraphBuilder view can finish its session");
+    }
     return details::take_built_graph(_session);
+} catch (...) {
+    // An exception leaving a session operation fails the session.
+    details::record_builder_failure(_session, std::current_exception(), {});
+    throw;
 }
 
 } // namespace iv

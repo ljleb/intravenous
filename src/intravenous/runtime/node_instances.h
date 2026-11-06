@@ -65,6 +65,10 @@ struct NodeInstanceConfigurationRequest {
     std::optional<ChannelLayout> tiled_layout{};
 };
 
+// The record of one configured invocation: its definition provenance, the
+// lifetimes its live graph state depends on, and its message handlers. A
+// reusable invocation additionally carries a closed copy of its contents
+// (`graph`, rooted at `local_root`) that later identical calls import.
 struct ConfiguredNodeInstance {
     std::string definition_id{};
     std::uint64_t definitions_generation = 0;
@@ -86,25 +90,34 @@ struct ConfiguredNodeInstance {
     // evaluated. This is required even when a nested invocation is deliberately
     // not reusable because its value type has no safe equality/hash operation.
     std::vector<std::shared_ptr<ConfiguredNodeInstance const>> dependencies{};
-    // Paths are relative to `local_root`, so a cached configured result can be
-    // embedded at any durable project NodeAddress without capturing its first
-    // placement.
+    // Paths are relative to the invocation root, so a cached configured
+    // result can be placed at any durable project NodeAddress without
+    // capturing its first placement.
     std::vector<ConfiguredNodeMessageHandler> message_handlers{};
+    // Null when the invocation was not reusable: uncacheable arguments, or a
+    // construction that refers to graph state outside itself.
     std::shared_ptr<ConfiguredGraph const> graph{};
 };
 
 struct NodeInstancePlacement {
     std::shared_ptr<ConfiguredNodeInstance const> configured{};
-    ConfiguredGraphEmbedding embedding{};
+    // The invocation's result in the root graph.
     NodeBundleHandle root = 0;
 };
 
 struct NodeInstanceDiagnostic {
     std::string instance_id{};
     std::string definition_id{};
+    // A construction failure's message is followed by one line per library
+    // boundary it crossed, innermost first.
     std::string message{};
+    // Where a construction failure was first recorded; empty for problems
+    // found before construction.
+    std::string stacktrace{};
 };
 
+// Any diagnostic means the batch failed: it then holds every problem found
+// before construction, or the first construction failure, and no placements.
 struct NodeInstancesBatchResult {
     std::unordered_map<std::string, NodeInstancePlacement> placements{};
     std::vector<NodeInstanceDiagnostic> diagnostics{};
@@ -211,9 +224,17 @@ private:
     void publish_instance_changes(IvModuleInstancesChanged diff, bool list_changed) const;
     void publish_instance_declarations_changed() const;
     IvModuleRequiredDefinitionsChanged rebuild_required_definitions_locked();
-    std::shared_ptr<CacheEntry> configure_cached(
+    struct RealizedInvocation {
+        NodeBundleHandle root = 0;
+        std::shared_ptr<ConfiguredNodeInstance const> configured{};
+    };
+    // Realizes one registered call in `builder`'s session: a cache hit
+    // imports the cached contents, a miss constructs in place.
+    RealizedInvocation configure_cached(
         ConfigurationContext& context,
+        GraphBuilder& builder,
         NodeAddress const& address,
+        std::string_view qualifier,
         std::string_view definition_id,
         std::optional<ChannelLayout> tiled_layout,
         std::span<details::ConfigurationArgument> arguments);
@@ -225,8 +246,7 @@ private:
         void* context,
         GraphBuilder& builder,
         std::string_view definition_id,
-        std::string_view source_identity,
-        std::span<ProjectNodePathSelector const> scope_path,
+        std::span<ProjectNodePathSelector const> relative_path,
         std::optional<ChannelLayout> tiled_layout,
         std::span<details::ConfigurationArgument> arguments);
     static std::optional<NodeBundleHandle> resolve_builder_concrete_node_replacement(
@@ -254,8 +274,12 @@ public:
     [[nodiscard]] std::vector<ProjectNodeReplacement>
     desired_node_replacements() const;
 
-    // Synchronous configuration/embedding primitive intended for ProjectGraph.
-    // Every request in the batch resolves recursively through exactly `snapshot`.
+    // Synchronous configuration primitive intended for ProjectGraph. Every
+    // request is constructed directly in `root_builder`'s session and resolves
+    // recursively through exactly `snapshot`. Any failure fails the whole
+    // batch: problems found before construction are reported for every
+    // request; otherwise construction stops at the first failure, which leaves
+    // the session failed. A failed batch must not be finished or used.
     // Cache reuse is currently conservative across snapshot generations; cache
     // preservation across unrelated definition reloads is intentionally deferred.
     NodeInstancesBatchResult configure_and_embed(
