@@ -10,10 +10,10 @@ architectural step._
 > **Implementation status (2026-11-06):** the measurement gate was satisfied by the
 > builder/configuration baseline recorded under Front 12 in
 > [implementation_fronts_direction.md](./implementation_fronts_direction.md), and the
-> migration in this document is implemented in source pending the repository owner's
-> build and test run. That record lists the implementation decisions taken within
-> this direction (path-qualified virtual IDs, wrapper-free registered invocations)
-> and the remaining `node_reference` extension. The transactional rollback this
+> migration in this document is implemented and verified; Front 12 closed on
+> 2026-11-06. The front's record lists the implementation decisions taken within this
+> direction (path-qualified virtual IDs, wrapper-free registered invocations) and the
+> deferred nested `node_reference` extension (F12-7). The transactional rollback this
 > direction originally required was replaced on 2026-11-06 by stopping the
 > configuration pass on failure; see "Construction failure stops the configuration
 > pass" below.

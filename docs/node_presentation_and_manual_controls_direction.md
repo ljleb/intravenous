@@ -425,10 +425,10 @@ Front 14 uses the completed identity, persistence, GraphJit, and executor contra
 8. Measure compile latency and interaction latency before Front 16 adds reuse or more
    scheduling machinery.
 
-### Source implementation status (2026-11-04)
+### Implementation status (recorded 2026-11-04, verified)
 
-The manual-control backend is implemented in source and awaits the repository owner's
-build and test run. `ProjectManualControl` is durable project state keyed by
+The manual-control backend is implemented and verified: the repository owner's complete
+test suite has passed with it included (status corrected 2026-11-06). `ProjectManualControl` is durable project state keyed by
 `ManualControlId`, which contains a stable `NodeAddress` and authored input name.
 `ProjectGraph` resolves that identity for each `ConfiguredGraph`, owns client-scoped
 hover and interaction lifetimes, and runs the one-request predictive/required
@@ -449,8 +449,8 @@ value in `ManualControlRuntimeState`.
 bindings are compatible with the accepted structural generation. It changes the
 steady Tick operations at `activate_pending()` without rebuilding `NodeStorage`.
 
-The presentation registration and selection path is implemented in source and awaits
-the repository owner's build and test run. `IV_NODE_PRESENTATION` emits a neutral
+The presentation registration and selection path is implemented and verified (status
+corrected 2026-11-06). `IV_NODE_PRESENTATION` emits a neutral
 package record. The package finalizer, loader, accepted revision, package catalog, and
 socket RPC preserve the record. The VS Code frontend owns
 `NodePresentationRegistry`, its registered providers, and its guaranteed default

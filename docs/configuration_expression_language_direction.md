@@ -357,12 +357,13 @@ cardinality expected by the parameter type, and include the project revision and
 semantic dependencies in reuse decisions. Until then, there is no project-dependent
 resolution cache to invalidate.
 
-> **Front 12 status (2026-11-06):** implemented in source pending verification for a
+> **Front 12 status (2026-11-06, closed and verified):** implemented for a
 > direct `NodeRef`/`TypedNodeRef` parameter, which requires exactly one resolved node.
 > `NodeInstances` realizes a referencing request after the request it references and
 > diagnoses reference cycles. An invocation receiving a live `NodeRef` is never
 > reused, so reuse cannot depend on stale project state. A `NodeRef` nested inside an
-> aggregate or container parameter remains diagnosed.
+> aggregate or container parameter remains diagnosed; supporting it (F12-7) is
+> deferred until the project configuration language is settled.
 
 The durable representation of future project-owned editable subgraphs remains
 `ProjectGraph` work. It cannot reintroduce recursive virtual-node lookup, implicit

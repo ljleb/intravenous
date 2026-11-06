@@ -83,7 +83,7 @@ Until then, the detached-session/cache behavior in this document remains the
 implemented architecture.
 
 > **Implementation status (2026-11-06):** the same-session construction model is
-> implemented in source pending verification. A cache miss constructs directly in the
+> implemented and verified (Front 12 closed). A cache miss constructs directly in the
 > requesting session and is copied into a `ConfiguredGraph` only when it is
 > reusable; a hit places that copy. Leaf and module definitions still share the one
 > configuration path.

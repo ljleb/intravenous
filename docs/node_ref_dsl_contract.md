@@ -133,8 +133,8 @@ to matching mono edges only when their channel types, not merely their widths, m
 
 ## Planned post-runtime ownership migration
 
-> **Implementation status (2026-11-06):** implemented in source pending
-> verification. `NodeRef`, `SamplePortRef`, and `EventPortRef` carry their
+> **Implementation status (2026-11-06):** implemented and verified (Front 12
+> closed). `NodeRef`, `SamplePortRef`, and `EventPortRef` carry their
 > `BuilderSession`; views of one session are compatible and refs from different
 > sessions are rejected.
 

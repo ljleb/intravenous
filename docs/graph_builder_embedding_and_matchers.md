@@ -19,8 +19,8 @@ substantial optimization/profiling iteration has been completed.
 
 ## Implemented embedding checkpoint
 
-> **Front 12 status (2026-11-06):** the scoped-builder migration is implemented in
-> source pending verification. A newly constructed module scope is finalized in place
+> **Front 12 status (2026-11-06):** the scoped-builder migration is implemented and
+> verified (Front 12 closed). A newly constructed module scope is finalized in place
 > in its `BuilderSession`; only frozen `ConfiguredGraph` placement still goes through
 > the importer described below. A registered-definition cache hit places the cached
 > contents directly in the caller's scope without a synthetic wrapper subgraph, and
