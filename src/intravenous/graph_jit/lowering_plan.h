@@ -78,25 +78,18 @@ struct DeclarationPlan {
     std::vector<ContinuousActivityFrontierPlan> activity_frontiers{};
 };
 
-enum class CallbackImportAbi : std::uint8_t {
-    block,
-    background,
-    batch,
-    sequential_initialize,
-    sequential_combine,
-};
-
+// The project module imports a package callback by declaring the symbol GraphJit
+// gave its node-code address; the generation JITDylib defines that symbol.
 struct CallbackImportPlan {
-    std::string source_symbol{};
-    std::string import_symbol{};
+    std::string symbol{};
     std::string role{};
     CallbackImportAbi abi = CallbackImportAbi::block;
 };
 
 struct RetainedGlobalImportPlan {
-    std::string source_symbol{};
-    std::string import_symbol{};
+    std::string symbol{};
     std::size_t size = 0;
+    std::size_t alignment = 1;
 };
 
 struct PackageImportGroup {
@@ -122,11 +115,11 @@ struct PrimitiveCallbackPlan {
 };
 
 struct PackageImportPlan {
-    // One group per compile-local package module. All selected callback and
-    // retained-global roots must be known before that module is consumed once.
+    // One group per package code input that the project module imports from.
     std::vector<PackageImportGroup> packages{};
-    // One entry per analyzed concrete primitive. Several primitives may share one
-    // imported callback when they select the same package-local implementation.
+    // One entry per analyzed concrete primitive, naming the imported callback
+    // symbols. Several primitives share one symbol when they select the same
+    // package-local implementation.
     std::vector<PrimitiveCallbackPlan> primitive_callbacks{};
 };
 

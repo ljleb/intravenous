@@ -95,6 +95,9 @@ PackageJitBatchResult PackageJit::build(
                 .provenance = declaration.provenance,
                 .compiler_artifact = std::move(loaded_package.compiler_artifact),
                 .package_code = std::move(loaded_package.package_code),
+                .node_code_records = std::move(loaded_package.node_code_records),
+                .node_code_retained_globals =
+                    std::move(loaded_package.node_code_retained_globals),
                 .provider_definitions = std::move(loaded_package.provider_definitions),
                 .node_presentations = std::move(loaded_package.node_presentations),
                 .config_pointer_fields = std::move(loaded_package.config_pointer_fields),

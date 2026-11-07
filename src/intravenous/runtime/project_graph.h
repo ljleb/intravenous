@@ -58,6 +58,18 @@ struct EndManualControlInteractionRequest;
 struct DispatchNodeMessageRequest;
 struct GetNodeEventProtocolRequest;
 
+// Wall-clock microseconds of the rebuild that produced a generation, from the
+// rebuild's start to GraphExecutor accepting (or refusing) the compiled graph.
+struct ProjectGraphRebuildTimings {
+    std::uint64_t node_instances_us = 0;
+    std::uint64_t graph_connections_us = 0;
+    // Root finish plus generation assembly (placements, controls, handlers).
+    std::uint64_t finish_us = 0;
+    std::uint64_t graph_jit_us = 0;
+    std::uint64_t executor_stage_us = 0;
+    std::uint64_t total_us = 0;
+};
+
 // One immutable root-configuration generation produced by ProjectGraph. GraphJit
 // will consume this object (plus its pinned definition provenance) in the next
 // execution-side checkpoint.
@@ -72,6 +84,9 @@ struct ProjectGraphGeneration {
     bool graph_jit_attempted = false;
     std::shared_ptr<CompiledGraph const> compiled_graph{};
     std::vector<GraphJitDiagnostic> graph_jit_diagnostics{};
+    ProjectGraphRebuildTimings rebuild_timings{};
+    // One entry per GraphJit compilation of this rebuild (see GraphJitCompileTimings).
+    std::vector<GraphJitCompileTimings> graph_jit_timings{};
     std::vector<BoundNodeMessageHandler> message_handlers{};
     std::vector<ProjectNodeReplacement> node_replacements{};
     std::vector<ProjectManualControl> manual_controls{};

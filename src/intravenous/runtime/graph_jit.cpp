@@ -4,7 +4,9 @@
 #include <intravenous/ports.h>
 #include <intravenous/runtime/package_pipeline_types.h>
 
-#include <llvm/Bitcode/BitcodeReader.h>
+#include <llvm/ADT/StringExtras.h>
+#include <llvm/Demangle/Demangle.h>
+#include <llvm/ExecutionEngine/Orc/AbsoluteSymbols.h>
 #include <llvm/ExecutionEngine/Orc/ExecutionUtils.h>
 #include <llvm/ExecutionEngine/Orc/JITTargetMachineBuilder.h>
 #include <llvm/ExecutionEngine/Orc/LLJIT.h>
@@ -18,18 +20,23 @@
 #include <llvm/IR/GlobalVariable.h>
 #include <llvm/IR/LLVMContext.h>
 #include <llvm/IR/Module.h>
+#include <llvm/IR/PassInstrumentation.h>
 #include <llvm/IR/PassManager.h>
+#include <llvm/IR/PassTimingInfo.h>
 #include <llvm/IR/Verifier.h>
 #include <llvm/Passes/OptimizationLevel.h>
 #include <llvm/Passes/PassBuilder.h>
+#include <llvm/Passes/StandardInstrumentations.h>
 #include <llvm/Support/CodeGen.h>
 #include <llvm/Support/Error.h>
-#include <llvm/Support/MemoryBuffer.h>
 #include <llvm/Support/TargetSelect.h>
 #include <llvm/Support/raw_ostream.h>
 #include <llvm/Target/TargetMachine.h>
 #include <llvm/TargetParser/Triple.h>
 
+#include <cstdlib>
+#include <fstream>
+#include <chrono>
 #include <algorithm>
 #include <atomic>
 #include <filesystem>
@@ -116,297 +123,6 @@ void initialize_graph_jit_target()
 std::string package_root_key(std::filesystem::path const& path)
 {
     return path.lexically_normal().generic_string();
-}
-
-struct NodeCodeKeyHash {
-    std::size_t operator()(NodeCodeKey const& key) const noexcept
-    {
-        auto const a = static_cast<std::size_t>(key.low ^ (key.low >> 32));
-        auto const b = static_cast<std::size_t>(key.high ^ (key.high >> 32));
-        return a ^ (b + 0x9e3779b9u + (a << 6) + (a >> 2));
-    }
-};
-
-struct IrNodeRecord {
-    llvm::Function* tick_block = nullptr;
-    llvm::Function* tick_block_batch = nullptr;
-    llvm::Function* skip_block = nullptr;
-    llvm::Function* skip_block_batch = nullptr;
-    llvm::Function* tock_coverage = nullptr;
-    llvm::Function* tock_coverage_batch = nullptr;
-    llvm::Function* propagate_forward_coverage = nullptr;
-    llvm::Function* propagate_forward_coverage_batch = nullptr;
-    llvm::Function* propagate_reverse_coverage = nullptr;
-    llvm::Function* propagate_reverse_coverage_batch = nullptr;
-    llvm::Function* initialize_sequential_input = nullptr;
-    llvm::Function* combine_sequential_input_values = nullptr;
-    std::size_t state_size = 0;
-    std::size_t state_alignment = 1;
-    std::size_t background_state_size = 0;
-    std::size_t background_state_alignment = 1;
-    bool intrinsically_replayable = false;
-    bool pointwise_tick = false;
-    bool block_input_access = false;
-};
-
-std::uint64_t constant_u64(llvm::Value const* value, std::string_view field)
-{
-    auto const* integer = llvm::dyn_cast<llvm::ConstantInt>(value);
-    if (!integer) {
-        fail(
-            GraphJitDiagnosticStage::package_llvm,
-            "malformed iv_node_types " + std::string(field));
-    }
-    return integer->getZExtValue();
-}
-
-std::size_t constant_size(llvm::Value const* value, std::string_view field)
-{
-    auto const result = constant_u64(value, field);
-    if (result > std::numeric_limits<std::size_t>::max()) {
-        fail(
-            GraphJitDiagnosticStage::package_llvm,
-            "iv_node_types " + std::string(field) + " does not fit size_t");
-    }
-    return static_cast<std::size_t>(result);
-}
-
-llvm::Function* compiler_callback(
-    llvm::Value* value,
-    std::string_view field,
-    bool required)
-{
-    if (llvm::isa<llvm::ConstantPointerNull>(value)) {
-        if (required) {
-            fail(
-                GraphJitDiagnosticStage::package_llvm,
-                "iv_node_types has null required callback " + std::string(field));
-        }
-        return nullptr;
-    }
-    auto* constant = llvm::dyn_cast<llvm::Constant>(value);
-    auto* function = constant
-        ? llvm::dyn_cast<llvm::Function>(constant->stripPointerCasts())
-        : nullptr;
-    if (!function) {
-        fail(
-            GraphJitDiagnosticStage::package_llvm,
-            "iv_node_types callback " + std::string(field)
-                + " does not reference an LLVM function");
-    }
-    return function;
-}
-
-std::unordered_map<NodeCodeKey, IrNodeRecord, NodeCodeKeyHash> scan_node_records(
-    llvm::Module& module)
-{
-    std::unordered_map<NodeCodeKey, IrNodeRecord, NodeCodeKeyHash> result;
-    for (auto& global : module.globals()) {
-        auto const section = global.getSection();
-        if (section != "iv_node_types" && !section.ends_with("__iv_node_types")) {
-            continue;
-        }
-        auto* record = llvm::dyn_cast_or_null<llvm::ConstantStruct>(global.getInitializer());
-        if (!record || record->getNumOperands() != 11) {
-            fail(GraphJitDiagnosticStage::package_llvm, "malformed iv_node_types record");
-        }
-        auto* key = llvm::dyn_cast<llvm::ConstantStruct>(record->getOperand(0));
-        auto* operations = llvm::dyn_cast<llvm::ConstantStruct>(record->getOperand(1));
-        if (!key || key->getNumOperands() != 2 || !operations
-            || operations->getNumOperands() != 13) {
-            fail(GraphJitDiagnosticStage::package_llvm, "malformed iv_node_types record ABI");
-        }
-        NodeCodeKey code_key{
-            .low = constant_u64(key->getOperand(0), "code key low"),
-            .high = constant_u64(key->getOperand(1), "code key high"),
-        };
-        // Configuration-only declare_node must exist in the compiler record,
-        // but it is deliberately not exposed to whole-project lowering.
-        (void)compiler_callback(operations->getOperand(0), "declare_node", true);
-        auto const replay_marker = constant_u64(
-            record->getOperand(8), "intrinsic replayability");
-        if (replay_marker > 1) {
-            fail(GraphJitDiagnosticStage::package_llvm,
-                "malformed iv_node_types intrinsic replayability flag");
-        }
-        auto const pointwise_marker = constant_u64(
-            record->getOperand(9), "pointwise Tick mode");
-        if (pointwise_marker > 1) {
-            fail(GraphJitDiagnosticStage::package_llvm,
-                "malformed iv_node_types pointwise Tick flag");
-        }
-        auto const block_input_marker = constant_u64(
-            record->getOperand(10), "block input access");
-        if (block_input_marker > 1) {
-            fail(GraphJitDiagnosticStage::package_llvm,
-                "malformed iv_node_types block input access flag");
-        }
-        IrNodeRecord parsed{
-            .tick_block = compiler_callback(
-                operations->getOperand(1), "tick_block", false),
-            .tick_block_batch = compiler_callback(
-                operations->getOperand(2), "tick_block_batch", false),
-            .skip_block = compiler_callback(
-                operations->getOperand(3), "skip_block", false),
-            .skip_block_batch = compiler_callback(
-                operations->getOperand(4), "skip_block_batch", false),
-            .tock_coverage = compiler_callback(
-                operations->getOperand(5), "tock_coverage", false),
-            .tock_coverage_batch = compiler_callback(
-                operations->getOperand(6), "tock_coverage_batch", false),
-            .propagate_forward_coverage = compiler_callback(
-                operations->getOperand(7), "propagate_forward_coverage", false),
-            .propagate_forward_coverage_batch = compiler_callback(
-                operations->getOperand(8),
-                "propagate_forward_coverage_batch",
-                false),
-            .propagate_reverse_coverage = compiler_callback(
-                operations->getOperand(9), "propagate_reverse_coverage", false),
-            .propagate_reverse_coverage_batch = compiler_callback(
-                operations->getOperand(10),
-                "propagate_reverse_coverage_batch",
-                false),
-            .initialize_sequential_input = compiler_callback(
-                operations->getOperand(11),
-                "initialize_sequential_input",
-                false),
-            .combine_sequential_input_values = compiler_callback(
-                operations->getOperand(12),
-                "combine_sequential_input_values",
-                false),
-            .state_size = constant_size(record->getOperand(4), "state size"),
-            .state_alignment = constant_size(record->getOperand(5), "state alignment"),
-            .background_state_size = constant_size(
-                record->getOperand(6), "background state size"),
-            .background_state_alignment = constant_size(
-                record->getOperand(7), "background state alignment"),
-            .intrinsically_replayable =
-                replay_marker != 0,
-            .pointwise_tick = pointwise_marker != 0,
-            .block_input_access = block_input_marker != 0,
-        };
-        if (!result.emplace(code_key, parsed).second) {
-            fail(GraphJitDiagnosticStage::package_llvm, "duplicate NodeCodeKey in iv_node_types");
-        }
-    }
-    return result;
-}
-
-std::vector<llvm::GlobalVariable*> scan_retained_globals(
-    llvm::Module& module,
-    PackageRevision const& revision)
-{
-    auto* table = module.getNamedGlobal("iv.package_retained_globals");
-    if (revision.retained_globals.empty()) {
-        if (!table) return {};
-        auto const* array = llvm::dyn_cast_or_null<llvm::ConstantArray>(table->getInitializer());
-        if (!array || array->getNumOperands() == 0) return {};
-        fail(
-            GraphJitDiagnosticStage::package_llvm,
-            "package LLVM retained-global table disagrees with accepted revision");
-    }
-    if (!table || !table->hasInitializer()) {
-        fail(
-            GraphJitDiagnosticStage::package_llvm,
-            "package LLVM is missing iv.package_retained_globals");
-    }
-    auto* array = llvm::dyn_cast<llvm::ConstantArray>(table->getInitializer());
-    if (!array || array->getNumOperands() != revision.retained_globals.size()) {
-        fail(
-            GraphJitDiagnosticStage::package_llvm,
-            "package LLVM retained-global count disagrees with accepted revision");
-    }
-
-    std::vector<llvm::GlobalVariable*> result(array->getNumOperands(), nullptr);
-    for (unsigned record_index = 0; record_index < array->getNumOperands(); ++record_index) {
-        auto* entry = llvm::dyn_cast<llvm::ConstantStruct>(array->getOperand(record_index));
-        if (!entry || entry->getNumOperands() != 3) {
-            fail(GraphJitDiagnosticStage::package_llvm, "malformed retained-global record");
-        }
-        auto const size = constant_size(entry->getOperand(1), "retained-global size");
-        auto const index = constant_size(entry->getOperand(2), "retained-global index");
-        if (index >= result.size() || result[index] != nullptr) {
-            fail(GraphJitDiagnosticStage::package_llvm, "invalid retained-global index");
-        }
-        auto* address = llvm::dyn_cast<llvm::Constant>(entry->getOperand(0));
-        auto* global = address
-            ? llvm::dyn_cast<llvm::GlobalVariable>(address->stripPointerCasts())
-            : nullptr;
-        if (!global) {
-            fail(
-                GraphJitDiagnosticStage::package_llvm,
-                "retained-global record does not reference an LLVM global");
-        }
-        auto const& accepted = revision.retained_globals[index];
-        if (accepted.index != index || accepted.size != size) {
-            fail(
-                GraphJitDiagnosticStage::package_llvm,
-                "retained-global ABI disagrees with accepted revision");
-        }
-        result[index] = global;
-    }
-    return result;
-}
-
-struct ParsedPackage {
-    std::shared_ptr<PackageRevision const> revision{};
-    std::unique_ptr<llvm::Module> module{};
-    std::unordered_map<NodeCodeKey, IrNodeRecord, NodeCodeKeyHash> node_records{};
-    std::vector<llvm::GlobalVariable*> retained_globals{};
-};
-
-ParsedPackage parse_package_module(
-    std::shared_ptr<PackageRevision const> revision,
-    llvm::LLVMContext& context,
-    llvm::DataLayout const& target_data_layout,
-    llvm::Triple const& target_triple)
-{
-    if (!revision) {
-        fail(GraphJitDiagnosticStage::input_capture, "null package revision");
-    }
-    auto const& path = revision->compiler_artifact.bitcode_path;
-    if (path.empty()) {
-        fail(
-            GraphJitDiagnosticStage::package_llvm,
-            "accepted package revision has no finalized compiler artifact");
-    }
-    auto buffer = llvm::MemoryBuffer::getFile(path.string());
-    if (!buffer) {
-        fail(
-            GraphJitDiagnosticStage::package_llvm,
-            "cannot read finalized IV package LLVM '" + path.string()
-                + "': " + buffer.getError().message());
-    }
-    auto module = take_llvm_expected(
-        llvm::parseBitcodeFile((*buffer)->getMemBufferRef(), context),
-        GraphJitDiagnosticStage::package_llvm,
-        "parse finalized IV package LLVM '" + path.string() + "'");
-    if (module->getDataLayout().isDefault()) {
-        fail(
-            GraphJitDiagnosticStage::package_llvm,
-            "finalized IV package LLVM '" + path.string() + "' has no data layout");
-    }
-    if (module->getDataLayout() != target_data_layout) {
-        fail(
-            GraphJitDiagnosticStage::package_llvm,
-            "finalized IV package LLVM '" + path.string()
-                + "' data layout does not match the project JIT target");
-    }
-    if (!module->getTargetTriple().empty()
-        && llvm::Triple(module->getTargetTriple()) != target_triple) {
-        fail(
-            GraphJitDiagnosticStage::package_llvm,
-            "finalized IV package LLVM '" + path.string()
-                + "' target triple does not match the project JIT target");
-    }
-    auto node_records = scan_node_records(*module);
-    auto retained_globals = scan_retained_globals(*module, *revision);
-    return ParsedPackage{
-        .revision = std::move(revision),
-        .module = std::move(module),
-        .node_records = std::move(node_records),
-        .retained_globals = std::move(retained_globals),
-    };
 }
 
 struct CapturedNode {
@@ -692,62 +408,56 @@ CapturedInputs capture_inputs(GraphJitCompileRequest const& request)
     return result;
 }
 
+// The revision's node-code record for a captured node, by code key. The
+// finalizer emits node-code records sorted by code key.
+NodeCodeRecordData const* node_code_record(
+    PackageRevision const& revision,
+    NodeCodeKey key)
+{
+    auto const& records = revision.node_code_records;
+    auto const found = std::ranges::lower_bound(records, key, {}, &NodeCodeRecordData::code_key);
+    if (found == records.end() || found->code_key != key) return nullptr;
+    return &*found;
+}
+
+// Node code is compiled from the same finalized package LLVM as the
+// NodeCompilerRecord, so it must provide exactly the record's callbacks.
 void verify_compiler_record(
     CapturedNode const& captured,
-    IrNodeRecord const& ir_record)
+    NodeCodeRecordData const& node_code)
 {
-    auto const& accepted = captured.compiler_record;
-    if (!accepted.operations.valid()) {
+    auto const& accepted = captured.compiler_record.operations;
+    if (!accepted.valid()) {
         fail(
             GraphJitDiagnosticStage::package_llvm,
             "accepted NodeCompilerRecord has incomplete runtime callbacks for node '"
                 + captured.identity.node_type_id + "'");
     }
-    if (accepted.state_size != ir_record.state_size
-        || accepted.state_alignment != ir_record.state_alignment
-        || accepted.background_state_size != ir_record.background_state_size
-        || accepted.background_state_alignment != ir_record.background_state_alignment
-        || accepted.intrinsically_replayable != ir_record.intrinsically_replayable
-        || accepted.pointwise_tick != ir_record.pointwise_tick
-        || accepted.block_input_access != ir_record.block_input_access) {
+    auto const& code = node_code.operations;
+    auto const same = [](auto a, auto b) {
+        return (a != nullptr) == (b != nullptr);
+    };
+    if (!same(accepted.tick_block, code.tick_block)
+        || !same(accepted.tick_block_batch, code.tick_block_batch)
+        || !same(accepted.skip_block, code.skip_block)
+        || !same(accepted.skip_block_batch, code.skip_block_batch)
+        || !same(accepted.tock_coverage, code.tock_coverage)
+        || !same(accepted.tock_coverage_batch, code.tock_coverage_batch)
+        || !same(accepted.propagate_forward_coverage, code.propagate_forward_coverage)
+        || !same(
+            accepted.propagate_forward_coverage_batch,
+            code.propagate_forward_coverage_batch)
+        || !same(accepted.propagate_reverse_coverage, code.propagate_reverse_coverage)
+        || !same(
+            accepted.propagate_reverse_coverage_batch,
+            code.propagate_reverse_coverage_batch)
+        || !same(accepted.initialize_sequential_input, code.initialize_sequential_input)
+        || !same(
+            accepted.combine_sequential_input_values,
+            code.combine_sequential_input_values)) {
         fail(
             GraphJitDiagnosticStage::package_llvm,
-            "NodeCompilerRecord state/replay ABI disagrees with retained package LLVM for node '"
-                + captured.identity.node_type_id + "'");
-    }
-    if (static_cast<bool>(accepted.operations.tick_block)
-            != static_cast<bool>(ir_record.tick_block)
-        || static_cast<bool>(accepted.operations.tick_block_batch)
-            != static_cast<bool>(ir_record.tick_block_batch)
-        || static_cast<bool>(accepted.operations.skip_block)
-            != static_cast<bool>(ir_record.skip_block)
-        || static_cast<bool>(accepted.operations.skip_block_batch)
-            != static_cast<bool>(ir_record.skip_block_batch)
-        || static_cast<bool>(accepted.operations.tock_coverage)
-            != static_cast<bool>(ir_record.tock_coverage)
-        || static_cast<bool>(accepted.operations.tock_coverage_batch)
-            != static_cast<bool>(ir_record.tock_coverage_batch)
-        || static_cast<bool>(accepted.operations.propagate_forward_coverage)
-            != static_cast<bool>(ir_record.propagate_forward_coverage)
-        || static_cast<bool>(
-                accepted.operations.propagate_forward_coverage_batch)
-            != static_cast<bool>(ir_record.propagate_forward_coverage_batch)
-        || static_cast<bool>(accepted.operations.propagate_reverse_coverage)
-            != static_cast<bool>(ir_record.propagate_reverse_coverage)
-        || static_cast<bool>(
-                accepted.operations.propagate_reverse_coverage_batch)
-            != static_cast<bool>(ir_record.propagate_reverse_coverage_batch)
-        || static_cast<bool>(
-                accepted.operations.initialize_sequential_input)
-            != static_cast<bool>(
-                ir_record.initialize_sequential_input)
-        || static_cast<bool>(
-                accepted.operations.combine_sequential_input_values)
-            != static_cast<bool>(
-                ir_record.combine_sequential_input_values)) {
-        fail(
-            GraphJitDiagnosticStage::package_llvm,
-            "NodeCompilerRecord optional-operation ABI disagrees with retained package LLVM for node '"
+            "NodeCompilerRecord optional-operation ABI disagrees with the package node code for node '"
                 + captured.identity.node_type_id + "'");
     }
 }
@@ -947,19 +657,189 @@ void validate_lowering_output(
         background_required);
 }
 
-void optimize_project_module(llvm::Module& module, llvm::TargetMachine& target_machine)
+// Profiling knobs, not configuration: IV_GRAPH_JIT_OPT_LEVEL (0-3, default 3)
+// and IV_GRAPH_JIT_CODEGEN_LEVEL (0-3, default 3) measure how compile time
+// scales with optimization effort.
+llvm::OptimizationLevel project_optimization_level()
 {
-    // The finalized package artifacts deliberately carry Clang O0 barriers.
-    // Once the lowerer has imported only the selected project execution closure,
-    // every remaining definition is graph-runtime code and should participate in
-    // the whole-project optimization pipeline.
-    for (auto& function : module) {
+    char const* value = std::getenv("IV_GRAPH_JIT_OPT_LEVEL");
+    std::string_view const level = value ? value : "3";
+    if (level == "0") return llvm::OptimizationLevel::O0;
+    if (level == "1") return llvm::OptimizationLevel::O1;
+    if (level == "2") return llvm::OptimizationLevel::O2;
+    return llvm::OptimizationLevel::O3;
+}
+
+llvm::CodeGenOptLevel project_codegen_level()
+{
+    char const* value = std::getenv("IV_GRAPH_JIT_CODEGEN_LEVEL");
+    std::string_view const level = value ? value : "3";
+    if (level == "0") return llvm::CodeGenOptLevel::None;
+    if (level == "1") return llvm::CodeGenOptLevel::Less;
+    if (level == "2") return llvm::CodeGenOptLevel::Default;
+    return llvm::CodeGenOptLevel::Aggressive;
+}
+
+// The owning scope of a demangled function name with template and parameter
+// lists removed, limited to three components: the inventory's grouping key.
+std::string function_group(std::string_view demangled)
+{
+    std::string plain;
+    int angle = 0;
+    int paren = 0;
+    for (std::size_t index = 0; index < demangled.size(); ++index) {
+        char const c = demangled[index];
+        if (demangled.substr(index).starts_with("operator")) {
+            plain += "operator";
+            index += std::string_view("operator").size() - 1;
+            continue;
+        }
+        if (c == '<') { ++angle; continue; }
+        if (c == '>' && angle > 0) { --angle; continue; }
+        if (c == '(') { ++paren; continue; }
+        if (c == ')' && paren > 0) { --paren; continue; }
+        if (angle == 0 && paren == 0) plain += c;
+    }
+    std::vector<std::string_view> components;
+    std::string_view rest = plain;
+    while (true) {
+        auto const separator = rest.find("::");
+        if (separator == std::string_view::npos) {
+            components.push_back(rest);
+            break;
+        }
+        components.push_back(rest.substr(0, separator));
+        rest.remove_prefix(separator + 2);
+    }
+    if (components.size() > 1) components.pop_back();
+    if (components.size() > 3) components.resize(3);
+    std::string group;
+    for (auto const component : components) {
+        if (!group.empty()) group += "::";
+        group += component;
+    }
+    return group.empty() ? std::string("<global>") : group;
+}
+
+// The profiling output file `stem` + `suffix` under IV_GRAPH_JIT_PROFILE_DIR,
+// or nothing when profiling output is off.
+std::optional<std::filesystem::path> profile_path(
+    std::string const& stem, std::string_view suffix)
+{
+    char const* directory = std::getenv("IV_GRAPH_JIT_PROFILE_DIR");
+    if (!directory || !*directory) return std::nullopt;
+    std::filesystem::create_directories(directory);
+    return std::filesystem::path(directory) / (stem + std::string(suffix));
+}
+
+// With IV_GRAPH_JIT_PROFILE_DIR set and IV_GRAPH_JIT_DUMP_IR=1, writes the
+// module's textual LLVM, to read what the generated root contains.
+void write_module_ir(llvm::Module const& module, std::string const& stem)
+{
+    char const* dump = std::getenv("IV_GRAPH_JIT_DUMP_IR");
+    if (!dump || std::string_view(dump) != "1") return;
+    auto const path = profile_path(stem, ".ll");
+    if (!path) return;
+    std::error_code error;
+    llvm::raw_fd_ostream out(path->string(), error);
+    if (!error) module.print(out, nullptr);
+}
+
+// With IV_GRAPH_JIT_PROFILE_DIR set, writes every defined function's
+// instruction count and the totals per owning scope, to see what one
+// compilation spends its optimization and code generation on.
+void write_function_inventory(llvm::Module const& module, std::string const& stem)
+{
+    char const* directory = std::getenv("IV_GRAPH_JIT_PROFILE_DIR");
+    if (!directory || !*directory) return;
+    std::filesystem::create_directories(directory);
+    struct Entry {
+        std::size_t instructions = 0;
+        std::string name{};
+    };
+    std::vector<Entry> entries;
+    for (auto const& function : module) {
         if (function.isDeclaration()) continue;
-        function.removeFnAttr(llvm::Attribute::OptimizeNone);
-        function.removeFnAttr(llvm::Attribute::NoInline);
+        entries.push_back({
+            .instructions = function.getInstructionCount(),
+            .name = llvm::demangle(function.getName().str()),
+        });
+    }
+    std::ranges::sort(entries, std::ranges::greater{}, &Entry::instructions);
+    std::ofstream functions(std::filesystem::path(directory) / (stem + "-functions.tsv"));
+    functions << "instructions\tfunction\n";
+    for (auto const& entry : entries) {
+        functions << entry.instructions << '\t' << entry.name << '\n';
     }
 
-    llvm::PassBuilder pass_builder(&target_machine);
+    struct Group {
+        std::size_t functions = 0;
+        std::size_t instructions = 0;
+    };
+    std::unordered_map<std::string, Group> groups;
+    for (auto const& entry : entries) {
+        auto& group = groups[function_group(entry.name)];
+        ++group.functions;
+        group.instructions += entry.instructions;
+    }
+    std::vector<std::pair<std::string, Group>> ordered(groups.begin(), groups.end());
+    std::ranges::sort(ordered, std::ranges::greater{}, [](auto const& entry) {
+        return entry.second.instructions;
+    });
+    std::ofstream summary(std::filesystem::path(directory) / (stem + "-groups.tsv"));
+    summary << "instructions\tfunctions\tscope\n";
+    for (auto const& [name, group] : ordered) {
+        summary << group.instructions << '\t' << group.functions << '\t' << name << '\n';
+    }
+}
+
+void optimize_project_module(
+    llvm::Module& module, llvm::TargetMachine& target_machine,
+    std::string const& profile_stem)
+{
+    // The project module contains no package code: each revision's package
+    // code was compiled once, before any project compilation used it.
+    // Profiling knob, not configuration: IV_GRAPH_JIT_ROOT_OPTNONE=1 leaves the
+    // generated root operations unoptimized, to measure how much compile time
+    // and realtime cost root optimization accounts for.
+    if (char const* value = std::getenv("IV_GRAPH_JIT_ROOT_OPTNONE");
+        value && std::string_view(value) == "1") {
+        for (auto& function : module) {
+            if (function.isDeclaration()
+                || !function.getName().starts_with("__iv_graph_root_")) {
+                continue;
+            }
+            function.addFnAttr(llvm::Attribute::OptimizeNone);
+            function.addFnAttr(llvm::Attribute::NoInline);
+        }
+    }
+    llvm::PassInstrumentationCallbacks instrumentation;
+    // The new pass manager skips optnone functions only through this
+    // instrumentation; without it the optnone roots above are still optimized
+    // (only inlining into them is refused).
+    llvm::OptNoneInstrumentation optnone(false);
+    optnone.registerCallbacks(instrumentation);
+    // With profiling output on, time every optimization pass and analysis.
+    auto const passes_path = profile_path(profile_stem, "-optimization-passes.txt");
+    std::optional<llvm::TimePassesHandler> time_passes;
+    if (passes_path) {
+        time_passes.emplace(true);
+        time_passes->registerCallbacks(instrumentation);
+    }
+    // Loop unrolling (partial, runtime, and full) is off in the per-edit
+    // pipeline: at 64 voices it cost about 1.6 s per edit with no measurable
+    // realtime benefit (Front 16, 2026-11-07). Loops whose trip counts are
+    // package constants are already fully unrolled by the package's pre-link
+    // pipeline in iv_package_finalize. Profiling knob, not configuration:
+    // IV_GRAPH_JIT_UNROLL=1 re-enables unrolling to compare realtime cost.
+    llvm::PipelineTuningOptions tuning;
+    tuning.LoopUnrolling = false;
+    if (char const* value = std::getenv("IV_GRAPH_JIT_UNROLL");
+        value && std::string_view(value) == "1") {
+        tuning.LoopUnrolling = true;
+    }
+    llvm::PassBuilder pass_builder(
+        &target_machine, tuning, std::nullopt, &instrumentation);
     llvm::LoopAnalysisManager loops;
     llvm::FunctionAnalysisManager functions;
     llvm::CGSCCAnalysisManager cgscc;
@@ -969,8 +849,19 @@ void optimize_project_module(llvm::Module& module, llvm::TargetMachine& target_m
     pass_builder.registerFunctionAnalyses(functions);
     pass_builder.registerLoopAnalyses(loops);
     pass_builder.crossRegisterProxies(loops, functions, cgscc, modules);
-    auto pipeline = pass_builder.buildPerModuleDefaultPipeline(llvm::OptimizationLevel::O3);
+    auto const level = project_optimization_level();
+    auto pipeline = level == llvm::OptimizationLevel::O0
+        ? pass_builder.buildO0DefaultPipeline(level)
+        : pass_builder.buildPerModuleDefaultPipeline(level);
     pipeline.run(module, modules);
+    if (passes_path) {
+        std::error_code error;
+        llvm::raw_fd_ostream out(passes_path->string(), error);
+        if (!error) {
+            time_passes->setOutStream(out);
+            time_passes->print();
+        }
+    }
 }
 
 struct SharedProjectJit {
@@ -981,6 +872,9 @@ struct SharedProjectJit {
 
 struct ProjectCodeLifetime {
     std::shared_ptr<SharedProjectJit> shared{};
+    // The revisions whose node code this generation calls. Declared first so
+    // that they are released only after the generation's own JITDylib.
+    std::vector<std::shared_ptr<PackageRevision const>> package_revisions{};
     llvm::orc::JITDylib* jit_dylib = nullptr;
     llvm::orc::ResourceTrackerSP resources{};
 
@@ -1010,6 +904,69 @@ struct ProjectCodeLifetime {
     }
 };
 
+// Adds the generators a generation JITDylib needs for the external symbols of
+// project code: the iv_builder library and the revisions' native dynamic
+// libraries.
+void add_project_code_generators(
+    llvm::orc::LLJIT& jit,
+    llvm::orc::JITDylib& jit_dylib,
+    std::span<PackageRevision const* const> revisions)
+{
+    auto const global_prefix = jit.getDataLayout().getGlobalPrefix();
+#if defined(IV_CONFIGURED_IV_BUILDER_LIBRARY)
+    if (std::string_view(IV_CONFIGURED_IV_BUILDER_LIBRARY).size()) {
+        jit_dylib.addGenerator(take_llvm_expected(
+            llvm::orc::DynamicLibrarySearchGenerator::Load(
+                IV_CONFIGURED_IV_BUILDER_LIBRARY, global_prefix),
+            GraphJitDiagnosticStage::materialization,
+            "load iv_builder project symbol resolver"));
+    }
+#endif
+    std::unordered_set<std::string> loaded_libraries;
+    for (auto const* revision : revisions) {
+        for (auto const& library : revision->compiler_artifact.dynamic_libraries) {
+            auto const path = library.lexically_normal().string();
+            if (!loaded_libraries.insert(path).second) continue;
+            jit_dylib.addGenerator(take_llvm_expected(
+                llvm::orc::DynamicLibrarySearchGenerator::Load(
+                    path.c_str(), global_prefix),
+                GraphJitDiagnosticStage::materialization,
+                "load project dynamic library '" + path + "'"));
+        }
+    }
+}
+
+// The node-code addresses one project compilation imports, by the symbol the
+// project module declares for each. Node code lives in the package JIT, so the
+// generation JITDylib defines these as absolute symbols.
+struct ImportedNodeCode {
+    struct Symbol {
+        std::uint64_t address = 0;
+        bool callable = false;
+    };
+    std::unordered_map<std::string, Symbol> symbols{};
+
+    template<class Function>
+    std::string callback(Function* function)
+    {
+        if (function == nullptr) return {};
+        auto const address = static_cast<std::uint64_t>(
+            reinterpret_cast<std::uintptr_t>(function));
+        auto name = "__iv_node_code_" + llvm::utohexstr(address);
+        symbols.try_emplace(name, Symbol{.address = address, .callable = true});
+        return name;
+    }
+
+    std::string data(void const* pointer)
+    {
+        auto const address = static_cast<std::uint64_t>(
+            reinterpret_cast<std::uintptr_t>(pointer));
+        auto name = "__iv_node_data_" + llvm::utohexstr(address);
+        symbols.try_emplace(name, Symbol{.address = address, .callable = false});
+        return name;
+    }
+};
+
 struct MaterializedProjectCode {
     CompiledGraphRootOperations root_operations{};
     CompiledGraphBackgroundOperations background_operations{};
@@ -1021,11 +978,13 @@ MaterializedProjectCode materialize_project_module(
     std::unique_ptr<llvm::Module> module,
     std::unique_ptr<llvm::LLVMContext> context,
     std::span<std::shared_ptr<PackageRevision const> const> package_revisions,
+    ImportedNodeCode const& imported,
     graph_jit::LoweredGraphRootSymbols const& root_symbols,
     std::uint64_t project_generation)
 {
     auto lifetime = std::make_shared<ProjectCodeLifetime>();
     lifetime->shared = shared;
+    lifetime->package_revisions.assign(package_revisions.begin(), package_revisions.end());
 
     std::lock_guard lock(shared->mutex);
     auto& jit = *shared->jit;
@@ -1039,28 +998,25 @@ MaterializedProjectCode materialize_project_module(
             "create project JITDylib");
         lifetime->jit_dylib = &jit_dylib;
         lifetime->resources = jit_dylib.createResourceTracker();
-        auto const global_prefix = jit.getDataLayout().getGlobalPrefix();
-#if defined(IV_CONFIGURED_IV_BUILDER_LIBRARY)
-        if (std::string_view(IV_CONFIGURED_IV_BUILDER_LIBRARY).size()) {
-            jit_dylib.addGenerator(take_llvm_expected(
-                llvm::orc::DynamicLibrarySearchGenerator::Load(
-                    IV_CONFIGURED_IV_BUILDER_LIBRARY, global_prefix),
-                GraphJitDiagnosticStage::materialization,
-                "load iv_builder project symbol resolver"));
-        }
-#endif
-        std::unordered_set<std::string> loaded_libraries;
-        for (auto const& revision : package_revisions) {
-            for (auto const& library : revision->compiler_artifact.dynamic_libraries) {
-                auto const path = library.lexically_normal().string();
-                if (!loaded_libraries.insert(path).second) continue;
-                jit_dylib.addGenerator(take_llvm_expected(
-                    llvm::orc::DynamicLibrarySearchGenerator::Load(
-                        path.c_str(), global_prefix),
-                    GraphJitDiagnosticStage::materialization,
-                    "load project dynamic library '" + path + "'"));
+        if (!imported.symbols.empty()) {
+            llvm::orc::SymbolMap symbols;
+            for (auto const& [name, symbol] : imported.symbols) {
+                llvm::JITSymbolFlags flags = llvm::JITSymbolFlags::Exported;
+                if (symbol.callable) flags |= llvm::JITSymbolFlags::Callable;
+                symbols[jit.mangleAndIntern(name)] = llvm::orc::ExecutorSymbolDef(
+                    llvm::orc::ExecutorAddr(symbol.address), flags);
             }
+            check_llvm_error(
+                jit_dylib.define(
+                    llvm::orc::absoluteSymbols(std::move(symbols)),
+                    lifetime->resources),
+                GraphJitDiagnosticStage::materialization,
+                "define imported node code");
         }
+        std::vector<PackageRevision const*> revisions;
+        revisions.reserve(package_revisions.size());
+        for (auto const& revision : package_revisions) revisions.push_back(revision.get());
+        add_project_code_generators(jit, jit_dylib, revisions);
 
         llvm::orc::ThreadSafeContext thread_safe_context(std::move(context));
         check_llvm_error(
@@ -1181,7 +1137,7 @@ public:
             llvm::orc::JITTargetMachineBuilder::detectHost(),
             GraphJitDiagnosticStage::materialization,
             "detect project ORC target");
-        target.setCodeGenOptLevel(llvm::CodeGenOptLevel::Aggressive);
+        target.setCodeGenOptLevel(project_codegen_level());
         specialization_ = GraphJitKernelSpecialization{
             .sample_rate = config.sample_rate,
             .block_size = config.block_size,
@@ -1213,108 +1169,116 @@ public:
         TransitionCompilation const* transition)
     {
         std::lock_guard compile_lock(compile_mutex_);
+        using Clock = std::chrono::steady_clock;
+        auto const microseconds_since = [](Clock::time_point begin) {
+            return static_cast<std::uint64_t>(
+                std::chrono::duration_cast<std::chrono::microseconds>(
+                    Clock::now() - begin).count());
+        };
+        auto const compile_begin = Clock::now();
+        GraphJitCompileTimings timings{.transition = transition != nullptr};
         GraphJitCompileResult result{.attempted = true};
         auto captured = capture_inputs(request);
+        timings.capture_us = microseconds_since(compile_begin);
         if (!captured.diagnostics.empty()) {
             result.diagnostics = std::move(captured.diagnostics);
             return result;
         }
 
-        auto context = std::make_unique<llvm::LLVMContext>();
-        std::vector<ParsedPackage> parsed_packages;
-        parsed_packages.reserve(captured.used_revisions.size());
-        std::unordered_map<PackageRevision const*, std::size_t> parsed_by_revision;
+        // Each used revision carries its node code, compiled once per package
+        // build. A compilation only names the addresses it imports.
+        std::vector<std::shared_ptr<PackageRevision const>> package_revisions;
+        package_revisions.reserve(captured.used_revisions.size());
+        std::unordered_map<PackageRevision const*, std::size_t> package_by_revision;
         for (auto const& revision : request.definitions->package_revisions) {
             if (!revision || !captured.used_revisions.contains(revision.get())) continue;
-            try {
-                auto parsed = parse_package_module(
-                    revision,
-                    *context,
-                    shared_jit_->jit->getDataLayout(),
-                    shared_jit_->jit->getTargetTriple());
-                parsed_by_revision.emplace(revision.get(), parsed_packages.size());
-                parsed_packages.push_back(std::move(parsed));
-            } catch (GraphJitCompileError const& error) {
-                result.diagnostics.push_back(diagnostic(
-                    error.stage,
-                    error.what(),
-                    no_node_bundle,
-                    {},
-                    revision->package_root.generic_string()));
-            }
+            package_by_revision.emplace(revision.get(), package_revisions.size());
+            package_revisions.push_back(revision);
         }
-        if (!result.diagnostics.empty()) return result;
-
-        std::vector<graph_jit::PackageModule> package_modules;
-        package_modules.reserve(parsed_packages.size());
-        for (auto& parsed : parsed_packages) {
-            package_modules.push_back(graph_jit::PackageModule{
-                .revision = parsed.revision,
-                .module = std::move(parsed.module),
-                .retained_globals = parsed.retained_globals,
+        ImportedNodeCode imported;
+        std::vector<std::vector<graph_jit::PackageRetainedGlobal>> retained_globals(
+            package_revisions.size());
+        std::vector<graph_jit::PackageCode> package_inputs;
+        package_inputs.reserve(package_revisions.size());
+        for (std::size_t index = 0; index < package_revisions.size(); ++index) {
+            auto& globals = retained_globals[index];
+            for (auto const& global : package_revisions[index]->node_code_retained_globals) {
+                if (!global.address) {
+                    globals.emplace_back();
+                    continue;
+                }
+                globals.push_back(graph_jit::PackageRetainedGlobal{
+                    .symbol = imported.data(global.address),
+                    .size = global.size,
+                    .alignment = global.alignment,
+                });
+            }
+            package_inputs.push_back(graph_jit::PackageCode{
+                .revision = package_revisions[index],
+                .retained_globals = globals,
             });
         }
+        auto context = std::make_unique<llvm::LLVMContext>();
 
         std::vector<graph_jit::NodeImplementation> implementations;
         implementations.reserve(captured.nodes.size());
         try {
             for (auto const& captured_node : captured.nodes) {
-                auto const parsed_index = parsed_by_revision.find(captured_node.revision.get());
-                if (parsed_index == parsed_by_revision.end()) {
+                auto const package = package_by_revision.find(captured_node.revision.get());
+                if (package == package_by_revision.end()) {
                     fail(
                         GraphJitDiagnosticStage::package_llvm,
-                        "internal GraphJit error: provider package was not parsed");
+                        "internal GraphJit error: provider package is not a used revision");
                 }
-                auto& parsed = parsed_packages[parsed_index->second];
-                auto const record = parsed.node_records.find(
-                    captured_node.compiler_record.code_key);
-                if (record == parsed.node_records.end()) {
+                auto const& accepted = captured_node.compiler_record;
+                auto const* record = node_code_record(*captured_node.revision, accepted.code_key);
+                if (!record) {
                     fail(
                         GraphJitDiagnosticStage::package_llvm,
-                        "retained package LLVM has no NodeCompilerRecord for node '"
+                        "package node code has no record for node '"
                             + captured_node.identity.node_type_id + "'");
                 }
-                verify_compiler_record(captured_node, record->second);
+                verify_compiler_record(captured_node, *record);
+                auto const& code = record->operations;
                 implementations.push_back(graph_jit::NodeImplementation{
                     .node_bundle = captured_node.node_bundle,
                     .identity = captured_node.identity,
-                    .code_key = captured_node.compiler_record.code_key,
+                    .code_key = accepted.code_key,
                     .revision = captured_node.revision,
                     .provider_version = captured_node.provider_version,
                     .configuration_identity =
                         captured_node.configuration_identity,
-                    .package_module = package_modules[parsed_index->second].module.get(),
-                    .state_size = record->second.state_size,
-                    .state_alignment = record->second.state_alignment,
-                    .background_state_size = record->second.background_state_size,
-                    .background_state_alignment = record->second.background_state_alignment,
-                    .intrinsically_replayable = record->second.intrinsically_replayable,
-                    .pointwise_tick = record->second.pointwise_tick,
-                    .block_input_access = record->second.block_input_access,
+                    .package = &package_inputs[package->second],
+                    .state_size = accepted.state_size,
+                    .state_alignment = accepted.state_alignment,
+                    .background_state_size = accepted.background_state_size,
+                    .background_state_alignment = accepted.background_state_alignment,
+                    .intrinsically_replayable = accepted.intrinsically_replayable,
+                    .pointwise_tick = accepted.pointwise_tick,
+                    .block_input_access = accepted.block_input_access,
                     .node_data = captured_node.node_data,
                     .state_structures = captured_node.state_structures,
                     .declare_node = captured_node.declare_node,
-                    .tick_block = record->second.tick_block,
-                    .tick_block_batch = record->second.tick_block_batch,
-                    .skip_block = record->second.skip_block,
-                    .skip_block_batch = record->second.skip_block_batch,
-                    .tock_coverage = record->second.tock_coverage,
-                    .tock_coverage_batch = record->second.tock_coverage_batch,
+                    .tick_block = imported.callback(code.tick_block),
+                    .tick_block_batch = imported.callback(code.tick_block_batch),
+                    .skip_block = imported.callback(code.skip_block),
+                    .skip_block_batch = imported.callback(code.skip_block_batch),
+                    .tock_coverage = imported.callback(code.tock_coverage),
+                    .tock_coverage_batch = imported.callback(code.tock_coverage_batch),
                     .propagate_forward_coverage =
-                        record->second.propagate_forward_coverage,
+                        imported.callback(code.propagate_forward_coverage),
                     .propagate_forward_coverage_batch =
-                        record->second.propagate_forward_coverage_batch,
+                        imported.callback(code.propagate_forward_coverage_batch),
                     .propagate_reverse_coverage =
-                        record->second.propagate_reverse_coverage,
+                        imported.callback(code.propagate_reverse_coverage),
                     .propagate_reverse_coverage_batch =
-                        record->second.propagate_reverse_coverage_batch,
+                        imported.callback(code.propagate_reverse_coverage_batch),
                     .initialize_sequential_input =
-                        record->second.initialize_sequential_input,
+                        imported.callback(code.initialize_sequential_input),
                     .combine_sequential_input_values =
-                        record->second.combine_sequential_input_values,
+                        imported.callback(code.combine_sequential_input_values),
                     .host_initialize_sequential_input =
-                        captured_node.compiler_record.operations
-                            .initialize_sequential_input,
+                        accepted.operations.initialize_sequential_input,
                 });
             }
         } catch (GraphJitCompileError const& error) {
@@ -1333,26 +1297,25 @@ public:
                     });
                     continue;
                 }
-                auto const parsed_index = parsed_by_revision.find(
+                auto const package = package_by_revision.find(
                     captured_relocation.revision.get());
-                if (parsed_index == parsed_by_revision.end()) {
+                if (package == package_by_revision.end()) {
                     fail(
                         GraphJitDiagnosticStage::package_llvm,
-                        "internal GraphJit error: relocation package was not parsed");
+                        "internal GraphJit error: relocation package is not a used revision");
                 }
-                auto& parsed = parsed_packages[parsed_index->second];
+                auto const& globals = retained_globals[package->second];
                 auto const index = *captured_relocation.relocation->retained_global_index;
-                if (index >= parsed.retained_globals.size()
-                    || parsed.retained_globals[index] == nullptr) {
+                if (index >= globals.size()) {
                     fail(
                         GraphJitDiagnosticStage::package_llvm,
-                        "retained package LLVM is missing a configuration relocation global");
+                        "package node code is missing a configuration relocation global");
                 }
                 relocations.push_back(graph_jit::ConfigRelocation{
                     .node_bundle = captured_relocation.node_bundle,
                     .relocation = captured_relocation.relocation,
                     .revision = captured_relocation.revision,
-                    .retained_global = parsed.retained_globals[index],
+                    .retained_global = &globals[index],
                 });
             }
         } catch (GraphJitCompileError const& error) {
@@ -1398,7 +1361,7 @@ public:
             .graph = *request.graph,
             .specialization = specialization_,
             .realtime_storage_cost_model = realtime_storage_cost_model_,
-            .packages = package_modules,
+            .packages = package_inputs,
             .node_implementations = implementations,
             .config_relocations = relocations,
             .transition = transition_input ? &*transition_input : nullptr,
@@ -1411,34 +1374,59 @@ public:
             return result;
         }
 
+        timings.lowering_plan_us = lowering->plan_us;
+        timings.lowering_transition_us = lowering->transition_us;
+        timings.lowering_emit_us = lowering->emit_us;
+
         try {
+            auto const verify_begin = Clock::now();
             validate_lowering_output(*output, *lowering);
             verify_module(
                 *output,
                 GraphJitDiagnosticStage::lowering,
                 "graph lowerer produced invalid LLVM");
-            optimize_project_module(*output, *optimization_target_);
+            timings.verify_us = microseconds_since(verify_begin);
+            for (auto const& function : *output) {
+                if (!function.isDeclaration()) ++timings.functions;
+            }
+            timings.instructions_before_optimization = output->getInstructionCount();
+            auto const inventory_stem = "g" + std::to_string(request.project_generation)
+                + (transition ? "-transition" : "-steady");
+            write_function_inventory(*output, inventory_stem + "-before");
+            write_module_ir(*output, inventory_stem + "-before");
+            auto const optimization_begin = Clock::now();
+            optimize_project_module(*output, *optimization_target_, inventory_stem);
+            timings.optimization_us = microseconds_since(optimization_begin);
+            timings.instructions_after_optimization = output->getInstructionCount();
+            write_function_inventory(*output, inventory_stem + "-after");
+            write_module_ir(*output, inventory_stem + "-after");
+            auto const second_verify_begin = Clock::now();
             verify_module(
                 *output,
                 GraphJitDiagnosticStage::optimization,
                 "optimized project LLVM is invalid");
+            timings.verify_us += microseconds_since(second_verify_begin);
 
-            std::vector<std::shared_ptr<PackageRevision const>> package_revisions;
-            package_revisions.reserve(package_modules.size());
-            for (auto const& package : package_modules) {
-                package_revisions.push_back(package.revision);
-            }
-
-            // Package LLVM parses are compile-local. Lowering consumes selected
-            // modules directly into the project module; any unused package parses
-            // are released with package_modules after this compilation.
+            // With profiling output on, time code generation's legacy passes.
+            auto const codegen_passes_path =
+                profile_path(inventory_stem, "-codegen-passes.txt");
+            if (codegen_passes_path) llvm::TimePassesIsEnabled = true;
+            auto const materialization_begin = Clock::now();
             auto materialized = materialize_project_module(
                 shared_jit_,
                 std::move(output),
                 std::move(context),
                 package_revisions,
+                imported,
                 lowering->root_symbols,
                 request.project_generation);
+            timings.materialization_us = microseconds_since(materialization_begin);
+            if (codegen_passes_path) {
+                llvm::TimePassesIsEnabled = false;
+                std::error_code error;
+                llvm::raw_fd_ostream out(codegen_passes_path->string(), error);
+                if (!error) llvm::reportAndResetTimings(&out);
+            }
             std::optional<CompiledGraphCutover> cutover;
             if (lowering->transition) {
                 if (transition == nullptr) {
@@ -1480,12 +1468,36 @@ public:
         } catch (GraphJitCompileError const& error) {
             result.diagnostics.push_back(diagnostic(error.stage, error.what()));
         }
+        timings.total_us = microseconds_since(compile_begin);
+        result.timings.push_back(timings);
         return result;
     }
 
     GraphJitCompileResult compile(GraphJitCompileRequest const& request)
     {
         return compile_impl(request, nullptr);
+    }
+
+    // The ProjectGraph edit path with an accepted predecessor: one compilation
+    // whose module defines both the transition root and the steady root that
+    // follows it. A separate steady compilation would be discarded; its layout
+    // equals the steady plan this compilation builds first.
+    GraphJitCompileResult compile_cutover(
+        GraphJitCompileRequest const& successor,
+        std::shared_ptr<CompiledGraph const> const& predecessor)
+    {
+        if (predecessor->project_generation >= successor.project_generation) {
+            GraphJitCompileResult result{.attempted = true};
+            result.diagnostics.push_back(diagnostic(
+                GraphJitDiagnosticStage::input_capture,
+                "transition compilation predecessor is not older than its successor"));
+            return result;
+        }
+        TransitionCompilation transition{
+            .active_predecessor = predecessor,
+            .active_predecessor_phase = CompiledGraphRealtimePhase::steady,
+        };
+        return compile_impl(successor, &transition);
     }
 
     GraphJitCompileResult compile_transition(
@@ -1563,13 +1575,7 @@ GraphJitCompileResult GraphJit::compile_transition(
 GraphJitCompileResult GraphJit::handle_project_graph_transaction(
     ProjectGraphGraphJitRequest const& request)
 {
-    auto steady = compile(request.successor);
-    if (!steady.succeeded() || !request.predecessor) return steady;
-    return compile_transition(GraphJitTransitionCompileRequest{
-        .successor = request.successor,
-        .steady_successor = std::move(steady.compiled_graph),
-        .active_predecessor = request.predecessor,
-        .active_predecessor_phase = CompiledGraphRealtimePhase::steady,
-    });
+    if (!request.predecessor) return compile(request.successor);
+    return impl_->compile_cutover(request.successor, request.predecessor);
 }
 } // namespace iv

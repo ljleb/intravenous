@@ -149,7 +149,8 @@ explicit source and artifact roots when the corresponding directories are next
 to the executable.
 
 The disk artifact signature includes the package ABI, build configuration,
-target triple, pointer size and endianness, compiler/CMake/generator inputs,
+target triple, host CPU and its features (node code is compiled for the host),
+pointer size and endianness, compiler/CMake/generator inputs,
 JUCE configuration, DSL PCH, finalizer, source-introspection plugin, builder
 library, package-build template content, the explicit package ABI inputs,
 package source content, manifest, and custom package CMake content. The DSL PCH
@@ -274,6 +275,9 @@ It owns:
 - compiler/build caches and toolchain/compiler implementation state;
 - package build/compiler invocation;
 - loading/finalizing retained package LLVM;
+- node code: each node type's runtime/compiler callbacks, compiled once per package
+  build and carried by the revision, so that no project compilation compiles them
+  ([Graph JIT Direction](./graph_jit_direction.md), the section on the two JITs);
 - extraction of module-node and leaf-node providers;
 - dependency discovery produced by the build;
 - build/JIT diagnostics.
@@ -503,6 +507,11 @@ The package-side app-module split described above has landed:
   watches, and coordinates each complete refresh transaction;
 - `PackageJit` owns `ModuleLoader`, package ORC/JIT/compiler state, and returns
   self-contained immutable `PackageRevision` results synchronously;
+- `iv_package_finalize` writes each package's node code as a native object beside
+  the finalized LLVM. `ModuleLoader` links it into a node-code `JITDylib` beside the
+  package's, and
+  `PackageRevision::node_code_records` and `node_code_retained_globals` carry its
+  tables (implementation status, 2026-11-07; built, all tests pass);
 - `PackageDefinitions` owns the package catalog, accepted successful revisions,
   build diagnostics/status, and immutable accepted-revision snapshots;
 - `NodeDefinitions` consumes those snapshots and owns only the derived global

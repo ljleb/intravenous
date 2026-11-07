@@ -162,11 +162,16 @@ one. Explicitly anchored components retain their authored absolute scale.
   port-domain ordinal.
 - Node-facing single-type ports expose their concrete type-owned access directly.
   Multi-type ports expose only their declared `is<T>()` / `as<T>()` alternatives. The
-  generated binding is initialized from immutable realization bytes, selected package
-  callbacks are imported into the project LLVM module, and the whole module is
-  optimized after package O0/no-inline barriers are removed. The selected value type
-  is therefore available as a realization constant for inlining and dead-code
-  elimination rather than requiring per-value variant dispatch.
+  generated binding is initialized from immutable realization bytes. Selected
+  package callbacks run as node code: `iv_package_finalize` compiles them once per
+  package build at O3 for the host CPU, and the project module calls them out of
+  line (Front 16, 2026-11-07). The selected value type is therefore read from the
+  binding inside the callback; it is not a realization constant there, as it was
+  while callbacks were imported into the project module. Whole-project inlining,
+  which would make it one again, is a cost-model choice
+  ([Graph JIT Direction](./graph_jit_direction.md)). The earlier O0 package contract
+  is in
+  [Package Bitcode O0 Contract](./historical/package_bitcode_o0_contract_2026-11-07.md).
 - Sequential continuous inputs expose a projected `block()` and a contiguous
   history-plus-current `block_extended()` view. The storage planner aliases an already
   contiguous representation where possible and otherwise reserves bounded

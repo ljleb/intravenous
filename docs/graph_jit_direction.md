@@ -52,13 +52,38 @@ isolation.
 ### Current implementation checkpoint
 
 The application/compiler shell around whole-graph lowering has landed. `GraphJit`
-now captures one exact `ConfiguredGraph`/`NodeDefinitionsSnapshot` generation,
-resolves registered concrete nodes to the accepted package revisions that created
-them, parses those revisions' finalized O0 bitcode, indexes compiler callbacks by
-`NodeCodeKey`, resolves symbolic configuration-pointer relocations to retained LLVM
-globals, and owns a persistent project `LLJIT` with independently releasable
-per-generation resources. Generated project LLVM is verified, optimized at O3,
-and materialized synchronously before an immutable `CompiledGraph` is returned.
+owns a persistent project `LLJIT` with independently releasable resources.
+
+Node code is compiled once per package build:
+- `iv_package_finalize` writes the finalized package LLVM, then reduces the same
+  module to node code: every node record's callbacks and a copy of every retained
+  global.
+- It optimizes that at O3 for the host CPU and writes `<package>.ivpkg.bc.node-code.o`.
+  The object's only exports are `iv_package_node_code_records` and
+  `iv_package_node_code_retained_globals` (`NodeCodeRecordData`,
+  `NodeCodeRetainedGlobalData` in `module/abi.h`).
+- `ModuleLoader` links the object into its own `JITDylib` beside the package's,
+  with the same lifetime.
+- `PackageRevision::node_code_records` and `node_code_retained_globals` carry the
+  tables.
+
+A project compilation then does the following:
+- captures one exact `ConfiguredGraph`/`NodeDefinitionsSnapshot` generation;
+- resolves registered concrete nodes to the accepted package revisions that created
+  them;
+- finds each node's node-code record by `NodeCodeKey`, and resolves symbolic
+  configuration-pointer relocations to the node-code copies of retained globals;
+- names each imported address (`__iv_node_code_<address>` for callbacks,
+  `__iv_node_data_<address>` for globals) and declares those symbols in the project
+  module, which contains no package code;
+- verifies the generated project LLVM, optimizes it at O3 (without loop unrolling),
+  and materializes it synchronously into a generation `JITDylib`. That `JITDylib`
+  defines the imported symbols as absolute addresses, and `ProjectCodeLifetime` pins
+  the revisions that own them;
+- returns an immutable `CompiledGraph`.
+
+This is implementation status as of 2026-11-07; the repository owner's build
+and all 790 tests pass.
 
 The lowering boundary is executable for the semantic identity case: an empty
 project lowers to an empty canonical `NodeLayout` plus a materialized no-op root
@@ -1303,13 +1328,40 @@ native CompiledGraph
 The first JIT executes configuration code. The second JIT compiles the DSP
 program described by that configuration.
 
-The native DSP output of the first JIT is **not** the preferred code-generation
-input to the second JIT. `GraphJit` imports the required callback closures from
-the retained primitive node LLVM associated with the exact providers used by the
-configured graph so whole-project inlining and optimization remain possible. The
-accepted native node declaration/lifecycle callbacks remain useful for the canonical
-`NodeLayout`/`NodeStorage` contract and must stay pinned by the exact accepted
-package revisions.
+The first JIT's configuration code is **not** what project code calls. Node code
+consists of each node type's normalized Tick, skip, and batch operations, its
+background callbacks, and their callback closures. It depends only on the package
+build, never on a graph edit. The package build therefore compiles it once, with the
+host target, and the accepted `PackageRevision` carries it. `PackageJit` returns
+self-contained immutable revisions
+([Package Pipeline Architecture](./package_pipeline_architecture.md)), so node code
+reaches `GraphJit` inside the one request from `ProjectGraph`. Delivering it to
+`GraphJit` along any other edge would make one package refresh enter `GraphJit`
+twice ([Event Propagation Tree Constraint](./event_propagation_tree_constraint.md)).
+The superseded design, in which `GraphJit` compiled it on a separate delivery event,
+is preserved in
+[GraphJit Package Code Delivery](./historical/graph_jit_package_code_delivery_2026-11-07.md).
+
+A per-edit project compilation produces only the graph-dependent part:
+- the root, or data that a precompiled root consumes;
+- fused code that spans node types, where the tick scheduling and batch cost model
+  ([Batched Node Callback Direction](./batched_node_callbacks_direction.md) §8;
+  "tick packing" in the human co-author's words) chooses fusion. Fused code is
+  cached by its content, so an edit elsewhere does not regenerate it.
+
+Whole-project inlining across node types is therefore not the default; it is one of
+the cost model's choices, and measurement must justify it. Whether inlining pays
+depends on the packing: some batch operations prefer sample-major iteration over
+many lanes, others one lane's block at a time. The governing rule is to speed up
+without sacrificing generality. This is an accepted change, adopted "for now" by the
+human co-author on 2026-11-07. The superseded requirement is preserved in
+[GraphJit Whole-Project Inlining Requirement](./historical/graph_jit_whole_project_inlining_2026-11-07.md),
+and the measurements are under Front 16 in
+[implementation_fronts_direction.md](./implementation_fronts_direction.md).
+
+The accepted native node declaration/lifecycle callbacks remain useful for the
+canonical `NodeLayout`/`NodeStorage` contract and must stay pinned by the exact
+accepted package revisions.
 
 The two JITs may share non-app-module LLVM utility code, target setup, optimizer
 helpers, object-cache helpers, or memory-manager helpers. They should not share
@@ -1386,7 +1438,12 @@ mixed definition generation.
 The compile input therefore carries the same immutable definition generation
 used to construct the graph, and configured registered nodes carry exact
 provider/code identity. Each accepted `PackageRevision` pins both its native
-callbacks/lifetime and the finalized O0 bitcode used by the project JIT.
+callbacks/lifetime and the finalized bitcode used by the project JIT. That bitcode
+is optimizer-ready Clang LLVM that `iv_package_finalize` has already simplified with
+LLVM's pre-link pipeline, once per package build, because no graph edit can change
+that work. Every retained root keeps its body, so project optimization can still
+inline and specialize it. The superseded O0 contract is preserved in
+[Package Bitcode O0 Contract](./historical/package_bitcode_o0_contract_2026-11-07.md).
 
 The invariant is:
 

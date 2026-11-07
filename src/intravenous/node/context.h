@@ -106,8 +106,8 @@ namespace iv {
             // identity. It is not persistent runtime data; the package
             // finalizer recognizes its dedicated section accordingly. The
             // published compiler record reaches this storage, so a `used`
-            // attribute would be redundant and would retain the COMDAT both
-            // through llvm.compiler.used and the finalizer's llvm.used root.
+            // attribute would be redundant: it would retain the COMDAT through
+            // llvm.compiler.used even where no record reaches it.
             static int token IV_NODE_LAYOUT_TYPE_TOKEN_STORAGE = 0;
             return &token;
         }

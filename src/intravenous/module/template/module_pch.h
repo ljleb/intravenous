@@ -1,5 +1,12 @@
 #pragma once
 
+// Package code runs in the realtime audio callback. The NixOS clang wrapper
+// defines _FORTIFY_SOURCE after every other compile flag, so
+// PackageCompileFlags.cmake cannot override it. Undefining it here, before any
+// system header is included, keeps glibc's checked memory and string functions
+// out of package code.
+#undef _FORTIFY_SOURCE
+
 #include <intravenous/dsl.h>
 
 // This is the complete module-facing graph API. The application builds this

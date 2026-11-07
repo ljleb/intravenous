@@ -168,13 +168,34 @@ struct GraphJitTransitionCompileRequest {
         CompiledGraphRealtimePhase::steady;
 };
 
-// One ProjectGraph child request. GraphJit first compiles the predecessor-
-// independent steady artifact. When predecessor is present, it then returns
-// the executable cutover specialized from that predecessor's steady
-// realization. Both compiler operations remain one app-module entry.
+// One ProjectGraph child request. Without a predecessor GraphJit compiles the
+// steady artifact. With one, it runs a single compilation specialized from
+// that predecessor's steady realization: the module defines the transition
+// root and the steady root that follows it, and the steady plan it builds
+// first is the predecessor-independent analysis.
 struct ProjectGraphGraphJitRequest {
     GraphJitCompileRequest successor{};
     std::shared_ptr<CompiledGraph const> predecessor{};
+};
+
+// Wall-clock microseconds spent in each phase of one compilation, plus the
+// sizes that explain them. A phase the compilation did not reach stays zero.
+struct GraphJitCompileTimings {
+    bool transition = false;
+    std::uint64_t capture_us = 0;
+    // build_lowering_plan(): host-side graph, storage, and execution planning.
+    std::uint64_t lowering_plan_us = 0;
+    std::uint64_t lowering_transition_us = 0;
+    // emit_lowering_plan(): node-code import declarations plus IR emission.
+    std::uint64_t lowering_emit_us = 0;
+    std::uint64_t verify_us = 0;
+    std::uint64_t optimization_us = 0;
+    // ORC materialization: machine-code generation and linking.
+    std::uint64_t materialization_us = 0;
+    std::uint64_t total_us = 0;
+    std::uint64_t functions = 0;
+    std::uint64_t instructions_before_optimization = 0;
+    std::uint64_t instructions_after_optimization = 0;
 };
 
 struct GraphJitCompileResult {
@@ -183,6 +204,9 @@ struct GraphJitCompileResult {
     bool attempted = false;
     std::shared_ptr<CompiledGraph const> compiled_graph{};
     std::vector<GraphJitDiagnostic> diagnostics{};
+    // One entry per compilation this request ran, in order. A project
+    // transaction with a predecessor runs a steady and then a transition one.
+    std::vector<GraphJitCompileTimings> timings{};
 
     [[nodiscard]] bool succeeded() const noexcept
     {

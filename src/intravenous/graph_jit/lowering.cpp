@@ -14,9 +14,9 @@
 #include <llvm/IR/IRBuilder.h>
 #include <llvm/IR/Intrinsics.h>
 #include <llvm/IR/Type.h>
-#include <llvm/Linker/Linker.h>
 #include <llvm/Support/Alignment.h>
 
+#include <chrono>
 #include <algorithm>
 #include <bit>
 #include <cstddef>
@@ -357,219 +357,47 @@ llvm::GlobalVariable* immutable_bytes_global(
     return global;
 }
 
-std::expected<llvm::Function*, std::string> import_primitive_callback(
-    llvm::Module& output_module,
-    llvm::Module& source_module,
-    llvm::StringRef source_name,
-    llvm::FunctionType* expected_type,
-    std::string_view import_symbol,
-    std::string_view role)
-{
-    auto* source = source_module.getFunction(source_name);
-    if (!source || source->getFunctionType() != expected_type) {
-        return std::unexpected(
-            "selected primitive " + std::string(role)
-            + " callback has the wrong LLVM ABI");
-    }
-    if (source->isDeclaration()) {
-        return std::unexpected(
-            "selected primitive " + std::string(role)
-            + " callback has no definition in its finalized package LLVM");
-    }
-
-    auto const import_name = llvm::StringRef(import_symbol.data(), import_symbol.size());
-    if (auto* collision = source_module.getNamedValue(import_name); collision != nullptr
-        && collision != source) {
-        return std::unexpected(
-            "selected primitive " + std::string(role)
-            + " import symbol collides with a package symbol");
-    }
-    if (output_module.getNamedValue(import_name)) {
-        return std::unexpected(
-            "selected primitive " + std::string(role)
-            + " import symbol collides with a project symbol");
-    }
-
-    // Callback wrappers instantiated for package-local node types may have
-    // local/linkonce linkage. Such a definition cannot satisfy an external
-    // declaration in the destination module under LinkOnlyNeeded. Promote only
-    // each selected root, under a GraphJit-owned name. Package import planning
-    // collects every root first so each package module is consumed exactly once.
-    source->setName(import_name);
-    source->setLinkage(llvm::GlobalValue::ExternalLinkage);
-    source->setVisibility(llvm::GlobalValue::DefaultVisibility);
-    source->setDSOLocal(false);
-    if (source->hasComdat()) source->setComdat(nullptr);
-
-    auto* declaration = llvm::Function::Create(
-        expected_type,
-        llvm::GlobalValue::ExternalLinkage,
-        import_name,
-        output_module);
-    declaration->setCallingConv(source->getCallingConv());
-    declaration->setAttributes(source->getAttributes());
-    return declaration;
-}
-
-std::expected<llvm::GlobalVariable*, std::string> import_retained_global(
-    llvm::Module& output_module,
-    llvm::Module& source_module,
-    detail::RetainedGlobalImportPlan const& plan)
-{
-    auto* source = source_module.getNamedGlobal(plan.source_symbol);
-    if (!source || source->isDeclaration() || !source->hasInitializer()
-        || !source->isConstant()) {
-        return std::unexpected(
-            "selected retained LLVM global is not an immutable definition");
-    }
-    if (source->isThreadLocal() || source->getAddressSpace() != 0) {
-        return std::unexpected(
-            "selected retained LLVM global has an unsupported storage class");
-    }
-    auto const source_size = source_module.getDataLayout().getTypeAllocSize(
-        source->getValueType());
-    if (source_size.isScalable() || source_size.getFixedValue() != plan.size) {
-        return std::unexpected(
-            "selected retained LLVM global has the wrong finalized size");
-    }
-
-    auto const import_name = llvm::StringRef(
-        plan.import_symbol.data(), plan.import_symbol.size());
-    if (auto* collision = source_module.getNamedValue(import_name); collision != nullptr
-        && collision != source) {
-        return std::unexpected(
-            "retained LLVM global import symbol collides with a package symbol");
-    }
-    if (output_module.getNamedValue(import_name)) {
-        return std::unexpected(
-            "retained LLVM global import symbol collides with a project symbol");
-    }
-
-    // Retained globals can have private/internal linkage just like package-local
-    // callback wrappers. Promote only the selected immutable root under a
-    // GraphJit-owned name; LinkOnlyNeeded then imports its initializer closure.
-    source->setName(import_name);
-    source->setLinkage(llvm::GlobalValue::ExternalLinkage);
-    source->setVisibility(llvm::GlobalValue::DefaultVisibility);
-    source->setDSOLocal(false);
-    source->setUnnamedAddr(llvm::GlobalValue::UnnamedAddr::None);
-    if (source->hasComdat()) source->setComdat(nullptr);
-
-    auto* declaration = new llvm::GlobalVariable(
-        output_module,
-        source->getValueType(),
-        true,
-        llvm::GlobalValue::ExternalLinkage,
-        nullptr,
-        import_name,
-        nullptr,
-        llvm::GlobalValue::NotThreadLocal,
-        source->getAddressSpace());
-    declaration->setAlignment(source->getAlign());
-    return declaration;
-}
-
+// Package code is compiled once per accepted revision (graph_jit_direction.md),
+// so the project module imports the selected callbacks and retained globals by
+// declaring the symbols that code exports. The generation JITDylib resolves
+// them through its link order.
 std::expected<void, std::string> emit_package_imports(
-    LoweringInput& input,
+    LoweringInput const& input,
     detail::PackageImportPlan const& plan,
     llvm::Module& output_module)
 {
-    auto* block_type = primitive_block_operation_type(output_module.getContext());
-    auto* background_type = background_operation_type(output_module.getContext());
-    auto* batch_type = batch_operation_type(output_module.getContext());
-    auto* size_type = llvm::IntegerType::get(
-        output_module.getContext(),
-        static_cast<unsigned>(sizeof(std::size_t) * 8));
-    auto* sequential_combine_type = llvm::FunctionType::get(
-        llvm::Type::getInt1Ty(output_module.getContext()),
-        {size_type,
-         llvm::Type::getInt8Ty(output_module.getContext()),
-         llvm::PointerType::getUnqual(output_module.getContext()),
-         llvm::PointerType::getUnqual(output_module.getContext()),
-         size_type,
-         size_type},
-        false);
-    auto* sequential_initialize_type = llvm::FunctionType::get(
-        llvm::Type::getInt1Ty(output_module.getContext()),
-        {size_type,
-         llvm::Type::getInt8Ty(output_module.getContext()),
-         llvm::Type::getInt8Ty(output_module.getContext()),
-         llvm::PointerType::getUnqual(output_module.getContext()),
-         size_type,
-         size_type},
-        false);
+    auto& context = output_module.getContext();
     for (auto const& package_plan : plan.packages) {
-        if (package_plan.package_index >= input.packages.size()
-            || !input.packages[package_plan.package_index].module) {
-            return std::unexpected(
-                "planned package LLVM is not available for lowering consumption");
+        if (package_plan.package_index >= input.packages.size()) {
+            return std::unexpected("planned package code is not a GraphJit lowering input");
         }
-
-        // Package modules are parsed specifically for this GraphJit compilation.
-        // Promote all selected callback/retained-global roots in place, then
-        // consume the module once. LinkOnlyNeeded keeps only their transitive
-        // closures without a full CloneModule copy.
-        auto source_module =
-            std::move(input.packages[package_plan.package_index].module);
         for (auto const& callback : package_plan.callbacks) {
-            llvm::FunctionType* callback_type = nullptr;
-            switch (callback.abi) {
-            case detail::CallbackImportAbi::block:
-                callback_type = block_type;
-                break;
-            case detail::CallbackImportAbi::background:
-                callback_type = background_type;
-                break;
-            case detail::CallbackImportAbi::batch:
-                callback_type = batch_type;
-                break;
-            case detail::CallbackImportAbi::sequential_initialize:
-                callback_type = sequential_initialize_type;
-                break;
-            case detail::CallbackImportAbi::sequential_combine:
-                callback_type = sequential_combine_type;
-                break;
-            }
-            IV_ASSERT(callback_type != nullptr,
-                "unknown primitive callback import ABI");
-            auto imported = import_primitive_callback(
-                output_module,
-                *source_module,
-                callback.source_symbol,
-                callback_type,
-                callback.import_symbol,
-                callback.role);
-            if (!imported) return std::unexpected(std::move(imported.error()));
-        }
-        for (auto const& global : package_plan.retained_globals) {
-            auto imported = import_retained_global(
-                output_module, *source_module, global);
-            if (!imported) return std::unexpected(std::move(imported.error()));
-        }
-
-        if (llvm::Linker::linkModules(
-                output_module,
-                std::move(source_module),
-                llvm::Linker::Flags::LinkOnlyNeeded)) {
-            return std::unexpected(
-                "failed to import selected package LLVM roots into the project module");
-        }
-
-        for (auto const& callback : package_plan.callbacks) {
-            auto* imported = output_module.getFunction(callback.import_symbol);
-            if (!imported || imported->isDeclaration()) {
+            auto const name = llvm::StringRef(callback.symbol);
+            if (name.empty() || output_module.getNamedValue(name)) {
                 return std::unexpected(
                     "selected primitive " + callback.role
-                    + " closure was not imported into the project module");
+                    + " import symbol is empty or collides with a project symbol");
             }
+            llvm::Function::Create(
+                package_callback_type(context, callback.abi),
+                llvm::GlobalValue::ExternalLinkage,
+                name,
+                output_module);
         }
         for (auto const& global : package_plan.retained_globals) {
-            auto* imported = output_module.getNamedGlobal(global.import_symbol);
-            if (!imported || imported->isDeclaration() || !imported->hasInitializer()
-                || !imported->isConstant()) {
+            auto const name = llvm::StringRef(global.symbol);
+            if (name.empty() || output_module.getNamedValue(name) || global.size == 0) {
                 return std::unexpected(
-                    "selected retained LLVM global was not imported into the project module");
+                    "retained package global import is empty or collides with a project symbol");
             }
+            auto* declaration = new llvm::GlobalVariable(
+                output_module,
+                llvm::ArrayType::get(llvm::Type::getInt8Ty(context), global.size),
+                true,
+                llvm::GlobalValue::ExternalLinkage,
+                nullptr,
+                name);
+            declaration->setAlignment(llvm::Align(global.alignment));
         }
     }
     return {};
@@ -624,9 +452,9 @@ std::expected<llvm::GlobalVariable*, std::string> immutable_node_configuration_g
             pointer = llvm::ConstantPointerNull::get(pointer_type);
         } else {
             auto* global = module.getNamedGlobal(relocation.retained_global_symbol);
-            if (!global || global->isDeclaration()) {
+            if (!global) {
                 return std::unexpected(
-                    "planned node configuration relocation references an unmaterialized retained global");
+                    "planned node configuration relocation references an unimported retained global");
             }
             pointer = global;
             if (relocation.addend != 0) {
@@ -1671,8 +1499,8 @@ void stage_tick_sequential_sample_timelines(
         if (mixed && combine == nullptr) {
             combine = module->getFunction(
                 llvm::StringRef(combine_symbol.data(), combine_symbol.size()));
-            IV_ASSERT(combine && !combine->isDeclaration(),
-                "GraphJit mixed sample input has no materialized combination callback");
+            IV_ASSERT(combine,
+                "GraphJit mixed sample input has no imported combination callback");
         }
         auto* supplied = builder.CreateInBoundsGEP(
             byte_type,
@@ -1946,8 +1774,8 @@ void stage_manual_control_sample_timelines(
             "GraphJit manual control lost its target timeline");
         auto* combine = module->getFunction(
             llvm::StringRef(combine_symbol.data(), combine_symbol.size()));
-        IV_ASSERT(combine && !combine->isDeclaration(),
-            "GraphJit manual input has no materialized combination callback");
+        IV_ASSERT(combine,
+            "GraphJit manual input has no imported combination callback");
         llvm::Value* target_bits = settled_bits_value;
         llvm::Value* effective_bits = settled_bits_value;
         if (control.configured.dynamic) {
@@ -6568,11 +6396,9 @@ std::expected<void, std::string> emit_execution_step(
     auto* skip_callback = needs_skip_callback
         ? module.getFunction(step.skip_callback_symbol)
         : nullptr;
-    if (!tick_callback || tick_callback->isDeclaration()
-        || (needs_skip_callback
-            && (!skip_callback || skip_callback->isDeclaration()))) {
+    if (!tick_callback || (needs_skip_callback && !skip_callback)) {
         return std::unexpected(
-            "GraphJit execution plan references an unmaterialized primitive callback");
+            "GraphJit execution plan references an unimported primitive callback");
     }
     if (step.maximum_block_size == 0) {
         return std::unexpected(
@@ -6913,19 +6739,19 @@ std::expected<void, std::string> emit_execution_batch(
     }
 
 
-    auto materialized_callback = [&](std::string_view symbol) -> llvm::Function* {
+    auto imported_callback = [&](std::string_view symbol) -> llvm::Function* {
         auto* callback = module.getFunction(
             llvm::StringRef(symbol.data(), symbol.size()));
-        return callback && !callback->isDeclaration() ? callback : nullptr;
+        return callback;
     };
-    auto* tick_callback = skip ? nullptr : materialized_callback(tick_symbol);
+    auto* tick_callback = skip ? nullptr : imported_callback(tick_symbol);
     auto* skip_callback = skip || has_activity
-        ? materialized_callback(skip_symbol)
+        ? imported_callback(skip_symbol)
         : nullptr;
     if ((!skip && !tick_callback)
         || ((skip || has_activity) && !skip_callback)) {
         return std::unexpected(
-            "GraphJit realtime batch references an unmaterialized callback");
+            "GraphJit realtime batch references an unimported callback");
     }
     auto& context = builder.getContext();
     auto* function = builder.GetInsertBlock()->getParent();
@@ -8016,9 +7842,9 @@ std::expected<llvm::Function*, std::string> define_background_root_operation(
 
         auto* imported = module.getFunction(
             llvm::StringRef(callback_symbol.data(), callback_symbol.size()));
-        if (!imported || imported->isDeclaration()) {
+        if (!imported) {
             return std::unexpected(
-                "GraphJit background batch references an unmaterialized callback");
+                "GraphJit background batch references an unimported callback");
         }
         if (candidates.size() > std::numeric_limits<std::size_t>::max()
                 / lane_size) {
@@ -8467,9 +8293,9 @@ define_sequential_input_combiner(
                 "GraphJit sequential input has no imported combination callback");
         }
         auto* callback = module.getFunction(primitive->combine_sequential_input_values);
-        if (!callback || callback->isDeclaration()) {
+        if (!callback) {
             return std::unexpected(
-                "GraphJit sequential input combination callback is not materialized");
+                "GraphJit sequential input combination callback is not imported");
         }
 
         auto* selected = llvm::BasicBlock::Create(
@@ -8566,9 +8392,9 @@ define_sequential_input_initializer(
         }
         auto* callback = module.getFunction(
             primitive->initialize_sequential_input);
-        if (!callback || callback->isDeclaration()) {
+        if (!callback) {
             return std::unexpected(
-                "GraphJit sequential input neutral initializer is not materialized");
+                "GraphJit sequential input neutral initializer is not imported");
         }
 
         auto* selected = llvm::BasicBlock::Create(
@@ -9544,6 +9370,33 @@ std::expected<LoweringOutput, std::string> emit_lowering_plan(
 }
 } // namespace
 
+llvm::FunctionType* package_callback_type(
+    llvm::LLVMContext& context,
+    CallbackImportAbi abi)
+{
+    auto* pointer = llvm::PointerType::getUnqual(context);
+    auto* size_type = llvm::IntegerType::get(
+        context, static_cast<unsigned>(sizeof(std::size_t) * 8));
+    auto* boolean = llvm::Type::getInt1Ty(context);
+    auto* byte = llvm::Type::getInt8Ty(context);
+    switch (abi) {
+    case CallbackImportAbi::block:
+        return primitive_block_operation_type(context);
+    case CallbackImportAbi::background:
+        return background_operation_type(context);
+    case CallbackImportAbi::batch:
+        return batch_operation_type(context);
+    case CallbackImportAbi::sequential_initialize:
+        return llvm::FunctionType::get(
+            boolean, {size_type, byte, byte, pointer, size_type, size_type}, false);
+    case CallbackImportAbi::sequential_combine:
+        return llvm::FunctionType::get(
+            boolean, {size_type, byte, pointer, pointer, size_type, size_type}, false);
+    }
+    IV_ASSERT(false, "unknown package callback ABI");
+    return nullptr;
+}
+
 std::expected<LoweringOutput, std::string> lower_configured_graph_to_llvm(
     LoweringInput& input,
     llvm::Module& output_module)
@@ -9562,13 +9415,28 @@ std::expected<LoweringOutput, std::string> lower_configured_graph_to_llvm(
     // Host-side graph/declaration/import/configuration/execution planning must
     // succeed before output LLVM is mutated or a compile-local package module is
     // consumed. The emitter then realizes that immutable plan in one direction.
+    using Clock = std::chrono::steady_clock;
+    auto const microseconds = [](Clock::time_point begin, Clock::time_point end) {
+        return static_cast<std::uint64_t>(
+            std::chrono::duration_cast<std::chrono::microseconds>(end - begin).count());
+    };
+    auto const plan_begin = Clock::now();
     auto plan = detail::build_lowering_plan(input);
     if (!plan) return std::unexpected(std::move(plan.error()));
 
+    auto const transition_begin = Clock::now();
     auto transition = specialize_transition_plan(*plan, input.transition);
     if (!transition) return std::unexpected(std::move(transition.error()));
 
-    return emit_lowering_plan(
+    auto const emit_begin = Clock::now();
+    auto output = emit_lowering_plan(
         input, std::move(*plan), std::move(*transition), output_module);
+    auto const emit_end = Clock::now();
+    if (output) {
+        output->plan_us = microseconds(plan_begin, transition_begin);
+        output->transition_us = microseconds(transition_begin, emit_begin);
+        output->emit_us = microseconds(emit_begin, emit_end);
+    }
+    return output;
 }
 } // namespace iv::graph_jit

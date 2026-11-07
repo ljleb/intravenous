@@ -283,7 +283,9 @@ void PackageWatcher::handle_required_definitions_changed(
         install_effective_declarations_locked(merge_declaration_sources_locked());
     }
 
-    IV_INVOKE_LINKER_EVENT_SOURCE(
+    // This handler runs inside the NodeInstances event's propagation, so the
+    // notification continues that propagation instead of starting a new one.
+    IV_INVOKE_LINKER_EVENT(
         iv_runtime_package_watcher_work_available_event,
         PackageWatcherWorkAvailable{});
 }

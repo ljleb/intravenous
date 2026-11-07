@@ -2587,6 +2587,474 @@ media work does not block completion of the core multi-client session server.
 
 **Primary ownership:** optimization after the correctness architecture is stable.
 
+**Priority target (human co-author, 2026-11-06): edit-to-activation latency.** A
+user edit to the authored project graph should take at most 0.2 s, and preferably
+less, from the edit to the executor accepting the recompiled generation. Edits here
+mean node instances, connections, and configuration. Package compilation is
+excluded. This target comes before the other Front 16 categories.
+
+**Principle (human co-author, 2026-11-07): edit-invariant work is done before the
+compilation starts.** Anything that a graph edit cannot invalidate must already be
+computed by the time a `GraphJit` compilation is launched. For each per-compilation
+cost, ask what it depends on:
+- Work that depends only on a package revision belongs in the package build
+  (`iv_package_finalize`).
+- Work that depends on a node type and its realization is computed once and reused
+  across generations.
+- Only work that depends on the edited graph stays in the compilation.
+
+A cache filled lazily by the first compilation that needs it does not meet this
+principle, because that compilation pays the cost.
+
+Measurement (implementation status, 2026-11-06): setting `IV_EDIT_TIMING=1` makes
+`ProjectGraph::rebuild_locked()` write one "edit timing" entry per published
+rebuild to the diagnostic log (`IV_LOG_FILE`):
+- configuration time: `NodeInstances`, `GraphConnections`, and root finish plus
+  generation assembly;
+- `GraphJit` time;
+- `GraphExecutor::stage()`.
+
+`GraphJitCompileResult::timings` adds one `GraphJitCompileTimings` record per
+compilation: capture, package bitcode parse (with byte count), lowering plan,
+transition plan, IR emission and package linking, verification, O3 optimization,
+and ORC code generation, plus function and instruction counts.
+`ProjectGraphGeneration::rebuild_timings` and `graph_jit_timings` retain the same
+numbers on each published generation.
+
+`benchmark/iv_edit_latency_benchmark.cpp` (target `iv_edit_latency_benchmark`)
+measures edits without a frontend. It runs the server's pipeline: package watcher,
+`PackageJit`, definitions, `NodeInstances`, `GraphConnections`, `ProjectGraph`,
+`GraphJit`, and `GraphExecutor`. A realtime thread paced to the block period
+activates and ticks generations as the audio callback does. The benchmark builds
+a project of built-in nodes in one of several shapes of size N (`--shape`,
+`--size`; added 2026-11-07), so that compilation and tick-scheduling changes are
+not tuned to one graph:
+- `voices`: wide and shallow, identical chains;
+- `chain`: one deep series of filters;
+- `mixed`: alternating oscillator and filter types, warpers, and cross-voice
+  subtraction;
+- `feedback`: N instances of `iv.bench.feedback_voice`, a module the benchmark
+  writes into its workspace as a project-local package. Its one-sample loop
+  `saw -> subtract -> low pass -> detach() -> subtract` forces sample-by-sample
+  interleaving across node types. Project connections (`ProjectSampleConnection`)
+  cannot mark feedback; only module code breaks a cycle, with `detach()`. The
+  first version built the loop from project connections through
+  `iv.builtin.latency`, and `GraphJit` rejected every generation with "implicit
+  cycle" (2026-11-07).
+
+It then repeats five edits: change a constant, add a node, connect it, disconnect
+it, and delete it. It reports per-phase medians for each kind of edit. No registered
+built-in node produces events without external MIDI, so an event-heavy shape needs a
+test package with an event generator.
+
+Observations from source, before any measurement:
+- *Two full compilations per edit.* `GraphJit::handle_project_graph_transaction()`
+  runs a steady `compile()` and then a `compile_transition()` whenever a
+  predecessor is active. Each repeats every phase below.
+- *Package bitcode is re-parsed on every compilation.* `compile_impl()` reads and
+  parses each used package's finalized bitcode from disk into a fresh
+  `LLVMContext`. Lowering then links the selected callbacks with `LinkOnlyNeeded`.
+- *Whole-project optimization and code generation.* `optimize_project_module()`
+  removes the packages' `optnone`/`noinline` barriers and runs the O3 per-module
+  pipeline over the entire project module. ORC then generates code at
+  `CodeGenOptLevel::Aggressive` on one thread. No compiled code is reused between
+  generations.
+
+Measured baseline (2026-11-07, repository owner, `iv_edit_latency_benchmark`,
+medians per edit): about 14.5 s at 16 voices (81 bundles) and 24.6 s at 64 voices
+(321 bundles). Configuration and lowering planning take 1-2 ms. Each of the two
+compilations spends about 3.2 s (16 voices) or 6.0 s (64 voices) in O3 and about
+3.9 s or 6.1 s in code generation. Package parse, emit, and verify together take
+about 0.17 s.
+
+Both sizes import 5,564 functions and about 180,000 instructions; 64 voices adds
+only about 12,000. The function inventory (`IV_GRAPH_JIT_PROFILE_DIR`) showed
+callbacks for every built-in node type, not only the four the project uses, plus
+host-side construction code (`describe_node`, `NodeTypeConfigureAdapter`,
+`ErasedConfigurationArguments`).
+
+*Import-closure defect (fixed in source 2026-11-07, awaiting measurement):*
+`IV_NODE_COMPILER_RECORD_ATTR` and the configuration type-identity records are
+`used`, so they sit in the package's `llvm.used`. `Linker::LinkOnlyNeeded` always
+links appending-linkage globals and everything their initializers reference, so
+each compilation imported the whole package. Lowering now erases the package's
+`llvm.used` and `llvm.compiler.used` before linking. `GraphJit` has already
+scanned the records from the parsed package, and the project module needs none of
+them.
+
+Measured after the import fix (2026-11-07, 16 voices): about 3.15 s per edit, or
+about 1.56 s per compilation. That breaks down as O3 about 0.80 s, code generation
+about 0.67 s, package parse about 58 ms, emit about 22 ms, and verify about 8 ms.
+The largest function before optimization is the root tick (4,151 instructions);
+next come one batch wrapper per node type (about 1,100 each).
+
+*One compilation per edit (implementation decision, 2026-11-07, awaiting
+measurement):* with an accepted predecessor,
+`GraphJit::handle_project_graph_transaction()` now runs only the cutover
+compilation. Its module defines both the transition root and the steady root, and
+its steady plan is built first. The separate steady compilation was used only to
+check the transition's steady storage extent against an identical plan; its
+machine code was discarded. `compile_transition()` remains for direct callers.
+*Lazy package bitcode:* `getOwningLazyBitcodeModule` now reads globals eagerly,
+and the linker materializes only the callbacks' closures.
+
+Measured after single compilation and lazy bitcode (2026-11-07). Per edit:
+- O3, 16 voices: 1.52 s compile; realtime tick 396 µs mean, 626 µs worst, of a
+  5,333 µs block.
+- O3, 64 voices: 6.51 s; tick 1,523 µs mean.
+- O0 with fast instruction selection, 16 voices: 0.16 s; tick 4,064 µs.
+- O0 with fast instruction selection, 64 voices: 0.43 s; tick 15,496 µs, which
+  misses the block deadline.
+
+So a whole-project O0 build is not viable even as a temporary build. The
+function inventory at 64 voices shows that only the root grows with the project:
+`__iv_graph_root_tick_block` goes from 4,151 to 16,583 instructions, about 260 per
+voice. There are four primitive wrappers, one per batched node type, at both
+sizes, and the imported package code does not change. A further profiling knob,
+`IV_GRAPH_JIT_ROOT_OPTNONE=1`, leaves only the generated `__iv_graph_root_*`
+functions unoptimized and un-inlined. It separates the root's share of compile
+time and of realtime cost.
+
+After 16 to 64 voices, compile time rose about 70% while instructions rose about
+7%. Superlinear passes on the growing root functions are the likely cause; after
+optimization, `__iv_graph_root_tick_block` is the largest function by far (22,501
+instructions at 16 voices).
+
+The first `IV_GRAPH_JIT_ROOT_OPTNONE=1` measurement is invalid. It showed no
+compile-time change and a 25% slower tick. The new pass manager skips `optnone`
+functions only through `llvm::OptNoneInstrumentation`. `optimize_project_module()`
+did not register it, so the roots were still optimized; only inlining into them was
+refused. The instrumentation is now always registered (2026-11-07, awaiting
+measurement).
+
+Pass profile at 64 voices (2026-11-07, `IV_GRAPH_JIT_PROFILE_DIR`, one cutover
+compilation):
+- *Input to O3.* 34,338 instructions in 425 functions. The generated
+  `__iv_graph_root_tick_block` accounts for 16,583 instructions and the other
+  generated `__iv_graph_*` functions for 7,237. Package code compiled at Clang O0
+  accounts for 10,514 instructions in about 385 functions.
+- *Output of O3.* 97,416 instructions in 40 functions. The root alone is 91,165,
+  5.5 times its input size. Package code shrinks to 2,130.
+- *Optimization (3.47 s).* Loop and scalar passes dominate: `LoopUnrollPass` and
+  `LoopRotatePass` 0.41 s each, `GVNPass` 0.40 s, `InstCombinePass` 0.39 s, and
+  `IndVarSimplifyPass` 0.18 s.
+- *Code generation (2.91 s).* X86 DAG instruction selection 0.63 s and greedy
+  register allocation 0.62 s, both proportional to the optimized root.
+
+The hypothesis that the per-type wrappers grow with the lane count is refuted. The
+four `__iv_graph_primitive_*_tick_block_batch` wrappers end at 469-609 instructions.
+The cost follows the root's growth during optimization.
+
+Profiling knobs (2026-11-07):
+- `IV_GRAPH_JIT_NO_UNROLL=1` disabled partial, runtime, and full loop unrolling in
+  the project pipeline.
+- `IV_GRAPH_JIT_PRELINK_PACKAGES=1` ran LLVM's ThinLTO pre-link simplification
+  pipeline (O2) inside `GraphJit`. It ran once per package revision, the first time
+  a compilation used that revision, and later compilations lowered from the
+  simplified bitcode. At the time the design was O0 package bitcode with
+  whole-project optimization; the knob did not change that design.
+- `IV_GRAPH_JIT_DUMP_IR=1`, together with `IV_GRAPH_JIT_PROFILE_DIR`, writes the
+  module before and after optimization as `<stem>-before.ll` and `<stem>-after.ll`.
+
+Measured at 64 voices (2026-11-07, repository owner, `iv_edit_latency_benchmark`,
+per-edit medians; the tick is the realtime tick mean of a 5,333 µs block):
+
+| Knobs | Edit wall | Optimize | Code generation | Tick |
+|---|---|---|---|---|
+| none | 6.6 s | 3.6 s | 2.9 s | 1,535 µs |
+| `NO_UNROLL` | 4.9 s | 2.5 s | 2.3 s | 1,540 µs |
+| `PRELINK_PACKAGES` | 4.75 s | 1.95 s | 2.75 s | 1,500 µs |
+| both | 3.3 s | 1.13 s | 2.13 s | 1,520 µs |
+| `ROOT_OPTNONE` (fixed) | 1.81 s | 0.34 s | 1.41 s | 1,950 µs |
+
+With `PRELINK_PACKAGES`, the initial compilation's package parse took 2.0 s. That is
+the one-time pre-link of the whole built-in package.
+
+Decisions taken from these measurements:
+- *Pre-link at package build (accepted change, 2026-11-07).* Package translation
+  units now compile to optimizer-ready Clang LLVM (`-O2 -Xclang
+  -disable-llvm-passes -flto=full`), and so do the DSL PCH and the clangd command.
+  `iv_package_finalize` removes Clang's O0 barrier pair (`optnone` with `noinline`)
+  from any O0 LLVM input. It then runs the ThinLTO pre-link pipeline (O2) once over
+  the linked package. (The pre-link first ran after `preserve_package_code()` had
+  pinned every reachable function in `llvm.used`; that pin is removed, see "Friction:
+  pinned copies left gaps in the linked `.eh_frame`" below.)
+  `optimize_project_module()` no longer removes barriers, and the in-process knob is
+  gone. The superseded O0 contract is in
+  [Package Bitcode O0 Contract](historical/package_bitcode_o0_contract_2026-11-07.md).
+  This is awaiting measurement: the expectation is the `PRELINK_PACKAGES` numbers,
+  plus whatever TBAA and lifetime markers add.
+- *No loop unrolling per edit (implementation decision, 2026-11-07).* The project
+  pipeline runs with `PipelineTuningOptions::LoopUnrolling` off. It saved about
+  1.6 s per edit, and no tick change was measurable. Loops whose trip counts are
+  package constants are fully unrolled by the package pre-link pipeline.
+  `IV_GRAPH_JIT_UNROLL=1` re-enables unrolling for comparison. A node whose loops
+  only become constant after realization may want unrolling back. Measure such a
+  node before deciding how to handle it.
+
+Verified from the 4-voice IR dump:
+- *No TBAA, no lifetime markers.* The O0 package bitcode contained no `!tbaa`
+  metadata and no `llvm.lifetime` markers.
+- *The root's growth is per-instance inlining of generated plumbing.* The
+  unoptimized `__iv_graph_root_tick_block` (1,043 instructions, 49 blocks) makes 16
+  per-instance calls to `__iv_graph_primitive_*_tick_block` and two batched calls.
+  For each instance it copies a binding template (216 or 464 bytes) into an alloca
+  with `memcpy` and patches the storage pointers in place. After O3, the root has
+  5,635 instructions in 579 blocks: 160 `memcpy` calls, 86 `assertion_failed` calls,
+  10 `__cxa_throw` calls, and no floating-point or vector instructions. The checks
+  come from `build_request.h`, for example `ctx.continuous_input_bindings.size() ==
+  input_count`. They validate a `ReflectedNodeTickContext` that the root builds at
+  runtime, block by block, from values the lowerer already knows. They do not fold
+  away, because the context escapes into calls that stay out of line, such as the
+  `tick_node_block<Constant>` lambda. The DSP itself stays in out-of-line package
+  functions (`SawOscillator::tick`, `SimpleIirLowPass::tick`).
+- *Package code is compiled for baseline x86-64.* Every package function carries
+  `"target-cpu"="x86-64"` with SSE2 features. Out-of-line package functions are
+  therefore generated without the host features that `GraphJitKernelSpecialization`
+  records for the project target. This is a realtime defect; it does not affect edit
+  latency, and it is not yet addressed.
+
+Measured after pre-link at package build and no per-edit unrolling (2026-11-07, 64
+voices, repository owner; no tests were run on this state. An earlier version of
+this line said all 790 tests passed, which no test run supported):
+- *New defaults.* 3.3-3.5 s per edit (optimize 1.12 s, code generation 2.1-2.3 s).
+  The tick fell to 1,265-1,300 µs from about 1,520 µs with in-process pre-link of O0
+  IR. The 4-voice dump now has 1,168 `!tbaa` references and 144 lifetime markers in
+  the project module; the O0 bitcode had none.
+- *`IV_GRAPH_JIT_UNROLL=1` on top.* 5.5-5.9 s per edit with an unchanged tick
+  (1,260-1,276 µs). This confirms that unrolling does not pay for itself per edit.
+- *`iv_package_finalize`.* `package_prelink_optimize_us` is 2.49 s of 2.71 s for the
+  built-in package. This is package-build time.
+- *`IV_GRAPH_JIT_NOINLINE_PRIMITIVES=1`: invalid run.* The package callback adapters
+  in `build_request.h` and `tick.h` are `IV_FORCEINLINE` (`always_inline`). Adding
+  `noinline` to them produced invalid IR. The always-inliner still inlined them, so
+  optimization was unchanged at 1.1 s. The verifier then rejected the optimized
+  module, so nothing was materialized or accepted, and the measured tick (about 1 µs)
+  was an empty executor. The knob now removes `alwaysinline` first. The benchmark
+  summary now prints how many generations per edit kind were accepted.
+
+The package functions' attribute group also showed the NixOS clang wrapper's
+hardening flags on realtime code. The 4-voice module had `sspstrong` on 43
+functions, `"zero-call-used-regs"="used-gpr"` and `"frame-pointer"="all"` on 10, and
+`"probe-stack"="inline-asm"` on 5. The switch to `-O2` also activated
+`_FORTIFY_SOURCE`, which put 7 `__memcpy_chk` calls into the primitive operations; O3
+folded them here. `-fwrapv`, `_GLIBCXX_ASSERTIONS`, pattern initialization, and CET
+were not active in this build environment.
+
+*No hardening in package code (accepted change, human co-author, 2026-11-07).*
+Package code runs in the realtime callback, so it is compiled without hardening,
+whatever the build environment enables. `module/template/PackageCompileFlags.cmake`
+defines `IV_PACKAGE_COMPILE_FLAGS` once. Package translation units, the DSL PCH, and
+the clangd command all use it. The wrapper adds its hardening and frame-pointer
+flags before ours, so ours override them: the stack protector, stack-clash probes,
+register zeroing, CET, pattern initialization, `-fwrapv`, `-fno-strict-aliasing`
+(which would remove TBAA), `_GLIBCXX_ASSERTIONS`, and frame pointers. The wrapper
+defines `_FORTIFY_SOURCE` after our flags, so `module_pch.h` undefines it before any
+system header. Host code keeps the environment's flags. Package code under `perf`
+no longer has frame pointers, so call graphs through it need DWARF unwinding. The
+baseline `"target-cpu"="x86-64"` remains a separate open realtime defect.
+
+The root's per-instance plumbing is the remaining structural cost, and it scales
+with instance count. The ROOT_OPTNONE row above shows its two sides. Optimizing it
+cost about 3 s per edit at 64 voices, and generating code for it cost 1.4 s even
+unoptimized. Without root optimization, the tick was 27% slower.
+
+Measured without package hardening (2026-11-07, 64 voices, repository owner; all
+generations accepted):
+
+| Knobs | Edit wall | Optimize | Code generation | Tick |
+|---|---|---|---|---|
+| none | 3.1 s | 1.08 s | 1.97 s | 1,166-1,199 µs |
+| `NOINLINE_PRIMITIVES` | 0.61 s | 0.25 s | 0.33 s | 1,112-1,195 µs |
+| `NOINLINE_PRIMITIVES`, `CODEGEN_LEVEL=1` | 0.61 s | 0.25 s | 0.33 s | 1,150-1,163 µs |
+| `ROOT_OPTNONE` | 1.0 s | 0.15 s | 0.81 s | 1,215-1,251 µs |
+
+Dropping hardening lowered the tick from 1,265-1,300 µs to about 1,170 µs. The 4-voice
+dump confirms that the hardening attributes and `__memcpy_chk` calls are gone, and
+TBAA is intact.
+
+*Primitive operations stay out of line (implementation decision, 2026-11-07).*
+`optimize_project_module()` removes `alwaysinline` (from `IV_FORCEINLINE`) from
+every imported `__iv_graph_primitive_*` function and marks it `noinline`. Inlining
+them into the root cost about 2.5 s per edit at 64 voices and bought no measurable
+tick. The root builds each instance's `ReflectedNodeTickContext` at runtime, so
+inlining had nothing constant to specialize. `IV_GRAPH_JIT_INLINE_PRIMITIVES=1`
+restores inlining for comparison. Whole-project inlining remains possible, as
+`graph_jit_direction.md` requires; it is no longer the default.
+
+Observations that follow from this:
+- *Primitive code is edit-invariant.* `import_primitive_callback()` only renames a
+  package callback and promotes its linkage, so every `__iv_graph_primitive_*`
+  function and its imported closure depend only on the package revision and the
+  callback's source symbol. Under the edit-invariance principle, that code should
+  be compiled before any compilation is launched, not on every edit.
+- *Codegen level does not matter* once the primitives are out of line.
+- *An unoptimized root is not cheaper.* `ROOT_OPTNONE` cost more code generation
+  (0.81 s) than optimizing the root and generating code for it (about 0.58 s
+  together).
+
+*Primitive code compiled once per package revision (accepted change, human
+co-author, 2026-11-07, "for now").* The normative statement is in
+`graph_jit_direction.md`, in the section on the two JITs:
+- The package build compiles node code once, for the host target, and the accepted
+  `PackageRevision` carries it. The first version of this statement named `GraphJit`
+  as the compiler; the module is corrected below.
+- A per-edit compilation produces only the root, or root data, plus content-cached
+  fused cross-type code where the cost model chooses fusion.
+- Whole-project inlining is one of the cost model's choices, not the default.
+
+Compiling node code for the host target also resolves the baseline
+`"target-cpu"="x86-64"` defect for it.
+
+*Friction: package code delivered to `GraphJit` (2026-11-07, resolved).* The first
+implementation compiled package code in `GraphJit`, on a new
+`iv_runtime_package_jit_batch_completed_event` that `PackageWatcher` raised before
+publishing revisions. One package refresh then entered `GraphJit` twice: once on that
+event, and once through `PackageDefinitions` → `NodeDefinitions` → `ProjectGraph`.
+`LinkerEventModuleFrameScope` threw, the `PackageWatcherService` worker exited, and
+no definitions loaded, so the edit benchmark hung for 30 minutes on every shape. The
+tests missed it, because the GraphJit fixture called the handler directly. The root
+cause was ownership: `PackageJit` returns self-contained revisions, and `GraphJit` was
+keeping per-revision state that duplicated that lifetime. The human co-author approved
+the replacement below. The first implementation and its status text are in
+[GraphJit Package Code Delivery](historical/graph_jit_package_code_delivery_2026-11-07.md).
+
+*Node code compiled once per package build (implementation status, 2026-11-07;
+built, all 790 tests pass, measured below; repository owner).*
+- **Finalizer.** After it writes the finalized LLVM and the node-event protocol,
+  `iv_package_finalize` runs these steps, each timed as its own stage:
+  - `reduce_to_node_code()` reduces the same module in place:
+    - It builds `iv.node_code_records`: one `NodeCodeRecordData` per
+      `iv_node_types` record, sorted by `NodeCodeKey`, holding the record's
+      operations with `declare_node` cleared.
+    - It builds `iv.node_code_retained_globals`, one `NodeCodeRetainedGlobalData`
+      per retained-global index. It finds the retained-global table through the
+      `iv_package_retained_globals` accessor, so a renamed table is still found. An
+      entry that is not a constant, initialized, non-thread-local global gets a null
+      address.
+    - It erases every appending global: the `used` lists, the static constructors
+      and destructors, and the annotations. Node runtime operations reference no
+      mutable package global, so node code needs no constructors.
+    - It internalizes everything except the two table accessors. It sets each
+      function's `target-cpu` to the host, and its `target-features` to the host
+      features followed by the function's own.
+  - `optimize_node_code()` runs GlobalDCE, then O3 with Clang's O3 tuning.
+  - `write_node_code_object()` emits `<output>.node-code.o`. Code generation uses
+    `Reloc::PIC_`, the small code model, and `CodeGenOptLevel::Aggressive`.
+
+  The stages are `node_code_reduce`, `node_code_optimize`, and `node_code_codegen`.
+  `ModuleSupport.cmake` lists the object as a byproduct.
+- **ABI.** `module/abi.h` defines `NodeCodeRecordData` and
+  `NodeCodeRetainedGlobalData`, with accessor types `iv_package_node_code_records_fn`
+  and `iv_package_node_code_retained_globals_fn`. `IV_PACKAGE_ABI_VERSION` is now 5.
+- **Artifact signature.** `ModuleLoader` adds `host-cpu=`: the host CPU name and its
+  sorted features. A cached object therefore never loads on a CPU it was not compiled
+  for, for example a prebuilt built-in or common package artifact used on another
+  machine.
+- **Loading.** `ModuleLoader` links the object into its own `JITDylib`
+  (`LoadedPackageCode::node_code_dylib`) beside the package's, with the same
+  generators, and removes it with the package. It copies the two tables into
+  `LoadedPackageCode`, checks that the records are strictly sorted and that the
+  retained-global count matches the package's, and returns them through
+  `ModuleLoader::LoadedPackage`. `PackageJit` moves them into
+  `PackageRevision::node_code_records` and `node_code_retained_globals`.
+- **Separate `JITDylib`.** The node-code object links in its own `JITDylib`, so its
+  linker-private weak definitions, such as `DW.ref.__gxx_personality_v0`, never
+  resolve to the configuration graph's. The first version used the package's
+  `JITDylib`. That sharing was suspected of causing the eight test aborts below,
+  and was ruled out: the aborts persisted with the separate `JITDylib`.
+- **Friction: pinned copies left gaps in the linked `.eh_frame` (2026-11-07,
+  resolved; all 790 tests pass).**
+  - *Symptom.* Eight tests aborted. In each, an exception thrown through
+    JIT-compiled package configuration code reached `std::terminate`. These are
+    `ModuleLoaderFailures` tests 10, 11, 16 and 20; `ModuleLoaderPackages` 12 and
+    14; `PackagePipeline` 695; and `IvModuleSourceIntrospection` 707.
+  - *Mechanism.* The repository owner allowed gdb for this investigation. Core dumps
+    and a gdb session showed four steps:
+    1. `preserve_package_code()` pinned every function reachable from the package
+       entry points in `llvm.used`.
+    2. The new O2 pre-link inlined most of those functions but had to keep the
+       pinned out-of-line copies. In the failing package, 813 of 979 pinned
+       functions had no remaining reference.
+    3. JITLink dead-strips such unreferenced local functions and their `.eh_frame`
+       records. It splits `.eh_frame` into one block per record, and each block
+       keeps its original alignment of 8 with offset 0 or 4. A pruned record of
+       size ≡ 4 mod 8 therefore shifts every following record by 4 bytes, and
+       JITLink fills the shift with zero padding.
+    4. libgcc reads a zero length as the end of the section. It never saw the FDEs
+       after the first gap, including those of the configuration functions, so
+       unwinding stopped there.
+
+    The FDE, its CFI, and its LSDA for the failing frame were all present and
+    correct. JITLink's own terminator block sorts last.
+  - *Why it was new.* At O0, no pinned function was inlined away, so nothing was
+    pruned.
+  - *Fix.* The pin existed so that `GraphJit` could import package callback bodies;
+    node code removed that need. `remove_unreachable_package_code()` replaces
+    `preserve_package_code()`. It checks the entry points, adds nothing to
+    `llvm.used`, and runs GlobalDCE. `prelink_optimize_package()` now ends with
+    GlobalDCE.
+  - *Still latent.* JITLink's record-alignment behaviour still breaks `.eh_frame`
+    whenever it prunes a record of size ≡ 4 mod 8 from any in-process graph. After
+    this fix, the package, node-code, and project graphs contain no unreferenced
+    local functions, so nothing is pruned. A future change that leaves dead local
+    code in a JIT-linked object would bring the failure back. This is an LLVM
+    JITLink defect to report upstream.
+- **Compilation.** `compile_impl()` finds each node's record by binary search
+  (`node_code_record()`). `verify_compiler_record()` now compares the presence of
+  each optional callback with the `NodeCompilerRecord`. The state ABI comes from the
+  `NodeCompilerRecord` itself. `ImportedNodeCode` names each imported address
+  `__iv_node_code_<hex>` or `__iv_node_data_<hex>`. `materialize_project_module()`
+  defines those names as absolute symbols in the generation `JITDylib`, and
+  `ProjectCodeLifetime::package_revisions` pins the revisions that own the code.
+  `GraphJitCompileTimings::package_code_us` is gone, because there is nothing left to
+  time.
+- **Removed.** `iv_runtime_package_jit_batch_completed_event`,
+  `package_watcher_graph_jit_bridge`, `GraphJit::handle_package_jit_batch_completed()`,
+  `GraphJit::Impl::package_code_`, the package `TargetMachine`, the project `LLJIT`'s
+  concurrent compilation, and the test fixture's `deliver_package_code()`.
+- **Lost check.** The project module calls node code by address, so nothing compares
+  a callback's LLVM function type with `graph_jit::package_callback_type()` any
+  more. That check existed while the callbacks were imported as LLVM. A test that
+  parses the test package's finalized LLVM and checks each record's callback types
+  would restore it.
+- **Measured (2026-11-07, repository owner, size 64, medians over five edits of
+  each kind).** Edit wall is from the edit to the executor accepting the
+  generation. Optimize and code generation are the transition compilation's.
+
+  | Shape | Instances | Edit wall | Optimize | Code generation | Tick mean |
+  |---|---|---|---|---|---|
+  | `voices` | 320 | 385-393 ms | 148-149 ms | 223-228 ms | 954-968 µs |
+  | `chain` | 68 | 87-89 ms | 33 ms | 50-51 ms | 638-649 µs |
+  | `mixed` | 448 | 609-619 ms | 223-231 ms | 362-372 ms | 1,548-1,571 µs |
+
+  For `voices`, the edit fell from 0.61 s and the tick from 1,112-1,195 µs, the
+  last measurement with primitive operations out of line but compiled per edit.
+  That run was not yet node code. The tick gain is node code compiled at O3 for the
+  host CPU. Planning, emission, and verification together take about 12 ms at 320
+  instances. Optimizing and generating code for the root is 96% of each
+  compilation, and it grows with instance count. That makes it the target of root
+  as data (item 3). `chain` already meets the 0.2 s budget. The first `feedback`
+  run was invalid (see the shape list above).
+
+  With the module-based shape, `feedback` (64 voices, 513 bundles) compiles and
+  runs its first generation: 0.60 s, optimize 215 ms, code generation 363 ms, tick
+  mean 1,978 µs. The first edit after that fails. `GraphExecutor` rejects the
+  cutover with "sample transition source cannot represent its semantic interval"
+  from `validate_sample_interval()` in
+  `graph_jit/realtime_port_state_transition.cpp`. The predecessor's compact-carry
+  storage does not cover the interval the transition inherits. This is the first
+  benchmark that cuts over a graph containing `detach()` feedback inside a module.
+  The cause is not yet known; the message now reports the interval and the storage
+  geometry.
+- **Still open.** `iv_edit_latency_benchmark` still waits silently when the package
+  watcher service fails. Its only failure signal is
+  `iv_runtime_project_notification_event`. A notification subscriber in the
+  benchmark would be entered twice by one refresh, because `PackageWatcher` raises
+  both `rebuildStarted` and `rebuildFinished` in one source invocation. Whether
+  `SocketRpcServer`, which subscribes to the same event in the app, meets the same
+  re-entry is unverified.
+
 Candidate work includes:
 
 - batch-size/cost modeling beyond front 2's correctness-capable scheduler;

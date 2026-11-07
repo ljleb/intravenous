@@ -64,25 +64,9 @@ struct GraphAnalysis {
     std::vector<PrimitiveAnalysis> primitives{};
 };
 
-std::string primitive_callback_import_symbol(
-    std::size_t primitive_index,
-    std::string_view operation)
-{
-    return "__iv_graph_primitive_" + std::to_string(primitive_index) + "_"
-        + std::string(operation);
-}
-
 std::string node_config_global_symbol(std::size_t primitive_index)
 {
     return "iv.graph.node_config." + std::to_string(primitive_index);
-}
-
-std::string retained_global_import_symbol(
-    std::size_t package_index,
-    std::size_t retained_global_index)
-{
-    return "__iv_graph_retained_global_" + std::to_string(package_index) + "_"
-        + std::to_string(retained_global_index);
 }
 
 std::string tick_context_global_symbol(std::size_t primitive_index)
@@ -212,68 +196,37 @@ std::expected<GraphAnalysis, std::string> analyze_graph(
             return std::unexpected(
                 "GraphJit lowering has no resolved implementation for a concrete primitive");
         }
-        auto const has_tick = implementation->tick_block != nullptr;
-        auto const has_tock = implementation->tock_coverage != nullptr;
-        if (!implementation->package_module || has_tick == has_tock
+        auto const has_tick = !implementation->tick_block.empty();
+        auto const has_tock = !implementation->tock_coverage.empty();
+        if (!implementation->package || has_tick == has_tock
             || !implementation->declare_node || !implementation->node_data) {
             return std::unexpected(
                 "resolved primitive implementation is incomplete at the GraphJit lowering boundary");
         }
-        if (has_tick && (!implementation->tick_block_batch
-                || !implementation->skip_block
-                || !implementation->skip_block_batch)) {
+        if (has_tick && (implementation->tick_block_batch.empty()
+                || implementation->skip_block.empty()
+                || implementation->skip_block_batch.empty())) {
             return std::unexpected(
                 "Tick primitive has an incomplete normalized scalar/batch callback family");
         }
-        if (has_tock && (!implementation->tock_coverage_batch
-                || !implementation->propagate_forward_coverage
-                || !implementation->propagate_forward_coverage_batch)) {
+        if (has_tock && (implementation->tock_coverage_batch.empty()
+                || implementation->propagate_forward_coverage.empty()
+                || implementation->propagate_forward_coverage_batch.empty())) {
             return std::unexpected(
                 "Tock primitive has an incomplete normalized scalar/batch callback family");
         }
-        if ((!has_tick && (implementation->tick_block_batch
-                || implementation->skip_block
-                || implementation->skip_block_batch))
-            || (!has_tock && (implementation->tock_coverage_batch
-                || implementation->propagate_forward_coverage
-                || implementation->propagate_forward_coverage_batch
-                || implementation->propagate_reverse_coverage
-                || implementation->propagate_reverse_coverage_batch))
-            || (static_cast<bool>(implementation->propagate_reverse_coverage)
-                != static_cast<bool>(
-                    implementation->propagate_reverse_coverage_batch))
-            || (has_tick
-                && implementation->tick_block->getParent()
-                    != implementation->package_module)
-            || (implementation->skip_block
-                && implementation->skip_block->getParent()
-                    != implementation->package_module)
-            || (implementation->tick_block_batch
-                && implementation->tick_block_batch->getParent()
-                    != implementation->package_module)
-            || (implementation->skip_block_batch
-                && implementation->skip_block_batch->getParent()
-                    != implementation->package_module)
-            || (implementation->tock_coverage
-                && implementation->tock_coverage->getParent()
-                    != implementation->package_module)
-            || (implementation->tock_coverage_batch
-                && implementation->tock_coverage_batch->getParent()
-                    != implementation->package_module)
-            || (implementation->propagate_forward_coverage
-                && implementation->propagate_forward_coverage->getParent()
-                    != implementation->package_module)
-            || (implementation->propagate_forward_coverage_batch
-                && implementation->propagate_forward_coverage_batch->getParent()
-                    != implementation->package_module)
-            || (implementation->propagate_reverse_coverage
-                && implementation->propagate_reverse_coverage->getParent()
-                    != implementation->package_module)
-            || (implementation->propagate_reverse_coverage_batch
-                && implementation->propagate_reverse_coverage_batch->getParent()
-                    != implementation->package_module)) {
+        if ((!has_tick && (!implementation->tick_block_batch.empty()
+                || !implementation->skip_block.empty()
+                || !implementation->skip_block_batch.empty()))
+            || (!has_tock && (!implementation->tock_coverage_batch.empty()
+                || !implementation->propagate_forward_coverage.empty()
+                || !implementation->propagate_forward_coverage_batch.empty()
+                || !implementation->propagate_reverse_coverage.empty()
+                || !implementation->propagate_reverse_coverage_batch.empty()))
+            || (implementation->propagate_reverse_coverage.empty()
+                != implementation->propagate_reverse_coverage_batch.empty())) {
             return std::unexpected(
-                "resolved primitive callbacks do not belong to the selected package LLVM module");
+                "resolved primitive has an inconsistent package callback family");
         }
         if (primitive.node_size == 0) {
             return std::unexpected("configured primitive has empty node configuration storage");
@@ -2195,26 +2148,33 @@ std::expected<PackageImportPlan, std::string> plan_package_imports(
     PackageImportPlan plan;
     if (analysis.empty && input.config_relocations.empty()) return plan;
 
-    auto find_package_index = [&](llvm::Module const* module)
+    auto find_package_index = [&](PackageCode const* package)
         -> std::expected<std::size_t, std::string> {
-        if (!module) {
-            return std::unexpected(
-                "GraphJit lowering import source has no package LLVM module");
+        if (!package) {
+            return std::unexpected("GraphJit lowering import source has no package code");
         }
-        std::optional<std::size_t> selected_package_index;
         for (std::size_t i = 0; i < input.packages.size(); ++i) {
-            if (input.packages[i].module.get() != module) continue;
-            if (selected_package_index) {
+            if (&input.packages[i] == package) return i;
+        }
+        return std::unexpected("resolved package code is not a GraphJit lowering input");
+    };
+
+    auto find_revision_package_index = [&](PackageRevision const* revision)
+        -> std::expected<std::size_t, std::string> {
+        std::optional<std::size_t> selected;
+        for (std::size_t i = 0; i < input.packages.size(); ++i) {
+            if (input.packages[i].revision.get() != revision) continue;
+            if (selected) {
                 return std::unexpected(
-                    "GraphJit lowering received duplicate ownership for one package LLVM module");
+                    "GraphJit lowering received duplicate package code for one package revision");
             }
-            selected_package_index = i;
+            selected = i;
         }
-        if (!selected_package_index || !input.packages[*selected_package_index].module) {
+        if (!selected) {
             return std::unexpected(
-                "resolved package LLVM is not available for lowering consumption");
+                "configuration relocation package revision has no package code input");
         }
-        return *selected_package_index;
+        return *selected;
     };
 
     auto package_group = [&](std::size_t package_index) -> PackageImportGroup& {
@@ -2227,107 +2187,73 @@ std::expected<PackageImportPlan, std::string> plan_package_imports(
 
     auto add_callback = [&](
                             PackageImportGroup& package,
-                            std::string source_symbol,
-                            std::string import_symbol,
+                            std::string const& symbol,
                             std::string role,
                             CallbackImportAbi abi) -> std::string {
         for (auto const& callback : package.callbacks) {
-            if (callback.source_symbol == source_symbol) {
-                return callback.import_symbol;
-            }
+            if (callback.symbol == symbol) return callback.symbol;
         }
         package.callbacks.push_back(CallbackImportPlan{
-            .source_symbol = std::move(source_symbol),
-            .import_symbol = std::move(import_symbol),
+            .symbol = symbol,
             .role = std::move(role),
             .abi = abi,
         });
-        return package.callbacks.back().import_symbol;
+        return symbol;
     };
 
     auto add_retained_global = [&](
-                                   std::size_t package_index,
                                    PackageImportGroup& package,
-                                   llvm::GlobalVariable const& source,
-                                   std::size_t size)
-        -> std::expected<std::string, std::string> {
-        if (source.getName().empty()) {
-            return std::unexpected(
-                "configuration relocation retained LLVM global has no symbol name");
+                                   PackageRetainedGlobal const& global) {
+        for (auto const& imported : package.retained_globals) {
+            if (imported.symbol == global.symbol) return;
         }
-        for (auto const& global : package.retained_globals) {
-            if (global.source_symbol == source.getName().str()) {
-                if (global.size != size) {
-                    return std::unexpected(
-                        "configuration relocation retained LLVM global size is inconsistent");
-                }
-                return global.import_symbol;
-            }
-        }
-        auto import_symbol = retained_global_import_symbol(
-            package_index, package.retained_globals.size());
         package.retained_globals.push_back(RetainedGlobalImportPlan{
-            .source_symbol = source.getName().str(),
-            .import_symbol = import_symbol,
-            .size = size,
+            .symbol = global.symbol,
+            .size = global.size,
+            .alignment = global.alignment,
         });
-        return import_symbol;
     };
 
     plan.primitive_callbacks.reserve(analysis.primitives.size());
     for (std::size_t i = 0; i < analysis.primitives.size(); ++i) {
         auto const& primitive = analysis.primitives[i];
         auto const& implementation = *primitive.implementation;
-        auto package_index = find_package_index(implementation.package_module);
+        auto package_index = find_package_index(implementation.package);
         if (!package_index) return std::unexpected(std::move(package_index.error()));
         auto& package = package_group(*package_index);
 
         PrimitiveCallbackPlan callbacks{
             .bundle = primitive.bundle.node_bundle,
         };
-        if (implementation.tick_block) {
+        if (!implementation.tick_block.empty()) {
             callbacks.tick_block = add_callback(
-                package,
-                implementation.tick_block->getName().str(),
-                primitive_callback_import_symbol(i, "tick_block"),
-                "tick_block",
-                CallbackImportAbi::block);
+                package, implementation.tick_block, "tick_block", CallbackImportAbi::block);
             callbacks.tick_block_batch = add_callback(
                 package,
-                implementation.tick_block_batch->getName().str(),
-                primitive_callback_import_symbol(i, "tick_block_batch"),
+                implementation.tick_block_batch,
                 "tick_block_batch",
                 CallbackImportAbi::batch);
             if (primitive.bundle.block_skippable) {
                 callbacks.skip_block = add_callback(
-                    package,
-                    implementation.skip_block->getName().str(),
-                    primitive_callback_import_symbol(i, "skip_block"),
-                    "skip_block",
-                    CallbackImportAbi::block);
+                    package, implementation.skip_block, "skip_block", CallbackImportAbi::block);
                 callbacks.skip_block_batch = add_callback(
                     package,
-                    implementation.skip_block_batch->getName().str(),
-                    primitive_callback_import_symbol(i, "skip_block_batch"),
+                    implementation.skip_block_batch,
                     "skip_block_batch",
                     CallbackImportAbi::batch);
             }
         }
-        if (implementation.initialize_sequential_input) {
+        if (!implementation.initialize_sequential_input.empty()) {
             callbacks.initialize_sequential_input = add_callback(
                 package,
-                implementation.initialize_sequential_input->getName().str(),
-                primitive_callback_import_symbol(
-                    i, "initialize_sequential_input"),
+                implementation.initialize_sequential_input,
                 "initialize_sequential_input",
                 CallbackImportAbi::sequential_initialize);
         }
-        if (implementation.combine_sequential_input_values) {
+        if (!implementation.combine_sequential_input_values.empty()) {
             callbacks.combine_sequential_input_values = add_callback(
                 package,
-                implementation.combine_sequential_input_values->getName().str(),
-                primitive_callback_import_symbol(
-                    i, "combine_sequential_input_values"),
+                implementation.combine_sequential_input_values,
                 "combine_sequential_input_values",
                 CallbackImportAbi::sequential_combine);
         }
@@ -2343,54 +2269,44 @@ std::expected<PackageImportPlan, std::string> plan_package_imports(
             }
             auto const& node = background.nodes[*background_node];
             if (node.authored_tock_execution) {
-                if (!implementation.tock_coverage
-                    || !implementation.propagate_forward_coverage) {
+                if (implementation.tock_coverage.empty()
+                    || implementation.propagate_forward_coverage.empty()) {
                     return std::unexpected(
                         "GraphJit authored Tock node has incomplete background callbacks");
                 }
                 callbacks.tock_coverage = add_callback(
                     package,
-                    implementation.tock_coverage->getName().str(),
-                    primitive_callback_import_symbol(i, "tock_coverage"),
+                    implementation.tock_coverage,
                     "tock_coverage",
                     CallbackImportAbi::background);
                 callbacks.tock_coverage_batch = add_callback(
                     package,
-                    implementation.tock_coverage_batch->getName().str(),
-                    primitive_callback_import_symbol(i, "tock_coverage_batch"),
+                    implementation.tock_coverage_batch,
                     "tock_coverage_batch",
                     CallbackImportAbi::batch);
                 callbacks.propagate_forward_coverage = add_callback(
                     package,
-                    implementation.propagate_forward_coverage->getName().str(),
-                    primitive_callback_import_symbol(
-                        i, "propagate_forward_coverage"),
+                    implementation.propagate_forward_coverage,
                     "propagate_forward_coverage",
                     CallbackImportAbi::background);
                 callbacks.propagate_forward_coverage_batch = add_callback(
                     package,
-                    implementation.propagate_forward_coverage_batch->getName().str(),
-                    primitive_callback_import_symbol(
-                        i, "propagate_forward_coverage_batch"),
+                    implementation.propagate_forward_coverage_batch,
                     "propagate_forward_coverage_batch",
                     CallbackImportAbi::batch);
                 if (node.accumulators.input_requirement_count != 0) {
-                    if (!implementation.propagate_reverse_coverage) {
+                    if (implementation.propagate_reverse_coverage.empty()) {
                         return std::unexpected(
                             "GraphJit authored Tock node with background inputs has no reverse callback");
                     }
                     callbacks.propagate_reverse_coverage = add_callback(
                         package,
-                        implementation.propagate_reverse_coverage->getName().str(),
-                        primitive_callback_import_symbol(
-                            i, "propagate_reverse_coverage"),
+                        implementation.propagate_reverse_coverage,
                         "propagate_reverse_coverage",
                         CallbackImportAbi::background);
                     callbacks.propagate_reverse_coverage_batch = add_callback(
                         package,
-                        implementation.propagate_reverse_coverage_batch->getName().str(),
-                        primitive_callback_import_symbol(
-                            i, "propagate_reverse_coverage_batch"),
+                        implementation.propagate_reverse_coverage_batch,
                         "propagate_reverse_coverage_batch",
                         CallbackImportAbi::batch);
                 }
@@ -2413,7 +2329,7 @@ std::expected<PackageImportPlan, std::string> plan_package_imports(
         }
         if (!relocation.revision || !relocation.retained_global) {
             return std::unexpected(
-                "non-null configuration relocation has no retained package LLVM global");
+                "non-null configuration relocation has no retained package global");
         }
         auto const index = *relocation.relocation->retained_global_index;
         if (index >= relocation.revision->retained_globals.size()) {
@@ -2426,30 +2342,23 @@ std::expected<PackageImportPlan, std::string> plan_package_imports(
             return std::unexpected(
                 "configuration relocation retained-global metadata is invalid at lowering");
         }
-        auto package_index = find_package_index(relocation.retained_global->getParent());
+        auto package_index = find_revision_package_index(relocation.revision.get());
         if (!package_index) return std::unexpected(std::move(package_index.error()));
         auto const& package_input = input.packages[*package_index];
-        if (package_input.revision.get() != relocation.revision.get()) {
+        if (index >= package_input.retained_globals.size()
+            || &package_input.retained_globals[index] != relocation.retained_global) {
             return std::unexpected(
-                "configuration relocation retained global belongs to the wrong package revision");
+                "configuration relocation retained global is absent from its package code");
         }
-        if (std::ranges::find(
-                package_input.retained_globals, relocation.retained_global)
-            == package_input.retained_globals.end()) {
-            return std::unexpected(
-                "configuration relocation retained global is absent from package metadata");
-        }
-        if (!relocation.retained_global->isConstant()
-            || relocation.retained_global->isDeclaration()
-            || !relocation.retained_global->hasInitializer()) {
+        if (relocation.retained_global->symbol.empty()) {
             return std::unexpected(
                 "configuration relocation target is not an immutable defined LLVM global");
         }
-
-        auto& package = package_group(*package_index);
-        auto imported = add_retained_global(
-            *package_index, package, *relocation.retained_global, accepted.size);
-        if (!imported) return std::unexpected(std::move(imported.error()));
+        if (relocation.retained_global->size != accepted.size) {
+            return std::unexpected(
+                "configuration relocation retained global disagrees with the accepted revision");
+        }
+        add_retained_global(package_group(*package_index), *relocation.retained_global);
     }
     return plan;
 }
@@ -2474,19 +2383,16 @@ std::expected<ConfigurationPlan, std::string> plan_node_configurations(
         if (!relocation.relocation->retained_global_index) return std::string{};
         if (!relocation.retained_global) {
             return std::unexpected(
-                "non-null configuration relocation lost its retained LLVM global");
+                "non-null configuration relocation lost its retained package global");
         }
         for (auto const& package : imports.packages) {
-            if (package.package_index >= input.packages.size()) continue;
-            auto const& package_input = input.packages[package.package_index];
-            if (package_input.module.get() != relocation.retained_global->getParent()) continue;
             for (auto const& global : package.retained_globals) {
-                if (global.source_symbol == relocation.retained_global->getName().str()) {
+                if (global.symbol == relocation.retained_global->symbol) {
                     if (relocation.relocation->addend >= global.size) {
                         return std::unexpected(
-                            "configuration relocation addend lies outside retained LLVM global");
+                            "configuration relocation addend lies outside retained package global");
                     }
-                    return global.import_symbol;
+                    return global.symbol;
                 }
             }
         }
@@ -2629,7 +2535,7 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
             return std::unexpected(
                 "GraphJit sample-edge planning lost concrete-node port metadata");
         }
-        if (analysis.primitives[i].implementation->tick_block == nullptr) {
+        if (analysis.primitives[i].implementation->tick_block.empty()) {
             // Tock ports are bound by BackgroundNodeCall for each batch. They
             // are not part of the generated realtime root's port-binding ABI.
             continue;
@@ -3040,7 +2946,7 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
         }
         auto const& analyzed = analysis.primitives[*primitive];
         if (!analyzed.implementation
-            || analyzed.implementation->tick_block == nullptr) {
+            || analyzed.implementation->tick_block.empty()) {
             return std::unexpected(
                 "GraphJit manual controls require a Tick node input");
         }
@@ -3189,8 +3095,7 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
         // Background callbacks receive their sample ports from the supplied
         // BackgroundNodeCall bindings. They have no realtime execution
         // position and must not acquire disconnected Tick constants or sinks.
-        if (analysis.primitives[primitive_index].implementation->tick_block
-            == nullptr) {
+        if (analysis.primitives[primitive_index].implementation->tick_block.empty()) {
             continue;
         }
         auto const bundle = analysis.primitives[primitive_index].bundle.node_bundle;
@@ -3907,7 +3812,7 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
             return std::unexpected(
                 "GraphJit event planning lost concrete-node port metadata");
         }
-        if (analysis.primitives[i].implementation->tick_block == nullptr) {
+        if (analysis.primitives[i].implementation->tick_block.empty()) {
             // Tock ports use the caller-supplied background batch bindings.
             continue;
         }
@@ -7387,8 +7292,7 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
     // state.
     for (std::size_t primitive_index = 0;
         primitive_index < plan.primitives.size(); ++primitive_index) {
-        if (analysis.primitives[primitive_index].implementation->tick_block
-            == nullptr) {
+        if (analysis.primitives[primitive_index].implementation->tick_block.empty()) {
             continue;
         }
         auto const bundle = analysis.primitives[primitive_index].bundle.node_bundle;
@@ -7492,8 +7396,7 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
         analysis.primitives.size());
     for (std::size_t primitive_index = 0;
          primitive_index < analysis.primitives.size(); ++primitive_index) {
-        if (analysis.primitives[primitive_index].implementation->tick_block
-            == nullptr) {
+        if (analysis.primitives[primitive_index].implementation->tick_block.empty()) {
             continue;
         }
         auto const bundle = analysis.primitives[primitive_index].bundle.node_bundle;
@@ -8164,8 +8067,7 @@ std::expected<ExecutionPlan, std::string> plan_execution(
     // initialized by their own explicit operations.
     for (std::size_t primitive_index = 0;
          primitive_index < event_ports.primitives.size(); ++primitive_index) {
-        if (analysis.primitives[primitive_index].implementation->tick_block
-            == nullptr) {
+        if (analysis.primitives[primitive_index].implementation->tick_block.empty()) {
             continue;
         }
         if (primitive_index >= configuration_steps.size()
@@ -8678,15 +8580,15 @@ std::expected<LoweringPlan, std::string> build_lowering_plan(
     // intentionally absent.
     auto same_callback_batch_class = [&](PrimitiveAnalysis const& left,
                                          PrimitiveAnalysis const& right) {
-        if ((left.implementation->tick_block != nullptr)
-                != (right.implementation->tick_block != nullptr)
+        if ((!left.implementation->tick_block.empty())
+                != (!right.implementation->tick_block.empty())
             || left.implementation->code_key
                 != right.implementation->code_key
             || left.implementation->revision.get()
                 != right.implementation->revision.get()
             || left.implementation->provider_version
                 != right.implementation->provider_version
-            || (left.implementation->tick_block != nullptr
+            || (!left.implementation->tick_block.empty()
                 && left.bundle.maximum_block_size
                     != right.bundle.maximum_block_size)) {
             return false;

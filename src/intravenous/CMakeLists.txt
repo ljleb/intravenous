@@ -247,12 +247,14 @@ set_target_properties(iv_builder PROPERTIES OUTPUT_NAME iv_builder)
 iv_configure_intravenous_target(iv_builder PUBLIC)
 iv_link_stacktrace_support(iv_builder)
 
+include(${CMAKE_CURRENT_SOURCE_DIR}/module/template/PackageCompileFlags.cmake)
 set(IV_DSL_PCH "${CMAKE_CURRENT_BINARY_DIR}/iv_dsl.pch")
 file(GLOB_RECURSE IV_PACKAGE_PCH_HEADERS CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/*.h" "${CMAKE_CURRENT_SOURCE_DIR}/*.hpp")
 add_custom_command(
     OUTPUT "${IV_DSL_PCH}"
-    COMMAND "${CMAKE_CXX_COMPILER}" -std=c++23 -O0 -flto=full
+    COMMAND "${CMAKE_CXX_COMPILER}" -std=c++23
+        ${IV_PACKAGE_COMPILE_FLAGS} -Xclang -disable-llvm-passes
         "-I${IV_PUBLIC_INCLUDE_ROOT}" -isystem "${CMAKE_CURRENT_SOURCE_DIR}/third_party"
         -DIV_ENABLE_JUCE_VST=0 -x c++-header
         "${CMAKE_CURRENT_SOURCE_DIR}/module/template/module_pch.h"
@@ -454,8 +456,10 @@ add_library(intravenous_tooling_runtime_objects OBJECT
     runtime/uuid.cpp
 )
 iv_configure_intravenous_target(intravenous_tooling_runtime_objects PUBLIC)
+list(JOIN IV_PACKAGE_COMPILE_FLAGS " " IV_PACKAGE_COMPILE_FLAGS_COMMAND_LINE)
 target_compile_definitions(intravenous_tooling_runtime_objects PRIVATE
     IV_CONFIGURED_MODULE_SOURCE_TEMPLATE_CXX_COMPILER="${CMAKE_CXX_COMPILER}"
+    IV_CONFIGURED_MODULE_SOURCE_TEMPLATE_COMPILE_FLAGS="${IV_PACKAGE_COMPILE_FLAGS_COMMAND_LINE}"
     IV_CONFIGURED_MODULE_SOURCE_TEMPLATE_DSL_PCH="${IV_DSL_PCH}"
     IV_CONFIGURED_MODULE_SOURCE_TEMPLATE_INCLUDE_DIR="${IV_PUBLIC_INCLUDE_ROOT}"
     IV_CONFIGURED_MODULE_SOURCE_TEMPLATE_THIRD_PARTY_INCLUDE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/third_party"

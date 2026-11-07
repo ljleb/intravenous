@@ -1,6 +1,7 @@
 #pragma once
 
 #include <intravenous/runtime/node_definition_types.h>
+#include <intravenous/module/abi.h>
 #include <intravenous/module/builder_session.h>
 #include <intravenous/module/package_compiler_artifact.h>
 #include <intravenous/node/presentation.h>
@@ -42,12 +43,18 @@ struct PackageRevision {
     std::filesystem::path package_root{};
     PackageProvenance provenance = PackageProvenance::project_local;
     std::uint64_t revision = 0;
-    // Exact finalized O0 LLVM and native link dependencies for this accepted
-    // package generation. Whole-project compilation consumes these directly
-    // rather than reaching back into PackageJit/ModuleLoader state.
+    // Exact finalized package LLVM and native link dependencies for this
+    // accepted package generation.
     PackageCompilerArtifact compiler_artifact{};
-    // Pins this package JIT generation, including retained LLVM/code/data.
+    // Pins this package JIT generation, including retained LLVM/code/data and
+    // the node code below.
     ModuleRef package_code{};
+    // Node code: every node record's runtime/compiler callbacks and a copy of
+    // every retained global, compiled at O3 for the host CPU once per package
+    // build and loaded with the package (NodeCodeRecordData). Project code
+    // calls these addresses; no project compilation recompiles them.
+    std::vector<NodeCodeRecordData> node_code_records{};
+    std::vector<NodeCodeRetainedGlobalData> node_code_retained_globals{};
     // Immutable configuration tables copied from the accepted package code.
     // Their function/data pointers remain valid while package_code is retained.
     std::vector<details::PackageDefinition> provider_definitions{};

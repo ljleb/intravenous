@@ -92,6 +92,10 @@ namespace iv {
             std::vector<NodeMessageHandlerData> node_message_handlers{};
             std::vector<ModuleMessageHandlerData> module_message_handlers{};
             std::vector<details::BuilderNodeStateStructures> node_state_structures{};
+            // The package's node code, compiled once per package build (see
+            // NodeCodeRecordData). Valid while package_code is retained.
+            std::vector<NodeCodeRecordData> node_code_records{};
+            std::vector<NodeCodeRetainedGlobalData> node_code_retained_globals{};
             // Opaque ownership of this IV package's ORC resources. Definitions and
             // configured graphs retain it while callbacks or retained LLVM globals
             // from this package can still be referenced.

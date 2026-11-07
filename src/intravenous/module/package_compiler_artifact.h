@@ -5,8 +5,11 @@
 
 namespace iv {
 // Immutable compiler inputs for one finalized IV package generation. The
-// bitcode artifact is O0 package LLVM; dynamic_libraries contains the native
-// libraries that must be available when that LLVM is linked into a JIT domain.
+// bitcode artifact is package LLVM after iv_package_finalize's pre-link
+// simplification; dynamic_libraries contains the native libraries that must
+// be available when that LLVM is linked into a JIT domain. The node-code
+// object `<bitcode_path>.node-code.o` sits beside it; ModuleLoader links it
+// with the package and PackageRevision carries its tables.
 struct PackageCompilerArtifact {
     std::filesystem::path bitcode_path{};
     // Language-neutral semantic event schema emitted beside the finalized

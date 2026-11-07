@@ -14,6 +14,8 @@
 
 #include <nlohmann/json.hpp>
 
+#include <iomanip>
+#include <chrono>
 #include <algorithm>
 #include <functional>
 #include <iterator>
@@ -454,6 +456,45 @@ void ProjectGraph::control_compile_worker(std::stop_token stop)
 }
 
 namespace {
+// Writes one rebuild's timings, from its start to the executor accepting the
+// compiled generation, when IV_EDIT_TIMING is set. The edit becomes audible at
+// the next realtime cutover after that.
+void log_edit_timing(ProjectGraphGeneration const& generation) noexcept
+{
+    try {
+        auto const ms = [](std::uint64_t value) { return static_cast<double>(value) / 1000.0; };
+        auto const& rebuild = generation.rebuild_timings;
+        auto& out = diagnostic_stream();
+        out << std::fixed << std::setprecision(2)
+            << "\nedit timing: generation " << generation.generation
+            << ", " << (generation.graph ? generation.graph->node_bundles.size() : 0)
+            << " bundles, "
+            << (generation.graph_executor_accepted ? "accepted" : "not accepted")
+            << "\n  total " << ms(rebuild.total_us) << " ms"
+            << " = instances " << ms(rebuild.node_instances_us)
+            << " + connections " << ms(rebuild.graph_connections_us)
+            << " + finish " << ms(rebuild.finish_us)
+            << " + graph jit " << ms(rebuild.graph_jit_us)
+            << " + stage " << ms(rebuild.executor_stage_us) << " ms\n";
+        for (auto const& compile : generation.graph_jit_timings) {
+            out << "  " << (compile.transition ? "transition" : "steady")
+                << " compile " << ms(compile.total_us) << " ms"
+                << " = capture " << ms(compile.capture_us)
+                << " + plan " << ms(compile.lowering_plan_us)
+                << " + transition plan " << ms(compile.lowering_transition_us)
+                << " + emit " << ms(compile.lowering_emit_us)
+                << " + verify " << ms(compile.verify_us)
+                << " + optimize " << ms(compile.optimization_us)
+                << " + codegen " << ms(compile.materialization_us) << " ms"
+                << "; " << compile.functions << " functions, "
+                << compile.instructions_before_optimization << " -> "
+                << compile.instructions_after_optimization << " instructions\n";
+        }
+        out.flush();
+    } catch (...) {
+    }
+}
+
 // Writes a failed configuration pass to the server diagnostic log, including
 // the stack where a construction failure was first recorded.
 void log_configuration_failure(ProjectGraphConfigurationFailure const& failure) noexcept
@@ -481,6 +522,8 @@ ProjectGraph::RebuildResult ProjectGraph::rebuild_locked(
     GraphConnectionsMutation connection_mutation,
     bool publish_execution)
 {
+    using Clock = std::chrono::steady_clock;
+    auto const rebuild_begin = Clock::now();
     GraphBuilder root_builder;
     NodeInstancesProjectGraphRequest request{
         .snapshot = definitions_snapshot_,
@@ -518,9 +561,11 @@ ProjectGraph::RebuildResult ProjectGraph::rebuild_locked(
         .placements = &request.result.placements,
         .mutation = std::move(connection_mutation),
     };
+    auto const instances_end = Clock::now();
     IV_INVOKE_LINKER_EVENT(
         iv_runtime_project_graph_connections_requested_event,
         connections_request);
+    auto const connections_end = Clock::now();
     if (!connections_request.handled) {
         throw std::runtime_error("ProjectGraph cannot rebuild without GraphConnections");
     }
@@ -651,6 +696,7 @@ ProjectGraph::RebuildResult ProjectGraph::rebuild_locked(
     }
 
     if (publish_execution) {
+        auto const graph_jit_begin = Clock::now();
         auto graph_jit_result = IV_INVOKE_SINGLETON_EVENT(
             iv_runtime_project_graph_graph_jit_requested_event,
             ProjectGraphGraphJitRequest{
@@ -661,6 +707,7 @@ ProjectGraph::RebuildResult ProjectGraph::rebuild_locked(
                 },
                 .predecessor = accepted_execution_graph_,
             });
+        auto const graph_jit_end = Clock::now();
         generation->graph_jit_attempted = graph_jit_result.attempted;
         generation->compiled_graph = std::move(graph_jit_result.compiled_graph);
         generation->graph_jit_diagnostics = std::move(graph_jit_result.diagnostics);
@@ -674,6 +721,21 @@ ProjectGraph::RebuildResult ProjectGraph::rebuild_locked(
                 accepted_execution_graph_ = generation->compiled_graph;
             }
         }
+        auto const microseconds = [](auto begin, auto end) {
+            return static_cast<std::uint64_t>(
+                std::chrono::duration_cast<std::chrono::microseconds>(end - begin).count());
+        };
+        auto const stage_end = Clock::now();
+        generation->rebuild_timings = ProjectGraphRebuildTimings{
+            .node_instances_us = microseconds(rebuild_begin, instances_end),
+            .graph_connections_us = microseconds(instances_end, connections_end),
+            .finish_us = microseconds(connections_end, graph_jit_begin),
+            .graph_jit_us = microseconds(graph_jit_begin, graph_jit_end),
+            .executor_stage_us = microseconds(graph_jit_end, stage_end),
+            .total_us = microseconds(rebuild_begin, stage_end),
+        };
+        generation->graph_jit_timings = std::move(graph_jit_result.timings);
+        if (diagnostic_flag_enabled("IV_EDIT_TIMING")) log_edit_timing(*generation);
         manual_interactions_ = std::move(next_manual_interactions);
         hovered_controls_ = std::move(next_hovered_controls);
         dynamic_inputs_ = std::move(next_dynamic_inputs);

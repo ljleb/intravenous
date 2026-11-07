@@ -20,8 +20,17 @@
 #include "llvm/IR/Value.h"
 #include "llvm/IR/Verifier.h"
 #include "llvm/Linker/Linker.h"
+#include "llvm/MC/TargetRegistry.h"
 #include "llvm/Object/Archive.h"
 #include "llvm/Pass.h"
+#include "llvm/Passes/OptimizationLevel.h"
+#include "llvm/Passes/PassBuilder.h"
+#include "llvm/Support/TargetSelect.h"
+#include "llvm/Target/TargetMachine.h"
+#include "llvm/Target/TargetOptions.h"
+#include "llvm/TargetParser/Host.h"
+#include "llvm/TargetParser/SubtargetFeature.h"
+#include "llvm/TargetParser/Triple.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/FileSystem.h"
@@ -2244,7 +2253,16 @@ void inject_package_configuration_metadata(
 
 }
 
-void preserve_package_code(Module& module)
+// Checks that the package defines every entry point its configuration JIT
+// looks up, then removes code that no external root reaches. Nothing is pinned
+// in llvm.used. The finalized LLVM has two consumers: the configuration JIT,
+// which looks up these external entry points, and reduce_to_node_code(), which
+// reaches each callback through its node record. A pin would keep an
+// out-of-line copy of every function the pre-link inlines. JITLink drops such
+// unreferenced local copies, and each dropped .eh_frame record leaves zero
+// padding that ends libgcc's frame search early, so an exception through any
+// later function terminates (Front 16, 2026-11-07).
+void remove_unreachable_package_code(Module& module)
 {
     static constexpr std::array<StringRef, 9> entry_points{
         "iv_package_abi_version",
@@ -2257,49 +2275,67 @@ void preserve_package_code(Module& module)
         "iv_package_node_state_structures",
         "iv_package_node_background_state_structures",
     };
-    SmallPtrSet<GlobalValue const*, 32> reachable;
     for (auto const name : entry_points) {
         auto* function = module.getFunction(name);
         if (!function || function->isDeclaration()) {
             fail("finalized IV package does not define '" + name.str() + "'");
         }
-        mark_reachable(function, reachable);
     }
-    if (auto* ctors = module.getGlobalVariable("llvm.global_ctors")) {
-        mark_reachable(ctors, reachable);
-    }
-    if (auto* dtors = module.getGlobalVariable("llvm.global_dtors")) {
-        mark_reachable(dtors, reachable);
-    }
-
-    // llvm.compiler.used is already a code-generation root. Do not add one
-    // of its COMDAT members to llvm.used a second time: the two retention
-    // lists have different lowering paths, and duplicate membership can make
-    // the backend emit a COMDAT symbol twice.
-    SmallVector<GlobalValue*, 32> compiler_used;
-    collectUsedGlobalVariables(module, compiler_used, true);
-    SmallPtrSet<GlobalValue const*, 32> compiler_used_values;
-    for (auto* value : compiler_used) compiler_used_values.insert(value);
-
-    SmallVector<GlobalValue*, 64> used;
-    for (auto const* value : reachable) {
-        if (!value->isDeclaration()
-            && !compiler_used_values.contains(value)
-            && value->getName() != "llvm.used"
-            && value->getName() != "llvm.compiler.used"
-            // These appending globals are special LLVM intrinsics, not
-            // ordinary GlobalValues that may appear in llvm.used. Their
-            // referenced constructor/destructor functions are already in
-            // reachable and are added below instead.
-            && value->getName() != "llvm.global_ctors"
-            && value->getName() != "llvm.global_dtors") {
-            used.push_back(const_cast<GlobalValue*>(value));
-        }
-    }
-    appendToUsed(module, used);
     legacy::PassManager passes;
     passes.add(createGlobalDCEPass());
     passes.run(module);
+}
+
+// Package-revision work that no graph edit changes belongs here, once per
+// package build, not in every GraphJit compilation. LLVM's ThinLTO pre-link
+// simplification pipeline (O2) inlines and simplifies within the whole linked
+// package; GlobalDCE then removes every copy that inlining left unreferenced
+// (see remove_unreachable_package_code()). Node callbacks stay functions with
+// bodies because their node records take their addresses. The finalized LLVM
+// is what the package's own ORC JIT loads for configuration; node code is
+// optimized further from it below.
+void prelink_optimize_package(Module& module)
+{
+    // Clang's O0 barrier pair, from O0 LLVM inputs that custom package CMake
+    // may add. An explicit noinline without optnone is the author's and stays.
+    for (auto& function : module) {
+        if (function.isDeclaration()
+            || !function.hasFnAttribute(Attribute::OptimizeNone)) {
+            continue;
+        }
+        function.removeFnAttr(Attribute::OptimizeNone);
+        function.removeFnAttr(Attribute::NoInline);
+    }
+
+    InitializeNativeTarget();
+    auto triple = module.getTargetTriple();
+    if (triple.empty()) triple = Triple(sys::getProcessTriple());
+    std::string error;
+    auto const* target = TargetRegistry::lookupTarget(triple, error);
+    if (!target) {
+        fail("no LLVM target for IV package triple '" + triple.str() + "': " + error);
+    }
+    // No CPU or features: each function's own target attributes select its
+    // subtarget for the cost model.
+    std::unique_ptr<TargetMachine> target_machine(target->createTargetMachine(
+        triple, "", "", TargetOptions(), std::nullopt));
+    if (!target_machine) {
+        fail("cannot create the LLVM target machine for IV package pre-link optimization");
+    }
+
+    PassBuilder pass_builder(target_machine.get());
+    LoopAnalysisManager loops;
+    FunctionAnalysisManager functions;
+    CGSCCAnalysisManager cgscc;
+    ModuleAnalysisManager modules;
+    pass_builder.registerModuleAnalyses(modules);
+    pass_builder.registerCGSCCAnalyses(cgscc);
+    pass_builder.registerFunctionAnalyses(functions);
+    pass_builder.registerLoopAnalyses(loops);
+    pass_builder.crossRegisterProxies(loops, functions, cgscc, modules);
+    auto pipeline = pass_builder.buildThinLTOPreLinkDefaultPipeline(OptimizationLevel::O2);
+    pipeline.addPass(GlobalDCEPass());
+    pipeline.run(module, modules);
 }
 
 void verify_finalized_package(Module const& module)
@@ -2335,6 +2371,364 @@ void write_package_bitcode(Module& module, std::filesystem::path const& path)
         std::filesystem::rename(temporary, path, ec);
         if (ec) {
             fail("cannot publish finalized IV package bitcode '" + path.string()
+                + "': " + ec.message());
+        }
+    }
+}
+
+// Node code: the native object beside the finalized package LLVM that project
+// code calls. See NodeCodeRecordData in module/abi.h.
+std::filesystem::path node_code_object_path(std::filesystem::path const& bitcode_path)
+{
+    return std::filesystem::path(bitcode_path.string() + ".node-code.o");
+}
+
+// Node code is compiled for the CPU it runs on. ModuleLoader puts the same host
+// CPU and features in the package artifact signature, so a cached object is
+// never loaded on another CPU.
+struct NodeCodeTarget {
+    std::string cpu;
+    std::string features;
+};
+
+NodeCodeTarget host_node_code_target()
+{
+    SubtargetFeatures features;
+    for (auto const& feature : sys::getHostCPUFeatures()) {
+        features.AddFeature(feature.getKey(), feature.getValue());
+    }
+    return {
+        .cpu = sys::getHostCPUName().str(),
+        .features = features.getString(),
+    };
+}
+
+std::unique_ptr<TargetMachine> create_node_code_target_machine(
+    Module const& module,
+    NodeCodeTarget const& host)
+{
+    InitializeNativeTarget();
+    InitializeNativeTargetAsmPrinter();
+    // Object emission assembles inline asm in package code.
+    InitializeNativeTargetAsmParser();
+    auto triple = module.getTargetTriple();
+    if (triple.empty()) triple = Triple(sys::getProcessTriple());
+    std::string error;
+    auto const* target = TargetRegistry::lookupTarget(triple, error);
+    if (!target) {
+        fail("no LLVM target for IV package node code '" + triple.str() + "': " + error);
+    }
+    // Position-independent code with the small code model is what ORC links
+    // anywhere in the address space.
+    std::unique_ptr<TargetMachine> target_machine(target->createTargetMachine(
+        triple,
+        host.cpu,
+        host.features,
+        TargetOptions(),
+        Reloc::PIC_,
+        CodeModel::Small,
+        CodeGenOptLevel::Aggressive));
+    if (!target_machine) {
+        fail("cannot create the LLVM target machine for IV package node code");
+    }
+    if (target_machine->createDataLayout() != module.getDataLayout()) {
+        fail("IV package LLVM data layout does not match the host node-code target");
+    }
+    return target_machine;
+}
+
+// The data pointer a finalizer view accessor (emit_view_accessor) returns, or
+// null when the accessor returns an empty view.
+Constant* view_accessor_data(Module& module, StringRef name)
+{
+    auto* accessor = module.getFunction(name);
+    if (!accessor || accessor->isDeclaration()) {
+        fail("finalized IV package does not define '" + name.str() + "'");
+    }
+    for (auto& block : *accessor) {
+        auto* ret = dyn_cast_or_null<ReturnInst>(block.getTerminator());
+        if (!ret) continue;
+        auto* view = dyn_cast_or_null<ConstantStruct>(ret->getReturnValue());
+        if (!view || view->getNumOperands() != 2) break;
+        auto* data = view->getOperand(0);
+        return isa<ConstantPointerNull>(data) ? nullptr : data;
+    }
+    fail("finalized IV package accessor '" + name.str() + "' does not return a constant view");
+}
+
+std::size_t node_code_size(Value const* value, std::string_view field)
+{
+    auto const* integer = dyn_cast<ConstantInt>(value);
+    if (!integer || integer->getValue().getActiveBits() > 64
+        || integer->getZExtValue() > std::numeric_limits<std::size_t>::max()) {
+        fail("malformed IV package " + std::string(field));
+    }
+    return static_cast<std::size_t>(integer->getZExtValue());
+}
+
+// Reduces the finalized package, after its LLVM has been written, to node code:
+// every node record's runtime/compiler callbacks and every retained global,
+// reachable only from the two node-code tables. Everything else becomes
+// internal and unreferenced, so optimization removes the configuration code,
+// the package tables, and the static constructors. Node runtime operations
+// reference no mutable package global (reject_node_runtime_mutable_globals),
+// so node code needs no constructors.
+void reduce_to_node_code(Module& module, NodeCodeTarget const& host)
+{
+    auto& context = module.getContext();
+    auto const& layout = module.getDataLayout();
+    auto* size_type = IntegerType::get(context, layout.getPointerSizeInBits());
+    auto* pointer_type = PointerType::getUnqual(context);
+
+    auto* i64 = Type::getInt64Ty(context);
+    auto* key_type = StructType::get(i64, i64);
+    auto* operations_type = StructType::get(
+        context, SmallVector<Type*, 13>(13, pointer_type));
+    auto* record_type = StructType::get(key_type, operations_type);
+    auto const record_size = layout.getTypeAllocSize(record_type);
+    if (record_size.isScalable()
+        || record_size.getFixedValue() != sizeof(iv::NodeCodeRecordData)) {
+        fail("node-code record ABI does not match NodeCodeRecordData");
+    }
+
+    struct Record {
+        iv::NodeCodeKey key{};
+        ConstantStruct* operations = nullptr;
+    };
+    std::vector<Record> records;
+    for (auto& global : module.globals()) {
+        auto const section = global.getSection();
+        if (section != "iv_node_types" && !section.ends_with("__iv_node_types")) continue;
+        auto* record = global.hasInitializer()
+            ? dyn_cast<ConstantStruct>(global.getInitializer())
+            : nullptr;
+        if (!record || record->getNumOperands() != 11) fail("malformed iv_node_types record");
+        auto* key = dyn_cast<ConstantStruct>(record->getOperand(0));
+        auto* operations = dyn_cast<ConstantStruct>(record->getOperand(1));
+        if (!key || key->getNumOperands() != 2 || !operations
+            || operations->getNumOperands() != 13) {
+            fail("malformed iv_node_types record ABI");
+        }
+        // Operand 0 is declare_node, which stays configuration-only.
+        for (unsigned index = 0; index < operations->getNumOperands(); ++index) {
+            auto* callback = operations->getOperand(index);
+            if (!callback->getType()->isPointerTy()) {
+                fail("malformed iv_node_types operations ABI");
+            }
+            if (index == 0 || isa<ConstantPointerNull>(callback)) continue;
+            auto* function = dyn_cast<Function>(callback->stripPointerCasts());
+            if (!function || function->isDeclaration()) {
+                fail("node compiler record callback has no definition in the finalized package");
+            }
+        }
+        records.push_back({
+            .key = {
+                .low = constant_u64(key->getOperand(0)),
+                .high = constant_u64(key->getOperand(1)),
+            },
+            .operations = operations,
+        });
+    }
+    // Sorted so that GraphJit finds a record by binary search.
+    std::ranges::sort(records, {}, &Record::key);
+    if (std::ranges::adjacent_find(records, {}, &Record::key) != records.end()) {
+        fail("duplicate NodeCodeKey in compiler records");
+    }
+
+    std::vector<Constant*> record_entries;
+    record_entries.reserve(records.size());
+    for (auto const& record : records) {
+        std::vector<Constant*> operations;
+        operations.push_back(ConstantPointerNull::get(pointer_type));
+        for (unsigned index = 1; index < record.operations->getNumOperands(); ++index) {
+            operations.push_back(record.operations->getOperand(index));
+        }
+        record_entries.push_back(ConstantStruct::get(
+            record_type,
+            ConstantStruct::get(
+                key_type,
+                ConstantInt::get(i64, record.key.low),
+                ConstantInt::get(i64, record.key.high)),
+            ConstantStruct::get(operations_type, operations)));
+    }
+
+    auto* retained_type = StructType::get(pointer_type, size_type, size_type);
+    auto const retained_size = layout.getTypeAllocSize(retained_type);
+    if (retained_size.isScalable()
+        || retained_size.getFixedValue() != sizeof(iv::NodeCodeRetainedGlobalData)) {
+        fail("node-code retained-global ABI does not match NodeCodeRetainedGlobalData");
+    }
+    std::vector<Constant*> retained_entries;
+    if (auto* data = view_accessor_data(module, "iv_package_retained_globals")) {
+        auto* table = dyn_cast<GlobalVariable>(data->stripPointerCasts());
+        auto* array = table && table->hasInitializer()
+            ? dyn_cast<ConstantArray>(table->getInitializer())
+            : nullptr;
+        if (!array) fail("malformed IV package retained-global table");
+        retained_entries.assign(array->getNumOperands(), nullptr);
+        for (unsigned position = 0; position < array->getNumOperands(); ++position) {
+            auto* entry = dyn_cast<ConstantStruct>(array->getOperand(position));
+            if (!entry || entry->getNumOperands() != 3) {
+                fail("malformed IV package retained-global record");
+            }
+            auto const size = node_code_size(entry->getOperand(1), "retained-global size");
+            auto const index = node_code_size(entry->getOperand(2), "retained-global index");
+            if (index >= retained_entries.size() || retained_entries[index]) {
+                fail("invalid IV package retained-global index");
+            }
+            auto* global = dyn_cast<GlobalVariable>(entry->getOperand(0)->stripPointerCasts());
+            if (!global || !global->isConstant() || !global->hasInitializer()
+                || global->isThreadLocal() || global->getAddressSpace() != 0) {
+                retained_entries[index] = ConstantStruct::get(
+                    retained_type,
+                    ConstantPointerNull::get(pointer_type),
+                    ConstantInt::get(size_type, 0),
+                    ConstantInt::get(size_type, 1));
+                continue;
+            }
+            // An explicit alignment makes the reported one exact.
+            if (!global->getAlign()) global->setAlignment(layout.getPreferredAlign(global));
+            retained_entries[index] = ConstantStruct::get(
+                retained_type,
+                ConstantExpr::getPointerCast(global, pointer_type),
+                ConstantInt::get(size_type, size),
+                ConstantInt::get(size_type, global->getAlign()->value()));
+        }
+    }
+
+    // The package's retention lists, static constructors and destructors, and
+    // annotations are configuration roots, not node code.
+    for (auto& global : make_early_inc_range(module.globals())) {
+        if (global.hasAppendingLinkage()) global.eraseFromParent();
+    }
+
+    auto emit_table = [&](StringRef accessor, StringRef table_name, Type* type,
+                          std::vector<Constant*> const& entries) -> Function* {
+        if (entries.empty()) {
+            return emit_view_accessor(
+                module, accessor, ConstantPointerNull::get(pointer_type), 0);
+        }
+        auto* array_type = ArrayType::get(type, entries.size());
+        auto* table = new GlobalVariable(
+            module, array_type, true, GlobalValue::PrivateLinkage,
+            ConstantArray::get(array_type, entries), table_name);
+        return emit_view_accessor(
+            module, accessor,
+            ConstantExpr::getPointerCast(table, pointer_type),
+            layout.getTypeAllocSize(array_type).getFixedValue());
+    };
+    auto* records_accessor = emit_table(
+        "iv_package_node_code_records", "iv.node_code_records",
+        record_type, record_entries);
+    auto* retained_accessor = emit_table(
+        "iv_package_node_code_retained_globals", "iv.node_code_retained_globals",
+        retained_type, retained_entries);
+    if (records_accessor->getName() != "iv_package_node_code_records"
+        || retained_accessor->getName() != "iv_package_node_code_retained_globals") {
+        fail("IV package defines a reserved node-code symbol");
+    }
+
+    auto internalize = [&](GlobalValue& value) {
+        if (value.isDeclaration() || value.hasLocalLinkage()
+            || value.hasAvailableExternallyLinkage()
+            || &value == records_accessor || &value == retained_accessor) {
+            return;
+        }
+        value.setLinkage(GlobalValue::InternalLinkage);
+        value.setVisibility(GlobalValue::DefaultVisibility);
+        value.setDLLStorageClass(GlobalValue::DefaultStorageClass);
+        if (auto* object = dyn_cast<GlobalObject>(&value)) object->setComdat(nullptr);
+    };
+    for (auto& function : module) internalize(function);
+    for (auto& global : module.globals()) internalize(global);
+    for (auto& alias : module.aliases()) internalize(alias);
+    for (auto& ifunc : module.ifuncs()) internalize(ifunc);
+
+    // Clang recorded the generic baseline CPU on each function. Node code is
+    // for the host; a function's own explicit features still apply after it.
+    for (auto& function : module) {
+        if (function.isDeclaration()) continue;
+        auto features = host.features;
+        if (auto const existing = function.getFnAttribute("target-features");
+            existing.isValid() && !existing.getValueAsString().empty()) {
+            features += ',';
+            features += existing.getValueAsString();
+        }
+        function.addFnAttr("target-cpu", host.cpu);
+        function.addFnAttr("target-features", features);
+        function.removeFnAttr("tune-cpu");
+    }
+}
+
+void verify_node_code(Module const& module)
+{
+    std::string diagnostics;
+    raw_string_ostream stream(diagnostics);
+    if (!verifyModule(module, &stream)) return;
+    stream.flush();
+    fail("IV package node code LLVM is invalid:\n" + diagnostics);
+}
+
+// Node code runs on the audio thread and is compiled once per package build, so
+// it gets the complete O3 pipeline with Clang's O3 tuning (loop and SLP
+// vectorization, interleaving, and unrolling). GlobalDCE first removes what
+// reduce_to_node_code() left unreferenced.
+void optimize_node_code(Module& module, TargetMachine& target_machine)
+{
+    PipelineTuningOptions tuning;
+    tuning.LoopInterleaving = true;
+    tuning.LoopVectorization = true;
+    tuning.SLPVectorization = true;
+    tuning.LoopUnrolling = true;
+    PassBuilder pass_builder(&target_machine, tuning);
+    LoopAnalysisManager loops;
+    FunctionAnalysisManager functions;
+    CGSCCAnalysisManager cgscc;
+    ModuleAnalysisManager modules;
+    pass_builder.registerModuleAnalyses(modules);
+    pass_builder.registerCGSCCAnalyses(cgscc);
+    pass_builder.registerFunctionAnalyses(functions);
+    pass_builder.registerLoopAnalyses(loops);
+    pass_builder.crossRegisterProxies(loops, functions, cgscc, modules);
+    ModulePassManager pipeline;
+    pipeline.addPass(GlobalDCEPass());
+    pipeline.addPass(pass_builder.buildPerModuleDefaultPipeline(OptimizationLevel::O3));
+    pipeline.run(module, modules);
+}
+
+void write_node_code_object(
+    Module& module,
+    TargetMachine& target_machine,
+    std::filesystem::path const& path)
+{
+    auto temporary = path;
+    temporary += ".tmp";
+    {
+        std::error_code ec;
+        raw_fd_ostream output(temporary.string(), ec, sys::fs::OF_None);
+        if (ec) {
+            fail("cannot create IV package node code '" + temporary.string()
+                + "': " + ec.message());
+        }
+        legacy::PassManager passes;
+        if (target_machine.addPassesToEmitFile(
+                passes, output, nullptr, CodeGenFileType::ObjectFile)) {
+            fail("the LLVM target cannot emit IV package node code objects");
+        }
+        passes.run(module);
+        output.flush();
+        if (output.has_error()) {
+            fail("cannot finish IV package node code '" + temporary.string() + "'");
+        }
+    }
+    std::error_code ec;
+    std::filesystem::rename(temporary, path, ec);
+    if (ec) {
+        std::filesystem::remove(path, ec);
+        ec.clear();
+        std::filesystem::rename(temporary, path, ec);
+        if (ec) {
+            fail("cannot publish IV package node code '" + path.string()
                 + "': " + ec.message());
         }
     }
@@ -2598,9 +2992,14 @@ int finalize(Options options)
         state_structures,
         background_state_structures,
         retained_globals);
-    preserve_package_code(package);
+    remove_unreachable_package_code(package);
     verify_finalized_package(package);
     timings.finish_stage("package_metadata_inject", stage_started_at);
+
+    stage_started_at = timings.start_stage();
+    prelink_optimize_package(package);
+    verify_finalized_package(package);
+    timings.finish_stage("package_prelink_optimize", stage_started_at);
 
     stage_started_at = timings.start_stage();
     write_package_bitcode(package, options.output);
@@ -2609,6 +3008,24 @@ int finalize(Options options)
     stage_started_at = timings.start_stage();
     write_node_event_protocol(metadata, options.output);
     timings.finish_stage("node_event_protocol_write", stage_started_at);
+
+    // The finalized LLVM is written; the module is now reduced in place to
+    // node code.
+    stage_started_at = timings.start_stage();
+    auto const node_code_host = host_node_code_target();
+    auto node_code_target = create_node_code_target_machine(package, node_code_host);
+    reduce_to_node_code(package, node_code_host);
+    verify_node_code(package);
+    timings.finish_stage("node_code_reduce", stage_started_at);
+
+    stage_started_at = timings.start_stage();
+    optimize_node_code(package, *node_code_target);
+    verify_node_code(package);
+    timings.finish_stage("node_code_optimize", stage_started_at);
+
+    stage_started_at = timings.start_stage();
+    write_node_code_object(package, *node_code_target, node_code_object_path(options.output));
+    timings.finish_stage("node_code_codegen", stage_started_at);
 
     if (options.timings_file) timings.write(*options.timings_file);
     return 0;

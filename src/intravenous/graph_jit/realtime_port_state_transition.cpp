@@ -1049,7 +1049,13 @@ std::expected<void, std::string> validate_sample_interval(
         || static_cast<std::uint64_t>(*last)
             > view.storage_frame_count) {
         return std::unexpected(
-            std::string{role} + " cannot represent its semantic interval");
+            std::string{role} + " cannot represent its semantic interval ["
+            + std::to_string(begin) + ", " + std::to_string(end)
+            + ") in compact-carry storage of "
+            + std::to_string(view.storage_frame_count) + " frames ("
+            + std::to_string(view.carry_future_frames)
+            + " carried future, timeline offset "
+            + std::to_string(view.timeline_offset_frames) + ")");
     }
     return {};
 }

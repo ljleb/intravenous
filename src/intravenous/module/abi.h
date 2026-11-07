@@ -1,6 +1,7 @@
 #pragma once
 
 #include <intravenous/node/code_key.h>
+#include <intravenous/node/compiler_record.h>
 
 #include <cstddef>
 #include <cstdint>
@@ -14,8 +15,9 @@ namespace details {
 struct ConfigurationTypeIdentity;
 }
 // Invalidate package compilation caches when the compiler-record or
-// configured-graph wire contract changes (including the replay flag).
-inline constexpr std::uint32_t IV_PACKAGE_ABI_VERSION = 4;
+// configured-graph wire contract changes (including the replay flag), or the
+// node-code object the finalizer writes beside the package LLVM.
+inline constexpr std::uint32_t IV_PACKAGE_ABI_VERSION = 5;
 
 struct ModuleDataView {
     void const* data = nullptr;
@@ -31,6 +33,30 @@ struct RetainedGlobalData {
     void const* address = nullptr;
     std::size_t size = 0;
     std::size_t index = 0;
+};
+
+// Node code is the finalizer's native object beside the finalized package
+// LLVM: every node record's runtime/compiler callbacks and a copy of every
+// retained global, optimized at O3 and compiled for the host CPU once per
+// package build. Project code calls these callbacks; configuration keeps using
+// the package's own code.
+//
+// One record per NodeCompilerRecord, sorted by code_key. operations has the
+// same optional callbacks as that record, except declare_node, which is
+// configuration-only and always null here.
+struct NodeCodeRecordData {
+    NodeCodeKey code_key{};
+    details::NodeCompilerOperations operations{};
+};
+
+// The node-code copy of one retained global, indexed like RetainedGlobalData.
+// A null address marks a global that cannot be node-code data (not constant,
+// thread-local, or no longer a plain global after package optimization); only a
+// configuration relocation that uses it fails.
+struct NodeCodeRetainedGlobalData {
+    void const* address = nullptr;
+    std::size_t size = 0;
+    std::size_t alignment = 1;
 };
 
 struct NodeMessageHandlerData {
@@ -82,6 +108,10 @@ static_assert(std::is_standard_layout_v<NodeConfigPointerFieldData>);
 static_assert(std::is_trivially_copyable_v<NodeConfigPointerFieldData>);
 static_assert(std::is_standard_layout_v<RetainedGlobalData>);
 static_assert(std::is_trivially_copyable_v<RetainedGlobalData>);
+static_assert(std::is_standard_layout_v<NodeCodeRecordData>);
+static_assert(std::is_trivially_copyable_v<NodeCodeRecordData>);
+static_assert(std::is_standard_layout_v<NodeCodeRetainedGlobalData>);
+static_assert(std::is_trivially_copyable_v<NodeCodeRetainedGlobalData>);
 static_assert(std::is_standard_layout_v<NodeMessageHandlerData>);
 static_assert(std::is_trivially_copyable_v<NodeMessageHandlerData>);
 static_assert(std::is_standard_layout_v<ModuleMessageHandlerData>);
@@ -102,4 +132,7 @@ using iv_package_node_message_handlers_fn = iv::ModuleDataView (*)();
 using iv_package_module_message_handlers_fn = iv::ModuleDataView (*)();
 using iv_package_node_state_structures_fn = iv::ModuleDataView (*)();
 using iv_package_node_background_state_structures_fn = iv::ModuleDataView (*)();
+// The two exports of the node-code object.
+using iv_package_node_code_records_fn = iv::ModuleDataView (*)();
+using iv_package_node_code_retained_globals_fn = iv::ModuleDataView (*)();
 }

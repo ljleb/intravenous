@@ -101,6 +101,8 @@ struct LoadedPackageCode {
     std::shared_ptr<SharedPackageJit> shared_jit;
     llvm::orc::JITDylib* jit_dylib = nullptr;
     llvm::orc::ResourceTrackerSP resources{};
+    // The node-code object's own JITDylib, beside jit_dylib.
+    llvm::orc::JITDylib* node_code_dylib = nullptr;
     std::vector<details::PackageDefinition> definitions{};
     std::vector<NodePresentationDescriptor> node_presentations{};
     std::vector<NodeConfigPointerFieldData> config_pointer_fields{};
@@ -108,6 +110,10 @@ struct LoadedPackageCode {
     std::vector<NodeMessageHandlerData> node_message_handlers{};
     std::vector<ModuleMessageHandlerData> module_message_handlers{};
     std::vector<details::BuilderNodeStateStructures> node_state_structures{};
+    // The node-code object's tables, linked in node_code_dylib. Sorted by code
+    // key; addresses are valid while this is alive.
+    std::vector<NodeCodeRecordData> node_code_records{};
+    std::vector<NodeCodeRetainedGlobalData> node_code_retained_globals{};
     ModuleDependency dependency{};
 
     ~LoadedPackageCode();
@@ -475,6 +481,30 @@ std::string package_code_name(std::string_view base)
     return std::string(base) + ".ivpkg.bc";
 }
 
+// The finalizer's node-code object beside the finalized package LLVM.
+std::filesystem::path node_code_object_path(std::filesystem::path const& bitcode_path)
+{
+    return std::filesystem::path(bitcode_path.string() + ".node-code.o");
+}
+
+// The CPU the finalizer compiles node code for, as it detects it: the host.
+// Sorted so that the artifact signature is stable.
+std::string host_cpu_signature()
+{
+    std::vector<std::string> features;
+    for (auto const& feature : llvm::sys::getHostCPUFeatures()) {
+        features.push_back(
+            (feature.getValue() ? "+" : "-") + feature.getKey().str());
+    }
+    std::ranges::sort(features);
+    std::string result = llvm::sys::getHostCPUName().str();
+    for (auto const& feature : features) {
+        result += ',';
+        result += feature;
+    }
+    return result;
+}
+
 char const *config_name()
 {
 #if defined(NDEBUG)
@@ -668,8 +698,15 @@ void run(
 }
 LoadedPackageCode::~LoadedPackageCode()
 {
-    if (!shared_jit || !shared_jit->jit || !jit_dylib) return;
+    if (!shared_jit || !shared_jit->jit) return;
     std::lock_guard lock(shared_jit->mutex);
+    if (node_code_dylib) {
+        if (auto error = shared_jit->jit->getExecutionSession().removeJITDylib(
+                *node_code_dylib)) {
+            llvm::consumeError(std::move(error));
+        }
+    }
+    if (!jit_dylib) return;
     if (auto error = shared_jit->jit->deinitialize(*jit_dylib)) {
         llvm::consumeError(std::move(error));
     }
@@ -873,6 +910,8 @@ class ModuleLoader::Impl {
         signature << "iv-package-abi=" << IV_PACKAGE_ABI_VERSION << '\n'
                   << "config=" << config_name() << '\n'
                   << "target-triple=" << llvm::sys::getDefaultTargetTriple() << '\n'
+                  // Node code is compiled for the host CPU.
+                  << "host-cpu=" << host_cpu_signature() << '\n'
                   << "pointer-size=" << sizeof(void*) << '\n'
                   << "little-endian=" << (std::endian::native == std::endian::little) << '\n'
                   << "cmake=" << file_identity(cmake_program()) << '\n'
@@ -1024,6 +1063,12 @@ class ModuleLoader::Impl {
                 "IV package build did not produce semantic event protocol '"
                 + node_event_protocol.string() + "'");
         }
+        if (auto const node_code = node_code_object_path(artifact);
+            !std::filesystem::exists(node_code)) {
+            throw std::runtime_error(
+                "IV package build did not produce node code '"
+                + node_code.string() + "'");
+        }
 
         // The signature is part of the filename. A changed IV package produces new
         // LLVM while configured graphs keep the previous ORC resources alive
@@ -1145,25 +1190,50 @@ public:
             package->jit_dylib = &jit_dylib;
             package->resources = jit_dylib.createResourceTracker();
             auto const global_prefix = jit.getDataLayout().getGlobalPrefix();
-            if (std::string_view(IV_CONFIGURED_IV_BUILDER_LIBRARY).size()) {
-                jit_dylib.addGenerator(take_llvm_expected(
-                    llvm::orc::DynamicLibrarySearchGenerator::Load(
-                        IV_CONFIGURED_IV_BUILDER_LIBRARY, global_prefix),
-                    "load iv_builder package symbol resolver"));
-            }
-            for (auto const& library : package->dynamic_libraries) {
-                auto const library_path = library.string();
-                jit_dylib.addGenerator(take_llvm_expected(
-                    llvm::orc::DynamicLibrarySearchGenerator::Load(
-                        library_path.c_str(), global_prefix),
-                    "load IV package dynamic library '" + library_path + "'"));
-            }
+            auto add_package_generators = [&](llvm::orc::JITDylib& target) {
+                if (std::string_view(IV_CONFIGURED_IV_BUILDER_LIBRARY).size()) {
+                    target.addGenerator(take_llvm_expected(
+                        llvm::orc::DynamicLibrarySearchGenerator::Load(
+                            IV_CONFIGURED_IV_BUILDER_LIBRARY, global_prefix),
+                        "load iv_builder package symbol resolver"));
+                }
+                for (auto const& library : package->dynamic_libraries) {
+                    auto const library_path = library.string();
+                    target.addGenerator(take_llvm_expected(
+                        llvm::orc::DynamicLibrarySearchGenerator::Load(
+                            library_path.c_str(), global_prefix),
+                        "load IV package dynamic library '" + library_path + "'"));
+                }
+            };
+            add_package_generators(jit_dylib);
             check_llvm_error(
                 jit.addIRModule(
                     package->resources,
                     llvm::orc::ThreadSafeModule(
                         std::move(module), std::move(thread_safe_context))),
                 "add IV package LLVM to shared ORC JIT");
+            // Node code gets its own JITDylib, so that its linker-private weak
+            // definitions, such as DW.ref.__gxx_personality_v0, never resolve
+            // to the package graph's.
+            auto& node_code_dylib = take_llvm_expected(
+                jit.createJITDylib(
+                    "iv.package." + sanitize(root.package_key) + "."
+                    + std::to_string(suffix) + ".node-code"),
+                "create IV package node-code JITDylib");
+            package->node_code_dylib = &node_code_dylib;
+            add_package_generators(node_code_dylib);
+            {
+                auto const node_code_path = node_code_object_path(bitcode_path);
+                auto node_code = llvm::MemoryBuffer::getFile(node_code_path.string());
+                if (!node_code) {
+                    throw std::runtime_error(
+                        "cannot read IV package node code '" + node_code_path.string()
+                        + "': " + node_code.getError().message());
+                }
+                check_llvm_error(
+                    jit.addObjectFile(node_code_dylib, std::move(*node_code)),
+                    "add IV package node code to shared ORC JIT");
+            }
             check_llvm_error(jit.initialize(jit_dylib), "initialize IV package LLVM");
 
             auto symbol = [&]<class Function>(char const* name) -> Function {
@@ -1237,6 +1307,35 @@ public:
                 retained_globals_fn(),
                 static_cast<RetainedGlobalData*>(nullptr),
                 "retained LLVM global");
+            auto node_code_symbol = [&]<class Function>(char const* name) -> Function {
+                auto address = take_llvm_expected(
+                    jit.lookup(node_code_dylib, name),
+                    std::string("lookup IV package node-code symbol '") + name + "'");
+                return address.template toPtr<Function>();
+            };
+            package->node_code_records = copy_table(
+                node_code_symbol.template operator()<iv_package_node_code_records_fn>(
+                    "iv_package_node_code_records")(),
+                static_cast<NodeCodeRecordData*>(nullptr),
+                "node-code record");
+            package->node_code_retained_globals = copy_table(
+                node_code_symbol.template operator()<iv_package_node_code_retained_globals_fn>(
+                    "iv_package_node_code_retained_globals")(),
+                static_cast<NodeCodeRetainedGlobalData*>(nullptr),
+                "node-code retained global");
+            if (!std::ranges::is_sorted(
+                    package->node_code_records, {}, &NodeCodeRecordData::code_key)
+                || std::ranges::adjacent_find(
+                       package->node_code_records, {}, &NodeCodeRecordData::code_key)
+                    != package->node_code_records.end()) {
+                throw std::runtime_error(
+                    "IV package node code records are not strictly sorted by code key");
+            }
+            if (package->node_code_retained_globals.size()
+                != package->retained_globals.size()) {
+                throw std::runtime_error(
+                    "IV package node code retained-global count disagrees with the package");
+            }
             package->node_message_handlers = copy_table(
                 node_message_handlers_fn(),
                 static_cast<NodeMessageHandlerData*>(nullptr),
@@ -1487,6 +1586,8 @@ public:
             .node_message_handlers = package->node_message_handlers,
             .module_message_handlers = package->module_message_handlers,
             .node_state_structures = package->node_state_structures,
+            .node_code_records = package->node_code_records,
+            .node_code_retained_globals = package->node_code_retained_globals,
             .package_code = package,
         };
     }

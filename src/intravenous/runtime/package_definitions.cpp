@@ -63,6 +63,7 @@ void write_initial_compile_commands(
     std::filesystem::path const& destination)
 {
 #if !defined(IV_CONFIGURED_MODULE_SOURCE_TEMPLATE_CXX_COMPILER) \
+    || !defined(IV_CONFIGURED_MODULE_SOURCE_TEMPLATE_COMPILE_FLAGS) \
     || !defined(IV_CONFIGURED_MODULE_SOURCE_TEMPLATE_DSL_PCH) \
     || !defined(IV_CONFIGURED_MODULE_SOURCE_TEMPLATE_INCLUDE_DIR) \
     || !defined(IV_CONFIGURED_MODULE_SOURCE_TEMPLATE_THIRD_PARTY_INCLUDE_DIR)
@@ -74,7 +75,9 @@ void write_initial_compile_commands(
         + " -I" + command_quote(package_root.generic_string())
         + " -isystem " + command_quote(IV_CONFIGURED_MODULE_SOURCE_TEMPLATE_INCLUDE_DIR)
         + " -isystem " + command_quote(IV_CONFIGURED_MODULE_SOURCE_TEMPLATE_THIRD_PARTY_INCLUDE_DIR)
-        + " -O0 -flto=full -std=c++23 -fvisibility=hidden"
+        // The shared package flags (PackageCompileFlags.cmake).
+        + " " + IV_CONFIGURED_MODULE_SOURCE_TEMPLATE_COMPILE_FLAGS
+        + " -Xclang -disable-llvm-passes -std=c++23 -fvisibility=hidden"
           " -fvisibility-inlines-hidden -Wall -Wextra -Wpedantic"
         + " -include-pch " + command_quote(IV_CONFIGURED_MODULE_SOURCE_TEMPLATE_DSL_PCH)
         + " -c " + command_quote(source.generic_string());

@@ -10,6 +10,7 @@
 #include <llvm/IR/GlobalVariable.h>
 #include <llvm/IR/Module.h>
 
+#include <cstdint>
 #include <expected>
 #include <memory>
 #include <span>
@@ -17,13 +18,37 @@
 #include <vector>
 
 namespace iv::graph_jit {
-struct PackageModule {
+// The compiler ABI of one package callback. Every callback with a given ABI has
+// the LLVM function type package_callback_type() returns for it.
+enum class CallbackImportAbi : std::uint8_t {
+    block,
+    background,
+    batch,
+    sequential_initialize,
+    sequential_combine,
+};
+
+llvm::FunctionType* package_callback_type(
+    llvm::LLVMContext& context,
+    CallbackImportAbi abi);
+
+// The node-code copy of one retained package global, by the symbol the project
+// module declares for it. An empty symbol marks a global node code cannot use.
+struct PackageRetainedGlobal {
+    std::string symbol{};
+    std::size_t size = 0;
+    std::size_t alignment = 1;
+};
+
+// One accepted package revision's node code, compiled once per package build
+// (NodeCodeRecordData, graph_jit_direction.md). Lowering sees only symbols: the
+// project module declares the callbacks and retained globals it uses, and
+// GraphJit defines each symbol at its node-code address in the generation
+// JITDylib.
+struct PackageCode {
     std::shared_ptr<PackageRevision const> revision{};
-    // GraphJit parses package LLVM specifically for one project compilation.
-    // Lowering owns that parse and may consume it exactly once into the final
-    // project module; no CloneModule copy is required.
-    std::unique_ptr<llvm::Module> module{};
-    std::span<llvm::GlobalVariable* const> retained_globals{};
+    // Indexed by the revision's retained-global index.
+    std::span<PackageRetainedGlobal const> retained_globals{};
 };
 
 struct NodeImplementation {
@@ -33,7 +58,7 @@ struct NodeImplementation {
     std::shared_ptr<PackageRevision const> revision{};
     std::uint64_t provider_version = 0;
     std::shared_ptr<void const> configuration_identity{};
-    llvm::Module* package_module = nullptr;
+    PackageCode const* package = nullptr;
 
     std::size_t state_size = 0;
     std::size_t state_alignment = 1;
@@ -55,19 +80,20 @@ struct NodeImplementation {
         NodeLayoutBuilder&,
         ReflectedNodePortRealization const&) = nullptr;
 
-    // Runtime/compiler LLVM anchors imported into the whole-project module.
-    llvm::Function* tick_block = nullptr;
-    llvm::Function* tick_block_batch = nullptr;
-    llvm::Function* skip_block = nullptr;
-    llvm::Function* skip_block_batch = nullptr;
-    llvm::Function* tock_coverage = nullptr;
-    llvm::Function* tock_coverage_batch = nullptr;
-    llvm::Function* propagate_forward_coverage = nullptr;
-    llvm::Function* propagate_forward_coverage_batch = nullptr;
-    llvm::Function* propagate_reverse_coverage = nullptr;
-    llvm::Function* propagate_reverse_coverage_batch = nullptr;
-    llvm::Function* initialize_sequential_input = nullptr;
-    llvm::Function* combine_sequential_input_values = nullptr;
+    // Node-code symbols of the runtime/compiler callbacks the project module
+    // may import. Empty means the node has no such callback.
+    std::string tick_block{};
+    std::string tick_block_batch{};
+    std::string skip_block{};
+    std::string skip_block_batch{};
+    std::string tock_coverage{};
+    std::string tock_coverage_batch{};
+    std::string propagate_forward_coverage{};
+    std::string propagate_forward_coverage_batch{};
+    std::string propagate_reverse_coverage{};
+    std::string propagate_reverse_coverage_batch{};
+    std::string initialize_sequential_input{};
+    std::string combine_sequential_input_values{};
 
     bool (*host_initialize_sequential_input)(
         std::size_t,
@@ -84,7 +110,7 @@ struct ConfigRelocation {
     // Empty for an explicit null pointer index. Non-null relocations identify
     // the exact retained package global that replaces the native pointer bytes.
     std::shared_ptr<PackageRevision const> revision{};
-    llvm::GlobalVariable* retained_global = nullptr;
+    PackageRetainedGlobal const* retained_global = nullptr;
 };
 
 // Immutable semantic inventory of the exact active predecessor realization.
@@ -96,15 +122,14 @@ struct LoweringTransitionInput {
 };
 
 // Everything the difficult compiler core is allowed to see. In particular,
-// there is no PackageJit/ModuleLoader/live NodeDefinitions dependency here.
-// Package modules and the caller-owned output module share one LLVMContext.
-// Package modules are compile-local lowering inputs and may be consumed directly
-// into output_module, avoiding a whole-module clone before LinkOnlyNeeded.
+// there is no PackageJit/ModuleLoader/live NodeDefinitions dependency here, and
+// no package LLVM: node code is already compiled, and lowering imports its
+// symbols by declaration.
 struct LoweringInput {
     ConfiguredGraph const& graph;
     GraphJitKernelSpecialization const& specialization;
     RealtimeStorageCostModel const& realtime_storage_cost_model;
-    std::span<PackageModule> packages{};
+    std::span<PackageCode const> packages{};
     // One entry for each registered concrete primitive. Synthetic/host graph
     // nodes remain represented by ConfiguredGraph and are lowered structurally.
     std::span<NodeImplementation const> node_implementations{};
@@ -134,8 +159,8 @@ struct LoweredGraphTransition {
 };
 
 // The lowerer owns graph analysis and canonical storage planning as well as
-// selected primitive-LLVM import/inlining and construction of the complete
-// project module. It must finish node_layout before emitting final realtime
+// the selected node-code imports and construction of the complete project
+// module. It must finish node_layout before emitting final realtime
 // storage accesses into output_module. TockState remains separately owned
 // background sidecar state and is supplied through background call frames.
 // Immutable lowering-shared tables should be emitted as LLVM globals so their
@@ -150,6 +175,10 @@ struct LoweringOutput {
     std::vector<ManualControlRuntimeBinding> manual_controls{};
     std::optional<LoweredGraphTransition> transition{};
     LoweredGraphRootSymbols root_symbols{};
+    // Wall-clock microseconds of the three lowering phases.
+    std::uint64_t plan_us = 0;
+    std::uint64_t transition_us = 0;
+    std::uint64_t emit_us = 0;
 };
 
 std::expected<LoweringOutput, std::string> lower_configured_graph_to_llvm(
