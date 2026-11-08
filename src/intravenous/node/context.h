@@ -32,7 +32,6 @@ namespace iv {
         void (*release_fn)(void const*, size_t, NodeStorage&) noexcept = nullptr;
         void (*default_construct_state_fn)(void*) = nullptr;
         void (*destroy_state_fn)(void*) = nullptr;
-        std::string (*identity_fn)(void const*) = nullptr;
     };
 
     struct TockStateLifecycleCallbacks {
@@ -145,6 +144,15 @@ namespace iv {
             NodeLayoutBuilder const&);
 
         void* node_storage_state_ptr(NodeStorage const&, size_t node_index);
+        // Completes an implicit move after the node's State was move-
+        // constructed from its predecessor's: copies each local_array region
+        // of the predecessor into the node's own, and points the State's
+        // local_array and nested-node spans back at the node's own regions.
+        void move_node_storage_regions(
+            NodeStorage& storage,
+            size_t node_index,
+            NodeStorage const& previous_storage,
+            size_t previous_node_index);
         ResourceContext const& node_storage_resources(NodeStorage const&);
         size_t node_storage_max_block_size(NodeStorage const&);
         size_t node_storage_default_silence_ttl_samples(NodeStorage const&);
@@ -924,6 +932,37 @@ namespace iv {
     };
 
     namespace details {
+        // A node that authors no move() is moved implicitly when its State
+        // can be moved. A node without State has no implicit move.
+        template<typename Node>
+        inline constexpr bool has_implicit_move = !has_move<Node>
+            && !std::is_void_v<typename NodeState<Node>::Type>
+            && std::is_move_constructible_v<typename NodeState<Node>::Type>;
+
+        // The implicit move: replace the successor's default-constructed
+        // State with one move-constructed from the predecessor's, then carry
+        // the predecessor's local_array regions over.
+        template<typename Node>
+        void move_state_implicitly(
+            void const*,
+            size_t node_index,
+            size_t previous_node_index,
+            NodeStorage& storage,
+            NodeStorage const& previous_storage) noexcept
+        {
+            using State = typename NodeState<Node>::Type;
+            invoke_node_lifecycle<Node>("move", node_index, [&] {
+                auto* state = static_cast<State*>(
+                    node_storage_state_ptr(storage, node_index));
+                auto* previous_state = static_cast<State*>(
+                    node_storage_state_ptr(previous_storage, previous_node_index));
+                std::destroy_at(state);
+                std::construct_at(state, std::move(*previous_state));
+                move_node_storage_regions(
+                    storage, node_index, previous_storage, previous_node_index);
+            });
+        }
+
         template<typename Node>
         NodeLifecycleCallbacks make_lifecycle_callbacks()
         {
@@ -973,21 +1012,8 @@ namespace iv {
                         }
                     });
                 };
-            }
-
-            if constexpr (requires(Node const& node) {
-                { node.identity() } -> std::convertible_to<std::string>;
-            }) {
-                callbacks.identity_fn = [](void const* node_ptr) -> std::string {
-                    if constexpr (std::is_empty_v<Node>) {
-                        (void)node_ptr;
-                        Node node {};
-                        return std::string(node.identity());
-                    } else {
-                        return std::string(
-                            static_cast<Node const*>(node_ptr)->identity());
-                    }
-                };
+            } else if constexpr (has_implicit_move<Node>) {
+                callbacks.move_fn = &move_state_implicitly<Node>;
             }
 
             if constexpr (has_initialize<Node>) {
@@ -1138,14 +1164,8 @@ namespace iv {
                             node_storage_resources(storage)));
                     });
                 };
-            }
-
-            if constexpr (requires {
-                { NodeValue.identity() } -> std::convertible_to<std::string>;
-            }) {
-                callbacks.identity_fn = [](void const*) -> std::string {
-                    return std::string(NodeValue.identity());
-                };
+            } else if constexpr (has_implicit_move<Node>) {
+                callbacks.move_fn = &move_state_implicitly<Node>;
             }
 
             if constexpr (requires(InitializationContext<Node> ctx) {

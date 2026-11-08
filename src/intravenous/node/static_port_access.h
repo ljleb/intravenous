@@ -1583,21 +1583,21 @@ namespace iv::details {
         std::tuple<Values...>, Binding, ChannelType, Layout, Access> {
         Binding const* binding_ = nullptr;
         FractionalGlobalIndex begin_{};
-        std::uint64_t begin_ordinal_ = 0;
-        std::uint64_t sequential_begin_ordinal_ = 0;
+        std::uint64_t begin_index_ = 0;
+        std::uint64_t sequential_begin_index_ = 0;
         std::size_t block_size_ = 0;
 
     public:
         constexpr StaticVariantContinuousInputAccess(
             Binding const& binding,
             FractionalGlobalIndex begin,
-            std::uint64_t begin_ordinal,
-            std::uint64_t sequential_begin_ordinal,
+            std::uint64_t begin_index,
+            std::uint64_t sequential_begin_index,
             std::size_t block_size) noexcept
             : binding_(&binding)
             , begin_(begin)
-            , begin_ordinal_(begin_ordinal)
-            , sequential_begin_ordinal_(sequential_begin_ordinal)
+            , begin_index_(begin_index)
+            , sequential_begin_index_(sequential_begin_index)
             , block_size_(block_size)
         {}
 
@@ -1620,8 +1620,8 @@ namespace iv::details {
                 ContinuousInputPort<Value>{
                     *binding_,
                     begin_,
-                    begin_ordinal_,
-                    sequential_begin_ordinal_,
+                    begin_index_,
+                    sequential_begin_index_,
                     block_size_}};
         }
     };
@@ -1642,8 +1642,8 @@ namespace iv::details {
         std::tuple<Values...>, Binding, ChannelType, Layout, Access, Recording> {
         Binding const* binding_ = nullptr;
         FractionalGlobalIndex begin_{};
-        std::uint64_t begin_ordinal_ = 0;
-        std::uint64_t sequential_begin_ordinal_ = 0;
+        std::uint64_t begin_index_ = 0;
+        std::uint64_t sequential_begin_index_ = 0;
         std::size_t block_size_ = 0;
         OutputDisposition* disposition_ = nullptr;
 
@@ -1651,29 +1651,29 @@ namespace iv::details {
         constexpr StaticVariantContinuousOutputAccess(
             Binding const& binding,
             FractionalGlobalIndex begin,
-            std::uint64_t begin_ordinal,
-            std::uint64_t sequential_begin_ordinal,
+            std::uint64_t begin_index,
+            std::uint64_t sequential_begin_index,
             std::size_t block_size) noexcept
         requires (!Recording)
             : binding_(&binding)
             , begin_(begin)
-            , begin_ordinal_(begin_ordinal)
-            , sequential_begin_ordinal_(sequential_begin_ordinal)
+            , begin_index_(begin_index)
+            , sequential_begin_index_(sequential_begin_index)
             , block_size_(block_size)
         {}
 
         constexpr StaticVariantContinuousOutputAccess(
             Binding const& binding,
             FractionalGlobalIndex begin,
-            std::uint64_t begin_ordinal,
-            std::uint64_t sequential_begin_ordinal,
+            std::uint64_t begin_index,
+            std::uint64_t sequential_begin_index,
             std::size_t block_size,
             OutputDisposition& disposition) noexcept
         requires Recording
             : binding_(&binding)
             , begin_(begin)
-            , begin_ordinal_(begin_ordinal)
-            , sequential_begin_ordinal_(sequential_begin_ordinal)
+            , begin_index_(begin_index)
+            , sequential_begin_index_(sequential_begin_index)
             , block_size_(block_size)
             , disposition_(&disposition)
         {}
@@ -1695,8 +1695,8 @@ namespace iv::details {
             auto port = ContinuousOutputPort<Value>{
                 *binding_,
                 begin_,
-                begin_ordinal_,
-                sequential_begin_ordinal_,
+                begin_index_,
+                sequential_begin_index_,
                 block_size_};
             if constexpr (Recording) {
                 return StaticContinuousOutputAccess<

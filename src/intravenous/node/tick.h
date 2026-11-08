@@ -165,8 +165,8 @@ namespace iv {
         IV_FORCEINLINE auto make_continuous_input_access(
             Binding const& binding,
             FractionalGlobalIndex begin,
-            std::uint64_t begin_ordinal,
-            std::uint64_t sequential_begin_ordinal,
+            std::uint64_t begin_index,
+            std::uint64_t sequential_begin_index,
             std::size_t block_size)
         {
             constexpr auto layout =
@@ -185,8 +185,8 @@ namespace iv {
                         ContinuousInputPort<Value>{
                             binding,
                             begin,
-                            begin_ordinal,
-                            sequential_begin_ordinal,
+                            begin_index,
+                            sequential_begin_index,
                             block_size}};
             } else {
                 return StaticVariantContinuousInputAccess<
@@ -197,8 +197,8 @@ namespace iv {
                     Access>{
                         binding,
                         begin,
-                        begin_ordinal,
-                        sequential_begin_ordinal,
+                        begin_index,
+                        sequential_begin_index,
                         block_size};
             }
         }
@@ -208,8 +208,8 @@ namespace iv {
         IV_FORCEINLINE auto make_continuous_output_access(
             Binding const& binding,
             FractionalGlobalIndex begin,
-            std::uint64_t begin_ordinal,
-            std::uint64_t sequential_begin_ordinal,
+            std::uint64_t begin_index,
+            std::uint64_t sequential_begin_index,
             std::size_t block_size,
             OutputDisposition* disposition = nullptr)
         {
@@ -224,8 +224,8 @@ namespace iv {
                 auto port = ContinuousOutputPort<Value>{
                     binding,
                     begin,
-                    begin_ordinal,
-                    sequential_begin_ordinal,
+                    begin_index,
+                    sequential_begin_index,
                     block_size};
                 if constexpr (Recording) {
                     IV_ASSERT(disposition != nullptr,
@@ -259,8 +259,8 @@ namespace iv {
                         true>{
                             binding,
                             begin,
-                            begin_ordinal,
-                            sequential_begin_ordinal,
+                            begin_index,
+                            sequential_begin_index,
                             block_size,
                             *disposition};
                 } else {
@@ -273,8 +273,8 @@ namespace iv {
                         false>{
                             binding,
                             begin,
-                            begin_ordinal,
-                            sequential_begin_ordinal,
+                            begin_index,
+                            sequential_begin_index,
                             block_size};
                 }
             }
@@ -475,7 +475,7 @@ namespace iv {
                         binding,
                         this->index,
                         this->value_index,
-                        binding.sequential_begin_ordinal
+                        binding.sequential_begin_index
                             + this->sequential_value_offset_,
                         1);
                 }
@@ -543,7 +543,7 @@ namespace iv {
                             binding,
                             this->index,
                             this->value_index,
-                            binding.sequential_begin_ordinal
+                            binding.sequential_begin_index
                                 + this->sequential_value_offset_,
                             1,
                             &this->template recording_disposition<Index>());
@@ -556,7 +556,7 @@ namespace iv {
                             binding,
                             this->index,
                             this->value_index,
-                            binding.sequential_begin_ordinal
+                            binding.sequential_begin_index
                                 + this->sequential_value_offset_,
                             1);
                 }
@@ -643,8 +643,8 @@ namespace iv {
                         Node, Index, details::TickPortAccessKind::block>(
                         binding,
                         projected.begin,
-                        projected.begin_ordinal_bits,
-                        binding.sequential_begin_ordinal,
+                        projected.begin_index_bits,
+                        binding.sequential_begin_index,
                         projected.count);
                 }
             } else {
@@ -717,8 +717,8 @@ namespace iv {
                         true>(
                             binding,
                             projected.begin,
-                            projected.begin_ordinal_bits,
-                            binding.sequential_begin_ordinal,
+                            projected.begin_index_bits,
+                            binding.sequential_begin_index,
                             projected.count,
                             &this->template recording_disposition<Index>());
                 } else {
@@ -729,8 +729,8 @@ namespace iv {
                         false>(
                             binding,
                             projected.begin,
-                            projected.begin_ordinal_bits,
-                            binding.sequential_begin_ordinal,
+                            projected.begin_index_bits,
+                            binding.sequential_begin_index,
                             projected.count);
                 }
             } else {
@@ -1130,7 +1130,7 @@ namespace iv {
                 do_tick(node, {
                     static_cast<TickContext<Node> const&>(ctx),
                     value_coordinate,
-                    projected.begin_ordinal_bits + i,
+                    projected.begin_index_bits + i,
                     i,
                 });
                 if (i + 1 < projected.count) {
@@ -1182,7 +1182,7 @@ namespace iv {
                     do_tick(lane.node(), TickSampleContext<Node>{
                         static_cast<TickContext<Node> const&>(block),
                         value_coordinate,
-                        lane_projection.begin_ordinal_bits + sample,
+                        lane_projection.begin_index_bits + sample,
                         sample,
                     });
                 }

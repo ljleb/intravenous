@@ -162,7 +162,7 @@ normally advances it, but resume/seek may make it jump. This does not reset the 
 graph's Sequential state.
 
 Physical continuous rings and compact carries use compiler-owned linear value cursors,
-not projected global ordinal bits. Generated execution maintains one cumulative cursor
+not projected global index bits. Generated execution maintains one cumulative cursor
 for each resolved dyadic pace used by the generation. For an SCC or primitive slice it
 derives the slice's physical beginning from the root callback's pace cursor plus the
 number of global-lattice values in the preceding root prefix. It advances each pace
@@ -171,7 +171,7 @@ cursor once after the complete root callback.
 This separation has three required consequences:
 
 - `begin()` and the node callback index remain global `FractionalGlobalIndex` values;
-- `value_index()` remains the global-lattice ordinal associated with the current
+- `value_index()` remains the global-lattice index associated with the current
   node-visible position; and
 - `get()`, `block()`, `block_extended()`, output revision, feedback, and carry address
   physical storage through the hidden Sequential cursor.
@@ -345,9 +345,51 @@ The configured/resolved history/latency requirements should be interpreted by an
 state** rule. For graph-revision semantics, each concrete node behaves as though its
 port windows were ordinary state owned beside its nested `State`:
 
-- a Sequential input owns the resolved values in its history window;
-- a Tick output owns the values in its resolved history window; and
-- a Tick output owns its already-authored values inside its resolved latency/future window.
+- a Sequential input owns the resolved values in its history window and its
+  in-flight values: the values its sources have already finalized that its read delay
+  beyond their latency (compiler-owned compensation or an authored `detach()` delay)
+  has not yet let it read;
+- a Tick sample output owns its last `history + latency` authored values before its next
+  tick. Storage files each value at the index it was authored for; latency only marks
+  the newest `latency` of those values as still revisable through
+  `OutputPort::update()`, and each consumer observes them through its `read_latency`;
+- a Tick event output owns the events in its resolved history window; and
+- a Tick event output owns the events it has already stamped inside its resolved
+  latency/future window, at or after its next tick.
+
+Newly settled (2026-11-07): a Tick sample output has no state at or after its next
+tick. The superseded finalization-index text, which filed each value at
+`index + latency`, is preserved in
+[historical/tick_output_finalization_index_2026-11-07.md](historical/tick_output_finalization_index_2026-11-07.md).
+
+Newly settled (2026-11-08): a Sequential input reads its source at
+`index - read_latency`, where `read_latency` is the source latency plus the input's
+compensation `c`. At a cutover position `P`, the source values in
+`[P - read_latency, P - source latency)` are final and not yet read. The input owns
+them as positions `[P, P + c)` of its own timeline, so it owns one window
+`[-history, c)`: its history, then its in-flight values. The extent rule below
+applies to the whole window, in the input's own timeline:
+
+- compensation that grows from `c` to `c + d` keeps the `c` in-flight values, exposes
+  `d` fresh positions after them, and the source's values continue after those. The
+  input hears no value twice and loses none;
+- compensation that shrinks from `c` to `c - d` discards the newest `d` in-flight
+  values;
+- a source whose own latency grows by `d` exposes `d` fresh positions in the same way.
+  The source's later revisions of values the input already holds do not reach it;
+- a rewired input plays its in-flight values from the old source first. The new
+  source's values follow them, entering as the new source finalizes them; and
+- a composed input's in-flight value at a position combines the contributions its
+  sources have already finalized for that position. A source added by the edit
+  contributes from the positions it finalizes after the cutover.
+
+The same holds for any read delay beyond the source's latency, not only for
+compiler-owned compensation: a Sequential input that reads its source through an
+authored `detach()` delay owns the values that delay has not yet let it read, and `c`
+counts both. (Newly settled 2026-11-08.)
+
+The superseded text, under which the input owned only its history, is preserved in
+[historical/input_owned_history_only_2026-11-08.md](historical/input_owned_history_only_2026-11-08.md).
 
 This is an effect requirement, not an allocation requirement. The steady
 storage planner may satisfy several conceptual port states using one producer ring,
@@ -389,13 +431,17 @@ Connection analysis therefore emits one cold semantic-state requirement for ever
 non-empty owned extent before storage selection:
 
 ```text
-Sequential sample input history -> one record per semantic channel
-Sequential event input history  -> one record for the event stream
-Tick sample output history       -> one record per semantic channel
-Tick sample output latency       -> one record per semantic channel
-Tick event output history        -> one record for the event stream
-Tick event output latency        -> one record for the event stream
+Sequential sample input history + c     -> one record per semantic channel
+Sequential event input history          -> one record for the event stream
+Tick sample output history + latency    -> one record per semantic channel
+Tick event output history               -> one record for the event stream
+Tick event output latency               -> one record for the event stream
 ```
+
+A sample input's record is one window `[-history, c)`, where `c` is the input's
+compensation. A sample output's record is one window because all of its owned values lie before its
+next tick. Keeping it whole lets a successor that changes history, latency, or both
+preserve the newest values of the intersection.
 
 Each record always retains its generation-local configured port coordinate and exact,
 unrounded extent. When its concrete node has authored stable identity, the record also
@@ -416,7 +462,10 @@ layout/channel, signed semantic-to-storage timeline offset, working capacity, ac
 stored-frame count, compact-carry future extent, and final `NodeStorage` or
 callback-arena-relative byte range. For semantic coordinate `P`, the physical ring
 coordinate is `P + offset`: Sequential-input read latency/channel delay is negative,
-while Tick-output authored storage latency is positive.
+and every Tick output view uses zero because sample storage files each value at the
+index it was authored for. Only shifted composed feedback, whose target timeline is
+written ahead of the current block by its read latency, carries compact-carry future
+frames.
 
 When a callback-local sample input is produced by explicit materialization, the cold
 mapping records every retained source-layout channel needed to reconstruct its target
@@ -444,7 +493,7 @@ A retained event stream is classified as one of: direct semantic ownership,
 materialization from a retained source, producer selection from a merged stream with a
 source-index sidecar, a shared merged stream that no longer contains sufficient producer
 identity, authoritative immutable emptiness, or callback-only state. The source-indexed
-case retains the producer's semantic source ordinal, preserving deterministic equal-time
+case retains the producer's semantic source index, preserving deterministic equal-time
 ordering. Retained fan-in acquires that sidecar exactly when one or more of its producers
 owns Tick-output history or latency; target-owned history alone continues to use the
 cheaper unindexed aggregate because no producer state has to be separated. A disconnected
@@ -984,7 +1033,7 @@ the frame owner, executor nor data store is reachable through the generated ABI.
 The compiler now retains contiguous per-node dynamic Sequential and Random Access
 sample/event slot ranges. Generated Sequential lowering copies the complete ordinary
 input-binding array into the primitive's stack frame and overlays only the retained
-dynamic input ordinals, preserving unaffected and mixed live inputs.
+dynamic input slots, preserving unaffected and mixed live inputs.
 
 Newly settled (2026-10-23): a generated root whose graph has dynamic slots
 requires a `TickInvocationCall` carrying every slot, as one built from that graph's

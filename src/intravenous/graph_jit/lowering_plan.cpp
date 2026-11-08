@@ -530,14 +530,10 @@ std::string activity_migration_identity(
     PrimitiveEventPortPlan const& primitive_event_ports)
 {
     if (!planned.stable_identity) return {};
-    auto const& stable = *planned.stable_identity;
     auto const& implementation = *primitive.implementation;
     std::ostringstream out;
-    out << "graphjit.activity:graph=" << stable.graph.size() << ':'
-        << stable.graph
-        << ":node=" << stable.virtual_node.size() << ':'
-        << stable.virtual_node
-        << ":member=" << stable.direct_member
+    out << "graphjit.activity:"
+        << migration_identity_fields(*planned.stable_identity)
         << ":type=" << implementation.identity.node_type_id.size() << ':'
         << implementation.identity.node_type_id
         << ":provider=" << implementation.provider_version
@@ -625,13 +621,9 @@ std::string manual_control_migration_identity(
     ConfiguredManualControl const& control)
 {
     if (!planned.stable_identity) return {};
-    auto const& stable = *planned.stable_identity;
     std::ostringstream out;
-    out << "graphjit.manual_control:graph=" << stable.graph.size() << ':'
-        << stable.graph
-        << ":node=" << stable.virtual_node.size() << ':'
-        << stable.virtual_node
-        << ":member=" << stable.direct_member
+    out << "graphjit.manual_control:"
+        << migration_identity_fields(*planned.stable_identity)
         << ":input=" << control.id.input_name.size() << ':'
         << control.id.input_name
         << ":port=" << control.input.port_index;
@@ -699,11 +691,27 @@ std::expected<DeclarationPlan, std::string> plan_declarations(
             .inputs = inputs,
             .outputs = outputs,
         };
-        declared_node_indices.push_back(implementation.declare_node(
+        auto const node_index = implementation.declare_node(
             implementation.node_data,
             implementation.state_structures,
             layout_builder,
-            reflected_ports));
+            reflected_ports);
+        declared_node_indices.push_back(node_index);
+
+        // Authored State migrates between graph revisions by the concrete
+        // node's stable identity. Anonymous nodes have none and start fresh.
+        auto const planned = std::ranges::find(
+            connections.nodes, bundle, &PlannedGraphNode::bundle);
+        if (planned == connections.nodes.end()) {
+            return std::unexpected(
+                "GraphJit declaration lost its planned concrete node");
+        }
+        if (planned->stable_identity) {
+            layout_builder.set_node_migration_identity(
+                node_index,
+                "graphjit.node:"
+                    + migration_identity_fields(*planned->stable_identity));
+        }
     }
 
     for (auto const& primitive : sample_ports.primitives) {
@@ -1352,6 +1360,7 @@ std::expected<DeclarationPlan, std::string> plan_declarations(
 
 std::expected<RealtimePortStateRealizations, std::string>
 plan_sample_realtime_port_state_realizations(
+    ConfiguredGraph const& graph,
     GraphAnalysis const& analysis,
     ConnectionAnalysisPlan const& connections,
     DeclarationPlan const& declarations,
@@ -1416,6 +1425,47 @@ plan_sample_realtime_port_state_realizations(
             .timeline_offset_frames = timeline_offset,
             .working_frame_capacity = representation.frame_capacity,
         };
+        // A producer's canonical representation holds that Tick output's own
+        // timeline; name the output so a cutover can tell whether two views
+        // hold the same producer's values.
+        if (representation.canonical_producer_representation
+            && representation.producer_group_index
+                < connections.sample_producer_groups.size()) {
+            auto const& source_port = connections.sample_producer_groups[
+                representation.producer_group_index].source_port;
+            auto const planned = source_port
+                ? std::ranges::find(
+                    connections.nodes,
+                    source_port->node_bundle_handle,
+                    &PlannedGraphNode::bundle)
+                : connections.nodes.end();
+            if (planned != connections.nodes.end() && planned->stable_identity) {
+                auto const& bundle =
+                    graph.node_bundles.bundle(source_port->node_bundle_handle);
+                if (bundle.is_concrete()) {
+                    auto const outputs = bundle.concrete_ports().sample_outputs();
+                    if (source_port->port_index < outputs.size()) {
+                        view.producer = StableOutputPortId{
+                            .node = *planned->stable_identity,
+                            .kind = PortKind::sample,
+                            .port_name = outputs[source_port->port_index].name,
+                            .port_index = source_port->port_index,
+                        };
+                        view.producer_channel = representation_channel;
+                    }
+                }
+            }
+        }
+        // A feedback timeline written by a copy or a composition is read only
+        // by its own connection's input. A producer_home timeline is the
+        // producer's canonical representation instead.
+        view.feedback_timeline = std::ranges::any_of(
+            sample_ports.storage.feedback_timelines,
+            [&](SampleFeedbackTimelinePlan const& timeline) {
+                return timeline.timeline_representation == representation_index
+                    && timeline.writer.kind
+                        != SampleFeedbackTimelineWriterKind::producer_home;
+            });
 
         if (representation.constant_value) {
             if (representation.persistent_allocation
@@ -1569,7 +1619,12 @@ plan_sample_realtime_port_state_realizations(
         auto const& requirement =
             connections.realtime_port_states.states[requirement_index];
         if (requirement.configured_port.port_kind != PortKind::sample) continue;
-        if (!requirement.channel || requirement.extent_samples == 0) {
+        // A Sequential input's record may own no history: its window is
+        // [-history, in_flight), possibly empty.
+        if (!requirement.channel
+            || (requirement.extent_samples == 0
+                && requirement.role
+                    != RealtimePortStateRole::sequential_input_history)) {
             return std::unexpected(
                 "GraphJit sample port-state requirement has no channel or extent");
         }
@@ -1629,28 +1684,19 @@ plan_sample_realtime_port_state_realizations(
                 return std::unexpected(
                     "GraphJit Tick output state has no realtime storage binding");
             }
-            std::size_t expected_extent = 0;
-            if (requirement.role
-                == RealtimePortStateRole::tick_output_history) {
-                expected_extent = binding.history;
-            } else if (requirement.role
-                       == RealtimePortStateRole::tick_output_latency) {
-                expected_extent = binding.latency;
-            }
-            if (expected_extent == 0
-                || expected_extent != requirement.extent_samples) {
+            // A sample output owns one window: its last history + latency
+            // values, filed at the indices they were authored for.
+            if (requirement.role != RealtimePortStateRole::tick_output_history
+                || binding.latency
+                    > std::numeric_limits<std::size_t>::max() - binding.history
+                || binding.history + binding.latency == 0
+                || binding.history + binding.latency
+                    != requirement.extent_samples) {
                 return std::unexpected(
                     "GraphJit sample output state disagrees with its semantic extent");
             }
             representation_index = *binding.storage;
             representation_channel = *requirement.channel;
-            if (binding.latency
-                > static_cast<std::size_t>(
-                    std::numeric_limits<std::int64_t>::max())) {
-                return std::unexpected(
-                    "GraphJit sample output state timeline offset is not representable");
-            }
-            timeline_offset = static_cast<std::int64_t>(binding.latency);
         }
 
         auto authored = storage_view(
@@ -1676,18 +1722,10 @@ plan_sample_realtime_port_state_realizations(
             continue;
         }
 
-        // Retained Tick output storage is already indexed in the semantic
-        // output timeline. The positive authored latency belongs only to the
-        // callback-facing view; applying it again during migration would move
-        // both history and future state twice.
-        auto const retained_timeline_offset =
-            requirement.direction == PortDirection::output
-            ? std::int64_t{0}
-            : timeline_offset;
         auto retained = storage_view(
             representation_index,
             representation_channel,
-            retained_timeline_offset,
+            timeline_offset,
             true);
         if (!retained) return std::unexpected(std::move(retained.error()));
         if (*retained) {
@@ -1767,10 +1805,22 @@ plan_sample_realtime_port_state_realizations(
                                 != representation_channel) {
                                 continue;
                             }
+                            // An explicit transform names its own source
+                            // count and coefficients, as in the composition
+                            // kernel; otherwise the registry conversion
+                            // between the two layouts does.
+                            auto const& transform = contribution.transform;
+                            auto const source_count = transform.empty()
+                                ? channel_count(contribution.source_layout)
+                                : transform.source_channel_count;
                             if (selected_target
-                                || contribution.sources.size()
-                                    != channel_count(
-                                        contribution.source_layout)) {
+                                || contribution.sources.size() != source_count
+                                || (!transform.empty()
+                                    && (converted_channel
+                                            >= transform.target_channel_count
+                                        || transform.coefficients.size()
+                                            != source_count
+                                                * transform.target_channel_count))) {
                                 return std::unexpected(
                                     "GraphJit composed port state has an ambiguous target channel");
                             }
@@ -1779,12 +1829,15 @@ plan_sample_realtime_port_state_realizations(
                                  source_channel
                                     < contribution.sources.size();
                                  ++source_channel) {
-                                auto const coefficient =
-                                    channel_conversion_coefficient(
+                                auto const coefficient = transform.empty()
+                                    ? channel_conversion_coefficient(
                                         contribution.source_layout.channel_type,
                                         contribution.converted_layout.channel_type,
                                         source_channel,
-                                        converted_channel);
+                                        converted_channel)
+                                    : transform.coefficients[
+                                        converted_channel * source_count
+                                        + source_channel];
                                 if (coefficient == 0.0f) continue;
                                 auto const& source =
                                     contribution.sources[source_channel];
@@ -8987,6 +9040,7 @@ std::expected<LoweringPlan, std::string> build_lowering_plan(
 
         auto realtime_port_state_realizations =
             plan_sample_realtime_port_state_realizations(
+                input.graph,
                 *analysis,
                 realtime_ports->connections,
                 *declarations,

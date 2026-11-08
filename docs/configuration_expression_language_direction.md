@@ -333,7 +333,7 @@ The implementation uses these concrete records and functions:
   positions. The parser keeps the UUID and the three selector records; it never
   retains a `NodeRef`.
 - `TiledNodeBundle::channel_type` preserves the channel type that supplied names such
-  as `left` and `right`. Configured-graph archive version 11 preserves that field.
+  as `left` and `right`. The configured-graph archive preserves that field.
 - `resolve_project_node_path()` resolves both configuration paths and
   `ProjectNodePortMatcher::path`. Every selector applies to every current match, and
   duplicate matches are removed. A virtual-node match retains only the

@@ -17,8 +17,8 @@
 
 namespace iv {
 
-// Compiler-resolved storage for one semantic channel. Logical value ordinals,
-// rather than project-sample indices, address the ring. This is what lets the
+// Compiler-resolved storage for one semantic channel. Indices into the port's
+// own value sequence, rather than project-sample indices, address the ring. This is what lets the
 // same facade serve slow FFT-block streams and faster oversampled streams.
 struct ContinuousChannelStorageBinding {
     std::byte* storage = nullptr;
@@ -38,7 +38,6 @@ struct ContinuousPortStorageBinding {
         maximum_supported_channel_count> channels{};
     ContinuousValueStorageGeometry geometry{};
     std::size_t value_capacity = 0;
-    std::size_t storage_latency = 0;
     ChannelLayout channel_layout {
         .channel_type = ChannelTypeId::mono,
         .sample_layout = SampleStreamLayout::planar,
@@ -51,11 +50,11 @@ struct ContinuousInputPortBinding {
     std::size_t read_latency = 0;
     std::int32_t absolute_pace_exponent = 0;
     std::size_t contiguous_value_capacity = 0;
-    // Physical invocation-order ordinal selected by generated execution for
+    // Physical invocation-order index selected by generated execution for
     // this callback. It is deliberately independent of the global lattice
-    // ordinal exposed to node code.
-    mutable std::uint64_t sequential_begin_ordinal = 0;
-    mutable std::uint64_t contiguous_begin_ordinal = 0;
+    // index exposed to node code.
+    mutable std::uint64_t sequential_begin_index = 0;
+    mutable std::uint64_t contiguous_begin_index = 0;
     mutable std::size_t contiguous_value_count = 0;
 };
 
@@ -64,7 +63,7 @@ struct ContinuousOutputPortBinding {
     std::size_t history = 0;
     std::size_t latency = 0;
     std::int32_t absolute_pace_exponent = 0;
-    mutable std::uint64_t sequential_begin_ordinal = 0;
+    mutable std::uint64_t sequential_begin_index = 0;
 };
 
 // One logical random-access Region. storage addresses one contiguous native-
@@ -364,7 +363,7 @@ class ContinuousChannelStorageAccess {
     ContinuousValueStorageGeometry const* geometry_ = nullptr;
 
     [[nodiscard]] constexpr std::span<Element> elements_at(
-        std::uint64_t ordinal) const noexcept
+        std::uint64_t index) const noexcept
     {
         IV_ASSERT(binding_ != nullptr && geometry_ != nullptr,
             "continuous channel storage is absent");
@@ -379,7 +378,7 @@ class ContinuousChannelStorageAccess {
                 && geometry_->element_alignment == alignof(Element),
             "continuous channel storage geometry does not match its extension");
 
-        auto const delayed = ordinal - binding_->value_delay;
+        auto const delayed = index - binding_->value_delay;
         auto const slot = static_cast<std::size_t>(delayed)
             & (binding_->value_capacity - 1);
         auto* bytes = binding_->storage + slot * binding_->value_stride_bytes;
@@ -401,17 +400,17 @@ public:
     {}
 
     [[nodiscard]] constexpr typename Extension::const_reference read(
-        std::uint64_t ordinal) const noexcept
+        std::uint64_t index) const noexcept
     {
-        auto elements = elements_at(ordinal);
+        auto elements = elements_at(index);
         return Extension::read_value(
             std::span<Element const>{elements.data(), elements.size()});
     }
 
     [[nodiscard]] constexpr typename Extension::mutable_reference write(
-        std::uint64_t ordinal) const noexcept
+        std::uint64_t index) const noexcept
     {
-        return Extension::write_value(elements_at(ordinal));
+        return Extension::write_value(elements_at(index));
     }
 };
 
@@ -425,7 +424,7 @@ class ContinuousValueBlockView {
     StorageByte* storage_ = nullptr;
     ContinuousValueStorageGeometry const* geometry_ = nullptr;
     ContinuousPortStorageBinding const* ring_storage_ = nullptr;
-    std::uint64_t ring_begin_ordinal_ = 0;
+    std::uint64_t ring_begin_index_ = 0;
     std::size_t ring_channel_ = 0;
     std::size_t count_ = 0;
 
@@ -489,12 +488,12 @@ public:
 
     constexpr ContinuousValueBlockView(
         ContinuousPortStorageBinding const& storage,
-        std::uint64_t begin_ordinal,
+        std::uint64_t begin_index,
         std::size_t count,
         std::size_t channel) noexcept
         : geometry_(&storage.geometry)
         , ring_storage_(&storage)
-        , ring_begin_ordinal_(begin_ordinal)
+        , ring_begin_index_(begin_index)
         , ring_channel_(channel)
         , count_(count)
     {
@@ -525,9 +524,9 @@ public:
                 ring_storage_->channels[ring_channel_],
                 ring_storage_->geometry};
             if constexpr (Mutable) {
-                return access.write(ring_begin_ordinal_ + index);
+                return access.write(ring_begin_index_ + index);
             } else {
-                return access.read(ring_begin_ordinal_ + index);
+                return access.read(ring_begin_index_ + index);
             }
         }
         auto elements = elements_at(index);
@@ -563,10 +562,10 @@ class ContinuousInputPort {
     std::size_t history_ = 0;
     std::size_t read_latency_ = 0;
     FractionalGlobalIndex begin_{};
-    std::uint64_t begin_ordinal_ = 0;
-    std::uint64_t sequential_begin_ordinal_ = 0;
+    std::uint64_t begin_index_ = 0;
+    std::uint64_t sequential_begin_index_ = 0;
     std::size_t block_size_ = 0;
-    std::uint64_t contiguous_begin_ordinal_ = 0;
+    std::uint64_t contiguous_begin_index_ = 0;
     std::size_t contiguous_value_count_ = 0;
 
     [[nodiscard]] constexpr ContinuousValueBlockView<Value, false>
@@ -578,7 +577,7 @@ class ContinuousInputPort {
         auto const* base = storage_->channels[channel].contiguous_storage;
         if (base != nullptr) {
             auto const offset_bits =
-                requested_begin - contiguous_begin_ordinal_;
+                requested_begin - contiguous_begin_index_;
             if (offset_bits <= contiguous_value_count_
                 && requested_count
                     <= contiguous_value_count_ - offset_bits) {
@@ -613,24 +612,24 @@ public:
             binding.storage;
             binding.history;
             binding.read_latency;
-            binding.contiguous_begin_ordinal;
+            binding.contiguous_begin_index;
             binding.contiguous_value_count;
-            binding.sequential_begin_ordinal;
+            binding.sequential_begin_index;
         }
     constexpr ContinuousInputPort(
         Binding const& binding,
         FractionalGlobalIndex begin,
-        std::uint64_t begin_ordinal,
-        std::uint64_t sequential_begin_ordinal,
+        std::uint64_t begin_index,
+        std::uint64_t sequential_begin_index,
         std::size_t block_size) noexcept
         : storage_(&binding.storage)
         , history_(binding.history)
         , read_latency_(binding.read_latency)
         , begin_(begin)
-        , begin_ordinal_(begin_ordinal)
-        , sequential_begin_ordinal_(sequential_begin_ordinal)
+        , begin_index_(begin_index)
+        , sequential_begin_index_(sequential_begin_index)
         , block_size_(block_size)
-        , contiguous_begin_ordinal_(binding.contiguous_begin_ordinal)
+        , contiguous_begin_index_(binding.contiguous_begin_index)
         , contiguous_value_count_(binding.contiguous_value_count)
     {
         IV_ASSERT(storage_->geometry.value_type
@@ -649,7 +648,7 @@ public:
         ContinuousChannelStorageAccess<Value> access{
             storage_->channels[channel], storage_->geometry};
         return access.read(
-            sequential_begin_ordinal_ - read_latency_ - history);
+            sequential_begin_index_ - read_latency_ - history);
     }
 
     [[nodiscard]] constexpr reference get_value(
@@ -663,7 +662,7 @@ public:
         ContinuousChannelStorageAccess<Value> access{
             storage_->channels[channel], storage_->geometry};
         return access.read(
-            sequential_begin_ordinal_ - read_latency_ + value_offset);
+            sequential_begin_index_ - read_latency_ + value_offset);
     }
 
     [[nodiscard]] constexpr block_type block(
@@ -673,7 +672,7 @@ public:
                 && channel < channel_count(storage_->channel_layout),
             "continuous input block channel is out of bounds");
         return contiguous_block(
-            sequential_begin_ordinal_ - read_latency_, block_size_, channel);
+            sequential_begin_index_ - read_latency_, block_size_, channel);
     }
 
     [[nodiscard]] constexpr block_type block_extended(
@@ -683,7 +682,7 @@ public:
                 && channel < channel_count(storage_->channel_layout),
             "continuous input extended block channel is out of bounds");
         return contiguous_block(
-            sequential_begin_ordinal_ - read_latency_ - history_,
+            sequential_begin_index_ - read_latency_ - history_,
             history_ + block_size_,
             channel);
     }
@@ -700,7 +699,7 @@ public:
 
     [[nodiscard]] constexpr std::uint64_t value_index() const noexcept
     {
-        return begin_ordinal_;
+        return begin_index_;
     }
 
     [[nodiscard]] constexpr std::size_t history() const noexcept
@@ -727,8 +726,8 @@ class ContinuousOutputPort {
     std::size_t history_ = 0;
     std::size_t latency_ = 0;
     FractionalGlobalIndex begin_{};
-    std::uint64_t begin_ordinal_ = 0;
-    std::uint64_t sequential_begin_ordinal_ = 0;
+    std::uint64_t begin_index_ = 0;
+    std::uint64_t sequential_begin_index_ = 0;
     std::size_t block_size_ = 0;
     mutable std::size_t cursor_ = 0;
 
@@ -745,20 +744,20 @@ public:
             binding.storage;
             binding.history;
             binding.latency;
-            binding.sequential_begin_ordinal;
+            binding.sequential_begin_index;
         }
     constexpr ContinuousOutputPort(
         Binding const& binding,
         FractionalGlobalIndex begin,
-        std::uint64_t begin_ordinal,
-        std::uint64_t sequential_begin_ordinal,
+        std::uint64_t begin_index,
+        std::uint64_t sequential_begin_index,
         std::size_t block_size) noexcept
         : storage_(&binding.storage)
         , history_(binding.history)
         , latency_(binding.latency)
         , begin_(begin)
-        , begin_ordinal_(begin_ordinal)
-        , sequential_begin_ordinal_(sequential_begin_ordinal)
+        , begin_index_(begin_index)
+        , sequential_begin_index_(sequential_begin_index)
         , block_size_(block_size)
     {
         IV_ASSERT(storage_->geometry.value_type
@@ -776,8 +775,7 @@ public:
             "continuous output channel is out of bounds");
         ContinuousChannelStorageAccess<Value> access{
             storage_->channels[channel], storage_->geometry};
-        return access.write(
-            sequential_begin_ordinal_ + storage_->storage_latency + offset);
+        return access.write(sequential_begin_index_ + offset);
     }
 
     [[nodiscard]] constexpr const_reference get(
@@ -791,9 +789,7 @@ public:
             "continuous output channel is out of bounds");
         ContinuousChannelStorageAccess<Value> access{
             storage_->channels[channel], storage_->geometry};
-        return access.read(
-            sequential_begin_ordinal_ + cursor_
-                + storage_->storage_latency - 1 - offset);
+        return access.read(sequential_begin_index_ + cursor_ - 1 - offset);
     }
 
     [[nodiscard]] constexpr mutable_reference update_value(
@@ -806,9 +802,7 @@ public:
             "continuous output channel is out of bounds");
         ContinuousChannelStorageAccess<Value> access{
             storage_->channels[channel], storage_->geometry};
-        return access.write(
-            sequential_begin_ordinal_ + cursor_
-                + storage_->storage_latency - 1 - offset);
+        return access.write(sequential_begin_index_ + cursor_ - 1 - offset);
     }
 
     [[nodiscard]] constexpr block_type block(
@@ -816,7 +810,7 @@ public:
     {
         return {
             *storage_,
-            sequential_begin_ordinal_ + storage_->storage_latency,
+            sequential_begin_index_,
             block_size_,
             channel,
         };
@@ -878,7 +872,7 @@ public:
 
     [[nodiscard]] constexpr std::uint64_t value_index() const noexcept
     {
-        return begin_ordinal_;
+        return begin_index_;
     }
 
     [[nodiscard]] constexpr std::size_t history() const noexcept

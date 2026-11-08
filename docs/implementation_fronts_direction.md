@@ -1375,6 +1375,9 @@ Also, retained Tick sample outputs incorrectly reused the callback-facing positi
 latency offset even though compact carry is already indexed in semantic output
 coordinates. This double shift made the retained future window unrepresentable; the
 authored and retained views now carry their distinct offsets.
+_(Superseded 2026-11-07 by the authoring-index decision in Front 16: a Tick sample
+output files each value at the index it was authored for, so its authored and retained
+views both use offset 0.)_
 
 The other four failures were verification-fixture drift rather than runtime behavior:
 materialized sample state can now transfer directly into compatible private steady
@@ -1394,6 +1397,9 @@ output reserved `history + latency` compact-carry frames but classified all of t
 past frames. It now records the output latency as the carry's future extent, allowing
 the transition to reconstruct both halves of the output window in the shared monotonic
 Sequential coordinate. Front 6 remains open for another collaborator verification run.
+_(Superseded 2026-11-07 by the authoring-index decision in Front 16: the carried future
+extent belonged to the finalization-index convention. The disconnected-output carry now
+uses `future_frames = 0`, and the output owns one `[-(history + latency), 0)` window.)_
 
 **Front 6 completed and verified (2026-10-21):** the collaborator's following full
 548-test run passed. The final run verifies the corrected semantic-coverage fixture and
@@ -2946,7 +2952,9 @@ built, all 790 tests pass, measured below; repository owner).*
   `ModuleSupport.cmake` lists the object as a byproduct.
 - **ABI.** `module/abi.h` defines `NodeCodeRecordData` and
   `NodeCodeRetainedGlobalData`, with accessor types `iv_package_node_code_records_fn`
-  and `iv_package_node_code_retained_globals_fn`. `IV_PACKAGE_ABI_VERSION` is now 5.
+  and `iv_package_node_code_retained_globals_fn`. They raised `IV_PACKAGE_ABI_VERSION`
+  to 5; removing `ContinuousPortStorageBinding::storage_latency` later raised it to 6
+  (see the latent-output friction record below).
 - **Artifact signature.** `ModuleLoader` adds `host-cpu=`: the host CPU name and its
   sorted features. A cached object therefore never loads on a CPU it was not compiled
   for, for example a prebuilt built-in or common package artifact used on another
@@ -3037,16 +3045,362 @@ built, all 790 tests pass, measured below; repository owner).*
   as data (item 3). `chain` already meets the 0.2 s budget. The first `feedback`
   run was invalid (see the shape list above).
 
+  The full test suite (790 tests, `ctest -j16`) fell from about 5 minutes before
+  Front 16 to under 1 minute (repository owner, 2026-11-07). That makes adding
+  tests much cheaper.
+
   With the module-based shape, `feedback` (64 voices, 513 bundles) compiles and
   runs its first generation: 0.60 s, optimize 215 ms, code generation 363 ms, tick
   mean 1,978 µs. The first edit after that fails. `GraphExecutor` rejects the
   cutover with "sample transition source cannot represent its semantic interval"
   from `validate_sample_interval()` in
   `graph_jit/realtime_port_state_transition.cpp`. The predecessor's compact-carry
-  storage does not cover the interval the transition inherits. This is the first
-  benchmark that cuts over a graph containing `detach()` feedback inside a module.
-  The cause is not yet known; the message now reports the interval and the storage
-  geometry.
+  storage does not cover the interval the transition inherits. The message now
+  reports the interval and the storage geometry. It read "[0, 1) in
+  compact-carry storage of 1 frames (0 carried future, timeline offset 0)".
+
+  *Friction: latent Tick output state across a cutover (earlier-front oversight,
+  found 2026-11-07; decided and implemented 2026-11-07; verification pending).*
+  - *The state.* The failing state is `SawOscillator`'s `out`, which has authored
+    latency 1 (`tick_output_latency`). The `detach()` loop only makes this graph
+    pick compact carry for it.
+  - *Physical layout (verified in source and by tests).* A Tick output writes each
+    value at its own tick index: lowering set
+    `ContinuousPortStorageBinding::storage_latency` to 0 (the field is now removed)
+    and gives the output the callback's `sequential_begin_index`. `OutputPort::update()` revises the last
+    `latency` values, and consumers read `latency` frames back through their
+    `read_latency`. At a block boundary, the output's owned latency window is
+    therefore the last `latency` frames before the boundary. The producer carry's
+    `future_frames = 0` is physically correct.
+  - *First diagnosis, wrong and reverted.* Setting the producer carry's
+    `future_frames` to the output latency made four runtime tests read
+    unrestored frames: `TickOnlySampleNodePreservesContextAcrossPrimitiveSlices`,
+    `SampleLatencyCompensation`, and two `UnequalLatencySampleFeedbackMigrates*`
+    tests. The carry sites now state `future_frames = 0` explicitly, with the
+    reason.
+  - *Actual mismatch.* `make_transition()` places the latency window at semantic
+    `[0, latency)` and history at `[-history, 0)`, which is the consumers'
+    latency-compensated timeline. The transfer maps semantic `r` to physical
+    `cursor + r + timeline_offset`. `plan_sample_realtime_port_state_realizations()`
+    gives retained output views offset 0, so the latency window maps past the
+    cutover, onto frames the producer has not written. Compact carry rejects
+    this (the observed error). A ring would accept it, copy stale values, and
+    leave the real window unmigrated. The mapping that matches the physical
+    layout is a retained offset of `-latency`.
+  - *Two conventions.* sequential_port_storage_planning.md states that
+    "Tick-output authored storage latency is positive". That is the *finalization
+    index* convention: storage files a value at `index + latency`, and the producer
+    writes ahead through `storage_latency`. The implementation uses the *authoring
+    index* convention: storage files a value at its own index, and consumers
+    include the latency in `read_latency`. `make_transition()`, the realization
+    offsets, and the disconnected-output carry (`SampleSinkStorageRequest` sets a
+    physical `future_frames = latency`) were written for the documented convention.
+    That carry commits values past the root invocation's end, and
+    `DisconnectedSampleOutputKeepsDeclaredHistory` encodes it.
+  - *Destination analysis (2026-11-07).* Both conventions implement latency
+    compensation: each continuous value has one `GlobalIndex` position, and each
+    reader may observe it only once its author can no longer revise it, aligned
+    with every other path into that reader. They differ in which index storage
+    uses.
+    - With the authoring index, the producer writes at its own index, and persisted
+      capture records each value at its own index. Each realtime consumer applies
+      one delay, `read_latency`, which it already needs for path equalization.
+    - Every owned window then lies before the next tick: the last
+      `history + latency` values, of which latency only marks the revisable ones.
+      Carries need only `retained_frames`, transitions need only unsigned extents,
+      and `storage_latency` (always 0) becomes removable, which saves an add on every
+      output access.
+    - The finalization index adds an offset on the producer's write and on
+      persisted capture. It also splits each output's owned window around the next
+      tick (history before, latency after), which is what requires signed
+      intervals or `future_frames`.
+    - Recommendation: standardize on the authoring index and revise the design text.
+      That means retained output windows at `[-(history + latency), 0)`, the
+      disconnected-output carry at `future_frames = 0`, and removal of
+      `storage_latency`. A runtime test that cuts over a latent output and checks
+      sample continuity, in both ring and compact-carry storage, is needed. The
+      repository owner chose the authoring index on 2026-11-07.
+  - *Implementation (2026-11-07; build, tests, and the `feedback` benchmark rerun
+    are pending).*
+    - Design text: sequential_port_storage_planning.md,
+      dsp_execution_storage_glossary.md, and graph_jit_direction.md now state that a
+      Tick sample output owns its last `history + latency` values before its next
+      tick. The superseded text is in
+      [historical/tick_output_finalization_index_2026-11-07.md](historical/tick_output_finalization_index_2026-11-07.md).
+    - `inventory_realtime_port_states()` (connection_plan.cpp) emits one
+      `tick_output_history` record per sample-output channel, with extent
+      `history + latency`. `tick_output_latency` is now an event-only role
+      (realtime_port_state_plan.h).
+    - `plan_sample_realtime_port_state_realizations()` (lowering_plan.cpp) requires
+      that record and gives the authored and retained output views offset 0.
+      `specialize_transition_plan()` (lowering.cpp) accepts only
+      `tick_output_history` for a sample output window.
+    - sample_storage_plan.cpp: the disconnected-output carry uses
+      `future_frames = 0`, and every carry states its `future_frames` explicitly.
+      `SampleCarryOperationPlan::future_frames` documents that only shifted composed
+      feedback carries future frames.
+    - `ContinuousPortStorageBinding::storage_latency` is removed from
+      continuous_port.h and from its users (activity_runtime.cpp,
+      tick_invocation_frame.cpp, lowering.cpp, and four test helpers). Compiled node
+      code reads that record. `IV_PACKAGE_ABI_VERSION` was raised to 6 for this; the
+      human co-author reset every version constant to 0 on 2026-11-08 (see the
+      authored `State` migration record below).
+    - Consequence: a disconnected latent output's state is now
+      `transfer_to_steady_storage`. Its compact carry has one semantic user instead of
+      two, so the cutover writes the window into the steady successor carry and
+      needs no transition root. `TransitionRootPreservesSampleOutputWindow` is now
+      `CutoverTransfersSampleOutputWindowIntoSteadyCarry`.
+    - New runtime tests: `LatentSampleOutputWindowSurvivesCutoverInCompactCarry`,
+      `LatentSampleOutputWindowSurvivesCutoverInRing`,
+      `LatentSampleConsumerStaysFinalAcrossCutoverInCompactCarry`, and
+      `LatentSampleConsumerStaysFinalAcrossCutoverInRing`. Their source keeps the
+      newest values of each block provisional and revises them through
+      `OutputPort::update()` on its next tick. Each block checks every value of the
+      source's window, and a consumer's latency-compensated reads, before and after
+      the cutover.
+    - Updated expectations: `DisconnectedSampleOutputKeepsDeclaredHistory`,
+      `InventoriesStableNodeOwnedRealtimePortState`,
+      `KeepsAnonymousRealtimePortStateGenerationLocal`, and
+      `MatchesStableStateAcrossGenerationLocalPorts`.
+    - Renamed under the terminology rule: `sequential_begin_index`,
+      `contiguous_begin_index`, `begin_index_bits`, `lattice_index_bits`,
+      `emit_sequential_begin_index`, `store_sequential_begin_index`, and
+      `validate_sequential_bindings`.
+    - Unresolved, not changed: `ContinuousOutputPort::get()` asserts
+      `offset <= history + latency`. At `cursor_ == 0`, `offset == history + latency`
+      reads one value older than the owned window, which a compact carry does not
+      restore. No document states the `get()` bound.
+  - *First run (repository owner, 2026-11-07): 792 of 794 tests passed.* Both
+    `LatentSampleConsumerStaysFinalAcrossCutover*` tests failed, only in the
+    consumer's checks and only while the transition root ran. The source's window
+    checks passed in every block.
+    - *Records.* When an output window and a consumer's input history share one
+      steady producer representation, `specialize_transition_plan()` (lowering.cpp)
+      gives each its own transition-only ring. It adds two `SampleMaterializationPlan`
+      mirrors at the producer's step: output ring → steady representation with
+      `retained_before = latency`, then steady representation → consumer ring with
+      `retained_before = latest_read_latency = 0`.
+      `emit_sample_materialization()` copies
+      `[index - retained_before, index + block - latest_read_latency)`.
+    - *Defect.* The consumer mirror copied `[index, index + block)`, the values just
+      authored. The consumer reads `[index - delay - history, index - delay + block)`,
+      where delay is its binding's `read_latency + frame_delay`. With latency 2, the
+      first transition block never received the producer's two inherited, revised
+      values (2 mismatches). With latency 1000, every value the producer authors in
+      a block is still provisional when copied, its later `OutputPort::update()`
+      never reached the consumer's ring, and every consumer read was wrong for the
+      whole transition (64, then 68 mismatches per block).
+    - *Fix.* The consumer mirror now uses
+      `retained_before = latest_read_latency = delay`, so it copies exactly the
+      values the consumer newly reads, after the output mirror has propagated the
+      producer's revisions. Channels that share one consumer ring must share the
+      delay; otherwise lowering reports an error.
+    - *Open friction, not changed.* A consumer whose delay exceeds its producer's
+      latency (feed-forward path-latency equalization, "compiler-owned read
+      compensation" in graph_jit_direction.md) also reads, in its first transition
+      blocks, positions older than the output mirror's `[index - latency, ...)`
+      range. Inside the producer's history those values exist only in the output
+      ring; beyond it, no semantic-state record owns them. No document says whether
+      compensation delay survives a cutover. A decision is needed.
+    - *Reproduction tests (2026-11-08).*
+      `CompensatedInputUnaffectedBySecondReaderMove`,
+      `CompensatedInputUnaffectedByHistoryReaderMove`, and
+      `CompensatedHistoryInputUnaffectedByHistoryReaderMove` (graph_jit_gtest.cpp)
+      edit a graph without touching a compensated probe's connections. In the
+      collaborator's run each fails as predicted, with 7 mismatches in its first block
+      after the cutover.
+    - *Decision (human co-author, 2026-11-08).* The in-flight values belong to the
+      reading input, as positions `[P, P + c)` of one window `[-history, c)`, where `c`
+      is its compensation. A rewired input plays its in-flight values before the new
+      source's values. Recorded in sequential_port_storage_planning.md, section "Port
+      windows are semantically node-owned even when storage is shared"; the replaced
+      text is in historical/input_owned_history_only_2026-11-08.md.
+    - *More reproduction tests (2026-11-08; not yet run), each expected to fail with 7
+      wrong values in its first block after the cutover:*
+      `CompensatedHistoryInputOfLatentSourceUnaffectedByHistoryReaderMove` (a source
+      with history and latency of its own, through the transition root),
+      `CompensatedInputUnaffectedByHistoryReaderLeavingItsSource` (producer storage
+      shrinking from a ring to a compact carry),
+      `ConvertedCompensatedInputUnaffectedByHistoryReaderMove` (a mono to interleaved
+      conversion), `GrowingCompensationAddsFreshValuesAfterInFlightValues`,
+      `ShrinkingCompensationDropsTheNewestInFlightValues`, and
+      `RewiredCompensatedInputReadsItsInFlightValuesFirst`.
+    - *Collaborator run (2026-11-08):* those six fail as predicted, each with 7 wrong
+      values in its first block after the cutover.
+    - *Remaining reproduction tests (2026-11-08; not yet run).* None needed a
+      production change:
+      - `ComposedCompensatedChannelUnaffectedByHistoryReaderMove` and
+        `InterleavedComposedCompensatedChannelUnaffectedByHistoryReaderMove`: a
+        stereo input composed from the ramp and the delay node. The planar input's
+        channels alias their sources with a per-channel `frame_delay`
+        (sample_storage_plan.cpp). New probes compare the two channels. Expected to
+        fail with 7 mismatches.
+      - `FeedbackLoopUnaffectedByHistoryReaderMove`: a counter fed back through a
+        `detach()` of latency 5. Its nodes come from a package module, because the
+        existing feedback graphs are built in test code through
+        `configure_package_definition_provider()` and have anonymous nodes. Moving
+        the history reader onto the counter's output gives that producer retained
+        frames, so the feedback edge no longer uses its separate home ring. Expected
+        to fail at every position after the cutover, because the counter restarts
+        from its lost in-flight values.
+      - `LongCompensationInFlightValuesOutlastTheTransitionRoot`: a compensation of
+        998, whose in-flight values outlast a transition root that expires after a
+        few values. Expected to fail at most of the 998 in-flight positions.
+      - `CompensatedInputUnaffectedByAddedLeadingNode` and
+        `GrowingSourceLatencyAddsFreshValuesAfterInFlightValues` build one module
+        twice with different construction arguments, through the new test helper
+        `configured_module_graph_with_arguments()`. It repeats the loader's calls
+        (module/loader.cpp) with the arguments passed to `module_build`. Each test
+        first checks that every surviving node keeps its stable identity. Expected
+        to fail with 7 wrong values.
+    - *Collaborator run (2026-11-08): 795 of 810 tests pass.* The composed, feedback,
+      and long-compensation tests fail as predicted. The two argument-built tests
+      failed in their fixture: configuration type identities exist only in package
+      code, so `configuration_argument()` in host test code carried
+      `<unavailable type identity>`. `configured_module_graph_with_arguments()` now
+      gives each argument its parameter's identity from the module's
+      `RegisteredSignature`.
+    - *Implementation plan (2026-11-08; approved by the co-author).*
+      - Each Sequential input's record covers `[-history, c)`, where `c` is its read
+        delay beyond its source's latency, including a `detach()` delay. Cold
+        metadata only.
+      - Every record maps its inherited window into the successor's steady storage
+        at the successor's index mapping, as `transfer_to_steady_storage` already
+        does for direct views. Materialized and composed views transfer through
+        their per-source views instead of being classified `transition_only_storage`.
+      - Records whose transfers agree on every shared target slot (the same
+        predecessor slot, or both fresh) share the steady target. This replaces the
+        blanket shared-target downgrade. Only records that disagree move to
+        transition-only storage, choosing the provenance class with the smaller total
+        extent.
+      - A moved record's transition-only ring holds `[-history, c)`; its mirror copies
+        from the source's finalization frontier, with an 8-byte resume index only
+        where the record's source latency grew.
+      - Cost: no steady memory or time. The cutover copies `history + c` values per
+        record between audio callbacks. Transition-only memory exists only for moved
+        records.
+    - *Implemented (2026-11-08; collaborator build and test run pending).*
+      - `RealtimePortStateRequirement::in_flight_samples`, set per input channel by
+        `inventory_sequential_input_in_flight_values()` (connection_plan.cpp) right
+        after `plan_sample_latency_compensation()`. Every channel of an input fed
+        only through `tick_to_sequential` storage now has a record, even an empty
+        one, so a read delay that grows from nothing still finds its window.
+      - `SampleRealtimePortStateStorageView::producer` and `producer_channel`, set
+        in `plan_sample_realtime_port_state_realizations()` (lowering_plan.cpp)
+        for a producer's canonical representation.
+      - `RealtimePortStateTransition::target_begin`/`target_end`.
+        `apply_input_window()` gives an input `[-history', T)` from
+        `input_resume_position()`.
+      - Converted (`materialized`) and composed inputs whose sources pair by
+        producer, channel, and read delay transfer per source
+        (`sample_sources_pair_by_producer()`).
+      - A window that inherits nothing gets a fresh-only transfer, which zero-fills
+        its target and reads no predecessor storage.
+      - `resolve_sample_transfer_conflicts()` replaces the sample half of the
+        shared-target downgrade in `classify_shared_successor_storage()`.
+      - Consumer suffix mirrors in `specialize_transition_plan()` (lowering.cpp)
+        copy at `d - T`. The executor's `*_ordinal` locals are renamed `*_index`.
+    - *First collaborator run (2026-11-08): 758 of 810 tests pass.*
+      - 50 failures had one cause: `plan_sample_realtime_port_state_realizations()`
+        and `index_realizations()` rejected a sample record with no history. Both
+        now accept one for a Sequential input.
+      - `NewStateSharingSampleTargetRequiresTransitionStorage` showed a missing rule:
+        a state without a predecessor, or an anonymous one, starts fresh, so its
+        window must not show values another state inherited.
+        `resolve_sample_transfer_conflicts()` now treats every such non-empty window
+        as an all-fresh claim and moves any kept transfer that puts inherited
+        values inside it to transition-only storage.
+      - `TransitionRootReconstructsMaterializedSampleHistory` expected a transition
+        root that only the old shared-target rule produced. Its converted history
+        now transfers through its source, so the test is renamed
+        `CutoverTransfersMaterializedSampleHistoryThroughItsSource` and checks a
+        steady cutover against the same reference.
+    - *Second collaborator run (2026-11-08): 804 of 810 tests pass.*
+      - The six failures are the projected and unequal-latency `detach()` feedback
+        tests, which compile one generation. Each failed with "GraphJit composed
+        port state has an ambiguous target channel". Their converted node's
+        stereo input reads the feedback loop through a routed connection. Before
+        `inventory_sequential_input_in_flight_values()` existed, it had no record,
+        because its history is 0.
+      - Its storage is the final `SampleCompositionPlan` built for routed feedback
+        (sample_storage_plan.cpp). That plan has one contribution with a mono
+        `source_layout`, one source per feedback timeline, and an explicit
+        `SampleChannelTransformPlan`. The composed branch of
+        `plan_sample_realtime_port_state_realizations()` took its source count
+        from `channel_count(source_layout)` and its coefficients from
+        `channel_conversion_coefficient()`. It now reads both from the transform
+        when the transform is explicit, as `emit_sample_composition()` does
+        (lowering.cpp).
+      - *Reproduction test, not yet run:*
+        `RoutedSampleDetachFeedbackUnaffectedByRecompile`. The package module
+        `routed_feedback_module` builds that loop with `detach()` latencies 6 and 7
+        on the two channels. The existing feedback graphs are built in test code
+        and have anonymous nodes. The test activates an unchanged recompile at
+        index 64 and compares the converted node's reads with an uninterrupted
+        run. Expected to fail. A routed feedback timeline is not a canonical
+        producer representation, so its view has no `producer`, and
+        `sample_sources_pair_by_producer()` fails for it. The input's record
+        therefore moves to transition-only storage at every cutover. Its composition
+        runs before the consumer (`before_execution_position`).
+        `specialize_transition_plan()` nevertheless appends the mirror to that
+        consumer step's `sample_transition_materializations_after`, so the consumer
+        reads its suffix before the mirror writes the block.
+    - *Third collaborator run (2026-11-08): 810 of 811 tests pass.* Only
+      `RoutedSampleDetachFeedbackUnaffectedByRecompile` fails, as predicted. The
+      reads at 64 and 68 are right, because they fall inside the inherited windows
+      of 6 and 7 values. Every recorded read from 71 through 95 is 0.
+    - *Fix (2026-11-08; not yet run).*
+      - `emit_sample_composition_write()` (lowering.cpp) writes a routed feedback
+        timeline at source frame + read latency. It covers only source frames from
+        `revision_frames` (the source latency) before the block start. So in the
+        successor's first block it writes timeline indices from
+        `P + read_latency - source_latency`. The input's window `[0, c)` maps to
+        timeline indices `[P - detach, P + read_latency - source_latency)`. The
+        writer therefore never rewrites an inherited position.
+      - The successor's own timeline can therefore receive the input's values.
+        `SampleRealtimePortStateStorageView::feedback_timeline` marks a view of a
+        feedback timeline whose writer is a copy or a composition. Only its
+        connection's input reads that storage. It is set in
+        `plan_sample_realtime_port_state_realizations()`.
+      - `sample_source_pairs_by_producer()` is renamed `sample_source_views_pair()`
+        and also pairs two feedback timeline views, without requiring the same read
+        delay. `sample_sources_pair_by_producer()` is renamed
+        `sample_sources_pair()`.
+      - Such an input now takes per-source `transfer_to_steady_storage` transfers.
+        It needs no transition root, no steady memory and no steady time. The
+        cutover copies `c` values per timeline between audio callbacks.
+        `resolve_sample_transfer_conflicts()` still moves the record to
+        transition-only storage when two records disagree on a shared timeline
+        slot.
+    - *Known gaps, not implemented:*
+      - A fresh position in a feedback timeline's window is zero-filled, like every
+        transfer target, although a freshly initialized timeline holds its
+        `detach()` initial value.
+      - A transition mirror for a composition that runs before its consumer
+        (`before_execution_position`) is still appended after that consumer. Only
+        routed feedback compositions run before their consumer. With feedback
+        timelines pairing, such an input reaches that path only when another of
+        its sources does not pair, or when its transfers disagree with another
+        record's.
+      - A moved (transition-only) input whose same producer's latency grew needs
+        the 8-byte resume index; lowering reports an error for it instead.
+      - A moved converted or composed input keeps the mirror at its read delay,
+        so after a rewire it does not play its in-flight values first.
+      - A converted or composed input whose window inherits nothing stays
+        `fresh_state`, so its fresh positions are not zeroed in shared storage.
+      - An input that was disconnected, or only slot-fed, has no predecessor
+        record, so when it becomes connected it reads the new source's values from
+        before the cutover.
+      - Existing tests that count records or expect a transition root that only the
+        old shared-target rule produced will need new expectations.
+  - *Second run (repository owner, 2026-11-07): all 794 tests pass.*
+    `iv_edit_latency_benchmark --shape feedback --size 64` now completes: all 26
+    edits are accepted. Medians per edit kind are 573 to 587 ms of wall time, against
+    the 200 ms target. Of that, `GraphJit` takes 571 to 585 ms: optimize 214 to 217
+    ms and codegen 335 to 341 ms, while capture, plan, emit and verify together take
+    about 20 ms. Each edit is a transition compile of one module with 3 functions,
+    24,395 to 24,462 instructions before optimization and 14,471 to 14,495 after.
+    The realtime tick mean is 1,958 to 1,988 µs per 5,333 µs block.
 - **Still open.** `iv_edit_latency_benchmark` still waits silently when the package
   watcher service fails. Its only failure signal is
   `iv_runtime_project_notification_event`. A notification subscriber in the
@@ -3054,6 +3408,125 @@ built, all 790 tests pass, measured below; repository owner).*
   both `rebuildStarted` and `rebuildFinished` in one source invocation. Whether
   `SocketRpcServer`, which subscribes to the same event in the app, meets the same
   re-entry is unverified.
+- **Authored `State` migration identity (2026-11-08; collaborator build and test run
+  pending).**
+  - *Observed.* `NodeStorage` migrated a node's authored `State` only when the
+    authored node type defined both `identity()` and `move()`. No package node defines
+    `identity()`, so authored `State` restarted at every graph edit even though the
+    graph already gives each concrete node a `StableConcreteNodeId`.
+  - *Decision (human co-author, 2026-11-08).* Migration must not require an authored
+    `identity()`. The node's identity in the graph supplies it.
+  - *Implementation.*
+    - `NodeLifecycleCallbacks::identity_fn` and the authored `identity()` hook are
+      removed. `NodeLayout::NodeRecord::migration_identity` holds the identity, and
+      `NodeLayoutBuilder::set_node_migration_identity()` assigns it.
+    - `plan_declarations()` (lowering_plan.cpp) assigns each declared primitive with a
+      `StableConcreteNodeId` the identity `"graphjit.node:"` followed by
+      `migration_identity_fields()` of that id. Its virtual-node field already
+      contains a hash of the `IV_NODE` type identity. Anonymous nodes and nodes
+      declared inside another node's `declare()` receive none and start fresh.
+    - `NodeStorage::initialize()`, `NodeStorage::prepare_migration_from()`, and the
+      structural layout comparison in graph_executor.cpp read the field.
+    - `migration_identity_fields()` (stable_graph_identity.h) replaces three copies of
+      the same encoding in the activity, manual-control, and producer authored-extent
+      raw-region identities. Their strings are unchanged.
+    - `IV_PACKAGE_ABI_VERSION` was first raised to 7 because package declaration
+      code fills `NodeLifecycleCallbacks`. *Decision (human co-author,
+      2026-11-08):* every version constant is 0 and is never raised.
+      `IV_PACKAGE_ABI_VERSION`, `archive_version`, `session_protocol_version` (and
+      its check in vscode/client/src/projectSessionDiscovery.ts), and the node-event
+      `formatVersion` are now 0. A package build signature already contains
+      abi.h's text and the DSL precompiled header's identity, so changed host
+      headers rebuild packages without a version change.
+    - Tests: node_layout_storage.cpp assigns identities through the builder;
+      `AuthoredStateMovesToTheSameNodeInTheNextGeneration` (graph_jit_gtest.cpp)
+      checks that two nodes of one type each continue their own `State`.
+  - *Observed.* `prepare_migration_from()` deferred `initialize()` to
+    `Migration::commit()`, which `GraphExecutor::activate_pending()` runs on the audio
+    thread, for every node whose identity matched a predecessor that it could not move
+    from. With identities on every stable node, that would have run
+    `RealFFT::initialize()` (FFTW plan creation) and the `SystemAudio*` device binding
+    on the audio thread at every edit. No document stated why the deferral existed; it
+    dates from commit `1bec0284`.
+  - *Decision (human co-author, 2026-11-08).* Node initialization runs outside the
+    audio thread whenever it can. Only work that initializes from a move, or that
+    mutates or destroys the predecessor's node storage, runs between audio callbacks.
+    Recorded in graph_jit_direction.md, section "Generation cutover".
+  - *Implementation.* `prepare_migration_from()` no longer tracks identity
+    collisions. A node that is not moved initializes during preparation whether or
+    not its identity matches a predecessor. At commit, moved nodes run `move()`; owners
+    of imported arrays (imports are patched at commit) and nodes that depend on a
+    moved or deferred node run `initialize()`.
+  - *Decision (human co-author, 2026-11-08): implicit `move()`.* A node type whose
+    `State` can be moved has an implicit `move()`. A node type without `State` has
+    none. An explicit `move()` replaces the implicit one and is valid without
+    `State`, so a node can run code at migration without an empty `State`.
+  - *Implementation.*
+    - `details::has_implicit_move<Node>` (context.h) holds when the node authors no
+      `move()` and `State` is move-constructible. `make_lifecycle_callbacks()` and
+      `make_reflected_lifecycle_callbacks()` then set `move_fn` to
+      `details::move_state_implicitly<Node>`. It destroys the successor's
+      default-constructed `State`, move-constructs it from the predecessor's, and
+      calls `details::move_node_storage_regions()` (layout.cpp). That function
+      copies each `local_array` region of the predecessor into the successor's
+      matching region and points the `State`'s `local_array` and nested-node spans
+      back at the successor's regions. `can_move_from()` already guarantees that the
+      two nodes' regions match one to one.
+    - The moved-from predecessor is consumed: its `release()` does not run, and its
+      destructor runs when its storage is destroyed.
+    - Tests: `CompilerOwnedActivityStateMigratesAcrossCompatibleGenerations` now
+      expects `ActivityProbe::State::tick_calls` to carry over. node_layout_storage.cpp
+      checks an implicit move of `AutoMovable`, including its `local_array`, and an
+      explicit `move()` on a node without `State`.
+  - *Observed: `State` derived from construction arguments.* Virtual-node identity
+    does not change when a construction argument changes, so an implicit move kept
+    `State` computed from the predecessor's arguments. `RealFFT` and `InverseRealFFT`
+    kept an FFTW plan of the old `transform_size`, which the backend rejected on the
+    first tick; `SystemAudioInput` and `SystemAudioOutput` kept the old `device_id`
+    binding; `UniformToPower` kept weights from the old `lambda`; `UniformNoise` kept
+    its old distribution.
+  - *Decision (human co-author, 2026-11-08).* Each node decides what happens when
+    the contents of its `State` depend on its arguments. A moved node must function
+    as well as one that was freshly initialized. Checking for a stale `State` at run
+    time is redundant work once `initialize()` and `move()` are correct; a node that
+    needs such a check is implemented incorrectly.
+  - *Implementation.*
+    - `RealFFT` and `InverseRealFFT` (builtin_packages/fftw/module.cpp) record
+      `State::plan_size`. Their explicit `move()` keeps the predecessor's plan when
+      its size equals `transform_size`, and otherwise destroys it and creates a plan
+      for the new size. Creating that plan is the only lifecycle work these nodes do
+      on the audio thread, and only when `transform_size` changes.
+    - `iv_fftw_execute_forward_plan()` and `iv_fftw_execute_inverse_plan()` no longer
+      take sizes or validate the plan, and return nothing to assert on. The nodes no
+      longer assert that `State::plan` exists. Their spectrum-timeline locals and the
+      inverse plan's spectrum cache key are renamed from `*_ordinal` to `*_index`.
+    - `SystemAudioInput::State`, `SystemAudioOutput::State` (basic_nodes/system_audio.h)
+      and `UniformToPower::State` (basic_nodes/noise.h) delete their move
+      constructor, so these nodes have no implicit move. Their successor initializes
+      before the edit activates. The system-audio `State` only names the
+      `SystemAudioDevices` binding for `device_id`, and `resolve_input_binding()` and
+      `resolve_output_binding()` lock `SystemAudioDevices::mutex_`, which the audio
+      thread must not do. `UniformToPower::State` is computed entirely from the
+      arguments and `tick()` never writes it.
+    - `UniformNoise` records `State::seed`. Its explicit `move()` continues the
+      predecessor's generator when the seed is unchanged and reseeds otherwise; the
+      distribution always follows the current `min` and `max`.
+    - Tests: node_layout_storage.cpp checks `UniformNoise` and `UniformToPower` across
+      argument changes.
+  - *Not changed.* The `LearnedHrtfSource` and `BaselineFir256` nodes of the
+    projects/simple_sine modules `q24_pan`, `q24_bspline_pan`, and
+    `q24_icosphere_pan` read filter coefficients in `initialize()` from a fixed
+    `static constexpr` `coefficient_path`, not from an argument. An implicit move keeps
+    the coefficients the predecessor read; it differs from a fresh node only if that
+    file changed on disk in between.
+  - *Collaborator run (2026-11-08): 794 of 798 tests pass.* The three compensation
+    reproduction tests fail as predicted, each with 7 mismatches in the first block
+    after the cutover at 1024. `SeparateEventOutputAndInputStateNeedsNoTransitionRoot`
+    expected its event consumer probe to start fresh; its `State` now moves
+    implicitly, so the test now expects the successor's block to be the probe's
+    second call. `FeedForwardEventFanInCompactCarryMigrates` builds its graph through
+    `configure_package_definition_provider()`, so its nodes have no virtual node and
+    still start fresh, as expected.
 
 Candidate work includes:
 

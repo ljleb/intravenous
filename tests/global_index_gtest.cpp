@@ -87,7 +87,7 @@ TEST(FractionalGlobalIndexRange, EmptyProjectionKeepsItsLatticeInsertionOrdinal)
     EXPECT_EQ(
         projected->begin,
         iv::FractionalGlobalIndex::from_global(index(100)));
-    EXPECT_EQ(projected->begin_ordinal_bits, 25u);
+    EXPECT_EQ(projected->begin_index_bits, 25u);
     EXPECT_EQ(projected->count, 0u);
 }
 

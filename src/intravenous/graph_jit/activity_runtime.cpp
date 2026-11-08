@@ -11,7 +11,7 @@ namespace {
 std::byte const* continuous_value_at(
     ContinuousPortStorageBinding const& storage,
     std::size_t channel,
-    std::uint64_t ordinal) noexcept
+    std::uint64_t index) noexcept
 {
     auto const channels = channel_count(storage.channel_layout);
     if (channel >= channels || channel >= storage.channels.size()) return nullptr;
@@ -21,7 +21,7 @@ std::byte const* continuous_value_at(
         || selected.value_stride_bytes < storage.geometry.value_size_bytes) {
         return nullptr;
     }
-    auto const slot = static_cast<std::size_t>(ordinal - selected.value_delay)
+    auto const slot = static_cast<std::size_t>(index - selected.value_delay)
         & (selected.value_capacity - 1);
     if (slot != 0
         && selected.value_stride_bytes
@@ -120,7 +120,7 @@ extern "C" std::uint32_t iv_graph_jit_continuous_input_activity(
     auto const& geometry = binding->storage.geometry;
     auto const& type = continuous_value_type_registry[
         static_cast<std::size_t>(geometry.value_type)];
-    auto const begin = binding->sequential_begin_ordinal
+    auto const begin = binding->sequential_begin_index
         - binding->read_latency;
     auto const* first = continuous_value_at(binding->storage, channel, begin);
     if (first == nullptr) {
@@ -163,8 +163,7 @@ extern "C" bool iv_graph_jit_continuous_output_is_clear(
     auto const& geometry = binding->storage.geometry;
     auto const& type = continuous_value_type_registry[
         static_cast<std::size_t>(geometry.value_type)];
-    auto const begin = binding->sequential_begin_ordinal
-        + binding->storage.storage_latency;
+    auto const begin = binding->sequential_begin_index;
     for (std::size_t offset = 0; offset < value_count; ++offset) {
         auto const* value = continuous_value_at(
             binding->storage, channel, begin + offset);

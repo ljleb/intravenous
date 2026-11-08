@@ -475,6 +475,11 @@ The governing performance invariant is:
    latency frames but did not classify them as future frames; `future_frames` now uses
    the output latency. This is metadata-only on the realtime path and preserves the
    existing single copy loop and shared Sequential pace cursor.
+   _(Superseded 2026-11-07 by the authoring-index decision in Front 16 of
+   implementation_fronts_direction.md: the disconnected-output carry uses
+   `future_frames = 0`, and both Tick sample output views use offset 0. Removing
+   `ContinuousPortStorageBinding::storage_latency` also removes one add from every
+   continuous-output access.)_
 
    **Completion verification (2026-10-21):** the collaborator's following full
    548-test run passed. Front 6 transition/state-continuity work is closed with no
@@ -499,9 +504,9 @@ The governing performance invariant is:
    **Sequential cursor scope:** GraphJit continuous Tick storage already uses the
    proposed seek-independent scheme: one monotonic `uint64_t` cursor per distinct
    absolute pace, shared by every graph-owned continuous port at that pace. The
-   `sequential_begin_ordinal` inside each reflected port binding is not independent
+   `sequential_begin_index` inside each reflected port binding is not independent
    persistent ring state; generated execution overwrites it with that callback's
-   derived start ordinal before entering authored code. A later cleanup may group
+   derived start index before entering authored code. A later cleanup may group
    those per-port stores into one per-node/per-pace invocation value if measurement
    justifies the ABI change. Do not collapse all paces into one integer cursor, because
    their projected value counts differ, and do not force externally materialized Tick

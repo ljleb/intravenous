@@ -334,10 +334,10 @@ static_assert(std::is_standard_layout_v<FractionalGlobalIndex>);
 struct FractionalGlobalIndexRange {
     struct LatticeProjection {
         FractionalGlobalIndex begin {};
-        // Low 64 bits of the modular value ordinal on this lattice. Ring
+        // Low 64 bits of the modular value index on this lattice. Ring
         // addressing needs only these bits even when a fast lattice contains
         // more than 2^64 positions in one complete global-index cycle.
-        std::uint64_t begin_ordinal_bits = 0;
+        std::uint64_t begin_index_bits = 0;
         std::size_t count = 0;
 
         constexpr bool operator==(LatticeProjection const&) const noexcept = default;
@@ -493,7 +493,7 @@ namespace detail {
     return {};
 }
 
-[[nodiscard]] constexpr std::uint64_t lattice_ordinal_bits(
+[[nodiscard]] constexpr std::uint64_t lattice_index_bits(
     FractionalGlobalIndex index,
     std::int32_t pace_exponent) noexcept
 {
@@ -520,7 +520,7 @@ FractionalGlobalIndexRange::try_project_onto_lattice(
     if (empty()) {
         return LatticeProjection{
             .begin = begin,
-            .begin_ordinal_bits = detail::lattice_ordinal_bits(
+            .begin_index_bits = detail::lattice_index_bits(
                 begin, pace_exponent),
         };
     }
@@ -529,12 +529,12 @@ FractionalGlobalIndexRange::try_project_onto_lattice(
     auto const offset = detail::alignment_offset(begin, spacing_shift);
     if (!(offset < extent)) {
         // An empty projection still begins at its lattice lower bound. Its
-        // ordinal is the insertion position of the first value after this
+        // index is the insertion position of the first value after this
         // source interval, not the floor of an unaligned interval end.
         auto const projection_begin = begin.advanced_by(offset);
         return LatticeProjection{
             .begin = projection_begin,
-            .begin_ordinal_bits = detail::lattice_ordinal_bits(
+            .begin_index_bits = detail::lattice_index_bits(
                 projection_begin, pace_exponent),
         };
     }
@@ -550,7 +550,7 @@ FractionalGlobalIndexRange::try_project_onto_lattice(
     }
     return LatticeProjection{
         .begin = first,
-        .begin_ordinal_bits = detail::lattice_ordinal_bits(
+        .begin_index_bits = detail::lattice_index_bits(
             first, pace_exponent),
         .count = static_cast<std::size_t>(additional.fraction) + 1,
     };

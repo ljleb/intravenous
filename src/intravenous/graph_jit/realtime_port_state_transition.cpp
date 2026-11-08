@@ -124,6 +124,94 @@ bool supports_linear_audio_channel_conversion(
             == geometry.channel_scalar_lane_count * sizeof(float);
 }
 
+// A converted or composed input keeps its values in its sources' storage. A
+// source view pairs with a successor view when the successor view is persistent
+// storage that can receive its values, and either
+// - both hold the same producer's channel at the same read delay, or
+// - both are feedback timelines, which only this input reads, so its values
+//   move to the successor's timeline at the successor's read delay.
+bool sample_source_views_pair(
+    SampleRealtimePortStateStorageView const& before,
+    SampleRealtimePortStateStorageView const& after)
+{
+    auto const same_producer = before.producer
+        && before.producer == after.producer
+        && before.producer_channel == after.producer_channel
+        && before.timeline_offset_frames == after.timeline_offset_frames;
+    auto const feedback_timelines =
+        before.feedback_timeline && after.feedback_timeline;
+    return (same_producer || feedback_timelines)
+        && before.geometry == after.geometry
+        && sample_storage_source_is_recoverable(before)
+        && after.node_storage_offset && !after.callback_arena_offset
+        && (after.storage == SampleRealtimePortStateStorage::ring
+            || after.storage == SampleRealtimePortStateStorage::compact_carry);
+}
+
+// The predecessor and successor views of a converted or composed input's
+// sources, in derivation order.
+std::vector<SampleRealtimePortStateStorageView const*> derivation_sources(
+    SampleRealtimePortStateRealization const& realization)
+{
+    std::vector<SampleRealtimePortStateStorageView const*> views;
+    if (realization.retained_access
+        == SampleRealtimePortStateAccess::composed) {
+        for (auto const& source : realization.composition_sources) {
+            views.push_back(&source.storage);
+        }
+    } else {
+        for (auto const& source : realization.retained_sources) {
+            views.push_back(&source);
+        }
+    }
+    return views;
+}
+
+// True when every source of a converted or composed input pairs with the
+// predecessor's source in the same position through the same derivation. Each
+// source's values then transfer to that source's successor storage.
+bool sample_sources_pair(
+    SampleRealtimePortStateRealization const& previous,
+    SampleRealtimePortStateRealization const& current)
+{
+    if (previous.retained_access != current.retained_access) return false;
+    if (current.retained_access == SampleRealtimePortStateAccess::materialized) {
+        if (!previous.materialization || !current.materialization
+            || previous.materialization->source_layout
+                != current.materialization->source_layout
+            || previous.materialization->target_layout
+                != current.materialization->target_layout
+            || previous.authored_storage.representation_channel
+                != current.authored_storage.representation_channel) {
+            return false;
+        }
+    } else if (current.retained_access
+               == SampleRealtimePortStateAccess::composed) {
+        if (previous.composition_sources.size()
+            != current.composition_sources.size()) {
+            return false;
+        }
+        for (std::size_t index = 0;
+             index < current.composition_sources.size(); ++index) {
+            if (previous.composition_sources[index].coefficient
+                != current.composition_sources[index].coefficient) {
+                return false;
+            }
+        }
+    } else {
+        return false;
+    }
+    auto const before = derivation_sources(previous);
+    auto const after = derivation_sources(current);
+    if (after.empty() || before.size() != after.size()) return false;
+    for (std::size_t index = 0; index < after.size(); ++index) {
+        if (!sample_source_views_pair(*before[index], *after[index])) {
+            return false;
+        }
+    }
+    return true;
+}
+
 std::expected<InheritedRealtimePortStateRealization, std::string>
 select_sample_inherited_state_realization(
     SampleRealtimePortStateRealization const& previous,
@@ -239,6 +327,10 @@ select_sample_inherited_state_realization(
             return InheritedRealtimePortStateRealization::
                 transition_only_storage;
         }
+        return InheritedRealtimePortStateRealization::
+            transfer_to_steady_storage;
+    }
+    if (sample_sources_pair(previous, current)) {
         return InheritedRealtimePortStateRealization::
             transfer_to_steady_storage;
     }
@@ -376,7 +468,11 @@ index_realizations(
 
     for (std::size_t index = 0; index < requirements.states.size(); ++index) {
         auto const& requirement = requirements.states[index];
-        if (requirement.extent_samples == 0) {
+        // A Sequential sample input's record may own no history (see
+        // RealtimePortStateRequirement::in_flight_samples).
+        if (requirement.extent_samples == 0
+            && requirement.role
+                != RealtimePortStateRole::sequential_input_history) {
             return std::unexpected(
                 std::string{generation}
                 + " realtime port-state requirement has an empty extent");
@@ -454,17 +550,25 @@ std::expected<RealtimePortStateTransition, std::string> make_transition(
 
     std::int64_t begin = 0;
     std::int64_t end = 0;
+    std::int64_t target_begin = 0;
+    std::int64_t target_end = 0;
+    auto const current_extent =
+        static_cast<std::int64_t>(current_requirement.extent_samples);
     if (current_requirement.role
         == RealtimePortStateRole::tick_output_latency) {
         end = static_cast<std::int64_t>(inherited);
+        target_end = current_extent;
     } else {
         begin = -static_cast<std::int64_t>(inherited);
+        target_begin = -current_extent;
     }
     return RealtimePortStateTransition{
         .previous_requirement_index = previous.requirement,
         .current_requirement_index = current.requirement,
         .previous_realization_index = previous.realization,
         .current_realization_index = current.realization,
+        .target_begin = target_begin,
+        .target_end = target_end,
         .inherited_begin = begin,
         .inherited_end = end,
         .inherited_extent_samples = inherited,
@@ -473,6 +577,92 @@ std::expected<RealtimePortStateTransition, std::string> make_transition(
         .discarded_extent_samples =
             previous_requirement.extent_samples - inherited,
     };
+}
+
+// The position T at which a Sequential input's source values resume after its
+// in-flight values. A source value enters the input once, when its source
+// finalizes it. When the input keeps reading the same producer, it already holds
+// that producer's values up to its previous finalization frontier, so the next
+// one lands at c_old + d_new - d_old. Another producer's first value finalized
+// after the cutover lands at c_new.
+std::int64_t input_resume_position(
+    RealtimePortStateRequirement const& previous_requirement,
+    RealtimePortStateRequirement const& current_requirement,
+    SampleRealtimePortStateRealization const& previous,
+    SampleRealtimePortStateRealization const& current)
+{
+    auto const other_producer =
+        static_cast<std::int64_t>(current_requirement.in_flight_samples);
+    if (previous.retained_access != SampleRealtimePortStateAccess::direct
+        || current.retained_access != SampleRealtimePortStateAccess::direct
+        || previous.retained_sources.size() != 1
+        || current.retained_sources.size() != 1) {
+        return other_producer;
+    }
+    auto const& before = previous.retained_sources.front();
+    auto const& after = current.retained_sources.front();
+    if (!before.producer || before.producer != after.producer
+        || before.producer_channel != after.producer_channel) {
+        return other_producer;
+    }
+    // A view reads physical index P + position + timeline_offset_frames, so
+    // d = -timeline_offset_frames.
+    auto const resume =
+        static_cast<std::int64_t>(previous_requirement.in_flight_samples)
+        + before.timeline_offset_frames - after.timeline_offset_frames;
+    return std::max<std::int64_t>(resume, 0);
+}
+
+// Gives a Sequential input transition its window [-history, T) (see
+// RealtimePortStateTransition).
+std::expected<void, std::string> apply_input_window(
+    RealtimePortStateTransition& transition,
+    RealtimePortStateRequirement const& previous_requirement,
+    RealtimePortStateRequirement const& current_requirement,
+    SampleRealtimePortStateRealization const& previous,
+    SampleRealtimePortStateRealization const& current)
+{
+    constexpr auto limit = static_cast<std::size_t>(
+        std::numeric_limits<std::int64_t>::max() / 4);
+    if (previous_requirement.extent_samples > limit
+        || previous_requirement.in_flight_samples > limit
+        || current_requirement.extent_samples > limit
+        || current_requirement.in_flight_samples > limit) {
+        return std::unexpected(
+            "Sequential input state extent is not representable");
+    }
+    auto const old_history =
+        static_cast<std::int64_t>(previous_requirement.extent_samples);
+    auto const new_history =
+        static_cast<std::int64_t>(current_requirement.extent_samples);
+    auto const old_in_flight =
+        static_cast<std::int64_t>(previous_requirement.in_flight_samples);
+    auto const resume = input_resume_position(
+        previous_requirement, current_requirement, previous, current);
+    auto const kept_history = std::min(old_history, new_history);
+    auto const kept_in_flight = std::min(old_in_flight, resume);
+    transition.target_begin = -new_history;
+    transition.target_end = resume;
+    transition.inherited_begin = -kept_history;
+    transition.inherited_end = kept_in_flight;
+    auto const inherited = kept_history + kept_in_flight;
+    transition.inherited_extent_samples = static_cast<std::size_t>(inherited);
+    transition.newly_exposed_extent_samples =
+        static_cast<std::size_t>(new_history + resume - inherited);
+    transition.discarded_extent_samples =
+        static_cast<std::size_t>(old_history + old_in_flight - inherited);
+    if (transition.target_begin == transition.target_end) {
+        transition.inherited_state_realization =
+            InheritedRealtimePortStateRealization::fresh_state;
+    } else if (inherited == 0) {
+        // Only fresh positions: they must still be initialized in steady
+        // storage that other states may share, through a fresh-only transfer.
+        transition.inherited_state_realization =
+            current.retained_access == SampleRealtimePortStateAccess::direct
+            ? InheritedRealtimePortStateRealization::transfer_to_steady_storage
+            : InheritedRealtimePortStateRealization::fresh_state;
+    }
+    return {};
 }
 
 bool same_sample_target_geometry(
@@ -520,8 +710,6 @@ std::expected<void, std::string> classify_shared_successor_storage(
 {
     struct SampleTargetGroup {
         SampleRealtimePortStateStorageView const* geometry = nullptr;
-        std::size_t semantic_users = 0;
-        std::vector<std::size_t> transitions{};
     };
     std::unordered_map<
         SampleTargetKey,
@@ -546,47 +734,10 @@ std::expected<void, std::string> classify_shared_successor_storage(
                 "successor sample states disagree about shared storage geometry");
         }
         group.geometry = &target;
-        ++group.semantic_users;
     }
-    for (std::size_t index = 0; index < plan.sample_states.size(); ++index) {
-        auto const& transition = plan.sample_states[index];
-        auto const& realization = current_realizations.sample_states[
-            transition.current_realization_index];
-        if (realization.retained_access
-                != SampleRealtimePortStateAccess::direct
-            || realization.retained_sources.size() != 1
-            || !realization.retained_sources.front().node_storage_offset) {
-            continue;
-        }
-        auto const& target = realization.retained_sources.front();
-        sample_targets[SampleTargetKey{
-            .storage_offset = *target.node_storage_offset,
-            .channel = target.representation_channel,
-        }].transitions.push_back(index);
-    }
-    for (auto const& [_, group] : sample_targets) {
-        if (group.semantic_users < 2) continue;
-        auto const transfers_inherited_state = std::ranges::any_of(
-            group.transitions,
-            [&](std::size_t index) {
-                return plan.sample_states[index].inherited_state_realization
-                    == InheritedRealtimePortStateRealization::
-                        transfer_to_steady_storage;
-            });
-        if (!transfers_inherited_state) continue;
-        for (auto const index : group.transitions) {
-            auto& transition = plan.sample_states[index];
-            if (transition.inherited_state_realization
-                != InheritedRealtimePortStateRealization::
-                    predecessor_state_unavailable
-                && transition.inherited_state_realization
-                    != InheritedRealtimePortStateRealization::fresh_state) {
-                transition.inherited_state_realization =
-                    InheritedRealtimePortStateRealization::
-                        transition_only_storage;
-            }
-        }
-    }
+    // Several sample states may share one successor target, such as one
+    // producer ring read by several inputs. resolve_sample_transfer_conflicts()
+    // decides, once their transfers exist, which of them can share it.
 
     struct EventTargetGroup {
         EventRealtimePortStateStorageView const* geometry = nullptr;
@@ -692,6 +843,49 @@ std::expected<void, std::string> build_steady_storage_transfers(
             transition.previous_realization_index];
         auto const& target = current_realizations.sample_states[
             transition.current_realization_index];
+        if (transition.inherited_begin == transition.inherited_end) {
+            // The window inherits nothing: its fresh positions still have to be
+            // initialized in storage that other states may share.
+            if (target.retained_access != SampleRealtimePortStateAccess::direct
+                || target.retained_sources.size() != 1) {
+                return std::unexpected(
+                    "fresh-only sample state transfer has no direct successor view");
+            }
+            plan.sample_transfers.push_back(SampleRealtimePortStateTransfer{
+                .transition_index = index,
+                .source_access = SampleRealtimePortStateAccess::callback_only,
+                .target_storage = target.retained_sources.front(),
+                .target_begin = transition.target_begin,
+                .target_end = transition.target_end,
+                .inherited_begin = transition.target_begin,
+                .inherited_end = transition.target_begin,
+            });
+            continue;
+        }
+        if (target.retained_access == SampleRealtimePortStateAccess::materialized
+            || target.retained_access == SampleRealtimePortStateAccess::composed) {
+            // Each paired source's values move to that source's successor
+            // storage at the same read delay.
+            auto const before = derivation_sources(source);
+            auto const after = derivation_sources(target);
+            if (after.empty() || before.size() != after.size()) {
+                return std::unexpected(
+                    "sample state transfer lost its paired source views");
+            }
+            for (std::size_t view = 0; view < after.size(); ++view) {
+                plan.sample_transfers.push_back(SampleRealtimePortStateTransfer{
+                    .transition_index = index,
+                    .source_access = SampleRealtimePortStateAccess::direct,
+                    .source_storage = {*before[view]},
+                    .target_storage = *after[view],
+                    .target_begin = transition.target_begin,
+                    .target_end = transition.target_end,
+                    .inherited_begin = transition.inherited_begin,
+                    .inherited_end = transition.inherited_end,
+                });
+            }
+            continue;
+        }
         if (target.retained_access != SampleRealtimePortStateAccess::direct
             || target.retained_sources.size() != 1
             || !target.retained_sources.front().node_storage_offset
@@ -707,16 +901,8 @@ std::expected<void, std::string> build_steady_storage_transfers(
             .source_materialization_channel =
                 source.authored_storage.representation_channel,
             .target_storage = target.retained_sources.front(),
-            .target_begin = transition.inherited_begin < 0
-                ? -static_cast<std::int64_t>(
-                    transition.inherited_extent_samples
-                    + transition.newly_exposed_extent_samples)
-                : 0,
-            .target_end = transition.inherited_begin < 0
-                ? 0
-                : static_cast<std::int64_t>(
-                    transition.inherited_extent_samples
-                    + transition.newly_exposed_extent_samples),
+            .target_begin = transition.target_begin,
+            .target_end = transition.target_end,
             .inherited_begin = transition.inherited_begin,
             .inherited_end = transition.inherited_end,
         };
@@ -912,6 +1098,186 @@ std::expected<void, std::string> build_steady_storage_transfers(
                 .inherited_begin = transition->inherited_begin,
                 .inherited_end = transition->inherited_end,
             });
+        }
+    }
+    return {};
+}
+
+// Several sample states may transfer into one successor steady target, such as
+// a producer ring read by several inputs. They may share it only where they put
+// the same value into every slot they both cover: the same predecessor slot, or a
+// fresh value. A native transfer copies a producer's own values, without fresh
+// slots, to the same index of that producer's successor storage, so native
+// transfers always agree with each other. Every other transfer, largest first,
+// is kept while it agrees with the transfers already kept on its target;
+// otherwise its whole semantic state moves to transition-only storage. A state
+// the predecessor does not have, or an anonymous one, starts fresh, so a kept
+// transfer that puts inherited values inside its window moves too.
+std::expected<void, std::string> resolve_sample_transfer_conflicts(
+    RealtimePortStateTransitionPlan& plan,
+    RealtimePortStateRequirements const& current_requirements,
+    RealtimePortStateRealizations const& current_realizations)
+{
+    struct Claim {
+        std::size_t transfer = 0;
+        bool native = false;
+        // Successor slots relative to the cutover cursor.
+        std::int64_t begin = 0;
+        std::int64_t end = 0;
+        std::int64_t inherited_begin = 0;
+        std::int64_t inherited_end = 0;
+        // Where an inherited slot comes from: a predecessor view's storage and
+        // channel, and the distance from the successor slot to its predecessor
+        // slot. A transfer that derives its values is its own provenance.
+        bool derived = false;
+        std::optional<std::size_t> source_offset{};
+        std::size_t source_channel = 0;
+        std::int64_t shift = 0;
+    };
+    auto const agree = [](Claim const& a, Claim const& b) {
+        auto const begin = std::max(a.begin, b.begin);
+        auto const end = std::min(a.end, b.end);
+        if (begin >= end) return true;
+        auto const a_begin = std::max(a.inherited_begin, begin);
+        auto const a_end = std::min(a.inherited_end, end);
+        auto const b_begin = std::max(b.inherited_begin, begin);
+        auto const b_end = std::min(b.inherited_end, end);
+        auto const a_inherits = a_begin < a_end;
+        auto const b_inherits = b_begin < b_end;
+        if (!a_inherits && !b_inherits) return true;
+        if (a_inherits != b_inherits || a_begin != b_begin || a_end != b_end) {
+            return false;
+        }
+        return !a.derived && !b.derived && a.source_offset == b.source_offset
+            && a.source_channel == b.source_channel && a.shift == b.shift;
+    };
+
+    std::unordered_map<SampleTargetKey, std::vector<Claim>, SampleTargetKeyHash>
+        targets;
+    for (std::size_t index = 0; index < plan.sample_transfers.size(); ++index) {
+        auto const& transfer = plan.sample_transfers[index];
+        if (transfer.target_transition_only
+            || !transfer.target_storage.node_storage_offset) {
+            continue;
+        }
+        auto const& transition = plan.sample_states[transfer.transition_index];
+        if (transition.current_requirement_index
+            >= current_requirements.states.size()) {
+            return std::unexpected(
+                "sample state transfer names a missing successor requirement");
+        }
+        auto const& requirement =
+            current_requirements.states[transition.current_requirement_index];
+        auto const& target = transfer.target_storage;
+        auto const offset = target.timeline_offset_frames;
+        Claim claim{
+            .transfer = index,
+            .begin = transfer.target_begin + offset,
+            .end = transfer.target_end + offset,
+            .inherited_begin = transfer.inherited_begin + offset,
+            .inherited_end = transfer.inherited_end + offset,
+        };
+        auto const copies = transfer.source_access
+                == SampleRealtimePortStateAccess::direct
+            && transfer.source_storage.size() == 1;
+        if (copies) {
+            auto const& source = transfer.source_storage.front();
+            claim.source_offset = source.node_storage_offset;
+            claim.source_channel = source.representation_channel;
+            claim.shift = source.timeline_offset_frames - offset;
+            auto const same_producer = requirement.role
+                    == RealtimePortStateRole::tick_output_history
+                || (source.producer && source.producer == target.producer
+                    && source.producer_channel == target.producer_channel);
+            claim.native = same_producer && claim.shift == 0
+                && transfer.target_begin == transfer.inherited_begin
+                && transfer.target_end == transfer.inherited_end;
+        } else {
+            claim.derived = true;
+        }
+        targets[SampleTargetKey{
+            .storage_offset = *target.node_storage_offset,
+            .channel = target.representation_channel,
+        }].push_back(claim);
+    }
+
+    std::vector<bool> moved(plan.sample_states.size(), false);
+    for (auto& [_, claims] : targets) {
+        std::ranges::stable_sort(claims, [](Claim const& a, Claim const& b) {
+            if (a.native != b.native) return a.native;
+            return a.end - a.begin > b.end - b.begin;
+        });
+        std::vector<Claim const*> kept;
+        for (auto const& claim : claims) {
+            if (claim.native) {
+                kept.push_back(&claim);
+                continue;
+            }
+            auto const fits = std::ranges::all_of(
+                kept, [&](Claim const* other) { return agree(claim, *other); });
+            if (fits) {
+                kept.push_back(&claim);
+            } else {
+                moved[plan.sample_transfers[claim.transfer].transition_index] = true;
+            }
+        }
+    }
+
+    std::vector<bool> surviving(current_requirements.states.size(), false);
+    for (auto const& transition : plan.sample_states) {
+        if (transition.current_requirement_index < surviving.size()) {
+            surviving[transition.current_requirement_index] = true;
+        }
+    }
+    for (auto const& realization : current_realizations.sample_states) {
+        if (realization.requirement_index >= surviving.size()
+            || surviving[realization.requirement_index]
+            || realization.retained_access != SampleRealtimePortStateAccess::direct
+            || realization.retained_sources.size() != 1
+            || !realization.retained_sources.front().node_storage_offset) {
+            continue;
+        }
+        auto const& requirement =
+            current_requirements.states[realization.requirement_index];
+        std::int64_t begin = 0;
+        std::int64_t end = 0;
+        if (requirement.role == RealtimePortStateRole::sequential_input_history) {
+            begin = -static_cast<std::int64_t>(requirement.extent_samples);
+            end = static_cast<std::int64_t>(requirement.in_flight_samples);
+        } else if (requirement.role
+                   == RealtimePortStateRole::tick_output_history) {
+            begin = -static_cast<std::int64_t>(requirement.extent_samples);
+        }
+        if (begin == end) continue;
+        auto const& view = realization.retained_sources.front();
+        auto const target = targets.find(SampleTargetKey{
+            .storage_offset = *view.node_storage_offset,
+            .channel = view.representation_channel,
+        });
+        if (target == targets.end()) continue;
+        auto const offset = view.timeline_offset_frames;
+        Claim const fresh{
+            .begin = begin + offset,
+            .end = end + offset,
+            .inherited_begin = begin + offset,
+            .inherited_end = begin + offset,
+        };
+        for (auto const& claim : target->second) {
+            if (!agree(fresh, claim)) {
+                moved[plan.sample_transfers[claim.transfer].transition_index] = true;
+            }
+        }
+    }
+
+    std::erase_if(
+        plan.sample_transfers,
+        [&](SampleRealtimePortStateTransfer const& transfer) {
+            return moved[transfer.transition_index];
+        });
+    for (std::size_t index = 0; index < plan.sample_states.size(); ++index) {
+        if (moved[index]) {
+            plan.sample_states[index].inherited_state_realization =
+                InheritedRealtimePortStateRealization::transition_only_storage;
         }
     }
     return {};
@@ -1146,7 +1512,13 @@ std::expected<void, std::string> validate_prepared_transitions(
             == SampleRealtimePortStateAccess::materialized;
         auto const composed_source = transfer.source_access
             == SampleRealtimePortStateAccess::composed;
-        if ((!direct_source && !materialized_source && !composed_source)
+        // A fresh-only transfer initializes its target without inheriting.
+        auto const fresh_only = transfer.source_access
+                == SampleRealtimePortStateAccess::callback_only
+            && transfer.source_storage.empty()
+            && transfer.inherited_begin == transfer.inherited_end;
+        if ((!fresh_only && !direct_source && !materialized_source
+                && !composed_source)
             || (direct_source && transfer.source_storage.size() != 1)
             || ((materialized_source || composed_source)
                 && transfer.source_storage.empty())
@@ -1288,6 +1660,13 @@ std::expected<void, std::string> validate_prepared_transitions(
                 return std::unexpected(
                     "fresh sample state unexpectedly has a transfer");
             }
+            continue;
+        }
+        if (realization
+                == InheritedRealtimePortStateRealization::
+                    transfer_to_steady_storage
+            && sample_transfer_counts[index] != 0) {
+            // A converted or composed input transfers once per paired source.
             continue;
         }
         auto const expected =
@@ -1532,14 +1911,27 @@ plan_realtime_port_state_transition(
             return std::unexpected(std::move(transition.error()));
         }
         if (current.kind == PortKind::sample) {
-            auto realization = select_sample_inherited_state_realization(
+            auto const& previous_realization =
                 previous_realizations.sample_states[
-                    previous->second.realization],
-                current_realizations.sample_states[current.realization]);
+                    previous->second.realization];
+            auto const& current_realization =
+                current_realizations.sample_states[current.realization];
+            auto realization = select_sample_inherited_state_realization(
+                previous_realization, current_realization);
             if (!realization) {
                 return std::unexpected(std::move(realization.error()));
             }
             transition->inherited_state_realization = *realization;
+            if (current_requirement.role
+                == RealtimePortStateRole::sequential_input_history) {
+                auto windowed = apply_input_window(
+                    *transition,
+                    previous_requirements.states[previous->second.requirement],
+                    current_requirement,
+                    previous_realization,
+                    current_realization);
+                if (!windowed) return std::unexpected(std::move(windowed.error()));
+            }
             result.sample_states.push_back(std::move(*transition));
         } else {
             auto realization = select_event_inherited_state_realization(
@@ -1563,6 +1955,9 @@ plan_realtime_port_state_transition(
     if (!transfers) {
         return std::unexpected(std::move(transfers.error()));
     }
+    auto resolved = resolve_sample_transfer_conflicts(
+        result, current_requirements, current_realizations);
+    if (!resolved) return std::unexpected(std::move(resolved.error()));
     return result;
 }
 
@@ -1642,7 +2037,11 @@ realize_realtime_port_state_transition_storage(
             transition.current_realization_index];
         auto const& requirement = current_requirements.states[
             transition.current_requirement_index];
-        if ((source.retained_access
+        // A window that inherits nothing needs no predecessor view.
+        auto const fresh_only =
+            transition.inherited_begin == transition.inherited_end;
+        if ((!fresh_only
+             && source.retained_access
                  != SampleRealtimePortStateAccess::direct
              && source.retained_access
                  != SampleRealtimePortStateAccess::immutable_constant
@@ -1691,6 +2090,10 @@ realize_realtime_port_state_transition_storage(
                 source_composition_coefficients.push_back(
                     composition_source.coefficient);
             }
+        }
+        if (fresh_only) {
+            source_views.clear();
+            source_composition_coefficients.clear();
         }
         std::optional<std::size_t> steady_target_offset;
         auto target = current.authored_storage;
@@ -1767,12 +2170,13 @@ realize_realtime_port_state_transition_storage(
                 "transition suffix sample extent is not representable");
         }
 
-        auto const target_begin = transition.inherited_begin < 0
-            ? -static_cast<std::int64_t>(target_extent)
-            : 0;
-        auto const target_end = transition.inherited_begin < 0
-            ? 0
-            : static_cast<std::int64_t>(target_extent);
+        auto const target_begin = transition.target_begin;
+        auto const target_end = transition.target_end;
+        if (target_end - target_begin
+            != static_cast<std::int64_t>(target_extent)) {
+            return std::unexpected(
+                "transition suffix sample interval disagrees with its extent");
+        }
 
         auto const same_physical_target = [&](SuffixTargetGroup const& group) {
             auto const& candidate = group.geometry;
@@ -1826,9 +2230,13 @@ realize_realtime_port_state_transition_storage(
         plan.sample_transfers.push_back(SampleRealtimePortStateTransfer{
             .transition_index = index,
             .target_transition_only = true,
-            .source_access = source.retained_access,
+            .source_access = fresh_only
+                ? SampleRealtimePortStateAccess::callback_only
+                : source.retained_access,
             .source_storage = source_views,
-            .source_materialization = source.materialization,
+            .source_materialization = fresh_only
+                ? std::nullopt
+                : source.materialization,
             .source_materialization_channel =
                 source.authored_storage.representation_channel,
             .source_composition_coefficients =
@@ -2144,16 +2552,16 @@ void execute_realtime_port_state_transfers(
             sizeof(result));
         return result;
     };
-    auto shifted_ordinal = [](std::uint64_t origin, std::int64_t relative) {
+    auto shifted_index = [](std::uint64_t origin, std::int64_t relative) {
         return origin + static_cast<std::uint64_t>(relative);
     };
     auto sample_at = [&](auto bytes,
                          SampleRealtimePortStateStorageView const& view,
-                         std::uint64_t root_ordinal,
+                         std::uint64_t root_index,
                          std::int64_t relative) -> decltype(bytes.data()) {
         auto* base = storage_base(bytes, view);
-        auto const physical = shifted_ordinal(
-            shifted_ordinal(root_ordinal, relative),
+        auto const physical = shifted_index(
+            shifted_index(root_index, relative),
             view.timeline_offset_frames);
         std::optional<std::size_t> frame;
         if (view.storage == SampleRealtimePortStateStorage::ring) {
@@ -2165,7 +2573,7 @@ void execute_realtime_port_state_transfers(
             if (view.storage_frame_count >= view.carry_future_frames) {
                 auto const retained_before =
                     view.storage_frame_count - view.carry_future_frames;
-                auto const first = root_ordinal - retained_before;
+                auto const first = root_index - retained_before;
                 auto const candidate = physical - first;
                 if (candidate < view.storage_frame_count) frame = candidate;
             }
@@ -2188,11 +2596,12 @@ void execute_realtime_port_state_transfers(
     };
 
     for (auto const& transfer : plan.sample_transfers) {
-        auto const target_root_ordinal = sequential_cursor(
+        auto const target_root_index = sequential_cursor(
             std::span<std::byte>{current_storage}, transfer.target_storage);
-        auto const source_root_ordinal =
+        auto const source_root_index =
             transfer.source_access
                     == SampleRealtimePortStateAccess::immutable_constant
+                || transfer.source_storage.empty()
             ? std::uint64_t{0}
             : sequential_cursor(
                 std::span<std::byte const>{previous_storage},
@@ -2202,7 +2611,7 @@ void execute_realtime_port_state_transfers(
             auto* target = sample_at(
                 std::span<std::byte>{current_storage},
                 transfer.target_storage,
-                target_root_ordinal,
+                target_root_index,
                 relative);
             IV_ASSERT(
                 target != nullptr,
@@ -2217,7 +2626,7 @@ void execute_realtime_port_state_transfers(
             auto* target = sample_at(
                 std::span<std::byte>{current_storage},
                 transfer.target_storage,
-                target_root_ordinal,
+                target_root_index,
                 relative);
             IV_ASSERT(
                 target != nullptr,
@@ -2234,7 +2643,7 @@ void execute_realtime_port_state_transfers(
                 auto const* address = sample_at(
                     std::span<std::byte const>{previous_storage},
                     source,
-                    source_root_ordinal,
+                    source_root_index,
                     relative);
                 IV_ASSERT(
                     address != nullptr,
@@ -2275,7 +2684,7 @@ void execute_realtime_port_state_transfers(
                         auto const* address = sample_at(
                             std::span<std::byte const>{previous_storage},
                             source_view,
-                            source_root_ordinal,
+                            source_root_index,
                             relative);
                         IV_ASSERT(
                             address != nullptr,
@@ -2315,7 +2724,7 @@ void execute_realtime_port_state_transfers(
                         auto const* address = sample_at(
                             std::span<std::byte const>{previous_storage},
                             source_view,
-                            source_root_ordinal,
+                            source_root_index,
                             relative);
                         IV_ASSERT(
                             address != nullptr,

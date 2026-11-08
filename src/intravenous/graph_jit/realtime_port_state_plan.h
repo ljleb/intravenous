@@ -17,9 +17,22 @@ namespace iv::graph_jit {
 // Distinguishes the independently owned temporal pieces of one realtime port.
 // These roles are semantic migration identities; they do not describe whether
 // the current realization uses a ring, compact carry, alias, or materialization.
+// Positions are relative to the port's next tick: a negative position is a value
+// owned before it.
 enum class RealtimePortStateRole : std::uint8_t {
+    // Values a Sequential input owns at its read delay: its history
+    // [-history, 0), then its in-flight values [0, in_flight), which its sources
+    // have finalized but its read delay beyond their latency has not yet let it
+    // read.
     sequential_input_history,
+    // Values a Tick output has authored and still owns before its next tick:
+    // [-extent, 0). A sample output files each value at the index it was
+    // authored for, so this one window is its history + latency values; latency
+    // only marks the newest of them as revisable. An event output owns its
+    // history here.
     tick_output_history,
+    // Events a Tick event output has already stamped at or after its next tick:
+    // [0, latency). Sample outputs have no such state.
     tick_output_latency,
 };
 
@@ -42,8 +55,12 @@ struct StableRealtimePortStateId {
 // One non-empty state extent owned by a concrete port in this compiled graph.
 // configured_port/direction identify the generation-local port even when the
 // concrete node is anonymous. stable_identity is present only when continuity
-// across graph revisions is meaningful. extent_samples is the exact history or
-// authored-future distance, never a rounded storage capacity.
+// across graph revisions is meaningful. extent_samples is the exact owned extent
+// of the role (see RealtimePortStateRole), never a rounded storage capacity.
+// For a Sequential sample input, extent_samples is its history and
+// in_flight_samples the channel's read delay beyond its source's latency:
+// compiler-owned compensation plus any detach() delay. The record owns
+// [-extent_samples, in_flight_samples).
 struct RealtimePortStateRequirement {
     NodeBundlePortId configured_port{};
     PortDirection direction = PortDirection::input;
@@ -51,6 +68,7 @@ struct RealtimePortStateRequirement {
     RealtimePortStateRole role =
         RealtimePortStateRole::sequential_input_history;
     std::size_t extent_samples = 0;
+    std::size_t in_flight_samples = 0;
     std::optional<StableRealtimePortStateId> stable_identity{};
 };
 
@@ -93,6 +111,17 @@ struct SampleRealtimePortStateStorageView {
     ChannelLayout channel_layout{};
     ContinuousValueStorageGeometry geometry{};
     std::int32_t absolute_pace_exponent = 0;
+    // Stable identity of the Tick output whose timeline this view addresses,
+    // and that output's channel, when the view is that output's canonical
+    // producer representation. A cutover compares them to tell whether a
+    // predecessor view and a successor view hold the same producer's values.
+    std::optional<StableOutputPortId> producer{};
+    std::size_t producer_channel = 0;
+    // True when the view is a detach() feedback timeline
+    // (SampleFeedbackTimelinePlan) written by a copy or a composition. Only
+    // its own connection's input reads that storage, so a cutover may place
+    // that input's values in it whatever produced them.
+    bool feedback_timeline = false;
     // Offset of the generation-owned linear Sequential cursor for this
     // resolved pace. Physical sample storage is addressed relative to this
     // cursor, not from the node-visible GlobalIndex. Constants carry the
@@ -100,11 +129,10 @@ struct SampleRealtimePortStateStorageView {
     std::optional<std::size_t> sequential_cursor_node_storage_offset{};
     std::size_t representation_channel = 0;
 
-    // Physical absolute-frame coordinate for semantic position P is
-    // P + timeline_offset_frames. Sequential inputs therefore use a negative
-    // read-latency/channel-delay offset. Callback-facing Tick output views use
-    // their positive authored storage latency; retained Tick output views are
-    // already indexed in semantic output coordinates and therefore use zero.
+    // Physical absolute-frame index for semantic position P is
+    // P + timeline_offset_frames. Sequential inputs use a negative
+    // read-latency/channel-delay offset. Tick output storage files each value at
+    // the index it was authored for, so every Tick output view uses zero.
     std::int64_t timeline_offset_frames = 0;
     // Capacity of the representation's absolute-indexed working ring.
     std::size_t working_frame_capacity = 0;
@@ -112,9 +140,9 @@ struct SampleRealtimePortStateStorageView {
     // backing. A compact carry stores retained frames rather than the full
     // working-ring capacity.
     std::size_t storage_frame_count = 0;
-    // Compact carry may retain already-authored frames at or after the next
-    // invocation boundary. Zero for constants, callback-local storage, and
-    // persistent rings.
+    // Retained frames at or after the next root invocation's first index. Only
+    // shifted composed feedback carries any; zero for Tick output storage,
+    // constants, callback-local storage, and persistent rings.
     std::size_t carry_future_frames = 0;
 
     // Exactly one location form is populated according to storage.

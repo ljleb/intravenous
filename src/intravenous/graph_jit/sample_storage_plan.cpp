@@ -131,12 +131,9 @@ std::string producer_authored_extent_identity(
         group.source_port->node_bundle_handle,
         &PlannedGraphNode::bundle);
     if (node == connections.nodes.end() || !node->stable_identity) return {};
-    auto const& stable = *node->stable_identity;
     std::ostringstream out;
-    out << "graphjit.sample.authored_extent:graph=" << stable.graph.size()
-        << ':' << stable.graph
-        << ":node=" << stable.virtual_node.size() << ':' << stable.virtual_node
-        << ":member=" << stable.direct_member
+    out << "graphjit.sample.authored_extent:"
+        << migration_identity_fields(*node->stable_identity)
         << ":port=" << group.source_port->port_index;
     out << ":type=" << static_cast<unsigned>(group.geometry.value_type)
         << ":elements=" << group.geometry.elements_per_value
@@ -1184,6 +1181,9 @@ std::expected<SampleStoragePlan, std::string> build_sample_storage_plan(
                     .restore_execution_position = home_feedback_restore_position,
                     .commit_execution_position = producer_position,
                     .retained_frames = home_feedback_retained_frames,
+                    // A producer home exists only for a producer that retains
+                    // nothing itself, so it authors nothing ahead.
+                    .future_frames = 0,
                 });
             } else {
                 return std::unexpected(
@@ -1249,6 +1249,9 @@ std::expected<SampleStoragePlan, std::string> build_sample_storage_plan(
                     .restore_execution_position = producer_position,
                     .commit_execution_position = producer_position,
                     .retained_frames = group.storage_requirements.retained_frames,
+                    // The producer writes at its own tick index; a latent
+                    // output's owned latency window precedes the boundary.
+                    .future_frames = 0,
                 });
             }
         }
@@ -1611,6 +1614,9 @@ std::expected<SampleStoragePlan, std::string> build_sample_storage_plan(
                         producer_position, consumer_position),
                     .commit_execution_position = producer_position,
                     .retained_frames = retained_frames,
+                    // Copied feedback holds no future frames
+                    // (SampleCarryOperationPlan::future_frames).
+                    .future_frames = 0,
                 });
             } else {
                 return std::unexpected(
@@ -3078,7 +3084,10 @@ std::expected<SampleStoragePlan, std::string> build_sample_storage_plan(
                     .restore_execution_position = sink.execution_position,
                     .commit_execution_position = sink.execution_position,
                     .retained_frames = retained_frames,
-                    .future_frames = sink.latency,
+                    // The output files each value at the index it was authored
+                    // for, so its history + latency window precedes the next
+                    // root invocation's first index.
+                    .future_frames = 0,
                 });
             } else if (storage.kind
                        != RealtimeBufferStorageKind::transient_stack) {

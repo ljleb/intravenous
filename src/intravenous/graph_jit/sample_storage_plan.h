@@ -231,10 +231,13 @@ struct SampleCarryOperationPlan {
     std::size_t restore_execution_position = 0;
     std::size_t commit_execution_position = 0;
     std::size_t retained_frames = 0;
-    // Number of retained frames at or after the next invocation boundary.
-    // Ordinary zero-latency producer carry and copied feedback use zero.
-    // Latent Tick outputs and shifted composed feedback may author aligned
-    // samples ahead of the current block end.
+    // Number of retained frames at or after the next root invocation's first
+    // index. Every carry states it explicitly. A Tick output files each value
+    // at the index it was authored for, so its owned history + latency window
+    // lies before that index, and every Tick output carry (connected producer,
+    // disconnected output, copied feedback, producer-home feedback) uses zero.
+    // Only shifted composed feedback, whose target timeline is written ahead
+    // of the current block by its read latency, carries future frames.
     std::size_t future_frames = 0;
 };
 

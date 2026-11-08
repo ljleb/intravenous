@@ -26,6 +26,16 @@ struct StableConcreteNodeId {
     auto operator<=>(StableConcreteNodeId const&) const = default;
 };
 
+// The concrete node's fields of a migration identity string. Each string is
+// prefixed with its length, so two different nodes never encode alike.
+inline std::string migration_identity_fields(StableConcreteNodeId const& node)
+{
+    return "graph=" + std::to_string(node.graph.size()) + ':' + node.graph
+        + ":node=" + std::to_string(node.virtual_node.size()) + ':'
+        + node.virtual_node
+        + ":member=" + std::to_string(node.direct_member);
+}
+
 struct StableOutputPortId {
     StableConcreteNodeId node{};
     PortKind kind = PortKind::sample;

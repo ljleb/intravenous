@@ -1625,10 +1625,18 @@ concrete node privately owns its port-related state alongside its authored `Stat
 ```text
 concrete node
     +-- authored State
-    +-- each Sequential input's resolved history
-    +-- each Tick output's resolved history
-    `-- each Tick output's resolved latency/future window
+    +-- each Sequential input's resolved history and in-flight values
+    +-- each Tick sample output's last history + latency authored values
+    +-- each Tick event output's resolved history
+    `-- each Tick event output's resolved latency/future window
 ```
+
+A Tick sample output files each value at the index it was authored for, so all of its
+owned values lie before its next tick; latency only marks the newest of them as still
+revisable through `OutputPort::update()`. A Tick event output can stamp events at or
+after its next tick, so its latency/future window is separate state. (Settled
+2026-11-07; the superseded wording is preserved in
+[historical/tick_output_finalization_index_2026-11-07.md](historical/tick_output_finalization_index_2026-11-07.md).)
 
 The storage planner remains free to alias several of those conceptual states onto one
 producer timeline, a compact carry, a full ring, a derived fan-in result, or another
@@ -1649,14 +1657,19 @@ B.out -> C.in(history = 64)
 ```
 
 then immediately after activation `C.in[P-64, P)` remains the resolved history that C
-actually observed before the splice, while positions from `P` onward use the new
-connection. Rewiring does not reinterpret C's past as B data. The same rule applies to
+actually observed before the splice. When compiler-owned read compensation delays
+`C.in` by `c` positions, `C.in` also owns the `c` values A had finalized that it had
+not yet read; those fill positions `[P, P + c)`, and B's values follow them. Without
+compensation, positions from `P` onward use the new connection. Rewiring does not
+reinterpret C's past as B data. (Newly settled 2026-11-08; see
+[Sequential Port Storage Planning](./sequential_port_storage_planning.md), section
+"Port windows are semantically node-owned even when storage is shared".) The same rule applies to
 fan-in: if C previously observed an `A+B` composition and the new graph supplies
 `A+D`, its still-visible history remains the old resolved `A+B` values until they age
 out.
 
-Likewise, a surviving output owns its resolved history and latency/future state.
-Changing consumers must not discard that state. When a resolved history/latency
+Likewise, a surviving output owns its resolved history and latency state, as listed
+above. Changing consumers must not discard that state. When a resolved history/latency
 extent itself changes, migration preserves the intersection of the old valid semantic
 range with the new required range; newly exposed range receives the normal fresh-state
 initialization semantics, and no-longer-observable range may be discarded. storage
@@ -1991,11 +2004,12 @@ linkage needed by both actors. There is no semantically visible half-staged gene
   background.
 
 Executable replacement must preserve concrete-node-owned port state. Input history
-belongs to the surviving destination input; output history and authored latency/future
-state belong to the surviving source output. Connection rewiring, fan-in/fanout
-changes, or a different steady storage representation do not themselves reset those
-windows. `RealtimeExecutor` reconciles overlapping valid semantic ranges from the old
-realization into the new revision, materializing transition-only state when necessary.
+belongs to the surviving destination input; output history and latency state, as listed
+in "Port history and latency are node-owned semantic state", belong to the surviving
+source output. Connection rewiring, fan-in/fanout changes, or a different steady
+storage representation do not themselves reset those windows. `RealtimeExecutor`
+reconciles overlapping valid semantic ranges from the old realization into the new
+revision, materializing transition-only state when necessary.
 
 Realtime-produced data uses blocks already provisioned into the producer reserve. The
 producer may write final audio/event payload directly into those blocks, build a
@@ -2047,6 +2061,14 @@ diagnostic log, and aborts. The handoff does not return an error value: after an
 lifecycle operation has mutated or released state, neither generation is a defined
 rollback target. Successful callbacks and the final migration commit are therefore
 exposed as `noexcept`, with diagnostic work confined to the exceptional path.
+
+Newly settled (2026-11-08): node lifecycle work runs outside the audio thread
+whenever it can. Only an operation that reads the predecessor's final state, or
+mutates or destroys the predecessor's node storage, runs between audio callbacks:
+`move()`, the predecessor's `release()`, the copy of migrated raw regions, and the
+`initialize()` of a node that depends on any of them. Every other successor node,
+including one whose identity matches a predecessor it does not move from, runs
+`initialize()` while the successor is prepared.
 
 A removed producer therefore simply stops producing after the boundary; it does not
 erase retained state at a surviving destination. A removed destination is retired only

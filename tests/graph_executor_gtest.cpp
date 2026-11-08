@@ -543,9 +543,8 @@ void evaluate_replay_probe(
                 for (std::size_t output = 0; output < outputs.size(); ++output) {
                     auto const& storage = outputs[output].storage;
                     auto const& channel = storage.channels[0];
-                    auto const ordinal = position.bits()
-                        + storage.storage_latency - channel.value_delay;
-                    auto const slot = static_cast<std::size_t>(ordinal)
+                    auto const index = position.bits() - channel.value_delay;
+                    auto const slot = static_cast<std::size_t>(index)
                         & (channel.value_capacity - 1);
                     *reinterpret_cast<iv::Sample*>(
                         channel.storage

@@ -205,8 +205,8 @@ TEST(TickBatchContext, ReflectedBatchAnchorsKeepLanePortBindingsSeparate)
         sample_output_binding(std::span{first_storage})};
     std::array second_outputs{
         sample_output_binding(std::span{second_storage})};
-    first_outputs[0].sequential_begin_ordinal = 2;
-    second_outputs[0].sequential_begin_ordinal = 3;
+    first_outputs[0].sequential_begin_index = 2;
+    second_outputs[0].sequential_begin_index = 3;
     std::array lanes{
         iv::ReflectedNodeTickBatchLane{
             .node_data = &first,
@@ -379,8 +379,8 @@ TEST(TickPointwiseExecution, AppliesValueOffsetToEachPortPhysicalOrigin)
 
     std::array inputs{sample_input_binding(std::span{input_storage})};
     std::array outputs{sample_output_binding(std::span{output_storage})};
-    inputs[0].sequential_begin_ordinal = 5;
-    outputs[0].sequential_begin_ordinal = 13;
+    inputs[0].sequential_begin_index = 5;
+    outputs[0].sequential_begin_index = 13;
 
     iv::do_tick_block(
         PointwisePhysicalOriginNode{},
@@ -412,7 +412,7 @@ TEST(TickPointwiseExecution, ExposesHistoryPlusOneCurrentValue)
     std::array inputs{sample_input_binding(std::span{input_storage})};
     std::array outputs{sample_output_binding(std::span{output_storage})};
     inputs[0].history = 2;
-    inputs[0].sequential_begin_ordinal = 7;
+    inputs[0].sequential_begin_index = 7;
     inputs[0].contiguous_value_capacity = contiguous_scratch.size();
     inputs[0].storage.channels[0].contiguous_scratch =
         reinterpret_cast<std::byte*>(contiguous_scratch.data());
@@ -1578,7 +1578,7 @@ TEST(BackgroundDspPorts, PersistedRealtimeOutputsUseOrdinaryTickBindings)
         sample_output_binding(
             std::span{sample_storage},
             iv::mono_interleaved_channel_layout)};
-    sample_outputs[0].sequential_begin_ordinal = 128;
+    sample_outputs[0].sequential_begin_index = 128;
     std::array<iv::TimedEvent, 16> event_storage {};
     iv::EventSharedPortData event_shared {
         event_storage, 0, 0, iv::EventTypeId::trigger,

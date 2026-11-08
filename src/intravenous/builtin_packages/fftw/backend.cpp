@@ -24,7 +24,7 @@ struct InversePlan {
     FFTBin* cached_spectrum = nullptr;
     Sample* normalized_output = nullptr;
     fftwf_plan plan = nullptr;
-    std::uint64_t cached_spectrum_ordinal = 0;
+    std::uint64_t cached_spectrum_index = 0;
     bool cache_valid = false;
 };
 
@@ -117,30 +117,22 @@ extern "C" void iv_fftw_destroy_forward_plan(ForwardPlan* storage) noexcept
     destroy(storage);
 }
 
-extern "C" bool iv_fftw_execute_forward_plan(
+extern "C" void iv_fftw_execute_forward_plan(
     ForwardPlan* storage,
     Sample const* input,
-    std::size_t input_size,
-    FFTBin* output,
-    std::size_t output_size) noexcept
+    FFTBin* output) noexcept
 {
-    if (!storage || !storage->plan || !input || !output
-        || input_size != storage->transform_size
-        || output_size != storage->transform_size / 2 + 1) {
-        return false;
-    }
-
-    for (std::size_t sample = 0; sample < input_size; ++sample) {
+    for (std::size_t sample = 0; sample < storage->transform_size; ++sample) {
         storage->input[sample] = static_cast<float>(input[sample]);
     }
     fftwf_execute(storage->plan);
-    for (std::size_t bin = 0; bin < output_size; ++bin) {
+    auto const bin_count = storage->transform_size / 2 + 1;
+    for (std::size_t bin = 0; bin < bin_count; ++bin) {
         output[bin] = FFTBin{
             storage->output[bin][0],
             storage->output[bin][1],
         };
     }
-    return true;
 }
 
 extern "C" InversePlan* iv_fftw_create_inverse_plan(
@@ -185,16 +177,11 @@ extern "C" void iv_fftw_destroy_inverse_plan(InversePlan* storage) noexcept
 extern "C" Sample const* iv_fftw_execute_inverse_plan(
     InversePlan* storage,
     FFTBin const* input,
-    std::size_t input_size,
-    std::uint64_t spectrum_ordinal) noexcept
+    std::uint64_t spectrum_index) noexcept
 {
-    if (!storage || !storage->plan || !input
-        || input_size != storage->transform_size / 2 + 1) {
-        return nullptr;
-    }
-
+    auto const input_size = storage->transform_size / 2 + 1;
     bool unchanged = storage->cache_valid
-        && storage->cached_spectrum_ordinal == spectrum_ordinal;
+        && storage->cached_spectrum_index == spectrum_index;
     for (std::size_t bin = 0; unchanged && bin < input_size; ++bin) {
         unchanged = storage->cached_spectrum[bin] == input[bin];
     }
@@ -213,7 +200,7 @@ extern "C" Sample const* iv_fftw_execute_inverse_plan(
         storage->normalized_output[sample] = Sample{
             storage->output[sample] * normalization};
     }
-    storage->cached_spectrum_ordinal = spectrum_ordinal;
+    storage->cached_spectrum_index = spectrum_index;
     storage->cache_valid = true;
     return storage->normalized_output;
 }

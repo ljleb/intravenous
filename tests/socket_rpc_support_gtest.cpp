@@ -522,7 +522,7 @@ TEST(SocketRpcNodeEventProtocolResultBuilder, SerializesNeutralSchemasAndReceive
 
     auto const response = parse_json_line(builder.build(44));
     auto const& protocol = response["result"];
-    EXPECT_EQ(protocol["formatVersion"], 1);
+    EXPECT_EQ(protocol["formatVersion"], 0);
     EXPECT_EQ(protocol["projectGraphGeneration"], 12);
     EXPECT_EQ(protocol["definitionsGeneration"], 7);
     ASSERT_EQ(protocol["eventTypes"].size(), 1u);

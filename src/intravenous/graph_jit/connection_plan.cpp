@@ -175,9 +175,11 @@ void append_realtime_port_state(
     std::optional<std::size_t> channel,
     RealtimePortStateRole role,
     std::size_t extent_samples,
-    std::optional<StableConcreteNodeId> const& stable_node)
+    std::optional<StableConcreteNodeId> const& stable_node,
+    std::size_t in_flight_samples = 0,
+    bool keep_empty = false)
 {
-    if (extent_samples == 0) return;
+    if (extent_samples == 0 && in_flight_samples == 0 && !keep_empty) return;
 
     std::optional<StableRealtimePortStateId> stable_identity;
     if (stable_node) {
@@ -197,6 +199,7 @@ void append_realtime_port_state(
         .channel = channel,
         .role = role,
         .extent_samples = extent_samples,
+        .in_flight_samples = in_flight_samples,
         .stable_identity = std::move(stable_identity),
     });
 }
@@ -255,25 +258,23 @@ void inventory_realtime_port_states(
             stable_node);
     }
 
+    // Sample storage files each value at the index it was authored for, so a Tick
+    // sample output owns one window: its last history + latency values before its
+    // next tick. Latency only marks the newest of them as still revisable through
+    // OutputPort::update(); it places nothing at or after the next tick. One
+    // record keeps that window whole when a successor changes history or latency.
     auto const sample_outputs = ports.sample_outputs();
     for (std::size_t index = 0; index < sample_outputs.size(); ++index) {
         auto const& output = sample_outputs[index];
         if (!is_tick(output)) continue;
-        auto const port = NodeBundlePortId{bundle, PortKind::sample, index};
+        auto const& resolved = realization.output(bundle, index);
         append_sample_states(
-            port,
+            NodeBundlePortId{bundle, PortKind::sample, index},
             PortDirection::output,
             output.name,
             output.channel_layout,
             RealtimePortStateRole::tick_output_history,
-            realization.output(bundle, index).history);
-        append_sample_states(
-            port,
-            PortDirection::output,
-            output.name,
-            output.channel_layout,
-            RealtimePortStateRole::tick_output_latency,
-            realization.output(bundle, index).latency);
+            saturating_add(resolved.history, resolved.latency));
     }
 
     auto const event_outputs = ports.event_outputs();
@@ -5634,6 +5635,152 @@ std::expected<void, std::string> plan_event_groups(
     return {};
 }
 
+// A Sequential sample input owns the values its sources have finalized that its
+// read delay beyond their latency has not yet let it read: compiler-owned
+// compensation plus any detach() delay. Path equalization has set every
+// read_latency by now, so this sets each input record's in_flight_samples per
+// target channel. Every channel of an input fed only through realtime storage
+// gets a record, even an empty one, so that a successor whose read delay grows
+// from nothing still finds the window it grows from.
+std::expected<void, std::string> inventory_sequential_input_in_flight_values(
+    ConfiguredGraph const& graph,
+    ConnectionAnalysisPlan& plan)
+{
+    for (auto const& connection : plan.sample_connections) {
+        if (connection.destination_access
+            != PlannedDestinationAccess::sequential) {
+            continue;
+        }
+        auto const& timings = connection.source_channel_timings;
+        auto const in_flight_of = [&](
+            std::size_t source,
+            std::optional<ConfiguredSampleConnectionDetach> const& contribution_detach)
+            -> std::size_t {
+            if (source >= timings.size()) return 0;
+            auto const& timing = timings[source];
+            if (timing.delivery != PlannedDeliveryMechanism::tick_to_sequential) {
+                return 0;
+            }
+            auto const compensation = timing.read_latency > timing.source_latency
+                ? timing.read_latency - timing.source_latency
+                : 0;
+            auto const& detach = timing.detach
+                ? timing.detach
+                : contribution_detach ? contribution_detach : connection.detach;
+            return compensation + (detach ? detach->loop_extra_latency : 0);
+        };
+
+        auto const channels = channel_count(connection.target_layout);
+        std::vector<std::size_t> in_flight(channels, 0);
+        auto const raise = [&](std::size_t channel, std::size_t value) {
+            if (channel < in_flight.size()) {
+                in_flight[channel] = std::max(in_flight[channel], value);
+            }
+        };
+        if (!connection.routed_contributions.empty()) {
+            for (auto const& contribution : connection.routed_contributions) {
+                for (std::size_t target = 0;
+                     target < contribution.target_coefficients.size(); ++target) {
+                    if (contribution.target_coefficients[target] == 0.0f) continue;
+                    for (std::size_t source = 0;
+                         source < contribution.source_coefficients.size();
+                         ++source) {
+                        if (contribution.source_coefficients[source] == 0.0f) {
+                            continue;
+                        }
+                        raise(target, in_flight_of(source, contribution.detach));
+                    }
+                }
+            }
+        } else if (!connection.projection_contributions.empty()) {
+            for (auto const& contribution : connection.projection_contributions) {
+                // A same-type contribution without a transform maps each source
+                // channel to the target channel in the same position.
+                auto const pairwise = contribution.source_type
+                        == contribution.target_type
+                    && contribution.transform.empty()
+                    && contribution.source_channel_indices.size()
+                        == contribution.target_channels.size();
+                for (std::size_t position = 0;
+                     position < contribution.target_channels.size(); ++position) {
+                    auto const target = contribution.target_channels[position];
+                    if (pairwise) {
+                        raise(target, in_flight_of(
+                            contribution.source_channel_indices[position],
+                            std::nullopt));
+                        continue;
+                    }
+                    for (auto const source : contribution.source_channel_indices) {
+                        raise(target, in_flight_of(source, std::nullopt));
+                    }
+                }
+            }
+        } else {
+            std::size_t whole_port = 0;
+            for (std::size_t source = 0; source < timings.size(); ++source) {
+                whole_port = std::max(whole_port, in_flight_of(source, std::nullopt));
+            }
+            for (std::size_t channel = 0; channel < channels; ++channel) {
+                raise(channel, whole_port);
+            }
+        }
+
+        auto const realtime_fed = !timings.empty()
+            && std::ranges::all_of(
+                timings,
+                [](SampleSourceChannelTimingPlan const& timing) {
+                    return timing.delivery
+                        == PlannedDeliveryMechanism::tick_to_sequential;
+                });
+        auto const& target = connection.target_port;
+        auto const& bundle = graph.node_bundles.bundle(target.node_bundle_handle);
+        if (!bundle.is_concrete()) continue;
+        auto const inputs = bundle.concrete_ports().sample_inputs();
+        if (target.port_index >= inputs.size()
+            || !is_sequential(inputs[target.port_index])) {
+            continue;
+        }
+        auto const planned = std::ranges::find(
+            plan.nodes, target.node_bundle_handle, &PlannedGraphNode::bundle);
+        if (planned == plan.nodes.end()) {
+            return std::unexpected(
+                "GraphJit in-flight input state lost its planned concrete node");
+        }
+        for (std::size_t channel = 0; channel < channels; ++channel) {
+            if (in_flight[channel] == 0 && !realtime_fed) continue;
+            auto const existing = std::ranges::find_if(
+                plan.realtime_port_states.states,
+                [&](RealtimePortStateRequirement const& requirement) {
+                    return requirement.configured_port == target
+                        && requirement.direction == PortDirection::input
+                        && requirement.role
+                            == RealtimePortStateRole::sequential_input_history
+                        && requirement.channel == channel;
+                });
+            if (existing != plan.realtime_port_states.states.end()) {
+                existing->in_flight_samples = std::max(
+                    existing->in_flight_samples, in_flight[channel]);
+                continue;
+            }
+            // A slot-fed or mixed input binds no realtime storage channel that
+            // could hold a new record.
+            if (!realtime_fed) continue;
+            append_realtime_port_state(
+                plan.realtime_port_states,
+                target,
+                PortDirection::input,
+                inputs[target.port_index].name,
+                channel,
+                RealtimePortStateRole::sequential_input_history,
+                0,
+                planned->stable_identity,
+                in_flight[channel],
+                realtime_fed);
+        }
+    }
+    return {};
+}
+
 } // namespace
 
 std::expected<ConnectionAnalysisPlan, std::string> build_connection_analysis_plan(
@@ -5770,6 +5917,11 @@ std::expected<ConnectionAnalysisPlan, std::string> build_connection_analysis_pla
     }
     if (auto latency = plan_sample_latency_compensation(plan); !latency) {
         return std::unexpected(std::move(latency.error()));
+    }
+    if (auto in_flight =
+            inventory_sequential_input_in_flight_values(graph, plan);
+        !in_flight) {
+        return std::unexpected(std::move(in_flight.error()));
     }
     plan_port_atoms(graph, port_realization, plan);
     if (auto samples = plan_sample_groups(

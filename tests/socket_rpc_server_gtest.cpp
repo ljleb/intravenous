@@ -670,7 +670,7 @@ TEST(SocketRpcServer, PublishesProtectedLocalDescriptorAndElectsOneOwner)
         std::ifstream descriptor_input(descriptor_path);
         ASSERT_TRUE(static_cast<bool>(descriptor_input));
         auto const descriptor = nlohmann::ordered_json::parse(descriptor_input);
-        EXPECT_EQ(descriptor["protocolVersion"], 1);
+        EXPECT_EQ(descriptor["protocolVersion"], 0);
         EXPECT_EQ(
             descriptor["projectRoot"],
             std::filesystem::weakly_canonical(workspace).generic_string());

@@ -22,7 +22,7 @@ test("project session discovery accepts only the matching canonical project", ()
         const descriptorPath = projectSessionDescriptorPath(workspace);
         fs.mkdirSync(path.dirname(descriptorPath), { recursive: true });
         const descriptor = {
-            protocolVersion: 1,
+            protocolVersion: 0,
             pid: 42,
             startupTimeUnixMs: 100,
             projectRoot: canonicalProjectRoot(workspace),

@@ -79,7 +79,7 @@ struct NodeEventDefinitionProtocol {
 };
 
 struct NodeEventProtocolSnapshot {
-    std::uint32_t format_version = 1;
+    std::uint32_t format_version = 0;
     std::uint64_t project_graph_generation = 0;
     std::uint64_t definitions_generation = 0;
     std::vector<NodeEventTypeSchema> event_types{};

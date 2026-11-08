@@ -76,6 +76,7 @@ bool compatible_realtime_code(
         auto const& lhs = structural.node_layout.nodes[i];
         auto const& rhs = replacement.node_layout.nodes[i];
         if (lhs.node_type != rhs.node_type
+            || lhs.migration_identity != rhs.migration_identity
             || lhs.state_structure != rhs.state_structure
             || lhs.state_offset != rhs.state_offset
             || lhs.state_size != rhs.state_size
@@ -87,8 +88,7 @@ bool compatible_realtime_code(
             || lhs.lifecycle.default_construct_state_fn
                 != rhs.lifecycle.default_construct_state_fn
             || lhs.lifecycle.destroy_state_fn
-                != rhs.lifecycle.destroy_state_fn
-            || lhs.lifecycle.identity_fn != rhs.lifecycle.identity_fn) {
+                != rhs.lifecycle.destroy_state_fn) {
             return false;
         }
     }

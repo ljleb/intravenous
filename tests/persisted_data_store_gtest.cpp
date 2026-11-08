@@ -675,18 +675,18 @@ bool combine_fft_sequential_values(
 }
 
 // Reads frame offset of the current window exactly as generated execution
-// addresses a Sequential binding: from the binding's own ordinal.
+// addresses a Sequential binding: from the binding's own sequential begin
+// index.
 iv::Sample sequential_sample_at(
     iv::ReflectedContinuousInputPortBinding const& binding,
     std::size_t offset,
     std::size_t channel = 0)
 {
     auto const& selected = binding.storage.channels[channel];
-    auto const ordinal = binding.sequential_begin_ordinal + offset
-        + binding.storage.storage_latency
+    auto const index = binding.sequential_begin_index + offset
         - selected.value_delay;
     auto const slot = static_cast<std::size_t>(
-        ordinal & (selected.value_capacity - 1));
+        index & (selected.value_capacity - 1));
     auto const* value = reinterpret_cast<iv::Sample const*>(
         selected.storage + slot * selected.value_stride_bytes);
     return *value;
@@ -698,11 +698,10 @@ std::span<iv::FFTBin const> sequential_fft_at(
     std::size_t channel = 0)
 {
     auto const& selected = binding.storage.channels[channel];
-    auto const ordinal = binding.sequential_begin_ordinal + offset
-        + binding.storage.storage_latency
+    auto const index = binding.sequential_begin_index + offset
         - selected.value_delay;
     auto const slot = static_cast<std::size_t>(
-        ordinal & (selected.value_capacity - 1));
+        index & (selected.value_capacity - 1));
     auto const* value = reinterpret_cast<iv::FFTBin const*>(
         selected.storage + slot * selected.value_stride_bytes);
     return {value, binding.storage.geometry.elements_per_value};
@@ -1766,7 +1765,7 @@ TEST(TickInvocationWorkspace,
     // configured neutral value and then receive the selected materialization
     // through the configured additive combiner.
     EXPECT_EQ(inputs[0].history, 0u);
-    EXPECT_EQ(inputs[0].sequential_begin_ordinal, 0u);
+    EXPECT_EQ(inputs[0].sequential_begin_index, 0u);
     EXPECT_FLOAT_EQ(sequential_sample_at(inputs[0], 0).value, 49.75f);
     EXPECT_FLOAT_EQ(sequential_sample_at(inputs[0], 1).value, 59.75f);
     EXPECT_FLOAT_EQ(sequential_sample_at(inputs[0], 2).value, -0.25f);
@@ -1868,7 +1867,7 @@ TEST(TickInvocationWorkspace,
         1,
         iv::OutputDisposition::written,
         iv::mono_interleaved_channel_layout);
-    binding.sequential_begin_ordinal = 6;
+    binding.sequential_begin_index = 6;
     auto const begin = iv::GlobalIndex::from_bits(
         std::numeric_limits<std::uint64_t>::max() - 1);
 
@@ -2006,7 +2005,7 @@ TEST(TickInvocationWorkspace,
         .history = 1,
         .latency = 1,
         .absolute_pace_exponent = 1,
-        .sequential_begin_ordinal = 14,
+        .sequential_begin_index = 14,
         .disposition = iv::OutputDisposition::written,
     };
     binding.storage.channels[0] = {

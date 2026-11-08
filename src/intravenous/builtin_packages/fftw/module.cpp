@@ -13,6 +13,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <stdexcept>
+#include <utility>
 
 namespace {
 
@@ -30,6 +31,8 @@ struct RealFFT {
 
     struct State {
         iv::fftw_package::ForwardPlan* plan = nullptr;
+        // The transform size plan was created for.
+        std::size_t plan_size = 0;
     };
 
     explicit RealFFT(std::size_t transform_size_ = 1024)
@@ -64,12 +67,23 @@ struct RealFFT {
 
     void initialize(iv::InitializationContext<RealFFT> const& ctx) const
     {
+        create_plan(ctx.state());
+    }
+
+    // Keeps the predecessor's plan when it was created for this transform
+    // size, and otherwise replaces it with a plan for this size.
+    void move(iv::MoveContext<RealFFT> const& ctx) const
+    {
         auto& state = ctx.state();
-        state.plan = iv::fftw_package::iv_fftw_create_forward_plan(
-            transform_size);
-        if (!state.plan) {
-            throw std::runtime_error("FFTW could not create a forward real-transform plan");
+        auto& previous = ctx.previous_state();
+        if (previous.plan_size == transform_size) {
+            state.plan = std::exchange(previous.plan, nullptr);
+            state.plan_size = transform_size;
+            return;
         }
+        iv::fftw_package::iv_fftw_destroy_forward_plan(
+            std::exchange(previous.plan, nullptr));
+        create_plan(state);
     }
 
     void release(iv::ReleaseContext<RealFFT> const& ctx) const noexcept
@@ -85,11 +99,10 @@ struct RealFFT {
         auto const output = ctx.output<"spectrum">();
         auto const samples = input.block_extended().elements();
         auto spectra = output.block();
-        auto& state = ctx.state();
-        IV_ASSERT(state.plan, "FFTW forward plan was not initialized");
+        auto const& state = ctx.state();
 
         for (std::size_t spectrum = 0; spectrum < spectra.size(); ++spectrum) {
-            // Spectrum ordinal S is located at project coordinate S * N and
+            // Spectrum index S is located at project coordinate S * N and
             // describes the N input samples immediately preceding it.
             auto const transform_end =
                 (output.value_index() + spectrum) * transform_size;
@@ -101,16 +114,21 @@ struct RealFFT {
                     && transform_size <= samples.size() - input_offset,
                 "FFTW input history does not contain its transform window");
 
-            auto const window = samples.subspan(input_offset, transform_size);
-            auto destination = spectra[spectrum];
-            IV_ASSERT(iv::fftw_package::iv_fftw_execute_forward_plan(
-                    state.plan,
-                    window.data(),
-                    window.size(),
-                    destination.data(),
-                    destination.size()),
-                "FFTW rejected a resolved forward transform block");
+            iv::fftw_package::iv_fftw_execute_forward_plan(
+                state.plan,
+                samples.subspan(input_offset, transform_size).data(),
+                spectra[spectrum].data());
         }
+    }
+
+    void create_plan(State& state) const
+    {
+        state.plan = iv::fftw_package::iv_fftw_create_forward_plan(
+            transform_size);
+        if (!state.plan) {
+            throw std::runtime_error("FFTW could not create a forward real-transform plan");
+        }
+        state.plan_size = transform_size;
     }
 };
 
@@ -122,6 +140,8 @@ struct InverseRealFFT {
 
     struct State {
         iv::fftw_package::InversePlan* plan = nullptr;
+        // The transform size plan was created for.
+        std::size_t plan_size = 0;
     };
 
     explicit InverseRealFFT(std::size_t transform_size_ = 1024)
@@ -156,12 +176,23 @@ struct InverseRealFFT {
 
     void initialize(iv::InitializationContext<InverseRealFFT> const& ctx) const
     {
+        create_plan(ctx.state());
+    }
+
+    // Keeps the predecessor's plan when it was created for this transform
+    // size, and otherwise replaces it with a plan for this size.
+    void move(iv::MoveContext<InverseRealFFT> const& ctx) const
+    {
         auto& state = ctx.state();
-        state.plan = iv::fftw_package::iv_fftw_create_inverse_plan(
-            transform_size);
-        if (!state.plan) {
-            throw std::runtime_error("FFTW could not create an inverse real-transform plan");
+        auto& previous = ctx.previous_state();
+        if (previous.plan_size == transform_size) {
+            state.plan = std::exchange(previous.plan, nullptr);
+            state.plan_size = transform_size;
+            return;
         }
+        iv::fftw_package::iv_fftw_destroy_inverse_plan(
+            std::exchange(previous.plan, nullptr));
+        create_plan(state);
     }
 
     void release(iv::ReleaseContext<InverseRealFFT> const& ctx) const noexcept
@@ -177,21 +208,20 @@ struct InverseRealFFT {
         auto const spectra = input.block_extended();
         auto const output = ctx.output<"samples">();
         auto samples = output.block();
-        auto& state = ctx.state();
-        IV_ASSERT(state.plan, "FFTW inverse plan was not initialized");
+        auto const& state = ctx.state();
 
         auto const pace_shift = static_cast<std::uint32_t>(
             std::countr_zero(transform_size));
         auto const phase_mask = static_cast<std::uint64_t>(transform_size - 1);
-        auto const spectra_begin_ordinal =
+        auto const spectra_begin_index =
             input.value_index() - input.history();
 
         std::size_t cursor = 0;
         while (cursor < samples.size()) {
-            auto const output_ordinal = output.value_index() + cursor;
-            auto const spectrum_ordinal = output_ordinal >> pace_shift;
+            auto const output_index = output.value_index() + cursor;
+            auto const spectrum_index = output_index >> pace_shift;
             auto const spectrum_offset_bits =
-                spectrum_ordinal - spectra_begin_ordinal;
+                spectrum_index - spectra_begin_index;
             IV_ASSERT(spectrum_offset_bits < spectra.size(),
                 "FFTW inverse input history does not contain the required spectrum");
             auto const spectrum = spectra[
@@ -200,13 +230,10 @@ struct InverseRealFFT {
                 iv::fftw_package::iv_fftw_execute_inverse_plan(
                 state.plan,
                 spectrum.data(),
-                spectrum.size(),
-                spectrum_ordinal);
-            IV_ASSERT(reconstructed,
-                "FFTW rejected a resolved inverse transform block");
+                spectrum_index);
 
             auto const phase = static_cast<std::size_t>(
-                output_ordinal & phase_mask);
+                output_index & phase_mask);
             auto const count = std::min(
                 transform_size - phase,
                 samples.size() - cursor);
@@ -215,6 +242,16 @@ struct InverseRealFFT {
             }
             cursor += count;
         }
+    }
+
+    void create_plan(State& state) const
+    {
+        state.plan = iv::fftw_package::iv_fftw_create_inverse_plan(
+            transform_size);
+        if (!state.plan) {
+            throw std::runtime_error("FFTW could not create an inverse real-transform plan");
+        }
+        state.plan_size = transform_size;
     }
 };
 

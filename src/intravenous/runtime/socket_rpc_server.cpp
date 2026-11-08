@@ -44,7 +44,7 @@ constexpr std::size_t max_replay_entries = 2048;
 // replay budget below the per-client queue budget so that a valid replay does
 // not look like backpressure from a slow client.
 constexpr std::size_t max_replay_bytes = 512 * 1024;
-constexpr std::uint32_t session_protocol_version = 1;
+constexpr std::uint32_t session_protocol_version = 0;
 
 std::string project_path_hash(std::filesystem::path const& path)
 {

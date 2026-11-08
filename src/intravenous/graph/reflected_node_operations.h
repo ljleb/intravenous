@@ -68,10 +68,10 @@ struct ReflectedContinuousOutputPortBinding {
     std::size_t history = 0;
     std::size_t latency = 0;
     std::int32_t absolute_pace_exponent = 0;
-    // Physical invocation-order ordinal selected by generated execution for
+    // Physical invocation-order index selected by generated execution for
     // this callback. The node-facing coordinate remains the projected global
     // lattice coordinate carried separately by the Tick context.
-    mutable std::uint64_t sequential_begin_ordinal = 0;
+    mutable std::uint64_t sequential_begin_index = 0;
     // For Tick/persisted outputs only, the imported primitive wrapper resets
     // this before each node invocation and passes its address only to that
     // output's statically specialized facade. Ephemeral/Tock output facades

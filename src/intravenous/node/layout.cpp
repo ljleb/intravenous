@@ -6,6 +6,7 @@
 #include <new>
 #include <sstream>
 #include <stdexcept>
+#include <string_view>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -155,6 +156,15 @@ namespace iv {
             tock_state.state_alignment,
             "TockState");
         tock_state.state_structure = structures.tock_state;
+    }
+
+    void NodeLayoutBuilder::set_node_migration_identity(
+        size_t node_index, std::string identity)
+    {
+        if (node_index >= _nodes.size()) {
+            throw std::out_of_range("node migration identity index out of range");
+        }
+        _nodes[node_index].migration_identity = std::move(identity);
     }
 
     size_t NodeLayoutBuilder::align_up(size_t value, size_t alignment)
@@ -646,6 +656,53 @@ namespace iv {
             NodeStorage const& storage, size_t node_index)
         {
             return storage.state_ptr(node_index);
+        }
+
+        void move_node_storage_regions(
+            NodeStorage& storage,
+            size_t node_index,
+            NodeStorage const& previous_storage,
+            size_t previous_node_index)
+        {
+            // NodeStorage::can_move_from() accepted this pair only when their
+            // owned regions match one to one, in layout order.
+            auto const& regions = storage.layout->regions;
+            auto const& previous_regions = previous_storage.layout->regions;
+            size_t previous_index = 0;
+            for (auto const& region : regions) {
+                if (region.owner_node != node_index) continue;
+                while (previous_index < previous_regions.size()
+                    && previous_regions[previous_index].owner_node
+                        != previous_node_index) {
+                    ++previous_index;
+                }
+                IV_ASSERT(
+                    previous_index < previous_regions.size(),
+                    "implicit move lost a region of its predecessor");
+                auto const& previous_region = previous_regions[previous_index++];
+                if ((region.kind != NodeLayout::Region::Kind::local_array
+                        && region.kind
+                            != NodeLayout::Region::Kind::nested_node_states)
+                    || !region.assign_span_fn) {
+                    continue;
+                }
+                auto* data = storage.storage.get() + region.storage_offset;
+                // Nested-node regions hold spans to this storage's nested
+                // States, which patching already set; only local arrays carry
+                // values of their own.
+                if (region.kind == NodeLayout::Region::Kind::local_array) {
+                    std::memcpy(
+                        data,
+                        previous_storage.storage.get()
+                            + previous_region.storage_offset,
+                        region.size);
+                }
+                region.assign_span_fn(
+                    storage.state_ptr(node_index),
+                    region.state_field_offset,
+                    data,
+                    region.element_count);
+            }
         }
 
         ResourceContext const& node_storage_resources(NodeStorage const& storage)
@@ -1150,27 +1207,25 @@ namespace iv {
         constructed_nodes.reserve(layout->nodes.size());
         initialized_nodes.reserve(layout->nodes.size());
 
-        std::unordered_map<std::string, size_t> previous_by_identity;
+        std::unordered_map<std::string_view, size_t> previous_by_identity;
         previous_by_identity.reserve(previous.layout->nodes.size());
         for (size_t previous_node = 0;
              previous_node < previous.layout->nodes.size();
              ++previous_node) {
-            auto const& record = previous.layout->nodes[previous_node];
-            if (!record.lifecycle.identity_fn) continue;
-            auto identity = record.lifecycle.identity_fn(record.node);
+            auto const& identity =
+                previous.layout->nodes[previous_node].migration_identity;
             if (identity.empty()) continue;
-            if (!previous_by_identity.emplace(std::move(identity), previous_node).second)
+            if (!previous_by_identity.emplace(identity, previous_node).second)
                 throw std::runtime_error(
-                    "duplicate node migration identity in previous storage");
+                    "duplicate node migration identity in previous storage: " +
+                    identity);
         }
 
-        std::unordered_map<std::string, size_t> current_by_identity;
+        std::unordered_map<std::string_view, size_t> current_by_identity;
         current_by_identity.reserve(layout->nodes.size());
-        std::vector<bool> identity_collision(layout->nodes.size(), false);
         for (size_t node = 0; node < layout->nodes.size(); ++node) {
             auto const& record = layout->nodes[node];
-            if (!record.lifecycle.identity_fn) continue;
-            auto identity = record.lifecycle.identity_fn(record.node);
+            auto const& identity = record.migration_identity;
             if (identity.empty()) continue;
             if (!current_by_identity.emplace(identity, node).second)
                 throw std::runtime_error(
@@ -1179,7 +1234,6 @@ namespace iv {
             auto const previous_it = previous_by_identity.find(identity);
             if (previous_it == previous_by_identity.end()) continue;
             auto const previous_node = previous_it->second;
-            identity_collision[node] = true;
             if (!record.lifecycle.move_fn ||
                 !can_move_from(previous, node, previous_node)) {
                 continue;
@@ -1188,11 +1242,16 @@ namespace iv {
             migration.previous_nodes_consumed[previous_node] = true;
         }
 
+        // Initialization runs here, outside the audio thread, unless it needs
+        // state that only exists once commit() has run between audio
+        // callbacks: a moved node's State, an import patched at commit, or a
+        // dependency that is itself moved or deferred. A node that is not
+        // moved, whether or not it has a predecessor, initializes here; its
+        // predecessor is released at commit.
         std::vector<bool> defer_initialize(layout->nodes.size(), false);
         for (size_t node = 0; node < layout->nodes.size(); ++node) {
             defer_initialize[node] =
-                migration.previous_node_for_current[node] != Migration::no_node ||
-                identity_collision[node];
+                migration.previous_node_for_current[node] != Migration::no_node;
         }
         for (auto const& import : layout->imported_arrays)
             defer_initialize[import.owner_node] = true;
@@ -1304,16 +1363,12 @@ namespace iv {
         );
 
         if (previous && previous->layout) {
-            std::unordered_map<std::string, size_t> previous_by_identity;
+            std::unordered_map<std::string_view, size_t> previous_by_identity;
             previous_by_identity.reserve(previous->layout->nodes.size());
 
             for (size_t previous_node_index = 0; previous_node_index < previous->layout->nodes.size(); ++previous_node_index) {
-                auto const& previous_record = previous->layout->nodes[previous_node_index];
-                if (!previous_record.lifecycle.identity_fn) {
-                    continue;
-                }
-
-                auto const identity = previous_record.lifecycle.identity_fn(previous_record.node);
+                auto const& identity =
+                    previous->layout->nodes[previous_node_index].migration_identity;
                 if (identity.empty()) {
                     continue;
                 }
@@ -1326,16 +1381,12 @@ namespace iv {
                 }
             }
 
-            std::unordered_map<std::string, size_t> current_by_identity;
+            std::unordered_map<std::string_view, size_t> current_by_identity;
             current_by_identity.reserve(layout->nodes.size());
 
             for (size_t node_index = 0; node_index < layout->nodes.size(); ++node_index) {
                 auto const& record = layout->nodes[node_index];
-                if (!record.lifecycle.identity_fn) {
-                    continue;
-                }
-
-                auto const identity = record.lifecycle.identity_fn(record.node);
+                auto const& identity = record.migration_identity;
                 if (identity.empty()) {
                     continue;
                 }

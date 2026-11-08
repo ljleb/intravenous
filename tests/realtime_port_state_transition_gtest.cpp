@@ -69,11 +69,11 @@ std::vector<std::byte> sample_value_bytes(iv::Sample value)
 void write_sequential_cursor(
     std::vector<std::byte>& storage,
     std::size_t offset,
-    std::uint64_t ordinal)
+    std::uint64_t index)
 {
     ASSERT_LE(offset, storage.size());
-    ASSERT_LE(sizeof(ordinal), storage.size() - offset);
-    std::memcpy(storage.data() + offset, &ordinal, sizeof(ordinal));
+    ASSERT_LE(sizeof(index), storage.size() - offset);
+    std::memcpy(storage.data() + offset, &index, sizeof(index));
 }
 
 iv::graph_jit::RealtimePortStateRequirement requirement(
@@ -237,7 +237,7 @@ TEST(RealtimePortStateTransition, MatchesStableStateAcrossGenerationLocalPorts)
                 2,
                 iv::PortKind::sample,
                 iv::graph_jit::PortDirection::output,
-                iv::graph_jit::RealtimePortStateRole::tick_output_latency,
+                iv::graph_jit::RealtimePortStateRole::tick_output_history,
                 "node",
                 "out",
                 1),
@@ -259,7 +259,7 @@ TEST(RealtimePortStateTransition, MatchesStableStateAcrossGenerationLocalPorts)
                 6,
                 iv::PortKind::sample,
                 iv::graph_jit::PortDirection::output,
-                iv::graph_jit::RealtimePortStateRole::tick_output_latency,
+                iv::graph_jit::RealtimePortStateRole::tick_output_history,
                 "node",
                 "out",
                 1),
@@ -288,14 +288,16 @@ TEST(RealtimePortStateTransition, MatchesStableStateAcrossGenerationLocalPorts)
         iv::graph_jit::InheritedRealtimePortStateRealization::
             predecessor_state_unavailable);
 
-    auto const& latency = planned->sample_states[1];
-    EXPECT_EQ(latency.inherited_begin, 0);
-    EXPECT_EQ(latency.inherited_end, 2);
-    EXPECT_EQ(latency.inherited_extent_samples, 2u);
-    EXPECT_EQ(latency.newly_exposed_extent_samples, 4u);
-    EXPECT_EQ(latency.discarded_extent_samples, 0u);
+    // A sample output owns only values authored before its next tick, so its
+    // grown window inherits the newest two and exposes four older positions.
+    auto const& output = planned->sample_states[1];
+    EXPECT_EQ(output.inherited_begin, -2);
+    EXPECT_EQ(output.inherited_end, 0);
+    EXPECT_EQ(output.inherited_extent_samples, 2u);
+    EXPECT_EQ(output.newly_exposed_extent_samples, 4u);
+    EXPECT_EQ(output.discarded_extent_samples, 0u);
     EXPECT_EQ(
-        latency.inherited_state_realization,
+        output.inherited_state_realization,
         iv::graph_jit::InheritedRealtimePortStateRealization::
             predecessor_state_unavailable);
 }
@@ -1031,8 +1033,8 @@ TEST(RealtimePortStateTransition, UsesPaceCursorsAcrossPaceChangeAndGlobalJump)
     constexpr std::uint64_t source_cursor = 106;
     constexpr std::uint64_t target_cursor = 501;
     for (std::size_t relative = 4; relative != 0; --relative) {
-        auto const ordinal = source_cursor - relative;
-        write_sample(previous, ordinal % 8, static_cast<float>(ordinal));
+        auto const index = source_cursor - relative;
+        write_sample(previous, index % 8, static_cast<float>(index));
     }
     for (std::size_t frame = 0; frame < 8; ++frame) {
         write_sample(current, frame, 99.0f);

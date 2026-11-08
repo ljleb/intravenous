@@ -50,12 +50,31 @@ namespace iv {
         struct State {
             std::mt19937 generator;
             std::uniform_real_distribution<Sample::storage> distribution;
+            // The seed generator started from.
+            unsigned int seed = 0;
         };
 
         void initialize(InitializationContext<UniformNoise> const& ctx) const
         {
             auto& state = ctx.state();
             state.generator.seed(_seed);
+            state.seed = _seed;
+            state.distribution = std::uniform_real_distribution<Sample::storage>(_min, _max);
+        }
+
+        // Continues the predecessor's sequence when it started from this seed,
+        // and otherwise starts this seed's sequence. The distribution always
+        // follows this node's range.
+        void move(MoveContext<UniformNoise> const& ctx) const
+        {
+            auto& state = ctx.state();
+            auto const& previous = ctx.previous_state();
+            if (previous.seed == _seed) {
+                state.generator = previous.generator;
+            } else {
+                state.generator.seed(_seed);
+            }
+            state.seed = _seed;
             state.distribution = std::uniform_real_distribution<Sample::storage>(_min, _max);
         }
 
@@ -247,6 +266,13 @@ namespace iv {
             std::span<Sample> weights;
             ptrdiff_t min;
             ptrdiff_t sign;
+
+            // Every field is computed from the construction arguments and
+            // tick() never writes one, so there is nothing to continue. State
+            // is therefore not movable: a successor runs initialize() before
+            // the edit activates.
+            State() = default;
+            State(State&&) = delete;
         };
 
         explicit UniformToPower(ptrdiff_t min = -5, ptrdiff_t max = 4, Sample lambda = 0.5)

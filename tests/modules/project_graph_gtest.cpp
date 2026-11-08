@@ -1493,7 +1493,7 @@ TEST_F(ProjectGraphFixture, EventProtocolListsPackageSchemasAndActiveAddressSupp
     ASSERT_EQ(create_builder.build(), "instance:protocol");
 
     auto const protocol = project_graph.node_event_protocol();
-    EXPECT_EQ(protocol.format_version, 1u);
+    EXPECT_EQ(protocol.format_version, 0u);
     EXPECT_EQ(protocol.definitions_generation, 9u);
     EXPECT_EQ(
         protocol.project_graph_generation,

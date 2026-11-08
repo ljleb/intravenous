@@ -2558,7 +2558,10 @@ recording merely because that planning metadata exists.
    Connection analysis also now derives the authoritative inventory of non-empty
    node-owned Sequential-input history and Tick-output history/latency. Sample state
    is identified per semantic channel; event state is identified per stream; history
-   and authored-future latency are distinct roles. Every entry retains its exact extent
+   and authored-future latency are distinct roles. _(Since 2026-11-07, a sample output
+   has one `tick_output_history` role covering its history + latency values, all of
+   which lie before its next tick; only an event output has a separate
+   `tick_output_latency` role. See Front 16 in implementation_fronts_direction.md.)_ Every entry retains its exact extent
    and generation-local port coordinate, while entries for authored stable nodes also
    retain graph/virtual-node/direct-member, direction, port kind/name/index, channel or
    event-stream marker, and role. `CompiledGraph` retains this inventory as cold

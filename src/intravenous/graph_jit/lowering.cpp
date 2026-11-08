@@ -582,7 +582,6 @@ sample_storage_binding(
     ReflectedContinuousPortStorageBinding binding{
         .geometry = storage.geometry,
         .value_capacity = storage.frame_capacity,
-        .storage_latency = 0,
         .channel_layout = storage.channel_layout,
     };
     auto const channels = channel_count(storage.channel_layout);
@@ -609,7 +608,6 @@ sample_input_storage_binding(
     }
 
     ReflectedContinuousPortStorageBinding binding{
-        .storage_latency = 0,
         .channel_layout = input.channel_layout,
     };
     for (std::size_t target_channel = 0;
@@ -1364,7 +1362,7 @@ void restore_continuous_input_scratch_bindings(
     }
 }
 
-llvm::Value* emit_sequential_begin_ordinal(
+llvm::Value* emit_sequential_begin_index(
     llvm::IRBuilder<>& builder,
     detail::SampleStoragePlan const& storage,
     EmittedRealtimeStorage const& realtime_storage,
@@ -1374,7 +1372,7 @@ llvm::Value* emit_sequential_begin_ordinal(
     llvm::Twine const& name);
 
 struct EmittedLatticeProjection {
-    llvm::Value* begin_ordinal = nullptr;
+    llvm::Value* begin_index = nullptr;
     llvm::Value* value_count = nullptr;
 };
 
@@ -1510,14 +1508,14 @@ void stage_tick_sequential_sample_timelines(
             "tick.timeline.sample.supplied");
         // The timeline and the realtime operand are addressed by the same
         // generation pace cursor as the callback binding.
-        auto* timeline_begin = emit_sequential_begin_ordinal(
+        auto* timeline_begin = emit_sequential_begin_index(
             builder,
             sample_storage,
             realtime_storage,
             root_index,
             sample_index,
             planned.absolute_pace_exponent,
-            "tick.timeline.sample.ordinal");
+            "tick.timeline.sample.sequential");
         // Slot frame zero is the root invocation's first position.
         auto const supplied_prefix = emit_lattice_projection(
             builder,
@@ -1531,8 +1529,8 @@ void stage_tick_sequential_sample_timelines(
                 load_size(
                     supplied,
                     offsetof(ReflectedContinuousInputPortBinding,
-                             sequential_begin_ordinal),
-                    "tick.timeline.sample.supplied.ordinal"),
+                             sequential_begin_index),
+                    "tick.timeline.sample.supplied.sequential"),
                 supplied_prefix.value_count),
             load_size(
                 supplied,
@@ -1605,12 +1603,12 @@ void stage_tick_sequential_sample_timelines(
             auto value_pointer = [&](ChannelAddress const& address,
                                      llvm::Value* begin,
                                      llvm::Twine const& name) {
-                auto* ordinal = builder.CreateSub(
+                auto* storage_index = builder.CreateSub(
                     builder.CreateAdd(begin, index),
                     address.delay,
-                    name + ".ordinal");
+                    name + ".storage.index");
                 auto* slot_index = builder.CreateAnd(
-                    ordinal,
+                    storage_index,
                     builder.CreateSub(address.capacity, constant(1)),
                     name + ".index");
                 return builder.CreateInBoundsGEP(
@@ -1815,14 +1813,14 @@ void stage_manual_control_sample_timelines(
                 "manual.control.callback.prefix.extent"),
             planned.absolute_pace_exponent,
             "manual.control.callback.prefix");
-        auto* timeline_begin = emit_sequential_begin_ordinal(
+        auto* timeline_begin = emit_sequential_begin_index(
             builder,
             sample_storage,
             realtime_storage,
             root_index,
             sample_index,
             planned.absolute_pace_exponent,
-            "manual.control.ordinal");
+            "manual.control.sequential");
         auto* stage = llvm::BasicBlock::Create(
             context, "manual.control.stage", function);
         auto* done = llvm::BasicBlock::Create(
@@ -1874,12 +1872,12 @@ void stage_manual_control_sample_timelines(
             builder.SetInsertPoint(body);
             auto pointer = [&](auto const& address,
                                llvm::Twine const& name) {
-                auto* ordinal = builder.CreateSub(
+                auto* storage_index = builder.CreateSub(
                     builder.CreateAdd(timeline_begin, index),
                     constant(address.delay),
-                    name + ".ordinal");
+                    name + ".storage.index");
                 auto* slot = builder.CreateAnd(
-                    ordinal,
+                    storage_index,
                     constant(address.capacity - 1),
                     name + ".index");
                 return builder.CreateInBoundsGEP(
@@ -2290,13 +2288,13 @@ void store_context_span(
         span_size);
 }
 
-void store_sequential_begin_ordinal(
+void store_sequential_begin_index(
     llvm::IRBuilder<>& builder,
     llvm::Value* bindings,
     std::size_t binding_index,
     std::size_t binding_size,
     std::size_t field_offset,
-    llvm::Value* ordinal,
+    llvm::Value* index,
     llvm::Twine const& name)
 {
     auto* pointer = byte_offset_pointer(
@@ -2304,7 +2302,7 @@ void store_sequential_begin_ordinal(
         bindings,
         binding_index * binding_size + field_offset,
         name + ".pointer");
-    builder.CreateStore(ordinal, pointer);
+    builder.CreateStore(index, pointer);
 }
 
 struct EmittedPrimitiveTickContext {
@@ -2411,11 +2409,11 @@ EmittedPrimitiveTickContext emit_primitive_tick_context(
         for (std::size_t input = 0; input < sample_plan.inputs.size(); ++input) {
             auto const& input_plan = sample_plan.inputs[input];
             if (input_plan.random_access) continue;
-            llvm::Value* ordinal = nullptr;
+            llvm::Value* begin_index = nullptr;
             if (input_plan.channels.empty()) {
                 // A directly bound slot holds the root invocation's window
                 // from frame zero, so a slice begins at its projected offset.
-                ordinal = emit_lattice_projection(
+                begin_index = emit_lattice_projection(
                     builder,
                     root_index,
                     builder.CreateSub(
@@ -2425,7 +2423,7 @@ EmittedPrimitiveTickContext emit_primitive_tick_context(
                     input_plan.absolute_pace_exponent,
                     "continuous.input.slot.prefix").value_count;
             } else {
-                ordinal = emit_sequential_begin_ordinal(
+                begin_index = emit_sequential_begin_index(
                     builder,
                     sample_storage,
                     realtime_storage,
@@ -2434,15 +2432,15 @@ EmittedPrimitiveTickContext emit_primitive_tick_context(
                     input_plan.absolute_pace_exponent,
                     "continuous.input.sequential");
             }
-            store_sequential_begin_ordinal(
+            store_sequential_begin_index(
                 builder,
                 bindings,
                 input,
                 sizeof(ReflectedContinuousInputPortBinding),
                 offsetof(
                     ReflectedContinuousInputPortBinding,
-                    sequential_begin_ordinal),
-                ordinal,
+                    sequential_begin_index),
+                begin_index,
                 "continuous.input.sequential");
         }
         store_context_span_pointer(
@@ -2458,7 +2456,7 @@ EmittedPrimitiveTickContext emit_primitive_tick_context(
         for (std::size_t output = 0;
              output < sample_plan.outputs.size(); ++output) {
             if (!sample_plan.outputs[output].realtime) continue;
-            auto* ordinal = emit_sequential_begin_ordinal(
+            auto* begin_index = emit_sequential_begin_index(
                 builder,
                 sample_storage,
                 realtime_storage,
@@ -2470,15 +2468,15 @@ EmittedPrimitiveTickContext emit_primitive_tick_context(
                 std::ranges::count_if(
                     std::span{sample_plan.outputs}.first(output),
                     [](auto const& candidate) { return candidate.realtime; }));
-            store_sequential_begin_ordinal(
+            store_sequential_begin_index(
                 builder,
                 sample_ports.output_bindings,
                 compact_output,
                 sizeof(ReflectedContinuousOutputPortBinding),
                 offsetof(
                     ReflectedContinuousOutputPortBinding,
-                    sequential_begin_ordinal),
-                ordinal,
+                    sequential_begin_index),
+                begin_index,
                 "continuous.output.sequential");
         }
         store_context_span_pointer(
@@ -3234,7 +3232,7 @@ EmittedLatticeProjection emit_lattice_projection(
         IV_ASSERT(shift < sizeof(std::size_t) * 8,
             "continuous pace cannot fit a root-block value count");
         return {
-            .begin_ordinal = shift == 0
+            .begin_index = shift == 0
                 ? project_index
                 : builder.CreateShl(
                     project_index,
@@ -3254,14 +3252,14 @@ EmittedLatticeProjection emit_lattice_projection(
         "continuous pace is outside the Q64.64 lattice");
     llvm::Value* offset = nullptr;
     llvm::Value* first = nullptr;
-    llvm::Value* ordinal = nullptr;
+    llvm::Value* begin_index = nullptr;
     if (shift == sizeof(std::size_t) * 8) {
         offset = builder.CreateSub(
             llvm::ConstantInt::get(size_type, 0),
             project_index,
             name + ".offset");
         first = builder.CreateAdd(project_index, offset, name + ".first");
-        ordinal = llvm::ConstantInt::get(size_type, 0);
+        begin_index = llvm::ConstantInt::get(size_type, 0);
     } else {
         auto const spacing = std::size_t{1} << shift;
         auto const mask = spacing - 1;
@@ -3277,7 +3275,7 @@ EmittedLatticeProjection emit_lattice_projection(
             llvm::ConstantInt::get(size_type, mask),
             name + ".offset");
         first = builder.CreateAdd(project_index, offset, name + ".first");
-        ordinal = builder.CreateLShr(
+        begin_index = builder.CreateLShr(
             first,
             llvm::ConstantInt::get(size_type, shift),
             name + ".begin");
@@ -3303,10 +3301,10 @@ EmittedLatticeProjection emit_lattice_projection(
             name + ".nonempty.count"),
         llvm::ConstantInt::get(size_type, 0),
         name + ".count");
-    return {.begin_ordinal = ordinal, .value_count = count};
+    return {.begin_index = begin_index, .value_count = count};
 }
 
-llvm::Value* emit_sequential_begin_ordinal(
+llvm::Value* emit_sequential_begin_index(
     llvm::IRBuilder<>& builder,
     detail::SampleStoragePlan const& storage,
     EmittedRealtimeStorage const& realtime_storage,
@@ -3325,7 +3323,8 @@ llvm::Value* emit_sequential_begin_ordinal(
         std::distance(storage.sequential_pace_cursors.begin(), cursor));
     IV_ASSERT(cursor_index < realtime_storage.sequential_pace_cursors.size(),
         "continuous Sequential cursor has no root value");
-    auto* root_ordinal = realtime_storage.sequential_pace_cursors[cursor_index];
+    auto* root_sequential_index =
+        realtime_storage.sequential_pace_cursors[cursor_index];
     auto* prefix_extent = builder.CreateSub(
         callback_index, root_index, name + ".prefix.extent");
     auto const prefix = emit_lattice_projection(
@@ -3335,7 +3334,7 @@ llvm::Value* emit_sequential_begin_ordinal(
         pace_exponent,
         name + ".prefix");
     return builder.CreateAdd(
-        root_ordinal, prefix.value_count, name + ".begin");
+        root_sequential_index, prefix.value_count, name + ".begin");
 }
 
 llvm::Value* emit_unsigned_min(
@@ -3574,7 +3573,7 @@ std::expected<void, std::string> emit_sample_materialization(
         block_size,
         target_representation.absolute_pace_exponent,
         "continuous.materialize.lattice");
-    sample_index = emit_sequential_begin_ordinal(
+    sample_index = emit_sequential_begin_index(
         builder,
         storage,
         realtime_storage,
@@ -3766,7 +3765,7 @@ std::expected<void, std::string> emit_sample_composition_write(
         target_representation.absolute_pace_exponent,
         "continuous.compose.lattice");
     auto* callback_index = sample_index;
-    sample_index = emit_sequential_begin_ordinal(
+    sample_index = emit_sequential_begin_index(
         builder,
         storage,
         realtime_storage,
@@ -4377,7 +4376,7 @@ std::expected<void, std::string> emit_sample_feedback_timeline_write(
         timeline_plan.absolute_pace_exponent,
         "continuous.feedback.lattice");
     auto* callback_index = sample_index;
-    sample_index = emit_sequential_begin_ordinal(
+    sample_index = emit_sequential_begin_index(
         builder,
         storage,
         realtime_storage,
@@ -4595,7 +4594,7 @@ std::expected<void, std::string> emit_sample_carry_operation(
         block_size,
         representation.absolute_pace_exponent,
         "continuous.carry.lattice");
-    sample_index = emit_sequential_begin_ordinal(
+    sample_index = emit_sequential_begin_index(
         builder,
         storage,
         realtime_storage,
@@ -6234,7 +6233,7 @@ std::expected<void, std::string> emit_execution_step(
             tick_background = &background;
             tick_bindings = &background.tick_runtime.nodes[node];
             tick_node = node;
-            auto validate_sequential_ordinals = [&](
+            auto validate_sequential_bindings = [&](
                 std::span<TickSequentialBindingPlan const> bindings,
                 std::size_t begin,
                 std::size_t count,
@@ -6261,7 +6260,7 @@ std::expected<void, std::string> emit_execution_step(
                 }
                 return {};
             };
-            if (auto valid = validate_sequential_ordinals(
+            if (auto valid = validate_sequential_bindings(
                     background.tick_runtime.sequential_sample_inputs,
                     tick_bindings->sequential_sample_begin,
                     tick_bindings->sequential_sample_count,
@@ -6271,7 +6270,7 @@ std::expected<void, std::string> emit_execution_step(
                 !valid) {
                 return valid;
             }
-            if (auto valid = validate_sequential_ordinals(
+            if (auto valid = validate_sequential_bindings(
                     background.tick_runtime.sequential_event_inputs,
                     tick_bindings->sequential_event_begin,
                     tick_bindings->sequential_event_count,
@@ -8590,12 +8589,11 @@ specialize_transition_plan(
                 == PortDirection::input
             && requirement.role
                 == RealtimePortStateRole::sequential_input_history;
+        // A sample output owns one window of past values (RealtimePortStateRole).
         auto const output_window = requirement.direction
                 == PortDirection::output
-            && (requirement.role
-                    == RealtimePortStateRole::tick_output_history
-                || requirement.role
-                    == RealtimePortStateRole::tick_output_latency);
+            && requirement.role
+                == RealtimePortStateRole::tick_output_history;
         if ((!input_history && !output_window) || !requirement.channel) {
             return std::unexpected(
                 "GraphJit transition suffix has an unsupported sample-state role");
@@ -8744,6 +8742,11 @@ specialize_transition_plan(
         }
         auto& target_ports = transition_plan.sample_ports
             .primitives[*target_primitive];
+        // Delay at which the consumer reads this channel of its steady input
+        // representation: physical index - read_latency - frame_delay.
+        std::size_t input_read_delay = 0;
+        // Delay at which the input's mirror copies its source's values.
+        std::size_t mirror_delay = 0;
         if (input_history) {
             if (requirement.configured_port.port_index
                 >= target_ports.inputs.size()) {
@@ -8762,6 +8765,39 @@ specialize_transition_plan(
                         .representation_channel) {
                 return std::unexpected(
                     "GraphJit transition sample state disagrees with its authored input binding");
+            }
+            auto const frame_delay =
+                steady_binding.channels[*requirement.channel].frame_delay;
+            if (frame_delay
+                > std::numeric_limits<std::size_t>::max()
+                    - steady_binding.read_latency) {
+                return std::unexpected(
+                    "GraphJit transition input suffix read delay overflows size_t");
+            }
+            input_read_delay = steady_binding.read_latency + frame_delay;
+            // A direct input's window ends at T, where its source's values
+            // resume. Its mirror copies each value as its source finalizes it,
+            // d - T values before the consumer's newest position, after the
+            // window's inherited and fresh positions.
+            if (current_realization.retained_access
+                == SampleRealtimePortStateAccess::direct) {
+                auto const resume = transfer->target_end;
+                if (resume < 0
+                    || static_cast<std::size_t>(resume) > input_read_delay) {
+                    return std::unexpected(
+                        "GraphJit transition input window ends outside its read delay");
+                }
+                // T beyond the input's compensation means the same producer's
+                // latency grew: its values at the frontier are revisable again,
+                // and skipping them needs the cutover position at run time.
+                if (static_cast<std::size_t>(resume)
+                    > requirement.in_flight_samples) {
+                    return std::unexpected(
+                        "GraphJit transition cannot yet move an input whose producer's latency grew to transition-only storage");
+                }
+                mirror_delay = input_read_delay - static_cast<std::size_t>(resume);
+            } else {
+                mirror_delay = input_read_delay;
             }
         } else {
             auto const& steady_outputs = steady_plan.sample_ports
@@ -8847,8 +8883,20 @@ specialize_transition_plan(
                 mirror.after_execution_position = *source_position;
             }
             if (output_window) {
+                // The producer may revise its newest latency values through
+                // OutputPort::update(), so the steady representation receives
+                // those revisions together with the new block.
                 mirror.retained_before = target_ports.outputs[
                     requirement.configured_port.port_index].latency;
+            } else {
+                // The consumer reads its suffix where it would read the steady
+                // representation. Its window already holds its inherited and
+                // fresh positions, so copy only the values its source finalized
+                // in this block. A latent producer finalized them before this
+                // copy runs; values it authored in this block may still be
+                // provisional and are copied once mirror_delay reaches them.
+                mirror.retained_before = mirror_delay;
+                mirror.latest_read_latency = mirror_delay;
             }
             sample_storage.materializations.push_back(std::move(mirror));
             auto& source_step = transition_plan.execution
@@ -8873,6 +8921,19 @@ specialize_transition_plan(
             } else {
                 source_step.sample_materializations_after.push_back(
                     materialization_index);
+            }
+        } else if (input_history) {
+            // One mirror copies one window for every channel sharing this
+            // suffix, so those channels must be read at the same delay.
+            auto const mirror = std::ranges::find(
+                sample_storage.materializations,
+                *suffix_representation,
+                &detail::SampleMaterializationPlan::target_representation);
+            if (mirror == sample_storage.materializations.end()
+                || mirror->retained_before != mirror_delay
+                || mirror->latest_read_latency != mirror_delay) {
+                return std::unexpected(
+                    "GraphJit transition input suffix mirrors channels read at different delays");
             }
         }
         if (input_history) {

@@ -38,6 +38,13 @@ the fields that the function can preserve, and the output record that is insuffi
 Diagrams and conceptual summaries may supplement that explanation, but they must not
 replace it.
 
+Do not write "ordinal"; it is too generic. Name what the number is: an "index" for a
+position on a timeline or in storage ("sequential index", not "sequential ordinal"),
+an "offset" for a distance from another position, or another term that says what is
+being counted. In code you are already editing, rename any identifier that uses
+"ordinal" as a word, prefix, or suffix to that specific term (for example
+`sequential_begin_ordinal` becomes `sequential_begin_index`), and update its uses.
+
 ## Leaf-node port access
 
 In authored leaf-node callbacks, especially builtin nodes, prefer named static port

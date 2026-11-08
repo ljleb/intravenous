@@ -312,7 +312,7 @@ IV_FORCEINLINE void prepare_reflected_continuous_inputs(
         IV_ASSERT(value_count <= binding.contiguous_value_capacity,
             "continuous input contiguous workspace is too small");
 
-        binding.contiguous_begin_ordinal = binding.sequential_begin_ordinal
+        binding.contiguous_begin_index = binding.sequential_begin_index
             - binding.read_latency - binding.history;
         binding.contiguous_value_count = value_count;
 
@@ -323,7 +323,7 @@ IV_FORCEINLINE void prepare_reflected_continuous_inputs(
                     && source.value_capacity != 0
                     && std::has_single_bit(source.value_capacity),
                 "continuous input source is not a bounded ring");
-            auto const source_begin = binding.contiguous_begin_ordinal
+            auto const source_begin = binding.contiguous_begin_index
                 - source.value_delay;
             auto const source_slot = static_cast<std::size_t>(source_begin)
                 & (source.value_capacity - 1);

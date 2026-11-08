@@ -858,7 +858,9 @@ TEST(GraphJitConnectionPlan, InventoriesStableNodeOwnedRealtimePortState)
     ASSERT_TRUE(plan.has_value()) << (plan ? std::string{} : plan.error());
 
     auto const& states = plan->realtime_port_states.states;
-    ASSERT_EQ(states.size(), 9u);
+    // Two sample-input channels, two sample-output channels, and three event
+    // states. A sample output owns one window per channel.
+    ASSERT_EQ(states.size(), 7u);
 
     auto find_state = [&](graph_jit::PortDirection direction,
                           graph_jit::RealtimePortStateRole role,
@@ -901,18 +903,19 @@ TEST(GraphJitConnectionPlan, InventoriesStableNodeOwnedRealtimePortState)
             graph_jit::RealtimePortStateRole::tick_output_history,
             channel);
         ASSERT_NE(history, nullptr);
-        EXPECT_EQ(history->extent_samples, 3u);
+        // history 3 + latency 2: latency marks the newest two authored values
+        // as revisable; it does not add state at or after the next tick.
+        EXPECT_EQ(history->extent_samples, 5u);
         ASSERT_TRUE(history->stable_identity);
         EXPECT_EQ(history->stable_identity->port_name, "out");
 
-        auto const* latency = find_state(
-            graph_jit::PortDirection::output,
-            graph_jit::RealtimePortStateRole::tick_output_latency,
-            channel);
-        ASSERT_NE(latency, nullptr);
-        EXPECT_EQ(latency->extent_samples, 2u);
-        ASSERT_TRUE(latency->stable_identity);
-        EXPECT_EQ(latency->stable_identity->channel, channel);
+        EXPECT_EQ(history->stable_identity->channel, channel);
+        EXPECT_EQ(
+            find_state(
+                graph_jit::PortDirection::output,
+                graph_jit::RealtimePortStateRole::tick_output_latency,
+                channel),
+            nullptr);
     }
 
     auto find_event_state = [&](graph_jit::PortDirection direction,
@@ -964,7 +967,8 @@ TEST(GraphJitConnectionPlan, KeepsAnonymousRealtimePortStateGenerationLocal)
     auto plan = build_connection_analysis_plan(configured, 64);
     ASSERT_TRUE(plan.has_value()) << (plan ? std::string{} : plan.error());
 
-    ASSERT_EQ(plan->realtime_port_states.states.size(), 3u);
+    // One input-history window and one output window (history 3 + latency 2).
+    ASSERT_EQ(plan->realtime_port_states.states.size(), 2u);
     EXPECT_TRUE(std::ranges::all_of(
         plan->realtime_port_states.states,
         [](graph_jit::RealtimePortStateRequirement const& state) {

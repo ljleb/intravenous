@@ -39,6 +39,7 @@
 #include <cstring>
 #include <filesystem>
 #include <limits>
+#include <map>
 #include <memory>
 #include <numeric>
 #include <optional>
@@ -186,6 +187,44 @@ constexpr char graph_jit_stereo_conversion_module_id[] = "iv.test.graph_jit.stat
 constexpr char graph_jit_stereo_history_conversion_module_id[] = "iv.test.graph_jit.state_context.stereo_history_conversion_module";
 constexpr char graph_jit_history_fanout_module_id[] = "iv.test.graph_jit.state_context.history_fanout_module";
 constexpr char graph_jit_persistent_history_module_id[] = "iv.test.graph_jit.state_context.persistent_history_module";
+constexpr char graph_jit_latent_window_compact_carry_module_id[] =
+    "iv.test.graph_jit.state_context.latent_window_compact_carry_module";
+constexpr char graph_jit_latent_window_ring_module_id[] =
+    "iv.test.graph_jit.state_context.latent_window_ring_module";
+constexpr char graph_jit_latent_window_consumer_compact_carry_module_id[] =
+    "iv.test.graph_jit.state_context.latent_window_consumer_compact_carry_module";
+constexpr char graph_jit_latent_window_consumer_ring_module_id[] =
+    "iv.test.graph_jit.state_context.latent_window_consumer_ring_module";
+constexpr char graph_jit_compensated_ramp_second_reader_module_id[] =
+    "iv.test.graph_jit.state_context.compensated_ramp_second_reader_module";
+constexpr char graph_jit_compensated_ramp_history_reader_module_id[] =
+    "iv.test.graph_jit.state_context.compensated_ramp_history_reader_module";
+constexpr char graph_jit_compensated_ramp_history_probe_module_id[] =
+    "iv.test.graph_jit.state_context.compensated_ramp_history_probe_module";
+constexpr char graph_jit_moving_state_module_id[] =
+    "iv.test.graph_jit.state_context.moving_state_module";
+constexpr char graph_jit_compensated_sequence_module_id[] =
+    "iv.test.graph_jit.state_context.compensated_sequence_module";
+constexpr char graph_jit_compensated_sequence_rewire_module_id[] =
+    "iv.test.graph_jit.state_context.compensated_sequence_rewire_module";
+constexpr char graph_jit_compensated_latent_history_probe_module_id[] =
+    "iv.test.graph_jit.state_context.compensated_latent_history_probe_module";
+constexpr char graph_jit_compensated_converted_history_reader_module_id[] =
+    "iv.test.graph_jit.state_context.compensated_converted_history_reader_module";
+constexpr char graph_jit_compensated_planar_composition_module_id[] =
+    "iv.test.graph_jit.state_context.compensated_planar_composition_module";
+constexpr char graph_jit_compensated_interleaved_composition_module_id[] =
+    "iv.test.graph_jit.state_context.compensated_interleaved_composition_module";
+constexpr char graph_jit_feedback_counter_module_id[] =
+    "iv.test.graph_jit.state_context.feedback_counter_module";
+constexpr char graph_jit_long_compensation_module_id[] =
+    "iv.test.graph_jit.state_context.long_compensation_module";
+constexpr char graph_jit_leading_node_module_id[] =
+    "iv.test.graph_jit.state_context.leading_node_module";
+constexpr char graph_jit_source_latency_module_id[] =
+    "iv.test.graph_jit.state_context.source_latency_module";
+constexpr char graph_jit_routed_feedback_module_id[] =
+    "iv.test.graph_jit.state_context.routed_feedback_module";
 constexpr char graph_jit_large_history_rewire_module_id[] =
     "iv.test.graph_jit.state_context.large_history_rewire_module";
 constexpr char graph_jit_latency_compensation_module_id[] = "iv.test.graph_jit.state_context.latency_compensation_module";
@@ -472,7 +511,7 @@ void capture_generated_tick_samples(
         || !std::has_single_bit(storage.value_capacity)) {
         return;
     }
-    auto read = [&](std::uint64_t ordinal) {
+    auto read = [&](std::uint64_t index) {
         auto const& channel = storage.channels[0];
         if (!channel.storage || channel.value_capacity == 0
             || !std::has_single_bit(channel.value_capacity)
@@ -480,16 +519,15 @@ void capture_generated_tick_samples(
             || channel.value_delay >= channel.value_capacity) {
             return 0.0f;
         }
-        auto const storage_ordinal = ordinal
-            + storage.storage_latency - channel.value_delay;
-        auto const slot = static_cast<std::size_t>(storage_ordinal)
+        auto const storage_index = index - channel.value_delay;
+        auto const slot = static_cast<std::size_t>(storage_index)
             & (channel.value_capacity - 1);
         return static_cast<float>(*reinterpret_cast<iv::Sample const*>(
             channel.storage + slot * channel.value_stride_bytes));
     };
-    probe.first_sample = read(output->sequential_begin_ordinal);
+    probe.first_sample = read(output->sequential_begin_index);
     probe.last_sample = read(
-        output->sequential_begin_ordinal + block_size - 1);
+        output->sequential_begin_index + block_size - 1);
 }
 
 void capture_generated_tick_events(
@@ -818,6 +856,49 @@ struct HistoryRampSourceStateMirror {
     std::uint32_t marker = 0;
 };
 
+struct LatentWindowSourceStateMirror {
+    std::uint64_t calls = 0;
+    std::uint64_t checked = 0;
+    std::uint64_t mismatches = 0;
+};
+
+struct LatentWindowConsumerStateMirror {
+    std::uint64_t calls = 0;
+    std::uint64_t checked = 0;
+    std::uint64_t mismatches = 0;
+    std::int64_t first_position = 0;
+};
+
+struct MovingStateProbeStateMirror {
+    std::uint64_t ticks = 0;
+    std::uint64_t moves = 0;
+    std::uint64_t marker = 0;
+};
+
+// State of CompensatedSequenceProbe and SampleSequenceProbe.
+struct SequenceProbeStateMirror {
+    std::uint64_t calls = 0;
+    std::uint64_t read_latency = 0;
+    std::int64_t first_index = 0;
+    std::uint64_t recorded = 0;
+    std::array<float, 64> values{};
+};
+
+// State of PlanarStereoAlignmentProbe and InterleavedStereoAlignmentProbe.
+struct StereoAlignmentProbeStateMirror {
+    std::uint64_t calls = 0;
+    std::uint64_t mismatches = 0;
+};
+
+// State of CompensatedRampProbe and CompensatedRampHistoryProbe.
+struct CompensatedRampProbeStateMirror {
+    std::uint64_t calls = 0;
+    std::uint64_t checked = 0;
+    std::uint64_t mismatches = 0;
+    std::int64_t first_position = 0;
+    std::uint64_t read_latency = 0;
+};
+
 struct HistoryConsumerStateMirror {
     std::uint64_t calls = 0;
     std::uint64_t last_index = 0;
@@ -1019,6 +1100,69 @@ std::shared_ptr<iv::ConfiguredGraph const> configured_module_graph(
         &iv::PackageModuleDefinition::definition_id);
     if (found == revision.module_definitions.end()) return {};
     return found->configured_graph;
+}
+
+// Builds a module definition's graph the way the package loader builds its
+// default graph (module/loader.cpp), but with construction arguments. Two graphs
+// built from one module this way give the nodes they share the same virtual
+// nodes, whatever the arguments.
+std::shared_ptr<iv::ConfiguredGraph const> configured_module_graph_with_arguments(
+    iv::PackageRevision const& revision,
+    std::string_view definition_id,
+    std::span<iv::details::ConfigurationArgument> arguments)
+{
+    auto const found = std::ranges::find(
+        revision.module_definitions,
+        definition_id,
+        &iv::PackageModuleDefinition::definition_id);
+    if (found == revision.module_definitions.end()) {
+        throw std::runtime_error("unknown GraphJit test module definition");
+    }
+    using Session = std::unique_ptr<iv::details::BuilderSession,
+        decltype(&iv::details::iv_builder_session_destroy)>;
+    Session session(
+        iv::details::iv_builder_session_create(),
+        iv::details::iv_builder_session_destroy);
+    if (!session) {
+        throw std::runtime_error("could not create GraphJit module builder session");
+    }
+    auto const package_root = revision.package_root.generic_string();
+    std::array packages{iv::details::BuilderPackageView{
+        .package_root = package_root,
+        .definitions = revision.provider_definitions,
+        .config_pointer_fields = revision.config_pointer_fields,
+        .retained_globals = revision.retained_globals,
+        .node_state_structures = revision.node_state_structures,
+    }};
+    iv::details::set_builder_packages(session.get(), packages);
+    iv::details::select_builder_package(
+        session.get(),
+        iv::details::builder_package_index(session.get(), package_root));
+    iv::details::begin_builder_module(session.get(), definition_id);
+    struct ModuleCallScope {
+        iv::details::BuilderSession* session = nullptr;
+        ~ModuleCallScope() { iv::details::end_builder_module(session); }
+    } const module_call{session.get()};
+
+    iv::GraphBuilder graph(session.get());
+    auto const* signature = found->provider.signature();
+    if (!signature) {
+        throw std::runtime_error("GraphJit test module has no construction signature");
+    }
+    if (arguments.size() > signature->argument_count) {
+        throw std::runtime_error("too many GraphJit test module arguments");
+    }
+    // Configuration type identities exist only in package code, so host test
+    // code takes each argument's identity from the module's own signature. The
+    // caller passes a value of that parameter's C++ type.
+    for (std::size_t index = 0; index < arguments.size(); ++index) {
+        arguments[index].type = signature->parameter_types[index];
+    }
+    iv::details::validate_registered_signature(
+        definition_id, *signature, arguments);
+    found->provider.module_build(graph, arguments);
+    return std::make_shared<iv::ConfiguredGraph const>(
+        iv::details::take_built_graph(session.get()));
 }
 
 void expect_single_node_canonical_regions(
@@ -6783,10 +6927,10 @@ struct FractionalIndexProducer {
         auto output = ctx.output<"coordinates">();
         auto values = output.block();
         for (std::size_t offset = 0; offset < values.size(); ++offset) {
-            auto const ordinal = output.value_index() + offset;
+            auto const index = output.value_index() + offset;
             values[offset] = iv::FractionalGlobalIndex::from_parts(
-                iv::GlobalIndex::from_bits(ordinal),
-                ordinal ^ 0x8000000000000000ull);
+                iv::GlobalIndex::from_bits(index),
+                index ^ 0x8000000000000000ull);
         }
     }
 };
@@ -8302,6 +8446,828 @@ void playback_event_rewire_module(iv::GraphBuilder& graph)
     background_fed.connect_event_input(0, background.event_port());
     graph.outputs();
 }
+
+// Authors a latent Tick sample output whose newest values stay provisional
+// until its next tick revises them through OutputPort::update(). Before
+// authoring, it checks every value of its owned window, the last
+// history + latency values before this tick, against the value it authored or
+// revised for that position. The newest min(latency, block size) values of
+// each block are provisional, so the fixture runs equal-sized blocks only.
+template<class State, class Output>
+void author_latent_window(
+    State& state,
+    Output const& output,
+    std::int64_t begin,
+    std::size_t block_size)
+{
+    auto const final_value = [](std::int64_t position) {
+        return static_cast<float>(position);
+    };
+    auto const provisional_value = [](std::int64_t position) {
+        return -1.0f - static_cast<float>(position);
+    };
+    auto const window = output.history() + output.latency();
+    auto const pending = std::min(output.latency(), block_size);
+    ++state.calls;
+    state.checked = 0;
+    state.mismatches = 0;
+    for (std::size_t offset = 0; offset < window; ++offset) {
+        auto const position = begin - 1 - static_cast<std::int64_t>(offset);
+        if (position < 0) break;
+        auto const expected = offset < pending
+            ? provisional_value(position)
+            : final_value(position);
+        ++state.checked;
+        if (static_cast<float>(output.get(offset)) != expected) {
+            ++state.mismatches;
+        }
+    }
+    for (std::size_t offset = 0; offset < pending; ++offset) {
+        auto const position = begin - 1 - static_cast<std::int64_t>(offset);
+        if (position < 0) break;
+        output.update(iv::Sample{final_value(position)}, offset);
+    }
+    for (std::size_t offset = 0; offset < block_size; ++offset) {
+        auto const position = begin + static_cast<std::int64_t>(offset);
+        output.push(iv::Sample{offset + pending >= block_size
+            ? provisional_value(position)
+            : final_value(position)});
+    }
+}
+
+struct LatentWindowSource {
+    struct State {
+        std::uint64_t calls = 0;
+        std::uint64_t checked = 0;
+        std::uint64_t mismatches = 0;
+    };
+
+    static constexpr auto inputs()
+    {
+        return std::tuple{};
+    }
+
+    static constexpr auto outputs()
+    {
+        return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::tick)};
+    }
+
+    void constrain_ports(
+        iv::ConstrainPortsContext<LatentWindowSource>& ctx) const
+    {
+        ctx.output<"out">().history() = 3;
+        ctx.output<"out">().latency() = 2;
+    }
+
+    void tick_block(iv::TickBlockContext<LatentWindowSource> const& ctx) const
+    {
+        author_latent_window(
+            ctx.state(),
+            ctx.output<"out">(),
+            ctx.index.whole().signed_value(),
+            ctx.block_size);
+    }
+};
+
+struct LargeLatentWindowSource {
+    struct State {
+        std::uint64_t calls = 0;
+        std::uint64_t checked = 0;
+        std::uint64_t mismatches = 0;
+    };
+
+    static constexpr auto inputs()
+    {
+        return std::tuple{};
+    }
+
+    static constexpr auto outputs()
+    {
+        return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::tick)};
+    }
+
+    void constrain_ports(
+        iv::ConstrainPortsContext<LargeLatentWindowSource>& ctx) const
+    {
+        ctx.output<"out">().history() = 4000;
+        ctx.output<"out">().latency() = 1000;
+    }
+
+    void tick_block(iv::TickBlockContext<LargeLatentWindowSource> const& ctx) const
+    {
+        author_latent_window(
+            ctx.state(),
+            ctx.output<"out">(),
+            ctx.index.whole().signed_value(),
+            ctx.block_size);
+    }
+};
+
+// Reads a latent source through its latency-compensated input. Every value it
+// observes, in its history and in its current block, must already be final.
+struct LatentWindowConsumer {
+    struct State {
+        std::uint64_t calls = 0;
+        std::uint64_t checked = 0;
+        std::uint64_t mismatches = 0;
+        std::int64_t first_position = 0;
+    };
+
+    static constexpr auto inputs()
+    {
+        return std::array{iv::input<iv::Sample>("in", iv::InputAccess::sequential)};
+    }
+
+    static constexpr auto outputs()
+    {
+        return std::tuple{};
+    }
+
+    void constrain_ports(
+        iv::ConstrainPortsContext<LatentWindowConsumer>& ctx) const
+    {
+        ctx.input<"in">().history() = 4;
+    }
+
+    void tick_block(iv::TickBlockContext<LatentWindowConsumer> const& ctx) const
+    {
+        auto& state = ctx.state();
+        auto input = ctx.input<"in">();
+        auto const first = ctx.index.whole().signed_value()
+            - static_cast<std::int64_t>(input.latency());
+        ++state.calls;
+        state.checked = 0;
+        state.mismatches = 0;
+        state.first_position = first;
+        auto const check = [&](std::int64_t position, float observed) {
+            if (position < 0) return;
+            ++state.checked;
+            if (observed != static_cast<float>(position)) ++state.mismatches;
+        };
+        for (std::size_t history = 1; history <= input.history(); ++history) {
+            check(
+                first - static_cast<std::int64_t>(history),
+                static_cast<float>(input.get(history)));
+        }
+        for (std::size_t offset = 0; offset < ctx.block_size; ++offset) {
+            check(
+                first + static_cast<std::int64_t>(offset),
+                static_cast<float>(input.get_value(offset)));
+        }
+    }
+};
+
+void latent_window_compact_carry_module(iv::GraphBuilder& graph)
+{
+    auto source = graph.node<"iv.test.graph_jit.state_context.latent_window_source">();
+    (void)source;
+    graph.outputs();
+}
+
+void latent_window_ring_module(iv::GraphBuilder& graph)
+{
+    auto source =
+        graph.node<"iv.test.graph_jit.state_context.large_latent_window_source">();
+    (void)source;
+    graph.outputs();
+}
+
+void latent_window_consumer_compact_carry_module(iv::GraphBuilder& graph)
+{
+    auto source = graph.node<"iv.test.graph_jit.state_context.latent_window_source">();
+    auto consumer =
+        graph.node<"iv.test.graph_jit.state_context.latent_window_consumer">();
+    consumer(source);
+    graph.outputs();
+}
+
+void latent_window_consumer_ring_module(iv::GraphBuilder& graph)
+{
+    auto source =
+        graph.node<"iv.test.graph_jit.state_context.large_latent_window_source">();
+    auto consumer =
+        graph.node<"iv.test.graph_jit.state_context.latent_window_consumer">();
+    consumer(source);
+    graph.outputs();
+}
+
+// Checks every value a Sequential input reads from sample_ramp_source, whose
+// value at each position is that position. The input's first current value is
+// at position index - latency(); its history precedes that position. checked
+// and mismatches count this block's reads only.
+template<class State, class Input>
+void check_ramp_reads(
+    State& state,
+    Input const& input,
+    std::int64_t index,
+    std::size_t block_size)
+{
+    auto const first = index - static_cast<std::int64_t>(input.latency());
+    ++state.calls;
+    state.first_position = first;
+    state.read_latency = input.latency();
+    state.checked = 0;
+    state.mismatches = 0;
+    auto const check = [&](std::int64_t position, float observed) {
+        if (position < 0) return;
+        ++state.checked;
+        if (observed != static_cast<float>(position)) ++state.mismatches;
+    };
+    for (std::size_t history = 1; history <= input.history(); ++history) {
+        check(
+            first - static_cast<std::int64_t>(history),
+            static_cast<float>(input.get(history)));
+    }
+    for (std::size_t offset = 0; offset < block_size; ++offset) {
+        check(
+            first + static_cast<std::int64_t>(offset),
+            static_cast<float>(input.get_value(offset)));
+    }
+}
+
+// Reads a ramp beside a slower input, so the compiler delays the ramp input to
+// align the two. The slower input only sets that delay; the probe checks the
+// ramp input alone.
+struct CompensatedRampProbe {
+    struct State {
+        std::uint64_t calls = 0;
+        std::uint64_t checked = 0;
+        std::uint64_t mismatches = 0;
+        std::int64_t first_position = 0;
+        std::uint64_t read_latency = 0;
+    };
+
+    static constexpr auto inputs()
+    {
+        return std::array{
+            iv::input<iv::Sample>("ramp", iv::InputAccess::sequential),
+            iv::input<iv::Sample>("slower", iv::InputAccess::sequential),
+        };
+    }
+
+    static constexpr auto outputs()
+    {
+        return std::tuple{};
+    }
+
+    void tick_block(iv::TickBlockContext<CompensatedRampProbe> const& ctx) const
+    {
+        check_ramp_reads(
+            ctx.state(),
+            ctx.input<"ramp">(),
+            ctx.index.whole().signed_value(),
+            ctx.block_size);
+    }
+};
+
+// CompensatedRampProbe whose ramp input also keeps history.
+struct CompensatedRampHistoryProbe {
+    struct State {
+        std::uint64_t calls = 0;
+        std::uint64_t checked = 0;
+        std::uint64_t mismatches = 0;
+        std::int64_t first_position = 0;
+        std::uint64_t read_latency = 0;
+    };
+
+    static constexpr auto inputs()
+    {
+        return std::array{
+            iv::input<iv::Sample>("ramp", iv::InputAccess::sequential),
+            iv::input<iv::Sample>("slower", iv::InputAccess::sequential),
+        };
+    }
+
+    static constexpr auto outputs()
+    {
+        return std::tuple{};
+    }
+
+    void constrain_ports(
+        iv::ConstrainPortsContext<CompensatedRampHistoryProbe>& ctx) const
+    {
+        ctx.input<"ramp">().history() = 4;
+    }
+
+    void tick_block(
+        iv::TickBlockContext<CompensatedRampHistoryProbe> const& ctx) const
+    {
+        check_ramp_reads(
+            ctx.state(),
+            ctx.input<"ramp">(),
+            ctx.index.whole().signed_value(),
+            ctx.block_size);
+    }
+};
+
+// The probe's ramp input reads the source, compensated for the delay node's
+// latency. The second reader's fast input reads the delay node; a successor
+// moves it to the source.
+void compensated_ramp_second_reader_module(iv::GraphBuilder& graph)
+{
+    auto source = graph.node<"iv.test.graph_jit.state_context.sample_ramp_source">();
+    auto delayed = graph.node<"iv.test.graph_jit.state_context.five_sample_delay">();
+    auto twice_delayed =
+        graph.node<"iv.test.graph_jit.state_context.five_sample_delay">();
+    auto probe =
+        graph.node<"iv.test.graph_jit.state_context.compensated_ramp_probe">();
+    auto second_reader =
+        graph.node<"iv.test.graph_jit.state_context.latency_compensation_probe">();
+    delayed(source);
+    twice_delayed(delayed);
+    probe(source, delayed);
+    second_reader(delayed, twice_delayed);
+    graph.outputs();
+}
+
+// The probe's ramp input reads the source, compensated for the delay node's
+// latency. The history reader reads the delay node; a successor moves it to
+// the source.
+void compensated_ramp_history_reader_module(iv::GraphBuilder& graph)
+{
+    auto source = graph.node<"iv.test.graph_jit.state_context.sample_ramp_source">();
+    auto delayed = graph.node<"iv.test.graph_jit.state_context.five_sample_delay">();
+    auto probe =
+        graph.node<"iv.test.graph_jit.state_context.compensated_ramp_probe">();
+    auto history_reader =
+        graph.node<"iv.test.graph_jit.state_context.large_history_consumer">();
+    delayed(source);
+    probe(source, delayed);
+    history_reader(delayed);
+    graph.outputs();
+}
+
+// Continues its own State in the next graph generation through move(), which
+// counts the moves.
+struct MovingStateProbe {
+    struct State {
+        std::uint64_t ticks = 0;
+        std::uint64_t moves = 0;
+        std::uint64_t marker = 0;
+    };
+
+    static constexpr auto inputs()
+    {
+        return std::array{iv::input<iv::Sample>("in", iv::InputAccess::sequential)};
+    }
+
+    static constexpr auto outputs()
+    {
+        return std::tuple{};
+    }
+
+    void move(iv::MoveContext<MovingStateProbe> const& ctx) const
+    {
+        auto const& previous = ctx.previous_state();
+        auto& state = ctx.state();
+        state.ticks = previous.ticks;
+        state.moves = previous.moves + 1;
+        state.marker = previous.marker;
+    }
+
+    void tick_block(iv::TickBlockContext<MovingStateProbe> const& ctx) const
+    {
+        ++ctx.state().ticks;
+    }
+};
+
+void moving_state_module(iv::GraphBuilder& graph)
+{
+    auto source = graph.node<"iv.test.graph_jit.state_context.sample_ramp_source">();
+    auto first = graph.node<"iv.test.graph_jit.state_context.moving_state_probe">();
+    auto second = graph.node<"iv.test.graph_jit.state_context.moving_state_probe">();
+    first(source);
+    second(source);
+    graph.outputs();
+}
+
+// sample_ramp_source shifted by 100000, so that values from the two sources of
+// a rewired input can be told apart.
+struct OffsetSampleRampSource {
+    static constexpr auto inputs()
+    {
+        return std::tuple{};
+    }
+
+    static constexpr auto outputs()
+    {
+        return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::tick)};
+    }
+
+    void tick_block(iv::TickBlockContext<OffsetSampleRampSource> const& ctx) const
+    {
+        auto output = ctx.output<"out">();
+        for (std::size_t i = 0; i < ctx.block_size; ++i) {
+            output.push(iv::Sample{static_cast<float>(
+                ctx.index.advanced_by({.whole = i}).whole().signed_value()
+                + 100000)});
+        }
+    }
+};
+
+// Records every value its ramp input reads in each block of at most 64 values.
+// The slower input only sets the ramp input's compensation.
+struct CompensatedSequenceProbe {
+    struct State {
+        std::uint64_t calls = 0;
+        std::uint64_t read_latency = 0;
+        std::int64_t first_index = 0;
+        std::uint64_t recorded = 0;
+        std::array<float, 64> values{};
+    };
+
+    static constexpr auto inputs()
+    {
+        return std::array{
+            iv::input<iv::Sample>("ramp", iv::InputAccess::sequential),
+            iv::input<iv::Sample>("slower", iv::InputAccess::sequential),
+        };
+    }
+
+    static constexpr auto outputs()
+    {
+        return std::tuple{};
+    }
+
+    void tick_block(iv::TickBlockContext<CompensatedSequenceProbe> const& ctx) const
+    {
+        auto& state = ctx.state();
+        auto ramp = ctx.input<"ramp">();
+        ++state.calls;
+        state.read_latency = ramp.latency();
+        state.first_index = ctx.index.whole().signed_value();
+        state.recorded = std::min<std::size_t>(ctx.block_size, state.values.size());
+        for (std::size_t offset = 0; offset < state.recorded; ++offset) {
+            state.values[offset] = static_cast<float>(ramp.get_value(offset));
+        }
+    }
+};
+
+// The probe's ramp input reads the source, compensated for the delay node's
+// latency. twice_delayed gives a successor a slower path to move the probe's
+// slower input to.
+void compensated_sequence_module(iv::GraphBuilder& graph)
+{
+    auto source = graph.node<"iv.test.graph_jit.state_context.sample_ramp_source">();
+    auto delayed = graph.node<"iv.test.graph_jit.state_context.five_sample_delay">();
+    auto twice_delayed =
+        graph.node<"iv.test.graph_jit.state_context.five_sample_delay">();
+    auto probe = graph.node<
+        "iv.test.graph_jit.state_context.compensated_sequence_probe">();
+    delayed(source);
+    twice_delayed(delayed);
+    probe(source, delayed);
+    graph.outputs();
+}
+
+// The probe's ramp input reads the first source; a successor rewires it to the
+// offset source, which has the same latency.
+void compensated_sequence_rewire_module(iv::GraphBuilder& graph)
+{
+    auto source = graph.node<"iv.test.graph_jit.state_context.sample_ramp_source">();
+    auto offset_source =
+        graph.node<"iv.test.graph_jit.state_context.offset_sample_ramp_source">();
+    auto delayed = graph.node<"iv.test.graph_jit.state_context.five_sample_delay">();
+    auto offset_delayed =
+        graph.node<"iv.test.graph_jit.state_context.five_sample_delay">();
+    auto probe = graph.node<
+        "iv.test.graph_jit.state_context.compensated_sequence_probe">();
+    delayed(source);
+    offset_delayed(offset_source);
+    probe(source, delayed);
+    graph.outputs();
+}
+
+// Records every value its input reads in each block of at most 64 values. Its
+// State matches CompensatedSequenceProbe's.
+struct SampleSequenceProbe {
+    struct State {
+        std::uint64_t calls = 0;
+        std::uint64_t read_latency = 0;
+        std::int64_t first_index = 0;
+        std::uint64_t recorded = 0;
+        std::array<float, 64> values{};
+    };
+
+    static constexpr auto inputs()
+    {
+        return std::array{iv::input<iv::Sample>("in", iv::InputAccess::sequential)};
+    }
+
+    static constexpr auto outputs()
+    {
+        return std::tuple{};
+    }
+
+    void tick_block(iv::TickBlockContext<SampleSequenceProbe> const& ctx) const
+    {
+        auto& state = ctx.state();
+        auto input = ctx.input<"in">();
+        ++state.calls;
+        state.read_latency = input.latency();
+        state.first_index = ctx.index.whole().signed_value();
+        state.recorded = std::min<std::size_t>(ctx.block_size, state.values.size());
+        for (std::size_t offset = 0; offset < state.recorded; ++offset) {
+            state.values[offset] = static_cast<float>(input.get_value(offset));
+        }
+    }
+};
+
+// Counts the values at which a stereo input's two channels differ.
+template<class State, class Input>
+void count_channel_mismatches(
+    State& state,
+    Input const& input,
+    std::size_t block_size)
+{
+    ++state.calls;
+    for (std::size_t offset = 0; offset < block_size; ++offset) {
+        if (static_cast<float>(input.get_value(offset, 0))
+            != static_cast<float>(input.get_value(offset, 1))) {
+            ++state.mismatches;
+        }
+    }
+}
+
+// Compares the two channels of a planar stereo input.
+struct PlanarStereoAlignmentProbe {
+    struct State {
+        std::uint64_t calls = 0;
+        std::uint64_t mismatches = 0;
+    };
+
+    static constexpr auto inputs()
+    {
+        return std::array{iv::input<iv::Sample>("in", iv::InputAccess::sequential,
+            {.channel_layout = {
+                .channel_type = iv::ChannelTypeId::stereo,
+                .sample_layout = iv::SampleStreamLayout::planar,
+            }})};
+    }
+
+    static constexpr auto outputs()
+    {
+        return std::tuple{};
+    }
+
+    void tick_block(iv::TickBlockContext<PlanarStereoAlignmentProbe> const& ctx) const
+    {
+        count_channel_mismatches(ctx.state(), ctx.input<"in">(), ctx.block_size);
+    }
+};
+
+// Compares the two channels of an interleaved stereo input.
+struct InterleavedStereoAlignmentProbe {
+    struct State {
+        std::uint64_t calls = 0;
+        std::uint64_t mismatches = 0;
+    };
+
+    static constexpr auto inputs()
+    {
+        return std::array{iv::input<iv::Sample>("in", iv::InputAccess::sequential,
+            {.channel_layout = {
+                .channel_type = iv::ChannelTypeId::stereo,
+                .sample_layout = iv::SampleStreamLayout::interleaved,
+            }})};
+    }
+
+    static constexpr auto outputs()
+    {
+        return std::tuple{};
+    }
+
+    void tick_block(
+        iv::TickBlockContext<InterleavedStereoAlignmentProbe> const& ctx) const
+    {
+        count_channel_mismatches(ctx.state(), ctx.input<"in">(), ctx.block_size);
+    }
+};
+
+// Outputs its input plus one. Fed back through a detach of latency L with
+// initial value 0, it outputs floor(position / L) + 1.
+struct FeedbackCounter {
+    static constexpr auto inputs()
+    {
+        return std::array{iv::input<iv::Sample>("in", iv::InputAccess::sequential)};
+    }
+
+    static constexpr auto outputs()
+    {
+        return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::tick)};
+    }
+
+    void tick_block(iv::TickBlockContext<FeedbackCounter> const& ctx) const
+    {
+        auto const input = ctx.input<"in">();
+        auto output = ctx.output<"out">();
+        for (std::size_t offset = 0; offset < ctx.block_size; ++offset) {
+            output.push(iv::Sample{
+                static_cast<float>(input.get_value(offset)) + 1.0f});
+        }
+    }
+};
+
+// sample_ramp_source whose output latency is a construction argument. It
+// authors every value final, so latency only delays its readers.
+struct LatencyArgumentRampSource {
+    std::size_t latency = 0;
+
+    explicit LatencyArgumentRampSource(std::size_t latency_ = 0)
+        : latency(latency_)
+    {}
+
+    static constexpr auto inputs()
+    {
+        return std::tuple{};
+    }
+
+    static constexpr auto outputs()
+    {
+        return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::tick)};
+    }
+
+    void constrain_ports(
+        iv::ConstrainPortsContext<LatencyArgumentRampSource>& ctx) const
+    {
+        ctx.output<"out">().latency() = latency;
+    }
+
+    void tick_block(
+        iv::TickBlockContext<LatencyArgumentRampSource> const& ctx) const
+    {
+        auto output = ctx.output<"out">();
+        for (std::size_t i = 0; i < ctx.block_size; ++i) {
+            output.push(iv::Sample{static_cast<float>(
+                ctx.index.advanced_by({.whole = i}).whole().signed_value())});
+        }
+    }
+};
+
+// The probe's stereo input composes the ramp (left) with the delay node's
+// output (right), so the compiler delays the left channel to align them. The
+// history reader reads the delay node; a successor moves it to the ramp.
+void compensated_planar_composition_module(iv::GraphBuilder& graph)
+{
+    auto source = graph.node<"iv.test.graph_jit.state_context.sample_ramp_source">();
+    auto delayed = graph.node<"iv.test.graph_jit.state_context.five_sample_delay">();
+    auto probe = graph.node<
+        "iv.test.graph_jit.state_context.planar_stereo_alignment_probe">();
+    auto history_reader =
+        graph.node<"iv.test.graph_jit.state_context.large_history_consumer">();
+    delayed(source);
+    probe(graph.tile<iv::stereo>(source, delayed));
+    history_reader(delayed);
+    graph.outputs();
+}
+
+// compensated_planar_composition_module with an interleaved stereo probe.
+void compensated_interleaved_composition_module(iv::GraphBuilder& graph)
+{
+    auto source = graph.node<"iv.test.graph_jit.state_context.sample_ramp_source">();
+    auto delayed = graph.node<"iv.test.graph_jit.state_context.five_sample_delay">();
+    auto probe = graph.node<
+        "iv.test.graph_jit.state_context.interleaved_stereo_alignment_probe">();
+    auto history_reader =
+        graph.node<"iv.test.graph_jit.state_context.large_history_consumer">();
+    delayed(source);
+    probe(graph.tile<iv::stereo>(source, delayed));
+    history_reader(delayed);
+    graph.outputs();
+}
+
+// The counter's input reads its own output through a detach of latency 5. The
+// history reader reads the ramp; a successor moves it to the counter's output.
+void feedback_counter_module(iv::GraphBuilder& graph)
+{
+    auto source = graph.node<"iv.test.graph_jit.state_context.sample_ramp_source">();
+    auto counter = graph.node<"iv.test.graph_jit.state_context.feedback_counter">();
+    auto observer =
+        graph.node<"iv.test.graph_jit.state_context.sample_sequence_probe">();
+    auto history_reader =
+        graph.node<"iv.test.graph_jit.state_context.large_history_consumer">();
+    observer(counter);
+    history_reader(source);
+    counter(static_cast<iv::SamplePortRef>(counter).detach(5, iv::Sample{0.0f}));
+    graph.outputs();
+}
+
+// The probe's ramp input reads a latent source 1000 values late, compensated for
+// the large latent source on its slower input. The second reader's fast input
+// reads the large latent source; a successor moves it to the probe's ramp
+// source, at a compensation larger than the probe's.
+void long_compensation_module(iv::GraphBuilder& graph)
+{
+    auto source = graph.node<"iv.test.graph_jit.state_context.latent_window_source">();
+    auto slow_source =
+        graph.node<"iv.test.graph_jit.state_context.large_latent_window_source">();
+    auto slow_delayed =
+        graph.node<"iv.test.graph_jit.state_context.five_sample_delay">();
+    auto probe = graph.node<
+        "iv.test.graph_jit.state_context.compensated_ramp_history_probe">();
+    auto second_reader =
+        graph.node<"iv.test.graph_jit.state_context.latency_compensation_probe">();
+    slow_delayed(slow_source);
+    probe(source, slow_source);
+    second_reader(slow_source, slow_delayed);
+    graph.outputs();
+}
+
+// compensated_ramp_history_reader_module's probe, optionally after a node that
+// nothing reads. Adding that node renumbers every later node's bundle.
+void leading_node_module(iv::GraphBuilder& graph, bool leading = false)
+{
+    if (leading) {
+        auto leading_source =
+            graph.node<"iv.test.graph_jit.state_context.sample_ramp_source">();
+        (void)leading_source;
+    }
+    auto source = graph.node<"iv.test.graph_jit.state_context.sample_ramp_source">();
+    auto delayed = graph.node<"iv.test.graph_jit.state_context.five_sample_delay">();
+    auto probe =
+        graph.node<"iv.test.graph_jit.state_context.compensated_ramp_probe">();
+    delayed(source);
+    probe(source, delayed);
+    graph.outputs();
+}
+
+// The probe's ramp input reads a source whose latency is the module's argument.
+// Its slower input reads that source through the delay node, so the ramp
+// input's compensation stays 7 whatever the source's latency.
+void source_latency_module(iv::GraphBuilder& graph, std::size_t latency = 0)
+{
+    auto source = graph.node<
+        "iv.test.graph_jit.state_context.latency_argument_ramp_source">(latency);
+    auto delayed = graph.node<"iv.test.graph_jit.state_context.five_sample_delay">();
+    auto probe = graph.node<
+        "iv.test.graph_jit.state_context.compensated_sequence_probe">();
+    delayed(source);
+    probe(source, delayed);
+    graph.outputs();
+}
+
+// The converted node reads the temporal node's output back through a different
+// detach() latency on each channel of its stereo input.
+void routed_feedback_module(iv::GraphBuilder& graph)
+{
+    auto temporal =
+        graph.node<"iv.test.graph_jit.state_context.temporal_sample_feedback">();
+    auto converted =
+        graph.node<"iv.test.graph_jit.state_context.converted_sample_feedback">();
+    temporal(converted);
+    auto const out = static_cast<iv::SamplePortRef>(temporal);
+    converted(graph.tile<iv::stereo>(
+        out.detach(6, iv::Sample{-0.25f}), out.detach(7, iv::Sample{-0.25f})));
+    graph.outputs();
+}
+
+// compensated_ramp_history_probe_module with a latent source that keeps history
+// of its own.
+void compensated_latent_history_probe_module(iv::GraphBuilder& graph)
+{
+    auto source = graph.node<"iv.test.graph_jit.state_context.latent_window_source">();
+    auto delayed = graph.node<"iv.test.graph_jit.state_context.five_sample_delay">();
+    auto probe = graph.node<
+        "iv.test.graph_jit.state_context.compensated_ramp_history_probe">();
+    auto history_reader =
+        graph.node<"iv.test.graph_jit.state_context.large_history_consumer">();
+    delayed(source);
+    probe(source, delayed);
+    history_reader(delayed);
+    graph.outputs();
+}
+
+// compensated_ramp_history_reader_module with a probe whose fast input is
+// converted from mono to interleaved mono.
+void compensated_converted_history_reader_module(iv::GraphBuilder& graph)
+{
+    auto source = graph.node<"iv.test.graph_jit.state_context.sample_ramp_source">();
+    auto delayed = graph.node<"iv.test.graph_jit.state_context.five_sample_delay">();
+    auto probe = graph.node<
+        "iv.test.graph_jit.state_context.interleaved_latency_compensation_probe">();
+    auto history_reader =
+        graph.node<"iv.test.graph_jit.state_context.large_history_consumer">();
+    delayed(source);
+    probe(source, delayed);
+    history_reader(delayed);
+    graph.outputs();
+}
+
+// compensated_ramp_history_reader_module with a probe whose ramp input keeps
+// history.
+void compensated_ramp_history_probe_module(iv::GraphBuilder& graph)
+{
+    auto source = graph.node<"iv.test.graph_jit.state_context.sample_ramp_source">();
+    auto delayed = graph.node<"iv.test.graph_jit.state_context.five_sample_delay">();
+    auto probe = graph.node<
+        "iv.test.graph_jit.state_context.compensated_ramp_history_probe">();
+    auto history_reader =
+        graph.node<"iv.test.graph_jit.state_context.large_history_consumer">();
+    delayed(source);
+    probe(source, delayed);
+    history_reader(delayed);
+    graph.outputs();
+}
 } // namespace
 
 IV_NODE("iv.test.graph_jit.state_context.playback_sample_source", PlaybackSampleSource);
@@ -8335,6 +9301,38 @@ IV_MODULE("iv.test.graph_jit.state_context.playback_event_history_replacement_mo
 IV_MODULE("iv.test.graph_jit.state_context.playback_mixed_event_module", playback_mixed_event_module);
 IV_MODULE("iv.test.graph_jit.state_context.playback_sample_rewire_module", playback_sample_rewire_module);
 IV_MODULE("iv.test.graph_jit.state_context.playback_event_rewire_module", playback_event_rewire_module);
+IV_NODE("iv.test.graph_jit.state_context.latent_window_source", LatentWindowSource);
+IV_NODE("iv.test.graph_jit.state_context.large_latent_window_source", LargeLatentWindowSource);
+IV_NODE("iv.test.graph_jit.state_context.latent_window_consumer", LatentWindowConsumer);
+IV_MODULE("iv.test.graph_jit.state_context.latent_window_compact_carry_module", latent_window_compact_carry_module);
+IV_MODULE("iv.test.graph_jit.state_context.latent_window_ring_module", latent_window_ring_module);
+IV_MODULE("iv.test.graph_jit.state_context.latent_window_consumer_compact_carry_module", latent_window_consumer_compact_carry_module);
+IV_MODULE("iv.test.graph_jit.state_context.latent_window_consumer_ring_module", latent_window_consumer_ring_module);
+IV_NODE("iv.test.graph_jit.state_context.compensated_ramp_probe", CompensatedRampProbe);
+IV_NODE("iv.test.graph_jit.state_context.compensated_ramp_history_probe", CompensatedRampHistoryProbe);
+IV_MODULE("iv.test.graph_jit.state_context.compensated_ramp_second_reader_module", compensated_ramp_second_reader_module);
+IV_MODULE("iv.test.graph_jit.state_context.compensated_ramp_history_reader_module", compensated_ramp_history_reader_module);
+IV_MODULE("iv.test.graph_jit.state_context.compensated_ramp_history_probe_module", compensated_ramp_history_probe_module);
+IV_NODE("iv.test.graph_jit.state_context.moving_state_probe", MovingStateProbe);
+IV_MODULE("iv.test.graph_jit.state_context.moving_state_module", moving_state_module);
+IV_NODE("iv.test.graph_jit.state_context.offset_sample_ramp_source", OffsetSampleRampSource);
+IV_NODE("iv.test.graph_jit.state_context.compensated_sequence_probe", CompensatedSequenceProbe);
+IV_MODULE("iv.test.graph_jit.state_context.compensated_sequence_module", compensated_sequence_module);
+IV_MODULE("iv.test.graph_jit.state_context.compensated_sequence_rewire_module", compensated_sequence_rewire_module);
+IV_MODULE("iv.test.graph_jit.state_context.compensated_latent_history_probe_module", compensated_latent_history_probe_module);
+IV_MODULE("iv.test.graph_jit.state_context.compensated_converted_history_reader_module", compensated_converted_history_reader_module);
+IV_NODE("iv.test.graph_jit.state_context.sample_sequence_probe", SampleSequenceProbe);
+IV_NODE("iv.test.graph_jit.state_context.planar_stereo_alignment_probe", PlanarStereoAlignmentProbe);
+IV_NODE("iv.test.graph_jit.state_context.interleaved_stereo_alignment_probe", InterleavedStereoAlignmentProbe);
+IV_NODE("iv.test.graph_jit.state_context.feedback_counter", FeedbackCounter);
+IV_NODE("iv.test.graph_jit.state_context.latency_argument_ramp_source", LatencyArgumentRampSource);
+IV_MODULE("iv.test.graph_jit.state_context.compensated_planar_composition_module", compensated_planar_composition_module);
+IV_MODULE("iv.test.graph_jit.state_context.compensated_interleaved_composition_module", compensated_interleaved_composition_module);
+IV_MODULE("iv.test.graph_jit.state_context.feedback_counter_module", feedback_counter_module);
+IV_MODULE("iv.test.graph_jit.state_context.long_compensation_module", long_compensation_module);
+IV_MODULE("iv.test.graph_jit.state_context.leading_node_module", leading_node_module);
+IV_MODULE("iv.test.graph_jit.state_context.source_latency_module", source_latency_module);
+IV_MODULE("iv.test.graph_jit.state_context.routed_feedback_module", routed_feedback_module);
 )cpp";
     static_assert(part_1.size() < 60 * 1024);
     static_assert(part_2.size() < 60 * 1024);
@@ -11120,9 +12118,10 @@ TEST_F(GraphJitRuntimeFixture,
         &empty_tick_invocation,
         index(64),
         64);
-    // Authored State starts fresh in this fixture. The compiler-owned activity
-    // region migrates independently, so the successor immediately skips.
-    EXPECT_EQ(successor_state->tick_calls, 0u);
+    // ActivityProbe::State is moved implicitly, so the predecessor's tick
+    // carries over. The compiler-owned activity region migrates independently,
+    // so the successor immediately skips.
+    EXPECT_EQ(successor_state->tick_calls, 1u);
     EXPECT_EQ(successor_state->skip_calls, 1u);
 }
 
@@ -11459,17 +12458,18 @@ TEST_F(GraphJitRuntimeFixture, DisconnectedSampleOutputKeepsDeclaredHistory)
         compiled.compiled_graph->realtime_port_state_requirements.states;
     auto const& realizations =
         compiled.compiled_graph->realtime_port_state_realizations.sample_states;
-    ASSERT_EQ(requirements.size(), 2u);
-    ASSERT_EQ(realizations.size(), 2u);
+    // The output owns one window: its last history 3 + latency 2 values, each
+    // filed at the index it was authored for.
+    ASSERT_EQ(requirements.size(), 1u);
+    ASSERT_EQ(realizations.size(), 1u);
     for (auto const& view : realizations) {
         ASSERT_LT(view.requirement_index, requirements.size());
         auto const& requirement = requirements[view.requirement_index];
         EXPECT_EQ(requirement.direction, iv::graph_jit::PortDirection::output);
-        EXPECT_TRUE(
-            requirement.role
-                == iv::graph_jit::RealtimePortStateRole::tick_output_history
-            || requirement.role
-                == iv::graph_jit::RealtimePortStateRole::tick_output_latency);
+        EXPECT_EQ(
+            requirement.role,
+            iv::graph_jit::RealtimePortStateRole::tick_output_history);
+        EXPECT_EQ(requirement.extent_samples, 5u);
         EXPECT_EQ(
             view.authored_storage.storage,
             iv::graph_jit::SampleRealtimePortStateStorage::callback_transient);
@@ -11482,13 +12482,13 @@ TEST_F(GraphJitRuntimeFixture, DisconnectedSampleOutputKeepsDeclaredHistory)
             retained.storage,
             iv::graph_jit::SampleRealtimePortStateStorage::compact_carry);
         EXPECT_EQ(view.authored_storage.representation_channel, 0u);
-        EXPECT_EQ(view.authored_storage.timeline_offset_frames, 2);
+        EXPECT_EQ(view.authored_storage.timeline_offset_frames, 0);
         ASSERT_TRUE(view.authored_storage.callback_arena_offset);
         EXPECT_FALSE(view.authored_storage.node_storage_offset);
         EXPECT_EQ(retained.representation_channel, 0u);
         EXPECT_EQ(retained.timeline_offset_frames, 0);
         EXPECT_EQ(retained.storage_frame_count, 5u);
-        EXPECT_EQ(retained.carry_future_frames, 2u);
+        EXPECT_EQ(retained.carry_future_frames, 0u);
         EXPECT_EQ(retained.storage_size_bytes, 5u * sizeof(iv::Sample));
         ASSERT_TRUE(retained.node_storage_offset);
         EXPECT_EQ(*retained.node_storage_offset, raw->storage_offset);
@@ -11514,7 +12514,7 @@ TEST_F(GraphJitRuntimeFixture, DisconnectedSampleOutputKeepsDeclaredHistory)
     EXPECT_FLOAT_EQ(state->previous_output, 63.0f);
 }
 
-TEST_F(GraphJitRuntimeFixture, TransitionRootPreservesSampleOutputWindow)
+TEST_F(GraphJitRuntimeFixture, CutoverTransfersSampleOutputWindowIntoSteadyCarry)
 {
     auto graph = configured_module_graph(
         *revision, graph_jit_disconnected_sample_output_module_id);
@@ -11532,7 +12532,7 @@ TEST_F(GraphJitRuntimeFixture, TransitionRootPreservesSampleOutputWindow)
                         == iv::graph_jit::PortDirection::output
                     && requirement.stable_identity.has_value();
             }),
-        2);
+        1);
 
     iv::GraphJitCompileRequest successor_request{
         .project_generation = 243,
@@ -11556,30 +12556,34 @@ TEST_F(GraphJitRuntimeFixture, TransitionRootPreservesSampleOutputWindow)
         << (specialized.diagnostics.empty()
                 ? ""
                 : specialized.diagnostics.front().message);
+    // The output's one window is the only user of its compact carry, so the
+    // cutover writes the whole history 3 + latency 2 window into the steady
+    // successor carry. No transition root or expiry horizon is needed.
     ASSERT_TRUE(specialized.compiled_graph->cutover);
-    ASSERT_NE(
+    EXPECT_EQ(
         specialized.compiled_graph->root_operations.transition_tick_block,
         nullptr);
-    ASSERT_EQ(
+    EXPECT_TRUE(
         specialized.compiled_graph->cutover->state_transition
-            .sample_expiry_cursors.size(),
-        1u);
-    EXPECT_EQ(
-        specialized.compiled_graph->cutover->state_transition
-            .sample_expiry_cursors.front().value_count,
-        3u);
+            .sample_expiry_cursors.empty());
     ASSERT_EQ(
         specialized.compiled_graph->cutover->state_transition
             .sample_transfers.size(),
-        2u);
-    for (auto const& transfer : specialized.compiled_graph->cutover
-             ->state_transition.sample_transfers) {
-        ASSERT_EQ(transfer.source_storage.size(), 1u);
-        EXPECT_EQ(
-            transfer.source_storage.front().timeline_offset_frames,
-            0);
-        EXPECT_EQ(transfer.target_storage.timeline_offset_frames, 0);
-    }
+        1u);
+    auto const& transfer = specialized.compiled_graph->cutover
+        ->state_transition.sample_transfers.front();
+    EXPECT_FALSE(transfer.target_transition_only);
+    EXPECT_EQ(transfer.target_begin, -5);
+    EXPECT_EQ(transfer.target_end, 0);
+    ASSERT_EQ(transfer.source_storage.size(), 1u);
+    EXPECT_EQ(
+        transfer.source_storage.front().storage,
+        iv::graph_jit::SampleRealtimePortStateStorage::compact_carry);
+    EXPECT_EQ(transfer.source_storage.front().timeline_offset_frames, 0);
+    EXPECT_EQ(
+        transfer.target_storage.storage,
+        iv::graph_jit::SampleRealtimePortStateStorage::compact_carry);
+    EXPECT_EQ(transfer.target_storage.timeline_offset_frames, 0);
 
     auto predecessor_storage = predecessor.compiled_graph
         ->node_layout.create_storage(resources);
@@ -11613,7 +12617,7 @@ TEST_F(GraphJitRuntimeFixture, TransitionRootPreservesSampleOutputWindow)
     auto* state = static_cast<HistoryRampSourceStateMirror*>(
         successor_storage.state_ptr(0));
     ASSERT_NE(state, nullptr);
-    specialized.compiled_graph->root_operations.transition_tick_block(
+    specialized.compiled_graph->root_operations.tick_block(
         successor_storage.buffer().data(),
         &empty_tick_invocation,
         index(128),
@@ -11625,6 +12629,1031 @@ TEST_F(GraphJitRuntimeFixture, TransitionRootPreservesSampleOutputWindow)
         index(192),
         64);
     EXPECT_FLOAT_EQ(state->previous_output, 191.0f);
+}
+
+namespace {
+// One latent Tick sample output scenario. The source authors a window of
+// history + latency values; consumer modules also read it through a
+// latency-compensated input with history 4.
+struct LatentSampleCutover {
+    std::string_view module_id;
+    iv::graph_jit::SampleRealtimePortStateStorage source_storage{};
+    std::size_t source_history = 0;
+    std::size_t source_latency = 0;
+    bool has_consumer = false;
+};
+
+// The State of the one node whose State has the mirror's size.
+template<class Mirror>
+Mirror* find_unique_state(
+    iv::NodeLayout const& layout,
+    iv::NodeStorage const& storage)
+{
+    Mirror* found = nullptr;
+    for (std::size_t node = 0; node < layout.nodes.size(); ++node) {
+        if (layout.nodes[node].state_size != sizeof(Mirror)) continue;
+        EXPECT_EQ(found, nullptr) << "two nodes share the mirrored state size";
+        found = static_cast<Mirror*>(storage.state_ptr(node));
+    }
+    return found;
+}
+
+// Runs the scenario across one cutover the way GraphExecutor activates a
+// compiled cutover: execute the cold transfers at the cutover position, run
+// the transition root until every Sequential expiry cursor has advanced by its
+// value count, then run the steady root. Every block checks every value of the
+// source's owned window, and the consumer's latency-compensated view.
+void expect_latent_sample_window_survives_cutover(
+    iv::GraphJit& jit,
+    iv::PackageRevision const& revision,
+    std::shared_ptr<iv::NodeDefinitionsSnapshot const> const& definitions,
+    iv::ResourceContext const& resources,
+    LatentSampleCutover const& scenario,
+    std::uint64_t generation)
+{
+    SCOPED_TRACE(std::string{scenario.module_id});
+    constexpr std::size_t block = 64;
+    constexpr std::int64_t consumer_history = 4;
+    auto const window = scenario.source_history + scenario.source_latency;
+
+    auto graph = configured_module_graph(revision, scenario.module_id);
+    ASSERT_TRUE(graph);
+    auto predecessor = jit.compile(iv::GraphJitCompileRequest{
+        .project_generation = generation,
+        .graph = graph,
+        .definitions = definitions,
+    });
+    ASSERT_TRUE(predecessor.succeeded())
+        << (predecessor.diagnostics.empty()
+                ? ""
+                : predecessor.diagnostics.front().message);
+
+    // The source output owns one window, realized in the storage under test.
+    auto const& requirements =
+        predecessor.compiled_graph->realtime_port_state_requirements.states;
+    auto const is_output = [](auto const& requirement) {
+        return requirement.direction == iv::graph_jit::PortDirection::output;
+    };
+    EXPECT_EQ(std::ranges::count_if(requirements, is_output), 1);
+    auto const output = std::ranges::find_if(requirements, is_output);
+    ASSERT_NE(output, requirements.end());
+    EXPECT_EQ(
+        output->role,
+        iv::graph_jit::RealtimePortStateRole::tick_output_history);
+    EXPECT_EQ(output->extent_samples, window);
+    auto const& realizations =
+        predecessor.compiled_graph->realtime_port_state_realizations.sample_states;
+    auto const realization = std::ranges::find(
+        realizations,
+        static_cast<std::size_t>(std::distance(requirements.begin(), output)),
+        &iv::graph_jit::SampleRealtimePortStateRealization::requirement_index);
+    ASSERT_NE(realization, realizations.end());
+    ASSERT_EQ(realization->retained_sources.size(), 1u);
+    auto const& retained = realization->retained_sources.front();
+    EXPECT_EQ(retained.storage, scenario.source_storage);
+    EXPECT_EQ(retained.timeline_offset_frames, 0);
+    EXPECT_EQ(retained.carry_future_frames, 0u);
+    EXPECT_EQ(realization->authored_storage.timeline_offset_frames, 0);
+
+    iv::GraphJitCompileRequest successor_request{
+        .project_generation = generation + 1,
+        .graph = graph,
+        .definitions = definitions,
+    };
+    auto steady_successor = jit.compile(successor_request);
+    ASSERT_TRUE(steady_successor.succeeded())
+        << (steady_successor.diagnostics.empty()
+                ? ""
+                : steady_successor.diagnostics.front().message);
+    auto specialized = jit.compile_transition(
+        iv::GraphJitTransitionCompileRequest{
+            .successor = successor_request,
+            .steady_successor = steady_successor.compiled_graph,
+            .active_predecessor = predecessor.compiled_graph,
+            .active_predecessor_phase =
+                iv::CompiledGraphRealtimePhase::steady,
+        });
+    ASSERT_TRUE(specialized.succeeded())
+        << (specialized.diagnostics.empty()
+                ? ""
+                : specialized.diagnostics.front().message);
+    auto const& successor = *specialized.compiled_graph;
+    ASSERT_TRUE(successor.cutover);
+
+    auto run_block = [&](iv::CompiledGraph const& compiled,
+                         iv::NodeStorage& storage,
+                         std::int64_t begin,
+                         bool transition) {
+        SCOPED_TRACE("block at " + std::to_string(begin));
+        auto* source = find_unique_state<LatentWindowSourceStateMirror>(
+            compiled.node_layout, storage);
+        ASSERT_NE(source, nullptr);
+        auto* consumer = scenario.has_consumer
+            ? find_unique_state<LatentWindowConsumerStateMirror>(
+                compiled.node_layout, storage)
+            : nullptr;
+        ASSERT_EQ(consumer != nullptr, scenario.has_consumer);
+        auto const source_calls = source->calls;
+        auto const consumer_calls = consumer ? consumer->calls : 0;
+        auto const operation = transition
+            ? compiled.root_operations.transition_tick_block
+            : compiled.root_operations.tick_block;
+        ASSERT_NE(operation, nullptr);
+        operation(
+            storage.buffer().data(),
+            &empty_tick_invocation,
+            index(begin),
+            block);
+
+        EXPECT_EQ(source->calls, source_calls + 1);
+        EXPECT_EQ(
+            source->checked,
+            std::min<std::uint64_t>(static_cast<std::uint64_t>(begin), window));
+        EXPECT_EQ(source->mismatches, 0u);
+        if (consumer == nullptr) return;
+        auto const first =
+            begin - static_cast<std::int64_t>(scenario.source_latency);
+        auto const end = first + static_cast<std::int64_t>(block);
+        auto const lowest = std::max<std::int64_t>(first - consumer_history, 0);
+        EXPECT_EQ(consumer->calls, consumer_calls + 1);
+        EXPECT_EQ(consumer->first_position, first);
+        EXPECT_EQ(
+            consumer->checked,
+            static_cast<std::uint64_t>(std::max<std::int64_t>(end - lowest, 0)));
+        EXPECT_EQ(consumer->mismatches, 0u);
+    };
+
+    // Fill the whole window before the cutover, and after it keep running the
+    // steady root until the successor has replaced every value it inherited.
+    auto const window_blocks = (window + block - 1) / block;
+    auto const cutover = static_cast<std::int64_t>((window_blocks + 2) * block);
+
+    auto predecessor_storage = predecessor.compiled_graph
+        ->node_layout.create_storage(resources);
+    predecessor_storage.initialize();
+    for (std::int64_t begin = 0; begin < cutover;
+         begin += static_cast<std::int64_t>(block)) {
+        run_block(*predecessor.compiled_graph, predecessor_storage, begin, false);
+        if (::testing::Test::HasFatalFailure()) return;
+    }
+
+    auto successor_storage = successor.node_layout.create_storage(resources);
+    successor_storage.initialize(&predecessor_storage);
+    auto prepared = iv::graph_jit::prepare_realtime_port_state_transfers(
+        successor.cutover->state_transition,
+        predecessor_storage.buffer(),
+        successor_storage.buffer());
+    ASSERT_TRUE(prepared.has_value())
+        << (prepared ? std::string{} : prepared.error());
+    iv::graph_jit::execute_realtime_port_state_transfers(
+        *prepared,
+        predecessor_storage.buffer(),
+        successor_storage.buffer(),
+        index(cutover));
+
+    auto read_cursor = [&](std::size_t offset) {
+        std::uint64_t value = 0;
+        std::memcpy(
+            &value, successor_storage.buffer().data() + offset, sizeof(value));
+        return value;
+    };
+    auto const& expiry =
+        successor.cutover->state_transition.sample_expiry_cursors;
+    auto const event_expiry =
+        successor.cutover->state_transition.event_expiry_samples;
+    std::vector<std::uint64_t> activation;
+    for (auto const& cursor : expiry) {
+        activation.push_back(read_cursor(cursor.node_storage_offset));
+    }
+    auto transition = !expiry.empty() || event_expiry != 0;
+    std::uint64_t event_progress = 0;
+    std::size_t steady_blocks = 0;
+    auto begin = cutover;
+    for (std::size_t step = 0;
+         step < 4 * (window_blocks + 2) && steady_blocks < window_blocks + 2;
+         ++step, begin += static_cast<std::int64_t>(block)) {
+        run_block(successor, successor_storage, begin, transition);
+        if (::testing::Test::HasFatalFailure()) return;
+        if (!transition) {
+            ++steady_blocks;
+            continue;
+        }
+        event_progress += block;
+        auto samples_complete = true;
+        for (std::size_t cursor = 0; cursor < expiry.size(); ++cursor) {
+            samples_complete = samples_complete
+                && read_cursor(expiry[cursor].node_storage_offset)
+                        - activation[cursor]
+                    >= expiry[cursor].value_count;
+        }
+        transition = !(samples_complete && event_progress >= event_expiry);
+    }
+    EXPECT_EQ(steady_blocks, window_blocks + 2);
+}
+} // namespace
+
+TEST_F(GraphJitRuntimeFixture, LatentSampleOutputWindowSurvivesCutoverInCompactCarry)
+{
+    expect_latent_sample_window_survives_cutover(
+        *jit, *revision, definitions, resources,
+        LatentSampleCutover{
+            .module_id = graph_jit_latent_window_compact_carry_module_id,
+            .source_storage =
+                iv::graph_jit::SampleRealtimePortStateStorage::compact_carry,
+            .source_history = 3,
+            .source_latency = 2,
+        },
+        300);
+}
+
+TEST_F(GraphJitRuntimeFixture, LatentSampleOutputWindowSurvivesCutoverInRing)
+{
+    expect_latent_sample_window_survives_cutover(
+        *jit, *revision, definitions, resources,
+        LatentSampleCutover{
+            .module_id = graph_jit_latent_window_ring_module_id,
+            .source_storage = iv::graph_jit::SampleRealtimePortStateStorage::ring,
+            .source_history = 4000,
+            .source_latency = 1000,
+        },
+        302);
+}
+
+TEST_F(GraphJitRuntimeFixture, LatentSampleConsumerStaysFinalAcrossCutoverInCompactCarry)
+{
+    expect_latent_sample_window_survives_cutover(
+        *jit, *revision, definitions, resources,
+        LatentSampleCutover{
+            .module_id = graph_jit_latent_window_consumer_compact_carry_module_id,
+            .source_storage =
+                iv::graph_jit::SampleRealtimePortStateStorage::compact_carry,
+            .source_history = 3,
+            .source_latency = 2,
+            .has_consumer = true,
+        },
+        304);
+}
+
+TEST_F(GraphJitRuntimeFixture, LatentSampleConsumerStaysFinalAcrossCutoverInRing)
+{
+    expect_latent_sample_window_survives_cutover(
+        *jit, *revision, definitions, resources,
+        LatentSampleCutover{
+            .module_id = graph_jit_latent_window_consumer_ring_module_id,
+            .source_storage = iv::graph_jit::SampleRealtimePortStateStorage::ring,
+            .source_history = 4000,
+            .source_latency = 1000,
+            .has_consumer = true,
+        },
+        306);
+}
+
+namespace {
+// The predecessor's sample connections, in the order its module made them.
+std::vector<iv::ConfiguredSampleConnection> sample_connections_of(
+    std::shared_ptr<iv::ConfiguredGraph const> const& graph,
+    std::size_t connection_count)
+{
+    auto sample_connections = std::vector<iv::ConfiguredSampleConnection>(
+        graph->connections.configured_sample_connections().begin(),
+        graph->connections.configured_sample_connections().end());
+    if (sample_connections.size() != connection_count) {
+        throw std::runtime_error("unexpected sample connection count");
+    }
+    return sample_connections;
+}
+
+// A copy of the predecessor whose sample connections are replaced.
+std::shared_ptr<iv::ConfiguredGraph const> with_sample_connections(
+    std::shared_ptr<iv::ConfiguredGraph const> const& predecessor,
+    std::vector<iv::ConfiguredSampleConnection> const& sample_connections)
+{
+    auto const event_connections = std::vector<iv::ConfiguredEventConnection>(
+        predecessor->connections.configured_event_connections().begin(),
+        predecessor->connections.configured_event_connections().end());
+    auto successor = std::make_shared<iv::ConfiguredGraph>(*predecessor);
+    successor->connections =
+        iv::GraphBuilderConnections::from_configured_connections(
+            sample_connections, event_connections);
+    return successor;
+}
+
+// Copies a predecessor graph and connects one single-channel sample connection
+// to the source of another. Connections are indexed in the order the module
+// made them. Before the edit, `current_peer`, when given, also reads `moved`'s
+// source channel, so a module whose connections change fails here instead of
+// editing a different one.
+std::shared_ptr<iv::ConfiguredGraph const> move_sample_connection_source(
+    std::shared_ptr<iv::ConfiguredGraph const> const& predecessor,
+    std::size_t connection_count,
+    std::size_t moved,
+    std::optional<std::size_t> current_peer,
+    std::size_t new_source)
+{
+    auto sample_connections =
+        sample_connections_of(predecessor, connection_count);
+    auto const& moved_sources = sample_connections[moved].source_channels;
+    if (moved_sources.size() != 1) {
+        throw std::runtime_error("moved sample connection has several sources");
+    }
+    if (current_peer
+        && std::ranges::find(
+               sample_connections[*current_peer].source_channels,
+               moved_sources.front().channel,
+               &iv::ConfiguredSampleConnectionSource::channel)
+            == sample_connections[*current_peer].source_channels.end()) {
+        throw std::runtime_error("unexpected sample connection sources");
+    }
+    if (moved_sources == sample_connections[new_source].source_channels) {
+        throw std::runtime_error("moved sample connection already reads that source");
+    }
+    sample_connections[moved].source_type =
+        sample_connections[new_source].source_type;
+    sample_connections[moved].source_channels =
+        sample_connections[new_source].source_channels;
+    return with_sample_connections(predecessor, sample_connections);
+}
+
+// Copies a predecessor graph and connects one mono sample connection to mono
+// output 0 of the node that connection `targeting` feeds.
+std::shared_ptr<iv::ConfiguredGraph const>
+connect_sample_connection_to_target_output(
+    std::shared_ptr<iv::ConfiguredGraph const> const& predecessor,
+    std::size_t connection_count,
+    std::size_t moved,
+    std::size_t targeting)
+{
+    auto sample_connections =
+        sample_connections_of(predecessor, connection_count);
+    auto const& targets = sample_connections[targeting].target_channels;
+    auto& sources = sample_connections[moved].source_channels;
+    if (targets.size() != 1 || sources.size() != 1) {
+        throw std::runtime_error("unexpected sample connection channel count");
+    }
+    auto const output = iv::SampleOutputChannelId{
+        .bundle = targets.front().bundle,
+        .port = 0,
+        .channel = 0,
+    };
+    if (sources.front().channel == output) {
+        throw std::runtime_error("sample connection already reads that output");
+    }
+    sample_connections[moved].source_type = iv::ChannelTypeId::mono;
+    sources = {iv::ConfiguredSampleConnectionSource{.channel = output}};
+    return with_sample_connections(predecessor, sample_connections);
+}
+
+// Runs the predecessor graph from position 0 to `cutover`, then activates the
+// successor the way GraphExecutor activates a compiled cutover: initialize
+// successor NodeStorage from the predecessor's, execute the cold transfers at
+// the cutover position, run the transition root until every Sequential expiry
+// cursor has advanced by its value count, then run the steady root until
+// `end`. `check(compiled, storage, begin)` runs after every block.
+template<class Check>
+void run_across_graph_edit(
+    iv::GraphJit& jit,
+    std::shared_ptr<iv::NodeDefinitionsSnapshot const> const& definitions,
+    iv::ResourceContext const& resources,
+    std::shared_ptr<iv::ConfiguredGraph const> const& predecessor_graph,
+    std::shared_ptr<iv::ConfiguredGraph const> const& successor_graph,
+    std::uint64_t generation,
+    std::int64_t cutover,
+    std::int64_t end,
+    Check const& check)
+{
+    constexpr std::size_t block = 64;
+    auto predecessor = jit.compile(iv::GraphJitCompileRequest{
+        .project_generation = generation,
+        .graph = predecessor_graph,
+        .definitions = definitions,
+    });
+    ASSERT_TRUE(predecessor.succeeded())
+        << (predecessor.diagnostics.empty()
+                ? ""
+                : predecessor.diagnostics.front().message);
+    iv::GraphJitCompileRequest successor_request{
+        .project_generation = generation + 1,
+        .graph = successor_graph,
+        .definitions = definitions,
+    };
+    auto steady_successor = jit.compile(successor_request);
+    ASSERT_TRUE(steady_successor.succeeded())
+        << (steady_successor.diagnostics.empty()
+                ? ""
+                : steady_successor.diagnostics.front().message);
+    auto specialized = jit.compile_transition(
+        iv::GraphJitTransitionCompileRequest{
+            .successor = successor_request,
+            .steady_successor = steady_successor.compiled_graph,
+            .active_predecessor = predecessor.compiled_graph,
+            .active_predecessor_phase =
+                iv::CompiledGraphRealtimePhase::steady,
+        });
+    ASSERT_TRUE(specialized.succeeded())
+        << (specialized.diagnostics.empty()
+                ? ""
+                : specialized.diagnostics.front().message);
+    auto const& successor = *specialized.compiled_graph;
+    ASSERT_TRUE(successor.cutover);
+
+    auto predecessor_storage = predecessor.compiled_graph
+        ->node_layout.create_storage(resources);
+    predecessor_storage.initialize();
+    for (std::int64_t begin = 0; begin < cutover;
+         begin += static_cast<std::int64_t>(block)) {
+        SCOPED_TRACE("predecessor block at " + std::to_string(begin));
+        predecessor.compiled_graph->root_operations.tick_block(
+            predecessor_storage.buffer().data(),
+            &empty_tick_invocation,
+            index(begin),
+            block);
+        check(*predecessor.compiled_graph, predecessor_storage, begin);
+        if (::testing::Test::HasFatalFailure()) return;
+    }
+
+    auto successor_storage = successor.node_layout.create_storage(resources);
+    successor_storage.initialize(&predecessor_storage);
+    auto prepared = iv::graph_jit::prepare_realtime_port_state_transfers(
+        successor.cutover->state_transition,
+        predecessor_storage.buffer(),
+        successor_storage.buffer());
+    ASSERT_TRUE(prepared.has_value())
+        << (prepared ? std::string{} : prepared.error());
+    iv::graph_jit::execute_realtime_port_state_transfers(
+        *prepared,
+        predecessor_storage.buffer(),
+        successor_storage.buffer(),
+        index(cutover));
+
+    auto read_cursor = [&](std::size_t offset) {
+        std::uint64_t value = 0;
+        std::memcpy(
+            &value, successor_storage.buffer().data() + offset, sizeof(value));
+        return value;
+    };
+    auto const& expiry =
+        successor.cutover->state_transition.sample_expiry_cursors;
+    auto const event_expiry =
+        successor.cutover->state_transition.event_expiry_samples;
+    std::vector<std::uint64_t> activation;
+    for (auto const& cursor : expiry) {
+        activation.push_back(read_cursor(cursor.node_storage_offset));
+    }
+    auto transition = !expiry.empty() || event_expiry != 0;
+    std::uint64_t event_progress = 0;
+    for (auto begin = cutover; begin < end;
+         begin += static_cast<std::int64_t>(block)) {
+        SCOPED_TRACE(
+            std::string{transition ? "transition" : "steady"}
+            + " block at " + std::to_string(begin));
+        auto const operation = transition
+            ? successor.root_operations.transition_tick_block
+            : successor.root_operations.tick_block;
+        ASSERT_NE(operation, nullptr);
+        operation(
+            successor_storage.buffer().data(),
+            &empty_tick_invocation,
+            index(begin),
+            block);
+        check(successor, successor_storage, begin);
+        if (::testing::Test::HasFatalFailure()) return;
+        if (!transition) continue;
+        event_progress += block;
+        auto samples_complete = true;
+        for (std::size_t cursor = 0; cursor < expiry.size(); ++cursor) {
+            samples_complete = samples_complete
+                && read_cursor(expiry[cursor].node_storage_offset)
+                        - activation[cursor]
+                    >= expiry[cursor].value_count;
+        }
+        transition = !(samples_complete && event_progress >= event_expiry);
+    }
+    EXPECT_FALSE(transition)
+        << "the transition realization was still active at the end of the run";
+}
+
+// Runs a graph edit that keeps a CompensatedRampProbe or
+// CompensatedRampHistoryProbe and both of its connections. After every block,
+// before and after the edit, the probe's ramp input must read each ramp value
+// at its own position, `read_latency` values late. Over a ramp source with no
+// latency that is 7: the delay node feeding the probe's slower input has
+// internal latency 5 and output latency 2.
+void expect_compensated_ramp_probe_reads_positions_across_graph_edit(
+    iv::GraphJit& jit,
+    std::shared_ptr<iv::NodeDefinitionsSnapshot const> const& definitions,
+    iv::ResourceContext const& resources,
+    std::shared_ptr<iv::ConfiguredGraph const> const& predecessor_graph,
+    std::shared_ptr<iv::ConfiguredGraph const> const& successor_graph,
+    std::int64_t probe_history,
+    std::int64_t read_latency,
+    std::uint64_t generation)
+{
+    constexpr std::int64_t block = 64;
+    constexpr std::int64_t cutover = 16 * block;
+    // Long enough for a transition realization that carries the history
+    // reader's 5000 values to expire, followed by steady blocks.
+    constexpr std::int64_t end = cutover + 100 * block;
+    run_across_graph_edit(
+        jit, definitions, resources, predecessor_graph, successor_graph,
+        generation, cutover, end,
+        [&](iv::CompiledGraph const& compiled,
+            iv::NodeStorage const& storage,
+            std::int64_t begin) {
+            auto const* probe = find_unique_state<CompensatedRampProbeStateMirror>(
+                compiled.node_layout, storage);
+            ASSERT_NE(probe, nullptr);
+            auto const first = begin - read_latency;
+            auto const lowest = std::max<std::int64_t>(first - probe_history, 0);
+            EXPECT_EQ(probe->read_latency, static_cast<std::uint64_t>(read_latency));
+            EXPECT_EQ(probe->first_position, first);
+            EXPECT_EQ(
+                probe->checked,
+                static_cast<std::uint64_t>(
+                    std::max<std::int64_t>(first + block - lowest, 0)));
+            EXPECT_EQ(probe->mismatches, 0u);
+        });
+}
+} // namespace
+
+// The probe's ramp input and both of its connections are the same in both
+// revisions. The edit connects another node's input to the same ramp source.
+TEST_F(GraphJitRuntimeFixture, CompensatedInputUnaffectedBySecondReaderMove)
+{
+    auto predecessor = configured_module_graph(
+        *revision, graph_jit_compensated_ramp_second_reader_module_id);
+    ASSERT_TRUE(predecessor);
+    // Module order: source -> delayed, delayed -> twice_delayed,
+    // source -> probe.ramp, delayed -> probe.slower,
+    // delayed -> second_reader.fast, twice_delayed -> second_reader.slow.
+    auto const successor =
+        move_sample_connection_source(predecessor, 6, 4, 3, 2);
+    expect_compensated_ramp_probe_reads_positions_across_graph_edit(
+        *jit, definitions, resources, predecessor, successor, 0, 7, 320);
+}
+
+// As above, but the input that moves to the ramp source keeps 5000 values of
+// history, which stay its own across the edit.
+TEST_F(GraphJitRuntimeFixture, CompensatedInputUnaffectedByHistoryReaderMove)
+{
+    auto predecessor = configured_module_graph(
+        *revision, graph_jit_compensated_ramp_history_reader_module_id);
+    ASSERT_TRUE(predecessor);
+    // Module order: source -> delayed, source -> probe.ramp,
+    // delayed -> probe.slower, delayed -> history_reader.in.
+    auto const successor =
+        move_sample_connection_source(predecessor, 4, 3, 2, 1);
+    expect_compensated_ramp_probe_reads_positions_across_graph_edit(
+        *jit, definitions, resources, predecessor, successor, 0, 7, 322);
+}
+
+// As above, and the probe's ramp input also keeps 4 values of history.
+TEST_F(GraphJitRuntimeFixture, CompensatedHistoryInputUnaffectedByHistoryReaderMove)
+{
+    auto predecessor = configured_module_graph(
+        *revision, graph_jit_compensated_ramp_history_probe_module_id);
+    ASSERT_TRUE(predecessor);
+    // Module order: source -> delayed, source -> probe.ramp,
+    // delayed -> probe.slower, delayed -> history_reader.in.
+    auto const successor =
+        move_sample_connection_source(predecessor, 4, 3, 2, 1);
+    expect_compensated_ramp_probe_reads_positions_across_graph_edit(
+        *jit, definitions, resources, predecessor, successor, 4, 7, 324);
+}
+
+// As above, over a latent source with history of its own. The probe's ramp
+// input reads it 9 values late: the source's latency 2 plus 7 of compensation.
+TEST_F(GraphJitRuntimeFixture,
+       CompensatedHistoryInputOfLatentSourceUnaffectedByHistoryReaderMove)
+{
+    auto predecessor = configured_module_graph(
+        *revision, graph_jit_compensated_latent_history_probe_module_id);
+    ASSERT_TRUE(predecessor);
+    // Module order: source -> delayed, source -> probe.ramp,
+    // delayed -> probe.slower, delayed -> history_reader.in.
+    auto const successor =
+        move_sample_connection_source(predecessor, 4, 3, 2, 1);
+    expect_compensated_ramp_probe_reads_positions_across_graph_edit(
+        *jit, definitions, resources, predecessor, successor, 4, 9, 326);
+}
+
+// The reverse of CompensatedInputUnaffectedByHistoryReaderMove: the history
+// reader leaves the probe's ramp source for the delay node, so the source keeps
+// fewer values than before.
+TEST_F(GraphJitRuntimeFixture,
+       CompensatedInputUnaffectedByHistoryReaderLeavingItsSource)
+{
+    auto const module = configured_module_graph(
+        *revision, graph_jit_compensated_ramp_history_reader_module_id);
+    ASSERT_TRUE(module);
+    // Module order: source -> delayed, source -> probe.ramp,
+    // delayed -> probe.slower, delayed -> history_reader.in.
+    auto const predecessor = move_sample_connection_source(module, 4, 3, 2, 1);
+    expect_compensated_ramp_probe_reads_positions_across_graph_edit(
+        *jit, definitions, resources, predecessor, module, 0, 7, 328);
+}
+
+// As CompensatedInputUnaffectedByHistoryReaderMove, but the compensated input
+// converts mono to interleaved mono. InterleavedLatencyCompensationProbe
+// compares it with its slower input at every value.
+TEST_F(GraphJitRuntimeFixture,
+       ConvertedCompensatedInputUnaffectedByHistoryReaderMove)
+{
+    auto predecessor = configured_module_graph(
+        *revision, graph_jit_compensated_converted_history_reader_module_id);
+    ASSERT_TRUE(predecessor);
+    // Module order: source -> delayed, source -> probe.fast,
+    // delayed -> probe.slow, delayed -> history_reader.in.
+    auto const successor =
+        move_sample_connection_source(predecessor, 4, 3, 2, 1);
+    constexpr std::int64_t block = 64;
+    run_across_graph_edit(
+        *jit, definitions, resources, predecessor, successor, 330,
+        16 * block, 116 * block,
+        [](iv::CompiledGraph const& compiled,
+           iv::NodeStorage const& storage,
+           std::int64_t) {
+            auto const* probe =
+                find_unique_state<LatencyCompensationProbeStateMirror>(
+                    compiled.node_layout, storage);
+            ASSERT_NE(probe, nullptr);
+            EXPECT_EQ(probe->marker, 0x1a7e2e0u);
+            EXPECT_EQ(probe->mismatches, 0u);
+        });
+}
+
+namespace {
+constexpr std::int64_t sequence_cutover = 16 * 64;
+
+float ramp_value(std::int64_t position)
+{
+    return position < 0 ? 0.0f : static_cast<float>(position);
+}
+
+// Runs a graph edit around a CompensatedSequenceProbe or SampleSequenceProbe and
+// checks every value its recorded input reads, before and after the cutover at
+// sequence_cutover, against `expected(position)`. The input reads
+// `predecessor_read_latency` values late before the edit and
+// `successor_read_latency` after it.
+template<class Expected>
+void expect_probe_sequence_across_graph_edit(
+    iv::GraphJit& jit,
+    std::shared_ptr<iv::NodeDefinitionsSnapshot const> const& definitions,
+    iv::ResourceContext const& resources,
+    std::shared_ptr<iv::ConfiguredGraph const> const& predecessor_graph,
+    std::shared_ptr<iv::ConfiguredGraph const> const& successor_graph,
+    std::uint64_t predecessor_read_latency,
+    std::uint64_t successor_read_latency,
+    Expected const& expected,
+    std::uint64_t generation)
+{
+    constexpr std::int64_t block = 64;
+    std::size_t mismatches = 0;
+    run_across_graph_edit(
+        jit, definitions, resources, predecessor_graph, successor_graph,
+        generation, sequence_cutover, sequence_cutover + 16 * block,
+        [&](iv::CompiledGraph const& compiled,
+            iv::NodeStorage const& storage,
+            std::int64_t begin) {
+            auto const* probe =
+                find_unique_state<SequenceProbeStateMirror>(
+                    compiled.node_layout, storage);
+            ASSERT_NE(probe, nullptr);
+            EXPECT_EQ(probe->first_index, begin);
+            EXPECT_EQ(
+                probe->read_latency,
+                begin < sequence_cutover
+                    ? predecessor_read_latency
+                    : successor_read_latency);
+            ASSERT_EQ(probe->recorded, static_cast<std::uint64_t>(block));
+            for (std::int64_t offset = 0; offset < block; ++offset) {
+                auto const position = begin + offset;
+                auto const value = probe->values[static_cast<std::size_t>(offset)];
+                auto const wanted = expected(position);
+                if (value == wanted) continue;
+                if (mismatches++ < 8) {
+                    ADD_FAILURE() << "position " << position << " read " << value
+                                  << ", expected " << wanted;
+                }
+            }
+        });
+    EXPECT_EQ(mismatches, 0u) << "positions that read an unexpected value";
+}
+} // namespace
+
+// The probe's ramp input stays connected to its source. The edit moves the
+// probe's slower input to a path 7 values slower, so the ramp input's
+// compensation grows from 7 to 14. It reads its 7 in-flight values, then 7
+// fresh values, then the ramp continues: no value twice, none lost.
+TEST_F(GraphJitRuntimeFixture,
+       GrowingCompensationAddsFreshValuesAfterInFlightValues)
+{
+    auto predecessor = configured_module_graph(
+        *revision, graph_jit_compensated_sequence_module_id);
+    ASSERT_TRUE(predecessor);
+    // Module order: source -> delayed, delayed -> twice_delayed,
+    // source -> probe.ramp, delayed -> probe.slower.
+    auto const successor =
+        connect_sample_connection_to_target_output(predecessor, 4, 3, 1);
+    expect_probe_sequence_across_graph_edit(
+        *jit, definitions, resources, predecessor, successor, 7, 14,
+        [](std::int64_t position) {
+            if (position < sequence_cutover + 7) return ramp_value(position - 7);
+            if (position < sequence_cutover + 14) return 0.0f;
+            return ramp_value(position - 14);
+        },
+        332);
+}
+
+// The reverse edit: the ramp input's compensation shrinks from 14 to 7. It keeps
+// its oldest 7 in-flight values, drops the newest 7, then the ramp continues.
+TEST_F(GraphJitRuntimeFixture,
+       ShrinkingCompensationDropsTheNewestInFlightValues)
+{
+    auto const module = configured_module_graph(
+        *revision, graph_jit_compensated_sequence_module_id);
+    ASSERT_TRUE(module);
+    // Module order: source -> delayed, delayed -> twice_delayed,
+    // source -> probe.ramp, delayed -> probe.slower.
+    auto const predecessor =
+        connect_sample_connection_to_target_output(module, 4, 3, 1);
+    expect_probe_sequence_across_graph_edit(
+        *jit, definitions, resources, predecessor, module, 14, 7,
+        [](std::int64_t position) {
+            if (position < sequence_cutover + 7) return ramp_value(position - 14);
+            return ramp_value(position - 7);
+        },
+        334);
+}
+
+// The edit rewires the probe's ramp input to the offset ramp, which has the same
+// latency, so its compensation stays 7. The input first reads its 7 in-flight
+// values from the old ramp, then the offset ramp's values from the cutover on.
+TEST_F(GraphJitRuntimeFixture,
+       RewiredCompensatedInputReadsItsInFlightValuesFirst)
+{
+    auto predecessor = configured_module_graph(
+        *revision, graph_jit_compensated_sequence_rewire_module_id);
+    ASSERT_TRUE(predecessor);
+    // Module order: source -> delayed, offset_source -> offset_delayed,
+    // source -> probe.ramp, delayed -> probe.slower.
+    auto const successor =
+        move_sample_connection_source(predecessor, 4, 2, 0, 1);
+    expect_probe_sequence_across_graph_edit(
+        *jit, definitions, resources, predecessor, successor, 7, 7,
+        [](std::int64_t position) {
+            if (position < sequence_cutover + 7) return ramp_value(position - 7);
+            return static_cast<float>(position - 7 + 100000);
+        },
+        336);
+}
+
+namespace {
+// The stable identities of a graph's concrete nodes, sorted. An edit test uses
+// them to check that the nodes it expects to survive keep their identity.
+std::vector<iv::graph_jit::StableConcreteNodeId> stable_node_identities(
+    iv::ConfiguredGraph const& graph)
+{
+    auto analysis = build_connection_analysis_plan(graph, 64);
+    if (!analysis) throw std::runtime_error(analysis.error());
+    std::vector<iv::graph_jit::StableConcreteNodeId> identities;
+    for (auto const& node : analysis->nodes) {
+        if (!node.stable_identity) {
+            throw std::runtime_error("GraphJit test node has no stable identity");
+        }
+        identities.push_back(*node.stable_identity);
+    }
+    std::ranges::sort(identities);
+    return identities;
+}
+
+// Runs the edit that moves a composition module's history reader from the delay
+// node to the ramp, and checks after every block that the stereo probe's two
+// channels have never differed.
+void expect_composed_channels_aligned_across_reader_move(
+    iv::GraphJit& jit,
+    std::shared_ptr<iv::NodeDefinitionsSnapshot const> const& definitions,
+    iv::ResourceContext const& resources,
+    iv::PackageRevision const& revision,
+    std::string_view module_id,
+    std::uint64_t generation)
+{
+    auto predecessor = configured_module_graph(revision, module_id);
+    ASSERT_TRUE(predecessor);
+    // Module order: source -> delayed, (source, delayed) -> probe.in,
+    // delayed -> history_reader.in.
+    auto const successor =
+        move_sample_connection_source(predecessor, 3, 2, 1, 0);
+    constexpr std::int64_t block = 64;
+    run_across_graph_edit(
+        jit, definitions, resources, predecessor, successor, generation,
+        16 * block, 116 * block,
+        [](iv::CompiledGraph const& compiled,
+           iv::NodeStorage const& storage,
+           std::int64_t) {
+            auto const* probe =
+                find_unique_state<StereoAlignmentProbeStateMirror>(
+                    compiled.node_layout, storage);
+            ASSERT_NE(probe, nullptr);
+            EXPECT_GT(probe->calls, 0u);
+            EXPECT_EQ(probe->mismatches, 0u);
+        });
+}
+} // namespace
+
+// The probe's planar stereo input composes the ramp, delayed by 7 to align it,
+// with the delay node's output. The edit moves the history reader from the
+// delay node to the ramp. The two channels must stay equal at every value.
+TEST_F(GraphJitRuntimeFixture,
+       ComposedCompensatedChannelUnaffectedByHistoryReaderMove)
+{
+    expect_composed_channels_aligned_across_reader_move(
+        *jit, definitions, resources, *revision,
+        graph_jit_compensated_planar_composition_module_id, 338);
+}
+
+// As above, with an interleaved stereo input.
+TEST_F(GraphJitRuntimeFixture,
+       InterleavedComposedCompensatedChannelUnaffectedByHistoryReaderMove)
+{
+    expect_composed_channels_aligned_across_reader_move(
+        *jit, definitions, resources, *revision,
+        graph_jit_compensated_interleaved_composition_module_id, 340);
+}
+
+// The counter reads its own output through a detach of latency 5, so it outputs
+// floor(position / 5) + 1. The edit moves the history reader from the ramp to the
+// counter's output. The counter's output must continue as if there were no edit.
+TEST_F(GraphJitRuntimeFixture, FeedbackLoopUnaffectedByHistoryReaderMove)
+{
+    auto predecessor = configured_module_graph(
+        *revision, graph_jit_feedback_counter_module_id);
+    ASSERT_TRUE(predecessor);
+    // Module order: counter -> observer.in, source -> history_reader.in,
+    // counter -> counter.in (detached).
+    auto const successor =
+        move_sample_connection_source(predecessor, 3, 1, std::nullopt, 0);
+    expect_probe_sequence_across_graph_edit(
+        *jit, definitions, resources, predecessor, successor, 0, 0,
+        [](std::int64_t position) {
+            return static_cast<float>(position / 5 + 1);
+        },
+        342);
+}
+
+// The probe's ramp input reads its latent source 1000 values late, so its
+// in-flight values span 16 blocks. The source's window and the probe's history
+// share the source's storage, so the cutover runs a transition root whose own
+// records expire after a few values. The edit moves the second reader's fast
+// input to the probe's source.
+TEST_F(GraphJitRuntimeFixture,
+       LongCompensationInFlightValuesOutlastTheTransitionRoot)
+{
+    auto predecessor = configured_module_graph(
+        *revision, graph_jit_long_compensation_module_id);
+    ASSERT_TRUE(predecessor);
+    // Module order: slow_source -> slow_delayed, source -> probe.ramp,
+    // slow_source -> probe.slower, slow_source -> second_reader.fast,
+    // slow_delayed -> second_reader.slow.
+    auto const successor =
+        move_sample_connection_source(predecessor, 5, 3, 2, 1);
+    expect_compensated_ramp_probe_reads_positions_across_graph_edit(
+        *jit, definitions, resources, predecessor, successor, 4, 1000, 344);
+}
+
+// The successor adds a node that nothing reads before the module's other
+// nodes. That renumbers their bundles but changes nothing they read.
+TEST_F(GraphJitRuntimeFixture, CompensatedInputUnaffectedByAddedLeadingNode)
+{
+    bool without_leading = false;
+    bool with_leading = true;
+    std::array predecessor_arguments{
+        iv::details::configuration_argument(without_leading)};
+    std::array successor_arguments{
+        iv::details::configuration_argument(with_leading)};
+    auto const predecessor = configured_module_graph_with_arguments(
+        *revision, graph_jit_leading_node_module_id, predecessor_arguments);
+    auto const successor = configured_module_graph_with_arguments(
+        *revision, graph_jit_leading_node_module_id, successor_arguments);
+    auto const predecessor_nodes = stable_node_identities(*predecessor);
+    auto const successor_nodes = stable_node_identities(*successor);
+    ASSERT_EQ(successor_nodes.size(), predecessor_nodes.size() + 1);
+    ASSERT_TRUE(std::ranges::includes(successor_nodes, predecessor_nodes))
+        << "every predecessor node should survive under its identity";
+    expect_compensated_ramp_probe_reads_positions_across_graph_edit(
+        *jit, definitions, resources, predecessor, successor, 0, 7, 346);
+}
+
+// The successor gives the probe's ramp source latency 3. The probe's slower
+// input reads that source through the delay node, so the ramp input's
+// compensation stays 7 while it now reads the ramp 10 values late. It reads its
+// 7 in-flight values, then 3 fresh values, then the ramp continues.
+TEST_F(GraphJitRuntimeFixture,
+       GrowingSourceLatencyAddsFreshValuesAfterInFlightValues)
+{
+    std::size_t predecessor_latency = 0;
+    std::size_t successor_latency = 3;
+    std::array predecessor_arguments{
+        iv::details::configuration_argument(predecessor_latency)};
+    std::array successor_arguments{
+        iv::details::configuration_argument(successor_latency)};
+    auto const predecessor = configured_module_graph_with_arguments(
+        *revision, graph_jit_source_latency_module_id, predecessor_arguments);
+    auto const successor = configured_module_graph_with_arguments(
+        *revision, graph_jit_source_latency_module_id, successor_arguments);
+    ASSERT_EQ(
+        stable_node_identities(*predecessor),
+        stable_node_identities(*successor))
+        << "every node should survive under its identity";
+    expect_probe_sequence_across_graph_edit(
+        *jit, definitions, resources, predecessor, successor, 7, 10,
+        [](std::int64_t position) {
+            if (position < sequence_cutover + 7) return ramp_value(position - 7);
+            if (position < sequence_cutover + 10) return 0.0f;
+            return ramp_value(position - 10);
+        },
+        348);
+}
+
+// Each node of a module graph is a stable concrete node, so a node that
+// authors move() continues its own State in the next compiled generation,
+// including when the graph holds several nodes of its type.
+TEST_F(GraphJitRuntimeFixture, AuthoredStateMovesToTheSameNodeInTheNextGeneration)
+{
+    auto graph = configured_module_graph(
+        *revision, graph_jit_moving_state_module_id);
+    ASSERT_TRUE(graph);
+    auto predecessor = compile_graph(graph, 330);
+    ASSERT_TRUE(predecessor.succeeded())
+        << (predecessor.diagnostics.empty()
+                ? ""
+                : predecessor.diagnostics.front().message);
+    auto successor = compile_graph(graph, 331);
+    ASSERT_TRUE(successor.succeeded())
+        << (successor.diagnostics.empty()
+                ? ""
+                : successor.diagnostics.front().message);
+
+    // Probe State keyed by the node's migration identity.
+    auto probes = [](iv::CompiledGraph const& compiled,
+                     iv::NodeStorage const& storage) {
+        std::map<std::string, MovingStateProbeStateMirror*> result;
+        auto const& nodes = compiled.node_layout.nodes;
+        for (std::size_t node = 0; node < nodes.size(); ++node) {
+            if (nodes[node].state_size != sizeof(MovingStateProbeStateMirror)) {
+                continue;
+            }
+            EXPECT_FALSE(nodes[node].migration_identity.empty());
+            auto const inserted = result.emplace(
+                nodes[node].migration_identity,
+                static_cast<MovingStateProbeStateMirror*>(
+                    storage.state_ptr(node))).second;
+            EXPECT_TRUE(inserted) << "two probes share a migration identity";
+        }
+        return result;
+    };
+
+    constexpr std::size_t block = 64;
+    constexpr std::uint64_t predecessor_blocks = 4;
+    auto predecessor_storage = predecessor.compiled_graph
+        ->node_layout.create_storage(resources);
+    predecessor_storage.initialize();
+    for (std::uint64_t call = 0; call < predecessor_blocks; ++call) {
+        predecessor.compiled_graph->root_operations.tick_block(
+            predecessor_storage.buffer().data(),
+            &empty_tick_invocation,
+            index(static_cast<std::int64_t>(call * block)),
+            block);
+    }
+    auto const before = probes(*predecessor.compiled_graph, predecessor_storage);
+    ASSERT_EQ(before.size(), 2u);
+    std::uint64_t marker = 0;
+    for (auto const& [identity, state] : before) {
+        EXPECT_EQ(state->ticks, predecessor_blocks);
+        EXPECT_EQ(state->moves, 0u);
+        state->marker = ++marker;
+    }
+
+    auto successor_storage = successor.compiled_graph
+        ->node_layout.create_storage(resources);
+    auto migration = successor_storage.prepare_migration_from(
+        predecessor_storage);
+    migration.commit();
+    successor.compiled_graph->root_operations.tick_block(
+        successor_storage.buffer().data(),
+        &empty_tick_invocation,
+        index(static_cast<std::int64_t>(predecessor_blocks * block)),
+        block);
+
+    auto const after = probes(*successor.compiled_graph, successor_storage);
+    ASSERT_EQ(after.size(), 2u);
+    for (auto const& [identity, state] : after) {
+        SCOPED_TRACE(identity);
+        auto const previous = before.find(identity);
+        ASSERT_NE(previous, before.end());
+        EXPECT_EQ(state->marker, previous->second->marker);
+        EXPECT_EQ(state->moves, 1u);
+        EXPECT_EQ(state->ticks, predecessor_blocks + 1);
+    }
 }
 
 TEST_F(GraphJitRuntimeFixture, GeneratedRootInvokesPersistedTickCaptures)
@@ -12697,7 +14726,10 @@ TEST_F(GraphJitRuntimeFixture, RetainedStereoToMonoHistoryRecordsItsSources)
     }
 }
 
-TEST_F(GraphJitRuntimeFixture, TransitionRootReconstructsMaterializedSampleHistory)
+// The converted history consumer keeps its history in its source's storage,
+// which pairs with the predecessor's by producer, so the cutover transfers the
+// history there and needs no transition root.
+TEST_F(GraphJitRuntimeFixture, CutoverTransfersMaterializedSampleHistoryThroughItsSource)
 {
     auto graph = configured_module_graph(
         *revision, graph_jit_stereo_history_conversion_module_id);
@@ -12731,17 +14763,12 @@ TEST_F(GraphJitRuntimeFixture, TransitionRootReconstructsMaterializedSampleHisto
                 ? ""
                 : specialized.diagnostics.front().message);
     ASSERT_TRUE(specialized.compiled_graph->cutover);
-    ASSERT_NE(
+    EXPECT_EQ(
         specialized.compiled_graph->root_operations.transition_tick_block,
         nullptr);
-    ASSERT_EQ(
+    EXPECT_TRUE(
         specialized.compiled_graph->cutover->state_transition
-            .sample_expiry_cursors.size(),
-        1u);
-    EXPECT_EQ(
-        specialized.compiled_graph->cutover->state_transition
-            .sample_expiry_cursors.front().value_count,
-        5u);
+            .sample_expiry_cursors.empty());
 
     auto predecessor_storage = predecessor.compiled_graph
         ->node_layout.create_storage(resources);
@@ -12757,22 +14784,22 @@ TEST_F(GraphJitRuntimeFixture, TransitionRootReconstructsMaterializedSampleHisto
         index(64),
         64);
 
-    auto transition_storage = specialized.compiled_graph
+    auto successor_storage = specialized.compiled_graph
         ->node_layout.create_storage(resources);
-    transition_storage.initialize(&predecessor_storage);
+    successor_storage.initialize(&predecessor_storage);
     auto prepared = iv::graph_jit::prepare_realtime_port_state_transfers(
         specialized.compiled_graph->cutover->state_transition,
         predecessor_storage.buffer(),
-        transition_storage.buffer());
+        successor_storage.buffer());
     ASSERT_TRUE(prepared.has_value())
         << (prepared ? std::string{} : prepared.error());
     iv::graph_jit::execute_realtime_port_state_transfers(
         *prepared,
         predecessor_storage.buffer(),
-        transition_storage.buffer(),
+        successor_storage.buffer(),
         index(128));
-    specialized.compiled_graph->root_operations.transition_tick_block(
-        transition_storage.buffer().data(),
+    specialized.compiled_graph->root_operations.tick_block(
+        successor_storage.buffer().data(),
         &empty_tick_invocation,
         index(128),
         64);
@@ -12786,13 +14813,13 @@ TEST_F(GraphJitRuntimeFixture, TransitionRootReconstructsMaterializedSampleHisto
         index(128),
         64);
 
-    HistoryConsumerStateMirror* transition_state = nullptr;
+    HistoryConsumerStateMirror* successor_state = nullptr;
     for (std::size_t node = 0;
          node < specialized.compiled_graph->node_layout.nodes.size(); ++node) {
         if (specialized.compiled_graph->node_layout.nodes[node].state_size
             == sizeof(HistoryConsumerStateMirror)) {
-            transition_state = static_cast<HistoryConsumerStateMirror*>(
-                transition_storage.state_ptr(node));
+            successor_state = static_cast<HistoryConsumerStateMirror*>(
+                successor_storage.state_ptr(node));
         }
     }
     HistoryConsumerStateMirror* reference_state = nullptr;
@@ -12804,11 +14831,11 @@ TEST_F(GraphJitRuntimeFixture, TransitionRootReconstructsMaterializedSampleHisto
                 reference_storage.state_ptr(node));
         }
     }
-    ASSERT_NE(transition_state, nullptr);
+    ASSERT_NE(successor_state, nullptr);
     ASSERT_NE(reference_state, nullptr);
-    EXPECT_FLOAT_EQ(transition_state->current, reference_state->current);
-    EXPECT_FLOAT_EQ(transition_state->history_1, reference_state->history_1);
-    EXPECT_FLOAT_EQ(transition_state->history_5, reference_state->history_5);
+    EXPECT_FLOAT_EQ(successor_state->current, reference_state->current);
+    EXPECT_FLOAT_EQ(successor_state->history_1, reference_state->history_1);
+    EXPECT_FLOAT_EQ(successor_state->history_5, reference_state->history_5);
 }
 
 TEST_F(GraphJitRuntimeFixture, SampleOutputUpdateRevisesUnpublishedFrames)
@@ -15124,6 +17151,77 @@ TEST_F(GraphJitRuntimeFixture, UnequalLatencySampleFeedbackMigratesPopulatedAlig
     ASSERT_NE(migrated_state, nullptr);
     expect_converted_feedback_suffix_equal(
         *reference_state, reference_prefix_calls, *migrated_state);
+}
+
+namespace {
+// Activates a recompiled, unchanged feedback graph at index 64 and checks that
+// its converted node reads exactly what it reads in an uninterrupted run.
+void expect_converted_feedback_unaffected_by_recompile(
+    iv::GraphJit& jit,
+    std::shared_ptr<iv::NodeDefinitionsSnapshot const> const& definitions,
+    iv::ResourceContext const& resources,
+    std::shared_ptr<iv::ConfiguredGraph const> const& graph,
+    std::uint64_t generation)
+{
+    ASSERT_TRUE(graph);
+    ASSERT_EQ(stable_node_identities(*graph).size(), 2u);
+    constexpr std::int64_t block = 64;
+    constexpr std::int64_t cutover = 64;
+    constexpr std::int64_t end = 128;
+
+    auto reference = jit.compile(iv::GraphJitCompileRequest{
+        .project_generation = generation + 2,
+        .graph = graph,
+        .definitions = definitions,
+    });
+    ASSERT_TRUE(reference.succeeded())
+        << (reference.diagnostics.empty()
+                ? ""
+                : reference.diagnostics.front().message);
+    auto reference_storage =
+        reference.compiled_graph->node_layout.create_storage(resources);
+    reference_storage.initialize();
+    for (std::int64_t begin = 0; begin < end; begin += block) {
+        reference.compiled_graph->root_operations.tick_block(
+            reference_storage.buffer().data(),
+            &empty_tick_invocation,
+            index(begin),
+            block);
+    }
+    auto const* expected = converted_sample_feedback_state(reference_storage);
+    ASSERT_NE(expected, nullptr);
+
+    ConvertedSampleFeedbackStateMirror actual{};
+    run_across_graph_edit(
+        jit, definitions, resources, graph, graph, generation, cutover, end,
+        [&](auto const&, auto const& storage, std::int64_t) {
+            auto const* state = converted_sample_feedback_state(storage);
+            ASSERT_NE(state, nullptr);
+            actual = *state;
+        });
+    if (::testing::Test::HasFatalFailure()) return;
+
+    ASSERT_EQ(actual.calls, expected->calls);
+    auto const recorded = std::min<std::size_t>(
+        static_cast<std::size_t>(actual.calls), actual.indices.size());
+    for (std::size_t call = 0; call < recorded; ++call) {
+        SCOPED_TRACE("call at " + std::to_string(expected->indices[call]));
+        EXPECT_EQ(actual.indices[call], expected->indices[call]);
+        EXPECT_EQ(actual.block_sizes[call], expected->block_sizes[call]);
+        EXPECT_FLOAT_EQ(actual.first_left[call], expected->first_left[call]);
+        EXPECT_FLOAT_EQ(actual.first_right[call], expected->first_right[call]);
+        EXPECT_FLOAT_EQ(actual.last_left[call], expected->last_left[call]);
+        EXPECT_FLOAT_EQ(actual.last_right[call], expected->last_right[call]);
+    }
+}
+} // namespace
+
+TEST_F(GraphJitRuntimeFixture, RoutedSampleDetachFeedbackUnaffectedByRecompile)
+{
+    expect_converted_feedback_unaffected_by_recompile(
+        *jit, definitions, resources,
+        configured_module_graph(*revision, graph_jit_routed_feedback_module_id),
+        360);
 }
 
 
@@ -17781,11 +19879,13 @@ TEST_F(GraphJitRuntimeFixture,
         &empty_tick_invocation,
         index(64),
         64);
-    ASSERT_EQ(probe->calls, 1u);
-    EXPECT_EQ(probe->event_counts[0], 4u);
-    EXPECT_EQ(probe->first_times[0], 61u);
-    EXPECT_EQ(probe->second_times[0], 67u);
-    EXPECT_EQ(probe->last_times[0], 125u);
+    // The probe's State is moved implicitly, so the successor's block is its
+    // second call.
+    ASSERT_EQ(probe->calls, 2u);
+    EXPECT_EQ(probe->event_counts[1], 4u);
+    EXPECT_EQ(probe->first_times[1], 61u);
+    EXPECT_EQ(probe->second_times[1], 67u);
+    EXPECT_EQ(probe->last_times[1], 125u);
 }
 
 TEST_F(GraphJitRuntimeFixture, PersistentEventRing)

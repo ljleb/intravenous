@@ -1,3 +1,4 @@
+#include <intravenous/basic_nodes/noise.h>
 #include <intravenous/node/lifecycle.h>
 #include <intravenous/node/layout.h>
 #include "module_test_utils.h"
@@ -218,9 +219,16 @@ namespace {
         };
     };
 
-    struct IdentifiedMovable {
-        std::string id;
+    struct StatelessMover {
+        static inline int moves = 0;
 
+        void move(iv::MoveContext<StatelessMover> const&) const
+        {
+            ++moves;
+        }
+    };
+
+    struct IdentifiedMovable {
         struct State {
             std::span<int> scratch;
             int initialized = 0;
@@ -231,11 +239,6 @@ namespace {
         void declare(iv::DeclarationContext<IdentifiedMovable> const& ctx) const
         {
             ctx.local_array<&State::scratch>(2);
-        }
-
-        std::string identity() const
-        {
-            return id;
         }
 
         void initialize(iv::InitializationContext<IdentifiedMovable> const& ctx) const
@@ -265,18 +268,11 @@ namespace {
     };
 
     struct IdentifiedAutoMovable {
-        std::string id;
-
         struct State {
             std::unique_ptr<int> value;
             int initialized = 0;
             int released = 0;
         };
-
-        std::string identity() const
-        {
-            return id;
-        }
 
         void initialize(iv::InitializationContext<IdentifiedAutoMovable> const& ctx) const
         {
@@ -295,17 +291,10 @@ namespace {
     };
 
     struct DifferentTypeSameIdentity {
-        std::string id;
-
         struct State {
             int initialized = 0;
             int released = 0;
         };
-
-        std::string identity() const
-        {
-            return id;
-        }
 
         void initialize(iv::InitializationContext<DifferentTypeSameIdentity> const& ctx) const
         {
@@ -334,8 +323,6 @@ namespace {
     };
 
     struct BackgroundLifecycleNode {
-        std::string id;
-
         struct TockState {
             static inline int live_instances = 0;
 
@@ -354,11 +341,6 @@ namespace {
                 --live_instances;
             }
         };
-
-        std::string identity() const
-        {
-            return id;
-        }
 
         void initialize(
             iv::TockInitializationContext<BackgroundLifecycleNode> const& ctx) const
@@ -700,10 +682,12 @@ int main()
 
     {
         iv::NodeLayoutBuilder original_builder(4);
-        IdentifiedMovable original_a { .id = "moved-later" };
-        IdentifiedMovable original_b { .id = "kept" };
+        IdentifiedMovable original_a;
+        IdentifiedMovable original_b;
         iv::do_declare(original_a, original_builder, {});
         iv::do_declare(original_b, original_builder, {});
+        original_builder.set_node_migration_identity(0, "moved-later");
+        original_builder.set_node_migration_identity(1, "kept");
 
         iv::NodeLayout original_layout = std::move(original_builder).build();
         auto resources = make_resources();
@@ -720,11 +704,13 @@ int main()
 
         iv::NodeLayoutBuilder reloaded_builder(4);
         LocalOnly inserted;
-        IdentifiedMovable reloaded_b { .id = "kept" };
-        IdentifiedMovable reloaded_a { .id = "moved-later" };
+        IdentifiedMovable reloaded_b;
+        IdentifiedMovable reloaded_a;
         iv::do_declare(inserted, reloaded_builder, {});
         iv::do_declare(reloaded_b, reloaded_builder, {});
         iv::do_declare(reloaded_a, reloaded_builder, {});
+        reloaded_builder.set_node_migration_identity(1, "kept");
+        reloaded_builder.set_node_migration_identity(2, "moved-later");
 
         iv::NodeLayout reloaded_layout = std::move(reloaded_builder).build();
         iv::NodeStorage reloaded = reloaded_layout.create_storage(resources);
@@ -745,8 +731,9 @@ int main()
 
     {
         iv::NodeLayoutBuilder original_builder(4);
-        IdentifiedAutoMovable original_node { .id = "same-name" };
+        IdentifiedAutoMovable original_node;
         iv::do_declare(original_node, original_builder, {});
+        original_builder.set_node_migration_identity(0, "same-name");
 
         iv::NodeLayout original_layout = std::move(original_builder).build();
         auto resources = make_resources();
@@ -758,8 +745,9 @@ int main()
         *original_state.value = 211;
 
         iv::NodeLayoutBuilder reloaded_builder(4);
-        DifferentTypeSameIdentity changed_node { .id = "same-name" };
+        DifferentTypeSameIdentity changed_node;
         iv::do_declare(changed_node, reloaded_builder, {});
+        reloaded_builder.set_node_migration_identity(0, "same-name");
 
         iv::NodeLayout reloaded_layout = std::move(reloaded_builder).build();
         iv::NodeStorage reloaded = reloaded_layout.create_storage(resources);
@@ -768,6 +756,142 @@ int main()
         auto& reloaded_state = *static_cast<DifferentTypeSameIdentity::State*>(reloaded.state_ptr(0));
         iv::test::require(reloaded_state.initialized == 1, "same identity with different type should initialize new node");
         iv::test::require(original.initialized_nodes.empty(), "previous storage should release unmatched old node ownership");
+    }
+
+    {
+        // AutoMovable authors no move() and its State can be moved, so a node
+        // with a matching identity moves it implicitly. Its local array keeps
+        // its values, in the successor's own region.
+        auto resources = make_resources();
+        iv::NodeLayoutBuilder original_builder(4);
+        AutoMovable original_node;
+        iv::do_declare(original_node, original_builder, {});
+        original_builder.set_node_migration_identity(0, "implicit");
+        iv::NodeLayout original_layout = std::move(original_builder).build();
+        iv::NodeStorage original = original_layout.create_storage(resources);
+        original.initialize();
+        auto& original_state = *static_cast<AutoMovable::State*>(original.state_ptr(0));
+        *original_state.value = 211;
+        original_state.scratch[0] = 223;
+        original_state.scratch[1] = 227;
+        auto const* original_value = original_state.value.get();
+
+        iv::NodeLayoutBuilder reloaded_builder(4);
+        AutoMovable reloaded_node;
+        iv::do_declare(reloaded_node, reloaded_builder, {});
+        reloaded_builder.set_node_migration_identity(0, "implicit");
+        iv::NodeLayout reloaded_layout = std::move(reloaded_builder).build();
+        iv::NodeStorage reloaded = reloaded_layout.create_storage(resources);
+        reloaded.initialize(&original);
+        auto& reloaded_state = *static_cast<AutoMovable::State*>(reloaded.state_ptr(0));
+
+        iv::test::require(reloaded_state.initialized == 1, "an implicitly moved node should not initialize again");
+        iv::test::require(reloaded_state.value.get() == original_value, "implicit move should transfer the owned value");
+        iv::test::require(original_state.value == nullptr, "implicit move should leave the predecessor's State moved-from");
+        iv::test::require(original_state.released == 0, "a moved predecessor should not be released");
+        iv::test::require(original.initialized_nodes.empty(), "implicit move should transfer release ownership");
+        iv::test::require(reloaded_state.scratch.size() == 2, "implicit move should keep the local array extent");
+        auto const reloaded_bytes = reloaded.buffer();
+        auto const* scratch_bytes = reinterpret_cast<std::byte const*>(reloaded_state.scratch.data());
+        iv::test::require(
+            scratch_bytes >= reloaded_bytes.data()
+                && scratch_bytes < reloaded_bytes.data() + reloaded_bytes.size(),
+            "an implicitly moved local array should point into the successor's storage");
+        iv::test::require(reloaded_state.scratch[0] == 223, "implicit move should carry local array value [0]");
+        iv::test::require(reloaded_state.scratch[1] == 227, "implicit move should carry local array value [1]");
+    }
+
+    {
+        // A node without State can still author move() to run code when it
+        // continues into a new storage.
+        StatelessMover::moves = 0;
+        auto resources = make_resources();
+        iv::NodeLayoutBuilder original_builder(4);
+        StatelessMover original_node;
+        iv::do_declare(original_node, original_builder, {});
+        original_builder.set_node_migration_identity(0, "stateless");
+        iv::NodeLayout original_layout = std::move(original_builder).build();
+        iv::NodeStorage original = original_layout.create_storage(resources);
+        original.initialize();
+
+        iv::NodeLayoutBuilder reloaded_builder(4);
+        StatelessMover reloaded_node;
+        iv::do_declare(reloaded_node, reloaded_builder, {});
+        reloaded_builder.set_node_migration_identity(0, "stateless");
+        iv::NodeLayout reloaded_layout = std::move(reloaded_builder).build();
+        iv::NodeStorage reloaded = reloaded_layout.create_storage(resources);
+        reloaded.initialize(&original);
+
+        iv::test::require(StatelessMover::moves == 1, "a stateless node's explicit move() should run once");
+    }
+
+    {
+        // After an edit, a node functions as if it were freshly initialized
+        // with its new arguments. UniformNoise continues its sequence while its
+        // seed is unchanged, and always draws from its current range.
+        auto resources = make_resources();
+        auto declare_noise = [](iv::UniformNoise const& node) {
+            iv::NodeLayoutBuilder builder(4);
+            iv::do_declare(node, builder, {});
+            builder.set_node_migration_identity(0, "noise");
+            return std::move(builder).build();
+        };
+        auto noise_state = [](iv::NodeStorage const& storage) -> iv::UniformNoise::State& {
+            return *static_cast<iv::UniformNoise::State*>(storage.state_ptr(0));
+        };
+
+        iv::UniformNoise original_node(iv::Sample{-1.0f}, iv::Sample{1.0f}, 7u);
+        auto const original_layout = declare_noise(original_node);
+        iv::NodeStorage original = original_layout.create_storage(resources);
+        original.initialize();
+        noise_state(original).generator.discard(5);
+        auto const advanced = noise_state(original).generator;
+
+        iv::UniformNoise wider_node(iv::Sample{-2.0f}, iv::Sample{2.0f}, 7u);
+        auto const wider_layout = declare_noise(wider_node);
+        iv::NodeStorage wider = wider_layout.create_storage(resources);
+        wider.initialize(&original);
+        iv::test::require(noise_state(wider).generator == advanced, "an unchanged seed should continue the predecessor's sequence");
+        iv::test::require(noise_state(wider).distribution.a() == -2.0f, "the distribution should follow the successor's minimum");
+        iv::test::require(noise_state(wider).distribution.b() == 2.0f, "the distribution should follow the successor's maximum");
+
+        iv::UniformNoise reseeded_node(iv::Sample{-2.0f}, iv::Sample{2.0f}, 11u);
+        auto const reseeded_layout = declare_noise(reseeded_node);
+        iv::NodeStorage reseeded = reseeded_layout.create_storage(resources);
+        reseeded.initialize(&wider);
+        iv::test::require(noise_state(reseeded).generator == std::mt19937{11u}, "a changed seed should start the successor's own sequence");
+    }
+
+    {
+        // UniformToPower's State is computed from its arguments, so a
+        // successor with a new lambda holds the weights a fresh node would.
+        auto resources = make_resources();
+        auto declare_power = [](iv::UniformToPower const& node) {
+            iv::NodeLayoutBuilder builder(4);
+            iv::do_declare(node, builder, {});
+            builder.set_node_migration_identity(0, "power");
+            return std::move(builder).build();
+        };
+        auto weights = [](iv::NodeStorage const& storage) {
+            return static_cast<iv::UniformToPower::State*>(storage.state_ptr(0))->weights;
+        };
+
+        iv::UniformToPower original_node(-5, 4, iv::Sample{0.5f});
+        auto const original_layout = declare_power(original_node);
+        iv::NodeStorage original = original_layout.create_storage(resources);
+        original.initialize();
+
+        iv::UniformToPower changed_node(-5, 4, iv::Sample{0.25f});
+        auto const changed_layout = declare_power(changed_node);
+        iv::NodeStorage changed = changed_layout.create_storage(resources);
+        changed.initialize(&original);
+        iv::NodeStorage fresh = changed_layout.create_storage(resources);
+        fresh.initialize();
+
+        iv::test::require(weights(changed).size() == weights(fresh).size(), "the successor should keep its own weight count");
+        iv::test::require(
+            std::ranges::equal(weights(changed), weights(fresh)),
+            "the successor's weights should follow its new lambda");
     }
 
     {
@@ -829,7 +953,7 @@ int main()
             "background-state lifecycle test should start without live objects");
 
         iv::NodeLayoutBuilder builder(4);
-        BackgroundLifecycleNode node { .id = "background-state" };
+        BackgroundLifecycleNode node;
         iv::do_declare(node, builder, {});
         iv::TockStateLayout tock_layout = builder.build_tock_state_layout();
         iv::NodeLayout layout = std::move(builder).build();

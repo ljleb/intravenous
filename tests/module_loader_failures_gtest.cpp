@@ -657,7 +657,7 @@ TEST(ModuleLoaderPackages, RegisteredNodeAndModuleUseProviderConstructionArgumen
     ASSERT_TRUE(event_protocol_stream);
     auto const event_protocol = nlohmann::ordered_json::parse(
         event_protocol_stream);
-    EXPECT_EQ(event_protocol["formatVersion"], 1);
+    EXPECT_EQ(event_protocol["formatVersion"], 0);
     ASSERT_EQ(event_protocol["eventTypes"].size(), 1u);
     EXPECT_FALSE(event_protocol["eventTypes"][0]["nominalId"]
         .get<std::string>().empty());

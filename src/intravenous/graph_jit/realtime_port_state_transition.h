@@ -35,14 +35,22 @@ enum class InheritedRealtimePortStateRealization : std::uint8_t {
 
 // One surviving semantic port-state piece across a graph-generation boundary.
 // Indices refer to the immutable metadata of the predecessor/current compiled
-// graphs. The inherited interval is relative to the cutover position: history
-// occupies a negative interval ending at zero, while authored output latency
-// occupies a non-negative interval beginning at zero.
+// graphs. Intervals are relative to the cutover position. Tick output history
+// (for a sample output, its whole history + latency window) occupies a negative
+// interval ending at zero, and a Tick event output's stamped latency a
+// non-negative interval beginning at zero. A Sequential input's window is
+// [-history, T): its history, then its in-flight values, where T is the position
+// at which its source's values resume. The input inherits the overlap of both
+// histories and its first min(old in-flight count, T) in-flight values; the
+// rest of its window is fresh.
 struct RealtimePortStateTransition {
     std::size_t previous_requirement_index = 0;
     std::size_t current_requirement_index = 0;
     std::size_t previous_realization_index = 0;
     std::size_t current_realization_index = 0;
+    // Complete successor interval.
+    std::int64_t target_begin = 0;
+    std::int64_t target_end = 0;
     std::int64_t inherited_begin = 0;
     std::int64_t inherited_end = 0;
     std::size_t inherited_extent_samples = 0;

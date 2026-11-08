@@ -47,7 +47,7 @@ export function readProjectSessionDescriptor(
     if (!value || typeof value !== "object") return null;
     const descriptor = value as Partial<ProjectSessionDescriptor>;
     const endpoint = descriptor.endpoint;
-    if (descriptor.protocolVersion !== 1
+    if (descriptor.protocolVersion !== 0
         || descriptor.projectRoot !== canonicalProjectRoot(projectRoot)
         || typeof descriptor.pid !== "number"
         || typeof descriptor.startupTimeUnixMs !== "number"

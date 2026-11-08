@@ -14,10 +14,11 @@ struct ModuleMessageLocalRefs;
 namespace details {
 struct ConfigurationTypeIdentity;
 }
-// Invalidate package compilation caches when the compiler-record or
-// configured-graph wire contract changes (including the replay flag), or the
-// node-code object the finalizer writes beside the package LLVM.
-inline constexpr std::uint32_t IV_PACKAGE_ABI_VERSION = 5;
+// The loader rejects a package whose iv_package_abi_version() differs from this
+// value. It stays 0 and is never raised: a package build signature already
+// contains this header's text and the identity of the DSL precompiled header,
+// so a changed host header rebuilds every package.
+inline constexpr std::uint32_t IV_PACKAGE_ABI_VERSION = 0;
 
 struct ModuleDataView {
     void const* data = nullptr;

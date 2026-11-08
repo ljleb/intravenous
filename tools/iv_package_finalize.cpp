@@ -2927,7 +2927,7 @@ void write_node_event_protocol(
         fail("cannot create semantic event protocol '" + temporary.string() + "'");
     }
     output << formatv("{0:2}", json::Value(json::Object{
-        {"formatVersion", std::int64_t{1}},
+        {"formatVersion", std::int64_t{0}},
         {"eventTypes", std::move(event_json)},
         {"definitions", std::move(definition_json)},
     })).str() << '\n';

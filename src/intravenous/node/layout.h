@@ -92,6 +92,12 @@ namespace iv {
             void const* node = nullptr;
             void const* node_type = nullptr;
             char const* node_type_name = nullptr;
+            // Identity of this concrete node across graph revisions, assigned
+            // by whoever declares the layout (GraphJit uses the node's
+            // StableConcreteNodeId). NodeStorage migrates State only between
+            // records with equal non-empty identities; an anonymous node
+            // starts fresh.
+            std::string migration_identity{};
             std::optional<NodeStateStructure> state_structure {};
             ptrdiff_t state_offset = 0;
             size_t state_size = 0;
@@ -177,6 +183,9 @@ namespace iv {
 
         void override_node_state_structures(
             size_t node_index, NodeStateStructures const& structures);
+
+        // See NodeLayout::NodeRecord::migration_identity.
+        void set_node_migration_identity(size_t node_index, std::string identity);
 
         template<typename A>
         bool has_import_array(std::string const& id) const

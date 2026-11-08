@@ -286,9 +286,7 @@ public:
                 || binding.absolute_pace_exponent != absolute_pace_exponent
                 || geometry.value_size_bytes == 0
                 || binding.storage.value_capacity == 0
-                || !std::has_single_bit(binding.storage.value_capacity)
-                || binding.storage.storage_latency
-                    >= binding.storage.value_capacity) {
+                || !std::has_single_bit(binding.storage.value_capacity)) {
                 return;
             }
             auto const channels = channel_count(layout);
@@ -304,9 +302,7 @@ public:
                 if (!source.storage || source.value_capacity == 0
                     || !std::has_single_bit(source.value_capacity)
                     || source.value_stride_bytes < geometry.value_size_bytes
-                    || source.value_delay >= source.value_capacity
-                    || binding.storage.storage_latency
-                        >= source.value_capacity) {
+                    || source.value_delay >= source.value_capacity) {
                     return;
                 }
             }
@@ -323,7 +319,7 @@ public:
                 return;
             }
             auto const recorded_range = GlobalIndexRange{
-                .begin = GlobalIndex::from_bits(projection->begin_ordinal_bits),
+                .begin = GlobalIndex::from_bits(projection->begin_index_bits),
                 .extent = selected_count,
             };
             if (static_cast<std::size_t>(recorded_range.extent)
@@ -366,9 +362,8 @@ public:
                 auto append_value = [&](std::size_t frame,
                                         std::size_t channel) noexcept {
                     auto const& source = binding.storage.channels[channel];
-                    auto const delayed = binding.sequential_begin_ordinal
-                        + binding.storage.storage_latency + frame
-                        - source.value_delay;
+                    auto const delayed = binding.sequential_begin_index
+                        + frame - source.value_delay;
                     auto const source_frame = static_cast<std::size_t>(
                         delayed & (source.value_capacity - 1));
                     return writer.append(std::span<std::byte const>{
@@ -615,7 +610,8 @@ public:
         graph_jit::SequentialInputInitializeFunction initialize = nullptr;
         // Frame f holds the current window's position sample_index + f. The
         // consumer's history is node-owned realtime state, so the window never
-        // reaches behind the current block and its ordinal stays zero.
+        // reaches behind the current block and its sequential begin index stays
+        // zero.
         PersistedContinuousStorage values{};
         ReflectedContinuousInputPortBinding binding{};
 
@@ -656,7 +652,6 @@ public:
                 .storage = {
                     .geometry = geometry,
                     .value_capacity = capacity,
-                    .storage_latency = 0,
                     .channel_layout = layout,
                 },
                 .history = 0,
