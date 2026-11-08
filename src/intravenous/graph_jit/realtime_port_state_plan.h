@@ -150,6 +150,11 @@ struct SampleRealtimePortStateStorageView {
     std::optional<std::size_t> callback_arena_offset{};
     std::size_t storage_size_bytes = 0;
     std::optional<std::vector<std::byte>> constant_value{};
+    // The value of every frame of this storage before anything is written to
+    // it, when its persistent allocation declares one: a feedback timeline's
+    // detach() initial value, or a slot-fed input timeline's neutral value.
+    // Producer storage declares none.
+    std::optional<std::vector<std::byte>> initial_value{};
 };
 
 struct SampleRealtimePortStateMaterialization {
@@ -182,6 +187,9 @@ struct SampleRealtimePortStateRealization {
     // Each view already includes its source read latency in timeline_offset.
     std::vector<SampleRealtimePortStateCompositionSource>
         composition_sources{};
+    // One value of a Sequential input's geometry: its neutral_value. Empty for
+    // an output.
+    std::vector<std::byte> neutral_value{};
 };
 
 enum class EventRealtimePortStateStorage : std::uint8_t {

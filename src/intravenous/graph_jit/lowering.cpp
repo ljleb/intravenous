@@ -6374,6 +6374,33 @@ std::expected<void, std::string> emit_execution_step(
         }
     }
 
+    for (auto const materialization_index :
+         step.sample_transition_materializations_before) {
+        if (materialization_index
+            >= plan.sample_ports.storage.materializations.size()) {
+            return std::unexpected(
+                "GraphJit execution plan references a missing pre-callback transition materialization");
+        }
+        auto materialized = emit_sample_materialization(
+            builder,
+            plan.sample_ports.storage,
+            plan.sample_ports.storage.materializations[materialization_index],
+            realtime_storage,
+            root_index,
+            sample_index,
+            block_size);
+        if (!materialized) {
+            return std::unexpected(std::move(materialized.error()));
+        }
+        if (auto marked = mark_sample_write(
+                plan.sample_ports.storage
+                    .materializations[materialization_index]
+                    .target_representation);
+            !marked) {
+            return marked;
+        }
+    }
+
     detail::PrimitiveActivityPlan const* activity = nullptr;
     if (!skip) {
         if (step.configuration_index
@@ -8681,6 +8708,7 @@ specialize_transition_plan(
         std::optional<std::size_t> source_position;
         bool source_after_composition = false;
         bool source_before_consumer_materialization = false;
+        bool source_before_consumer_composition = false;
         if (output_window) {
             source_position = target_position;
         } else {
@@ -8713,7 +8741,12 @@ specialize_transition_plan(
                     ? composition->before_execution_position
                     : std::optional<std::size_t>{
                         composition->after_execution_position};
-                source_after_composition = true;
+                // A composition that runs before its consumer is written in
+                // the consumer's own step, before its callback.
+                source_before_consumer_composition =
+                    composition->before_execution_position.has_value();
+                source_after_composition =
+                    !source_before_consumer_composition;
             } else {
                 if (source.producer_group_index
                         >= transition_plan.connections.sample_producer_groups.size()) {
@@ -8877,7 +8910,8 @@ specialize_transition_plan(
                 .source_layout = source.channel_layout,
                 .target_layout = source.channel_layout,
             };
-            if (source_before_consumer_materialization) {
+            if (source_before_consumer_materialization
+                || source_before_consumer_composition) {
                 mirror.before_execution_position = *source_position;
             } else {
                 mirror.after_execution_position = *source_position;
@@ -8908,7 +8942,10 @@ specialize_transition_plan(
                         return timeline.timeline_representation
                             == *source_representation;
                     });
-            if (source_is_feedback_timeline || source_after_composition) {
+            if (source_before_consumer_composition) {
+                source_step.sample_transition_materializations_before
+                    .push_back(materialization_index);
+            } else if (source_is_feedback_timeline || source_after_composition) {
                 source_step.sample_transition_materializations_after
                     .push_back(materialization_index);
             } else if (source_before_consumer_materialization) {

@@ -3372,20 +3372,107 @@ built, all 790 tests pass, measured below; repository owner).*
         `resolve_sample_transfer_conflicts()` still moves the record to
         transition-only storage when two records disagree on a shared timeline
         slot.
+    - *Fourth collaborator run (2026-11-08): all 811 tests pass.*
+    - *Reproduction tests for two remaining gaps (2026-11-08; not yet run).* Both
+      need no production change. The new nodes and modules are at the end of
+      package part 1.
+      - `GrowingDetachLatencyReadsNeutralValuesAfterInFlightValues`.
+        - `NeutralFeedbackCounter` adds one to its input, whose authored
+          `neutral_value` is 100. `neutral_feedback_counter_module` feeds its
+          output back through a `detach()` with no initial value. By the
+          `detach()` contract (node_ref_dsl_contract.md), that storage starts at
+          the input's neutral value. Its initial value is not zero, so the loop
+          uses a `copy` feedback timeline rather than the producer's home ring.
+        - The edit lengthens the `detach()` from 5 to 7. The input's window
+          `[0, 7)` inherits `[0, 5)`; positions 5 and 6 are fresh.
+        - The test expects those two positions to read 100, as the loop's first
+          positions do. Expected to fail: `execute_realtime_port_state_transfers()`
+          sets every fresh position to zero (`std::memset`). The counter therefore
+          outputs 1 instead of 101 there, and every value derived from them
+          differs.
+      - `RewiredChannelBesideDetachedChannelReadsItsNewSource`.
+        - `RoutedHistoryProbe` has a stereo input with 3 values of history.
+          `routed_rewire_module` feeds the probe's output back to the left channel
+          through `detach(4)`, and connects a ramp to the right channel. The edit
+          rewires the right channel to the offset ramp.
+        - Because the two channels have different detach settings, the connection
+          is routed. Its final `SampleCompositionPlan` runs before the consumer
+          (`before_execution_position`).
+        - The right channel's record is composed. Its predecessor and successor
+          sources are different producers, so they do not pair, and the record
+          moves to transition-only storage.
+        - `specialize_transition_plan()` (lowering.cpp) then redirects that input
+          channel to a private suffix ring. It adds a `SampleMaterializationPlan`
+          (the local `mirror`) that copies the composition's target into that
+          ring. Because the composition runs before the consumer, it appends that
+          materialization to the consumer step's own
+          `sample_transition_materializations_after`, which runs after the
+          consumer's callback. The callback therefore reads ring positions that
+          the copy has not yet written.
+        - Expected to fail with 0 at every right-channel position of the
+          transition root's block.
+    - *Fifth collaborator run (2026-11-08): 811 of 813 tests pass.* Both new tests
+      fail as predicted.
+      - `GrowingDetachLatencyReadsNeutralValuesAfterInFlightValues`: positions 1029
+        and 1030 read 1 instead of 101, with 292 mismatches in all.
+      - `RewiredChannelBesideDetachedChannelReadsItsNewSource`: every right-channel
+        read in the transition root's block, 1024 to 1087, is 0.
+    - *Decision (human co-author, 2026-11-08).* A fresh position holds what freshly
+      initialized storage would hold there. Behind a `detach()` this is its initial
+      value: the authored one, otherwise the reading input's neutral value.
+      Elsewhere it is the input's `neutral_value`. Recorded in
+      sequential_port_storage_planning.md.
+    - *Fixes (2026-11-08; collaborator build and test run pending).*
+      - *Fresh value.*
+        - `SampleRealtimePortStateStorageView::initial_value` holds the
+          persistent allocation's `initialize_value`. Feedback timelines declare
+          their `detach()` initial value, and slot-fed input timelines declare
+          the neutral value.
+        - `SampleRealtimePortStateRealization::neutral_value` holds an input's
+          neutral value. It comes from the new
+          `initialized_sequential_input_value()` (lowering_plan.cpp), which the
+          input-timeline and `detach()` default paths now also use.
+        - `SampleRealtimePortStateTransfer::fresh_value` is chosen by
+          `sample_fresh_value()`: the target's `initial_value`, otherwise the
+          successor input's neutral value, otherwise zero for a Tick output. A
+          transition-only target takes the value of the steady storage it stands
+          in for.
+        - `execute_realtime_port_state_transfers()` copies `fresh_value` where it
+          used `std::memset`. Preparation checks its size.
+        - In `resolve_sample_transfer_conflicts()`, fresh slots of two claims agree
+          only when their fresh values are equal.
+        - The two hand-built transfers in realtime_port_state_transition_gtest.cpp
+          now carry a zero `fresh_value`.
+      - *Copy order.* The new `PrimitiveExecutionStep::
+        sample_transition_materializations_before` runs after a step's
+        `sample_compositions_before` and before its callback. When the input's
+        steady representation is a composition with `before_execution_position`,
+        `specialize_transition_plan()` places the input's
+        `SampleMaterializationPlan` there. Steps with that list stay unbatched,
+        like steps with any other list.
     - *Known gaps, not implemented:*
-      - A fresh position in a feedback timeline's window is zero-filled, like every
-        transfer target, although a freshly initialized timeline holds its
-        `detach()` initial value.
-      - A transition mirror for a composition that runs before its consumer
-        (`before_execution_position`) is still appended after that consumer. Only
-        routed feedback compositions run before their consumer. With feedback
-        timelines pairing, such an input reaches that path only when another of
-        its sources does not pair, or when its transfers disagree with another
-        record's.
+      - A fresh position in a Sequential input's window is zero-filled
+        (`execute_realtime_port_state_transfers()`). A freshly initialized
+        feedback timeline holds its `detach()` initial value, which defaults to
+        the input's `neutral_value`. *(Addressed by the fixes above.)*
+      - When a composition runs before its consumer (`before_execution_position`),
+        `specialize_transition_plan()` appends the transition-only input's
+        `SampleMaterializationPlan` after that consumer's callback. Only routed
+        compositions run before their consumer. *(Addressed by the fixes above.)*
+      - A converted or composed input's per-source transfers give each source's
+        storage its own fresh value. An input that sums two ordinary producers
+        with coefficients 1 and 1 therefore reads twice its neutral value at a
+        fresh position.
+      - A freshly started generation does not follow the fresh-value rule. An
+        input with a non-zero `neutral_value` that reads an ordinary producer's
+        storage before that producer's first value reads zero bytes.
       - A moved (transition-only) input whose same producer's latency grew needs
         the 8-byte resume index; lowering reports an error for it instead.
       - A moved converted or composed input keeps the mirror at its read delay,
-        so after a rewire it does not play its in-flight values first.
+        so after a rewire it does not play its in-flight values first. (The
+        "mirror" is the `SampleMaterializationPlan` that
+        `specialize_transition_plan()` adds to copy the input's steady
+        representation into its transition-only suffix ring.)
       - A converted or composed input whose window inherits nothing stays
         `fresh_state`, so its fresh positions are not zeroed in shared storage.
       - An input that was disconnected, or only slot-fed, has no predecessor

@@ -78,8 +78,13 @@ struct SampleRealtimePortStateTransfer {
     std::size_t source_materialization_channel = 0;
     std::vector<float> source_composition_coefficients{};
     SampleRealtimePortStateStorageView target_storage{};
-    // Complete successor interval. It is initialized to silence before the
-    // inherited sub-interval is transferred from predecessor storage.
+    // One value of the target's geometry. Every position of the complete
+    // successor interval is set to it before the inherited sub-interval is
+    // transferred from predecessor storage: the value the input's storage
+    // starts with when it declares one (a detach() initial value), otherwise
+    // the successor input's neutral_value, and zero for a Tick output.
+    std::vector<std::byte> fresh_value{};
+    // Complete successor interval.
     std::int64_t target_begin = 0;
     std::int64_t target_end = 0;
     std::int64_t inherited_begin = 0;

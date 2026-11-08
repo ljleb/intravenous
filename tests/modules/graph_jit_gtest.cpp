@@ -225,6 +225,10 @@ constexpr char graph_jit_source_latency_module_id[] =
     "iv.test.graph_jit.state_context.source_latency_module";
 constexpr char graph_jit_routed_feedback_module_id[] =
     "iv.test.graph_jit.state_context.routed_feedback_module";
+constexpr char graph_jit_neutral_feedback_counter_module_id[] =
+    "iv.test.graph_jit.state_context.neutral_feedback_counter_module";
+constexpr char graph_jit_routed_rewire_module_id[] =
+    "iv.test.graph_jit.state_context.routed_rewire_module";
 constexpr char graph_jit_large_history_rewire_module_id[] =
     "iv.test.graph_jit.state_context.large_history_rewire_module";
 constexpr char graph_jit_latency_compensation_module_id[] = "iv.test.graph_jit.state_context.latency_compensation_module";
@@ -882,6 +886,12 @@ struct SequenceProbeStateMirror {
     std::int64_t first_index = 0;
     std::uint64_t recorded = 0;
     std::array<float, 64> values{};
+};
+
+// State of RoutedHistoryProbe.
+struct RoutedHistoryProbeStateMirror {
+    std::uint64_t calls = 0;
+    std::array<float, 64> right{};
 };
 
 // State of PlanarStereoAlignmentProbe and InterleavedStereoAlignmentProbe.
@@ -4577,6 +4587,106 @@ struct FiveSampleDelay {
         }
     }
 };
+
+// Adds one to every value its input reads. The input's neutral value is 100.
+struct NeutralFeedbackCounter {
+    static constexpr auto inputs()
+    {
+        return std::array{iv::input<iv::Sample>(
+            "in", iv::InputAccess::sequential, {.neutral_value = 100.0f})};
+    }
+
+    static constexpr auto outputs()
+    {
+        return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::tick)};
+    }
+
+    void tick_block(iv::TickBlockContext<NeutralFeedbackCounter> const& ctx) const
+    {
+        auto const input = ctx.input<"in">();
+        auto output = ctx.output<"out">();
+        for (std::size_t offset = 0; offset < ctx.block_size; ++offset) {
+            output.push(iv::Sample{
+                static_cast<float>(input.get_value(offset)) + 1.0f});
+        }
+    }
+};
+
+// Records the right channel of its stereo input, which keeps 3 values of
+// history, filed by index. Its output adds one to the left channel.
+struct RoutedHistoryProbe {
+    struct State {
+        std::uint64_t calls = 0;
+        std::array<float, 64> right{};
+    };
+
+    static constexpr auto inputs()
+    {
+        return std::array{iv::input<iv::Sample>("in", iv::InputAccess::sequential,
+            {.channel_layout = {
+                .channel_type = iv::ChannelTypeId::stereo,
+                .sample_layout = iv::SampleStreamLayout::interleaved,
+            }})};
+    }
+
+    static constexpr auto outputs()
+    {
+        return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::tick)};
+    }
+
+    void constrain_ports(iv::ConstrainPortsContext<RoutedHistoryProbe>& ctx) const
+    {
+        ctx.input<"in">().history() = 3;
+    }
+
+    void tick_block(iv::TickBlockContext<RoutedHistoryProbe> const& ctx) const
+    {
+        auto& state = ctx.state();
+        auto const input = ctx.input<"in">();
+        auto output = ctx.output<"out">();
+        ++state.calls;
+        for (std::size_t offset = 0; offset < ctx.block_size; ++offset) {
+            auto const index = static_cast<std::size_t>(
+                ctx.index.advanced_by({.whole = offset}).whole().bits());
+            state.right[index % state.right.size()] =
+                static_cast<float>(input.get_value(offset, 1));
+            output.push(iv::Sample{
+                static_cast<float>(input.get_value(offset, 0)) + 1.0f});
+        }
+    }
+};
+
+// The counter reads its own output back through a detach() of `latency`,
+// whose storage starts at the counter input's neutral value.
+void neutral_feedback_counter_module(
+    iv::GraphBuilder& graph,
+    std::size_t latency = 5)
+{
+    auto counter =
+        graph.node<"iv.test.graph_jit.state_context.neutral_feedback_counter">();
+    auto observer =
+        graph.node<"iv.test.graph_jit.state_context.sample_sequence_probe">();
+    observer(counter);
+    counter(static_cast<iv::SamplePortRef>(counter).detach(latency));
+    graph.outputs();
+}
+
+// The probe's left channel reads the probe's own output back through detach().
+// Its right channel reads the ramp, or the offset ramp when `rewired`.
+void routed_rewire_module(iv::GraphBuilder& graph, bool rewired = false)
+{
+    auto ramp = graph.node<"iv.test.graph_jit.state_context.sample_ramp_source">();
+    auto offset_ramp =
+        graph.node<"iv.test.graph_jit.state_context.offset_sample_ramp_source">();
+    auto probe =
+        graph.node<"iv.test.graph_jit.state_context.routed_history_probe">();
+    auto const right = rewired
+        ? static_cast<iv::SamplePortRef>(offset_ramp)
+        : static_cast<iv::SamplePortRef>(ramp);
+    probe(graph.tile<iv::stereo>(
+        static_cast<iv::SamplePortRef>(probe).detach(4), right));
+    graph.outputs();
+}
 
 )cpp";
     static constexpr std::string_view part_2 = R"cpp(struct LatencyCompensationProbe {
@@ -9333,6 +9443,10 @@ IV_MODULE("iv.test.graph_jit.state_context.long_compensation_module", long_compe
 IV_MODULE("iv.test.graph_jit.state_context.leading_node_module", leading_node_module);
 IV_MODULE("iv.test.graph_jit.state_context.source_latency_module", source_latency_module);
 IV_MODULE("iv.test.graph_jit.state_context.routed_feedback_module", routed_feedback_module);
+IV_NODE("iv.test.graph_jit.state_context.neutral_feedback_counter", NeutralFeedbackCounter);
+IV_NODE("iv.test.graph_jit.state_context.routed_history_probe", RoutedHistoryProbe);
+IV_MODULE("iv.test.graph_jit.state_context.neutral_feedback_counter_module", neutral_feedback_counter_module);
+IV_MODULE("iv.test.graph_jit.state_context.routed_rewire_module", routed_rewire_module);
 )cpp";
     static_assert(part_1.size() < 60 * 1024);
     static_assert(part_2.size() < 60 * 1024);
@@ -17222,6 +17336,103 @@ TEST_F(GraphJitRuntimeFixture, RoutedSampleDetachFeedbackUnaffectedByRecompile)
         *jit, definitions, resources,
         configured_module_graph(*revision, graph_jit_routed_feedback_module_id),
         360);
+}
+
+// The edit lengthens the counter's detach() from 5 to 7. Its input reads its 5
+// in-flight values, then 2 positions that nothing filled, which read its neutral
+// value 100 like the loop's first positions, then the longer loop continues.
+TEST_F(GraphJitRuntimeFixture,
+       GrowingDetachLatencyReadsNeutralValuesAfterInFlightValues)
+{
+    std::size_t predecessor_latency = 5;
+    std::size_t successor_latency = 7;
+    std::array predecessor_arguments{
+        iv::details::configuration_argument(predecessor_latency)};
+    std::array successor_arguments{
+        iv::details::configuration_argument(successor_latency)};
+    auto const predecessor = configured_module_graph_with_arguments(
+        *revision, graph_jit_neutral_feedback_counter_module_id,
+        predecessor_arguments);
+    auto const successor = configured_module_graph_with_arguments(
+        *revision, graph_jit_neutral_feedback_counter_module_id,
+        successor_arguments);
+    ASSERT_EQ(
+        stable_node_identities(*successor), stable_node_identities(*predecessor));
+
+    // The observer reads the counter's output: one more than its input.
+    constexpr float neutral = 100.0f;
+    std::vector<float> output(
+        static_cast<std::size_t>(sequence_cutover + 16 * 64));
+    for (std::int64_t position = 0;
+         position < static_cast<std::int64_t>(output.size()); ++position) {
+        auto const at = [&](std::int64_t earlier) {
+            return output[static_cast<std::size_t>(earlier)];
+        };
+        float input = 0.0f;
+        if (position < 5) {
+            input = neutral;
+        } else if (position < sequence_cutover + 5) {
+            input = at(position - 5);
+        } else if (position < sequence_cutover + 7) {
+            input = neutral;
+        } else {
+            input = at(position - 7);
+        }
+        output[static_cast<std::size_t>(position)] = input + 1.0f;
+    }
+    expect_probe_sequence_across_graph_edit(
+        *jit, definitions, resources, predecessor, successor, 0, 0,
+        [&](std::int64_t position) {
+            return output[static_cast<std::size_t>(position)];
+        },
+        366);
+}
+
+// The probe's stereo input keeps 3 values of history. Its left channel feeds
+// the probe's output back through detach(); the edit rewires its right channel
+// from the ramp to the offset ramp. From the cutover on, the right channel reads
+// the offset ramp's values.
+TEST_F(GraphJitRuntimeFixture, RewiredChannelBesideDetachedChannelReadsItsNewSource)
+{
+    bool original = false;
+    bool rewired = true;
+    std::array predecessor_arguments{
+        iv::details::configuration_argument(original)};
+    std::array successor_arguments{
+        iv::details::configuration_argument(rewired)};
+    auto const predecessor = configured_module_graph_with_arguments(
+        *revision, graph_jit_routed_rewire_module_id, predecessor_arguments);
+    auto const successor = configured_module_graph_with_arguments(
+        *revision, graph_jit_routed_rewire_module_id, successor_arguments);
+    ASSERT_EQ(
+        stable_node_identities(*successor), stable_node_identities(*predecessor));
+
+    constexpr std::int64_t block = 64;
+    std::size_t mismatches = 0;
+    run_across_graph_edit(
+        *jit, definitions, resources, predecessor, successor, 370,
+        sequence_cutover, sequence_cutover + 4 * block,
+        [&](iv::CompiledGraph const& compiled,
+            iv::NodeStorage const& storage,
+            std::int64_t begin) {
+            auto const* probe = find_unique_state<RoutedHistoryProbeStateMirror>(
+                compiled.node_layout, storage);
+            ASSERT_NE(probe, nullptr);
+            for (std::int64_t offset = 0; offset < block; ++offset) {
+                auto const position = begin + offset;
+                auto const value = probe->right[
+                    static_cast<std::size_t>(position) % probe->right.size()];
+                auto const wanted = position < sequence_cutover
+                    ? static_cast<float>(position)
+                    : static_cast<float>(position + 100000);
+                if (value == wanted) continue;
+                if (mismatches++ < 8) {
+                    ADD_FAILURE() << "position " << position << " read " << value
+                                  << ", expected " << wanted;
+                }
+            }
+        });
+    EXPECT_EQ(mismatches, 0u) << "positions that read an unexpected value";
 }
 
 

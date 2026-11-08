@@ -25,6 +25,43 @@
 
 namespace iv::graph_jit::detail {
 namespace {
+// One value of a Sequential continuous input's resolved geometry, set by its
+// node's type-owned initializer to the input's neutral or default value.
+std::expected<std::vector<std::byte>, std::string>
+initialized_sequential_input_value(
+    NodeImplementation const* implementation,
+    std::size_t port,
+    ContinuousValueStorageGeometry const& geometry,
+    iv::details::SequentialInputInitialization initialization)
+{
+    if (!implementation || !implementation->host_initialize_sequential_input) {
+        return std::unexpected(
+            "GraphJit continuous input has no type-owned initializer");
+    }
+    std::vector<std::byte> unaligned(
+        geometry.value_size_bytes + geometry.element_alignment - 1);
+    void* aligned = unaligned.data();
+    auto space = unaligned.size();
+    if (!std::align(
+            geometry.element_alignment,
+            geometry.value_size_bytes,
+            aligned,
+            space)
+        || !implementation->host_initialize_sequential_input(
+            port,
+            geometry.value_type,
+            initialization,
+            static_cast<std::byte*>(aligned),
+            geometry.value_size_bytes,
+            geometry.elements_per_value)) {
+        return std::unexpected(
+            "GraphJit continuous input initializer rejected its resolved geometry");
+    }
+    std::vector<std::byte> value(geometry.value_size_bytes);
+    std::memcpy(value.data(), aligned, geometry.value_size_bytes);
+    return value;
+}
+
 void initialize_zero_raw_region(
     std::span<std::byte> storage,
     std::span<std::byte const> data)
@@ -1513,6 +1550,7 @@ plan_sample_realtime_port_state_realizations(
             }
             view.node_storage_offset = allocation.storage_offset;
             view.storage_size_bytes = allocation.size_bytes;
+            view.initial_value = allocation.initialize_value;
             view.storage_frame_count =
                 allocation.kind == SamplePersistentStorageKind::compact_carry
                 ? allocation.retained_frames
@@ -1713,6 +1751,15 @@ plan_sample_realtime_port_state_realizations(
             .requirement_index = requirement_index,
             .authored_storage = std::move(**authored),
         };
+        if (requirement.direction == PortDirection::input) {
+            auto neutral = initialized_sequential_input_value(
+                analysis.primitives[*primitive].implementation,
+                port,
+                primitive_ports.inputs[port].geometry,
+                iv::details::SequentialInputInitialization::neutral);
+            if (!neutral) return std::unexpected(std::move(neutral.error()));
+            realization.neutral_value = std::move(*neutral);
+        }
 
         if (realization.authored_storage.storage
             == SampleRealtimePortStateStorage::immutable_constant) {
@@ -3053,37 +3100,11 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
         std::size_t port,
         iv::details::SequentialInputInitialization initialization)
         -> std::expected<std::vector<std::byte>, std::string> {
-        auto const& geometry =
-            plan.primitives[primitive_index].inputs[port].geometry;
-        auto const* implementation =
-            analysis.primitives[primitive_index].implementation;
-        if (!implementation
-            || !implementation->host_initialize_sequential_input) {
-            return std::unexpected(
-                "GraphJit continuous input has no type-owned initializer");
-        }
-        std::vector<std::byte> unaligned(
-            geometry.value_size_bytes + geometry.element_alignment - 1);
-        void* aligned = unaligned.data();
-        auto space = unaligned.size();
-        if (!std::align(
-                geometry.element_alignment,
-                geometry.value_size_bytes,
-                aligned,
-                space)
-            || !implementation->host_initialize_sequential_input(
-                port,
-                geometry.value_type,
-                initialization,
-                static_cast<std::byte*>(aligned),
-                geometry.value_size_bytes,
-                geometry.elements_per_value)) {
-            return std::unexpected(
-                "GraphJit continuous input initializer rejected its resolved geometry");
-        }
-        std::vector<std::byte> value(geometry.value_size_bytes);
-        std::memcpy(value.data(), aligned, geometry.value_size_bytes);
-        return value;
+        return initialized_sequential_input_value(
+            analysis.primitives[primitive_index].implementation,
+            port,
+            plan.primitives[primitive_index].inputs[port].geometry,
+            initialization);
     };
     auto request_input_timeline = [&](
         std::size_t primitive_index,
@@ -3382,40 +3403,14 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
             return std::unexpected(
                 "GraphJit detached continuous input has no concrete target initializer");
         }
-        auto const* implementation =
-            analysis.primitives[*target_primitive].implementation;
-        if (!implementation
-            || !implementation->host_initialize_sequential_input) {
-            return std::unexpected(
-                "GraphJit detached continuous input has no type-owned neutral initializer");
-        }
-        auto const& geometry = connection.geometry;
-        std::vector<std::byte> unaligned(
-            geometry.value_size_bytes + geometry.element_alignment - 1);
-        void* aligned = unaligned.data();
-        auto space = unaligned.size();
-        if (!std::align(
-                geometry.element_alignment,
-                geometry.value_size_bytes,
-                aligned,
-                space)
-            || !implementation->host_initialize_sequential_input(
-                connection.target_port.port_index,
-                geometry.value_type,
-                iv::details::SequentialInputInitialization::neutral,
-                static_cast<std::byte*>(aligned),
-                geometry.value_size_bytes,
-                geometry.elements_per_value)) {
-            return std::unexpected(
-                "GraphJit detached continuous neutral initializer rejected its resolved geometry");
-        }
+        auto neutral = initialized_sequential_input_value(
+            analysis.primitives[*target_primitive].implementation,
+            connection.target_port.port_index,
+            connection.geometry,
+            iv::details::SequentialInputInitialization::neutral);
+        if (!neutral) return std::unexpected(std::move(neutral.error()));
         for (auto const initial_value : initial_values) {
-            if (*initial_value) continue;
-            initial_value->emplace(geometry.value_size_bytes);
-            std::memcpy(
-                (*initial_value)->data(),
-                aligned,
-                geometry.value_size_bytes);
+            if (!*initial_value) *initial_value = *neutral;
         }
     }
 
@@ -8346,6 +8341,7 @@ std::expected<bool, std::string> realtime_ready_group_batches(
         if (!step.sample_carry_restores_before.empty()
             || !step.sample_materializations_before.empty()
             || !step.sample_compositions_before.empty()
+            || !step.sample_transition_materializations_before.empty()
             || !step.sample_feedback_writes_after.empty()
             || !step.sample_materializations_after.empty()
             || !step.sample_compositions_after.empty()

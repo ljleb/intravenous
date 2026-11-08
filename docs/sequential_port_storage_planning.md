@@ -388,6 +388,11 @@ compiler-owned compensation: a Sequential input that reads its source through an
 authored `detach()` delay owns the values that delay has not yet let it read, and `c`
 counts both. (Newly settled 2026-11-08.)
 
+A fresh position of an input's window holds what freshly initialized storage would
+hold there. Storage behind a `detach()` starts at that detach's initial value: the
+authored one, otherwise the neutral value of the input it feeds. Any other fresh
+position holds the input's `neutral_value`. (Newly settled 2026-11-08.)
+
 The superseded text, under which the input owned only its history, is preserved in
 [historical/input_owned_history_only_2026-11-08.md](historical/input_owned_history_only_2026-11-08.md).
 

@@ -826,6 +826,20 @@ std::expected<void, std::string> classify_shared_successor_storage(
     return {};
 }
 
+// The value a position of a successor sample window holds when no inherited
+// value fills it: the value its target storage starts with when that storage
+// declares one (a feedback timeline's detach() initial value, a slot-fed input
+// timeline's neutral value), otherwise the successor input's neutral_value.
+// A Tick output has no neutral value; new producer storage starts at zero.
+std::vector<std::byte> sample_fresh_value(
+    SampleRealtimePortStateStorageView const& target,
+    SampleRealtimePortStateRealization const& current)
+{
+    if (target.initial_value) return *target.initial_value;
+    if (!current.neutral_value.empty()) return current.neutral_value;
+    return std::vector<std::byte>(target.geometry.value_size_bytes);
+}
+
 std::expected<void, std::string> build_steady_storage_transfers(
     RealtimePortStateTransitionPlan& plan,
     RealtimePortStateRealizations const& previous_realizations,
@@ -855,6 +869,8 @@ std::expected<void, std::string> build_steady_storage_transfers(
                 .transition_index = index,
                 .source_access = SampleRealtimePortStateAccess::callback_only,
                 .target_storage = target.retained_sources.front(),
+                .fresh_value = sample_fresh_value(
+                    target.retained_sources.front(), target),
                 .target_begin = transition.target_begin,
                 .target_end = transition.target_end,
                 .inherited_begin = transition.target_begin,
@@ -878,6 +894,7 @@ std::expected<void, std::string> build_steady_storage_transfers(
                     .source_access = SampleRealtimePortStateAccess::direct,
                     .source_storage = {*before[view]},
                     .target_storage = *after[view],
+                    .fresh_value = sample_fresh_value(*after[view], target),
                     .target_begin = transition.target_begin,
                     .target_end = transition.target_end,
                     .inherited_begin = transition.inherited_begin,
@@ -901,6 +918,8 @@ std::expected<void, std::string> build_steady_storage_transfers(
             .source_materialization_channel =
                 source.authored_storage.representation_channel,
             .target_storage = target.retained_sources.front(),
+            .fresh_value = sample_fresh_value(
+                target.retained_sources.front(), target),
             .target_begin = transition.target_begin,
             .target_end = transition.target_end,
             .inherited_begin = transition.inherited_begin,
@@ -1105,9 +1124,9 @@ std::expected<void, std::string> build_steady_storage_transfers(
 
 // Several sample states may transfer into one successor steady target, such as
 // a producer ring read by several inputs. They may share it only where they put
-// the same value into every slot they both cover: the same predecessor slot, or a
-// fresh value. A native transfer copies a producer's own values, without fresh
-// slots, to the same index of that producer's successor storage, so native
+// the same value into every slot they both cover: the same predecessor slot, or
+// equal fresh values. A native transfer copies a producer's own values, without
+// fresh slots, to the same index of that producer's successor storage, so native
 // transfers always agree with each other. Every other transfer, largest first,
 // is kept while it agrees with the transfers already kept on its target;
 // otherwise its whole semantic state moves to transition-only storage. A state
@@ -1133,6 +1152,8 @@ std::expected<void, std::string> resolve_sample_transfer_conflicts(
         std::optional<std::size_t> source_offset{};
         std::size_t source_channel = 0;
         std::int64_t shift = 0;
+        // The value of every slot it covers outside its inherited slots.
+        std::span<std::byte const> fresh_value{};
     };
     auto const agree = [](Claim const& a, Claim const& b) {
         auto const begin = std::max(a.begin, b.begin);
@@ -1144,12 +1165,16 @@ std::expected<void, std::string> resolve_sample_transfer_conflicts(
         auto const b_end = std::min(b.inherited_end, end);
         auto const a_inherits = a_begin < a_end;
         auto const b_inherits = b_begin < b_end;
-        if (!a_inherits && !b_inherits) return true;
+        auto const same_fresh_value =
+            std::ranges::equal(a.fresh_value, b.fresh_value);
+        if (!a_inherits && !b_inherits) return same_fresh_value;
         if (a_inherits != b_inherits || a_begin != b_begin || a_end != b_end) {
             return false;
         }
+        auto const both_fresh_somewhere = a_begin != begin || a_end != end;
         return !a.derived && !b.derived && a.source_offset == b.source_offset
-            && a.source_channel == b.source_channel && a.shift == b.shift;
+            && a.source_channel == b.source_channel && a.shift == b.shift
+            && (!both_fresh_somewhere || same_fresh_value);
     };
 
     std::unordered_map<SampleTargetKey, std::vector<Claim>, SampleTargetKeyHash>
@@ -1176,6 +1201,7 @@ std::expected<void, std::string> resolve_sample_transfer_conflicts(
             .end = transfer.target_end + offset,
             .inherited_begin = transfer.inherited_begin + offset,
             .inherited_end = transfer.inherited_end + offset,
+            .fresh_value = transfer.fresh_value,
         };
         auto const copies = transfer.source_access
                 == SampleRealtimePortStateAccess::direct
@@ -1256,11 +1282,13 @@ std::expected<void, std::string> resolve_sample_transfer_conflicts(
         });
         if (target == targets.end()) continue;
         auto const offset = view.timeline_offset_frames;
+        auto const fresh_value = sample_fresh_value(view, realization);
         Claim const fresh{
             .begin = begin + offset,
             .end = end + offset,
             .inherited_begin = begin + offset,
             .inherited_end = begin + offset,
+            .fresh_value = fresh_value,
         };
         for (auto const& claim : target->second) {
             if (!agree(fresh, claim)) {
@@ -1524,7 +1552,9 @@ std::expected<void, std::string> validate_prepared_transitions(
                 && transfer.source_storage.empty())
             || transfer.target_begin > transfer.inherited_begin
             || transfer.inherited_begin > transfer.inherited_end
-            || transfer.inherited_end > transfer.target_end) {
+            || transfer.inherited_end > transfer.target_end
+            || transfer.fresh_value.size()
+                != transfer.target_storage.geometry.value_size_bytes) {
             return std::unexpected(
                 "sample transfer is not an executable retained-state transfer");
         }
@@ -2096,6 +2126,12 @@ realize_realtime_port_state_transition_storage(
             source_composition_coefficients.clear();
         }
         std::optional<std::size_t> steady_target_offset;
+        // The suffix stands in for the storage the steady successor reads.
+        auto fresh_value = sample_fresh_value(
+            current.retained_access == SampleRealtimePortStateAccess::direct
+                ? current.retained_sources.front()
+                : current.authored_storage,
+            current);
         auto target = current.authored_storage;
         if (current.retained_access
             == SampleRealtimePortStateAccess::direct) {
@@ -2242,6 +2278,7 @@ realize_realtime_port_state_transition_storage(
             .source_composition_coefficients =
                 std::move(source_composition_coefficients),
             .target_storage = std::move(target),
+            .fresh_value = std::move(fresh_value),
             .target_begin = target_begin,
             .target_end = target_end,
             .inherited_begin = transition.inherited_begin,
@@ -2616,10 +2653,10 @@ void execute_realtime_port_state_transfers(
             IV_ASSERT(
                 target != nullptr,
                 "prepared sample transition target is out of bounds");
-            std::memset(
+            std::memcpy(
                 target,
-                0,
-                transfer.target_storage.geometry.value_size_bytes);
+                transfer.fresh_value.data(),
+                transfer.fresh_value.size());
         }
         for (auto relative = transfer.inherited_begin;
              relative < transfer.inherited_end; ++relative) {

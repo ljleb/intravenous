@@ -550,6 +550,9 @@ struct PrimitiveExecutionStep {
     std::vector<std::size_t> sample_carry_restores_before{};
     std::vector<std::size_t> sample_materializations_before{};
     std::vector<std::size_t> sample_compositions_before{};
+    // Transition-root materializations that must observe this step's
+    // sample_compositions_before and run before its callback reads them.
+    std::vector<std::size_t> sample_transition_materializations_before{};
     std::vector<std::size_t> sample_feedback_writes_after{};
     std::vector<std::size_t> sample_materializations_after{};
     std::vector<std::size_t> sample_compositions_after{};
