@@ -35,10 +35,18 @@ ProducerCapacityPolicy producer_capacity_policy(
     };
 }
 
+// A replacement changes only the steady Tick operations, which run after the
+// structural generation's transition phase and address only its steady
+// NodeStorage prefix. So it is compared with that prefix: the structural
+// generation's transition-only regions, a suffix of its layout, are not part of
+// the canonical layout that dynamic and constant code share.
 bool compatible_realtime_code(
     CompiledGraph const& structural,
     CompiledGraph const& replacement) noexcept
 {
+    auto const steady_regions = static_cast<std::size_t>(std::ranges::count_if(
+        structural.node_layout.regions,
+        [](NodeLayout::Region const& region) { return !region.transition_only; }));
     if (replacement.cutover
         || replacement.project_generation != structural.project_generation
         || replacement.definitions_generation
@@ -48,19 +56,22 @@ bool compatible_realtime_code(
         || replacement.specialization.block_size
             != structural.specialization.block_size
         || replacement.node_layout.storage_size
-            != structural.node_layout.storage_size
+            != replacement.node_layout.steady_storage_size
         || replacement.node_layout.steady_storage_size
             != structural.node_layout.steady_storage_size
-        || replacement.node_layout.storage_alignment
-            != structural.node_layout.storage_alignment
+        // A transition-only region may raise the structural alignment; storage
+        // aligned for it is aligned for the replacement too.
+        || replacement.node_layout.storage_alignment == 0
+        || structural.node_layout.storage_alignment
+                % replacement.node_layout.storage_alignment
+            != 0
         || replacement.node_layout.max_block_size
             != structural.node_layout.max_block_size
         || replacement.node_layout.default_silence_ttl_samples
             != structural.node_layout.default_silence_ttl_samples
         || replacement.node_layout.nodes.size()
             != structural.node_layout.nodes.size()
-        || replacement.node_layout.regions.size()
-            != structural.node_layout.regions.size()
+        || replacement.node_layout.regions.size() != steady_regions
         || replacement.node_layout.imported_arrays.size()
             != structural.node_layout.imported_arrays.size()
         || replacement.node_layout.exported_arrays.size()
@@ -104,7 +115,9 @@ bool compatible_realtime_code(
                         == region.storage_offset;
                 });
     };
-    for (std::size_t i = 0; i < structural.node_layout.regions.size(); ++i) {
+    // NodeLayoutTransitionBuilder appends transition-only regions after the
+    // steady ones, so the steady regions are the first steady_regions entries.
+    for (std::size_t i = 0; i < steady_regions; ++i) {
         auto const& lhs = structural.node_layout.regions[i];
         auto const& rhs = replacement.node_layout.regions[i];
         auto const lhs_manual = owns_manual_control_state(structural, lhs);
@@ -420,9 +433,46 @@ GraphExecutor::ExecutionGeneration::ExecutionGeneration(
     }
 }
 
+// A first generation whose cutover starts from the empty graph writes its fresh
+// values once its storage is initialized, before it is published to the audio
+// thread, and starts in its transition phase when it has a transition root.
 void GraphExecutor::ExecutionGeneration::initialize_first_generation()
 {
     realtime.storage.initialize();
+    if (graph->cutover) {
+        if (!graph->cutover->from_empty_graph) {
+            throw std::logic_error(
+                "GraphExecutor first generation carries a predecessor cutover");
+        }
+        if ((!graph->cutover->state_transition.sample_expiry_cursors.empty()
+                || graph->cutover->state_transition.event_expiry_samples != 0)
+            && !graph->root_operations.transition_tick_block) {
+            throw std::runtime_error(
+                "GraphExecutor transition cutover has no transition root");
+        }
+        auto prepared = graph_jit::prepare_realtime_port_state_transfers(
+            graph->cutover->state_transition, {}, realtime.storage.buffer());
+        if (!prepared) {
+            throw std::runtime_error(
+                "GraphExecutor could not prepare the first generation's fresh values: "
+                + std::move(prepared.error()));
+        }
+        graph_jit::execute_realtime_port_state_transfers(
+            *prepared, {}, realtime.storage.buffer(), GlobalIndex{});
+        auto const storage = realtime.storage.buffer();
+        for (auto& progress : transition_cursor_progress) {
+            std::memcpy(
+                &progress.activation_index,
+                storage.data() + progress.expiry.node_storage_offset,
+                sizeof(progress.activation_index));
+        }
+        realtime_phase.store(
+            transition_cursor_progress.empty()
+                    && graph->cutover->state_transition.event_expiry_samples == 0
+                ? CompiledGraphRealtimePhase::steady
+                : CompiledGraphRealtimePhase::transition,
+            std::memory_order_release);
+    }
     realtime_initialized = true;
 }
 
@@ -529,9 +579,9 @@ void GraphExecutor::ExecutionGeneration::commit_realtime_migration(
         auto const storage = realtime.storage.buffer();
         for (auto& progress : transition_cursor_progress) {
             std::memcpy(
-                &progress.activation_ordinal,
+                &progress.activation_index,
                 storage.data() + progress.expiry.node_storage_offset,
-                sizeof(progress.activation_ordinal));
+                sizeof(progress.activation_index));
         }
         realtime_phase.store(
             CompiledGraphRealtimePhase::transition,
@@ -569,7 +619,7 @@ void GraphExecutor::ExecutionGeneration::update_realtime_phase(
                 &current,
                 storage.data() + progress.expiry.node_storage_offset,
                 sizeof(current));
-            return current - progress.activation_ordinal
+            return current - progress.activation_index
                 >= progress.expiry.value_count;
         });
     auto const events_complete = transition_event_progress
@@ -991,7 +1041,12 @@ GraphExecutorStageResult GraphExecutor::stage(
         && compiled_graph->project_generation <= newest_generation) {
         return GraphExecutorStageResult::ignored_stale;
     }
-    if (compiled_graph->cutover) {
+    if (compiled_graph->cutover && compiled_graph->cutover->from_empty_graph) {
+        if (predecessor) {
+            throw std::invalid_argument(
+                "GraphExecutor successor cannot start from the empty graph");
+        }
+    } else if (compiled_graph->cutover) {
         if (!predecessor) {
             throw std::invalid_argument(
                 "GraphExecutor first generation cannot carry a predecessor cutover");

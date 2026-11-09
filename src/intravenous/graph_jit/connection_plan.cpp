@@ -5949,4 +5949,83 @@ std::expected<ConnectionAnalysisPlan, std::string> build_connection_analysis_pla
     return plan;
 }
 
+std::optional<std::string> raw_region_node_identity(
+    ConnectionAnalysisPlan const& connections,
+    NodeBundleHandle bundle)
+{
+    auto const node = std::ranges::find(
+        connections.nodes, bundle, &PlannedGraphNode::bundle);
+    if (node == connections.nodes.end() || !node->stable_identity) {
+        return std::nullopt;
+    }
+    return '{' + migration_identity_fields(*node->stable_identity) + '}';
+}
+
+namespace {
+// Cannot occur in a stable identity, whose fields are printable text.
+constexpr std::string_view anonymous_raw_region_node = "\x01" "anonymous" "\x01";
+} // namespace
+
+std::string raw_region_node_identity_text(
+    ConnectionAnalysisPlan const& connections,
+    NodeBundleHandle bundle)
+{
+    auto identity = raw_region_node_identity(connections, bundle);
+    return identity ? std::move(*identity)
+                    : std::string{anonymous_raw_region_node};
+}
+
+std::string owned_raw_region_identity(std::string identity)
+{
+    if (identity.find(anonymous_raw_region_node) != std::string::npos) {
+        return {};
+    }
+    return identity;
+}
+
+std::vector<std::string> resolve_detach_identities(
+    std::span<DetachIdentityParts const> detaches)
+{
+    std::vector<std::string> result(detaches.size());
+    std::vector<bool> resolved(detaches.size(), false);
+    // Resolves every remaining detach whose key at this level no other
+    // remaining detach shares. Keys of different levels never compare equal.
+    auto const settle = [&](auto key_of) {
+        std::map<std::string, std::size_t> counts;
+        for (std::size_t index = 0; index < detaches.size(); ++index) {
+            if (resolved[index]) continue;
+            if (auto key = key_of(detaches[index])) ++counts[*key];
+        }
+        for (std::size_t index = 0; index < detaches.size(); ++index) {
+            if (resolved[index]) continue;
+            auto key = key_of(detaches[index]);
+            if (!key || counts[*key] != 1) continue;
+            result[index] = std::move(*key);
+            resolved[index] = true;
+        }
+    };
+    auto const producer = [](DetachIdentityParts const& parts)
+        -> std::optional<std::string> {
+        if (!parts.producer) return std::nullopt;
+        return "producer=" + *parts.producer;
+    };
+    auto const consumer = [&](DetachIdentityParts const& parts)
+        -> std::optional<std::string> {
+        if (!parts.consumer) return std::nullopt;
+        return producer(parts).value_or(std::string{})
+            + ":consumer=" + *parts.consumer;
+    };
+    auto const settings = [&](DetachIdentityParts const& parts)
+        -> std::optional<std::string> {
+        auto base = consumer(parts);
+        if (!base) base = producer(parts);
+        if (!base) return std::nullopt;
+        return *base + ":settings=" + parts.settings;
+    };
+    settle(producer);
+    settle(consumer);
+    settle(settings);
+    return result;
+}
+
 } // namespace iv::graph_jit::detail

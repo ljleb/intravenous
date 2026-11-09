@@ -43,7 +43,13 @@ enum class InheritedRealtimePortStateRealization : std::uint8_t {
 // at which its source's values resume. The input inherits the overlap of both
 // histories and its first min(old in-flight count, T) in-flight values; the
 // rest of its window is fresh.
+//
+// A Sequential input that the predecessor does not have (a new or anonymous
+// port, or every input of a fresh start) owns a window too, and all of it is
+// fresh. Its transition has no predecessor, and its previous_* indices are
+// meaningless.
 struct RealtimePortStateTransition {
+    bool has_predecessor = true;
     std::size_t previous_requirement_index = 0;
     std::size_t current_requirement_index = 0;
     std::size_t previous_realization_index = 0;
@@ -137,6 +143,15 @@ struct SampleRealtimePortStateExpiryCursor {
     std::uint64_t value_count = 0;
 };
 
+// One 8-byte transition-only cell that receives the value of one Sequential
+// pace cursor when the cutover's transfers run: the sequential index of the
+// successor's first block at that pace. A transition-only input's copy from its
+// steady representation reads it to skip the frames its window already holds.
+struct SampleRealtimePortStateCutoverIndex {
+    std::size_t sequential_cursor_node_storage_offset = 0;
+    std::size_t node_storage_offset = 0;
+};
+
 // Cold semantic reconciliation for one prospective generation cutover. This
 // intentionally contains no raw-region transfers: physical transition
 // realization consumes these matches after stable node-port ownership has
@@ -147,6 +162,7 @@ struct RealtimePortStateTransitionPlan {
     std::vector<SampleRealtimePortStateTransfer> sample_transfers{};
     std::vector<EventRealtimePortStateTransfer> event_transfers{};
     std::vector<SampleRealtimePortStateExpiryCursor> sample_expiry_cursors{};
+    std::vector<SampleRealtimePortStateCutoverIndex> sample_cutover_indices{};
     // Event time is project-rate. This horizon is advanced by processed block
     // extents, never by differences between visible GlobalIndex values.
     std::uint64_t event_expiry_samples = 0;
@@ -207,6 +223,27 @@ plan_realtime_port_state_transition(
     RealtimePortStateRealizations const& previous_realizations,
     RealtimePortStateRequirements const& current_requirements,
     RealtimePortStateRealizations const& current_realizations);
+
+// The value every frame of one persistent sample region starts with.
+struct FreshSampleStorageValue {
+    std::size_t node_storage_offset = 0;
+    std::vector<std::byte> value{};
+};
+
+// The fresh values of a graph that starts without a predecessor. Every
+// Sequential input's window [-history, in_flight) then holds its fresh value
+// (sequential_port_storage_planning.md). A reader reads a frame of its source's
+// storage before that source writes it only inside its own window, so when every
+// state with a window in one region agrees on one fresh value, initializing the
+// whole region with it is the same as initializing each window. The result names
+// each such region whose value is not zero bytes. A Tick output's own storage
+// starts at zero. Where two states need different fresh values in one region,
+// one of them needs transition-only storage, which a starting graph cannot have
+// yet (a known gap): that region starts at zero.
+[[nodiscard]] std::expected<std::vector<FreshSampleStorageValue>, std::string>
+plan_fresh_sample_storage_values(
+    RealtimePortStateRequirements const& requirements,
+    RealtimePortStateRealizations const& realizations);
 
 // Realizes sample transition state whose successor steady binding cannot
 // directly receive inherited values. Each source and target retains its own

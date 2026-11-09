@@ -1,5 +1,6 @@
 #include <intravenous/graph_jit/lowering_plan.h>
 #include <intravenous/graph_jit/activity_runtime.h>
+#include <intravenous/graph_jit/realtime_port_state_transition.h>
 #include <intravenous/graph_jit/sample_storage_plan.h>
 #include <intravenous/graph_jit/transient_arena_plan.h>
 #include <intravenous/runtime/package_pipeline_types.h>
@@ -1489,6 +1490,20 @@ plan_sample_realtime_port_state_realizations(
                             .port_index = source_port->port_index,
                         };
                         view.producer_channel = representation_channel;
+                        for (auto const& connection : connections.sample_connections) {
+                            auto const timing = std::ranges::find_if(
+                                connection.source_channel_timings,
+                                [&](SampleSourceChannelTimingPlan const& candidate) {
+                                    return candidate.source.bundle
+                                            == source_port->node_bundle_handle
+                                        && candidate.source.port
+                                            == source_port->port_index;
+                                });
+                            if (timing != connection.source_channel_timings.end()) {
+                                view.producer_latency = timing->source_latency;
+                                break;
+                            }
+                        }
                     }
                 }
             }
@@ -2238,6 +2253,42 @@ plan_event_realtime_port_state_realizations(
         result.push_back(std::move(realization));
     }
     return result;
+}
+
+// Every Sequential input of a graph that starts without a predecessor reads its
+// fresh value at each position of its window. Persistent sample regions on
+// whose fresh value every state agrees start at that value
+// (plan_fresh_sample_storage_values()). Each view of such a region then
+// declares it as its initial_value, as a feedback timeline's view does.
+std::expected<void, std::string> declare_fresh_sample_storage_values(
+    NodeLayout& layout,
+    SampleStoragePlan& storage,
+    RealtimePortStateRequirements const& requirements,
+    RealtimePortStateRealizations& realizations)
+{
+    auto fresh = plan_fresh_sample_storage_values(requirements, realizations);
+    if (!fresh) return std::unexpected(std::move(fresh.error()));
+    for (auto const& region : *fresh) {
+        auto declared = declare_sample_fresh_storage_value(
+            layout, storage, region.node_storage_offset, region.value);
+        if (!declared) return declared;
+    }
+    auto declare_view = [&](SampleRealtimePortStateStorageView& view) {
+        if (!view.node_storage_offset || view.initial_value) return;
+        auto const region = std::ranges::find(
+            *fresh,
+            *view.node_storage_offset,
+            &FreshSampleStorageValue::node_storage_offset);
+        if (region != fresh->end()) view.initial_value = region->value;
+    };
+    for (auto& realization : realizations.sample_states) {
+        declare_view(realization.authored_storage);
+        for (auto& view : realization.retained_sources) declare_view(view);
+        for (auto& source : realization.composition_sources) {
+            declare_view(source.storage);
+        }
+    }
+    return {};
 }
 
 std::expected<PackageImportPlan, std::string> plan_package_imports(
@@ -3313,7 +3364,8 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
                 .execution_position = *execution_position,
                 .migration_identity =
                     "graphjit.sample.disconnected_output:"
-                    + std::to_string(bundle) + "." + std::to_string(port),
+                    + raw_region_node_identity_text(connections, bundle) + "."
+                    + std::to_string(port),
             });
         }
     }
@@ -3972,7 +4024,8 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
             .event_capacity = capacity,
             .persistent = persistent,
             .persistent_ring = persistent_ring,
-            .migration_identity = std::move(migration_identity),
+            .migration_identity =
+                owned_raw_region_identity(std::move(migration_identity)),
             .has_producer_overflow_counter = producer_telemetry,
             .count_relative_offset = 0,
             .read_index_relative_offset = read_index_relative,
@@ -4023,15 +4076,15 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
         }
         return next_power_of_2(required);
     };
-    auto event_group_identity = [](EventProducerGroupPlan const& group) {
+    auto event_group_identity = [&](EventProducerGroupPlan const& group) {
         std::string identity =
             "graphjit.event:"
             + std::to_string(static_cast<unsigned>(group.source_type));
         for (std::size_t source_index = 0;
              source_index < group.sources.size(); ++source_index) {
             auto const source = group.sources[source_index];
-            identity += ':' + std::to_string(source.bundle) + '.'
-                + std::to_string(source.port);
+            identity += ':' + raw_region_node_identity_text(connections, source.bundle)
+                + '.' + std::to_string(source.port);
             if (source_index < group.source_conversions.size()) {
                 auto const& conversion = group.source_conversions[source_index];
                 identity += "[" + std::to_string(
@@ -4351,7 +4404,7 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
             position, EventOperationPhase::after);
         auto const identity_base =
             "graphjit.event.raw_output:"
-            + std::to_string(output.bundle) + "."
+            + raw_region_node_identity_text(connections, output.bundle) + "."
             + std::to_string(output.port)
             + ":history=" + std::to_string(history)
             + ":latency=" + std::to_string(latency);
@@ -6069,8 +6122,8 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
             }
             std::string migration_identity =
                 "graphjit.event:" + std::to_string(static_cast<unsigned>(group.source_type))
-                + ':' + std::to_string(source_id.bundle) + '.'
-                + std::to_string(source_id.port)
+                + ':' + raw_region_node_identity_text(connections, source_id.bundle)
+                + '.' + std::to_string(source_id.port)
                 + ":kind=persistent_ring:history=" + std::to_string(retained_history)
                 + ":latency=" + std::to_string(retained_latency)
                 + ":capacity=" + std::to_string(ring_capacity);
@@ -6091,8 +6144,8 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
         if (compact_carry && !uses_raw_source_directly) {
             std::string migration_identity =
                 "graphjit.event:" + std::to_string(static_cast<unsigned>(group.source_type))
-                + ':' + std::to_string(source_id.bundle) + '.'
-                + std::to_string(source_id.port)
+                + ':' + raw_region_node_identity_text(connections, source_id.bundle)
+                + '.' + std::to_string(source_id.port)
                 + ":kind=compact_carry:history=" + std::to_string(retained_history)
                 + ":latency=" + std::to_string(retained_latency)
                 + ":capacity=" + std::to_string(carry_capacity);
@@ -9057,6 +9110,12 @@ std::expected<LoweringPlan, std::string> build_lowering_plan(
         }
         realtime_port_state_realizations->event_states =
             std::move(*event_realtime_port_state_realizations);
+        auto fresh = declare_fresh_sample_storage_values(
+            declarations->node_layout,
+            realtime_ports->sample_ports.storage,
+            realtime_ports->connections.realtime_port_states,
+            *realtime_port_state_realizations);
+        if (!fresh) return std::unexpected(std::move(fresh.error()));
 
         auto imports = plan_package_imports(
             input, *analysis, realtime_ports->connections.background);

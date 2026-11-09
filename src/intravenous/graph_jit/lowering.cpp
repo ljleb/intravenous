@@ -3624,20 +3624,6 @@ std::expected<void, std::string> emit_sample_materialization(
         context, static_cast<unsigned>(sizeof(std::size_t) * 8));
     auto* sample_type = llvm::Type::getFloatTy(context);
     auto* zero = llvm::ConstantInt::get(size_type, 0);
-    auto* preheader = builder.GetInsertBlock();
-    auto* loop = llvm::BasicBlock::Create(
-        context, "sample.materialize", function);
-    auto* exit = llvm::BasicBlock::Create(
-        context, "sample.materialize.end", function);
-    builder.CreateCondBr(
-        builder.CreateICmpNE(block_size, zero, "sample.materialize.nonempty"),
-        loop,
-        exit);
-
-    builder.SetInsertPoint(loop);
-    auto* frame_offset = builder.CreatePHI(
-        size_type, 2, "sample.materialize.frame");
-    frame_offset->addIncoming(zero, preheader);
     if (materialization.latest_read_latency > materialization.retained_before) {
         return std::unexpected(
             "GraphJit sample materialization has an invalid consumer window");
@@ -3646,6 +3632,61 @@ std::expected<void, std::string> emit_sample_materialization(
         sample_index,
         llvm::ConstantInt::get(size_type, materialization.retained_before),
         "sample.materialize.first");
+    auto const materialized_prefix = materialization.retained_before
+        - materialization.latest_read_latency;
+    auto* materialize_count = builder.CreateAdd(
+        block_size,
+        llvm::ConstantInt::get(size_type, materialized_prefix),
+        "sample.materialize.count");
+    // A transition root's copy into an input's transition-only storage skips
+    // the frames before the end of the window the cutover placed there.
+    llvm::Value* first_offset = zero;
+    if (materialization.transition_cutover_index_storage_offset) {
+        auto* cutover = builder.CreateLoad(
+            size_type,
+            byte_offset_pointer(
+                builder,
+                realtime_storage.persistent_base,
+                *materialization.transition_cutover_index_storage_offset,
+                "sample.materialize.cutover.ptr"),
+            "sample.materialize.cutover");
+        auto* bound = builder.CreateAdd(
+            cutover,
+            llvm::ConstantInt::get(
+                size_type,
+                static_cast<std::uint64_t>(
+                    materialization.transition_first_frame)),
+            "sample.materialize.bound");
+        auto* skip = builder.CreateSub(
+            bound, first_frame, "sample.materialize.skip");
+        first_offset = builder.CreateSelect(
+            builder.CreateICmpSGT(skip, zero, "sample.materialize.skips"),
+            emit_unsigned_min(
+                builder, skip, materialize_count, "sample.materialize.skip.min"),
+            zero,
+            "sample.materialize.first.offset");
+    }
+    auto* preheader = builder.GetInsertBlock();
+    auto* loop = llvm::BasicBlock::Create(
+        context, "sample.materialize", function);
+    auto* exit = llvm::BasicBlock::Create(
+        context, "sample.materialize.end", function);
+    builder.CreateCondBr(
+        builder.CreateAnd(
+            builder.CreateICmpNE(
+                block_size, zero, "sample.materialize.nonempty"),
+            builder.CreateICmpULT(
+                first_offset,
+                materialize_count,
+                "sample.materialize.remaining"),
+            "sample.materialize.enter"),
+        loop,
+        exit);
+
+    builder.SetInsertPoint(loop);
+    auto* frame_offset = builder.CreatePHI(
+        size_type, 2, "sample.materialize.frame");
+    frame_offset->addIncoming(first_offset, preheader);
     auto* absolute_frame = builder.CreateAdd(
         first_frame, frame_offset, "sample.materialize.absolute");
 
@@ -3705,6 +3746,11 @@ std::expected<void, std::string> emit_sample_materialization(
             "continuous.materialize.convert." + std::to_string(element));
         if (!converted) return std::unexpected(std::move(converted.error()));
         for (std::size_t channel = 0; channel < converted->size(); ++channel) {
+            if (!materialization.transition_channels.empty()
+                && !std::ranges::contains(
+                    materialization.transition_channels, channel)) {
+                continue;
+            }
             store_target(
                 channel,
                 element,
@@ -3718,12 +3764,6 @@ std::expected<void, std::string> emit_sample_materialization(
         frame_offset,
         llvm::ConstantInt::get(size_type, 1),
         "sample.materialize.next");
-    auto const materialized_prefix = materialization.retained_before
-        - materialization.latest_read_latency;
-    auto* materialize_count = builder.CreateAdd(
-        block_size,
-        llvm::ConstantInt::get(size_type, materialized_prefix),
-        "sample.materialize.count");
     auto* done = builder.CreateICmpUGE(
         next, materialize_count, "sample.materialize.done");
     builder.CreateCondBr(done, exit, loop);
@@ -8780,6 +8820,9 @@ specialize_transition_plan(
         std::size_t input_read_delay = 0;
         // Delay at which the input's mirror copies its source's values.
         std::size_t mirror_delay = 0;
+        // The first frame the mirror may write, relative to the cutover's
+        // sequential index, when its first copy would otherwise begin earlier.
+        std::optional<std::int64_t> mirror_first_frame;
         if (input_history) {
             if (requirement.configured_port.port_index
                 >= target_ports.inputs.size()) {
@@ -8808,29 +8851,49 @@ specialize_transition_plan(
                     "GraphJit transition input suffix read delay overflows size_t");
             }
             input_read_delay = steady_binding.read_latency + frame_delay;
-            // A direct input's window ends at T, where its source's values
-            // resume. Its mirror copies each value as its source finalizes it,
-            // d - T values before the consumer's newest position, after the
-            // window's inherited and fresh positions.
+            if (input_read_delay
+                > static_cast<std::size_t>(
+                    std::numeric_limits<std::int64_t>::max())) {
+                return std::unexpected(
+                    "GraphJit transition input suffix read delay is not representable");
+            }
+            // The window holds positions [-history, T), where the source's
+            // values resume. Position T lies at frame P + T - d of the suffix,
+            // where P is the cutover's sequential index and d the read delay.
+            auto const resume = transfer->target_end;
+            auto const delay = static_cast<std::int64_t>(input_read_delay);
+            if (resume < 0
+                || transfer->target_storage.timeline_offset_frames != -delay) {
+                return std::unexpected(
+                    "GraphJit transition input window disagrees with its read delay");
+            }
+            auto const window_end = resume - delay;
             if (current_realization.retained_access
                 == SampleRealtimePortStateAccess::direct) {
-                auto const resume = transfer->target_end;
-                if (resume < 0
-                    || static_cast<std::size_t>(resume) > input_read_delay) {
+                if (resume > delay) {
                     return std::unexpected(
                         "GraphJit transition input window ends outside its read delay");
                 }
-                // T beyond the input's compensation means the same producer's
-                // latency grew: its values at the frontier are revisable again,
-                // and skipping them needs the cutover position at run time.
-                if (static_cast<std::size_t>(resume)
-                    > requirement.in_flight_samples) {
-                    return std::unexpected(
-                        "GraphJit transition cannot yet move an input whose producer's latency grew to transition-only storage");
-                }
-                mirror_delay = input_read_delay - static_cast<std::size_t>(resume);
+                // A direct input's source finalizes each value
+                // L = d - in_flight frames before the consumer's newest
+                // position. The mirror copies each value as its source
+                // finalizes it, but not before T: d - min(T, in_flight)
+                // frames back. When T is at most in_flight, its first copy
+                // begins exactly where the window ends.
+                mirror_delay = input_read_delay
+                    - std::min<std::size_t>(
+                        static_cast<std::size_t>(resume),
+                        requirement.in_flight_samples);
             } else {
+                // A converted or composed steady representation holds only the
+                // frames its consumer reads in the current block.
                 mirror_delay = input_read_delay;
+            }
+            // When the source's latency grew (T beyond in_flight), or the
+            // representation is converted or composed, the first copies would
+            // begin inside the window: the mirror skips frames before its end.
+            if (-static_cast<std::int64_t>(mirror_delay) < window_end) {
+                mirror_first_frame = window_end;
             }
         } else {
             auto const& steady_outputs = steady_plan.sample_ports
@@ -8931,6 +8994,26 @@ specialize_transition_plan(
                 // provisional and are copied once mirror_delay reaches them.
                 mirror.retained_before = mirror_delay;
                 mirror.latest_read_latency = mirror_delay;
+                mirror.transition_channels = {
+                    transfer->target_storage.representation_channel};
+                if (mirror_first_frame) {
+                    auto const cursor = transfer->target_storage
+                        .sequential_cursor_node_storage_offset;
+                    auto const cell = std::ranges::find_if(
+                        realized->plan.sample_cutover_indices,
+                        [&](SampleRealtimePortStateCutoverIndex const& index) {
+                            return cursor
+                                && index.sequential_cursor_node_storage_offset
+                                    == *cursor;
+                        });
+                    if (cell == realized->plan.sample_cutover_indices.end()) {
+                        return std::unexpected(
+                            "GraphJit transition input suffix lost its cutover index cell");
+                    }
+                    mirror.transition_cutover_index_storage_offset =
+                        cell->node_storage_offset;
+                    mirror.transition_first_frame = *mirror_first_frame;
+                }
             }
             sample_storage.materializations.push_back(std::move(mirror));
             auto& source_step = transition_plan.execution
@@ -8968,9 +9051,20 @@ specialize_transition_plan(
                 &detail::SampleMaterializationPlan::target_representation);
             if (mirror == sample_storage.materializations.end()
                 || mirror->retained_before != mirror_delay
-                || mirror->latest_read_latency != mirror_delay) {
+                || mirror->latest_read_latency != mirror_delay
+                || mirror->transition_cutover_index_storage_offset.has_value()
+                    != mirror_first_frame.has_value()
+                || (mirror_first_frame
+                    && mirror->transition_first_frame
+                        != *mirror_first_frame)) {
                 return std::unexpected(
                     "GraphJit transition input suffix mirrors channels read at different delays");
+            }
+            if (!std::ranges::contains(
+                    mirror->transition_channels,
+                    transfer->target_storage.representation_channel)) {
+                mirror->transition_channels.push_back(
+                    transfer->target_storage.representation_channel);
             }
         }
         if (input_history) {

@@ -5,6 +5,7 @@
 #include <intravenous/node/layout.h>
 
 #include <cstddef>
+#include <cstdint>
 #include <expected>
 #include <limits>
 #include <optional>
@@ -133,6 +134,18 @@ struct SampleMaterializationPlan {
     // target_history + read_latency and read_latency respectively.
     std::size_t retained_before = 0;
     std::size_t latest_read_latency = 0;
+
+    // Set only for the copy that a transition root makes from an input's steady
+    // representation into its transition-only storage, when that copy must
+    // start after the window the cutover placed there. It then writes no frame
+    // before the sequential index stored at this NodeStorage offset (a
+    // SampleRealtimePortStateCutoverIndex cell) plus transition_first_frame.
+    std::optional<std::size_t> transition_cutover_index_storage_offset{};
+    std::int64_t transition_first_frame = 0;
+    // Set only for that copy as well: the channels of target_layout that the
+    // transition-only storage holds for its inputs. The copy writes no other
+    // channel. Empty means every channel.
+    std::vector<std::size_t> transition_channels{};
 };
 
 struct SampleCompositionInputPlan {
@@ -399,5 +412,15 @@ std::expected<void, std::string> declare_sample_storage(
 std::expected<void, std::string> finalize_sample_storage(
     NodeLayout const& layout,
     SampleStoragePlan& plan);
+
+// Gives the finalized persistent allocation at node_storage_offset the value
+// every one of its frames starts with (FreshSampleStorageValue), through the
+// same raw-region initialization as a declared initialize_value. An allocation
+// that already declares a value must declare this one.
+std::expected<void, std::string> declare_sample_fresh_storage_value(
+    NodeLayout& layout,
+    SampleStoragePlan& plan,
+    std::size_t node_storage_offset,
+    std::vector<std::byte> const& value);
 
 } // namespace iv::graph_jit::detail

@@ -172,7 +172,7 @@ class GraphExecutor {
             realtime_port_state_transition{};
         struct TransitionCursorProgress {
             graph_jit::SampleRealtimePortStateExpiryCursor expiry{};
-            std::uint64_t activation_ordinal = 0;
+            std::uint64_t activation_index = 0;
         };
         // Allocated during cold generation construction. Activation only
         // snapshots the already-migrated cursor values.

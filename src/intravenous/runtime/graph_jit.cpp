@@ -1329,7 +1329,17 @@ public:
         output->setTargetTriple(shared_jit_->jit->getTargetTriple());
 
         std::optional<graph_jit::LoweringTransitionInput> transition_input;
-        if (transition != nullptr) {
+        // A first generation starts from the empty graph, which owns no state.
+        static graph_jit::RealtimePortStateRequirements const
+            empty_graph_requirements{};
+        static graph_jit::RealtimePortStateRealizations const
+            empty_graph_realizations{};
+        if (transition != nullptr && !transition->active_predecessor) {
+            transition_input.emplace(graph_jit::LoweringTransitionInput{
+                .predecessor_requirements = empty_graph_requirements,
+                .predecessor_realizations = empty_graph_realizations,
+            });
+        } else if (transition != nullptr) {
             auto const* predecessor_realizations =
                 &transition->active_predecessor
                     ->realtime_port_state_realizations;
@@ -1434,7 +1444,32 @@ public:
                         GraphJitDiagnosticStage::lowering,
                         "GraphJit transition lowering lost its compiler input");
                 }
-                cutover.emplace(CompiledGraphCutover{
+                auto const from_empty_graph = !transition->active_predecessor;
+                auto const& state = lowering->transition->state_transition;
+                // A first generation needs no cutover when NodeStorage
+                // initialization already gives every window its fresh value:
+                // no state needs transition-only storage, and every fresh-only
+                // transfer writes its region's declared initial value, or zero
+                // bytes into a region that declares none.
+                auto const initialized_by_storage = from_empty_graph
+                    && state.sample_expiry_cursors.empty()
+                    && state.event_expiry_samples == 0
+                    && state.event_transfers.empty()
+                    && std::ranges::all_of(
+                        state.sample_transfers,
+                        [](graph_jit::SampleRealtimePortStateTransfer const& transfer) {
+                            auto const& initial =
+                                transfer.target_storage.initial_value;
+                            return initial
+                                ? *initial == transfer.fresh_value
+                                : std::ranges::all_of(
+                                    transfer.fresh_value,
+                                    [](std::byte value) {
+                                        return value == std::byte{0};
+                                    });
+                        });
+                if (!initialized_by_storage) cutover.emplace(CompiledGraphCutover{
+                    .from_empty_graph = from_empty_graph,
                     .predecessor = transition->active_predecessor,
                     .predecessor_phase =
                         transition->active_predecessor_phase,
@@ -1476,6 +1511,17 @@ public:
     GraphJitCompileResult compile(GraphJitCompileRequest const& request)
     {
         return compile_impl(request, nullptr);
+    }
+
+    // The executor's first generation: a cutover from the empty graph, so
+    // that every Sequential input starts at its fresh values even where two
+    // of them disagree in one region. Without such a need the result is the
+    // steady artifact.
+    GraphJitCompileResult compile_initial_generation(
+        GraphJitCompileRequest const& request)
+    {
+        TransitionCompilation const from_empty_graph{};
+        return compile_impl(request, &from_empty_graph);
     }
 
     // The ProjectGraph edit path with an accepted predecessor: one compilation
@@ -1575,7 +1621,11 @@ GraphJitCompileResult GraphJit::compile_transition(
 GraphJitCompileResult GraphJit::handle_project_graph_transaction(
     ProjectGraphGraphJitRequest const& request)
 {
-    if (!request.predecessor) return compile(request.successor);
+    if (!request.predecessor) {
+        return request.initial_generation
+            ? impl_->compile_initial_generation(request.successor)
+            : compile(request.successor);
+    }
     return impl_->compile_cutover(request.successor, request.predecessor);
 }
 } // namespace iv

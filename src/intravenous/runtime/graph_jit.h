@@ -98,7 +98,14 @@ struct CompiledGraph;
 // Cold cutover program specialized against one exact active predecessor
 // realization. The weak predecessor reference validates staging without
 // retaining obsolete generated code for the successor's entire lifetime.
+//
+// A first generation's cutover starts from the empty graph instead: it names
+// no predecessor, and its transfers write only fresh values. It exists when
+// two states need different fresh values in one region, so that one of them
+// needs transition-only storage, or when a fresh value is not the region's
+// declared initial value.
 struct CompiledGraphCutover {
+    bool from_empty_graph = false;
     std::weak_ptr<CompiledGraph const> predecessor{};
     CompiledGraphRealtimePhase predecessor_phase =
         CompiledGraphRealtimePhase::steady;
@@ -173,9 +180,16 @@ struct GraphJitTransitionCompileRequest {
 // that predecessor's steady realization: the module defines the transition
 // root and the steady root that follows it, and the steady plan it builds
 // first is the predecessor-independent analysis.
+//
+// initial_generation marks the request for the executor's first generation.
+// Without a predecessor, GraphJit then compiles a cutover from the empty graph
+// when the fresh values need one (CompiledGraphCutover::from_empty_graph). A
+// request without a predecessor that is not initial, such as a manual-control
+// recompile, yields the steady artifact.
 struct ProjectGraphGraphJitRequest {
     GraphJitCompileRequest successor{};
     std::shared_ptr<CompiledGraph const> predecessor{};
+    bool initial_generation = false;
 };
 
 // Wall-clock microseconds spent in each phase of one compilation, plus the

@@ -430,7 +430,11 @@ TEST(RealtimePortStateTransition, SelectsImmutableAndPrivateSampleRealizations)
     EXPECT_EQ(transfer.inherited_end, 0);
 }
 
-TEST(RealtimePortStateTransition, NewStateSharingSampleTargetRequiresTransitionStorage)
+// A state the predecessor does not have owns a fresh window too. When it shares
+// a steady target with a surviving state whose inherited values disagree with
+// its fresh values, the new state is the one that moves to transition-only
+// storage; the survivor keeps its values in the shared steady target.
+TEST(RealtimePortStateTransition, NewStateSharingSampleTargetMovesItselfToTransitionStorage)
 {
     iv::graph_jit::RealtimePortStateRequirements previous{
         .states = {requirement(
@@ -475,12 +479,27 @@ TEST(RealtimePortStateTransition, NewStateSharingSampleTargetRequiresTransitionS
 
     ASSERT_TRUE(planned.has_value())
         << (planned ? std::string{} : planned.error());
-    ASSERT_EQ(planned->sample_states.size(), 1u);
+    ASSERT_EQ(planned->sample_states.size(), 2u);
+    auto const& survivor = planned->sample_states[0];
+    EXPECT_TRUE(survivor.has_predecessor);
+    EXPECT_EQ(survivor.current_requirement_index, 0u);
     EXPECT_EQ(
-        planned->sample_states[0].inherited_state_realization,
+        survivor.inherited_state_realization,
+        iv::graph_jit::InheritedRealtimePortStateRealization::
+            transfer_to_steady_storage);
+    auto const& fresh = planned->sample_states[1];
+    EXPECT_FALSE(fresh.has_predecessor);
+    EXPECT_EQ(fresh.current_requirement_index, 1u);
+    EXPECT_EQ(fresh.target_begin, -8);
+    EXPECT_EQ(fresh.target_end, 0);
+    EXPECT_EQ(fresh.inherited_begin, fresh.inherited_end);
+    EXPECT_EQ(fresh.newly_exposed_extent_samples, 8u);
+    EXPECT_EQ(
+        fresh.inherited_state_realization,
         iv::graph_jit::InheritedRealtimePortStateRealization::
             transition_only_storage);
-    EXPECT_TRUE(planned->sample_transfers.empty());
+    ASSERT_EQ(planned->sample_transfers.size(), 1u);
+    EXPECT_EQ(planned->sample_transfers.front().transition_index, 0u);
 
     iv::NodeLayoutBuilder layout_builder(8);
     (void)layout_builder.declare_raw_region(1024);
@@ -496,18 +515,27 @@ TEST(RealtimePortStateTransition, NewStateSharingSampleTargetRequiresTransitionS
         << (realized ? std::string{} : realized.error());
     EXPECT_EQ(realized->node_layout.steady_storage_size, 1024u);
     EXPECT_GT(realized->node_layout.storage_size, 1024u);
-    ASSERT_EQ(realized->plan.sample_transfers.size(), 1u);
-    EXPECT_TRUE(
-        realized->plan.sample_transfers.front().target_transition_only);
-    auto const& target =
-        realized->plan.sample_transfers.front().target_storage;
-    ASSERT_TRUE(target.node_storage_offset.has_value());
-    EXPECT_GE(*target.node_storage_offset, 1024u);
-    auto const target_offset = *target.node_storage_offset;
+    ASSERT_EQ(realized->plan.sample_transfers.size(), 2u);
+    auto const& steady = realized->plan.sample_transfers[0];
+    EXPECT_FALSE(steady.target_transition_only);
+    ASSERT_TRUE(steady.target_storage.node_storage_offset.has_value());
+    EXPECT_EQ(*steady.target_storage.node_storage_offset, 512u);
+    auto const& suffix = realized->plan.sample_transfers[1];
+    EXPECT_TRUE(suffix.target_transition_only);
+    EXPECT_EQ(suffix.transition_index, 1u);
+    EXPECT_TRUE(suffix.source_storage.empty());
+    ASSERT_TRUE(suffix.target_storage.node_storage_offset.has_value());
+    EXPECT_GE(*suffix.target_storage.node_storage_offset, 1024u);
+    auto const suffix_offset = *suffix.target_storage.node_storage_offset;
+    // The moved input's copy from its steady storage reads the cutover index.
+    ASSERT_EQ(realized->plan.sample_cutover_indices.size(), 1u);
+    auto const cell = realized->plan.sample_cutover_indices.front();
+    EXPECT_EQ(cell.sequential_cursor_node_storage_offset, 0u);
+    EXPECT_GE(cell.node_storage_offset, 1024u);
 
     std::vector<std::byte> previous_storage(128);
     std::vector<std::byte> current_storage(
-        realized->node_layout.storage_size);
+        realized->node_layout.storage_size, std::byte{0xff});
     for (std::size_t i = 0; i < 8; ++i) {
         auto const value = iv::Sample{static_cast<float>(i + 1)};
         std::memcpy(
@@ -526,9 +554,22 @@ TEST(RealtimePortStateTransition, NewStateSharingSampleTargetRequiresTransitionS
     EXPECT_EQ(
         std::memcmp(
             previous_storage.data() + 64,
-            current_storage.data() + target_offset,
+            current_storage.data() + 512,
             8 * sizeof(iv::Sample)),
         0);
+    std::vector<std::byte> const zeros(8 * sizeof(iv::Sample));
+    EXPECT_EQ(
+        std::memcmp(
+            zeros.data(),
+            current_storage.data() + suffix_offset,
+            zeros.size()),
+        0);
+    std::uint64_t cutover = 0;
+    std::memcpy(
+        &cutover,
+        current_storage.data() + cell.node_storage_offset,
+        sizeof(cutover));
+    EXPECT_EQ(cutover, 8u);
 }
 
 TEST(RealtimePortStateTransition, MaterializesInheritedSampleStateIntoSteadyStorage)

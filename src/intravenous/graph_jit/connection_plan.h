@@ -443,4 +443,38 @@ std::expected<ConnectionAnalysisPlan, std::string> build_connection_analysis_pla
     // The empty span preserves the ordinary deterministic bundle order.
     std::span<std::size_t const> callback_batch_classes = {});
 
+// Compiler-owned raw regions (producer storage, detach structures) migrate
+// across graph revisions by identity, and that identity names what owns the
+// region's values. The node part is the node's stable identity, so renumbering
+// the graph's bundles keeps it. A node under no virtual node has none: like
+// everything else it owns, its storage starts fresh at every edit.
+std::optional<std::string> raw_region_node_identity(
+    ConnectionAnalysisPlan const& connections,
+    NodeBundleHandle bundle);
+
+// raw_region_node_identity(), or a marker standing for a node without one. A
+// region is declared with owned_raw_region_identity() of its identity, which is
+// empty, so the region never migrates, when the identity contains the marker.
+std::string raw_region_node_identity_text(
+    ConnectionAnalysisPlan const& connections,
+    NodeBundleHandle bundle);
+std::string owned_raw_region_identity(std::string identity);
+
+// The parts that can identify one detach() across graph revisions. A detach
+// is not a node: it is identified by its producer port when that tells it
+// apart from the graph's other detaches, then also by its consumer port, then
+// also by its latency and initial value. producer is present only when every
+// detached source port has an identity, consumer only when the consumer port
+// has one.
+struct DetachIdentityParts {
+    std::optional<std::string> producer{};
+    std::optional<std::string> consumer{};
+    std::string settings{};
+};
+
+// One identity per detach, in order: the shortest of those keys that no other
+// detach of the graph shares, or empty when none tells it apart.
+std::vector<std::string> resolve_detach_identities(
+    std::span<DetachIdentityParts const> detaches);
+
 } // namespace iv::graph_jit::detail

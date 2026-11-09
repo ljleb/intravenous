@@ -706,6 +706,7 @@ ProjectGraph::RebuildResult ProjectGraph::rebuild_locked(
                     .definitions = generation->definitions,
                 },
                 .predecessor = accepted_execution_graph_,
+                .initial_generation = !accepted_execution_graph_,
             });
         auto const graph_jit_end = Clock::now();
         generation->graph_jit_attempted = graph_jit_result.attempted;

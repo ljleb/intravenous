@@ -117,6 +117,9 @@ struct SampleRealtimePortStateStorageView {
     // predecessor view and a successor view hold the same producer's values.
     std::optional<StableOutputPortId> producer{};
     std::size_t producer_channel = 0;
+    // That Tick output's resolved latency, when known. A reader's in-flight
+    // values from it are then its read delay minus this latency.
+    std::optional<std::size_t> producer_latency{};
     // True when the view is a detach() feedback timeline
     // (SampleFeedbackTimelinePlan) written by a copy or a composition. Only
     // its own connection's input reads that storage, so a cutover may place
@@ -152,8 +155,10 @@ struct SampleRealtimePortStateStorageView {
     std::optional<std::vector<std::byte>> constant_value{};
     // The value of every frame of this storage before anything is written to
     // it, when its persistent allocation declares one: a feedback timeline's
-    // detach() initial value, or a slot-fed input timeline's neutral value.
-    // Producer storage declares none.
+    // detach() initial value, a slot-fed input timeline's neutral value, or
+    // the fresh value on which every state with a window in producer storage
+    // agrees (plan_fresh_sample_storage_values()). Other producer storage
+    // starts at zero bytes and declares none.
     std::optional<std::vector<std::byte>> initial_value{};
 };
 

@@ -11,6 +11,7 @@
 #include <exception>
 #include <iterator>
 #include <limits>
+#include <map>
 #include <numeric>
 #include <sstream>
 #include <stdexcept>
@@ -96,6 +97,7 @@ std::expected<std::size_t, std::string> working_ring_capacity(
 }
 
 std::string persistent_identity(
+    ConnectionAnalysisPlan const& connections,
     SampleProducerGroupPlan const& group,
     SamplePersistentStorageKind kind,
     std::size_t retained_frames,
@@ -104,7 +106,8 @@ std::string persistent_identity(
     std::ostringstream out;
     out << "graphjit.sample:" << static_cast<unsigned>(group.source_type) << ':';
     for (auto const source : group.source_channels) {
-        out << source.bundle << '.' << source.port << '.' << source.channel << ',';
+        out << raw_region_node_identity_text(connections, source.bundle) << '.'
+            << source.port << '.' << source.channel << ',';
     }
     if (group.canonical_source_layout) {
         out << ":layout="
@@ -149,26 +152,19 @@ std::string producer_authored_extent_identity(
     return std::move(out).str();
 }
 
+// The identity of a copy-written feedback timeline: its detach's identity
+// (sample_detach_identities()) and the shape of its bytes. Empty when nothing
+// identifies the detach.
 std::string feedback_identity(
+    std::string const& detach,
     SampleProducerGroupPlan const& group,
     SampleConnectionPlan const& connection,
     SamplePersistentStorageKind kind,
-    std::span<std::byte const> initial_value,
     std::size_t frame_capacity)
 {
+    if (detach.empty()) return {};
     std::ostringstream out;
-    out << "graphjit.sample.feedback:source=";
-    if (group.source_port) {
-        out << group.source_port->node_bundle_handle << '.'
-            << group.source_port->port_index;
-    } else {
-        for (auto const source : group.source_channels) {
-            out << source.bundle << '.' << source.port << '.' << source.channel << ',';
-        }
-    }
-    out << ":target=" << connection.target_port.node_bundle_handle << '.'
-        << connection.target_port.port_index
-        << ":source_layout=";
+    out << "graphjit.sample.feedback:" << detach << ":source_layout=";
     if (group.canonical_source_layout) {
         out << static_cast<unsigned>(group.canonical_source_layout->channel_type)
             << '.'
@@ -176,31 +172,26 @@ std::string feedback_identity(
     } else {
         out << static_cast<unsigned>(connection.source_type);
     }
-    out
-        << ":latency=" << connection.detach->loop_extra_latency
-        << ":value_type=" << static_cast<unsigned>(connection.geometry.value_type)
+    out << ":value_type=" << static_cast<unsigned>(connection.geometry.value_type)
         << ":value_elements=" << connection.geometry.elements_per_value
         << ":pace=" << connection.absolute_pace_exponent
         << ":kind=" << static_cast<unsigned>(kind)
-        << ":initial=";
-    for (auto value : initial_value) {
-        out << std::hex << static_cast<unsigned>(value) << '.';
-    }
-    out << std::dec
         << ":capacity=" << frame_capacity;
     return std::move(out).str();
 }
 
+// The identity of a composition-written feedback timeline: its detach's
+// identity and the shape of its bytes. Empty when nothing identifies the
+// detach.
 std::string composition_feedback_identity(
+    std::string const& detach,
     SampleConnectionPlan const& connection,
     SamplePersistentStorageKind kind,
-    std::span<std::byte const> initial_value,
     std::size_t frame_capacity)
 {
+    if (detach.empty()) return {};
     std::ostringstream out;
-    out << "graphjit.sample.composed_feedback:target="
-        << connection.target_port.node_bundle_handle << '.'
-        << connection.target_port.port_index
+    out << "graphjit.sample.composed_feedback:" << detach
         << ":layout="
         << static_cast<unsigned>(connection.target_layout.channel_type) << '.'
         << static_cast<unsigned>(connection.target_layout.sample_layout)
@@ -208,72 +199,41 @@ std::string composition_feedback_identity(
     for (auto const& contribution : connection.projection_contributions) {
         out << '[' << static_cast<unsigned>(contribution.source_type) << '>'
             << static_cast<unsigned>(contribution.target_type) << ':';
-        for (auto const source_index : contribution.source_channel_indices) {
-            if (source_index >= connection.source_channel_timings.size()) {
-                out << "invalid,";
-                continue;
-            }
-            auto const& channel = connection.source_channel_timings[source_index];
-            out << channel.source.bundle << '.' << channel.source.port << '.'
-                << channel.source.channel << '@' << channel.read_latency << ',';
-        }
-        out << "->";
         for (auto const target_channel : contribution.target_channels)
             out << target_channel << ',';
         out << ']';
     }
-    out << ":latency=" << connection.detach->loop_extra_latency
-        << ":history=" << connection.target_history
-        << ":value_type=" << static_cast<unsigned>(connection.geometry.value_type)
+    out << ":value_type=" << static_cast<unsigned>(connection.geometry.value_type)
         << ":value_elements=" << connection.geometry.elements_per_value
         << ":pace=" << connection.absolute_pace_exponent
         << ":kind=" << static_cast<unsigned>(kind)
-        << ":initial=";
-    for (auto value : initial_value) {
-        out << std::hex << static_cast<unsigned>(value) << '.';
-    }
-    out << std::dec
         << ":capacity=" << frame_capacity;
     return std::move(out).str();
 }
 
+// The identity of a routed contribution's feedback timeline: its detach's
+// identity and the shape of its bytes. Empty when nothing identifies the
+// detach.
 std::string routed_feedback_identity(
+    std::string const& detach,
     SampleConnectionPlan const& connection,
     SampleRoutedContributionPlan const& contribution,
-    std::size_t contribution_index,
     SamplePersistentStorageKind kind,
-    std::span<std::byte const> initial_value,
     std::size_t frame_capacity)
 {
+    if (detach.empty()) return {};
     std::ostringstream out;
-    out << "graphjit.sample.routed_feedback:target="
-        << connection.target_port.node_bundle_handle << '.'
-        << connection.target_port.port_index
-        << ":contribution=" << contribution_index
-        << ":sources=";
-    for (std::size_t source = 0;
-         source < connection.source_channel_timings.size(); ++source) {
-        auto const& channel = connection.source_channel_timings[source];
-        auto const coefficient = source < contribution.source_coefficients.size()
-            ? contribution.source_coefficients[source]
-            : 0.0f;
-        out << channel.source.bundle << '.' << channel.source.port << '.'
-            << channel.source.channel << '@' << channel.read_latency << '*'
-            << std::bit_cast<std::uint32_t>(coefficient) << ',';
-    }
+    out << "graphjit.sample.routed_feedback:" << detach << ":sources=";
+    for (auto const coefficient : contribution.source_coefficients)
+        out << std::bit_cast<std::uint32_t>(coefficient) << ',';
     out << ":targets=";
     for (auto const coefficient : contribution.target_coefficients)
         out << std::bit_cast<std::uint32_t>(coefficient) << ',';
-    out << ":latency=" << contribution.detach->loop_extra_latency
-        << ":history=" << connection.target_history
-        << ":value_type=" << static_cast<unsigned>(connection.geometry.value_type)
+    out << ":value_type=" << static_cast<unsigned>(connection.geometry.value_type)
         << ":value_elements=" << connection.geometry.elements_per_value
         << ":pace=" << connection.absolute_pace_exponent
         << ":kind=" << static_cast<unsigned>(kind)
-        << ":initial=";
-    for (auto value : initial_value)
-        out << std::hex << static_cast<unsigned>(value) << '.';
-    out << std::dec << ":capacity=" << frame_capacity;
+        << ":capacity=" << frame_capacity;
     return std::move(out).str();
 }
 
@@ -689,32 +649,137 @@ RealtimeStorageOperationCounts sample_producer_operation_counts(
     return result;
 }
 
+constexpr std::size_t whole_connection_detach =
+    std::numeric_limits<std::size_t>::max();
+
+// The identity of every detach() among the graph's sample connections: a
+// whole connection's detach, and each routed contribution's own detach. A
+// detach is identified by its producer ports, then also its consumer port,
+// then also its latency and initial value (resolve_detach_identities()).
+class SampleDetachIdentities {
+public:
+    explicit SampleDetachIdentities(ConnectionAnalysisPlan const& connections)
+    {
+        std::vector<std::pair<std::size_t, std::size_t>> detaches;
+        std::vector<DetachIdentityParts> parts;
+        auto const settings = [](
+            ConfiguredSampleConnectionDetach const& detach,
+            std::optional<std::vector<std::byte>> const& initial_value) {
+            std::ostringstream out;
+            out << "latency=" << detach.loop_extra_latency << ":initial=";
+            if (initial_value) {
+                for (auto value : *initial_value) {
+                    out << std::hex << static_cast<unsigned>(value) << '.';
+                }
+            }
+            return std::move(out).str();
+        };
+        for (std::size_t connection_index = 0;
+             connection_index < connections.sample_connections.size();
+             ++connection_index) {
+            auto const& connection =
+                connections.sample_connections[connection_index];
+            auto const& timings = connection.source_channel_timings;
+            // Every detached source port with an identity, or nothing.
+            auto const producer = [&](auto detached)
+                -> std::optional<std::string> {
+                std::string result;
+                for (std::size_t source = 0; source < timings.size(); ++source) {
+                    if (!detached(source)) continue;
+                    auto const& channel = timings[source].source;
+                    auto const node =
+                        raw_region_node_identity(connections, channel.bundle);
+                    if (!node) return std::nullopt;
+                    result += *node + '.' + std::to_string(channel.port) + '.'
+                        + std::to_string(channel.channel) + ',';
+                }
+                return result;
+            };
+            auto const target = raw_region_node_identity(
+                connections, connection.target_port.node_bundle_handle);
+            auto const consumer = target
+                ? std::optional<std::string>{
+                    *target + '.'
+                    + std::to_string(connection.target_port.port_index)}
+                : std::nullopt;
+            if (connection.detach) {
+                detaches.emplace_back(connection_index, whole_connection_detach);
+                parts.push_back(DetachIdentityParts{
+                    .producer = producer([](std::size_t) { return true; }),
+                    .consumer = consumer,
+                    .settings = settings(
+                        *connection.detach, connection.detach_initial_value),
+                });
+            }
+            for (std::size_t contribution_index = 0;
+                 contribution_index < connection.routed_contributions.size();
+                 ++contribution_index) {
+                auto const& routed =
+                    connection.routed_contributions[contribution_index];
+                if (!routed.detach) continue;
+                std::optional<std::string> routed_consumer;
+                if (consumer) {
+                    routed_consumer = *consumer + ":channels=";
+                    for (std::size_t channel = 0;
+                         channel < routed.target_coefficients.size(); ++channel) {
+                        if (routed.target_coefficients[channel] == 0.0f) continue;
+                        *routed_consumer += std::to_string(channel) + ',';
+                    }
+                }
+                detaches.emplace_back(connection_index, contribution_index);
+                parts.push_back(DetachIdentityParts{
+                    .producer = producer([&](std::size_t source) {
+                        return source < routed.source_coefficients.size()
+                            && routed.source_coefficients[source] != 0.0f;
+                    }),
+                    .consumer = std::move(routed_consumer),
+                    .settings = settings(
+                        *routed.detach, routed.detach_initial_value),
+                });
+            }
+        }
+        auto resolved = resolve_detach_identities(parts);
+        for (std::size_t index = 0; index < detaches.size(); ++index) {
+            identities_.emplace(detaches[index], std::move(resolved[index]));
+        }
+    }
+
+    // Empty when nothing identifies the detach.
+    [[nodiscard]] std::string const& of(
+        std::size_t connection_index,
+        std::size_t contribution_index = whole_connection_detach) const
+    {
+        static std::string const none{};
+        auto const found =
+            identities_.find({connection_index, contribution_index});
+        return found == identities_.end() ? none : found->second;
+    }
+
+private:
+    std::map<std::pair<std::size_t, std::size_t>, std::string> identities_{};
+};
+
+// The identity of the alignment ring of one contribution of a
+// composition-written feedback timeline: its detach's identity, that
+// contribution's position in the detach, and the shape of its bytes. Empty
+// when nothing identifies the detach.
 std::string composition_feedback_alignment_identity(
+    std::string const& detach,
     SampleConnectionPlan const& connection,
     std::size_t contribution_index,
     ChannelLayout source_layout,
-    std::size_t minimum_latency,
-    std::size_t maximum_latency,
-    std::size_t frame_capacity,
-    std::span<std::byte const> initial_value)
+    std::size_t frame_capacity)
 {
+    if (detach.empty()) return {};
     std::ostringstream out;
-    out << "graphjit.sample.composed_feedback_alignment:target="
-        << connection.target_port.node_bundle_handle << '.'
-        << connection.target_port.port_index
+    out << "graphjit.sample.composed_feedback_alignment:" << detach
         << ":contribution=" << contribution_index
         << ":layout=" << static_cast<unsigned>(source_layout.channel_type) << '.'
         << static_cast<unsigned>(source_layout.sample_layout)
-        << ":min_latency=" << minimum_latency
-        << ":max_latency=" << maximum_latency
         << ":value_type=" << static_cast<unsigned>(connection.geometry.value_type)
         << ":value_elements=" << connection.geometry.elements_per_value
         << ":pace=" << connection.absolute_pace_exponent
-        << ":capacity=" << frame_capacity
-        << ":initial=";
-    for (auto value : initial_value) {
-        out << std::hex << static_cast<unsigned>(value) << '.';
-    }
+        << ":capacity=" << frame_capacity;
     return std::move(out).str();
 }
 
@@ -734,6 +799,7 @@ std::expected<SampleStoragePlan, std::string> build_sample_storage_plan(
     }
 
     SampleStoragePlan plan;
+    SampleDetachIdentities const detach_identities(connections);
     plan.producer_groups.resize(connections.sample_producer_groups.size());
     plan.connection_representations.resize(connections.sample_connections.size());
     plan.connection_channel_bindings.resize(connections.sample_connections.size());
@@ -837,7 +903,8 @@ std::expected<SampleStoragePlan, std::string> build_sample_storage_plan(
         ChannelLayout layout,
         std::size_t retained_frames,
         std::size_t frame_capacity,
-        std::string migration_identity = {},
+        // The producer's own storage identity unless given.
+        std::optional<std::string> migration_identity = std::nullopt,
         std::optional<std::vector<std::byte>> initialize_value = std::nullopt)
         -> std::expected<std::size_t, std::string> {
         if (initialize_value
@@ -861,10 +928,12 @@ std::expected<SampleStoragePlan, std::string> build_sample_storage_plan(
             .frame_capacity = frame_capacity,
             .size_bytes = *bytes,
             .alignment = group.geometry.element_alignment,
-            .migration_identity = migration_identity.empty()
-                ? persistent_identity(
-                    group, kind, retained_frames, frame_capacity)
-                : std::move(migration_identity),
+            .migration_identity = owned_raw_region_identity(
+                migration_identity
+                    ? std::move(*migration_identity)
+                    : persistent_identity(
+                        connections,
+                        group, kind, retained_frames, frame_capacity)),
             .initialize_value = initialize_value,
         });
         return allocation_index;
@@ -900,7 +969,8 @@ std::expected<SampleStoragePlan, std::string> build_sample_storage_plan(
             .frame_capacity = frame_capacity,
             .size_bytes = *bytes,
             .alignment = geometry.element_alignment,
-            .migration_identity = std::move(migration_identity),
+            .migration_identity = owned_raw_region_identity(
+                std::move(migration_identity)),
             .initialize_value = initialize_value,
         });
         return allocation_index;
@@ -1128,6 +1198,7 @@ std::expected<SampleStoragePlan, std::string> build_sample_storage_plan(
                     home_feedback_retained_frames,
                     home_feedback_capacity,
                     persistent_identity(
+                        connections,
                         group,
                         SamplePersistentStorageKind::ring,
                         home_feedback_retained_frames,
@@ -1166,6 +1237,7 @@ std::expected<SampleStoragePlan, std::string> build_sample_storage_plan(
                     home_feedback_retained_frames,
                     home_feedback_capacity,
                     persistent_identity(
+                        connections,
                         group,
                         SamplePersistentStorageKind::compact_carry,
                         home_feedback_retained_frames,
@@ -1554,10 +1626,10 @@ std::expected<SampleStoragePlan, std::string> build_sample_storage_plan(
                     retained_frames,
                     *working_capacity,
                     feedback_identity(
+                        detach_identities.of(connection_index),
                         group,
                         connection,
                         SamplePersistentStorageKind::ring,
-                        *connection.detach_initial_value,
                         *working_capacity),
                     *connection.detach_initial_value);
                 if (!persistent) {
@@ -1596,10 +1668,10 @@ std::expected<SampleStoragePlan, std::string> build_sample_storage_plan(
                     retained_frames,
                     *working_capacity,
                     feedback_identity(
+                        detach_identities.of(connection_index),
                         group,
                         connection,
                         SamplePersistentStorageKind::compact_carry,
-                        *connection.detach_initial_value,
                         *working_capacity),
                     *connection.detach_initial_value);
                 if (!persistent) {
@@ -1963,11 +2035,10 @@ std::expected<SampleStoragePlan, std::string> build_sample_storage_plan(
             std::size_t timeline_representation = no_sample_representation;
             auto const identity = [&](SamplePersistentStorageKind kind) {
                 return routed_feedback_identity(
+                    detach_identities.of(connection_index, contribution_index),
                     connection,
                     routed,
-                    contribution_index,
                     kind,
-                    *routed.detach_initial_value,
                     *timeline_capacity);
             };
             if (feedback_storage.kind
@@ -2100,10 +2171,13 @@ std::expected<SampleStoragePlan, std::string> build_sample_storage_plan(
                     writer.source_layout,
                     alignment_history,
                     *alignment_capacity,
-                    identity(SamplePersistentStorageKind::ring)
-                        + ":alignment="
-                        + std::to_string(minimum_read_latency) + "."
-                        + std::to_string(maximum_read_latency),
+                    [&] {
+                        auto timeline = identity(SamplePersistentStorageKind::ring);
+                        return timeline.empty()
+                            ? timeline
+                            : timeline + ":alignment:capacity="
+                                + std::to_string(*alignment_capacity);
+                    }(),
                     connection.geometry,
                     *routed.detach_initial_value);
                 if (!persistent) {
@@ -2565,9 +2639,9 @@ std::expected<SampleStoragePlan, std::string> build_sample_storage_plan(
                     feedback_retained_frames,
                     *capacity,
                     composition_feedback_identity(
+                        detach_identities.of(connection_index),
                         connection,
                         SamplePersistentStorageKind::ring,
-                        *connection.detach_initial_value,
                         *capacity),
                     connection.geometry,
                     *connection.detach_initial_value);
@@ -2605,9 +2679,9 @@ std::expected<SampleStoragePlan, std::string> build_sample_storage_plan(
                     feedback_retained_frames,
                     *capacity,
                     composition_feedback_identity(
+                        detach_identities.of(connection_index),
                         connection,
                         SamplePersistentStorageKind::compact_carry,
-                        *connection.detach_initial_value,
                         *capacity),
                     connection.geometry,
                     *connection.detach_initial_value);
@@ -2799,13 +2873,11 @@ std::expected<SampleStoragePlan, std::string> build_sample_storage_plan(
                         });
                     auto const identity =
                         composition_feedback_alignment_identity(
+                            detach_identities.of(connection_index),
                             connection,
                             contribution_index,
                             source_layout,
-                            minimum_latency,
-                            maximum_latency,
-                            *alignment_capacity,
-                            *connection.detach_initial_value);
+                            *alignment_capacity);
                     auto persistent = append_synthetic_persistent_allocation(
                         alignment_representation,
                         SamplePersistentStorageKind::ring,
@@ -3340,6 +3412,46 @@ std::expected<void, std::string> finalize_sample_storage(
         }
         cursor.storage_offset = region.storage_offset;
     }
+    return {};
+}
+
+std::expected<void, std::string> declare_sample_fresh_storage_value(
+    NodeLayout& layout,
+    SampleStoragePlan& plan,
+    std::size_t node_storage_offset,
+    std::vector<std::byte> const& value)
+{
+    auto const allocation = std::ranges::find(
+        plan.persistent_allocations,
+        node_storage_offset,
+        &SamplePersistentAllocationPlan::storage_offset);
+    if (allocation == plan.persistent_allocations.end()
+        || !allocation->region.valid()
+        || allocation->region.index >= layout.regions.size()
+        || value.size() != allocation->geometry.value_size_bytes
+        || value.empty()) {
+        return std::unexpected(
+            "GraphJit fresh sample storage value names no persistent allocation");
+    }
+    if (allocation->initialize_value) {
+        if (*allocation->initialize_value != value) {
+            return std::unexpected(
+                "GraphJit fresh sample storage value disagrees with its declared initial value");
+        }
+        return {};
+    }
+    auto& region = layout.regions[allocation->region.index];
+    if (region.kind != NodeLayout::Region::Kind::raw
+        || region.storage_offset != node_storage_offset
+        || region.size != allocation->size_bytes
+        || region.raw_initialize_fn
+        || region.size % value.size() != 0) {
+        return std::unexpected(
+            "GraphJit fresh sample storage value lost its raw region");
+    }
+    allocation->initialize_value = value;
+    region.raw_initialize_fn = initialize_continuous_raw_region;
+    region.raw_initialize_data = value;
     return {};
 }
 

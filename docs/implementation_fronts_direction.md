@@ -3450,6 +3450,626 @@ built, all 790 tests pass, measured below; repository owner).*
         `specialize_transition_plan()` places the input's
         `SampleMaterializationPlan` there. Steps with that list stay unbatched,
         like steps with any other list.
+    - *Sixth collaborator run (2026-11-08): all 813 tests pass.*
+    - *Reproduction tests for the remaining gaps (2026-11-08; not yet run).* None
+      needs a production change. Their nodes and modules are at the end of
+      package part 1. Each expects the behavior that
+      sequential_port_storage_planning.md requires.
+      - `RewiredComposedChannelReadsItsInFlightValuesFirst` and
+        `RewiredConvertedInputReadsItsInFlightValuesFirst` (gap: a moved
+        converted or composed input after a rewire).
+        - An interleaved stereo input composes its left channel from the ramp,
+          compensated by 7 for the delay node on its right channel. In the
+          second test, an interleaved mono input reads the ramp through a layout
+          conversion, compensated by 7 for a slower input.
+        - The edit rewires the ramp read to the offset ramp, whose latency is the
+          same. The tests expect the 7 in-flight ramp values, then the offset
+          ramp.
+        - Expected to fail at those 7 positions. The sources do not pair, so each
+          record moves to transition-only storage. The `SampleMaterializationPlan`
+          that copies the steady representation into the suffix ring copies at
+          the input's read delay, so it overwrites them.
+      - `GrowingSourceLatencyExposesNeutralValues` (gap: transition-only input
+        whose producer's latency grew).
+        - `NeutralSequenceProbe`, whose input's neutral value is 100, reads a ramp
+          whose latency grows from 0 to 3. The test expects 3 positions of 100,
+          then the ramp 3 values late.
+        - Expected to fail when compiling the transition. The ramp's new output
+          window is a new record whose fresh value is zero. The input's 3 fresh
+          positions lie in the same ramp storage slots and hold 100, so the two
+          disagree and `resolve_sample_transfer_conflicts()` moves the input to
+          transition-only storage. Its window ends at `T = 3`, beyond its
+          compensation of 0, so `specialize_transition_plan()` reports "cannot
+          yet move an input whose producer's latency grew".
+      - `CompensatedInputReadsItsNeutralValueBeforeItsSourceStarts` (gap: fresh
+        start).
+        - One generation. `NeutralCompensatedSequenceProbe`'s ramp input, whose
+          neutral value is 100, is compensated by 7. The test expects its first 7
+          positions to read 100.
+        - Expected to fail with 0 there: the ramp's storage starts zero-filled.
+      - `ConnectedInputReadsNeutralValuesBeforeItsNewSource` (gap: no predecessor
+        record).
+        - `compensated_sequence_probe`'s ramp input is disconnected before the
+          edit and connected to the ramp, compensated by 7, after it. A history
+          reader keeps the ramp's recent values in its storage. The test expects
+          7 positions of the input's neutral value 0, then the ramp.
+        - Expected to fail with the ramp's values from before the cutover at
+          those 7 positions.
+        - The slot-fed case has the same cause: an input without history that is
+          not fed only through realtime storage gets no record. It has no test,
+          because a slot-fed input needs a background-produced source.
+      - `GrowingCompensationOfComposedChannelExposesNeutralValues` (gap: composed
+        input whose window inherits nothing).
+        - An interleaved stereo input composes its left channel from the ramp and
+          its right from a second ramp. The edit moves the right channel to the
+          delay node, so the left channel's compensation grows from 0 to 7. A
+          history reader keeps the ramp's values.
+        - The test expects 7 positions of the neutral value 0, then the ramp 7
+          values late. Expected to fail with the ramp's values from before the
+          cutover there, because `apply_input_window()` leaves the record
+          `fresh_state`.
+      - `UnequalLatencyFeedbackUnaffectedByAddedLeadingNode` (gap: raw
+        identities with bundle handles).
+        - `detach_feedback_module`, rewritten by the new
+          `project_unequal_latency_sample_feedback()`, is the unequal-latency
+          routed loop, but its nodes have stable identities. The fixture
+          `configured_unequal_latency_projected_sample_feedback_graph()` now
+          applies the same function.
+        - The edit adds a node that nothing reads before the loop, which
+          renumbers its bundles. The test expects the converted node's reads to
+          match an uninterrupted run.
+        - The loop's alignment ring holds the older source frames that the
+          timeline writer mixes in after the cutover. No record covers it. Its
+          identity, `routed_feedback_identity()` plus `:alignment=`, contains
+          bundle handles, so it should not migrate. Expected to fail in the calls
+          shortly after the cutover.
+        - The routed timeline and the converted node's canonical storage also
+          have identities with bundle handles. The writer's revision recopies
+          source frames from that storage.
+      - Helpers: `expect_converted_feedback_unaffected_by_edit()` generalizes the
+        recompile check to two graphs. `expect_indexed_probe_values_across_graph_edit()`
+        and `expect_probe_values_across_graph_edit()` check probe values without
+        checking a read latency.
+    - *Seventh collaborator run (2026-11-09): 816 of 820 tests pass.*
+      - Failed:
+        - `GrowingSourceLatencyExposesNeutralValues`: positions 1024 to 1026 read
+          0 instead of 100. These were steady blocks: the transition compiled
+          with no transition root, so no compile error.
+        - `CompensatedInputReadsItsNeutralValueBeforeItsSourceStarts`: positions
+          0 to 6 read 0 instead of 100.
+        - `ConnectedInputReadsNeutralValuesBeforeItsNewSource`: positions 1024 to
+          1030 read 1017 to 1023, the ramp's values from before the cutover. The
+          transition root was also still active after the run's 4 blocks.
+        - `UnequalLatencyFeedbackUnaffectedByAddedLeadingNode`: the converted
+          node's reads differ from the uninterrupted run from the call at 68 on.
+      - Passed, against the prediction: `RewiredComposedChannelReadsItsInFlightValuesFirst`,
+        `RewiredConvertedInputReadsItsInFlightValuesFirst` and
+        `GrowingCompensationOfComposedChannelExposesNeutralValues`.
+    - *Why three predictions were wrong (2026-11-09).* The three tests that passed
+      reach `direct` records, not `composed` or `materialized` ones.
+      - A conversion whose every target channel copies exactly one source channel
+        passes `can_alias_sample_conversion()` (sample_storage_plan.cpp). Each
+        target channel then binds directly to its source's storage through a
+        `SampleChannelBindingPlan` whose `frame_delay` is the source's read
+        latency.
+      - Both a `tile<iv::stereo>` into an interleaved stereo input and a mono
+        source into an interleaved mono input convert this way. Their records
+        are `direct`, a path that already worked.
+      - A `materialized` record needs a computed conversion of one producer: a
+        `SampleMaterializationPlan` into transient storage, for example a stereo
+        source read by a mono input. A `composed` record needs a computed
+        conversion of several producers: a `SampleCompositionPlan` into
+        transient storage, for example a `tile<iv::stereo>` read by a mono
+        input.
+      - The three tests stay, renamed for what they reach:
+        - `RewiredTiledChannelReadsItsInFlightValuesFirst` (module
+          `tiled_rewire_module`);
+        - `RewiredInterleavedMonoInputReadsItsInFlightValuesFirst`
+          (`interleaved_mono_rewire_module`);
+        - `GrowingCompensationOfTiledChannelExposesNeutralValues`
+          (`tiled_compensation_module`).
+    - *Causes of the four failures (2026-11-09; from the source, not yet confirmed
+      by a run).*
+      - `GrowingSourceLatencyExposesNeutralValues`.
+        - Before the edit nothing retains the ramp's values. The probe's input
+          reads them only while its callback runs, so its record is
+          `callback_only`.
+        - `input_resume_position()` recognizes "the same producer" only between
+          two `direct` records. Here it falls back to `T = c_new = 0`, so
+          `apply_input_window()` gives an empty window and `fresh_state`.
+        - The ramp's successor storage is new and zero-filled, so the probe reads
+          0. By the rule, the probe holds the ramp's values up to the cutover, so
+          `T = c_old + d_new - d_old = 3`.
+        - The test now also checks that the probe's input record is
+          `callback_only` before the edit.
+        - The "latency grew" error predicted for it needs a retained source. The
+          new `GrowingLatencyOfRetainedSourceExposesNeutralValues` adds one.
+      - `CompensatedInputReadsItsNeutralValueBeforeItsSourceStarts`, as predicted:
+        `NodeStorage::initialize()` zero-fills the ramp's storage, and the probe
+        reads its frames -7 to -1.
+      - `ConnectedInputReadsNeutralValuesBeforeItsNewSource`, as predicted.
+        - The disconnected input has no predecessor record. In
+          `resolve_sample_transfer_conflicts()`, the new record's fresh claim
+          (frames `[P - 7, P)`, value 0) disagrees with the history reader's claim
+          on the ramp's storage.
+        - So the history reader's transfer is the one moved to transition-only
+          storage, carrying 5000 values. Its expiry explains the transition root
+          still active after 4 blocks.
+        - No transfer writes the new record's fresh value, so the probe reads the
+          ramp's storage as it was.
+      - `UnequalLatencyFeedbackUnaffectedByAddedLeadingNode`: the edit only
+        renumbers bundles, and the same graph recompiled without renumbering
+        passes `UnequalLatencySampleFeedbackMigratesPopulatedAlignmentRing`. So
+        the failure comes from a raw identity built from bundle handles. Which
+        region, whether the alignment ring alone or also the routed timeline, is
+        not yet established.
+    - *Reproduction tests that reach `materialized` and `composed` records
+      (2026-11-09; not yet run).*
+      - New in package part 3: the node `OffsetStereoRampSource`, and the modules
+        `downmixed_rewire_module`, `downmixed_tile_rewire_module`,
+        `downmixed_compensation_module`, `downmixed_tile_compensation_module` and
+        `retained_neutral_latency_module`.
+      - The probe is `ConvertedSequenceProbe`, whose `in` is interleaved mono and
+        whose `slower` sets its compensation.
+      - `expect_sequential_input_access()` compiles a graph and checks the
+        `retained_access` of its one Sequential input record with a given history
+        and in-flight count. Each test below checks the record it targets before
+        running the edit.
+      - `RewiredDownmixedInputReadsItsInFlightValuesFirst` (`materialized`).
+        - `in` downmixes the stereo ramp (value `p + 500`), compensated by 7. The
+          edit rewires it to the offset stereo ramp (`p + 100500`).
+        - Expects 7 in-flight values from the stereo ramp, then the offset stereo
+          ramp.
+        - Expected to fail at those 7 positions. The window maps them to frames
+          `[P - 7, P)` of the suffix ring. The `SampleMaterializationPlan` that
+          `specialize_transition_plan()` adds copies the steady materialized
+          storage at `mirror_delay = 7`, so it overwrites them with the new
+          downmix.
+      - `RewiredDownmixedTileReadsItsInFlightValuesFirst` (`composed`).
+        - `in` downmixes `tile<iv::stereo>(ramp, second ramp)`, compensated by 7.
+          The edit rewires the right channel to the offset ramp.
+        - Expects 7 in-flight values, then `p - 7 + 50000`.
+        - Expected to fail at those 7 positions. A feed-forward composition
+          writes consumer-aligned frames, and its consumer reads at delay 0
+          (lowering_plan.cpp). So `mirror_delay = 0`, and the copy overwrites
+          frames `[P, P + 7)`, where the window holds the in-flight values.
+      - `GrowingCompensationOfDownmixedInputExposesNeutralValues` (`materialized`)
+        and `GrowingCompensationOfDownmixedTileExposesNeutralValues` (`composed`).
+        - The edit moves `slower` to the delay node, so `in`'s compensation grows
+          from 0 to 7. History readers keep the sources' storage populated.
+        - Expect 7 fresh positions of the neutral value 0.
+        - Expected to fail with the sources' values from before the cutover.
+          `apply_input_window()` leaves a record that inherits nothing and is not
+          `direct` as `fresh_state`, and the steady downmix reads the sources 7
+          frames back.
+      - `GrowingLatencyOfRetainedSourceExposesNeutralValues` (`direct`).
+        - `GrowingSourceLatencyExposesNeutralValues` with a `history_consumer` on
+          the ramp, so the probe's input is `direct` before the edit.
+        - Expected to fail compiling the transition with "cannot yet move an input
+          whose producer's latency grew".
+        - The probe's fresh claim (100) disagrees with the history reader's fresh
+          slots (0) and with the ramp's new output record (0), so the probe moves
+          to transition-only storage. Its window ends at `T = 3`, beyond its
+          compensation of 0.
+    - *Eighth collaborator run (2026-11-09): 816 of 825 tests pass.* All nine
+      reproduction tests fail, each where predicted.
+      - `GrowingSourceLatencyExposesNeutralValues`: 1024 to 1026 read 0 instead
+        of 100, in steady blocks.
+      - `CompensatedInputReadsItsNeutralValueBeforeItsSourceStarts`: 0 to 6 read 0
+        instead of 100.
+      - `ConnectedInputReadsNeutralValuesBeforeItsNewSource`: 1024 to 1030 read
+        1017 to 1023, and the transition root was still active after 4 blocks.
+      - `RewiredDownmixedInputReadsItsInFlightValuesFirst`: 1024 to 1030 read 0
+        instead of 1517 to 1523.
+      - `RewiredDownmixedTileReadsItsInFlightValuesFirst`: 1024 read 508.5, which
+        is (1017 + 0) / 2: the rewired channel's in-flight value was overwritten
+        by the offset ramp's zero-filled storage.
+      - `GrowingCompensationOfDownmixedInputExposesNeutralValues` and
+        `GrowingCompensationOfDownmixedTileExposesNeutralValues`: 1024 read 1517
+        and 1017 instead of 0.
+      - `GrowingLatencyOfRetainedSourceExposesNeutralValues`: the transition
+        compile failed with "cannot yet move an input whose producer's latency
+        grew to transition-only storage".
+      - `UnequalLatencyFeedbackUnaffectedByAddedLeadingNode`: as in the seventh
+        run.
+    - *Fixes (2026-11-09; collaborator build and test run pending).* The human
+      co-author approved the fixes proposed after the seventh run, except where
+      one is not cheap; the one such case is listed under the known gaps.
+      - *Copy into transition-only storage.* The `SampleMaterializationPlan`
+        that `specialize_transition_plan()` adds (the local `mirror`) copies
+        frames `[S - mirror_delay, S + block - mirror_delay)` (see
+        `emit_sample_materialization()`). The window holds positions
+        `[-history, T)`, which end at frame `P + T - d`.
+        - For a `direct` record, `mirror_delay` is now `d - min(T, in_flight)`.
+          When `T <= in_flight` this equals the former `d - T`, and the first copy
+          begins where the window ends.
+        - When the same producer's latency grew (`T > in_flight`), `d - T` would
+          copy values the producer can still revise. `d - in_flight` copies only
+          finalized values, and lowering no longer reports an error.
+        - A `materialized` or `composed` steady representation holds only the
+          frames its consumer reads in the current block, so `mirror_delay`
+          stays `d`.
+        - Wherever the first copy would begin inside the window, the mirror skips
+          the frames before `P + T - d`. The new
+          `SampleRealtimePortStateCutoverIndex` names an 8-byte transition-only
+          cell for each Sequential pace cursor of a transition-only input.
+          `realize_realtime_port_state_transition_storage()` declares it, and
+          `execute_realtime_port_state_transfers()` copies the cursor into it.
+          `SampleMaterializationPlan::transition_cutover_index_storage_offset`
+          and `transition_first_frame` make the copy load the cell and start at
+          `max(S - mirror_delay, cell + transition_first_frame)`: one load, one
+          subtraction and one select per block of the transition root.
+      - *Same producer.* `input_resume_position()` recognizes the same producer
+        through `input_single_producer()`: the one producer that a `direct`
+        record reads, that a `callback_only` record's `authored_storage` reads,
+        or that every source of a `materialized` or `composed` record reads at
+        one timeline offset. The producer's channel no longer matters, because a
+        producer's channels finalize together.
+      - *Windows that inherit nothing.* `fresh_window_realization()` gives a
+        window of only fresh positions fresh-only transfers into each storage
+        view the input reads: the one view of a `direct` record, or each source
+        view of a `materialized` or `composed` one. Before, only `direct` records
+        got one. Each transfer's value is the input's own fresh value in that
+        view. Per-source fresh values compose to the input's fresh value (see
+        the 2026-11-08 note on registered conversions). A constant source view
+        gets none.
+      - *Inputs without a predecessor.* `make_fresh_input_transition()` gives a
+        Sequential input that the predecessor does not have its own transition,
+        new or anonymous. `RealtimePortStateTransition::has_predecessor` is false,
+        and its whole window `[-history, in_flight)` is fresh: sequential_port_
+        storage_planning.md forbids fabricating its history from source storage
+        that happens to hold values.
+        - Its fresh-only transfers take part in `resolve_sample_transfer_conflicts()`
+          like any other state, so when they disagree with another state, the new
+          input is the one moved.
+        - `build_steady_storage_transfers()` and
+          `realize_realtime_port_state_transition_storage()` read no predecessor
+          view for it.
+        - An input that reads a constant, or callback-local bytes, gets no
+          transition. *Collaborator interpretation, not yet confirmed:* a
+          constant's storage holds the constant at every position, so it is what
+          freshly initialized storage would hold there. Surviving inputs that
+          read a constant already behaved this way.
+      - *Fresh start.* `plan_fresh_sample_storage_values()` plans a transition
+        from an empty predecessor and returns each persistent sample region
+        where every state with a window agrees on one fresh value that is not
+        zero bytes. A Tick output's own storage counts as zero.
+        - A reader reads a frame before its source writes it only inside its own
+          window. So for such a region, initializing the whole region with that
+          value is the same as initializing each window.
+        - `declare_fresh_sample_storage_values()` (lowering_plan.cpp) runs after
+          realization planning. It installs the value as the region's raw
+          initializer through `declare_sample_fresh_storage_value()`
+          (sample_storage_plan.cpp). It also sets the value as the
+          `initial_value` of every view of that region.
+        - `NodeStorage::initialize()` runs a raw initializer only for a region
+          that was not restored by migration. So this costs nothing at run time
+          and does not change a migrated region.
+      - *Nominal raw identities.* The new `raw_region_node_identity()`
+        (connection_plan.cpp) gives the node part of a compiler-owned raw-region
+        identity: `{` + `migration_identity_fields()` + `}` for a node with a
+        `StableConcreteNodeId`, otherwise its bundle handle as before. It replaces
+        the bundle handles in:
+        - `persistent_identity`, `feedback_identity`,
+          `composition_feedback_identity`, `routed_feedback_identity` (and so its
+          `:alignment=` ring), and `composition_feedback_alignment_identity`
+          (sample_storage_plan.cpp);
+        - the sample `disconnected_output` sink, `event_group_identity`, the event
+          `raw_output` identity, and both event producer-ring identities
+          (lowering_plan.cpp).
+      - *Changed test.* `NewStateSharingSampleTargetRequiresTransitionStorage`
+        (realtime_port_state_transition_gtest.cpp) encoded the old rule, under
+        which a new state's fresh claim moved the surviving state. It is now
+        `NewStateSharingSampleTargetMovesItselfToTransitionStorage`.
+        - The survivor keeps its steady transfer into the shared target, and the
+          new state moves to transition-only storage with fresh zeros.
+        - The test also checks that one cutover index cell receives the cursor
+          value.
+      - Expected effect: every reproduction test above passes. Edits that add an input with
+        history or compensation to storage that other states already hold now
+        need a transition root, which costs one transition compile per such edit.
+    - *Ninth collaborator run (2026-11-09): all 825 tests pass.* No test
+      reached the gaps listed below, which is why they still pass.
+    - *Reproduction tests for the remaining gaps (2026-11-09; not yet run).* Their modules
+      are at the end of package part 1, which is now 58,959 of 61,440 bytes.
+      - `CompensatedInputBesideHistoryReaderReadsItsNeutralValueBeforeItsSourceStarts`
+        (gap: fresh start where two states disagree in one region).
+        - `shared_neutral_compensated_module`: `NeutralCompensatedSequenceProbe`'s
+          ramp input (neutral value 100), compensated by 7 for a slower input
+          that reads a ramp of latency 7. A `LargeHistoryConsumerProbe`
+          (neutral value 0, history 5000) reads the same ramp.
+        - Expects the probe's first 7 positions to read 100 and the history
+          reader's position 5000 back to read 0.
+        - Expected to fail with 0 at the probe's first 7 positions. The two
+          windows overlap in frames -7 to -1 of the ramp's storage with
+          different fresh values, so `plan_fresh_sample_storage_values()` leaves
+          that region at zero bytes.
+      - `GrowingCompensationOfComposedSourcesWithUnequalLatencies` (gap: a
+        composed input whose sources resume at different positions).
+        - `unequal_latency_composition_module`: `ConvertedSequenceProbe`'s mono
+          input downmixes `tile<iv::stereo>` of a ramp of latency 3 (A) and the
+          offset ramp (B). Its slower input reads a ramp of latency 7, raised to
+          10 by the edit. A's compensation grows from 4 to 7 and B's from 7 to
+          10. The record is `composed` with 7 in-flight values before the edit
+          and 10 after; the test checks both.
+        - By sequential_port_storage_planning.md applied to each source, A keeps
+          its 4 in-flight values, exposes 3 fresh positions and continues from
+          position 7. B keeps 7, exposes 3 and continues from position 10. A
+          fresh position of a source contributes half of the neutral value 0.
+        - Expected to fail at positions `C + 4` to `C + 9`. `input_resume_position()`
+          gives the record `T = c_new = 10`, so the window inherits the old
+          downmix at positions 0 to 6, including A's values at 4 to 6. It holds
+          fresh values for both sources at 7 to 9.
+      - `AddedFeedbackChannelReadsItsDetachValuesBesideItsContinuingChannel`
+        (gap: channels sharing one suffix ring with different window ends).
+        - `added_feedback_channel_module`: `RoutedHistoryProbe` (stereo input,
+          history 3) reads a ramp on each channel. The edit feeds its left
+          channel from its own output through `detach(4)`, which routes the
+          connection. Both channels' records are then `composed`, with 4 and 0
+          in-flight values; the test checks both. An observer
+          (`SampleSequenceProbe`) reads the probe's output, which is the left
+          channel plus one.
+        - Expects the right channel to continue its ramp. The left channel
+          should read the detach's initial value (the input's neutral value 0)
+          for 4 positions, then the probe's output 4 values late, so the
+          output is `1 + (p - C) / 4` from the cutover.
+        - Expected to fail compiling the transition with "GraphJit transition
+          input suffix mirrors channels read at different delays". Neither
+          channel pairs (`direct` before, `composed` after), so both move into
+          one suffix ring. The left window ends at 4, the right at 0, so only
+          the left's mirror skips frames.
+      - *Tenth collaborator run (2026-11-09): 825 of 828 tests pass.* The three
+        reproduction tests above fail as predicted.
+        - `CompensatedInputBesideHistoryReaderReadsItsNeutralValueBeforeItsSourceStarts`:
+          positions 0 to 6 read 0 instead of 100. The history reader's position
+          5000 back reads 0, as expected.
+        - `GrowingCompensationOfComposedSourcesWithUnequalLatencies`: exactly
+          positions 1028 to 1033 differ. At 1028 to 1030, 51021 to 51023 are
+          read instead of 50510.5 to 50511.5 (the old downmix, including the
+          latent ramp's values). At 1031 to 1033, 0 is read instead of 510.5 to
+          511.5 (both sources fresh).
+        - `AddedFeedbackChannelReadsItsDetachValuesBesideItsContinuingChannel`:
+          the transition compile reports "GraphJit transition input suffix
+          mirrors channels read at different delays".
+      - *Decision (human co-author, 2026-11-09).* A fresh start whose states
+        disagree in one region uses option A. Only the first generation's
+        compile becomes a cutover from an empty graph, with a transition root.
+        `GraphExecutor` runs its transfers when it initializes the first
+        generation and starts it in the transition phase. A no-predecessor
+        compile that the manual-control recompile requests stays steady-only.
+        The request must therefore tell the two apart. The other options are
+        rejected for their behavior or cost:
+        - private steady storage for one of the readers would copy every block
+          to fix startup;
+        - an exception to the fresh-value rule.
+      - `CompatibleCodeReplacesSteadyCodeOfGenerationWithTransitionRoot`
+        (gap: a realtime-code replacement for a generation compiled with a
+        transition root).
+        - Intent:
+          - node_presentation_and_manual_controls_direction.md: dynamic and
+            constant code for one structural realization share its canonical
+            `NodeLayout`, and `stage_realtime_code()` changes the steady Tick
+            operations;
+          - `ExecutionGeneration::realtime_code` (graph_executor.h): a
+            compatible steady-code replacement changes only the operations used
+            after the transition phase;
+          - `activate_pending()` swaps the code only once the phase is `steady`.
+        - The test drives `GraphExecutor` with `downmixed_rewire_module`:
+          - the original graph as the first generation;
+          - its rewired successor compiled as a cutover with a transition root;
+          - the rewired graph compiled again without a predecessor, as the
+            manual-control recompile does, staged through `stage_realtime_code()`.
+        - Expects it accepted, not active while the transition root runs, and
+          active after the next block.
+        - Expected to fail: `compatible_realtime_code()` compares the whole
+          `storage_size` and every region, including the structural graph's
+          transition-only suffix, so `stage_realtime_code()` throws
+          `std::invalid_argument`.
+      - *Eleventh collaborator run (2026-11-09): 825 of 829 tests pass.*
+        `CompatibleCodeReplacesSteadyCodeOfGenerationWithTransitionRoot` fails as
+        predicted: `stage_realtime_code()` throws `std::invalid_argument` ("GraphExecutor
+        realtime-code replacement is not layout-compatible"). The other three
+        fail as in the tenth run.
+      - *Decisions (human co-author, 2026-11-09).*
+        - Compiler-owned storage of a node under no virtual node is not
+          preserved either. Such a node behaves like a node the edit adds. For
+          example, consumers then read zero bytes, not the old node's values, in
+          its output latency window.
+        - A `detach()` is a first-class structure, not a node. It is called on a
+          node or a node's port in the source. Its structures (timelines,
+          alignment rings) are identified across graphs in this order:
+          - by its producer port, when that port has an identity;
+          - then by its consumer port, when that port has an identity and the
+            producer port is missing or does not tell the detach apart;
+          - then by its latency and initial value.
+        - The collaborator's earlier claim, that an anonymous consumer's detach
+          loop would restart its alignment ring, does not respect the structure
+          of C++ node graphs and is withdrawn.
+        - Both follow from one rule already stated in
+          sequential_port_storage_planning.md: observable state belongs to
+          whatever owns it, and survives an edit exactly when that owner is
+          identified in both graphs. Storage only serves that rule.
+          - A node's `State` and its ports' windows belong to the node.
+          - A Tick output's storage belongs to its producer port.
+          - A detach's structures hold values derived from what its producer
+            produced, so its producer port identifies them first.
+          - The values an input's read delay has not yet let it read belong to
+            that input, so an anonymous or new consumer of a surviving detach
+            starts its own window fresh, which the code already does.
+          - Questions of storage identity are answered by this rule, not by a
+            new decision.
+        - Not yet implemented; reproduction tests come first.
+        - `AnonymousFeedbackLoopStartsFreshAtAnEdit` (not yet run).
+          - `configured_unequal_latency_projected_sample_feedback_graph()` builds
+            the unequal-latency routed loop without source identities. The test
+            checks that none of its nodes has a stable identity, so neither has
+            its detach.
+          - Activating a recompile at index 64 must then behave like the same
+            graph started fresh at index 64: the converted node's reads, which
+            restart with its `State`, equal those of a fresh run from 64.
+          - Expected to fail, though not certain, in the converted node's reads
+            after its first 6 positions. The loop's alignment ring and routed
+            timeline still migrate by bundle handle, so the timeline writer mixes
+            source frames from before the edit into those reads.
+          - Implementing the rule will also move the six tests listed below onto
+            nodes with identities, since they test migration itself.
+      - *Twelfth collaborator run (2026-11-09): 829 of 830 tests pass.* Every
+        earlier fix passes. `AnonymousFeedbackLoopStartsFreshAtAnEdit` fails as
+        predicted: the first call after the edit matches the fresh run, then from
+        the call at 68 on the converted node reads values of the old loop (for
+        example 8.18 instead of 0.25).
+      - *Identity rule (2026-11-09; collaborator build and test run pending).*
+        - `raw_region_node_identity()` (connection_plan.cpp) now returns nothing
+          for a node under no virtual node.
+          `raw_region_node_identity_text()` puts a marker in its place, and
+          `owned_raw_region_identity()` declares an identity that contains the
+          marker empty, so such a region never migrates. Every compiler-owned
+          sample and event region passes through it where it is declared:
+          `append_persistent_allocation()`,
+          `append_synthetic_persistent_allocation()` and the event
+          `append_representation()`.
+        - `resolve_detach_identities()` gives each detach the shortest key no
+          other detach of the graph shares: `producer=` its detached source
+          ports, then also `:consumer=` its consumer port, then also
+          `:settings=` its latency and initial value. A part is present only
+          when every node it names has an identity. A detach that nothing
+          tells apart gets no identity.
+          - `SampleDetachIdentities` (sample_storage_plan.cpp) resolves every
+            whole-connection detach and every routed contribution's detach once
+            per plan. A routed contribution's consumer part also names its
+            target channels.
+          - `feedback_identity`, `composition_feedback_identity`,
+            `routed_feedback_identity` (with its `:alignment:capacity=` ring)
+            and `composition_feedback_alignment_identity` now hold that key plus
+            only the shape of their bytes: layout, value type, pace, kind and
+            capacity.
+          - Latency, history, read latencies and initial value left them. A
+            detach whose latency changes therefore keeps its structures when its
+            producer port identifies it, and a region whose shape changed does
+            not migrate, because raw migration skips a size mismatch.
+        - An event detach's storage is shared by every consumer of the same
+          source, latency and retention. Its identity (producer group, source
+          position, latency) already orders producer first; a consumer cannot
+          identify a shared structure, so it starts fresh when its producer is
+          anonymous.
+        - Tests moved onto nodes with identities:
+          - `with_node_identities()` (graph_jit_gtest.cpp) puts each concrete
+            node of a built graph in a virtual node of its own.
+          - The six migration tests use it. In
+            `UnequalLatencySampleFeedbackMigratesAlignmentPrehistory` and
+            `...PopulatedAlignmentRing`, `expect_converted_feedback_suffix_equal()`
+            already accepts a node `State` that migrates.
+          - `ExactSampleDetachFeedback`, `MultipleSampleDetachBranchesMigrateSharedHomeAndFallbackCopy`,
+            `ExactTypeEventDetachFeedback` and `FeedForwardEventFanInCompactCarryMigrates`
+            now expect the nodes' `State` to continue: the calls after the edit
+            follow the earlier calls in the same slots. Their nodes' outputs do
+            not depend on `State`, so the values are unchanged.
+          - `configured_event_feedback_scc_external_fanout_graph()` and
+            `configured_staged_event_fan_in_graph()` return graphs with
+            identities, because their tests locate regions by migration
+            identity.
+          - The three hand-built `GraphJitSampleStoragePlan` tests add identified
+            `PlannedGraphNode` entries through `add_identified_test_nodes()`.
+          - `sample_feedback_alignment_regions()` matches `:alignment:`.
+      - *Thirteenth collaborator run (2026-11-09): 828 of 830 tests pass.*
+        `AnonymousFeedbackLoopStartsFreshAtAnEdit` and the six migration tests
+        pass.
+        - `EventDetachFeedbackFanoutSharesDelayedStream` and
+          `EventDetachFeedbackRetainsBurstAcrossTinyBlocks` failed: they locate
+          the `graphjit.event.feedback:` region by migration identity on
+          anonymous builder graphs, whose identities are now empty.
+        - `configured_event_feedback_fanout_graph()` and
+          `configured_event_feedback_graph()` now return graphs with identities,
+          like the other two fixtures.
+        - Every other test that matches migration identities uses module graphs,
+          one of those four fixtures, hand-built analyses with
+          `add_identified_test_nodes()`, or a producer group without source
+          channels, whose identity names no node.
+      - *Fixes (2026-11-09; collaborator build and test run pending).*
+        - *Realtime-code replacement.* `compatible_realtime_code()` compares a
+          replacement with the structural generation's steady prefix only.
+          - It checks the replacement's `storage_size` against its own
+            `steady_storage_size`, which equals the structural one.
+          - It checks the structural generation's non-transition-only regions,
+            which `NodeLayoutTransitionBuilder` puts first.
+          - It accepts a structural `storage_alignment` that is a multiple of the
+            replacement's, since a transition-only region may raise it.
+          - The replacement still takes over only once the phase is `steady`.
+        - *Separate suffix rings.* In
+          `realize_realtime_port_state_transition_storage()`, channels share a
+          suffix ring only when their windows end at the same position and have
+          the same timeline offset and in-flight count:
+          `SuffixTargetGroup::window_end` and `in_flight`. Then one mirror, with
+          one delay and one first frame, serves every channel of the ring. Two
+          channels of one input may now bind two suffix rings, as aliased tile
+          channels already bind two representations.
+        - *Each source's own window.* `derived_source_window()` gives each source
+          view of a `materialized` or `composed` input its own window:
+          - its in-flight count is its read delay minus its latency. The new
+            `SampleRealtimePortStateStorageView::producer_latency` comes from the
+            connection timings' `source_latency`; a feedback timeline counts
+            latency 0;
+          - its values resume as in `input_resume_position()`, applied to that
+            source;
+          - it inherits `[-kept history, min(c_old, T))`;
+          - without a source's latency, the input's whole window applies as
+            before.
+          - `build_steady_storage_transfers()` uses it for every paired-source and
+            fresh-only transfer of a converted or composed input.
+            `sample_source_views_pair()` now pairs the same producer's channel at
+            any read delay, as a `direct` input already did.
+          - Still open: a converted or composed input that moves to transition-only
+            storage keeps one window for the composed value. When its sources
+            resume at different positions, that window is wrong; this happens
+            when a rewire or a conflict in shared storage moves it.
+        - *Option A.*
+          - `ProjectGraphGraphJitRequest::initial_generation` marks the first
+            generation; `ProjectGraph` sets it when it has no accepted execution
+            graph. `GraphJit::handle_project_graph_transaction()` then calls the
+            new `compile_initial_generation()`.
+          - That compiles a cutover from the empty graph, with empty predecessor
+            requirements and realizations.
+          - The result keeps the cutover, marked
+            `CompiledGraphCutover::from_empty_graph`, only when NodeStorage
+            initialization does not already give every window its fresh value:
+            some state needs transition-only storage, or a fresh-only transfer
+            writes a value other than its region's declared initial value
+            (zero bytes when it declares none).
+          - `GraphExecutor::stage()` accepts such a cutover only for a first
+            generation. `initialize_first_generation()` prepares and runs its
+            transfers right after `NodeStorage::initialize()`, on the staging
+            thread. It then records each expiry cursor's activation index and
+            starts the generation in its transition phase when it has one.
+          - `compile()` and a request without `initial_generation`, such as the
+            manual-control recompile, still produce the steady artifact.
+        - *Changed test entry point.* `CompensatedInputBesideHistoryReaderReadsItsNeutralValueBeforeItsSourceStarts`
+          compiled through `compile()` and ran `NodeStorage` directly, a path that
+          option A leaves steady-only. It now compiles the first-generation
+          request and runs its cutover as `initialize_first_generation()` does.
+          Its expectations are unchanged.
+        - *Rename.* `TransitionCursorProgress::activation_ordinal`
+          (graph_executor.h) is now `activation_index`: the Sequential cursor's
+          value at activation.
+        - *Copy cost.* Separate suffix rings made each ring's mirror copy every
+          channel of its source representation, doubling the transition root's
+          copying for a stereo input whose channels separate.
+          `SampleMaterializationPlan::transition_channels` now lists the channels
+          a suffix ring holds, and `emit_sample_materialization()` stores only
+          those. The total stays one copy per moved channel.
+      - No reproduction test yet for an anonymous node's raw regions. Six tests already
+        assert that an anonymous node's compiler-owned regions migrate, and that
+        contradicts the human co-author's statement that the state of a node
+        under no virtual node is never preserved:
+        `UnequalLatencySampleFeedbackMigratesAlignmentPrehistory`,
+        `UnequalLatencySampleFeedbackMigratesPopulatedAlignmentRing`,
+        `MultipleSampleDetachBranchesMigrateSharedHomeAndFallbackCopy`,
+        `FeedForwardEventFanInCompactCarryMigrates`,
+        `ExactTypeEventDetachFeedback` and `ExactSampleDetachFeedback`. Their
+        fixtures call `configure_package_definition_provider()` directly, which
+        skips `consume_builder_node_source_identity()`, so their nodes join no
+        virtual node. *(Confirmed 2026-11-09: it covers compiler-owned storage,
+        except a detach's structures; see "Decisions" above. The six tests will
+        need nodes with identities.)*
     - *Known gaps, not implemented:*
       - A fresh position in a Sequential input's window is zero-filled
         (`execute_realtime_port_state_transfers()`). A freshly initialized
@@ -3462,24 +4082,100 @@ built, all 790 tests pass, measured below; repository owner).*
       - A converted or composed input's per-source transfers give each source's
         storage its own fresh value. An input that sums two ordinary producers
         with coefficients 1 and 1 therefore reads twice its neutral value at a
-        fresh position.
+        fresh position. *(Not reachable, 2026-11-08: the registry declares only
+        mono and stereo. Mono to stereo uses 1, stereo to mono uses 0.5 and 0.5,
+        so every conversion, and every composition of conversions, sums to 1
+        per target channel. A realtime composition rejects two contributions to
+        one target channel, and the DSL has no fan-in. Per-source fresh values
+        therefore compose to the input's neutral value.)*
       - A freshly started generation does not follow the fresh-value rule. An
         input with a non-zero `neutral_value` that reads an ordinary producer's
         storage before that producer's first value reads zero bytes.
+        *(Addressed 2026-11-09 where every state with a window in a region agrees
+        on its fresh value: `plan_fresh_sample_storage_values()`. Still open
+        where they disagree; see the last gap below.)*
       - A moved (transition-only) input whose same producer's latency grew needs
         the 8-byte resume index; lowering reports an error for it instead.
+        *(Test: `GrowingLatencyOfRetainedSourceExposesNeutralValues`.
+        Addressed 2026-11-09 by the cutover index cell.)*
       - A moved converted or composed input keeps the mirror at its read delay,
         so after a rewire it does not play its in-flight values first. (The
         "mirror" is the `SampleMaterializationPlan` that
         `specialize_transition_plan()` adds to copy the input's steady
-        representation into its transition-only suffix ring.)
+        representation into its transition-only suffix ring.) *(Applies to
+        `materialized` and `composed` records, not to aliased channels, which
+        are `direct`. Tests: `RewiredDownmixedInputReadsItsInFlightValuesFirst`
+        and `RewiredDownmixedTileReadsItsInFlightValuesFirst`. Addressed
+        2026-11-09 by the cutover index cell.)*
       - A converted or composed input whose window inherits nothing stays
         `fresh_state`, so its fresh positions are not zeroed in shared storage.
+        *(Tests: `GrowingCompensationOfDownmixedInputExposesNeutralValues`
+        and `GrowingCompensationOfDownmixedTileExposesNeutralValues`. Addressed
+        2026-11-09 by `fresh_window_realization()`.)*
       - An input that was disconnected, or only slot-fed, has no predecessor
         record, so when it becomes connected it reads the new source's values from
-        before the cutover.
+        before the cutover. *(Also: its fresh claim moves the other readers of
+        that storage to transition-only storage instead of itself. Addressed
+        2026-11-09 by `make_fresh_input_transition()`.)*
+      - `input_resume_position()` recognizes the same producer only between two
+        `direct` records, so a `callback_only` predecessor gets `T = c_new`. Its
+        input loses the fresh positions that its producer's grown latency
+        exposes. (Added 2026-11-09. Test:
+        `GrowingSourceLatencyExposesNeutralValues`. Addressed 2026-11-09 by
+        `input_single_producer()`.)
       - Existing tests that count records or expect a transition root that only the
-        old shared-target rule produced will need new expectations.
+        old shared-target rule produced will need new expectations. *(One found
+        and changed, 2026-11-09: see "Changed test" above.)*
+      - Compiler-owned raw-region identities name a node by its bundle handle,
+        so renumbering bundles restarts the region. *(Test:
+        `UnequalLatencyFeedbackUnaffectedByAddedLeadingNode`. Addressed
+        2026-11-09 for nodes with a stable identity.)* An anonymous node's
+        regions still use its bundle handle. That contradicts
+        `StableConcreteNodeId`, which deliberately gives an anonymous node no
+        identity. Giving its regions an empty identity would restart them at
+        every edit. `UnequalLatencySampleFeedbackMigratesPopulatedAlignmentRing`,
+        whose builder-made nodes are anonymous, expects them to migrate. This
+        needs a decision. *(Decided and implemented 2026-11-09; see "Identity
+        rule".)*
+      - A composed input whose sources are different producers gets
+        `T = c_new` even when one source's latency changed. Its sources'
+        values resume at different positions, which one window `[-history, T)`
+        cannot describe. (Added 2026-11-09. Test:
+        `GrowingCompensationOfComposedSourcesWithUnequalLatencies`. The
+        unequal positions arise when the sources' latencies differ and the
+        input's read delay changes, not only when a source's latency changes.)
+      - Channels of one port that share a suffix ring share one mirror, so they
+        must agree on its delay and now also on its first frame. Lowering reports
+        an error otherwise, as it already did for the delay. (Added 2026-11-09.
+        Test: `AddedFeedbackChannelReadsItsDetachValuesBesideItsContinuingChannel`.)
+      - *For discussion (2026-11-09): a fresh start where two states need
+        different fresh values in one region.*
+        - Example: an input with `neutral_value` 100 and compensation 7 and a
+          history reader with neutral value 0, both reading one ramp.
+        - One of them needs transition-only storage for its first positions,
+          which means the first generation needs a transition root.
+        - Today a first generation carries no `CompiledGraphCutover`.
+          `GraphExecutor::stage()` rejects one with a cutover.
+          `compatible_realtime_code()` rejects a steady-code replacement with a
+          cutover, and `ProjectGraph`'s manual-control recompiles stage
+          `compile()` results as such replacements.
+        - So the first generation's transition root would need its own artifact
+          contract, separate from `compile()`'s steady artifacts. That is not a
+          cheap fix.
+        - Until it is decided, `plan_fresh_sample_storage_values()` leaves such
+          a region at zero bytes, as before, and those states read zero.
+          *(Test: `CompensatedInputBesideHistoryReaderReadsItsNeutralValueBeforeItsSourceStarts`.)*
+        - `ProjectGraph`'s manual-control recompile sends the same request as a
+          first generation (`ProjectGraphGraphJitRequest` without a
+          predecessor), so `GraphJit` cannot tell the two apart.
+        - Observed while checking this, not confirmed by a run:
+          `compatible_realtime_code()` also requires an equal `storage_size` and
+          equal regions. So a `compile()` replacement already cannot replace the
+          code of a generation compiled with transition-only storage, and
+          `stage_realtime_code()` throws `std::invalid_argument` for it.
+          *(Intended to work; test:
+          `CompatibleCodeReplacesSteadyCodeOfGenerationWithTransitionRoot`.)*
+        - *Decided 2026-11-09: option A* (see "Decision" above).
   - *Second run (repository owner, 2026-11-07): all 794 tests pass.*
     `iv_edit_latency_benchmark --shape feedback --size 64` now completes: all 26
     edits are accepted. Medians per edit kind are 573 to 587 ms of wall time, against
