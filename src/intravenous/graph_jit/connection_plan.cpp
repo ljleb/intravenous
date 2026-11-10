@@ -19,6 +19,7 @@
 #include <optional>
 #include <ranges>
 #include <span>
+#include <sstream>
 #include <string>
 #include <string_view>
 #include <tuple>
@@ -277,28 +278,22 @@ void inventory_realtime_port_states(
             saturating_add(resolved.history, resolved.latency));
     }
 
+    // A Tick event output owns the events at its last history + latency
+    // positions before its next tick, as a sample output owns its values there:
+    // one record for its stream.
     auto const event_outputs = ports.event_outputs();
     for (std::size_t index = 0; index < event_outputs.size(); ++index) {
         auto const& output = event_outputs[index];
         if (!is_tick(output)) continue;
-        auto const port = NodeBundlePortId{bundle, PortKind::event, index};
+        auto const& resolved = realization.event_output(bundle, index);
         append_realtime_port_state(
             requirements,
-            port,
+            NodeBundlePortId{bundle, PortKind::event, index},
             PortDirection::output,
             output.name,
             std::nullopt,
             RealtimePortStateRole::tick_output_history,
-            realization.event_output(bundle, index).history,
-            stable_node);
-        append_realtime_port_state(
-            requirements,
-            port,
-            PortDirection::output,
-            output.name,
-            std::nullopt,
-            RealtimePortStateRole::tick_output_latency,
-            realization.event_output(bundle, index).latency,
+            saturating_add(resolved.history, resolved.latency),
             stable_node);
     }
 }
@@ -4137,13 +4132,145 @@ std::size_t effective_block_size(
         kernel_block_size, plan.schedule.regions[region].maximum_block_size);
 }
 
-std::expected<void, std::string> plan_sample_latency_compensation(
+// One Tick-to-Sequential path into a concrete node's input, of either stream
+// kind: the node it starts at, the authored latency of its source port, and the
+// read latency that path-latency alignment assigns it. read_latency points into
+// the connection plan that owns the path.
+struct IncomingStreamPath {
+    NodeBundleHandle source_bundle = 0;
+    std::size_t source_latency = 0;
+    std::size_t* read_latency = nullptr;
+};
+
+// Every feed-forward sample path into `bundle`: one per source channel of each
+// entirely realtime, non-detached connection to one of its inputs. A detached
+// (feedback) input is not aligned: its path latency includes the node's own
+// output path latency plus its loop's, so aligning it would need a negative
+// delay, and its read delay stays the authored one.
+std::expected<void, std::string> append_sample_incoming_paths(
+    ConnectionAnalysisPlan& plan,
+    NodeBundleHandle bundle,
+    std::vector<IncomingStreamPath>& paths)
+{
+    for (auto& connection : plan.sample_connections) {
+        if (!is_entirely_realtime_delivery(connection)
+            || has_detached_source(connection)
+            || connection.target_port.node_bundle_handle != bundle) {
+            continue;
+        }
+        if (connection.source_channel_timings.size()
+            != connection.source_channels.size()) {
+            return std::unexpected(
+                "latency compensation lost source-channel timing metadata");
+        }
+        for (auto& channel : connection.source_channel_timings) {
+            paths.push_back(IncomingStreamPath{
+                .source_bundle = channel.source.bundle,
+                .source_latency = channel.source_latency,
+                .read_latency = &channel.read_latency,
+            });
+        }
+    }
+    return {};
+}
+
+// Every feed-forward event path into `bundle`: one per Tick-to-Sequential
+// delivery of each entirely realtime, non-detached connection to one of its
+// inputs.
+void append_event_incoming_paths(
+    ConnectionAnalysisPlan& plan,
+    NodeBundleHandle bundle,
+    std::vector<IncomingStreamPath>& paths)
+{
+    for (auto& connection : plan.event_connections) {
+        if (!is_entirely_realtime_delivery(connection)
+            || has_detached_source(connection)) {
+            continue;
+        }
+        for (auto& delivery : connection.deliveries) {
+            if (delivery.target_index >= connection.target_plans.size()
+                || delivery.source_index >= connection.source_plans.size()
+                || connection.target_plans[delivery.target_index].target.bundle
+                    != bundle) {
+                continue;
+            }
+            auto const& source = connection.source_plans[delivery.source_index];
+            paths.push_back(IncomingStreamPath{
+                .source_bundle = source.source.bundle,
+                .source_latency = source.latency,
+                .read_latency = &delivery.read_latency,
+            });
+        }
+    }
+}
+
+// A whole-port sample source has one producer path and one authored port
+// latency, so every channel has the same read latency. A composed source keeps
+// the largest of its channels' read latencies for whole-port planning;
+// source_channel_timings stays authoritative.
+void summarize_sample_read_latencies(
+    ConnectionAnalysisPlan& plan,
+    NodeBundleHandle bundle)
+{
+    for (auto& connection : plan.sample_connections) {
+        if (connection.target_port.node_bundle_handle != bundle
+            || connection.source_channel_timings.empty()) {
+            continue;
+        }
+        connection.read_latency = 0;
+        for (auto const& channel : connection.source_channel_timings) {
+            connection.read_latency = std::max(
+                connection.read_latency, channel.read_latency);
+        }
+    }
+}
+
+// Aligns every path into one node, whatever its stream kind: each path reads its
+// source late enough that all of them arrive with the largest path latency into
+// the node. Returns that latency.
+std::expected<std::size_t, std::string> align_incoming_paths(
+    ConnectionAnalysisPlan const& plan,
+    std::span<IncomingStreamPath const> paths,
+    std::span<std::optional<std::size_t> const> node_output_latency)
+{
+    std::vector<std::size_t> arrivals;
+    arrivals.reserve(paths.size());
+    std::size_t aligned = 0;
+    for (auto const& path : paths) {
+        std::size_t upstream = 0;
+        if (path.source_bundle != plan.boundary_bundle) {
+            if (path.source_bundle >= node_output_latency.size()
+                || !node_output_latency[path.source_bundle]) {
+                return std::unexpected(
+                    "latency compensation encountered a source before its producer");
+            }
+            upstream = *node_output_latency[path.source_bundle];
+        }
+        auto arrival = checked_latency_add(
+            upstream, path.source_latency, "stream path latency");
+        if (!arrival) return std::unexpected(std::move(arrival.error()));
+        aligned = std::max(aligned, *arrival);
+        arrivals.push_back(*arrival);
+    }
+    for (std::size_t index = 0; index < paths.size(); ++index) {
+        auto read_latency = checked_latency_add(
+            paths[index].source_latency,
+            aligned - arrivals[index],
+            "compensated read latency");
+        if (!read_latency) {
+            return std::unexpected(std::move(read_latency.error()));
+        }
+        *paths[index].read_latency = *read_latency;
+    }
+    return aligned;
+}
+
+// Whole-graph feed-forward path-latency equalization. A concrete node's outputs
+// carry the latency of its aligned inputs plus its internal latency, before the
+// authored latency of any particular output port.
+std::expected<void, std::string> plan_latency_compensation(
     ConnectionAnalysisPlan& plan)
 {
-    // The feed-forward latency carried by a concrete node's output values,
-    // before the authored latency of any particular output port. Once all
-    // inputs of a node are aligned, every output shares the same upstream
-    // path latency plus the node's intrinsic internal latency.
     std::vector<std::optional<std::size_t>> node_output_latency(
         plan.schedule.bundle_to_region.size());
 
@@ -4154,135 +4281,58 @@ std::expected<void, std::string> plan_sample_latency_compensation(
         return found == plan.nodes.end() ? nullptr : &*found;
     };
 
-    // Keep authored output latency as the default for connections not covered
-    // by this feed-forward Tick pass (background access, boundaries, and
-    // cyclic regions whose feedback latency belongs to point 12).
+    // Keep authored output latency as the default for paths this Tick pass
+    // does not align (background access, boundaries, and detached feedback
+    // inputs, whose read delay is their authored one).
     for (auto& connection : plan.sample_connections) {
         connection.read_latency = connection.source_latency;
         for (auto& channel : connection.source_channel_timings) {
             channel.read_latency = channel.source_latency;
         }
     }
+    for (auto& connection : plan.event_connections) {
+        for (auto& delivery : connection.deliveries) {
+            delivery.read_latency =
+                delivery.source_index < connection.source_plans.size()
+                ? connection.source_plans[delivery.source_index].latency
+                : 0;
+        }
+    }
 
+    std::vector<IncomingStreamPath> paths;
     for (auto const region_index : plan.schedule.region_order) {
         if (region_index >= plan.schedule.regions.size()) {
             return std::unexpected(
-                "sample latency compensation references an invalid schedule region");
+                "latency compensation references an invalid schedule region");
         }
         auto const& region = plan.schedule.regions[region_index];
 
-        if (region.cyclic) {
-            // Feedback-aware SCC latency is deliberately deferred. Mark a
-            // conservative provisional base so analysis of downstream regions
-            // remains total; GraphJit's current lowering capability gate still
-            // rejects feedback sample storage before execution.
-            for (auto const bundle : region.execution_order) {
-                auto const* node = planned_node(bundle);
-                if (!node || bundle >= node_output_latency.size()) continue;
-                node_output_latency[bundle] = node->internal_latency_samples;
-            }
-            continue;
-        }
-
+        // A cyclic region is aligned like an acyclic one. Its edges that are
+        // not detached are acyclic, and execution_order is a topological order
+        // of them, so every source a node's aligned paths start at has its
+        // output path latency by then. A detached input keeps its authored
+        // delay (append_*_incoming_paths()), so the loop's own latency is the
+        // detach's, and compensation only adds delay on its forward edges.
         for (auto const bundle : region.execution_order) {
             auto const* node = planned_node(bundle);
             if (!node || bundle >= node_output_latency.size()) {
                 return std::unexpected(
-                    "sample latency compensation lost a scheduled concrete node");
+                    "latency compensation lost a scheduled concrete node");
             }
-
-            struct IncomingPath {
-                std::size_t connection_index = 0;
-                std::size_t source_channel_index = 0;
-                std::size_t arrival_latency = 0;
-            };
-            std::vector<IncomingPath> incoming;
-            std::size_t aligned_input_latency = 0;
-
-            for (std::size_t connection_index = 0;
-                 connection_index < plan.sample_connections.size();
-                 ++connection_index) {
-                auto const& connection = plan.sample_connections[connection_index];
-                if (!is_entirely_realtime_delivery(connection)
-                    || has_detached_source(connection)
-                    || connection.target_port.node_bundle_handle != bundle) {
-                    continue;
-                }
-                if (connection.source_channel_timings.size()
-                    != connection.source_channels.size()) {
-                    return std::unexpected(
-                        "sample latency compensation lost source-channel timing metadata");
-                }
-
-                for (std::size_t source_channel_index = 0;
-                     source_channel_index < connection.source_channel_timings.size();
-                     ++source_channel_index) {
-                    auto const& channel =
-                        connection.source_channel_timings[source_channel_index];
-                    std::size_t upstream_latency = 0;
-                    if (channel.source.bundle != plan.boundary_bundle) {
-                        if (channel.source.bundle >= node_output_latency.size()
-                            || !node_output_latency[channel.source.bundle]) {
-                            return std::unexpected(
-                                "sample latency compensation encountered a source before its producer");
-                        }
-                        upstream_latency = *node_output_latency[channel.source.bundle];
-                    }
-
-                    auto arrival = checked_latency_add(
-                        upstream_latency,
-                        channel.source_latency,
-                        "sample channel path latency");
-                    if (!arrival) {
-                        return std::unexpected(std::move(arrival.error()));
-                    }
-                    aligned_input_latency = std::max(
-                        aligned_input_latency, *arrival);
-                    incoming.push_back(IncomingPath{
-                        .connection_index = connection_index,
-                        .source_channel_index = source_channel_index,
-                        .arrival_latency = *arrival,
-                    });
-                }
+            paths.clear();
+            if (auto appended = append_sample_incoming_paths(plan, bundle, paths);
+                !appended) {
+                return std::unexpected(std::move(appended.error()));
             }
-
-            for (auto const& path : incoming) {
-                auto& connection = plan.sample_connections[path.connection_index];
-                auto& channel =
-                    connection.source_channel_timings[path.source_channel_index];
-                auto const compensation =
-                    aligned_input_latency - path.arrival_latency;
-                auto read_latency = checked_latency_add(
-                    channel.source_latency,
-                    compensation,
-                    "sample compensated channel read latency");
-                if (!read_latency) {
-                    return std::unexpected(std::move(read_latency.error()));
-                }
-                channel.read_latency = *read_latency;
-            }
-
-            // Whole-port sources necessarily share one producer path and one
-            // authored port latency, so every channel has the same effective
-            // read latency. For composed sources retain a conservative scalar
-            // maximum for the existing storage planner; explicit channel
-            // composition will consume source_channel_timings directly.
-            for (auto& connection : plan.sample_connections) {
-                if (connection.target_port.node_bundle_handle != bundle
-                    || connection.source_channel_timings.empty()) {
-                    continue;
-                }
-                connection.read_latency = 0;
-                for (auto const& channel : connection.source_channel_timings) {
-                    connection.read_latency = std::max(
-                        connection.read_latency, channel.read_latency);
-                }
-            }
+            append_event_incoming_paths(plan, bundle, paths);
+            auto aligned = align_incoming_paths(plan, paths, node_output_latency);
+            if (!aligned) return std::unexpected(std::move(aligned.error()));
+            summarize_sample_read_latencies(plan, bundle);
 
             auto output_latency = checked_latency_add(
-                aligned_input_latency,
+                *aligned,
                 node->internal_latency_samples,
-                "sample node output path latency");
+                "node output path latency");
             if (!output_latency) {
                 return std::unexpected(std::move(output_latency.error()));
             }
@@ -5437,22 +5487,76 @@ std::expected<void, std::string> plan_event_groups(
         source_conversions.reserve(connection.source_plans.size());
         for (auto const& source : connection.source_plans)
             source_conversions.push_back(source.conversion);
+        // Each realtime target reads its sources at its own compensation; the
+        // targets that need the same compensation for every source read one
+        // group. A connection without realtime targets joins one group.
+        struct TargetPartition {
+            std::vector<std::size_t> source_compensations{};
+            std::vector<EventInputPortId> targets{};
+        };
+        std::vector<TargetPartition> partitions;
+        for (std::size_t target_index = 0;
+             target_index < connection.target_plans.size(); ++target_index) {
+            std::vector<std::size_t> target_compensations(
+                connection.source_plans.size(), 0);
+            bool realtime_target = false;
+            for (auto const& delivery : connection.deliveries) {
+                if (delivery.target_index != target_index
+                    || !uses_realtime_storage(delivery.mechanism)
+                    || delivery.source_index >= connection.source_plans.size()) {
+                    continue;
+                }
+                realtime_target = true;
+                auto const latency =
+                    connection.source_plans[delivery.source_index].latency;
+                target_compensations[delivery.source_index] =
+                    delivery.read_latency > latency
+                    ? delivery.read_latency - latency
+                    : 0;
+            }
+            if (!realtime_target) continue;
+            auto const target = connection.target_plans[target_index].target;
+            auto partition = std::ranges::find(
+                partitions,
+                target_compensations,
+                &TargetPartition::source_compensations);
+            if (partition == partitions.end()) {
+                partitions.push_back(TargetPartition{
+                    .source_compensations = std::move(target_compensations),
+                });
+                partition = std::prev(partitions.end());
+            }
+            if (!std::ranges::contains(partition->targets, target)) {
+                partition->targets.push_back(target);
+            }
+        }
+        if (partitions.empty()) {
+            partitions.push_back(TargetPartition{
+                .source_compensations = std::vector<std::size_t>(
+                    connection.source_plans.size(), 0),
+            });
+        }
+        for (auto& partition : partitions) {
         auto group = std::ranges::find_if(
             plan.event_producer_groups,
             [&](EventProducerGroupPlan const& candidate) {
                 return candidate.source_type == connection.source_type
                     && candidate.sources == connection.sources
-                    && candidate.source_conversions == source_conversions;
+                    && candidate.source_conversions == source_conversions
+                    && candidate.source_compensations
+                        == partition.source_compensations;
             });
         if (group == plan.event_producer_groups.end()) {
             plan.event_producer_groups.push_back(EventProducerGroupPlan{
                 .source_type = connection.source_type,
                 .sources = connection.sources,
-                .source_conversions = std::move(source_conversions),
+                .source_conversions = source_conversions,
+                .source_compensations = partition.source_compensations,
             });
             group = std::prev(plan.event_producer_groups.end());
         }
         group->connection_indices.push_back(i);
+        group->connection_targets.push_back(std::move(partition.targets));
 
         for (auto const source : connection.sources) {
             auto const atom = std::ranges::find_if(
@@ -5518,6 +5622,7 @@ std::expected<void, std::string> plan_event_groups(
             group->has_background_connections = group->has_background_connections
                 || source_background;
         }
+        }
     }
 
     for (std::size_t group_index = 0;
@@ -5553,10 +5658,16 @@ std::expected<void, std::string> plan_event_groups(
                     connection.source_plans[delivery.source_index];
                 auto const& target =
                     connection.target_plans[delivery.target_index];
+                // The group stream holds each event where its readers read
+                // it, its read latency after its position: it keeps the
+                // targets' history behind the block and the positions not
+                // read yet ahead of it.
                 retained = std::max(
                     retained,
                     retained_extent(
-                        source.history, source.latency, target.history));
+                        source.history,
+                        std::max(delivery.read_latency, source.latency),
+                        target.history));
             }
         }
         auto const current_event_capacity = event_count_for_sample_span(
@@ -5635,13 +5746,70 @@ std::expected<void, std::string> plan_event_groups(
     return {};
 }
 
-// A Sequential sample input owns the values its sources have finalized that its
-// read delay beyond their latency has not yet let it read: compiler-owned
-// compensation plus any detach() delay. Path equalization has set every
-// read_latency by now, so this sets each input record's in_flight_samples per
-// target channel. Every channel of an input fed only through realtime storage
+// A Sequential input of either stream kind owns the values its sources have
+// finalized that its read delay beyond their latency has not yet let it read:
+// compiler-owned compensation plus any detach() delay. Path equalization has
+// set every read_latency by now, so this sets each input record's
+// in_flight_samples: per target channel for a sample input, the largest over
+// its deliveries for an event stream. Every channel of an input fed only through realtime storage
 // gets a record, even an empty one, so that a successor whose read delay grows
 // from nothing still finds the window it grows from.
+// The positions a Sequential input's read delay holds beyond its source's
+// latency, whatever its stream kind: compiler-owned compensation plus any
+// detach() delay. They are the input's in-flight values.
+std::size_t in_flight_extent(
+    std::size_t read_latency,
+    std::size_t source_latency,
+    std::size_t detach_latency) noexcept
+{
+    auto const compensation = read_latency > source_latency
+        ? read_latency - source_latency
+        : 0;
+    return saturating_add(compensation, detach_latency);
+}
+
+// Raises one input record's in-flight count: a sample input's record for one
+// channel, or an event input's stream record (channel empty). An input without
+// a record gets one when it is fed entirely in realtime; a slot-fed or mixed
+// input binds no realtime storage that could hold one.
+void record_input_in_flight(
+    RealtimePortStateRequirements& requirements,
+    NodeBundlePortId target,
+    std::optional<std::size_t> channel,
+    std::string const& port_name,
+    std::optional<StableConcreteNodeId> const& stable_node,
+    std::size_t in_flight,
+    bool realtime_fed)
+{
+    if (in_flight == 0 && !realtime_fed) return;
+    auto const existing = std::ranges::find_if(
+        requirements.states,
+        [&](RealtimePortStateRequirement const& requirement) {
+            return requirement.configured_port == target
+                && requirement.direction == PortDirection::input
+                && requirement.role
+                    == RealtimePortStateRole::sequential_input_history
+                && requirement.channel == channel;
+        });
+    if (existing != requirements.states.end()) {
+        existing->in_flight_samples = std::max(
+            existing->in_flight_samples, in_flight);
+        return;
+    }
+    if (!realtime_fed) return;
+    append_realtime_port_state(
+        requirements,
+        target,
+        PortDirection::input,
+        port_name,
+        channel,
+        RealtimePortStateRole::sequential_input_history,
+        0,
+        stable_node,
+        in_flight,
+        realtime_fed);
+}
+
 std::expected<void, std::string> inventory_sequential_input_in_flight_values(
     ConfiguredGraph const& graph,
     ConnectionAnalysisPlan& plan)
@@ -5661,13 +5829,13 @@ std::expected<void, std::string> inventory_sequential_input_in_flight_values(
             if (timing.delivery != PlannedDeliveryMechanism::tick_to_sequential) {
                 return 0;
             }
-            auto const compensation = timing.read_latency > timing.source_latency
-                ? timing.read_latency - timing.source_latency
-                : 0;
             auto const& detach = timing.detach
                 ? timing.detach
                 : contribution_detach ? contribution_detach : connection.detach;
-            return compensation + (detach ? detach->loop_extra_latency : 0);
+            return in_flight_extent(
+                timing.read_latency,
+                timing.source_latency,
+                detach ? detach->loop_extra_latency : 0);
         };
 
         auto const channels = channel_count(connection.target_layout);
@@ -5747,34 +5915,70 @@ std::expected<void, std::string> inventory_sequential_input_in_flight_values(
                 "GraphJit in-flight input state lost its planned concrete node");
         }
         for (std::size_t channel = 0; channel < channels; ++channel) {
-            if (in_flight[channel] == 0 && !realtime_fed) continue;
-            auto const existing = std::ranges::find_if(
-                plan.realtime_port_states.states,
-                [&](RealtimePortStateRequirement const& requirement) {
-                    return requirement.configured_port == target
-                        && requirement.direction == PortDirection::input
-                        && requirement.role
-                            == RealtimePortStateRole::sequential_input_history
-                        && requirement.channel == channel;
-                });
-            if (existing != plan.realtime_port_states.states.end()) {
-                existing->in_flight_samples = std::max(
-                    existing->in_flight_samples, in_flight[channel]);
-                continue;
-            }
-            // A slot-fed or mixed input binds no realtime storage channel that
-            // could hold a new record.
-            if (!realtime_fed) continue;
-            append_realtime_port_state(
+            record_input_in_flight(
                 plan.realtime_port_states,
                 target,
-                PortDirection::input,
-                inputs[target.port_index].name,
                 channel,
-                RealtimePortStateRole::sequential_input_history,
-                0,
+                inputs[target.port_index].name,
                 planned->stable_identity,
                 in_flight[channel],
+                realtime_fed);
+        }
+    }
+
+    // An event input's stream has one record; its in-flight extent is the
+    // largest over the deliveries it receives.
+    for (auto const& connection : plan.event_connections) {
+        for (std::size_t target_index = 0;
+             target_index < connection.target_plans.size(); ++target_index) {
+            auto const& target_plan = connection.target_plans[target_index];
+            if (target_plan.access != PlannedDestinationAccess::sequential) {
+                continue;
+            }
+            std::size_t in_flight = 0;
+            bool delivered = false;
+            bool realtime_fed = true;
+            for (auto const& delivery : connection.deliveries) {
+                if (delivery.target_index != target_index
+                    || delivery.source_index >= connection.source_plans.size()) {
+                    continue;
+                }
+                delivered = true;
+                if (delivery.mechanism
+                    != PlannedDeliveryMechanism::tick_to_sequential) {
+                    realtime_fed = false;
+                    continue;
+                }
+                auto const& source = connection.source_plans[delivery.source_index];
+                auto const& detach = source.detach ? source.detach : connection.detach;
+                in_flight = std::max(in_flight, in_flight_extent(
+                    delivery.read_latency,
+                    source.latency,
+                    detach ? detach->loop_extra_latency : 0));
+            }
+            if (!delivered) continue;
+            auto const target = NodeBundlePortId{
+                target_plan.target.bundle, PortKind::event, target_plan.target.port};
+            auto const& bundle = graph.node_bundles.bundle(target.node_bundle_handle);
+            if (!bundle.is_concrete()) continue;
+            auto const inputs = bundle.concrete_ports().event_inputs();
+            if (target.port_index >= inputs.size()
+                || !is_sequential(inputs[target.port_index])) {
+                continue;
+            }
+            auto const planned = std::ranges::find(
+                plan.nodes, target.node_bundle_handle, &PlannedGraphNode::bundle);
+            if (planned == plan.nodes.end()) {
+                return std::unexpected(
+                    "GraphJit in-flight input state lost its planned concrete node");
+            }
+            record_input_in_flight(
+                plan.realtime_port_states,
+                target,
+                std::nullopt,
+                inputs[target.port_index].name,
+                planned->stable_identity,
+                in_flight,
                 realtime_fed);
         }
     }
@@ -5915,7 +6119,7 @@ std::expected<ConnectionAnalysisPlan, std::string> build_connection_analysis_pla
     if (auto detach_regions = bind_detach_regions(plan); !detach_regions) {
         return std::unexpected(std::move(detach_regions.error()));
     }
-    if (auto latency = plan_sample_latency_compensation(plan); !latency) {
+    if (auto latency = plan_latency_compensation(plan); !latency) {
         return std::unexpected(std::move(latency.error()));
     }
     if (auto in_flight =
@@ -6026,6 +6230,33 @@ std::vector<std::string> resolve_detach_identities(
     settle(consumer);
     settle(settings);
     return result;
+}
+
+std::optional<std::string> detach_identity_port(
+    ConnectionAnalysisPlan const& connections,
+    NodeBundleHandle bundle,
+    std::size_t port_index,
+    std::optional<std::size_t> channel)
+{
+    auto node = raw_region_node_identity(connections, bundle);
+    if (!node) return std::nullopt;
+    auto result = std::move(*node) + '.' + std::to_string(port_index);
+    if (channel) result += '.' + std::to_string(*channel);
+    return result;
+}
+
+std::string detach_identity_settings(
+    std::size_t latency,
+    std::optional<std::vector<std::byte>> const& initial_value)
+{
+    std::ostringstream out;
+    out << "latency=" << latency << ":initial=";
+    if (initial_value) {
+        for (auto value : *initial_value) {
+            out << std::hex << static_cast<unsigned>(value) << '.';
+        }
+    }
+    return std::move(out).str();
 }
 
 } // namespace iv::graph_jit::detail

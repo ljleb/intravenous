@@ -14,11 +14,13 @@
 
 namespace iv::graph_jit {
 
-// Distinguishes the independently owned temporal pieces of one realtime port.
-// These roles are semantic migration identities; they do not describe whether
-// the current realization uses a ring, compact carry, alias, or materialization.
-// Positions are relative to the port's next tick: a negative position is a value
-// owned before it.
+// Distinguishes the independently owned temporal pieces of one realtime port,
+// whatever its stream kind (sequential_port_storage_planning.md, "Sample and
+// event streams share one lifetime and ownership model"). These roles are
+// semantic migration identities; they do not describe whether the current
+// realization uses a ring, compact carry, alias, or materialization. Positions
+// are relative to the port's next tick: a negative position is a value owned
+// before it.
 enum class RealtimePortStateRole : std::uint8_t {
     // Values a Sequential input owns at its read delay: its history
     // [-history, 0), then its in-flight values [0, in_flight), which its sources
@@ -26,14 +28,10 @@ enum class RealtimePortStateRole : std::uint8_t {
     // read.
     sequential_input_history,
     // Values a Tick output has authored and still owns before its next tick:
-    // [-extent, 0). A sample output files each value at the index it was
-    // authored for, so this one window is its history + latency values; latency
-    // only marks the newest of them as revisable. An event output owns its
-    // history here.
+    // [-extent, 0), its last history + latency positions. Storage files each
+    // value or event at the position it was authored for; latency only marks
+    // the newest positions as still open to authoring.
     tick_output_history,
-    // Events a Tick event output has already stamped at or after its next tick:
-    // [0, latency). Sample outputs have no such state.
-    tick_output_latency,
 };
 
 // Stable identity of one conceptual node-owned realtime state piece. Sample
@@ -57,10 +55,10 @@ struct StableRealtimePortStateId {
 // concrete node is anonymous. stable_identity is present only when continuity
 // across graph revisions is meaningful. extent_samples is the exact owned extent
 // of the role (see RealtimePortStateRole), never a rounded storage capacity.
-// For a Sequential sample input, extent_samples is its history and
-// in_flight_samples the channel's read delay beyond its source's latency:
-// compiler-owned compensation plus any detach() delay. The record owns
-// [-extent_samples, in_flight_samples).
+// For a Sequential input, extent_samples is its history and in_flight_samples
+// its read delay beyond its source's latency (a sample channel's, or the
+// largest of an event stream's deliveries): compiler-owned compensation plus
+// any detach() delay. The record owns [-extent_samples, in_flight_samples).
 struct RealtimePortStateRequirement {
     NodeBundlePortId configured_port{};
     PortDirection direction = PortDirection::input;
@@ -250,16 +248,46 @@ struct EventRealtimePortStateStorageView {
     // populates callback_arena_offset, and immutable_empty populates neither.
     std::optional<std::size_t> node_storage_offset{};
     std::optional<std::size_t> callback_arena_offset{};
+
+    // The stored timestamp of an event at semantic position P of the state is
+    // P + timeline_offset. A latent Tick output's own retained stream holds
+    // each event where it becomes final, so its views use the output's
+    // latency. A Sequential input's producer-group stream and a detach()
+    // delayed stream hold each event at the position the input reads it, so
+    // their views use zero.
+    std::int64_t timeline_offset = 0;
 };
 
-// One Tick output-latency state whose future interval is present in a retained
-// event input representation. requirement_index names the output-latency
-// requirement in the same compiled graph. conversion is the exact path from
-// that output's raw type to the retained input type. target_source_index is
-// present only when the retained representation owns a source-index sidecar.
-struct EventRealtimePortStateFutureSource {
+// How a Sequential event input reads one of its sources: the Tick output it
+// reads, when that output has a stable identity; its read delay behind the
+// output's own positions (the output's latency, compensation, and any detach()
+// delay); the output's latency; and whether it reads a detach() delayed stream
+// that only its connection's inputs read. Transition planning uses these as it
+// uses a sample view's producer, timeline offset and producer latency.
+struct EventRealtimePortStateSourceTiming {
+    std::optional<StableOutputPortId> producer{};
+    std::size_t read_delay = 0;
+    std::optional<std::size_t> producer_latency{};
+    bool feedback_timeline = false;
+    // The source's semantic position in its connection: its index in a
+    // fan-in stream's source-index sidecar.
+    std::size_t source_index = 0;
+};
+
+// One Tick event output whose events a retained input stream (a producer
+// group's fan-in or conversion stream) also holds. Besides the input's own
+// window, that stream holds the output's latency positions, which are not
+// final yet and belong to the output. requirement_index names the output's
+// requirement in the same compiled graph; conversion is the path from the
+// output's raw type to the stream's type; latency is the output's; the stream
+// holds each of its events stream_delay positions after its own position (the
+// output's latency plus the readers' compensation); target_source_index is
+// present only when the stream owns a source-index sidecar.
+struct EventRealtimePortStateOutputSource {
     std::size_t requirement_index = 0;
     EventConversionPlan conversion{};
+    std::size_t latency = 0;
+    std::size_t stream_delay = 0;
     std::optional<std::size_t> target_source_index{};
 };
 
@@ -283,11 +311,12 @@ struct EventRealtimePortStateRealization {
     std::size_t materialization_history_samples = 0;
     bool materialization_selects_invocation_window = false;
 
-    // Input history and source-authored future events can occupy one retained
-    // producer-group representation. Transition planning uses these records to
-    // reconstruct its future interval from the independently owned output
-    // latency states without changing steady execution.
-    std::vector<EventRealtimePortStateFutureSource> retained_future_sources{};
+    // One entry per realtime delivery a Sequential input receives. Empty for an
+    // output.
+    std::vector<EventRealtimePortStateSourceTiming> source_timings{};
+    // The outputs whose latency positions the input's retained stream also
+    // holds. A cutover seeds them there from each output's own state.
+    std::vector<EventRealtimePortStateOutputSource> retained_output_sources{};
 };
 
 struct RealtimePortStateRealizations {

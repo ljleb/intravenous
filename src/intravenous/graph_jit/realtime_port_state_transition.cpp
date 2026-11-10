@@ -9,6 +9,7 @@
 #include <functional>
 #include <iterator>
 #include <limits>
+#include <map>
 #include <optional>
 #include <string_view>
 #include <unordered_map>
@@ -212,6 +213,42 @@ bool sample_sources_pair(
     return true;
 }
 
+// True when a composed input keeps its composition and some of its sources
+// pair (sample_source_views_pair()) while the others were rewired to another
+// producer's persistent storage. The paired sources transfer to steady storage;
+// each rewired one gets a source suffix (SampleRealtimePortStateTransfer::
+// composition_source).
+bool sample_sources_partially_pair(
+    SampleRealtimePortStateRealization const& previous,
+    SampleRealtimePortStateRealization const& current)
+{
+    if (previous.retained_access != SampleRealtimePortStateAccess::composed
+        || current.retained_access != SampleRealtimePortStateAccess::composed
+        || previous.composition_sources.size()
+            != current.composition_sources.size()
+        || current.composition_sources.empty()) {
+        return false;
+    }
+    for (std::size_t index = 0;
+         index < current.composition_sources.size(); ++index) {
+        auto const& before = previous.composition_sources[index];
+        auto const& after = current.composition_sources[index];
+        if (before.coefficient != after.coefficient) return false;
+        if (sample_source_views_pair(before.storage, after.storage)) continue;
+        if (before.storage.geometry != after.storage.geometry
+            || !sample_storage_source_is_recoverable(before.storage)
+            || !after.storage.node_storage_offset
+            || after.storage.callback_arena_offset
+            || !after.storage.sequential_cursor_node_storage_offset
+            || (after.storage.storage != SampleRealtimePortStateStorage::ring
+                && after.storage.storage
+                    != SampleRealtimePortStateStorage::compact_carry)) {
+            return false;
+        }
+    }
+    return true;
+}
+
 std::expected<InheritedRealtimePortStateRealization, std::string>
 select_sample_inherited_state_realization(
     SampleRealtimePortStateRealization const& previous,
@@ -330,7 +367,8 @@ select_sample_inherited_state_realization(
         return InheritedRealtimePortStateRealization::
             transfer_to_steady_storage;
     }
-    if (sample_sources_pair(previous, current)) {
+    if (sample_sources_pair(previous, current)
+        || sample_sources_partially_pair(previous, current)) {
         return InheritedRealtimePortStateRealization::
             transfer_to_steady_storage;
     }
@@ -548,20 +586,11 @@ std::expected<RealtimePortStateTransition, std::string> make_transition(
             "realtime port-state extent is not representable");
     }
 
-    std::int64_t begin = 0;
-    std::int64_t end = 0;
-    std::int64_t target_begin = 0;
-    std::int64_t target_end = 0;
-    auto const current_extent =
-        static_cast<std::int64_t>(current_requirement.extent_samples);
-    if (current_requirement.role
-        == RealtimePortStateRole::tick_output_latency) {
-        end = static_cast<std::int64_t>(inherited);
-        target_end = current_extent;
-    } else {
-        begin = -static_cast<std::int64_t>(inherited);
-        target_begin = -current_extent;
-    }
+    std::int64_t const begin = -static_cast<std::int64_t>(inherited);
+    std::int64_t const end = 0;
+    std::int64_t const target_begin =
+        -static_cast<std::int64_t>(current_requirement.extent_samples);
+    std::int64_t const target_end = 0;
     return RealtimePortStateTransition{
         .previous_requirement_index = previous.requirement,
         .current_requirement_index = current.requirement,
@@ -579,73 +608,129 @@ std::expected<RealtimePortStateTransition, std::string> make_transition(
     };
 }
 
-// The one producer whose canonical timeline a Sequential input record reads,
-// when it reads exactly one, and the timeline offset at which it reads it. The
-// record reads it through its direct storage, through its callback view when
-// nothing retains it (callback_only), or through every source of its
-// derivation (materialized, composed).
-struct InputProducerView {
+// How one Sequential input reads one source's stored stream, whatever its kind
+// (sequential_port_storage_planning.md, "Sample and event streams share one
+// lifetime and ownership model"): the Tick output whose stream the storage
+// holds, when it is that output's canonical representation, and that output's
+// channel; how many positions the read trails the input's own positions; that
+// output's latency, when known; and whether the storage is a detach() timeline
+// that only this input reads.
+struct StreamSourceTiming {
     StableOutputPortId const* producer = nullptr;
-    std::int64_t timeline_offset_frames = 0;
+    std::size_t producer_channel = 0;
+    std::int64_t read_delay = 0;
+    std::optional<std::size_t> producer_latency{};
+    bool feedback_timeline = false;
 };
 
-std::optional<InputProducerView> input_single_producer(
-    SampleRealtimePortStateRealization const& realization)
+StreamSourceTiming sample_source_timing(
+    SampleRealtimePortStateStorageView const& view)
 {
-    std::vector<SampleRealtimePortStateStorageView const*> views;
-    switch (realization.retained_access) {
-    case SampleRealtimePortStateAccess::direct:
-        if (realization.retained_sources.size() != 1) return std::nullopt;
-        views.push_back(&realization.retained_sources.front());
-        break;
-    case SampleRealtimePortStateAccess::callback_only:
-        views.push_back(&realization.authored_storage);
-        break;
-    case SampleRealtimePortStateAccess::materialized:
-    case SampleRealtimePortStateAccess::composed:
-        views = derivation_sources(realization);
-        break;
-    case SampleRealtimePortStateAccess::immutable_constant:
-        return std::nullopt;
-    }
-    if (views.empty() || !views.front()->producer) return std::nullopt;
-    auto const& first = *views.front();
-    for (auto const* view : views) {
-        if (view->producer != first.producer
-            || view->timeline_offset_frames != first.timeline_offset_frames) {
-            return std::nullopt;
-        }
-    }
-    return InputProducerView{
-        .producer = &*first.producer,
-        .timeline_offset_frames = first.timeline_offset_frames,
+    return StreamSourceTiming{
+        .producer = view.producer ? &*view.producer : nullptr,
+        .producer_channel = view.producer_channel,
+        // A view reads physical index P + position + timeline_offset_frames.
+        .read_delay = -view.timeline_offset_frames,
+        .producer_latency = view.producer_latency,
+        .feedback_timeline = view.feedback_timeline,
     };
 }
 
+// True when both read the same Tick output port. The channel is not compared:
+// every channel of one output shares its latency, and so the finalization
+// frontier at which its values resume.
+bool same_producer_port(
+    StreamSourceTiming const& before,
+    StreamSourceTiming const& after) noexcept
+{
+    return before.producer && after.producer
+        && *before.producer == *after.producer;
+}
+
+// The one producer whose canonical stream an input record reads, when it reads
+// exactly one, at one read delay.
+std::optional<StreamSourceTiming> single_producer(
+    std::span<StreamSourceTiming const> sources)
+{
+    if (sources.empty() || !sources.front().producer) return std::nullopt;
+    auto const& first = sources.front();
+    for (auto const& source : sources) {
+        if (!same_producer_port(source, first)
+            || source.read_delay != first.read_delay) {
+            return std::nullopt;
+        }
+    }
+    return first;
+}
+
+// The sources a sample input record reads: its direct storage, its callback
+// view when nothing retains it (callback_only), or every source of its
+// derivation (materialized, composed). A constant reads no producer.
+std::vector<StreamSourceTiming> sample_input_sources(
+    SampleRealtimePortStateRealization const& realization)
+{
+    std::vector<StreamSourceTiming> sources;
+    switch (realization.retained_access) {
+    case SampleRealtimePortStateAccess::direct:
+        if (realization.retained_sources.size() == 1) {
+            sources.push_back(
+                sample_source_timing(realization.retained_sources.front()));
+        }
+        break;
+    case SampleRealtimePortStateAccess::callback_only:
+        sources.push_back(sample_source_timing(realization.authored_storage));
+        break;
+    case SampleRealtimePortStateAccess::materialized:
+    case SampleRealtimePortStateAccess::composed:
+        for (auto const* view : derivation_sources(realization)) {
+            sources.push_back(sample_source_timing(*view));
+        }
+        break;
+    case SampleRealtimePortStateAccess::immutable_constant:
+        break;
+    }
+    return sources;
+}
+
+// The sources an event input record reads (EventRealtimePortStateSourceTiming).
+// An event stream is restamped where it is read, so its read delay is the
+// delivery's, whatever storage holds it.
+std::vector<StreamSourceTiming> event_input_sources(
+    EventRealtimePortStateRealization const& realization)
+{
+    std::vector<StreamSourceTiming> sources;
+    sources.reserve(realization.source_timings.size());
+    for (auto const& timing : realization.source_timings) {
+        sources.push_back(StreamSourceTiming{
+            .producer = timing.producer ? &*timing.producer : nullptr,
+            .read_delay = static_cast<std::int64_t>(timing.read_delay),
+            .producer_latency = timing.producer_latency,
+            .feedback_timeline = timing.feedback_timeline,
+        });
+    }
+    return sources;
+}
+
 // The position T at which a Sequential input's source values resume after its
-// in-flight values. A source value enters the input once, when its source
-// finalizes it. When the input keeps reading the same producer, it already holds
-// that producer's values up to its previous finalization frontier, so the next
-// one lands at c_old + d_new - d_old. Another producer's first value finalized
-// after the cutover lands at c_new.
+// in-flight values, whatever its stream kind. A source value enters the input
+// once, when its source finalizes it. When the input keeps reading the same
+// producer, it already holds that producer's values up to its previous
+// finalization frontier, so the next one lands at c_old + d_new - d_old.
+// Another producer's first value finalized after the cutover lands at c_new.
 std::int64_t input_resume_position(
     RealtimePortStateRequirement const& previous_requirement,
     RealtimePortStateRequirement const& current_requirement,
-    SampleRealtimePortStateRealization const& previous,
-    SampleRealtimePortStateRealization const& current)
+    std::optional<StreamSourceTiming> const& before,
+    std::optional<StreamSourceTiming> const& after)
 {
     auto const other_producer =
         static_cast<std::int64_t>(current_requirement.in_flight_samples);
-    auto const before = input_single_producer(previous);
-    auto const after = input_single_producer(current);
-    if (!before || !after || *before->producer != *after->producer) {
+    if (!before || !after || !same_producer_port(*before, *after)) {
         return other_producer;
     }
-    // A view reads physical index P + position + timeline_offset_frames, so
-    // d = -timeline_offset_frames.
     auto const resume =
         static_cast<std::int64_t>(previous_requirement.in_flight_samples)
-        + before->timeline_offset_frames - after->timeline_offset_frames;
+        - before->read_delay + after->read_delay;
     return std::max<std::int64_t>(resume, 0);
 }
 
@@ -656,21 +741,21 @@ std::int64_t input_resume_position(
 // frontier lands, as in input_resume_position(), so sources whose latencies
 // differ resume at different positions. A fresh-only window inherits nothing
 // from any source. Without a source's latency the input's whole window applies.
-struct SampleSourceWindow {
+struct SourceWindow {
     std::int64_t target_begin = 0;
     std::int64_t target_end = 0;
     std::int64_t inherited_begin = 0;
     std::int64_t inherited_end = 0;
 };
 
-SampleSourceWindow derived_source_window(
+SourceWindow derived_source_window(
     RealtimePortStateTransition const& transition,
-    SampleRealtimePortStateStorageView const* before,
-    SampleRealtimePortStateStorageView const& after)
+    std::optional<StreamSourceTiming> const& before,
+    StreamSourceTiming const& after)
 {
     auto const fresh_only =
         transition.inherited_begin == transition.inherited_end;
-    SampleSourceWindow const whole{
+    SourceWindow const whole{
         .target_begin = transition.target_begin,
         .target_end = transition.target_end,
         .inherited_begin = fresh_only
@@ -680,15 +765,14 @@ SampleSourceWindow derived_source_window(
             ? transition.target_begin
             : transition.inherited_end,
     };
-    auto const in_flight = [](SampleRealtimePortStateStorageView const& view)
+    auto const in_flight = [](StreamSourceTiming const& source)
         -> std::optional<std::int64_t> {
-        if (!view.producer_latency && !view.feedback_timeline) {
+        if (!source.producer_latency && !source.feedback_timeline) {
             return std::nullopt;
         }
         auto const latency =
-            static_cast<std::int64_t>(view.producer_latency.value_or(0));
-        return std::max<std::int64_t>(
-            -view.timeline_offset_frames - latency, 0);
+            static_cast<std::int64_t>(source.producer_latency.value_or(0));
+        return std::max<std::int64_t>(source.read_delay - latency, 0);
     };
     auto const after_in_flight = in_flight(after);
     if (!after_in_flight) return whole;
@@ -697,22 +781,20 @@ SampleSourceWindow derived_source_window(
         : std::optional<std::int64_t>{};
     if (!fresh_only && !before_in_flight) return whole;
     auto resume = *after_in_flight;
-    if (before_in_flight && before->producer
-        && before->producer == after.producer) {
+    if (before_in_flight && same_producer_port(*before, after)) {
         resume = std::max<std::int64_t>(
-            *before_in_flight + before->timeline_offset_frames
-                - after.timeline_offset_frames,
+            *before_in_flight - before->read_delay + after.read_delay,
             0);
     }
     if (fresh_only) {
-        return SampleSourceWindow{
+        return SourceWindow{
             .target_begin = transition.target_begin,
             .target_end = resume,
             .inherited_begin = transition.target_begin,
             .inherited_end = transition.target_begin,
         };
     }
-    return SampleSourceWindow{
+    return SourceWindow{
         .target_begin = transition.target_begin,
         .target_end = resume,
         .inherited_begin = transition.inherited_begin,
@@ -740,14 +822,35 @@ InheritedRealtimePortStateRealization fresh_window_realization(
     return InheritedRealtimePortStateRealization::fresh_state;
 }
 
+// An event window that inherits nothing must still hold no events in the
+// steady stream the input reads, which other states may fill: a fresh-only
+// transfer claims its positions there (resolve_event_transfer_conflicts()).
+// Without retained storage the window has nothing to clear.
+InheritedRealtimePortStateRealization event_fresh_window_realization(
+    EventRealtimePortStateRealization const& current)
+{
+    auto const claims_stream = current.retained_storage
+        && event_storage_is_persistent_sequence(*current.retained_storage)
+        && (current.retained_access == EventRealtimePortStateAccess::direct
+            || current.retained_access
+                == EventRealtimePortStateAccess::materialized
+            || current.retained_access
+                == EventRealtimePortStateAccess::indexed_merged_source);
+    return claims_stream
+        ? InheritedRealtimePortStateRealization::transfer_to_steady_storage
+        : InheritedRealtimePortStateRealization::fresh_state;
+}
+
 // Gives a Sequential input transition its window [-history, T) (see
-// RealtimePortStateTransition).
+// RealtimePortStateTransition), whatever its stream kind. resume is T
+// (input_resume_position()); fresh_kind is how the successor initializes a
+// window that inherits nothing.
 std::expected<void, std::string> apply_input_window(
     RealtimePortStateTransition& transition,
     RealtimePortStateRequirement const& previous_requirement,
     RealtimePortStateRequirement const& current_requirement,
-    SampleRealtimePortStateRealization const& previous,
-    SampleRealtimePortStateRealization const& current)
+    std::int64_t resume,
+    InheritedRealtimePortStateRealization fresh_kind)
 {
     constexpr auto limit = static_cast<std::size_t>(
         std::numeric_limits<std::int64_t>::max() / 4);
@@ -764,8 +867,6 @@ std::expected<void, std::string> apply_input_window(
         static_cast<std::int64_t>(current_requirement.extent_samples);
     auto const old_in_flight =
         static_cast<std::int64_t>(previous_requirement.in_flight_samples);
-    auto const resume = input_resume_position(
-        previous_requirement, current_requirement, previous, current);
     auto const kept_history = std::min(old_history, new_history);
     auto const kept_in_flight = std::min(old_in_flight, resume);
     transition.target_begin = -new_history;
@@ -782,8 +883,7 @@ std::expected<void, std::string> apply_input_window(
         transition.inherited_state_realization =
             InheritedRealtimePortStateRealization::fresh_state;
     } else if (inherited == 0) {
-        transition.inherited_state_realization =
-            fresh_window_realization(current);
+        transition.inherited_state_realization = fresh_kind;
     }
     return {};
 }
@@ -797,7 +897,7 @@ std::expected<void, std::string> apply_input_window(
 std::optional<RealtimePortStateTransition> make_fresh_input_transition(
     LocatedState const& current,
     RealtimePortStateRequirement const& requirement,
-    SampleRealtimePortStateRealization const& realization)
+    InheritedRealtimePortStateRealization kind)
 {
     constexpr auto limit = static_cast<std::size_t>(
         std::numeric_limits<std::int64_t>::max() / 4);
@@ -809,7 +909,6 @@ std::optional<RealtimePortStateTransition> make_fresh_input_transition(
     auto const begin =
         -static_cast<std::int64_t>(requirement.extent_samples);
     auto const end = static_cast<std::int64_t>(requirement.in_flight_samples);
-    auto const kind = fresh_window_realization(realization);
     if (begin == end
         || kind == InheritedRealtimePortStateRealization::fresh_state) {
         return std::nullopt;
@@ -974,6 +1073,15 @@ std::expected<void, std::string> classify_shared_successor_storage(
         if (output_roles_share_one_timeline) continue;
         for (auto const index : group.transitions) {
             auto& transition = plan.event_states[index];
+            // A Tick output's storage belongs to its producer port: the
+            // output keeps its events in it, and its readers move.
+            if (transition.current_requirement_index
+                    < current_requirements.states.size()
+                && current_requirements.states[
+                       transition.current_requirement_index].direction
+                    == PortDirection::output) {
+                continue;
+            }
             if (transition.inherited_state_realization
                 != InheritedRealtimePortStateRealization::
                     predecessor_state_unavailable
@@ -1053,10 +1161,11 @@ std::expected<void, std::string> build_steady_storage_transfers(
                     ? derived_source_window(
                         transition,
                         before_views.size() == views.size()
-                            ? before_views[view_index]
-                            : nullptr,
-                        *view)
-                    : SampleSourceWindow{
+                            ? std::optional{sample_source_timing(
+                                *before_views[view_index])}
+                            : std::nullopt,
+                        sample_source_timing(*view))
+                    : SourceWindow{
                         .target_begin = transition.target_begin,
                         .target_end = transition.target_end,
                         .inherited_begin = transition.target_begin,
@@ -1098,9 +1207,17 @@ std::expected<void, std::string> build_steady_storage_transfers(
             }
             for (std::size_t view = 0; view < after.size(); ++view) {
                 auto const window = derived_source_window(
-                    transition, before[view], *after[view]);
+                    transition,
+                    sample_source_timing(*before[view]),
+                    sample_source_timing(*after[view]));
+                // A rewired source's window holds the old source's values,
+                // which the new source's storage cannot also hold: they go to
+                // a source suffix, which realization allocates.
+                auto const rewired =
+                    !sample_source_views_pair(*before[view], *after[view]);
                 plan.sample_transfers.push_back(SampleRealtimePortStateTransfer{
                     .transition_index = index,
+                    .target_transition_only = rewired,
                     .source_access = SampleRealtimePortStateAccess::direct,
                     .source_storage = {*before[view]},
                     .target_storage = *after[view],
@@ -1109,6 +1226,9 @@ std::expected<void, std::string> build_steady_storage_transfers(
                     .target_end = window.target_end,
                     .inherited_begin = window.inherited_begin,
                     .inherited_end = window.inherited_end,
+                    .composition_source = rewired
+                        ? std::optional<std::size_t>{view}
+                        : std::nullopt,
                 });
             }
             continue;
@@ -1173,15 +1293,55 @@ std::expected<void, std::string> build_steady_storage_transfers(
                 transfer_to_steady_storage) {
             continue;
         }
-        auto const& source = previous_realizations.event_states[
-            transition.previous_realization_index];
         auto const& target = current_realizations.event_states[
             transition.current_realization_index];
+        if (transition.inherited_begin == transition.inherited_end) {
+            // A window that inherits nothing claims its positions in the
+            // stream it reads: they hold no events.
+            if (event_fresh_window_realization(target)
+                != InheritedRealtimePortStateRealization::
+                    transfer_to_steady_storage) {
+                plan.event_states[index].inherited_state_realization =
+                    InheritedRealtimePortStateRealization::fresh_state;
+                continue;
+            }
+            plan.event_transfers.push_back(EventRealtimePortStateTransfer{
+                .transition_index = index,
+                .source_access = EventRealtimePortStateAccess::immutable_empty,
+                .target_storage = *target.retained_storage,
+                .target_index = target.retained_source_index,
+                .target_begin = transition.target_begin,
+                .target_end = transition.target_end,
+                .inherited_begin = transition.target_begin,
+                .inherited_end = transition.target_begin,
+                .target_timeline_offset =
+                    target.retained_storage->timeline_offset,
+            });
+            continue;
+        }
+        if (!transition.has_predecessor) {
+            return std::unexpected(
+                "event state without a predecessor inherits events");
+        }
+        auto const& source = previous_realizations.event_states[
+            transition.previous_realization_index];
         if (!source.retained_storage
             || !source.retained_storage->node_storage_offset
             || source.retained_storage->callback_arena_offset) {
             return std::unexpected(
                 "event state transfer lost its recoverable predecessor storage");
+        }
+        // A whole fan-in stream that keeps each event's source index receives
+        // the index each inherited event had; a predecessor stream without
+        // one cannot supply it, so the state keeps its window in
+        // transition-only storage instead.
+        if (target.retained_storage
+            && target.retained_storage->has_source_indices
+            && !target.retained_source_index
+            && !source.retained_storage->has_source_indices) {
+            plan.event_states[index].inherited_state_realization =
+                InheritedRealtimePortStateRealization::transition_only_storage;
+            continue;
         }
         if ((target.retained_access
                     != EventRealtimePortStateAccess::direct
@@ -1209,6 +1369,70 @@ std::expected<void, std::string> build_steady_storage_transfers(
                     "event state transfer lost its type conversion");
             }
         }
+        // An input reading a whole fan-in stream that keeps each event's
+        // source index has one window per source: each source's in-flight
+        // events are its read delay beyond its own latency, and resume where
+        // that source's finalization frontier lands (derived_source_window(),
+        // the rule a converted or composed sample input's sources follow).
+        if (target.retained_storage->has_source_indices
+            && !target.retained_source_index
+            && source.retained_storage->has_source_indices
+            && !source.retained_source_index
+            && !target.source_timings.empty()) {
+            auto const before = event_input_sources(source);
+            auto const after = event_input_sources(target);
+            for (std::size_t source_view = 0;
+                 source_view < after.size(); ++source_view) {
+                auto const& after_timing = after[source_view];
+                auto const target_index =
+                    target.source_timings[source_view].source_index;
+                // The same producer read before, by its sidecar index.
+                std::optional<StreamSourceTiming> before_timing;
+                std::optional<std::size_t> predecessor_index;
+                for (std::size_t candidate = 0;
+                     candidate < before.size(); ++candidate) {
+                    if (same_producer_port(before[candidate], after_timing)) {
+                        before_timing = before[candidate];
+                        predecessor_index =
+                            source.source_timings[candidate].source_index;
+                        break;
+                    }
+                }
+                auto window = derived_source_window(
+                    transition, before_timing, after_timing);
+                if (!predecessor_index) {
+                    // A source the input did not read before contributes
+                    // from the positions it finalizes after the cutover.
+                    window.inherited_begin = window.target_begin;
+                    window.inherited_end = window.target_begin;
+                }
+                plan.event_transfers.push_back(EventRealtimePortStateTransfer{
+                    .transition_index = index,
+                    .source_access = predecessor_index
+                        ? EventRealtimePortStateAccess::indexed_merged_source
+                        : EventRealtimePortStateAccess::immutable_empty,
+                    .source_storage = predecessor_index
+                        ? *source.retained_storage
+                        : EventRealtimePortStateStorageView{},
+                    .source_index = predecessor_index,
+                    .source_conversion = predecessor_index
+                        ? conversion
+                        : std::optional<EventConversionPlan>{},
+                    .target_storage = *target.retained_storage,
+                    .target_index = target_index,
+                    .target_begin = window.target_begin,
+                    .target_end = window.target_end,
+                    .inherited_begin = window.inherited_begin,
+                    .inherited_end = window.inherited_end,
+                    .source_timeline_offset = predecessor_index
+                        ? source.retained_storage->timeline_offset
+                        : 0,
+                    .target_timeline_offset =
+                        target.retained_storage->timeline_offset,
+                });
+            }
+            continue;
+        }
         plan.event_transfers.push_back(EventRealtimePortStateTransfer{
             .transition_index = index,
             .source_access = source.retained_access,
@@ -1221,57 +1445,59 @@ std::expected<void, std::string> build_steady_storage_transfers(
                 source.materialization_selects_invocation_window,
             .target_storage = *target.retained_storage,
             .target_index = target.retained_source_index,
-            .target_begin = transition.inherited_begin < 0
-                ? -static_cast<std::int64_t>(
-                    transition.inherited_extent_samples
-                    + transition.newly_exposed_extent_samples)
-                : 0,
-            .target_end = transition.inherited_begin < 0
-                ? 0
-                : static_cast<std::int64_t>(
-                    transition.inherited_extent_samples
-                    + transition.newly_exposed_extent_samples),
+            .target_begin = transition.target_begin,
+            .target_end = transition.target_end,
             .inherited_begin = transition.inherited_begin,
             .inherited_end = transition.inherited_end,
+            .source_timeline_offset = source.retained_storage->timeline_offset,
+            .target_timeline_offset = target.retained_storage->timeline_offset,
         });
     }
 
-    // An input producer-group carry can contain both the input's negative
-    // history interval and one or more source-output future intervals. The
-    // steady producer-group merge reads callback-local source sequences, so a
-    // cutover must seed those future intervals here exactly once. Ordinary
-    // calls continue to use the producer-group carry and callback-local merge.
+    // A producer group's stream holds, besides its inputs' own windows, its
+    // sources' latency positions: events each output authored that are not
+    // final yet. They belong to the output, whose own transfer fills only the
+    // output's storage, so the cutover seeds them into every such stream once.
     for (auto const& target : current_realizations.event_states) {
-        if (target.retained_future_sources.empty()) continue;
-        if ((target.retained_access
-                    != EventRealtimePortStateAccess::direct
+        if (target.retained_output_sources.empty()) continue;
+        if ((target.retained_access != EventRealtimePortStateAccess::direct
                 && target.retained_access
                     != EventRealtimePortStateAccess::materialized)
             || !target.retained_storage
-            || !event_storage_is_persistent_sequence(
-                *target.retained_storage)) {
+            || !event_storage_is_persistent_sequence(*target.retained_storage)) {
             return std::unexpected(
-                "event input future provenance has no successor steady storage");
+                "event input stream of latent outputs has no successor steady storage");
         }
-
-        for (auto const& future : target.retained_future_sources) {
+        for (auto const& output_source : target.retained_output_sources) {
             auto const transition = std::ranges::find_if(
                 plan.event_states,
                 [&](RealtimePortStateTransition const& candidate) {
                     return candidate.current_requirement_index
-                        == future.requirement_index;
+                        == output_source.requirement_index;
                 });
-            // A new output has no predecessor future to preserve. Its first
-            // successor callback authors the new future normally.
-            if (transition == plan.event_states.end()) continue;
-            if (transition->inherited_begin != 0
-                || transition->previous_realization_index
-                    >= previous_realizations.event_states.size()) {
-                return std::unexpected(
-                    "event input future provenance names a non-latency transition");
+            // A new output has no predecessor events to seed.
+            if (transition == plan.event_states.end()
+                || transition->inherited_state_realization
+                    == InheritedRealtimePortStateRealization::fresh_state
+                || transition->inherited_state_realization
+                    == InheritedRealtimePortStateRealization::
+                        already_represented) {
+                continue;
             }
-            if (transition->inherited_state_realization
-                == InheritedRealtimePortStateRealization::fresh_state) {
+            if (transition->previous_realization_index
+                    >= previous_realizations.event_states.size()
+                || transition->current_realization_index
+                    >= current_realizations.event_states.size()) {
+                return std::unexpected(
+                    "event output seeding names a missing realization");
+            }
+            // The output's own storage is this stream: its own transfer
+            // already fills it.
+            auto const& current_output = current_realizations.event_states[
+                transition->current_realization_index];
+            if (current_output.retained_storage
+                && current_output.retained_storage->node_storage_offset
+                    == target.retained_storage->node_storage_offset) {
                 continue;
             }
             auto const& source = previous_realizations.event_states[
@@ -1280,28 +1506,31 @@ std::expected<void, std::string> build_steady_storage_transfers(
                 || !event_storage_is_persistent_sequence(
                     *source.retained_storage)) {
                 return std::unexpected(
-                    "event input future provenance lost its predecessor output storage");
+                    "event output seeding lost its predecessor output storage");
             }
-
             EventConversionPlan prefix;
             try {
                 prefix = EventConversionRegistry::plan(
                     source.retained_storage->type,
-                    future.conversion.source_type);
+                    output_source.conversion.source_type);
             } catch (std::exception const&) {
                 return std::unexpected(
-                    "event input future provenance lost its output type conversion");
+                    "event output seeding lost its output type conversion");
             }
             auto conversion = append_event_conversion(
-                std::move(prefix), future.conversion);
+                std::move(prefix), output_source.conversion);
             if (!conversion) {
                 return std::unexpected(std::move(conversion.error()));
             }
             if (conversion->target_type != target.retained_storage->type) {
                 return std::unexpected(
-                    "event input future provenance changed retained input type");
+                    "event output seeding changed the stream's event type");
             }
-
+            auto const latency =
+                static_cast<std::int64_t>(output_source.latency);
+            auto const inherited_begin =
+                std::max(transition->inherited_begin, -latency);
+            if (inherited_begin >= transition->inherited_end) continue;
             auto const transition_index = static_cast<std::size_t>(
                 std::distance(plan.event_states.begin(), transition));
             plan.event_transfers.push_back(EventRealtimePortStateTransfer{
@@ -1319,14 +1548,183 @@ std::expected<void, std::string> build_steady_storage_transfers(
                 .source_selects_invocation_window =
                     source.materialization_selects_invocation_window,
                 .target_storage = *target.retained_storage,
-                .target_index = future.target_source_index,
-                .target_begin = 0,
-                .target_end = static_cast<std::int64_t>(
-                    transition->inherited_extent_samples
-                    + transition->newly_exposed_extent_samples),
-                .inherited_begin = transition->inherited_begin,
+                .target_index = output_source.target_source_index,
+                .target_begin = -latency,
+                .target_end = 0,
+                .inherited_begin = inherited_begin,
                 .inherited_end = transition->inherited_end,
+                .source_timeline_offset =
+                    source.retained_storage->timeline_offset,
+                // The stream holds each of this output's events where its
+                // readers read it.
+                .target_timeline_offset =
+                    static_cast<std::int64_t>(output_source.stream_delay),
             });
+        }
+    }
+
+    return {};
+}
+
+// One transfer's claim on the positions of one successor storage target,
+// whatever its stream kind. Positions are relative to the cutover cursor of the
+// target's own timeline.
+struct StorageClaim {
+    std::size_t transfer = 0;
+    // A native claim copies a producer's own data, without fresh positions, to
+    // the same position of that producer's successor storage.
+    bool native = false;
+    std::int64_t begin = 0;
+    std::int64_t end = 0;
+    std::int64_t inherited_begin = 0;
+    std::int64_t inherited_end = 0;
+    // Where an inherited position comes from: a predecessor view's storage and
+    // channel, and the distance from the successor position to its predecessor
+    // position. A transfer that derives its data is its own provenance.
+    bool derived = false;
+    std::optional<std::size_t> source_offset{};
+    std::size_t source_channel = 0;
+    std::int64_t shift = 0;
+    // What every position it covers outside its inherited positions holds: one
+    // sample value, or empty for an event stream, whose fresh positions hold no
+    // events.
+    std::span<std::byte const> fresh_value{};
+    // The source a claim on a fan-in event stream fills, when the stream keeps
+    // each event's source index and the claim fills one source's events.
+    // Claims on different sources of one stream never overlap; a claim without
+    // one covers every source.
+    std::optional<std::size_t> lane{};
+};
+
+// Two claims agree when they put the same data at every position they both
+// cover: the same predecessor position, or equal fresh data.
+bool storage_claims_agree(StorageClaim const& a, StorageClaim const& b)
+{
+    if (a.lane && b.lane && *a.lane != *b.lane) return true;
+    auto const begin = std::max(a.begin, b.begin);
+    auto const end = std::min(a.end, b.end);
+    if (begin >= end) return true;
+    auto const a_begin = std::max(a.inherited_begin, begin);
+    auto const a_end = std::min(a.inherited_end, end);
+    auto const b_begin = std::max(b.inherited_begin, begin);
+    auto const b_end = std::min(b.inherited_end, end);
+    auto const a_inherits = a_begin < a_end;
+    auto const b_inherits = b_begin < b_end;
+    auto const same_fresh_value =
+        std::ranges::equal(a.fresh_value, b.fresh_value);
+    if (!a_inherits && !b_inherits) return same_fresh_value;
+    if (a_inherits != b_inherits || a_begin != b_begin || a_end != b_end) {
+        return false;
+    }
+    auto const both_fresh_somewhere = a_begin != begin || a_end != end;
+    return !a.derived && !b.derived && a.source_offset == b.source_offset
+        && a.source_channel == b.source_channel && a.shift == b.shift
+        && (!both_fresh_somewhere || same_fresh_value);
+}
+
+// Settles the claims on one target: native claims always agree with each other
+// and are kept first. Every other claim, largest first, is kept while it agrees
+// with every claim already kept; on_moved receives each claim that does not.
+template<typename OnMoved>
+void settle_storage_claims(std::vector<StorageClaim>& claims, OnMoved&& on_moved)
+{
+    std::ranges::stable_sort(claims, [](StorageClaim const& a, StorageClaim const& b) {
+        if (a.native != b.native) return a.native;
+        return a.end - a.begin > b.end - b.begin;
+    });
+    std::vector<StorageClaim const*> kept;
+    for (auto const& claim : claims) {
+        if (claim.native) {
+            kept.push_back(&claim);
+            continue;
+        }
+        auto const fits = std::ranges::all_of(
+            kept,
+            [&](StorageClaim const* other) {
+                return storage_claims_agree(claim, *other);
+            });
+        if (fits) {
+            kept.push_back(&claim);
+        } else {
+            on_moved(claim);
+        }
+    }
+}
+
+// Several event states may transfer into one successor steady stream, such as
+// a producer group's stream read by several inputs, with the transfers that
+// seed its sources' latency positions there. They may share it only where they
+// put the same events at every position they both cover: the same predecessor
+// events at the same restamp, or none. The seeding transfers and an output's
+// transfer into its own storage are kept first;
+// every other transfer, largest first, is kept while it agrees with the
+// transfers already kept on its stream; otherwise its whole semantic state moves
+// to transition-only storage. A fresh window claims positions that hold no
+// events, so a new consumer of a stream that another state fills moves itself.
+// A claim on a stream with a source-index sidecar may fill one source's
+// events (StorageClaim::lane).
+std::expected<void, std::string> resolve_event_transfer_conflicts(
+    RealtimePortStateTransitionPlan& plan,
+    RealtimePortStateRequirements const& current_requirements)
+{
+    std::map<std::size_t, std::vector<StorageClaim>> targets;
+    for (std::size_t index = 0; index < plan.event_transfers.size(); ++index) {
+        auto const& transfer = plan.event_transfers[index];
+        if (transfer.target_transition_only
+            || !transfer.target_storage.node_storage_offset) {
+            continue;
+        }
+        auto const& transition = plan.event_states[transfer.transition_index];
+        if (transition.current_requirement_index
+            >= current_requirements.states.size()) {
+            return std::unexpected(
+                "event state transfer names a missing successor requirement");
+        }
+        auto const& requirement =
+            current_requirements.states[transition.current_requirement_index];
+        auto const offset = transfer.target_timeline_offset;
+        auto const shift =
+            transfer.target_timeline_offset - transfer.source_timeline_offset;
+        StorageClaim claim{
+            .transfer = index,
+            .begin = transfer.target_begin + offset,
+            .end = transfer.target_end + offset,
+            .inherited_begin = transfer.inherited_begin + offset,
+            .inherited_end = transfer.inherited_end + offset,
+            .derived = transfer.source_conversion.has_value()
+                || transfer.source_access
+                    == EventRealtimePortStateAccess::materialized,
+            .source_offset = transfer.source_storage.node_storage_offset,
+            .source_channel = transfer.source_index.value_or(0),
+            .shift = shift,
+        };
+        // A Tick output's transfer fills its own storage, which belongs to
+        // its producer port, whatever restamp or window growth an edit gave
+        // it; the seeding transfers fill its events into other streams.
+        claim.native = transfer.supplemental_target
+            || requirement.role == RealtimePortStateRole::tick_output_history;
+        claim.lane = transfer.target_index;
+        targets[*transfer.target_storage.node_storage_offset].push_back(claim);
+    }
+
+    std::vector<bool> moved(plan.event_states.size(), false);
+    for (auto& [_, claims] : targets) {
+        settle_storage_claims(claims, [&](StorageClaim const& claim) {
+            moved[plan.event_transfers[claim.transfer].transition_index] = true;
+        });
+    }
+    // A moved output still seeds its latency positions into the streams that
+    // hold them; only its own transfer moves.
+    std::erase_if(
+        plan.event_transfers,
+        [&](EventRealtimePortStateTransfer const& transfer) {
+            return moved[transfer.transition_index]
+                && !transfer.supplemental_target;
+        });
+    for (std::size_t index = 0; index < plan.event_states.size(); ++index) {
+        if (moved[index]) {
+            plan.event_states[index].inherited_state_realization =
+                InheritedRealtimePortStateRealization::transition_only_storage;
         }
     }
     return {};
@@ -1350,46 +1748,7 @@ std::expected<void, std::string> resolve_sample_transfer_conflicts(
     RealtimePortStateRequirements const& current_requirements,
     RealtimePortStateRealizations const& current_realizations)
 {
-    struct Claim {
-        std::size_t transfer = 0;
-        bool native = false;
-        // Successor slots relative to the cutover cursor.
-        std::int64_t begin = 0;
-        std::int64_t end = 0;
-        std::int64_t inherited_begin = 0;
-        std::int64_t inherited_end = 0;
-        // Where an inherited slot comes from: a predecessor view's storage and
-        // channel, and the distance from the successor slot to its predecessor
-        // slot. A transfer that derives its values is its own provenance.
-        bool derived = false;
-        std::optional<std::size_t> source_offset{};
-        std::size_t source_channel = 0;
-        std::int64_t shift = 0;
-        // The value of every slot it covers outside its inherited slots.
-        std::span<std::byte const> fresh_value{};
-    };
-    auto const agree = [](Claim const& a, Claim const& b) {
-        auto const begin = std::max(a.begin, b.begin);
-        auto const end = std::min(a.end, b.end);
-        if (begin >= end) return true;
-        auto const a_begin = std::max(a.inherited_begin, begin);
-        auto const a_end = std::min(a.inherited_end, end);
-        auto const b_begin = std::max(b.inherited_begin, begin);
-        auto const b_end = std::min(b.inherited_end, end);
-        auto const a_inherits = a_begin < a_end;
-        auto const b_inherits = b_begin < b_end;
-        auto const same_fresh_value =
-            std::ranges::equal(a.fresh_value, b.fresh_value);
-        if (!a_inherits && !b_inherits) return same_fresh_value;
-        if (a_inherits != b_inherits || a_begin != b_begin || a_end != b_end) {
-            return false;
-        }
-        auto const both_fresh_somewhere = a_begin != begin || a_end != end;
-        return !a.derived && !b.derived && a.source_offset == b.source_offset
-            && a.source_channel == b.source_channel && a.shift == b.shift
-            && (!both_fresh_somewhere || same_fresh_value);
-    };
-
+    using Claim = StorageClaim;
     std::unordered_map<SampleTargetKey, std::vector<Claim>, SampleTargetKeyHash>
         targets;
     for (std::size_t index = 0; index < plan.sample_transfers.size(); ++index) {
@@ -1442,24 +1801,9 @@ std::expected<void, std::string> resolve_sample_transfer_conflicts(
 
     std::vector<bool> moved(plan.sample_states.size(), false);
     for (auto& [_, claims] : targets) {
-        std::ranges::stable_sort(claims, [](Claim const& a, Claim const& b) {
-            if (a.native != b.native) return a.native;
-            return a.end - a.begin > b.end - b.begin;
+        settle_storage_claims(claims, [&](Claim const& claim) {
+            moved[plan.sample_transfers[claim.transfer].transition_index] = true;
         });
-        std::vector<Claim const*> kept;
-        for (auto const& claim : claims) {
-            if (claim.native) {
-                kept.push_back(&claim);
-                continue;
-            }
-            auto const fits = std::ranges::all_of(
-                kept, [&](Claim const* other) { return agree(claim, *other); });
-            if (fits) {
-                kept.push_back(&claim);
-            } else {
-                moved[plan.sample_transfers[claim.transfer].transition_index] = true;
-            }
-        }
     }
 
     std::vector<bool> surviving(current_requirements.states.size(), false);
@@ -1504,7 +1848,7 @@ std::expected<void, std::string> resolve_sample_transfer_conflicts(
             .fresh_value = fresh_value,
         };
         for (auto const& claim : target->second) {
-            if (!agree(fresh, claim)) {
+            if (!storage_claims_agree(fresh, claim)) {
                 moved[plan.sample_transfers[claim.transfer].transition_index] = true;
             }
         }
@@ -1740,7 +2084,11 @@ std::expected<void, std::string> validate_prepared_transitions(
             transfer.transition_index].inherited_state_realization
             == InheritedRealtimePortStateRealization::
                 transition_only_storage;
-        if (transfer.target_transition_only != transition_only) {
+        // A source suffix is transition-only storage of a state that stays
+        // in steady storage.
+        if (transfer.target_transition_only
+                != (transition_only || transfer.composition_source.has_value())
+            || (transfer.composition_source && transition_only)) {
             return std::unexpected(
                 "sample transfer disagrees with its target storage extent");
         }
@@ -2018,31 +2366,50 @@ std::expected<void, std::string> validate_prepared_transitions(
         if (!transfer.supplemental_target) {
             ++event_transfer_counts[transfer.transition_index];
         }
+        // A fresh-only transfer reads nothing: its target positions hold no
+        // events.
+        auto const fresh_only = transfer.source_access
+            == EventRealtimePortStateAccess::immutable_empty;
         if ((transfer.source_access != EventRealtimePortStateAccess::direct
              && transfer.source_access
                 != EventRealtimePortStateAccess::materialized
              && transfer.source_access
-                != EventRealtimePortStateAccess::indexed_merged_source)
+                != EventRealtimePortStateAccess::indexed_merged_source
+             && !fresh_only)
+            || (fresh_only
+                && (transfer.inherited_begin != transfer.inherited_end
+                    || transfer.source_conversion
+                    || transfer.source_index
+                    || transfer.supplemental_target))
             || transfer.target_begin > transfer.inherited_begin
             || transfer.inherited_begin > transfer.inherited_end
             || transfer.inherited_end > transfer.target_end) {
             return std::unexpected(
                 "event transfer is not an executable direct transfer");
         }
-        auto validated = validate_event_storage_view(
-            transfer.source_storage,
-            previous_storage_size,
-            true,
-            "event transition source");
-        if (!validated) return validated;
+        std::expected<void, std::string> validated{};
+        if (!fresh_only) {
+            validated = validate_event_storage_view(
+                transfer.source_storage,
+                previous_storage_size,
+                true,
+                "event transition source");
+            if (!validated) return validated;
+        }
         validated = validate_event_storage_view(
             transfer.target_storage,
             current_storage_size,
             true,
             "event transition target");
         if (!validated) return validated;
-        if (transfer.target_storage.has_source_indices
-            != transfer.target_index.has_value()) {
+        // A target sidecar names one source for every transferred event, or
+        // takes each event's index from the source sidecar.
+        if ((!transfer.target_storage.has_source_indices
+                && transfer.target_index.has_value())
+            || (transfer.target_storage.has_source_indices
+                && !transfer.target_index
+                && !fresh_only
+                && !transfer.source_storage.has_source_indices)) {
             return std::unexpected(
                 "event transition target has inconsistent source identity");
         }
@@ -2060,15 +2427,23 @@ std::expected<void, std::string> validate_prepared_transitions(
                 return std::unexpected(
                     "event transitions disagree about shared target storage");
             }
+            auto const begin =
+                transfer.inherited_begin + transfer.target_timeline_offset;
+            auto const end =
+                transfer.inherited_end + transfer.target_timeline_offset;
+            auto const previous_begin =
+                previous.inherited_begin + previous.target_timeline_offset;
+            auto const previous_end =
+                previous.inherited_end + previous.target_timeline_offset;
             if (!transfer.supplemental_target
                 && !previous.supplemental_target
                 && transfer.target_index == previous.target_index
-                && transfer.inherited_begin < previous.inherited_end
-                && previous.inherited_begin < transfer.inherited_end) {
+                && begin < previous_end && previous_begin < end) {
                 return std::unexpected(
                     "event transitions overlap in shared target storage");
             }
         }
+        if (fresh_only) continue;
         auto const converted = transfer.source_conversion.has_value();
         if ((!converted
                 && transfer.source_storage.type
@@ -2100,15 +2475,20 @@ std::expected<void, std::string> validate_prepared_transitions(
             return std::unexpected(
                 "event state is unavailable from the active predecessor");
         }
-        auto const expected = realization
-                == InheritedRealtimePortStateRealization::
-                    transfer_to_steady_storage
-                || realization
+        // A steady transition has one transfer, or one per source of a
+        // whole fan-in stream; a transition-only state has its one suffix.
+        auto const count = event_transfer_counts[index];
+        auto const consistent =
+            realization
                     == InheritedRealtimePortStateRealization::
-                        transition_only_storage
-            ? std::size_t{1}
-            : std::size_t{0};
-        if (event_transfer_counts[index] != expected) {
+                        transfer_to_steady_storage
+                ? count >= 1
+                : realization
+                        == InheritedRealtimePortStateRealization::
+                            transition_only_storage
+                    ? count == 1
+                    : count == 0;
+        if (!consistent) {
             return std::unexpected(
                 "event semantic transition has inconsistent transfers");
         }
@@ -2170,8 +2550,18 @@ plan_realtime_port_state_transition(
                 auto fresh = make_fresh_input_transition(
                     current,
                     current_requirement,
-                    current_realizations.sample_states[current.realization]);
+                    fresh_window_realization(
+                        current_realizations.sample_states[
+                            current.realization]));
                 if (fresh) result.sample_states.push_back(std::move(*fresh));
+            } else {
+                auto fresh = make_fresh_input_transition(
+                    current,
+                    current_requirement,
+                    event_fresh_window_realization(
+                        current_realizations.event_states[
+                            current.realization]));
+                if (fresh) result.event_states.push_back(std::move(*fresh));
             }
             continue;
         }
@@ -2201,24 +2591,53 @@ plan_realtime_port_state_transition(
             transition->inherited_state_realization = *realization;
             if (current_requirement.role
                 == RealtimePortStateRole::sequential_input_history) {
+                auto const& previous_requirement =
+                    previous_requirements.states[previous->second.requirement];
+                auto const before = sample_input_sources(previous_realization);
+                auto const after = sample_input_sources(current_realization);
                 auto windowed = apply_input_window(
                     *transition,
-                    previous_requirements.states[previous->second.requirement],
+                    previous_requirement,
                     current_requirement,
-                    previous_realization,
-                    current_realization);
+                    input_resume_position(
+                        previous_requirement,
+                        current_requirement,
+                        single_producer(before),
+                        single_producer(after)),
+                    fresh_window_realization(current_realization));
                 if (!windowed) return std::unexpected(std::move(windowed.error()));
             }
             result.sample_states.push_back(std::move(*transition));
         } else {
-            auto realization = select_event_inherited_state_realization(
+            auto const& previous_realization =
                 previous_realizations.event_states[
-                    previous->second.realization],
-                current_realizations.event_states[current.realization]);
+                    previous->second.realization];
+            auto const& current_realization =
+                current_realizations.event_states[current.realization];
+            auto realization = select_event_inherited_state_realization(
+                previous_realization, current_realization);
             if (!realization) {
                 return std::unexpected(std::move(realization.error()));
             }
             transition->inherited_state_realization = *realization;
+            if (current_requirement.role
+                == RealtimePortStateRole::sequential_input_history) {
+                auto const& previous_requirement =
+                    previous_requirements.states[previous->second.requirement];
+                auto const before = event_input_sources(previous_realization);
+                auto const after = event_input_sources(current_realization);
+                auto windowed = apply_input_window(
+                    *transition,
+                    previous_requirement,
+                    current_requirement,
+                    input_resume_position(
+                        previous_requirement,
+                        current_requirement,
+                        single_producer(before),
+                        single_producer(after)),
+                    event_fresh_window_realization(current_realization));
+                if (!windowed) return std::unexpected(std::move(windowed.error()));
+            }
             result.event_states.push_back(std::move(*transition));
         }
     }
@@ -2235,6 +2654,11 @@ plan_realtime_port_state_transition(
     auto resolved = resolve_sample_transfer_conflicts(
         result, current_requirements, current_realizations);
     if (!resolved) return std::unexpected(std::move(resolved.error()));
+    auto resolved_events = resolve_event_transfer_conflicts(
+        result, current_requirements);
+    if (!resolved_events) {
+        return std::unexpected(std::move(resolved_events.error()));
+    }
     return result;
 }
 
@@ -2667,13 +3091,68 @@ realize_realtime_port_state_transition_storage(
             plan.sample_transfers.size() - 1, group->region);
     }
 
+    // Source suffixes of composed inputs whose state stays in steady storage:
+    // each stands in for its source's storage, as a ring.
+    for (std::size_t index = 0; index < plan.sample_transfers.size(); ++index) {
+        auto& transfer = plan.sample_transfers[index];
+        if (!transfer.composition_source) continue;
+        auto target = transfer.target_storage;
+        auto const channels = channel_count(target.channel_layout);
+        if (target.storage == SampleRealtimePortStateStorage::compact_carry) {
+            if (target.working_frame_capacity == 0 || channels == 0
+                || target.geometry.value_size_bytes == 0
+                || channels > std::numeric_limits<std::size_t>::max()
+                        / target.working_frame_capacity
+                || channels * target.working_frame_capacity
+                        > std::numeric_limits<std::size_t>::max()
+                            / target.geometry.value_size_bytes) {
+                return std::unexpected(
+                    "transition source suffix cannot expand its compact carry");
+            }
+            target.storage = SampleRealtimePortStateStorage::ring;
+            target.storage_frame_count = target.working_frame_capacity;
+            target.storage_size_bytes = channels
+                * target.storage_frame_count
+                * target.geometry.value_size_bytes;
+        }
+        auto const cursor = target.sequential_cursor_node_storage_offset;
+        if (target.storage != SampleRealtimePortStateStorage::ring
+            || target.storage_size_bytes == 0 || !cursor) {
+            return std::unexpected(
+                "transition source suffix has no ring geometry");
+        }
+        target.node_storage_offset.reset();
+        target.callback_arena_offset.reset();
+        target.carry_future_frames = 0;
+        transfer.target_storage = target;
+        suffix_targets.emplace_back(
+            index,
+            layout_builder.declare_raw_region(
+                target.storage_size_bytes,
+                target.geometry.element_alignment));
+        if (std::ranges::none_of(
+                cutover_index_cells,
+                [&](auto const& cell) { return cell.first == *cursor; })) {
+            cutover_index_cells.emplace_back(
+                *cursor,
+                layout_builder.declare_raw_region(
+                    sizeof(std::uint64_t), alignof(std::uint64_t)));
+        }
+    }
+
     for (std::size_t index = 0; index < plan.event_states.size(); ++index) {
         auto const& transition = plan.event_states[index];
         if (transition.inherited_state_realization
             != InheritedRealtimePortStateRealization::
                 transition_only_storage) continue;
-        if (transition.previous_realization_index
-                >= previous_realizations.event_states.size()
+        // A window that inherits nothing needs no predecessor view: its
+        // suffix starts empty.
+        auto const fresh_only =
+            transition.inherited_begin == transition.inherited_end;
+        if ((transition.has_predecessor
+                && transition.previous_realization_index
+                    >= previous_realizations.event_states.size())
+            || (!transition.has_predecessor && !fresh_only)
             || transition.current_realization_index
                 >= current_realizations.event_states.size()
             || transition.current_requirement_index
@@ -2681,21 +3160,25 @@ realize_realtime_port_state_transition_storage(
             return std::unexpected(
                 "event transition-only state names a missing realization");
         }
-        auto const& source = previous_realizations.event_states[
-            transition.previous_realization_index];
+        static EventRealtimePortStateRealization const no_predecessor{};
+        auto const& source = transition.has_predecessor && !fresh_only
+            ? previous_realizations.event_states[
+                transition.previous_realization_index]
+            : no_predecessor;
         auto const& current = current_realizations.event_states[
             transition.current_realization_index];
         auto const& requirement = current_requirements.states[
             transition.current_requirement_index];
-        if (!source.retained_storage
-            || !event_storage_is_persistent_sequence(
-                *source.retained_storage)
-            || (source.retained_access
-                    != EventRealtimePortStateAccess::direct
-                && source.retained_access
-                    != EventRealtimePortStateAccess::materialized
-                && source.retained_access
-                    != EventRealtimePortStateAccess::indexed_merged_source)
+        if ((!fresh_only
+             && (!source.retained_storage
+                 || !event_storage_is_persistent_sequence(
+                     *source.retained_storage)
+                 || (source.retained_access
+                         != EventRealtimePortStateAccess::direct
+                     && source.retained_access
+                         != EventRealtimePortStateAccess::materialized
+                     && source.retained_access
+                         != EventRealtimePortStateAccess::indexed_merged_source)))
             || current.authored_storage.event_capacity == 0) {
             return std::unexpected(
                 "transition suffix requires recoverable predecessor event storage");
@@ -2756,12 +3239,13 @@ realize_realtime_port_state_transition_storage(
             return std::unexpected(
                 "transition suffix event extent is not representable");
         }
-        auto const target_begin = transition.inherited_begin < 0
-            ? -static_cast<std::int64_t>(target_extent)
-            : 0;
-        auto const target_end = transition.inherited_begin < 0
-            ? 0
-            : static_cast<std::int64_t>(target_extent);
+        auto const target_begin = transition.target_begin;
+        auto const target_end = transition.target_end;
+        if (target_end - target_begin
+            != static_cast<std::int64_t>(target_extent)) {
+            return std::unexpected(
+                "transition suffix event interval disagrees with its extent");
+        }
         auto group = std::ranges::find_if(
             event_suffix_groups,
             [&](EventSuffixTargetGroup const& candidate) {
@@ -2794,7 +3278,7 @@ realize_realtime_port_state_transition_storage(
             .end = target_end,
         });
         std::optional<EventConversionPlan> conversion;
-        if (source.retained_storage->type != target.type) {
+        if (!fresh_only && source.retained_storage->type != target.type) {
             try {
                 conversion = EventConversionRegistry::plan(
                     source.retained_storage->type, target.type);
@@ -2806,8 +3290,12 @@ realize_realtime_port_state_transition_storage(
         plan.event_transfers.push_back(EventRealtimePortStateTransfer{
             .transition_index = index,
             .target_transition_only = true,
-            .source_access = source.retained_access,
-            .source_storage = *source.retained_storage,
+            .source_access = fresh_only
+                ? EventRealtimePortStateAccess::immutable_empty
+                : source.retained_access,
+            .source_storage = fresh_only
+                ? EventRealtimePortStateStorageView{}
+                : *source.retained_storage,
             .source_index = source.retained_source_index,
             .source_conversion = std::move(conversion),
             .source_history_samples = source.materialization_history_samples,
@@ -2818,6 +3306,12 @@ realize_realtime_port_state_transition_storage(
             .target_end = target_end,
             .inherited_begin = transition.inherited_begin,
             .inherited_end = transition.inherited_end,
+            // The suffix holds events at the state's own positions: an
+            // input's, or an output's authoring positions.
+            .source_timeline_offset = fresh_only
+                ? 0
+                : source.retained_storage->timeline_offset,
+            .target_timeline_offset = 0,
         });
         event_suffix_targets.emplace_back(
             plan.event_transfers.size() - 1, group->region);
@@ -2915,11 +3409,12 @@ prepare_realtime_port_state_transfers(
             transfer.target_storage.node_storage_offset.has_value(),
             "validated event transition target has no storage offset");
         auto const offset = *transfer.target_storage.node_storage_offset;
+        auto const stored_begin =
+            transfer.target_begin + transfer.target_timeline_offset;
         auto [position, inserted] = event_target_order_begins.emplace(
-            offset, transfer.target_begin);
+            offset, stored_begin);
         if (!inserted) {
-            position->second = std::min(
-                position->second, transfer.target_begin);
+            position->second = std::min(position->second, stored_begin);
         }
     }
     for (auto& transfer : plan.event_transfers) {
@@ -3187,10 +3682,15 @@ void execute_realtime_port_state_transfers(
         auto const& transfer = plan.event_transfers[transfer_index];
         auto const& source = transfer.source_storage;
         auto const& target = transfer.target_storage;
-        auto const* source_base = storage_base(previous_storage, source);
+        // A fresh-only transfer reads nothing; it only claims its target.
+        auto const has_source = transfer.source_access
+            != EventRealtimePortStateAccess::immutable_empty;
+        auto const* source_base = has_source
+            ? storage_base(previous_storage, source)
+            : nullptr;
         auto* target_base = storage_base(current_storage, target);
         IV_ASSERT(
-            source_base != nullptr && target_base != nullptr,
+            (!has_source || source_base != nullptr) && target_base != nullptr,
             "prepared event transition ring is out of bounds");
         auto read_size = [](auto const* base, std::size_t offset) {
             std::size_t value = 0;
@@ -3199,25 +3699,30 @@ void execute_realtime_port_state_transfers(
         };
         auto const source_is_ring =
             source.storage == EventRealtimePortStateStorage::ring;
-        auto const read = source_is_ring
+        auto const read = has_source && source_is_ring
             ? read_size(source_base, source.read_index_relative_offset)
             : std::size_t{0};
-        auto const write = source_is_ring
-            ? read_size(source_base, source.write_index_relative_offset)
-            : read_size(source_base, source.count_relative_offset);
+        auto const write = !has_source
+            ? std::size_t{0}
+            : source_is_ring
+                ? read_size(source_base, source.write_index_relative_offset)
+                : read_size(source_base, source.count_relative_offset);
         IV_ASSERT(
-            write >= read && write - read <= source.event_capacity,
+            !has_source
+                || (write >= read && write - read <= source.event_capacity),
             "prepared event transition source has invalid cursors");
         std::uint8_t timeline_initialized = 0;
-        std::memcpy(
-            &timeline_initialized,
-            source_base + source.timeline_initialized_relative_offset,
-            sizeof(timeline_initialized));
         GlobalIndex expected_position{};
-        std::memcpy(
-            &expected_position,
-            source_base + source.expected_next_time_relative_offset,
-            sizeof(expected_position));
+        if (has_source) {
+            std::memcpy(
+                &timeline_initialized,
+                source_base + source.timeline_initialized_relative_offset,
+                sizeof(timeline_initialized));
+            std::memcpy(
+                &expected_position,
+                source_base + source.expected_next_time_relative_offset,
+                sizeof(expected_position));
+        }
         auto const seam_displacement = timeline_initialized != 0
             ? expected_position.forward_distance_to(sample_index)
             : GlobalIndex::extent_type{0};
@@ -3244,12 +3749,23 @@ void execute_realtime_port_state_transfers(
         auto const inherited_extent =
             static_cast<std::uint64_t>(transfer.inherited_end)
             - static_cast<std::uint64_t>(transfer.inherited_begin);
+        // Events are selected where the predecessor stores the inherited
+        // positions and stored where the successor holds them.
         auto const inherited = GlobalIndexRange{
-            .begin = relative_sample(sample_index, transfer.inherited_begin),
+            .begin = relative_sample(
+                sample_index,
+                transfer.inherited_begin + transfer.source_timeline_offset),
             .extent = inherited_extent,
         };
-        auto append = [&](TimedEvent const& event) noexcept {
-            if (!inherited.contains(event.time)) return;
+        auto const restamp =
+            transfer.target_timeline_offset - transfer.source_timeline_offset;
+        // The source index each inserted event receives: the transfer's, or
+        // the one the event had in the source's sidecar.
+        std::size_t event_source_index = transfer.target_index.value_or(0);
+        auto append = [&](TimedEvent const& stored) noexcept {
+            if (!inherited.contains(stored.time)) return;
+            auto event = stored;
+            event.time = relative_sample(event.time, restamp);
             if (target_write >= target.event_capacity) return;
             auto const target_slot = [&](std::size_t cursor) {
                 return target_is_ring
@@ -3278,8 +3794,7 @@ void execute_realtime_port_state_transfers(
                 auto const precedes = order(event.time, preceding.time)
                     || (target.has_source_indices
                         && event.time == preceding.time
-                        && *transfer.target_index
-                            < preceding_source_index);
+                        && event_source_index < preceding_source_index);
                 if (!precedes) break;
                 std::memcpy(
                     target_base + target.events_relative_offset
@@ -3304,12 +3819,24 @@ void execute_realtime_port_state_transfers(
                 std::memcpy(
                     target_base + target.source_indices_relative_offset
                         + target_slot(position) * sizeof(std::size_t),
-                    &*transfer.target_index,
+                    &event_source_index,
                     sizeof(std::size_t));
             }
             ++target_write;
         };
+        auto const copies_source_indices = target.has_source_indices
+            && !transfer.target_index && source.has_source_indices;
         for (auto cursor = read; cursor < write; ++cursor) {
+            if (copies_source_indices) {
+                std::memcpy(
+                    &event_source_index,
+                    source_base + source.source_indices_relative_offset
+                        + (source_is_ring
+                                ? cursor % source.event_capacity
+                                : cursor)
+                            * sizeof(std::size_t),
+                    sizeof(event_source_index));
+            }
             if (transfer.source_access
                 == EventRealtimePortStateAccess::indexed_merged_source) {
                 std::size_t source_index = 0;

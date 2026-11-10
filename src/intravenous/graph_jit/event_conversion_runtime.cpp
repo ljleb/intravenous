@@ -162,7 +162,8 @@ extern "C" std::size_t iv_graph_jit_merge_event_sequence(
     void const* source_events,
     std::size_t source_capacity,
     std::size_t source_count,
-    GlobalIndex origin) noexcept
+    GlobalIndex origin,
+    std::size_t delay) noexcept
 {
     if (target_events == nullptr || source_events == nullptr
         || (target_capacity != 0 && !is_power_of_2(target_capacity))) {
@@ -197,11 +198,12 @@ extern "C" std::size_t iv_graph_jit_merge_event_sequence(
         } else if (target_remaining != 0) {
             auto const& target_event = target[
                 (target_read_index + target_remaining - 1) & mask];
-            auto const& source_event = source[source_remaining - 1];
+            auto const source_time =
+                source[source_remaining - 1].time.advanced_by(delay);
             // On equal timestamps take the newly merged source while walking
             // backwards, leaving the existing target event earlier in the
             // final stable order.
-            take_target = order(source_event.time, target_event.time);
+            take_target = order(source_time, target_event.time);
         }
 
         auto const output_index =
@@ -212,6 +214,8 @@ extern "C" std::size_t iv_graph_jit_merge_event_sequence(
             --target_remaining;
         } else {
             target[output_index] = source[source_remaining - 1];
+            target[output_index].time =
+                target[output_index].time.advanced_by(delay);
             --source_remaining;
         }
         --output_remaining;
@@ -287,7 +291,8 @@ extern "C" std::size_t iv_graph_jit_merge_ordered_event_sequence(
     std::size_t source_capacity,
     std::size_t source_count,
     std::size_t source_index,
-    GlobalIndex origin) noexcept
+    GlobalIndex origin,
+    std::size_t delay) noexcept
 {
     if (target_events == nullptr || target_source_indices == nullptr
         || source_events == nullptr
@@ -321,10 +326,11 @@ extern "C" std::size_t iv_graph_jit_merge_ordered_event_sequence(
             auto const target_event_index =
                 (target_read_index + target_remaining - 1) & mask;
             auto const& target_event = target[target_event_index];
-            auto const& source_event = source[source_remaining - 1];
+            auto const source_time =
+                source[source_remaining - 1].time.advanced_by(delay);
             auto const target_index = target_source_indices[target_event_index];
-            take_target = order(source_event.time, target_event.time)
-                || (target_event.time == source_event.time
+            take_target = order(source_time, target_event.time)
+                || (target_event.time == source_time
                     && target_index > source_index);
         }
 
@@ -339,6 +345,8 @@ extern "C" std::size_t iv_graph_jit_merge_ordered_event_sequence(
             --target_remaining;
         } else {
             target[output_index] = source[source_remaining - 1];
+            target[output_index].time =
+                target[output_index].time.advanced_by(delay);
             target_source_indices[output_index] = source_index;
             --source_remaining;
         }

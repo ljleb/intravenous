@@ -1946,6 +1946,7 @@ plan_sample_realtime_port_state_realizations(
 
 std::expected<std::vector<EventRealtimePortStateRealization>, std::string>
 plan_event_realtime_port_state_realizations(
+    ConfiguredGraph const& graph,
     GraphAnalysis const& analysis,
     ConnectionAnalysisPlan const& connections,
     DeclarationPlan const& declarations,
@@ -2082,6 +2083,62 @@ plan_event_realtime_port_state_realizations(
         return selected;
     };
 
+    // Every realtime delivery to one Sequential event input, with its source.
+    auto for_each_delivery = [&](NodeBundlePortId input, auto&& visit) {
+        for (auto const& connection : connections.event_connections) {
+            for (auto const& delivery : connection.deliveries) {
+                if (!uses_realtime_storage(delivery.mechanism)
+                    || delivery.target_index >= connection.target_plans.size()
+                    || delivery.source_index >= connection.source_plans.size()) {
+                    continue;
+                }
+                auto const target =
+                    connection.target_plans[delivery.target_index].target;
+                if (target.bundle != input.node_bundle_handle
+                    || target.port != input.port_index) {
+                    continue;
+                }
+                auto const& source =
+                    connection.source_plans[delivery.source_index];
+                auto const& detach = source.detach ? source.detach : connection.detach;
+                visit(source, delivery, detach);
+            }
+        }
+    };
+    auto input_source_timings = [&](NodeBundlePortId input) {
+        std::vector<EventRealtimePortStateSourceTiming> timings;
+        for_each_delivery(input, [&](
+            EventSourcePlan const& source,
+            EventDeliveryPlan const& delivery,
+            std::optional<ConfiguredEventConnectionDetach> const& detach) {
+            EventRealtimePortStateSourceTiming timing{
+                .read_delay = iv::detail::saturating_add(
+                    delivery.read_latency,
+                    detach ? detach->loop_extra_latency : 0),
+                .producer_latency = source.latency,
+                .feedback_timeline = detach.has_value(),
+                .source_index = delivery.source_index,
+            };
+            auto const planned = std::ranges::find(
+                connections.nodes, source.source.bundle, &PlannedGraphNode::bundle);
+            if (planned != connections.nodes.end() && planned->stable_identity) {
+                auto const& bundle = graph.node_bundles.bundle(source.source.bundle);
+                if (bundle.is_concrete()) {
+                    auto const outputs = bundle.concrete_ports().event_outputs();
+                    if (source.source.port < outputs.size()) {
+                        timing.producer = StableOutputPortId{
+                            .node = *planned->stable_identity,
+                            .kind = PortKind::event,
+                            .port_name = outputs[source.source.port].name,
+                            .port_index = source.source.port,
+                        };
+                    }
+                }
+            }
+            timings.push_back(std::move(timing));
+        });
+        return timings;
+    };
     for (std::size_t requirement_index = 0;
          requirement_index
             < connections.realtime_port_states.states.size();
@@ -2089,7 +2146,11 @@ plan_event_realtime_port_state_realizations(
         auto const& requirement =
             connections.realtime_port_states.states[requirement_index];
         if (requirement.configured_port.port_kind != PortKind::event) continue;
-        if (requirement.channel || requirement.extent_samples == 0) {
+        // A Sequential input's record may own no history and no in-flight
+        // events, as a sample input's may (RealtimePortStateRequirement).
+        if (requirement.channel
+            || (requirement.direction == PortDirection::output
+                && requirement.extent_samples == 0)) {
             return std::unexpected(
                 "GraphJit event port-state requirement has a channel or no extent");
         }
@@ -2128,14 +2189,10 @@ plan_event_realtime_port_state_realizations(
                 return std::unexpected(
                     "GraphJit Tick event output state has no realtime storage binding");
             }
-            std::size_t expected_extent = 0;
-            if (requirement.role
-                == RealtimePortStateRole::tick_output_history) {
-                expected_extent = binding.history;
-            } else if (requirement.role
-                       == RealtimePortStateRole::tick_output_latency) {
-                expected_extent = binding.latency;
-            }
+            auto const expected_extent = requirement.role
+                    == RealtimePortStateRole::tick_output_history
+                ? iv::detail::saturating_add(binding.history, binding.latency)
+                : std::size_t{0};
             if (expected_extent == 0
                 || expected_extent != requirement.extent_samples) {
                 return std::unexpected(
@@ -2153,6 +2210,8 @@ plan_event_realtime_port_state_realizations(
         };
 
         if (requirement.direction == PortDirection::input) {
+            realization.source_timings = input_source_timings(
+                requirement.configured_port);
             auto materialization = materialization_for_target(
                 authored_representation);
             if (!materialization) {
@@ -2178,6 +2237,12 @@ plan_event_realtime_port_state_realizations(
                     ? EventRealtimePortStateAccess::materialized
                     : EventRealtimePortStateAccess::direct;
 
+                // A group stream and a detach() delayed stream both hold
+                // each event at the position the input reads it.
+                realization.retained_storage->timeline_offset = 0;
+
+                // A producer group's own stream also holds its sources'
+                // latency positions, which belong to those outputs.
                 auto const group_index = event_ports.ports[
                     source_representation].producer_group_index;
                 if (group_index
@@ -2193,13 +2258,11 @@ plan_event_realtime_port_state_realizations(
                         return std::unexpected(
                             "GraphJit event input state lost producer-group source conversions");
                     }
-                    realization.retained_future_sources.reserve(
-                        group.sources.size());
                     for (std::size_t source_index = 0;
                          source_index < group.sources.size();
                          ++source_index) {
                         auto const source = group.sources[source_index];
-                        auto const latency_requirement = std::ranges::find_if(
+                        auto const output_requirement = std::ranges::find_if(
                             connections.realtime_port_states.states,
                             [&](RealtimePortStateRequirement const& candidate) {
                                 return candidate.configured_port
@@ -2211,21 +2274,38 @@ plan_event_realtime_port_state_realizations(
                                         == PortDirection::output
                                     && candidate.role
                                         == RealtimePortStateRole::
-                                            tick_output_latency;
+                                            tick_output_history;
                             });
-                        if (latency_requirement
-                            == connections.realtime_port_states.states.end()) {
+                        auto const source_primitive =
+                            primitive_index_for_bundle(source.bundle);
+                        if (output_requirement
+                                == connections.realtime_port_states.states.end()
+                            || !source_primitive
+                            || *source_primitive >= event_ports.primitives.size()
+                            || source.port >= event_ports.primitives[
+                                *source_primitive].outputs.size()) {
                             continue;
                         }
-                        realization.retained_future_sources.push_back(
-                            EventRealtimePortStateFutureSource{
+                        auto const latency = event_ports.primitives[
+                            *source_primitive].outputs[source.port].latency;
+                        if (latency == 0) continue;
+                        realization.retained_output_sources.push_back(
+                            EventRealtimePortStateOutputSource{
                                 .requirement_index =
                                     static_cast<std::size_t>(std::distance(
                                         connections.realtime_port_states.states
                                             .begin(),
-                                        latency_requirement)),
+                                        output_requirement)),
                                 .conversion =
                                     group.source_conversions[source_index],
+                                .latency = latency,
+                                .stream_delay = iv::detail::saturating_add(
+                                    latency,
+                                    source_index
+                                            < group.source_compensations.size()
+                                        ? group.source_compensations[
+                                            source_index]
+                                        : 0),
                                 .target_source_index =
                                     realization.retained_storage
                                             ->has_source_indices
@@ -2242,12 +2322,21 @@ plan_event_realtime_port_state_realizations(
             continue;
         }
 
+        // The output's retained stream holds each event where it becomes
+        // final, its latency after its position.
+        auto const& binding = primitive_ports.outputs[port];
+        auto const output_offset =
+            static_cast<std::int64_t>(binding.latency);
+        if (binding.canonical_storage) {
+            realization.authored_storage.timeline_offset = output_offset;
+        }
         auto retained = retained_representation(authored_representation);
         if (!retained) return std::unexpected(std::move(retained.error()));
         if (*retained) {
             auto view = storage_view(**retained);
             if (!view) return std::unexpected(std::move(view.error()));
             realization.retained_storage = std::move(*view);
+            realization.retained_storage->timeline_offset = output_offset;
             realization.retained_access = EventRealtimePortStateAccess::direct;
         }
         result.push_back(std::move(realization));
@@ -4097,6 +4186,13 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
                 identity += ">" + std::to_string(
                     static_cast<unsigned>(conversion.target_type)) + "]";
             }
+            // Groups of the same sources differ in their readers'
+            // compensation, which places their events differently.
+            if (source_index < group.source_compensations.size()
+                && group.source_compensations[source_index] != 0) {
+                identity += "+" + std::to_string(
+                    group.source_compensations[source_index]);
+            }
         }
         return identity;
     };
@@ -4485,8 +4581,13 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
                 return std::unexpected(std::move(local.error()));
             }
             callback_storage = *local;
+            // The callback authors each event at its own position; the
+            // canonical stream holds it where it becomes final, `latency`
+            // positions later, which is where every consumer whose read delay
+            // is the output's latency reads it.
             plan.merges.push_back(EventMergePlan{
                 .source_representations = {callback_storage},
+                .source_delays = {latency},
                 .target_representation = *canonical,
                 .scope = merge_scope,
                 .ordering_history_samples = history,
@@ -4557,20 +4658,39 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
         }
         return true;
     };
-    auto realtime_targets = [] (EventConnectionPlan const& connection) {
-        std::vector<EventInputPortId> targets;
-        for (auto const& delivery : connection.deliveries) {
-            if (!uses_realtime_storage(delivery.mechanism)
-                || delivery.target_index >= connection.target_plans.size()) {
-                continue;
-            }
-            auto const target =
-                connection.target_plans[delivery.target_index].target;
-            if (!std::ranges::contains(targets, target)) {
-                targets.push_back(target);
+    // The realtime targets of one of a group's connections that read the
+    // group (EventProducerGroupPlan::connection_targets).
+    auto group_targets = [&] (
+        EventProducerGroupPlan const& group, std::size_t connection_index)
+        -> std::vector<EventInputPortId> const& {
+        static std::vector<EventInputPortId> const none{};
+        for (std::size_t position = 0;
+             position < group.connection_indices.size()
+                && position < group.connection_targets.size();
+             ++position) {
+            if (group.connection_indices[position] == connection_index) {
+                return group.connection_targets[position];
             }
         }
-        return targets;
+        return none;
+    };
+    // The largest compensation of any target of a connection
+    // (EventProducerGroupPlan::source_compensations): how far ahead of the
+    // block the group stream holds events its readers have not read yet.
+    auto connection_compensation = [](EventConnectionPlan const& connection) {
+        std::size_t result = 0;
+        for (auto const& delivery : connection.deliveries) {
+            if (!uses_realtime_storage(delivery.mechanism)
+                || delivery.source_index >= connection.source_plans.size()) {
+                continue;
+            }
+            auto const latency =
+                connection.source_plans[delivery.source_index].latency;
+            if (delivery.read_latency > latency) {
+                result = std::max(result, delivery.read_latency - latency);
+            }
+        }
+        return result;
     };
     // Mixed delivery is a property of one target: the connection may also
     // deliver other targets, for example Random Access inputs, entirely in
@@ -4781,6 +4901,9 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
                 std::size_t capacity = 0;
                 std::size_t aggregate_event_bound = 0;
                 std::optional<std::size_t> cyclic_region{};
+                // The callback sequence holds events at their own positions;
+                // the fan-in stream holds them where they become final.
+                std::size_t latency = 0;
             };
             std::vector<ValidatedSource> validated_sources;
             validated_sources.reserve(group.realtime_sources.size());
@@ -4920,6 +5043,7 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
                     .capacity = *capacity,
                     .aggregate_event_bound = *aggregate_event_bound,
                     .cyclic_region = source_cyclic_region,
+                    .latency = source_latency,
                 });
             }
             if (observed_rate != group.max_events_per_index) {
@@ -4990,7 +5114,13 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
                                 || !is_entirely_realtime_delivery(
                                     connections.event_connections[
                                         connection_index]));
-                    });
+                    })
+                // Sources read at different compensation leave their readers
+                // different in-flight windows, which a graph edit separates
+                // by source.
+                || std::ranges::adjacent_find(
+                       group.source_compensations, std::ranges::not_equal_to{})
+                    != group.source_compensations.end();
 
             std::size_t retained_history = 0;
             std::size_t retained_latency = 0;
@@ -5005,8 +5135,13 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
                 retained_history = std::max(
                     retained_history,
                     std::max(connection.source_history, connection.target_history));
+                // The fan-in stream holds each source's events where its
+                // readers read them, compensation included.
                 retained_latency = std::max(
-                    retained_latency, connection.source_latency);
+                    retained_latency,
+                    iv::detail::saturating_add(
+                        connection.source_latency,
+                        connection_compensation(connection)));
             }
 
             if (staged_fan_in) {
@@ -5272,6 +5407,11 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
                         merge.source_representations.push_back(*local);
                         merge.source_indices.push_back(
                             source.semantic_source_index);
+                        merge.source_delays.push_back(
+                            iv::detail::saturating_add(
+                                source.latency,
+                                group.source_compensations.at(
+                                    source.semantic_source_index)));
                     }
                     plan.merges.push_back(std::move(merge));
                 }
@@ -5284,7 +5424,8 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
                     auto const retained_connection =
                         connection.source_history != 0
                         || connection.source_latency != 0
-                        || connection.target_history != 0;
+                        || connection.target_history != 0
+                        || connection_compensation(connection) != 0;
                     if (connection.external_boundary
                         || !realtime_sources_match(group, connection)
                         || connection.source_type != group.source_type
@@ -5297,7 +5438,7 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
                             "GraphJit staged event fan-in connection requires unsupported retention, feedback, external, or source semantics");
                     }
 
-                    for (auto const target_id : realtime_targets(connection)) {
+                    for (auto const target_id : group_targets(group, connection_index)) {
                         auto const target_primitive = primitive_index_for_bundle(
                             target_id.bundle);
                         if (!target_primitive
@@ -5732,6 +5873,11 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
                 plan.producer_group_source_representations[
                     group_index][source.semantic_source_index] = *storage;
                 merge.source_representations.push_back(*storage);
+                merge.source_delays.push_back(
+                    iv::detail::saturating_add(
+                        source.latency,
+                        group.source_compensations.at(
+                            source.semantic_source_index)));
                 if (preserve_source_identity) {
                     merge.source_indices.push_back(
                         source.semantic_source_index);
@@ -5754,7 +5900,8 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
                 auto const retained_connection =
                     connection.source_history != 0
                     || connection.source_latency != 0
-                    || connection.target_history != 0;
+                    || connection.target_history != 0
+                    || connection_compensation(connection) != 0;
                 if (connection.external_boundary
                     || !realtime_sources_match(group, connection)
                     || connection.source_type != group.source_type
@@ -5767,7 +5914,7 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
                         "GraphJit event fan-in connection requires unsupported retention, feedback, external, or source semantics");
                 }
 
-                for (auto const target_id : realtime_targets(connection)) {
+                for (auto const target_id : group_targets(group, connection_index)) {
                     auto const target_primitive = primitive_index_for_bundle(
                         target_id.bundle);
                     if (!target_primitive
@@ -6020,7 +6167,13 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
             retained_history = std::max(
                 retained_history,
                 std::max(connection.source_history, connection.target_history));
-            retained_latency = std::max(retained_latency, connection.source_latency);
+            // The group stream holds the source's events where its readers
+            // read them, compensation included.
+            retained_latency = std::max(
+                retained_latency,
+                iv::detail::saturating_add(
+                    connection.source_latency,
+                    connection_compensation(connection)));
         }
         group_cost_requirements[group_index] =
             group.storage_requirements;
@@ -6103,9 +6256,15 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
                     return carry.working_representation
                         == raw_canonical_representation;
                 });
+        // The group stream holds the source's events where its readers read
+        // them: the raw output's own retained stream serves only readers
+        // without compensation.
+        auto const source_compensation =
+            group.source_compensations.at(semantic_source_index);
         auto const uses_raw_source_directly =
             !source_region_is_cyclic
             && source_conversion.size() == 0
+            && source_compensation == 0
             && source_history >= retained_history
             && source_latency >= retained_latency
             && (!retained_storage || raw_has_retained_storage);
@@ -6201,6 +6360,8 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
             }
             plan.merges.push_back(EventMergePlan{
                 .source_representations = {producer_representation},
+                .source_delays = {iv::detail::saturating_add(
+                    source_latency, source_compensation)},
                 .target_representation = *source_representation,
                 .scope = merge_scope,
                 .ordering_history_samples = retained_history,
@@ -6222,7 +6383,8 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
             auto const retained_connection =
                 connection.source_history != 0
                 || connection.source_latency != 0
-                || connection.target_history != 0;
+                || connection.target_history != 0
+                || connection_compensation(connection) != 0;
             if (connection.external_boundary
                 || !realtime_sources_match(group, connection)
                 || connection.source_type != group.source_type
@@ -6232,7 +6394,7 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
                 return std::unexpected(
                     "GraphJit event connection requires unsupported retention, feedback, external, or source-composition semantics");
             }
-            for (auto const target_id : realtime_targets(connection)) {
+            for (auto const target_id : group_targets(group, connection_index)) {
                 auto const target_primitive = primitive_index_for_bundle(
                     target_id.bundle);
                 if (!target_primitive) {
@@ -6377,18 +6539,24 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
                 "GraphJit per-source event detach source representation changed type");
         }
 
-        auto const latency = source.detach->loop_extra_latency;
+        auto const detach_latency = source.detach->loop_extra_latency;
+        if (source.latency
+            > std::numeric_limits<std::size_t>::max() - detach_latency) {
+            return std::unexpected(
+                "GraphJit per-source event feedback delay overflows size_t");
+        }
+        // The callback-local source sequence holds each event at its own
+        // position. The input reads it at the source latency plus the detach
+        // latency.
+        auto const latency = source.latency + detach_latency;
         auto const retained_history = std::max(
             source.history, connection.target_history);
-        if (source.latency > std::numeric_limits<std::size_t>::max() - latency
-            || retained_history
-                > std::numeric_limits<std::size_t>::max()
-                    - latency - source.latency) {
+        if (retained_history
+                > std::numeric_limits<std::size_t>::max() - latency) {
             return std::unexpected(
                 "GraphJit per-source event feedback retained span overflows size_t");
         }
-        auto const retained_window_samples =
-            retained_history + source.latency + latency;
+        auto const retained_window_samples = retained_history + latency;
         auto const slice_count = input.specialization.block_size
             / region.maximum_block_size
             + (input.specialization.block_size % region.maximum_block_size != 0);
@@ -6514,7 +6682,7 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
                 .commit_scope = region_scope(
                     *source.detach_region, EventOperationPhase::after),
                 .retained_history_samples = retained_history,
-                .retained_latency_samples = source.latency + latency,
+                .retained_latency_samples = latency,
             });
             break;
         }
@@ -6583,9 +6751,15 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
         auto const source_group_it = std::ranges::find_if(
             connections.event_producer_groups,
             [&](EventProducerGroupPlan const& group) {
+                // Groups also differ in their readers' compensation; the
+                // connection's own group is the one that lists it.
+                auto const connection_index = static_cast<std::size_t>(
+                    &connection - connections.event_connections.data());
                 return group.source_type == connection.source_type
                     && group.sources == connection.sources
-                    && source_conversions_match(group, connection);
+                    && source_conversions_match(group, connection)
+                    && std::ranges::contains(
+                        group.connection_indices, connection_index);
             });
         if (source_group_it == connections.event_producer_groups.end()) {
             return std::unexpected(
@@ -6616,12 +6790,12 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
             return std::unexpected(
                 "GraphJit event detach source storage is invalid");
         }
-        // Detached feedback must observe the producer group's canonical
-        // root-call stream, not a producer-local per-slice buffer. Any local
+        // Detached feedback observes the producer group's canonical root-call
+        // stream, which holds each event where it becomes final. Any local
         // source-history/latency buffer is merged into this stream immediately
-        // before feedback_append runs. The feedback cursor then selects only
-        // the newly appended suffix, so retained events already present in a
-        // carry buffer or persistent ring are not copied into feedback again.
+        // before feedback_append runs, which then copies the events that became
+        // final during the current slice. Each event is delivered once, at its
+        // final position plus the detach latency.
         auto const source_representation = canonical_source_representation;
         auto const& source_storage = plan.ports[source_representation];
         if (source_storage.type != connection.source_type) {
@@ -6853,6 +7027,7 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
             plan.feedback_operations.push_back(EventFeedbackPlan{
                 .source_representation = source_representation,
                 .target_representation = target_representation,
+                .selects_final_window = true,
                 .append_scope = primitive_scope(
                     producer_position, EventOperationPhase::after),
                 .reset_scope = region_scope(
@@ -6976,9 +7151,15 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
         auto const group_it = std::ranges::find_if(
             connections.event_producer_groups,
             [&](EventProducerGroupPlan const& group) {
+                // Groups also differ in their readers' compensation; the
+                // connection's own group is the one that lists it.
+                auto const connection_index = static_cast<std::size_t>(
+                    &connection - connections.event_connections.data());
                 return group.source_type == connection.source_type
                     && group.sources == connection.sources
-                    && source_conversions_match(group, connection);
+                    && source_conversions_match(group, connection)
+                    && std::ranges::contains(
+                        group.connection_indices, connection_index);
             });
         if (group_it == connections.event_producer_groups.end()) {
             return std::unexpected(
@@ -9100,6 +9281,7 @@ std::expected<LoweringPlan, std::string> build_lowering_plan(
         }
         auto event_realtime_port_state_realizations =
             plan_event_realtime_port_state_realizations(
+                input.graph,
                 *analysis,
                 realtime_ports->connections,
                 *declarations,

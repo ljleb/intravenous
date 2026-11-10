@@ -680,10 +680,15 @@ wording is preserved in
 [historical/input_owned_history_only_2026-11-08.md](historical/input_owned_history_only_2026-11-08.md).)
 A Tick sample output owns its last `history + latency` authored values before
 its next tick, each filed at the index it was authored for; latency marks the newest of
-them as still revisable. A Tick event output owns its resolved history and the events it
-has already stamped in its latency/future window. (The superseded sample-output
-finalization-index wording is preserved in
-[historical/tick_output_finalization_index_2026-11-07.md](historical/tick_output_finalization_index_2026-11-07.md).)
+them as still revisable. A Tick event output owns the events at its last
+`history + latency` positions before its next tick; latency marks the newest of those
+positions as still open to further events. (The superseded sample-output finalization-index wording is preserved in
+[historical/tick_output_finalization_index_2026-11-07.md](historical/tick_output_finalization_index_2026-11-07.md),
+and the superseded event-output latency/future-window wording in
+[historical/event_output_future_window_2026-11-09.md](historical/event_output_future_window_2026-11-09.md).)
+Sample and event streams follow one lifetime and ownership model; they differ only in
+what one position holds, what a fresh position holds, and how contributions to one
+position combine.
 This is an **as-if private state** rule: storage lowering may alias or share the data with
 producer timelines or other representations, but graph replacement must preserve the
 same observable state that private node-local storage would have preserved.

@@ -48,7 +48,9 @@ iv_graph_jit_convert_event_sequence(
 // sequence/ring. Both sequences are ordered forward from origin. Existing
 // target events precede newly merged source events when timestamps are equal,
 // so invoking this helper in semantic source order gives deterministic tie
-// ordering.
+// ordering. Each merged source event is stored delay positions after its own
+// timestamp: a latent Tick output's retained stream holds each event at the
+// position where it becomes final.
 extern "C" IV_GRAPH_JIT_RUNTIME_EXPORT std::size_t
 iv_graph_jit_merge_event_sequence(
     void* target_events,
@@ -58,13 +60,15 @@ iv_graph_jit_merge_event_sequence(
     void const* source_events,
     std::size_t source_capacity,
     std::size_t source_count,
-    GlobalIndex origin) noexcept;
+    GlobalIndex origin,
+    std::size_t delay = 0) noexcept;
 
 // Stable in-place merge used by staged fan-in. source_indices is parallel to
 // the target event ring/sequence; source_index identifies every event in the
 // bounded source. Ordering is lexicographic by (forward distance from
 // origin, semantic source index), with existing events of the same source
-// remaining first.
+// remaining first. Merged source events are stored delay positions after their
+// own timestamps, as in iv_graph_jit_merge_event_sequence().
 extern "C" IV_GRAPH_JIT_RUNTIME_EXPORT std::size_t
 iv_graph_jit_merge_ordered_event_sequence(
     void* target_events,
@@ -76,7 +80,8 @@ iv_graph_jit_merge_ordered_event_sequence(
     std::size_t source_capacity,
     std::size_t source_count,
     std::size_t source_index,
-    GlobalIndex origin) noexcept;
+    GlobalIndex origin,
+    std::size_t delay = 0) noexcept;
 
 // Merge the realtime and invocation-supplied parts of one mixed Sequential
 // input. Each source is a bounded sequence or ring in chronological order.

@@ -447,6 +447,12 @@ struct EventMergePlan {
     // source index per source storage; the target owns a parallel sidecar used
     // only by compiler runtime helpers.
     std::vector<std::size_t> source_indices{};
+    // Empty, or one value per source: the target stores each event of that
+    // source this many positions after its own timestamp. A latent Tick
+    // output's callback authors events at their own positions, and its
+    // retained streams hold each at the position where it becomes final, its
+    // position plus the output's latency.
+    std::vector<std::size_t> source_delays{};
     std::size_t target_representation = 0;
     EventOperationScope scope{};
     // Every input stream is sorted in forward circular order beginning at the
@@ -467,9 +473,17 @@ struct EventFeedbackPlan {
     std::size_t target_representation = 0;
     std::optional<std::size_t> source_index_filter{};
     // A callback-local source sequence is cleared and populated again for
-    // each primitive invocation. Feedback therefore consumes the complete
-    // sequence at every append scope instead of retaining a root-call cursor.
+    // each primitive invocation, and holds each event at its own position.
+    // Feedback therefore consumes the complete sequence at every append scope,
+    // delayed by the source latency plus the detach latency
+    // (loop_extra_latency includes both).
     bool source_sequence_restarts_each_append = false;
+    // The source is a retained stream that holds each event where it becomes
+    // final. Each append copies exactly the events that became final during
+    // the current invocation, [index, index + block_size), so every event is
+    // delivered once even when a latent producer adds it among events it
+    // authored earlier.
+    bool selects_final_window = false;
     EventOperationScope append_scope{};
     EventOperationScope reset_scope{};
     EventConnectionStorageRequirements storage_requirements{};

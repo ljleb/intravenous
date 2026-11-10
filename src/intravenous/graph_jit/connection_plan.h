@@ -228,6 +228,14 @@ struct EventDeliveryPlan {
     std::size_t target_index = 0;
     PlannedDeliveryMechanism mechanism = PlannedDeliveryMechanism::tick_to_sequential;
     bool contextually_replayable = false;
+    // The target reads its source at position - read_latency: an event its
+    // source authored at P reaches it at P + read_latency
+    // (sequential_port_storage_planning.md, "Sample and event streams share one
+    // lifetime and ownership model"). It is the source port's latency plus the
+    // compensation that feed-forward path-latency alignment assigns this path,
+    // as SampleSourceChannelTimingPlan::read_latency is for a sample channel. A
+    // detach() delay is not part of it; it adds to it.
+    std::size_t read_latency = 0;
 };
 
 struct EventConnectionPlan {
@@ -360,6 +368,14 @@ struct EventProducerGroupPlan {
     EventTypeId source_type = EventTypeId::empty;
     std::vector<EventOutputPortId> sources{};
     std::vector<EventConversionPlan> source_conversions{};
+    // One value per entry of sources: the latency compensation that every
+    // realtime target of the group's connections needs for that source, its
+    // EventDeliveryPlan::read_latency minus the source's latency. The group's
+    // stream holds each source's events at the position its readers read
+    // them, their own position plus the source latency and this compensation,
+    // so connections whose targets need different compensation read
+    // different groups.
+    std::vector<std::size_t> source_compensations{};
     std::vector<PortSubsetIndex> source_atom_indices{};
     std::vector<PortSubsetIndex> target_atom_indices{};
     // The semantic fan-in source set is retained above. Realtime storage
@@ -370,6 +386,11 @@ struct EventProducerGroupPlan {
     std::vector<EventOutputPortId> background_sources{};
     double max_events_per_index = 0.0;
     std::vector<std::size_t> connection_indices{};
+    // Parallel to connection_indices: the realtime targets of that connection
+    // that read this group, the ones whose compensation for each source is
+    // source_compensations. A connection whose targets need different
+    // compensation joins one group per distinct compensation.
+    std::vector<std::vector<EventInputPortId>> connection_targets{};
     bool has_realtime_connections = false;
     bool has_background_connections = false;
     // Cyclic or block-adapted producers append into one invocation-wide
@@ -476,5 +497,20 @@ struct DetachIdentityParts {
 // detach of the graph shares, or empty when none tells it apart.
 std::vector<std::string> resolve_detach_identities(
     std::span<DetachIdentityParts const> detaches);
+
+// One port in a detach's producer or consumer part, whatever its stream kind:
+// its node's identity, its port index, and a sample port's channel. Empty when
+// its node has no identity, which leaves the whole part absent.
+std::optional<std::string> detach_identity_port(
+    ConnectionAnalysisPlan const& connections,
+    NodeBundleHandle bundle,
+    std::size_t port_index,
+    std::optional<std::size_t> channel = std::nullopt);
+
+// A detach's settings part: its latency, then its initial value (empty for a
+// detach without one, such as an event detach).
+std::string detach_identity_settings(
+    std::size_t latency,
+    std::optional<std::vector<std::byte>> const& initial_value);
 
 } // namespace iv::graph_jit::detail

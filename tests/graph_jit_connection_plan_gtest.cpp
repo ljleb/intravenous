@@ -858,9 +858,10 @@ TEST(GraphJitConnectionPlan, InventoriesStableNodeOwnedRealtimePortState)
     ASSERT_TRUE(plan.has_value()) << (plan ? std::string{} : plan.error());
 
     auto const& states = plan->realtime_port_states.states;
-    // Two sample-input channels, two sample-output channels, and three event
-    // states. A sample output owns one window per channel.
-    ASSERT_EQ(states.size(), 7u);
+    // Two sample-input channels, two sample-output channels, and two event
+    // states. An output of either stream kind owns one window: a sample
+    // output one per channel, an event output one for its stream.
+    ASSERT_EQ(states.size(), 6u);
 
     auto find_state = [&](graph_jit::PortDirection direction,
                           graph_jit::RealtimePortStateRole role,
@@ -910,12 +911,6 @@ TEST(GraphJitConnectionPlan, InventoriesStableNodeOwnedRealtimePortState)
         EXPECT_EQ(history->stable_identity->port_name, "out");
 
         EXPECT_EQ(history->stable_identity->channel, channel);
-        EXPECT_EQ(
-            find_state(
-                graph_jit::PortDirection::output,
-                graph_jit::RealtimePortStateRole::tick_output_latency,
-                channel),
-            nullptr);
     }
 
     auto find_event_state = [&](graph_jit::PortDirection direction,
@@ -945,15 +940,19 @@ TEST(GraphJitConnectionPlan, InventoriesStableNodeOwnedRealtimePortState)
         graph_jit::PortDirection::output,
         graph_jit::RealtimePortStateRole::tick_output_history);
     ASSERT_NE(event_history, nullptr);
-    EXPECT_EQ(event_history->extent_samples, 11u);
+    // history 11 + latency 13: like a sample output, an event output owns one
+    // window, its last history + latency positions before its next tick.
+    EXPECT_EQ(event_history->extent_samples, 24u);
     ASSERT_TRUE(event_history->stable_identity);
     EXPECT_EQ(event_history->stable_identity->port_name, "events_out");
-
-    auto const* event_latency = find_event_state(
-        graph_jit::PortDirection::output,
-        graph_jit::RealtimePortStateRole::tick_output_latency);
-    ASSERT_NE(event_latency, nullptr);
-    EXPECT_EQ(event_latency->extent_samples, 13u);
+    EXPECT_EQ(
+        std::ranges::count_if(
+            states,
+            [](graph_jit::RealtimePortStateRequirement const& state) {
+                return state.configured_port.port_kind == PortKind::event
+                    && state.direction == graph_jit::PortDirection::output;
+            }),
+        1);
 }
 
 TEST(GraphJitConnectionPlan, KeepsAnonymousRealtimePortStateGenerationLocal)

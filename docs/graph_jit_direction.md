@@ -885,8 +885,8 @@ Fresh compiler-owned persistent connection state is lifecycle-owned. Sample
 feedback/carry/alignment raw regions and persistent event representations install
 `NodeLayout` raw initializers; exact-shape persistent regions skip initialization
 when migration restores their bytes. The generated Tick root contains no per-detach
-first-call initialization guard. Transient event sequences and feedback cursors are
-fixed stack/SSA state for one root call and reset there. Initialized feedback samples
+first-call initialization guard. Transient event sequences are fixed stack/SSA
+state for one root call and reset there. Initialized feedback samples
 remain authoritative until the corresponding producer values have actually been
 authored. Generated execution keeps one migratable, saturating authored extent for
 each producer whose revision horizon is read by detached feedback. All detach writers
@@ -1048,10 +1048,11 @@ This is a hint, not a hard constraint. Use your own good judgement if ever in do
     including source/target history, source latency, and same-SCC fan-in. The
     implementation covers same-delay
     detached fanout, burst retention, changing root-call sizes, and generation
-    migration. Compact-carry feedback cursors skip the restored historical prefix;
-    persistent-ring cursors start at the prior monotonic write index. Both paths
-    therefore copy only events authored during the current root call rather than
-    re-enqueueing retained history or future events. A cyclic producer may also
+    migration. Each slice's feedback append copies the events of the producer
+    group's stream that became final during that slice, so every event is delayed
+    once, even when a latent producer adds it among events it authored earlier
+    (implementation status, 2026-11-10; the earlier root-call cursors copied the
+    newly appended suffix). A cyclic producer may also
     fan out to an acyclic consumer through one SCC-exit materialization, including
     non-expanding conversion and target history backed by compact carry or a
     canonical persistent producer ring. Same-SCC non-detached conversion and
@@ -1627,16 +1628,25 @@ concrete node
     +-- authored State
     +-- each Sequential input's resolved history and in-flight values
     +-- each Tick sample output's last history + latency authored values
-    +-- each Tick event output's resolved history
-    `-- each Tick event output's resolved latency/future window
+    `-- each Tick event output's events at its last history + latency positions
 ```
 
-A Tick sample output files each value at the index it was authored for, so all of its
-owned values lie before its next tick; latency only marks the newest of them as still
-revisable through `OutputPort::update()`. A Tick event output can stamp events at or
-after its next tick, so its latency/future window is separate state. (Settled
-2026-11-07; the superseded wording is preserved in
-[historical/tick_output_finalization_index_2026-11-07.md](historical/tick_output_finalization_index_2026-11-07.md).)
+A Tick output owns state only before its next tick; latency only marks the newest of
+its positions as still open to authoring: a sample output revises them through
+`OutputPort::update()`, and an event output adds events to them. A sample output's
+storage files each value at the index it was authored for. Each consumer
+observes them through its `read_latency`. (Settled 2026-11-07 for sample outputs; the
+superseded wording is preserved in
+[historical/tick_output_finalization_index_2026-11-07.md](historical/tick_output_finalization_index_2026-11-07.md).
+Settled 2026-11-09 for event outputs; the superseded latency/future window is
+preserved in
+[historical/event_output_future_window_2026-11-09.md](historical/event_output_future_window_2026-11-09.md).)
+
+Sample and event streams follow one lifetime and ownership model. They differ only in
+what one position holds, what a fresh position holds, and how contributions to one
+position combine; see
+[Sequential Port Storage Planning](./sequential_port_storage_planning.md), section
+"Sample and event streams share one lifetime and ownership model".
 
 The storage planner remains free to alias several of those conceptual states onto one
 producer timeline, a compact carry, a full ring, a derived fan-in result, or another

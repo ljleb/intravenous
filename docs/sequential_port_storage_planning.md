@@ -353,9 +353,16 @@ port windows were ordinary state owned beside its nested `State`:
   tick. Storage files each value at the index it was authored for; latency only marks
   the newest `latency` of those values as still revisable through
   `OutputPort::update()`, and each consumer observes them through its `read_latency`;
-- a Tick event output owns the events in its resolved history window; and
-- a Tick event output owns the events it has already stamped inside its resolved
-  latency/future window, at or after its next tick.
+  and
+- a Tick event output owns the events at its last `history + latency` positions before
+  its next tick. Latency only marks the newest `latency` positions as still open to
+  further events, and each consumer observes them through its `read_latency`.
+
+Newly settled (2026-11-09): sample and event streams follow one lifetime and ownership
+model; see "Sample and event streams share one lifetime and ownership model" below. The
+superseded text, under which a Tick event output stamped events at or after its next
+tick and owned that future window separately, is preserved in
+[historical/event_output_future_window_2026-11-09.md](historical/event_output_future_window_2026-11-09.md).
 
 Newly settled (2026-11-07): a Tick sample output has no state at or after its next
 tick. The superseded finalization-index text, which filed each value at
@@ -396,6 +403,47 @@ position holds the input's `neutral_value`. (Newly settled 2026-11-08.)
 The superseded text, under which the input owned only its history, is preserved in
 [historical/input_owned_history_only_2026-11-08.md](historical/input_owned_history_only_2026-11-08.md).
 
+### Sample and event streams share one lifetime and ownership model
+
+Newly settled (2026-11-09, human co-author). Every rule in this section, and every
+rule elsewhere about which positions a port owns, when data at a position becomes
+final, how a read delay (source latency, compiler-owned compensation, or an authored
+`detach()` delay) moves data from a producer to a consumer, which state survives a
+graph edit, and how that state is identified, applies to sample streams and event
+streams alike. In those rules, "value" means the data at one position: one sample for
+a sample stream, and the events at that position for an event stream.
+
+The two stream kinds differ in exactly these three ways:
+
+1. **What one position holds.** A sample position holds one value, and authoring it
+   again overwrites it. An event position holds a set of events, and authoring adds an
+   event to it; an authored event is never removed or changed.
+2. **What a fresh position holds.** A fresh sample position holds the initial value
+   of the `detach()` it lies behind, otherwise the input's `neutral_value`. A fresh
+   event position holds no events.
+3. **How several contributions to one position combine.** Sample contributions sum
+   through their conversion coefficients. Event contributions merge: events are
+   ordered by position, then by semantic source index, then by the order in which
+   their source authored them.
+
+Their storage representations differ freely; any other difference in the lifetime or
+ownership of the data in a stream is a defect against this section. In particular:
+
+- an event input reads its source at `position - read_latency`: an event its source
+  authored at `P` reaches the input at `P + read_latency`;
+- latency compensation equalizes the path latencies of a node's event inputs together
+  with its sample inputs, so a node's inputs observe aligned positions whatever their
+  stream kind. Inside a feedback loop the same holds over the loop's edges that are
+  not detached; an input read through `detach()` keeps its authored delay, because
+  its path latency includes the node's own output path latency plus the loop's, which
+  no compensation can equalize (newly settled 2026-11-10);
+- an event input owns its history and its in-flight events: the events its sources
+  have already finalized that its read delay beyond their latency has not yet let it
+  read. The extent rules above apply to them unchanged; and
+- a `detach()` on an event connection is identified like one on a sample
+  connection: by its producer port, then by its consumer port, then by its latency
+  (and, for a sample stream, its initial value).
+
 This is an effect requirement, not an allocation requirement. The steady
 storage planner may satisfy several conceptual port states using one producer ring,
 may let a consumer history view alias producer storage, and may eliminate dedicated
@@ -432,21 +480,32 @@ Any storage plan that aliases/elides one of these conceptual state pieces must r
 cold metadata capable of reading that semantic window again during a later graph
 transition.
 
+Newly settled (2026-11-09, human co-author): observable state survives an edit exactly
+when its owner is identified in both graphs. A concrete node under no virtual node has
+no identity, so none of its state survives, including compiler-owned storage that
+holds its outputs; it behaves like a node the edit adds. A `detach()` is a first-class
+structure, not a node. Its structures (delayed timelines, alignment rings) are
+identified by its producer port when that port has an identity; then also by its
+consumer port, when that port has an identity and the producer port is missing or does
+not tell the detach apart; then also by its latency and initial value. A detach that
+none of these tells apart has no identity.
+
 Connection analysis therefore emits one cold semantic-state requirement for every
 non-empty owned extent before storage selection:
 
 ```text
 Sequential sample input history + c     -> one record per semantic channel
-Sequential event input history          -> one record for the event stream
+Sequential event input history + c      -> one record for the event stream
 Tick sample output history + latency    -> one record per semantic channel
-Tick event output history               -> one record for the event stream
-Tick event output latency               -> one record for the event stream
+Tick event output history + latency     -> one record for the event stream
 ```
 
-A sample input's record is one window `[-history, c)`, where `c` is the input's
-compensation. A sample output's record is one window because all of its owned values lie before its
-next tick. Keeping it whole lets a successor that changes history, latency, or both
-preserve the newest values of the intersection.
+An input's record is one window `[-history, c)`, where `c` is the input's read delay
+beyond its source's latency. An output's record is one window because all of its owned
+values lie before its next tick. Keeping it whole lets a successor that changes
+history, latency, or both preserve the newest values of the intersection. (Newly
+settled 2026-11-09 for event streams; the superseded event lines are preserved in
+[historical/event_output_future_window_2026-11-09.md](historical/event_output_future_window_2026-11-09.md).)
 
 Each record always retains its generation-local configured port coordinate and exact,
 unrounded extent. When its concrete node has authored stable identity, the record also
@@ -829,16 +888,18 @@ This gives the event pipeline a fixed order of decisions:
 5. compare the legal stack/carry/full-storage alternatives and copy work; and
 6. pack transient lifetimes and emit resolved bindings.
 
-For a cyclic producer with source history or latency, the callback writes an
+For a cyclic producer with source latency, the callback writes an
 invocation-local bounded sequence. A slice-scoped stable merge inserts it into
 the canonical retained aggregate. This is necessary because a later slice may
-legally author an event whose timestamp precedes a future event authored by an
-earlier slice; direct append would violate the sorted-stream invariant. The same
-mechanism extends to same-SCC fan-in. It uses only statically sized buffers. The
-local capacity is derived from `SCC quantum + history + latency`; the aggregate
-capacity accounts for the root block plus the history/latency allowance for
+legally add an event inside its latency window whose timestamp precedes an event
+authored by an earlier slice; direct append would violate the sorted-stream
+invariant. The same mechanism extends to same-SCC fan-in. It uses only statically
+sized buffers. The local capacity is derived from `SCC quantum + latency`; the
+aggregate capacity accounts for the root block plus the latency allowance for
 every possible slice, since each callback invocation may legally fill its whole
-declared authored window.
+declared authored window. (Newly settled 2026-11-09: a Tick event output authors
+in its latency window and current block only; the superseded paragraph is preserved in
+[historical/event_output_future_window_2026-11-09.md](historical/event_output_future_window_2026-11-09.md).)
 
 For samples, the buffer unit is a channel. Identity channel routing, projection,
 permutation, layout-only conversion, and channel duplication bind existing channel
@@ -1232,17 +1293,24 @@ like Tick sample outputs.
 A Tick output callback must not be able to produce an event at an arbitrary
 absolute time unrelated to the current invocation. Its legal output timestamps
 must lie inside the finite window defined by the current block together with the
-port's declared history and declared/corrected latency. In other words, Tick
-event production is constrained by the same `current block + history + latency`
-semantic extent used to make sequential sample access predictable.
+port's declared/corrected latency. In other words, Tick event production is
+constrained by the same `latency + current block` authoring extent as Tick sample
+production: a Tick sample output writes its current block and revises its newest
+`latency` values, and a Tick event output adds events to the same positions. Its
+history is never authored again. An event the node means to deliver later than its
+current block stays in its `State` until the block that contains its position.
 
-For a callback beginning at `GlobalIndex B`, block size `N`, output history `H`,
-and effective/corrected output latency `L`, the legal Tick event output range is:
+For a callback beginning at `GlobalIndex B`, block size `N`, and
+effective/corrected output latency `L`, the legal Tick event output range is:
 
 ```text
-begin  = B retreated by H
-extent = H + N + L
+begin  = B retreated by L
+extent = L + N
 ```
+
+(Newly settled 2026-11-09. The superseded range, which began `history` before `B`
+and extended `latency` beyond the block, is preserved in
+[historical/event_output_future_window_2026-11-09.md](historical/event_output_future_window_2026-11-09.md).)
 
 The range is half-open in forward modular order and may cross bit-pattern zero.
 It is never clamped or saturated. The compatibility runtime enforces this exact

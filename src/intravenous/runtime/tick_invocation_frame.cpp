@@ -318,8 +318,14 @@ public:
                         / bytes_per_value_index) {
                 return;
             }
+            // The values this block finalizes: its latency window before the
+            // block and the block, less its own newest `latency` values, which
+            // the next block may still revise (coverage_and_background_
+            // evaluation.md, dispositions). Latency counts values of the
+            // output's pace.
             auto const recorded_range = GlobalIndexRange{
-                .begin = GlobalIndex::from_bits(projection->begin_index_bits),
+                .begin = GlobalIndex::from_bits(projection->begin_index_bits)
+                    .retreated_by(latency),
                 .extent = selected_count,
             };
             if (static_cast<std::size_t>(recorded_range.extent)
@@ -363,7 +369,7 @@ public:
                                         std::size_t channel) noexcept {
                     auto const& source = binding.storage.channels[channel];
                     auto const delayed = binding.sequential_begin_index
-                        + frame - source.value_delay;
+                        - latency + frame - source.value_delay;
                     auto const source_frame = static_cast<std::size_t>(
                         delayed & (source.value_capacity - 1));
                     return writer.append(std::span<std::byte const>{
@@ -457,12 +463,48 @@ public:
             if (!published) fail_queue_reservation();
         }
 
+        // Events the output authored in its newest `latency` positions of the
+        // last captured block, which are not final yet. The next block's
+        // record holds them: a block records the positions it finalizes
+        // (coverage_and_background_evaluation.md, dispositions). Sized when
+        // the workspace binds the slot.
+        std::vector<TimedEvent> pending_events{};
+        std::size_t pending_count = 0;
+
+        bool publish_void(GlobalIndexRange range) noexcept
+        {
+            auto const block_count = queued_record_block_count_noexcept(
+                0, reserve->block_storage_size());
+            if (block_count == 0) return false;
+            auto chain = reserve->acquire(block_count);
+            if (!chain) return false;
+            auto writer = chain.writer();
+            auto const header = RealtimeProducedRecordHeader{
+                .payload_kind = RealtimeProducedPayloadKind::void_value,
+                .record_block_count = block_count,
+                .payload_size = 0,
+                .begin = range.begin,
+                .range_extent = range.extent,
+                .event_type = type,
+                .event_count = 0,
+            };
+            if (!writer.append(std::as_bytes(
+                    std::span{&header, std::size_t{1}}))) {
+                return false;
+            }
+            auto const appended = callback_chain.append(std::move(chain));
+            assert(appended);
+            return appended;
+        }
+
         void capture(
             ReflectedEventOutputPortBinding const& binding,
             GlobalIndex sample_index,
             std::size_t block_size) noexcept
         {
-            if (binding.disposition == OutputDisposition::untouched) return;
+            auto const untouched =
+                binding.disposition == OutputDisposition::untouched;
+            if (untouched && pending_count == 0) return;
             auto const& storage = binding.storage;
             if (!reserve || !pending || storage.storage == nullptr
                 || storage.type != type
@@ -471,8 +513,19 @@ public:
                 || !std::has_single_bit(storage.event_capacity)) {
                 return;
             }
-            auto const window = realtime_port_window(
-                sample_index, block_size, 0, 0);
+            // The positions this block finalizes: its latency window before
+            // the block and the block, less its own newest `latency`
+            // positions, which the next block may still add events to. A
+            // block that authors nothing still finalizes the events the
+            // previous block left pending there.
+            auto const window = untouched
+                ? GlobalIndexRange{
+                    .begin = sample_index.retreated_by(latency),
+                    .extent = std::min<GlobalIndex::extent_type>(
+                        latency, block_size),
+                }
+                : realtime_port_window(
+                    sample_index.retreated_by(latency), block_size, 0, 0);
             auto const selected_window_size =
                 static_cast<std::size_t>(window.extent);
             if (selected_window_size == 0
@@ -481,44 +534,19 @@ public:
                 return;
             }
             if (binding.disposition == OutputDisposition::voided) {
-                auto const block_count = queued_record_block_count_noexcept(
-                    0, reserve->block_storage_size());
-                if (block_count == 0) {
-                    fail_queue_reservation();
-                    return;
-                }
-                auto chain = reserve->acquire(block_count);
-                if (!chain) {
-                    fail_queue_reservation();
-                    return;
-                }
-                auto writer = chain.writer();
-                auto const header = RealtimeProducedRecordHeader{
-                    .payload_kind = RealtimeProducedPayloadKind::void_value,
-                    .record_block_count = block_count,
-                    .payload_size = 0,
-                    .begin = window.begin,
-                    .range_extent = selected_window_size,
-                    .event_type = type,
-                    .event_count = 0,
-                };
-                if (!writer.append(std::as_bytes(
-                        std::span{&header, std::size_t{1}}))) {
-                    fail_queue_reservation();
-                    return;
-                }
-                auto const appended = callback_chain.append(std::move(chain));
-                assert(appended);
-                if (!appended) fail_queue_reservation();
+                pending_count = 0;
+                if (!publish_void(window)) fail_queue_reservation();
                 return;
             }
 
             auto const* events = reinterpret_cast<TimedEvent const*>(
                 storage.storage + storage.events_offset);
             std::size_t read = 0;
-            std::size_t write = *reinterpret_cast<std::size_t const*>(
-                storage.storage + storage.count_offset);
-            if (storage.persistent_ring) {
+            std::size_t write = untouched
+                ? std::size_t{0}
+                : *reinterpret_cast<std::size_t const*>(
+                    storage.storage + storage.count_offset);
+            if (storage.persistent_ring && !untouched) {
                 read = *reinterpret_cast<std::size_t const*>(
                     storage.storage + storage.read_index_offset);
                 write = *reinterpret_cast<std::size_t const*>(
@@ -527,14 +555,18 @@ public:
             if (write < read) return;
             auto const available = std::min(
                 write - read, storage.event_capacity);
+            auto const event_at = [&](std::size_t index) -> TimedEvent const& {
+                return events[(read + index) & (storage.event_capacity - 1)];
+            };
 
+            // This block's authored events in the window, in order; those
+            // after it stay pending.
             std::size_t selected_begin = available;
             std::size_t selected_count = 0;
             GlobalIndex::extent_type previous_offset = 0;
             bool first_selected = true;
             for (std::size_t index = 0; index < available; ++index) {
-                auto const& event = events[
-                    (read + index) & (storage.event_capacity - 1)];
+                auto const& event = event_at(index);
                 auto const offset = window.offset_of(event.time);
                 if (!offset) continue;
                 if (!capture_event_matches_type(type, event.value)
@@ -546,16 +578,35 @@ public:
                 first_selected = false;
                 ++selected_count;
             }
-            if (selected_count > std::numeric_limits<std::size_t>::max()
+            // Pending events are sorted; those this block finalizes lead.
+            std::size_t pending_in_window = 0;
+            while (pending_in_window < pending_count
+                && window.contains(pending_events[pending_in_window].time)) {
+                ++pending_in_window;
+            }
+            auto const total_count = pending_in_window + selected_count;
+            if (total_count > std::numeric_limits<std::size_t>::max()
                     / sizeof(TimedEvent)) {
                 return;
             }
+            // Pending events precede this block's at an equal position: they
+            // were authored first.
             auto append_values = [&](auto& writer) noexcept {
-                for (std::size_t offset = 0;
-                     offset < selected_count; ++offset) {
-                    auto const index = selected_begin + offset;
-                    auto const& event = events[
-                        (read + index) & (storage.event_capacity - 1)];
+                std::size_t from_pending = 0;
+                std::size_t from_block = 0;
+                while (from_pending < pending_in_window
+                    || from_block < selected_count) {
+                    auto const take_pending = from_block == selected_count
+                        || (from_pending < pending_in_window
+                            && window.offset_of(
+                                    pending_events[from_pending].time)
+                                    .value_or(0)
+                                <= window.offset_of(
+                                    event_at(selected_begin + from_block).time)
+                                    .value_or(0));
+                    auto const& event = take_pending
+                        ? pending_events[from_pending++]
+                        : event_at(selected_begin + from_block++);
                     if (!writer.append(std::as_bytes(
                             std::span{&event, std::size_t{1}}))) {
                         return false;
@@ -563,7 +614,7 @@ public:
                 }
                 return true;
             };
-            auto const payload_size = selected_count * sizeof(TimedEvent);
+            auto const payload_size = total_count * sizeof(TimedEvent);
             auto const block_count = queued_record_block_count_noexcept(
                 payload_size, reserve->block_storage_size());
             if (block_count == 0) {
@@ -583,7 +634,7 @@ public:
                 .begin = window.begin,
                 .range_extent = selected_window_size,
                 .event_type = type,
-                .event_count = selected_count,
+                .event_count = total_count,
             };
             if (!writer.append(std::as_bytes(
                     std::span{&header, std::size_t{1}}))
@@ -594,6 +645,35 @@ public:
             auto const appended = callback_chain.append(std::move(chain));
             assert(appended);
             if (!appended) fail_queue_reservation();
+
+            // Events after the window wait for the next record: pending ones
+            // it did not finalize, then this block's, in position order with
+            // the earlier-authored first at an equal position.
+            std::move(
+                pending_events.begin()
+                    + static_cast<std::ptrdiff_t>(pending_in_window),
+                pending_events.begin()
+                    + static_cast<std::ptrdiff_t>(pending_count),
+                pending_events.begin());
+            pending_count -= pending_in_window;
+            auto const pending_begin = window.begin.advanced_by(window.extent);
+            auto const order = RangeRelativeIndexOrder{pending_begin};
+            for (std::size_t index = 0; index < available; ++index) {
+                auto const& event = event_at(index);
+                if (window.contains(event.time)
+                    || pending_begin.signed_distance_to(event.time) < 0) {
+                    continue;
+                }
+                if (pending_count == pending_events.size()) break;
+                auto position = pending_count;
+                while (position != 0
+                    && order(event.time, pending_events[position - 1].time)) {
+                    pending_events[position] = pending_events[position - 1];
+                    --position;
+                }
+                pending_events[position] = event;
+                ++pending_count;
+            }
         }
     };
 
@@ -1377,6 +1457,18 @@ public:
                 .history = port.output_history,
                 .latency = port.output_latency,
             };
+            // The events of the output's latency positions, which wait for
+            // the next block's record.
+            if (port.output_latency != 0) {
+                auto const pending_capacity =
+                    event_sequence_capacity_for_sample_span(
+                        port.max_events_per_index, port.output_latency);
+                if (!pending_capacity) {
+                    throw std::length_error(
+                        "Tick event capture latency window is too large");
+                }
+                selected.pending_events.resize(*pending_capacity);
+            }
             auto const window = planned.maximum_block_size;
             auto const event_capacity = event_sequence_capacity_for_sample_span(
                 port.max_events_per_index, window);

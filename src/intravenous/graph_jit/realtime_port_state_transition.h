@@ -35,10 +35,9 @@ enum class InheritedRealtimePortStateRealization : std::uint8_t {
 
 // One surviving semantic port-state piece across a graph-generation boundary.
 // Indices refer to the immutable metadata of the predecessor/current compiled
-// graphs. Intervals are relative to the cutover position. Tick output history
-// (for a sample output, its whole history + latency window) occupies a negative
-// interval ending at zero, and a Tick event output's stamped latency a
-// non-negative interval beginning at zero. A Sequential input's window is
+// graphs. Intervals are relative to the cutover position. A Tick output's
+// window, its last history + latency positions, occupies a negative interval
+// ending at zero, whatever its stream kind. A Sequential input's window is
 // [-history, T): its history, then its in-flight values, where T is the position
 // at which its source's values resume. The input inherits the overlap of both
 // histories and its first min(old in-flight count, T) in-flight values; the
@@ -95,6 +94,13 @@ struct SampleRealtimePortStateTransfer {
     std::int64_t target_end = 0;
     std::int64_t inherited_begin = 0;
     std::int64_t inherited_end = 0;
+    // Set when the transfer fills a source suffix: transition-only storage that
+    // stands in for this source of a composed input
+    // (SampleRealtimePortStateRealization::composition_sources) while its state
+    // stays in steady storage. The source was rewired, so its window holds the
+    // old source's values, and the transition root's composition reads the
+    // suffix, which a mirror then fills from the new source.
+    std::optional<std::size_t> composition_source{};
 };
 
 // Concrete cold descriptor for selecting/converting one predecessor event
@@ -120,16 +126,23 @@ struct EventRealtimePortStateTransfer {
     // Populated when several semantic output states share one indexed target
     // aggregate. Every inserted event receives this stable producer index.
     std::optional<std::size_t> target_index{};
-    // Successor interval initialized by this descriptor. Descriptors which
-    // share a physical target contribute the union of these intervals.
+    // Successor interval initialized by this descriptor, in semantic positions
+    // relative to the cutover. Descriptors which share a physical target
+    // contribute the union of these intervals.
     std::int64_t target_begin = 0;
     std::int64_t target_end = 0;
     std::int64_t inherited_begin = 0;
     std::int64_t inherited_end = 0;
-    // Cold preparation replaces this with the earliest semantic position of
-    // every transfer that appends into the same physical target. The realtime
-    // merge uses that shared origin so history and future roles have one
-    // chronological ordering across the cutover boundary.
+    // The stored timestamp of an event at semantic position P is P plus the
+    // view's timeline_offset (EventRealtimePortStateStorageView), in the
+    // predecessor's source storage and the successor's target storage. A
+    // transfer selects by the source offset and restamps by the difference.
+    std::int64_t source_timeline_offset = 0;
+    std::int64_t target_timeline_offset = 0;
+    // Cold preparation replaces this with the earliest stored timestamp,
+    // relative to the cutover, of every transfer that appends into the same
+    // physical target. The realtime merge uses that shared origin so every
+    // transfer has one chronological ordering across the cutover boundary.
     std::int64_t target_order_begin = 0;
 };
 
@@ -238,8 +251,9 @@ struct FreshSampleStorageValue {
 // whole region with it is the same as initializing each window. The result names
 // each such region whose value is not zero bytes. A Tick output's own storage
 // starts at zero. Where two states need different fresh values in one region,
-// one of them needs transition-only storage, which a starting graph cannot have
-// yet (a known gap): that region starts at zero.
+// that region starts at zero, and the first generation is compiled as a cutover
+// from the empty graph, whose transition-only storage gives the other state its
+// fresh window (CompiledGraphCutover::from_empty_graph).
 [[nodiscard]] std::expected<std::vector<FreshSampleStorageValue>, std::string>
 plan_fresh_sample_storage_values(
     RealtimePortStateRequirements const& requirements,
@@ -254,8 +268,10 @@ plan_fresh_sample_storage_values(
 // fixed. A predecessor input produced by one retained linear channel
 // materialization can be reconstructed during the prepared cutover. Direct,
 // materialized, and composed successor callback views can then be mirrored into
-// the suffix by transition lowering. Composed predecessor state and event
-// transition state remain explicit errors.
+// the suffix by transition lowering. A rewired source of a composed input that
+// stays in steady storage gets its own source suffix
+// (SampleRealtimePortStateTransfer::composition_source), and a transition-only
+// event state gets a suffix ring, empty for a window that inherits nothing.
 [[nodiscard]] std::expected<RealtimePortStateTransitionStorage, std::string>
 realize_realtime_port_state_transition_storage(
     NodeLayout steady_layout,

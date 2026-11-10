@@ -665,14 +665,8 @@ public:
         auto const settings = [](
             ConfiguredSampleConnectionDetach const& detach,
             std::optional<std::vector<std::byte>> const& initial_value) {
-            std::ostringstream out;
-            out << "latency=" << detach.loop_extra_latency << ":initial=";
-            if (initial_value) {
-                for (auto value : *initial_value) {
-                    out << std::hex << static_cast<unsigned>(value) << '.';
-                }
-            }
-            return std::move(out).str();
+            return detach_identity_settings(
+                detach.loop_extra_latency, initial_value);
         };
         for (std::size_t connection_index = 0;
              connection_index < connections.sample_connections.size();
@@ -687,21 +681,17 @@ public:
                 for (std::size_t source = 0; source < timings.size(); ++source) {
                     if (!detached(source)) continue;
                     auto const& channel = timings[source].source;
-                    auto const node =
-                        raw_region_node_identity(connections, channel.bundle);
-                    if (!node) return std::nullopt;
-                    result += *node + '.' + std::to_string(channel.port) + '.'
-                        + std::to_string(channel.channel) + ',';
+                    auto const port = detach_identity_port(
+                        connections, channel.bundle, channel.port, channel.channel);
+                    if (!port) return std::nullopt;
+                    result += *port + ',';
                 }
                 return result;
             };
-            auto const target = raw_region_node_identity(
-                connections, connection.target_port.node_bundle_handle);
-            auto const consumer = target
-                ? std::optional<std::string>{
-                    *target + '.'
-                    + std::to_string(connection.target_port.port_index)}
-                : std::nullopt;
+            auto const consumer = detach_identity_port(
+                connections,
+                connection.target_port.node_bundle_handle,
+                connection.target_port.port_index);
             if (connection.detach) {
                 detaches.emplace_back(connection_index, whole_connection_detach);
                 parts.push_back(DetachIdentityParts{

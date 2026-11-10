@@ -259,6 +259,26 @@ constexpr char graph_jit_unequal_latency_composition_module_id[] =
     "iv.test.graph_jit.state_context.unequal_latency_composition_module";
 constexpr char graph_jit_added_feedback_channel_module_id[] =
     "iv.test.graph_jit.state_context.added_feedback_channel_module";
+constexpr char graph_jit_revising_tile_rewire_module_id[] =
+    "iv.test.graph_jit.state_context.revising_tile_rewire_module";
+constexpr char graph_jit_event_feedback_module_id[] =
+    "iv.test.graph_jit.state_context.event_feedback_module";
+constexpr char graph_jit_added_event_consumer_module_id[] =
+    "iv.test.graph_jit.state_context.added_event_consumer_module";
+constexpr char graph_jit_compensated_trigger_module_id[] =
+    "iv.test.graph_jit.state_context.compensated_trigger_module";
+constexpr char graph_jit_revising_capture_module_id[] =
+    "iv.test.graph_jit.state_context.revising_capture_module";
+constexpr char graph_jit_routed_unequal_compensation_module_id[] =
+    "iv.test.graph_jit.state_context.routed_unequal_compensation_module";
+constexpr char graph_jit_latent_direct_event_module_id[] =
+    "iv.test.graph_jit.state_context.latent_direct_event_module";
+constexpr char graph_jit_revising_paced_capture_module_id[] =
+    "iv.test.graph_jit.state_context.revising_paced_capture_module";
+constexpr char graph_jit_latent_window_growth_module_id[] =
+    "iv.test.graph_jit.state_context.latent_window_growth_module";
+constexpr char graph_jit_scc_compensation_module_id[] =
+    "iv.test.graph_jit.state_context.scc_compensation_module";
 constexpr char graph_jit_large_history_rewire_module_id[] =
     "iv.test.graph_jit.state_context.large_history_rewire_module";
 constexpr char graph_jit_latency_compensation_module_id[] = "iv.test.graph_jit.state_context.latency_compensation_module";
@@ -1087,6 +1107,20 @@ struct PersistentEventFeedbackConsumerStateMirror {
     std::array<std::uint64_t, 4> first_times{};
     std::array<std::uint64_t, 4> last_times{};
     std::uint64_t marker = 0;
+};
+
+struct AlignedPairPassthroughStateMirror {
+    std::uint64_t calls = 0;
+    std::uint64_t checked = 0;
+    std::uint64_t mismatches = 0;
+    float largest_difference = 0.0f;
+};
+
+struct CompensatedTriggerProbeStateMirror {
+    std::uint64_t calls = 0;
+    std::array<std::uint64_t, 4> counts{};
+    std::array<std::uint64_t, 4> first_times{};
+    std::array<std::uint64_t, 4> last_times{};
 };
 
 struct RetainedMidiConsumerProbeStateMirror {
@@ -5080,6 +5114,44 @@ void added_feedback_channel_module(iv::GraphBuilder& graph, bool feedback = fals
     graph.outputs();
 }
 
+// The probe's mono input downmixes a stereo tile of the revising source, whose
+// latency is 1, and the ramp, or the offset ramp when `rewired`, compensated
+// for its slower input, which reads the delay node.
+void revising_tile_rewire_module(iv::GraphBuilder& graph, bool rewired = false)
+{
+    auto latent =
+        graph.node<"iv.test.graph_jit.state_context.revising_sample_source">();
+    auto ramp = graph.node<"iv.test.graph_jit.state_context.sample_ramp_source">();
+    auto offset =
+        graph.node<"iv.test.graph_jit.state_context.offset_sample_ramp_source">();
+    auto delayed = graph.node<"iv.test.graph_jit.state_context.five_sample_delay">();
+    auto probe =
+        graph.node<"iv.test.graph_jit.state_context.converted_sequence_probe">();
+    delayed(ramp);
+    auto const right = rewired
+        ? static_cast<iv::SamplePortRef>(offset)
+        : static_cast<iv::SamplePortRef>(ramp);
+    probe(graph.tile<iv::stereo>(latent, right), delayed);
+    graph.outputs();
+}
+
+// The two event feedback nodes in a loop: the first reads the second's
+// triggers, and the second reads the first's back through detach(`latency`).
+void event_feedback_module(iv::GraphBuilder& graph, std::size_t latency = 10)
+{
+    auto first = graph.node<"iv.test.graph_jit.state_context.event_feedback_a">();
+    auto second = graph.node<"iv.test.graph_jit.state_context.event_feedback_b">();
+    first.connect_event_input(0, second.event_port());
+    second.connect_event_input(0, first.event_port().detach(latency));
+    graph.outputs();
+}
+
+IV_MODULE(
+    "iv.test.graph_jit.state_context.revising_tile_rewire_module",
+    revising_tile_rewire_module);
+IV_MODULE(
+    "iv.test.graph_jit.state_context.event_feedback_module",
+    event_feedback_module);
 IV_MODULE(
     "iv.test.graph_jit.state_context.shared_neutral_compensated_module",
     shared_neutral_compensated_module);
@@ -5573,12 +5645,13 @@ struct LatentEventFeedbackA {
         state.scc_feedback_latency = ctx.scc_feedback_latency;
         state.marker = 0xa11ce016u;
 
-        // Publish one event beyond the current SCC slice. Across slices and root
-        // calls these timestamps remain globally nondecreasing; authored latency
-        // is a future-publication horizon, not permission to back-fill.
-        auto const offset = ctx.block_size + 1;
-        ctx.template output<0>().push(
-            iv::TriggerEvent{}, offset);
+        // Authored in the latency window; read one position after the slice.
+        ctx.template output<0>().push(iv::TimedEvent{
+            .time = ctx.index.whole()
+                .advanced_by(ctx.block_size + 1)
+                .retreated_by(16),
+            .value = iv::TriggerEvent{},
+        });
     }
 };
 
@@ -5627,13 +5700,14 @@ struct PersistentLatentEventFeedbackA {
         state.scc_feedback_latency = ctx.scc_feedback_latency;
         state.marker = 0xa11ce320u;
 
-        // The large declared future horizon forces canonical persistent-ring
-        // storage. Actual publication still advances monotonically by one sample
-        // beyond each SCC slice; latency is permission to publish future events,
-        // not permission to insert before the prior publication watermark.
-        auto const offset = ctx.block_size + 1;
-        ctx.template output<0>().push(
-            iv::TriggerEvent{}, offset);
+        // The large latency forces a persistent ring. Authored in the latency
+        // window; read one position after the slice.
+        ctx.template output<0>().push(iv::TimedEvent{
+            .time = ctx.index.whole()
+                .advanced_by(ctx.block_size + 1)
+                .retreated_by(320),
+            .value = iv::TriggerEvent{},
+        });
     }
 };
 
@@ -5660,10 +5734,13 @@ struct PersistentLatentBoundaryEventFeedbackA {
         iv::TickBlockContext<PersistentLatentBoundaryEventFeedbackA> const& ctx) const
     {
         (void)ctx.template input<0>().events();
-        auto const offset = ctx.block_size + 1;
-        ctx.template output<0>().push(
-            iv::BoundaryEvent{.is_begin = true},
-            offset);
+        // Authored in the latency window; read one position after the slice.
+        ctx.template output<0>().push(iv::TimedEvent{
+            .time = ctx.index.whole()
+                .advanced_by(ctx.block_size + 1)
+                .retreated_by(320),
+            .value = iv::BoundaryEvent{.is_begin = true},
+        });
     }
 };
 
@@ -6075,14 +6152,15 @@ struct RetainedTriggerEventSource {
     void tick_block(iv::TickBlockContext<RetainedTriggerEventSource> const& ctx) const
     {
         if (ctx.block_size < 8) return;
+        // In the latency window, before the previous block's end - 3 event.
+        ctx.template output<0>().push(iv::TimedEvent{
+            .time = ctx.index.whole().retreated_by(5),
+            .value = iv::TriggerEvent{},
+        });
         ctx.template output<0>().push(
             iv::TriggerEvent{}, 5);
         ctx.template output<0>().push(
             iv::TriggerEvent{}, ctx.block_size - 3);
-        // Authored output latency permits publishing a future event that must
-        // remain visible to the next root invocation.
-        ctx.template output<0>().push(
-            iv::TriggerEvent{}, ctx.block_size + 3);
     }
 };
 
@@ -10017,19 +10095,333 @@ IV_MODULE("iv.test.graph_jit.state_context.neutral_compensated_module", neutral_
 IV_MODULE("iv.test.graph_jit.state_context.connected_input_module", connected_input_module);
 IV_MODULE("iv.test.graph_jit.state_context.tiled_compensation_module", tiled_compensation_module);
 IV_MODULE("iv.test.graph_jit.state_context.detach_feedback_module", detach_feedback_module);
+
+)cpp";
+    static constexpr std::string_view part_5 = R"cpp(
+// A MIDI source read by a MIDI consumer with history 160, and with `added`
+// also by a trigger consumer with history 320, through a conversion.
+void added_event_consumer_module(iv::GraphBuilder& graph, bool added = false)
+{
+    auto source = graph.node<"iv.test.graph_jit.state_context.midi_event_source">();
+    auto first = graph.node<"iv.test.graph_jit.state_context.retained_midi_event_consumer">();
+    first.connect_event_input(0, source.event_port());
+    if (added) {
+        auto second = graph.node<"iv.test.graph_jit.state_context.persistent_event_feedback_consumer">();
+        second.connect_event_input(0, source.event_port());
+    }
+    graph.outputs();
+}
+IV_MODULE("iv.test.graph_jit.state_context.added_event_consumer_module", added_event_consumer_module);
+
+// A sample input and a trigger input, which latency compensation aligns:
+// records the trigger positions each call reads.
+struct CompensatedTriggerProbe {
+    struct State {
+        std::uint64_t calls = 0;
+        std::array<std::uint64_t, 4> counts{};
+        std::array<std::uint64_t, 4> first_times{};
+        std::array<std::uint64_t, 4> last_times{};
+    };
+    static constexpr auto inputs()
+    {
+        return std::tuple{
+            iv::input<iv::Sample>("audio", iv::InputAccess::sequential),
+            iv::event_input("trigger", iv::EventTypeId::trigger, iv::InputAccess::sequential),
+        };
+    }
+    static constexpr auto outputs() { return std::tuple{}; }
+    void tick_block(iv::TickBlockContext<CompensatedTriggerProbe> const& ctx) const
+    {
+        auto& state = ctx.state();
+        auto const call = state.calls++;
+        if (call >= state.counts.size()) return;
+        auto const events = ctx.input<"trigger">().events();
+        state.counts[call] = events.size();
+        if (!events.empty()) {
+            state.first_times[call] = events[0].time.bits();
+            state.last_times[call] = events[events.size() - 1].time.bits();
+        }
+    }
+};
+IV_NODE("iv.test.graph_jit.state_context.compensated_trigger_probe", CompensatedTriggerProbe);
+
+// The probe's sample input reads a ramp of latency 7, so its trigger input
+// reads the trigger source with compensation 7.
+void compensated_trigger_module(iv::GraphBuilder& graph)
+{
+    auto ramp = graph.node<"iv.test.graph_jit.state_context.latency_argument_ramp_source">(std::size_t{7});
+    auto source = graph.node<"iv.test.graph_jit.state_context.trigger_event_source">();
+    auto probe = graph.node<"iv.test.graph_jit.state_context.compensated_trigger_probe">();
+    probe(ramp);
+    probe.connect_event_input(0, source.event_port());
+    graph.outputs();
+}
+IV_MODULE("iv.test.graph_jit.state_context.compensated_trigger_module", compensated_trigger_module);
+
+// A trigger source drives a subgraph's event input, which feeds the probe,
+// whose sample input reads a ramp of latency 7, and a consumer (history 8)
+// without other inputs: one authored connection with two targets, which need
+// compensation 7 and 0 for the same source.
+void routed_unequal_compensation_module(iv::GraphBuilder& graph)
+{
+    auto source = graph.node<"iv.test.graph_jit.state_context.trigger_event_source">();
+    auto routed = graph.subgraph([&](iv::SubgraphBuilder& boundary) {
+        auto trigger = boundary.event_input<"trigger">(iv::EventTypeId::trigger);
+        auto ramp = graph.node<"iv.test.graph_jit.state_context.latency_argument_ramp_source">(std::size_t{7});
+        auto probe = graph.node<"iv.test.graph_jit.state_context.compensated_trigger_probe">();
+        probe(ramp);
+        probe.connect_event_input(0, trigger);
+        auto plain = graph.node<"iv.test.graph_jit.state_context.retained_trigger_event_consumer">();
+        plain.connect_event_input(0, trigger);
+        boundary.event_outputs();
+    });
+    routed.connect_event_input(0, source.event_port());
+    graph.outputs();
+}
+IV_MODULE("iv.test.graph_jit.state_context.routed_unequal_compensation_module", routed_unequal_compensation_module);
+
+// A trigger output of history 8 and the latency its argument gives. Each
+// block authors one trigger just before itself, in its latency window, one at
+// 5, and one 2 positions before its end, which is not final when it ends.
+struct LatentTriggerSource {
+    std::size_t latency = 1;
+    explicit LatentTriggerSource(std::size_t latency_ = 1) : latency(latency_) {}
+    static constexpr auto inputs() { return std::tuple{}; }
+    static constexpr auto outputs()
+    {
+        return std::array{iv::event_output("trigger", iv::EventTypeId::trigger, iv::OutputProduction::tick, {.max_events_per_index = 0.5})};
+    }
+    void constrain_ports(iv::ConstrainPortsContext<LatentTriggerSource>& ctx) const
+    {
+        ctx.output<"trigger">().history() = 8;
+        ctx.output<"trigger">().latency() = latency;
+    }
+    void tick_block(iv::TickBlockContext<LatentTriggerSource> const& ctx) const
+    {
+        if (ctx.block_size < 8) return;
+        ctx.output<"trigger">().push(iv::TimedEvent{
+            .time = ctx.index.whole().retreated_by(1),
+            .value = iv::TriggerEvent{},
+        });
+        ctx.output<"trigger">().push(iv::TriggerEvent{}, 5);
+        ctx.output<"trigger">().push(iv::TriggerEvent{}, ctx.block_size - 2);
+    }
+};
+IV_NODE("iv.test.graph_jit.state_context.latent_trigger_source", LatentTriggerSource);
+
+// The latent source read by a consumer of history 8, which reads the
+// source's own retained stream: the source keeps at least that history.
+void latent_direct_event_module(iv::GraphBuilder& graph, std::size_t latency = 4)
+{
+    auto source = graph.node<"iv.test.graph_jit.state_context.latent_trigger_source">(latency);
+    auto sink = graph.node<"iv.test.graph_jit.state_context.retained_trigger_event_consumer">();
+    sink.connect_event_input(0, source.event_port());
+    graph.outputs();
+}
+IV_MODULE("iv.test.graph_jit.state_context.latent_direct_event_module", latent_direct_event_module);
+
+// A persisted sample output at pace 2 with latency 1 (one value). Each value is
+// first written as its value index and revised, while the next value is
+// written, to 1000 plus its value index.
+struct RevisingPacedCaptureSource {
+    static constexpr auto inputs() { return std::tuple{}; }
+    static constexpr auto outputs()
+    {
+        return std::array{iv::output<iv::Sample>("samples", iv::OutputProduction::tick, iv::OutputRetention::persisted)};
+    }
+    void constrain_ports(iv::ConstrainPortsContext<RevisingPacedCaptureSource>& ctx) const
+    {
+        ctx.output<"samples">().pace() = 2;
+        ctx.output<"samples">().latency() = 1;
+    }
+    void tick_block(iv::TickBlockContext<RevisingPacedCaptureSource> const& ctx) const
+    {
+        auto samples = ctx.output<"samples">();
+        for (std::size_t offset = 0; offset < samples.block_size(); ++offset) {
+            auto const index = static_cast<std::int64_t>(samples.value_index() + offset);
+            samples.update(iv::Sample{static_cast<float>(999 + index)});
+            samples.push(iv::Sample{static_cast<float>(index)});
+        }
+    }
+};
+IV_NODE("iv.test.graph_jit.state_context.revising_paced_capture_source", RevisingPacedCaptureSource);
+void revising_paced_capture_module(iv::GraphBuilder& graph)
+{
+    (void)graph.node<"iv.test.graph_jit.state_context.revising_paced_capture_source">();
+    graph.outputs();
+}
+IV_MODULE("iv.test.graph_jit.state_context.revising_paced_capture_module", revising_paced_capture_module);
+
+// author_latent_window() with latency 2 and the history its argument gives.
+struct LatentWindowHistorySource {
+    struct State {
+        std::uint64_t calls = 0;
+        std::uint64_t checked = 0;
+        std::uint64_t mismatches = 0;
+    };
+    std::size_t history = 3;
+    explicit LatentWindowHistorySource(std::size_t history_ = 3) : history(history_) {}
+    static constexpr auto inputs() { return std::tuple{}; }
+    static constexpr auto outputs()
+    {
+        return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::tick)};
+    }
+    void constrain_ports(iv::ConstrainPortsContext<LatentWindowHistorySource>& ctx) const
+    {
+        ctx.output<"out">().history() = history;
+        ctx.output<"out">().latency() = 2;
+    }
+    void tick_block(iv::TickBlockContext<LatentWindowHistorySource> const& ctx) const
+    {
+        author_latent_window(
+            ctx.state(), ctx.output<"out">(), ctx.index.whole().signed_value(), ctx.block_size);
+    }
+};
+IV_NODE("iv.test.graph_jit.state_context.latent_window_history_source", LatentWindowHistorySource);
+
+// The source read by LatentWindowConsumer (history 4), which reads its ring.
+void latent_window_growth_module(iv::GraphBuilder& graph, std::size_t history = 3)
+{
+    auto source = graph.node<"iv.test.graph_jit.state_context.latent_window_history_source">(history);
+    auto consumer = graph.node<"iv.test.graph_jit.state_context.latent_window_consumer">();
+    consumer(source);
+    graph.outputs();
+}
+IV_MODULE("iv.test.graph_jit.state_context.latent_window_growth_module", latent_window_growth_module);
+
+// A ramp (value = position) whose input only closes a feedback loop.
+struct LoopRampSource {
+    static constexpr auto inputs()
+    {
+        return std::array{iv::input<iv::Sample>("in", iv::InputAccess::sequential)};
+    }
+    static constexpr auto outputs()
+    {
+        return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::tick)};
+    }
+    void tick_block(iv::TickBlockContext<LoopRampSource> const& ctx) const
+    {
+        auto output = ctx.output<"out">();
+        for (std::size_t i = 0; i < ctx.block_size; ++i) {
+            output.push(iv::Sample{static_cast<float>(
+                ctx.index.advanced_by({.whole = i}).whole().signed_value())});
+        }
+    }
+};
+IV_NODE("iv.test.graph_jit.state_context.loop_ramp_source", LoopRampSource);
+
+// Compares its two inputs at every position and passes the first through.
+struct AlignedPairPassthrough {
+    struct State {
+        std::uint64_t calls = 0;
+        std::uint64_t checked = 0;
+        std::uint64_t mismatches = 0;
+        float largest_difference = 0.0f;
+    };
+    static constexpr auto inputs()
+    {
+        return std::array{
+            iv::input<iv::Sample>("ramp", iv::InputAccess::sequential),
+            iv::input<iv::Sample>("loop", iv::InputAccess::sequential),
+        };
+    }
+    static constexpr auto outputs()
+    {
+        return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::tick)};
+    }
+    void tick_block(iv::TickBlockContext<AlignedPairPassthrough> const& ctx) const
+    {
+        auto& state = ctx.state();
+        ++state.calls;
+        auto const ramp = ctx.input<"ramp">().block();
+        auto const loop = ctx.input<"loop">().block();
+        auto output = ctx.output<"out">();
+        for (std::size_t i = 0; i < ctx.block_size; ++i) {
+            auto difference = static_cast<float>(ramp[i] - loop[i]);
+            if (difference < 0.0f) difference = -difference;
+            ++state.checked;
+            if (difference != 0.0f) ++state.mismatches;
+            if (difference > state.largest_difference) state.largest_difference = difference;
+            output.push(ramp[i]);
+        }
+    }
+};
+IV_NODE("iv.test.graph_jit.state_context.aligned_pair_passthrough", AlignedPairPassthrough);
+
+// A loop: the passthrough reads a ramp of latency 7 and the loop ramp, which
+// reads the passthrough back through detach(8). A probe after the loop compares
+// the passthrough's output with a plain ramp.
+void scc_compensation_module(iv::GraphBuilder& graph)
+{
+    auto latent = graph.node<"iv.test.graph_jit.state_context.latency_argument_ramp_source">(std::size_t{7});
+    auto loop = graph.node<"iv.test.graph_jit.state_context.loop_ramp_source">();
+    auto passthrough = graph.node<"iv.test.graph_jit.state_context.aligned_pair_passthrough">();
+    auto plain = graph.node<"iv.test.graph_jit.state_context.sample_ramp_source">();
+    auto probe = graph.node<"iv.test.graph_jit.state_context.latency_compensation_probe">();
+    passthrough(latent, loop);
+    loop(static_cast<iv::SamplePortRef>(passthrough).detach(8, iv::Sample{0.0f}));
+    probe(plain, passthrough);
+    graph.outputs();
+}
+IV_MODULE("iv.test.graph_jit.state_context.scc_compensation_module", scc_compensation_module);
+
+// Persisted Tick outputs of latency 1. Each sample is first written as its
+// position and then revised, during the next position, to 1000 + its position.
+// Each block adds a trigger at its last position and one in its latency window,
+// the position before the block.
+struct RevisingCaptureSource {
+    static constexpr auto inputs() { return std::tuple{}; }
+    static constexpr auto outputs()
+    {
+        return std::tuple{
+            iv::output<iv::Sample>("samples", iv::OutputProduction::tick, iv::OutputRetention::persisted),
+            iv::event_output("events", iv::EventTypeId::trigger, iv::OutputProduction::tick, iv::OutputRetention::persisted, {.max_events_per_index = 0.25}),
+        };
+    }
+    void constrain_ports(iv::ConstrainPortsContext<RevisingCaptureSource>& ctx) const
+    {
+        ctx.output<"samples">().latency() = 1;
+        ctx.output<"events">().latency() = 1;
+    }
+    void tick_block(iv::TickBlockContext<RevisingCaptureSource> const& ctx) const
+    {
+        auto samples = ctx.output<"samples">();
+        for (std::size_t i = 0; i < ctx.block_size; ++i) {
+            auto const position = ctx.index.advanced_by({.whole = i}).whole().signed_value();
+            samples.update(iv::Sample{static_cast<float>(999 + position)});
+            samples.push(iv::Sample{static_cast<float>(position)});
+        }
+        if (ctx.block_size == 0) return;
+        ctx.output<"events">().push(iv::TimedEvent{
+            .time = ctx.index.whole().retreated_by(1),
+            .value = iv::TriggerEvent{},
+        });
+        ctx.output<"events">().push(iv::TriggerEvent{}, ctx.block_size - 1);
+    }
+};
+IV_NODE("iv.test.graph_jit.state_context.revising_capture_source", RevisingCaptureSource);
+void revising_capture_module(iv::GraphBuilder& graph)
+{
+    (void)graph.node<"iv.test.graph_jit.state_context.revising_capture_source">();
+    graph.outputs();
+}
+IV_MODULE("iv.test.graph_jit.state_context.revising_capture_module", revising_capture_module);
 )cpp";
     static_assert(part_1.size() < 60 * 1024);
     static_assert(part_2.size() < 60 * 1024);
     static_assert(part_3.size() < 60 * 1024);
     static_assert(part_4.size() < 60 * 1024);
+    static_assert(part_5.size() < 60 * 1024);
     static std::string const source = [] {
         std::string result;
         result.reserve(
-            part_1.size() + part_2.size() + part_3.size() + part_4.size());
+            part_1.size() + part_2.size() + part_3.size() + part_4.size()
+            + part_5.size());
         result.append(part_1);
         result.append(part_2);
         result.append(part_3);
         result.append(part_4);
+        result.append(part_5);
         return result;
     }();
     return std::string_view{source};
@@ -11040,6 +11432,57 @@ std::shared_ptr<iv::ConfiguredGraph const> configured_merged_retained_event_grap
         iv::details::take_built_graph(session.get()));
 }
 
+// One consumer (history 8) reads the fan-in of a trigger source with latency 8
+// and one without latency.
+std::shared_ptr<iv::ConfiguredGraph const>
+configured_unequal_latency_event_fan_in_graph(
+    iv::PackageRevision const& revision)
+{
+    using Session = std::unique_ptr<iv::details::BuilderSession,
+        decltype(&iv::details::iv_builder_session_destroy)>;
+    Session session(
+        iv::details::iv_builder_session_create(),
+        iv::details::iv_builder_session_destroy);
+    if (!session) {
+        throw std::runtime_error(
+            "could not create unequal-latency event fan-in session");
+    }
+    auto const package_root = revision.package_root.generic_string();
+    std::array packages{iv::details::BuilderPackageView{
+        .package_root = package_root,
+        .definitions = revision.provider_definitions,
+        .config_pointer_fields = revision.config_pointer_fields,
+        .retained_globals = revision.retained_globals,
+        .node_state_structures = revision.node_state_structures,
+    }};
+    iv::details::set_builder_packages(session.get(), packages);
+    iv::GraphBuilder graph(session.get());
+    auto latent = iv::details::configure_package_definition_provider(
+        graph,
+        "iv.test.graph_jit.state_context.retained_trigger_event_source",
+        std::nullopt,
+        {});
+    auto plain = iv::details::configure_package_definition_provider(
+        graph,
+        "iv.test.graph_jit.state_context.trigger_event_source",
+        std::nullopt,
+        {});
+    auto sink = iv::details::configure_package_definition_provider(
+        graph,
+        "iv.test.graph_jit.state_context.retained_trigger_event_consumer",
+        std::nullopt,
+        {});
+    auto const latent_port = latent.event_port();
+    auto const plain_port = plain.event_port();
+    std::array sources{
+        latent_port.sources().front(), plain_port.sources().front()};
+    sink.connect_event_input(
+        0, iv::EventPortRef(graph, latent_port.type, sources));
+    graph.outputs();
+    return std::make_shared<iv::ConfiguredGraph const>(
+        iv::details::take_built_graph(session.get()));
+}
+
 std::shared_ptr<iv::ConfiguredGraph const>
 configured_disconnected_retained_event_output_graph(
     iv::PackageRevision const& revision)
@@ -11195,8 +11638,11 @@ configured_mixed_event_feedback_graph(iv::PackageRevision const& revision)
         iv::details::take_built_graph(session.get()));
 }
 
+// With `observed`, an acyclic consumer (history 320), created after the
+// loop's nodes so that their identities stay, also reads the staged fan-in.
 std::shared_ptr<iv::ConfiguredGraph const>
-configured_staged_event_fan_in_graph(iv::PackageRevision const& revision)
+configured_staged_event_fan_in_graph(
+    iv::PackageRevision const& revision, bool observed = false)
 {
     using Session = std::unique_ptr<iv::details::BuilderSession,
         decltype(&iv::details::iv_builder_session_destroy)>;
@@ -11240,6 +11686,15 @@ configured_staged_event_fan_in_graph(iv::PackageRevision const& revision)
     first.connect_event_input(
         0, iv::EventPortRef(graph, feedback_port.type, sources));
     second.connect_event_input(0, first.event_port().detach(10));
+    if (observed) {
+        auto observer = iv::details::configure_package_definition_provider(
+            graph,
+            "iv.test.graph_jit.state_context.persistent_event_feedback_consumer",
+            std::nullopt,
+            {});
+        observer.connect_event_input(
+            0, iv::EventPortRef(graph, feedback_port.type, sources));
+    }
     graph.outputs();
     // Its regions are located by migration identity, which needs node identities.
     return with_node_identities(std::make_shared<iv::ConfiguredGraph const>(
@@ -14439,6 +14894,226 @@ TEST_F(GraphJitRuntimeFixture, GeneratedRootInvokesPersistedTickCaptures)
     EXPECT_FLOAT_EQ(probe.last_sample, 1003.5f);
     EXPECT_EQ(probe.event_count, 1u);
     EXPECT_EQ(probe.first_event_time, index(1003));
+}
+
+// Each record a pending queue holds: its header and its payload bytes.
+struct CapturedRecord {
+    iv::RealtimeProducedRecordHeader header{};
+    std::vector<std::byte> payload{};
+};
+
+std::vector<CapturedRecord> captured_records(iv::PinnedBlockPrefix const& prefix)
+{
+    std::vector<CapturedRecord> records;
+    std::vector<std::byte> bytes;
+    std::size_t remaining_blocks = 0;
+    prefix.for_each([&](iv::AsyncQueueBlock const& block) {
+        auto const used = block.used_storage();
+        if (remaining_blocks == 0) {
+            iv::RealtimeProducedRecordHeader header{};
+            if (used.size() < sizeof(header)) return;
+            std::memcpy(&header, used.data(), sizeof(header));
+            remaining_blocks = std::max<std::size_t>(header.record_block_count, 1);
+        }
+        bytes.insert(bytes.end(), used.begin(), used.end());
+        if (--remaining_blocks != 0) return;
+        CapturedRecord record;
+        std::memcpy(&record.header, bytes.data(), sizeof(record.header));
+        auto const payload_end = std::min(
+            bytes.size(), sizeof(record.header) + record.header.payload_size);
+        record.payload.assign(
+            bytes.begin() + static_cast<std::ptrdiff_t>(sizeof(record.header)),
+            bytes.begin() + static_cast<std::ptrdiff_t>(payload_end));
+        records.push_back(std::move(record));
+        bytes.clear();
+    });
+    return records;
+}
+
+// A Tick/persisted output of latency 1 records, for each block, the positions
+// that block finalizes (coverage_and_background_evaluation.md, dispositions):
+// for a block at B of N positions, [B - 1, B + N - 1). The sample record holds
+// each value after its revision, and the event record holds the event the
+// block added in its latency window beside the one the previous block
+// authored at the same position.
+TEST_F(GraphJitRuntimeFixture, PersistedLatentTickOutputsRecordWhatEachBlockFinalizes)
+{
+    auto compiled = compile(graph_jit_revising_capture_module_id, 454);
+    ASSERT_TRUE(compiled.succeeded())
+        << (compiled.diagnostics.empty()
+                ? ""
+                : compiled.diagnostics.front().message);
+    auto& graph = *compiled.compiled_graph;
+    auto const& plan = graph.background_evaluation_plan;
+
+    iv::PersistedDataStore data;
+    auto data_reader = data.register_reader();
+    iv::TickMaterializationStore materializations;
+    auto materialization_reader = materializations.register_reader();
+    iv::TickInvocationWorkspace workspace(
+        plan,
+        graph.project_generation,
+        data,
+        graph.specialization.block_size,
+        graph.root_operations.combine_sequential_input,
+        graph.root_operations.initialize_sequential_input);
+    auto const requirements = workspace.producer_requirements();
+    ASSERT_EQ(requirements.size(), 2u);
+    iv::AsyncCapacityManager manager{1};
+    iv::AsyncWorkSignal work_signal;
+    std::atomic<bool> reservation_failed{false};
+    std::vector<std::unique_ptr<iv::ProducerReserve>> reserves;
+    std::vector<std::unique_ptr<iv::PendingQueue>> pending;
+    std::optional<std::size_t> sample_endpoint;
+    std::optional<std::size_t> event_endpoint;
+    for (std::size_t endpoint = 0; endpoint < requirements.size(); ++endpoint) {
+        reserves.push_back(std::make_unique<iv::ProducerReserve>(
+            iv::realtime_produced_block_storage_size));
+        pending.push_back(std::make_unique<iv::PendingQueue>(
+            *reserves.back(), work_signal));
+        auto const blocks = requirements[endpoint].maximum_blocks_per_callback;
+        // Two callbacks, none drained in between.
+        ASSERT_EQ(manager.maintain(*reserves.back(),
+            {blocks, blocks, 2 * blocks}), 2 * blocks);
+        workspace.bind_producer_endpoint(
+            endpoint, *reserves.back(), *pending.back(), reservation_failed);
+        (requirements[endpoint].kind == iv::PortKind::sample
+            ? sample_endpoint
+            : event_endpoint) = endpoint;
+    }
+    ASSERT_TRUE(sample_endpoint && event_endpoint);
+
+    auto storage = graph.node_layout.create_storage(resources);
+    storage.initialize();
+    for (std::int64_t begin = 0; begin < 128; begin += 64) {
+        iv::TickInvocationFrame frame{
+            data_reader, materialization_reader, workspace, index(begin), 64};
+        graph.root_operations.tick_block(
+            storage.buffer().data(), &frame.call(), index(begin), 64);
+    }
+    EXPECT_FALSE(reservation_failed.load(std::memory_order_relaxed));
+
+    auto const samples = captured_records(pending[*sample_endpoint]->pin());
+    ASSERT_EQ(samples.size(), 2u);
+    for (std::size_t block = 0; block < samples.size(); ++block) {
+        SCOPED_TRACE("sample record of block " + std::to_string(block));
+        auto const begin = static_cast<std::int64_t>(block * 64) - 1;
+        auto const& record = samples[block];
+        EXPECT_EQ(record.header.begin, index(begin));
+        ASSERT_EQ(record.header.range_extent, 64u);
+        ASSERT_EQ(record.payload.size(), 64 * sizeof(iv::Sample));
+        std::array<iv::Sample, 64> values{};
+        std::memcpy(values.data(), record.payload.data(), record.payload.size());
+        EXPECT_FLOAT_EQ(values.front(), static_cast<float>(1000 + begin));
+        EXPECT_FLOAT_EQ(values.back(), static_cast<float>(1000 + begin + 63));
+    }
+
+    auto const events = captured_records(pending[*event_endpoint]->pin());
+    ASSERT_EQ(events.size(), 2u);
+    // The first block finalizes [-1, 63): its event at -1. The second block
+    // finalizes [63, 127): the first block's event at 63 and its own.
+    std::array<std::size_t, 2> const counts{1, 2};
+    std::array<std::int64_t, 2> const times{-1, 63};
+    for (std::size_t block = 0; block < events.size(); ++block) {
+        SCOPED_TRACE("event record of block " + std::to_string(block));
+        auto const& record = events[block];
+        EXPECT_EQ(
+            record.header.begin,
+            index(static_cast<std::int64_t>(block * 64) - 1));
+        EXPECT_EQ(record.header.range_extent, 64u);
+        ASSERT_EQ(record.header.event_count, counts[block]);
+        ASSERT_EQ(
+            record.payload.size(), counts[block] * sizeof(iv::TimedEvent));
+        for (std::size_t event = 0; event < counts[block]; ++event) {
+            iv::TimedEvent timed{};
+            std::memcpy(
+                &timed,
+                record.payload.data() + event * sizeof(iv::TimedEvent),
+                sizeof(timed));
+            EXPECT_EQ(timed.time, index(times[block]));
+        }
+    }
+}
+
+// A latent persisted sample output at a non-project pace records, for each
+// block, the values it finalizes: the block's values on the output's lattice,
+// one value (its latency) earlier, each after its revision.
+TEST_F(GraphJitRuntimeFixture, PersistedLatentPacedSampleOutputRecordsWhatEachBlockFinalizes)
+{
+    auto compiled = compile(graph_jit_revising_paced_capture_module_id, 462);
+    ASSERT_TRUE(compiled.succeeded())
+        << (compiled.diagnostics.empty()
+                ? ""
+                : compiled.diagnostics.front().message);
+    auto& graph = *compiled.compiled_graph;
+    auto const& plan = graph.background_evaluation_plan;
+    auto const port = std::ranges::find_if(
+        plan.ports, [](auto const& candidate) {
+            return candidate.persisted_tick_output;
+        });
+    ASSERT_NE(port, plan.ports.end());
+    auto const exponent = port->absolute_pace_exponent;
+
+    iv::PersistedDataStore data;
+    auto data_reader = data.register_reader();
+    iv::TickMaterializationStore materializations;
+    auto materialization_reader = materializations.register_reader();
+    iv::TickInvocationWorkspace workspace(
+        plan,
+        graph.project_generation,
+        data,
+        graph.specialization.block_size,
+        graph.root_operations.combine_sequential_input,
+        graph.root_operations.initialize_sequential_input);
+    auto const requirements = workspace.producer_requirements();
+    ASSERT_EQ(requirements.size(), 1u);
+    iv::AsyncCapacityManager manager{1};
+    iv::AsyncWorkSignal work_signal;
+    std::atomic<bool> reservation_failed{false};
+    iv::ProducerReserve reserve{iv::realtime_produced_block_storage_size};
+    iv::PendingQueue pending{reserve, work_signal};
+    auto const blocks = requirements[0].maximum_blocks_per_callback;
+    ASSERT_EQ(manager.maintain(reserve, {blocks, blocks, 2 * blocks}),
+        2 * blocks);
+    workspace.bind_producer_endpoint(0, reserve, pending, reservation_failed);
+
+    auto storage = graph.node_layout.create_storage(resources);
+    storage.initialize();
+    for (std::int64_t begin = 0; begin < 128; begin += 64) {
+        iv::TickInvocationFrame frame{
+            data_reader, materialization_reader, workspace, index(begin), 64};
+        graph.root_operations.tick_block(
+            storage.buffer().data(), &frame.call(), index(begin), 64);
+    }
+    EXPECT_FALSE(reservation_failed.load(std::memory_order_relaxed));
+
+    auto const records = captured_records(pending.pin());
+    ASSERT_EQ(records.size(), 2u);
+    for (std::size_t block = 0; block < records.size(); ++block) {
+        SCOPED_TRACE("record of block " + std::to_string(block));
+        auto const projection = iv::FractionalGlobalIndexRange::from_global_range(
+            iv::GlobalIndexRange{
+                .begin = index(static_cast<std::int64_t>(block * 64)),
+                .extent = 64,
+            }).try_project_onto_lattice(exponent);
+        ASSERT_TRUE(projection.has_value());
+        auto const first = iv::GlobalIndex::from_bits(projection->begin_index_bits)
+            .retreated_by(1);
+        auto const& record = records[block];
+        EXPECT_EQ(record.header.begin, first);
+        ASSERT_EQ(record.header.range_extent, projection->count);
+        ASSERT_EQ(
+            record.payload.size(), projection->count * sizeof(iv::Sample));
+        std::vector<iv::Sample> values(projection->count);
+        std::memcpy(values.data(), record.payload.data(), record.payload.size());
+        auto const first_index = first.signed_value();
+        EXPECT_FLOAT_EQ(values.front(), static_cast<float>(1000 + first_index));
+        EXPECT_FLOAT_EQ(
+            values.back(),
+            static_cast<float>(
+                1000 + first_index
+                + static_cast<std::int64_t>(projection->count) - 1));
+    }
 }
 
 TEST_F(GraphJitRuntimeFixture,
@@ -18836,6 +19511,170 @@ TEST_F(GraphJitRuntimeFixture, CompatibleCodeReplacesSteadyCodeOfGenerationWithT
     executor.tick_block(index(128), 64);
 }
 
+// The probe's mono input downmixes a stereo tile of the revising source and the
+// ramp, compensated by 7, so each contributes half of its value. The revising
+// source's latency is 1: it revises its newest value one position later, to
+// its final value, its position + 100. The edit rewires the ramp to the offset
+// ramp. Each source keeps its own in-flight values: the revising source owns
+// its 6 final ones and resumes at position 6 with the value it finalizes after
+// the cutover; the ramp plays its 7 in-flight values first. The input reads
+// only final values.
+TEST_F(GraphJitRuntimeFixture, RewiredComposedInputReadsItsLatentSourceFinalValues)
+{
+    bool original = false;
+    bool rewired = true;
+    std::array predecessor_arguments{
+        iv::details::configuration_argument(original)};
+    std::array successor_arguments{
+        iv::details::configuration_argument(rewired)};
+    auto const predecessor = configured_module_graph_with_arguments(
+        *revision, graph_jit_revising_tile_rewire_module_id,
+        predecessor_arguments);
+    auto const successor = configured_module_graph_with_arguments(
+        *revision, graph_jit_revising_tile_rewire_module_id,
+        successor_arguments);
+    expect_sequential_input_access(
+        *jit, definitions, predecessor, 0, 7,
+        iv::graph_jit::SampleRealtimePortStateAccess::composed, 442);
+    expect_sequential_input_access(
+        *jit, definitions, successor, 0, 7,
+        iv::graph_jit::SampleRealtimePortStateAccess::composed, 443);
+    if (HasFatalFailure()) return;
+    expect_indexed_probe_values_across_graph_edit(
+        *jit, definitions, resources, predecessor, successor,
+        [](std::int64_t position) {
+            auto const read = position - 7;
+            if (read < 0) return 0.0f;
+            auto const latent = static_cast<float>(read + 100);
+            auto const right = position < sequence_cutover + 7
+                ? static_cast<float>(read)
+                : static_cast<float>(read + 100000);
+            return 0.5f * latent + 0.5f * right;
+        },
+        440);
+}
+
+// A loop of the two event feedback nodes: each sends one trigger per 8-sample
+// slice, and the second receives the first's triggers through detach(10), 10
+// samples after they are sent. The edit lengthens the detach to 12 at index 64.
+// The second node owns the triggers its detach has not yet delivered: the one
+// sent at 57 still arrives at 67. Two fresh positions follow, and the triggers
+// sent from the edit on arrive 12 samples after they are sent.
+TEST_F(GraphJitRuntimeFixture, GrowingEventDetachDeliversItsInFlightEventsFirst)
+{
+    std::size_t predecessor_latency = 10;
+    std::size_t successor_latency = 12;
+    std::array predecessor_arguments{
+        iv::details::configuration_argument(predecessor_latency)};
+    std::array successor_arguments{
+        iv::details::configuration_argument(successor_latency)};
+    auto const predecessor = configured_module_graph_with_arguments(
+        *revision, graph_jit_event_feedback_module_id, predecessor_arguments);
+    auto const successor = configured_module_graph_with_arguments(
+        *revision, graph_jit_event_feedback_module_id, successor_arguments);
+    ASSERT_EQ(
+        stable_node_identities(*successor), stable_node_identities(*predecessor));
+
+    constexpr std::int64_t cutover = 64;
+    constexpr std::int64_t end = 128;
+    EventFeedbackBStateMirror receiver{};
+    run_across_graph_edit(
+        *jit, definitions, resources, predecessor, successor, 438,
+        cutover, end,
+        [&](iv::CompiledGraph const& compiled,
+            iv::NodeStorage const& storage,
+            std::int64_t) {
+            auto const* state = find_unique_state<EventFeedbackBStateMirror>(
+                compiled.node_layout, storage);
+            ASSERT_NE(state, nullptr);
+            receiver = *state;
+        });
+    if (HasFatalFailure()) return;
+
+    // Both nodes keep their State, so the receiver's slices are its calls.
+    ASSERT_EQ(receiver.calls, static_cast<std::uint64_t>(end / 8));
+    for (std::size_t slice = 1; slice < end / 8; ++slice) {
+        auto const begin = static_cast<std::uint64_t>(slice * 8);
+        auto const wanted = begin < static_cast<std::uint64_t>(cutover) + 8
+            ? begin + 3
+            : begin + 5;
+        SCOPED_TRACE("slice at " + std::to_string(begin));
+        EXPECT_EQ(receiver.indices[slice], begin);
+        EXPECT_EQ(receiver.input_counts[slice], 1u);
+        EXPECT_EQ(receiver.first_input_times[slice], wanted);
+    }
+}
+
+// An edit adds a consumer of a MIDI source whose existing consumer survives.
+// The added consumer is an input the predecessor does not have, so its whole
+// window is fresh (sequential_port_storage_planning.md, "Port windows are
+// semantically node-owned"): its history holds none of the events the source
+// sent before the cutover, although the surviving consumer's history, which is
+// kept, holds them. The added consumer reads the source's stream through a
+// MIDI-to-trigger conversion.
+TEST_F(GraphJitRuntimeFixture, AddedEventConsumerReadsNoEventsFromBeforeItsCutover)
+{
+    bool without = false;
+    bool with = true;
+    std::array predecessor_arguments{
+        iv::details::configuration_argument(without)};
+    std::array successor_arguments{
+        iv::details::configuration_argument(with)};
+    auto const predecessor = configured_module_graph_with_arguments(
+        *revision, graph_jit_added_event_consumer_module_id,
+        predecessor_arguments);
+    auto const successor = configured_module_graph_with_arguments(
+        *revision, graph_jit_added_event_consumer_module_id,
+        successor_arguments);
+
+    // The survivor keeps its history in transition-only storage until its 160
+    // positions have passed.
+    constexpr std::int64_t cutover = 64;
+    constexpr std::int64_t end = 256;
+    RetainedMidiConsumerProbeStateMirror survivor{};
+    PersistentEventFeedbackConsumerStateMirror added{};
+    run_across_graph_edit(
+        *jit, definitions, resources, predecessor, successor, 444,
+        cutover, end,
+        [&](iv::CompiledGraph const& compiled,
+            iv::NodeStorage const& storage,
+            std::int64_t begin) {
+            auto const* first =
+                find_unique_state<RetainedMidiConsumerProbeStateMirror>(
+                    compiled.node_layout, storage);
+            ASSERT_NE(first, nullptr);
+            survivor = *first;
+            if (begin < cutover) return;
+            auto const* second =
+                find_unique_state<PersistentEventFeedbackConsumerStateMirror>(
+                    compiled.node_layout, storage);
+            ASSERT_NE(second, nullptr);
+            added = *second;
+        });
+    if (HasFatalFailure()) return;
+
+    // Each block the source sends note-ons at 5 and 17 and a note-off at 9.
+    // The survivor keeps its State and its history: its window [-96, 128)
+    // holds all six, and its window [32, 256) at the last call nine.
+    ASSERT_EQ(survivor.calls, 4u);
+    EXPECT_EQ(survivor.event_counts[1], 6u);
+    EXPECT_EQ(survivor.first_times[1], 5u);
+    EXPECT_EQ(survivor.last_times[1], 81u);
+    EXPECT_EQ(survivor.event_counts[3], 9u);
+    EXPECT_EQ(survivor.first_times[3], 69u);
+    EXPECT_EQ(survivor.last_times[3], 209u);
+    // The added consumer's window [-256, 128) holds the triggers of the
+    // note-ons after the cutover only: 69 and 81; [-128, 256) at its last
+    // call holds six.
+    ASSERT_EQ(added.calls, 3u);
+    EXPECT_EQ(added.event_counts[0], 2u);
+    EXPECT_EQ(added.first_times[0], 69u);
+    EXPECT_EQ(added.last_times[0], 81u);
+    EXPECT_EQ(added.event_counts[2], 6u);
+    EXPECT_EQ(added.first_times[2], 69u);
+    EXPECT_EQ(added.last_times[2], 209u);
+}
+
 // The converted node's left channel mixes the temporal and converted outputs,
 // whose latencies differ, through detach(6). The edit adds a node that nothing
 // reads before the loop, which renumbers both loop nodes' bundles and changes
@@ -20000,12 +20839,14 @@ TEST_F(GraphJitRuntimeFixture, FeedForwardEventFanInCompactCarryMigrates)
         }
     }
     ASSERT_NE(probe, nullptr);
+    // Each source authors -5, 5 and 61, which the consumer reads at 3, 13
+    // and 69 (latency 8). Its window [-8, 64) holds 3 and 13 of both.
     compiled.compiled_graph->root_operations.tick_block(
         storage.buffer().data(), &empty_tick_invocation, index(0), 64);
     EXPECT_EQ(probe->event_counts[0], 4u);
-    EXPECT_EQ(probe->first_times[0], 5u);
-    EXPECT_EQ(probe->second_times[0], 5u);
-    EXPECT_EQ(probe->last_times[0], 61u);
+    EXPECT_EQ(probe->first_times[0], 3u);
+    EXPECT_EQ(probe->second_times[0], 3u);
+    EXPECT_EQ(probe->last_times[0], 13u);
 
     auto recompiled = compile_graph(graph, 146);
     ASSERT_TRUE(recompiled.succeeded())
@@ -20028,12 +20869,408 @@ TEST_F(GraphJitRuntimeFixture, FeedForwardEventFanInCompactCarryMigrates)
     recompiled.compiled_graph->root_operations.tick_block(
         migrated.buffer().data(), &empty_tick_invocation, index(64), 64);
     // The compiler-owned carry and the probe's State both migrate, so the
-    // resumed observation is the probe's second.
+    // resumed observation is the probe's second. The carry brings both 69s
+    // (authored at 61, not final before the edit); each source's 59, 69 and
+    // 125 follow at 67, 77 and 133. The window [56, 128) holds six.
     EXPECT_EQ(migrated_probe->calls, 2u);
-    EXPECT_EQ(migrated_probe->event_counts[1], 8u);
-    EXPECT_EQ(migrated_probe->first_times[1], 61u);
-    EXPECT_EQ(migrated_probe->second_times[1], 61u);
-    EXPECT_EQ(migrated_probe->last_times[1], 125u);
+    EXPECT_EQ(migrated_probe->event_counts[1], 6u);
+    EXPECT_EQ(migrated_probe->first_times[1], 67u);
+    EXPECT_EQ(migrated_probe->second_times[1], 67u);
+    EXPECT_EQ(migrated_probe->last_times[1], 77u);
+}
+
+// A fan-in reads a trigger source of latency 8 and one without latency.
+// Latency compensation aligns the two paths, as it aligns sample paths
+// (sequential_port_storage_planning.md, "Sample and event streams share one
+// lifetime and ownership model"): the consumer reads each source's events 8
+// positions after they were sent, the latent source's through its latency and
+// the other's through compensation 8.
+TEST_F(GraphJitRuntimeFixture, EventFanInAlignsSourcesOfUnequalLatency)
+{
+    auto graph = configured_unequal_latency_event_fan_in_graph(*revision);
+    ASSERT_TRUE(graph);
+    auto analysis = build_connection_analysis_plan(*graph, 64);
+    ASSERT_TRUE(analysis.has_value())
+        << (analysis ? std::string{} : analysis.error());
+    ASSERT_EQ(analysis->event_connections.size(), 1u);
+    auto const& connection = analysis->event_connections.front();
+    ASSERT_EQ(connection.deliveries.size(), 2u);
+    for (auto const& delivery : connection.deliveries) {
+        EXPECT_EQ(delivery.read_latency, 8u);
+    }
+
+    auto compiled = compile_graph(graph, 446);
+    ASSERT_TRUE(compiled.succeeded())
+        << (compiled.diagnostics.empty()
+                ? ""
+                : compiled.diagnostics.front().message);
+    auto storage = compiled.compiled_graph->node_layout.create_storage(resources);
+    storage.initialize();
+    auto* probe = find_unique_state<RetainedEventConsumerProbeStateMirror>(
+        compiled.compiled_graph->node_layout, storage);
+    ASSERT_NE(probe, nullptr);
+
+    // The latent source sends -5, 5 and 61, read at 3, 13 and 69; the other
+    // sends 3 and 63, read at 11 and 71. The window [-8, 64) holds 3, 11, 13.
+    compiled.compiled_graph->root_operations.tick_block(
+        storage.buffer().data(), &empty_tick_invocation, index(0), 64);
+    ASSERT_EQ(probe->calls, 1u);
+    EXPECT_EQ(probe->event_counts[0], 3u);
+    EXPECT_EQ(probe->first_times[0], 3u);
+    EXPECT_EQ(probe->second_times[0], 11u);
+    EXPECT_EQ(probe->last_times[0], 13u);
+
+    // Then 59, 69 and 125, read at 67, 77 and 133, and 67 and 127, read at
+    // 75 and 135. The window [56, 128) holds 67, 69, 71, 75 and 77.
+    compiled.compiled_graph->root_operations.tick_block(
+        storage.buffer().data(), &empty_tick_invocation, index(64), 64);
+    ASSERT_EQ(probe->calls, 2u);
+    EXPECT_EQ(probe->event_counts[1], 5u);
+    EXPECT_EQ(probe->first_times[1], 67u);
+    EXPECT_EQ(probe->second_times[1], 69u);
+    EXPECT_EQ(probe->last_times[1], 77u);
+}
+
+// The unequal-latency fan-in, recompiled across a cutover with its nodes
+// identified. Each source has its own in-flight window in the consumer: the
+// latent source's events not yet final at the cutover belong to that output
+// (its latency positions), the other source's final but unread events to the
+// consumer (its compensation). The consumer reads every event once, as the
+// steady graph does: 67, 69, 71, 75 and 77 in the call at 64.
+TEST_F(GraphJitRuntimeFixture, RecompiledEventFanInOfUnequalLatencyReadsEachEventOnce)
+{
+    auto const graph = with_node_identities(
+        configured_unequal_latency_event_fan_in_graph(*revision));
+    ASSERT_TRUE(graph);
+
+    constexpr std::int64_t cutover = 64;
+    constexpr std::int64_t end = 192;
+    RetainedEventConsumerProbeStateMirror consumer{};
+    run_across_graph_edit(
+        *jit, definitions, resources, graph, graph, 456, cutover, end,
+        [&](iv::CompiledGraph const& compiled,
+            iv::NodeStorage const& storage,
+            std::int64_t) {
+            auto const* state =
+                find_unique_state<RetainedEventConsumerProbeStateMirror>(
+                    compiled.node_layout, storage);
+            ASSERT_NE(state, nullptr);
+            consumer = *state;
+        });
+    if (HasFatalFailure()) return;
+
+    ASSERT_EQ(consumer.calls, 3u);
+    EXPECT_EQ(consumer.event_counts[1], 5u);
+    EXPECT_EQ(consumer.first_times[1], 67u);
+    EXPECT_EQ(consumer.second_times[1], 69u);
+    EXPECT_EQ(consumer.last_times[1], 77u);
+    // Then 123, 133 and 189 (read at 131, 141, 197) and 131 and 191 (read at
+    // 139 and 199): the window [120, 192) holds 131, 133, 135, 139, 141.
+    EXPECT_EQ(consumer.event_counts[2], 5u);
+    EXPECT_EQ(consumer.first_times[2], 131u);
+    EXPECT_EQ(consumer.second_times[2], 133u);
+    EXPECT_EQ(consumer.last_times[2], 141u);
+}
+
+// Runs latent_direct_event_module with latency `before`, then with latency
+// `after` from a cutover at 64, and returns the consumer's State.
+RetainedEventConsumerProbeStateMirror run_latent_direct_event_edit(
+    iv::GraphJit& jit,
+    std::shared_ptr<iv::NodeDefinitionsSnapshot const> const& definitions,
+    iv::ResourceContext const& resources,
+    iv::PackageRevision const& revision,
+    std::size_t before,
+    std::size_t after,
+    std::uint64_t generation)
+{
+    std::array predecessor_arguments{iv::details::configuration_argument(before)};
+    std::array successor_arguments{iv::details::configuration_argument(after)};
+    auto const predecessor = configured_module_graph_with_arguments(
+        revision, graph_jit_latent_direct_event_module_id, predecessor_arguments);
+    auto const successor = configured_module_graph_with_arguments(
+        revision, graph_jit_latent_direct_event_module_id, successor_arguments);
+    RetainedEventConsumerProbeStateMirror consumer{};
+    run_across_graph_edit(
+        jit, definitions, resources, predecessor, successor, generation, 64, 192,
+        [&](iv::CompiledGraph const& compiled,
+            iv::NodeStorage const& storage,
+            std::int64_t) {
+            auto const* state =
+                find_unique_state<RetainedEventConsumerProbeStateMirror>(
+                    compiled.node_layout, storage);
+            ASSERT_NE(state, nullptr);
+            consumer = *state;
+        });
+    return consumer;
+}
+
+// A consumer reads a latent event output's own retained stream. The output's
+// events that are not final at a recompile's cutover belong to the output
+// (its latency positions) and survive it, so the consumer reads them once
+// they are final, as the steady graph does. The source sends 62 before the
+// cutover, then 63, 69, 126, then 127, 133, 190; with latency 4 the consumer
+// reads them at 66, 67, 73, 130, 131, 137.
+TEST_F(GraphJitRuntimeFixture, LatentEventOutputReadDirectlyKeepsItsUnfinalEventsAcrossARecompile)
+{
+    auto const consumer = run_latent_direct_event_edit(
+        *jit, definitions, resources, *revision, 4, 4, 458);
+    if (HasFatalFailure()) return;
+    ASSERT_EQ(consumer.calls, 3u);
+    EXPECT_EQ(consumer.event_counts[0], 2u);
+    EXPECT_EQ(consumer.first_times[0], 3u);
+    EXPECT_EQ(consumer.last_times[0], 9u);
+    EXPECT_EQ(consumer.event_counts[1], 3u);
+    EXPECT_EQ(consumer.first_times[1], 66u);
+    EXPECT_EQ(consumer.second_times[1], 67u);
+    EXPECT_EQ(consumer.last_times[1], 73u);
+    EXPECT_EQ(consumer.event_counts[2], 3u);
+    EXPECT_EQ(consumer.first_times[2], 130u);
+    EXPECT_EQ(consumer.second_times[2], 131u);
+    EXPECT_EQ(consumer.last_times[2], 137u);
+}
+
+// The same edit growing the output's latency from 4 to 6. The consumer reads
+// the source's values from its old finalization frontier, 60, at the new
+// delay, after 2 fresh positions: the unfinal 62 at 68, then 63 at 69 and
+// 69 at 75; then 126, 127, 133 at 132, 133, 139.
+TEST_F(GraphJitRuntimeFixture, LatentEventOutputReadDirectlyKeepsItsUnfinalEventsAcrossALatencyChange)
+{
+    auto const consumer = run_latent_direct_event_edit(
+        *jit, definitions, resources, *revision, 4, 6, 460);
+    if (HasFatalFailure()) return;
+    ASSERT_EQ(consumer.calls, 3u);
+    EXPECT_EQ(consumer.event_counts[1], 3u);
+    EXPECT_EQ(consumer.first_times[1], 68u);
+    EXPECT_EQ(consumer.second_times[1], 69u);
+    EXPECT_EQ(consumer.last_times[1], 75u);
+    EXPECT_EQ(consumer.event_counts[2], 3u);
+    EXPECT_EQ(consumer.first_times[2], 132u);
+    EXPECT_EQ(consumer.second_times[2], 133u);
+    EXPECT_EQ(consumer.last_times[2], 139u);
+}
+
+// A latent sample output whose history grows from 3 to 6 while a reader of
+// history 4 reads its ring. The reader's window covers one of the output's
+// newly exposed positions with a value it read before, so their claims on the
+// ring disagree; the reader's claim is native and the grown output's is not,
+// so the output moves to transition-only storage. The output's revisable
+// values must still reach the ring: the reader reads every position's final
+// value, before and after the cutover.
+TEST_F(GraphJitRuntimeFixture, GrowingLatentSampleOutputBesideItsReaderKeepsItsRevisableValues)
+{
+    std::size_t before = 3;
+    std::size_t after = 6;
+    std::array predecessor_arguments{iv::details::configuration_argument(before)};
+    std::array successor_arguments{iv::details::configuration_argument(after)};
+    auto const predecessor = configured_module_graph_with_arguments(
+        *revision, graph_jit_latent_window_growth_module_id, predecessor_arguments);
+    auto const successor = configured_module_graph_with_arguments(
+        *revision, graph_jit_latent_window_growth_module_id, successor_arguments);
+
+    std::size_t checked_blocks = 0;
+    run_across_graph_edit(
+        *jit, definitions, resources, predecessor, successor, 464, 64, 320,
+        [&](iv::CompiledGraph const& compiled,
+            iv::NodeStorage const& storage,
+            std::int64_t begin) {
+            auto const* consumer =
+                find_unique_state<LatentWindowConsumerStateMirror>(
+                    compiled.node_layout, storage);
+            ASSERT_NE(consumer, nullptr);
+            SCOPED_TRACE("block at " + std::to_string(begin));
+            EXPECT_GT(consumer->checked, 0u);
+            EXPECT_EQ(consumer->mismatches, 0u);
+            ++checked_blocks;
+        });
+    if (HasFatalFailure()) return;
+    EXPECT_EQ(checked_blocks, 5u);
+}
+
+// Runs scc_compensation_module for two blocks of 64 and returns the
+// passthrough's and the probe's States.
+std::pair<AlignedPairPassthroughStateMirror, LatencyCompensationProbeStateMirror>
+run_scc_compensation(
+    iv::ResourceContext const& resources,
+    iv::GraphJitCompileResult const& compiled)
+{
+    auto storage = compiled.compiled_graph->node_layout.create_storage(resources);
+    storage.initialize();
+    for (std::int64_t begin = 0; begin < 128; begin += 64) {
+        compiled.compiled_graph->root_operations.tick_block(
+            storage.buffer().data(), &empty_tick_invocation, index(begin), 64);
+    }
+    auto const* passthrough = find_unique_state<AlignedPairPassthroughStateMirror>(
+        compiled.compiled_graph->node_layout, storage);
+    auto const* probe = find_unique_state<LatencyCompensationProbeStateMirror>(
+        compiled.compiled_graph->node_layout, storage);
+    return {
+        passthrough ? *passthrough : AlignedPairPassthroughStateMirror{},
+        probe ? *probe : LatencyCompensationProbeStateMirror{},
+    };
+}
+
+// Inside a feedback loop, a node reads a ramp of latency 7 and, over an edge
+// that is not detached, the loop's own ramp. The loop's edges that are not
+// detached form an acyclic order, so path-latency compensation aligns this
+// node's inputs as it would outside a loop: it reads the loop ramp 7 positions
+// late, and both inputs hold the same value at every position. (Only the
+// detached edge keeps its authored delay.)
+TEST_F(GraphJitRuntimeFixture, SccNodeAlignsItsInputsOfUnequalPathLatency)
+{
+    auto compiled = compile(graph_jit_scc_compensation_module_id, 466);
+    ASSERT_TRUE(compiled.succeeded())
+        << (compiled.diagnostics.empty()
+                ? ""
+                : compiled.diagnostics.front().message);
+    auto const [passthrough, probe] = run_scc_compensation(resources, compiled);
+    (void)probe;
+    // Called once per slice of the loop; every position is checked once.
+    EXPECT_GE(passthrough.calls, 2u);
+    EXPECT_EQ(passthrough.checked, 128u);
+    EXPECT_EQ(passthrough.mismatches, 0u);
+    EXPECT_EQ(passthrough.largest_difference, 0.0f);
+}
+
+// The passthrough's output carries its ramp input, 7 positions late. A probe
+// after the loop compares it with a plain ramp; compensation delays the plain
+// ramp by the loop node's output path latency, 7, so the probe reads both
+// inputs equal.
+TEST_F(GraphJitRuntimeFixture, NodeAfterAnSccIsCompensatedForTheSccsPathLatency)
+{
+    auto compiled = compile(graph_jit_scc_compensation_module_id, 468);
+    ASSERT_TRUE(compiled.succeeded())
+        << (compiled.diagnostics.empty()
+                ? ""
+                : compiled.diagnostics.front().message);
+    auto const [passthrough, probe] = run_scc_compensation(resources, compiled);
+    (void)passthrough;
+    EXPECT_EQ(probe.calls, 2u);
+    EXPECT_EQ(probe.mismatches, 0u);
+    EXPECT_EQ(probe.max_abs_difference, 0.0f);
+}
+
+// A node whose sample input reads a ramp of latency 7 also reads triggers.
+// Latency compensation aligns its event input with its sample input
+// (sequential_port_storage_planning.md, "Sample and event streams share one
+// lifetime and ownership model"): it reads each trigger 7 positions after it
+// was sent.
+TEST_F(GraphJitRuntimeFixture, EventInputIsCompensatedForItsNodesLatentSampleInput)
+{
+    auto graph = configured_module_graph(
+        *revision, graph_jit_compensated_trigger_module_id);
+    ASSERT_TRUE(graph);
+    auto analysis = build_connection_analysis_plan(*graph, 64);
+    ASSERT_TRUE(analysis.has_value())
+        << (analysis ? std::string{} : analysis.error());
+    ASSERT_EQ(analysis->event_connections.size(), 1u);
+    ASSERT_EQ(analysis->event_connections.front().deliveries.size(), 1u);
+    EXPECT_EQ(
+        analysis->event_connections.front().deliveries.front().read_latency,
+        7u);
+
+    auto compiled = compile_graph(graph, 448);
+    ASSERT_TRUE(compiled.succeeded())
+        << (compiled.diagnostics.empty()
+                ? ""
+                : compiled.diagnostics.front().message);
+    auto storage = compiled.compiled_graph->node_layout.create_storage(resources);
+    storage.initialize();
+    auto* probe = find_unique_state<CompensatedTriggerProbeStateMirror>(
+        compiled.compiled_graph->node_layout, storage);
+    ASSERT_NE(probe, nullptr);
+
+    // The source sends 3 and 63, then 67 and 127.
+    for (std::int64_t begin = 0; begin < 128; begin += 64) {
+        compiled.compiled_graph->root_operations.tick_block(
+            storage.buffer().data(), &empty_tick_invocation, index(begin), 64);
+    }
+    ASSERT_EQ(probe->calls, 2u);
+    EXPECT_EQ(probe->counts[0], 1u);
+    EXPECT_EQ(probe->first_times[0], 10u);
+    EXPECT_EQ(probe->counts[1], 2u);
+    EXPECT_EQ(probe->first_times[1], 70u);
+    EXPECT_EQ(probe->last_times[1], 74u);
+}
+
+// One authored connection reaches two consumers through a subgraph's event
+// input. One of them needs compensation 7, the other none. Each reads the
+// source through its own compensation.
+TEST_F(GraphJitRuntimeFixture, RoutedEventConnectionCompensatesEachTargetOnItsOwn)
+{
+    auto graph = configured_module_graph(
+        *revision, graph_jit_routed_unequal_compensation_module_id);
+    ASSERT_TRUE(graph);
+    auto compiled = compile_graph(graph, 450);
+    ASSERT_TRUE(compiled.succeeded())
+        << (compiled.diagnostics.empty()
+                ? ""
+                : compiled.diagnostics.front().message);
+    auto storage = compiled.compiled_graph->node_layout.create_storage(resources);
+    storage.initialize();
+    auto* probe = find_unique_state<CompensatedTriggerProbeStateMirror>(
+        compiled.compiled_graph->node_layout, storage);
+    auto* plain = find_unique_state<RetainedEventConsumerProbeStateMirror>(
+        compiled.compiled_graph->node_layout, storage);
+    ASSERT_NE(probe, nullptr);
+    ASSERT_NE(plain, nullptr);
+
+    // The source sends 3 and 63, then 67 and 127.
+    for (std::int64_t begin = 0; begin < 128; begin += 64) {
+        compiled.compiled_graph->root_operations.tick_block(
+            storage.buffer().data(), &empty_tick_invocation, index(begin), 64);
+    }
+    ASSERT_EQ(probe->calls, 2u);
+    EXPECT_EQ(probe->counts[0], 1u);
+    EXPECT_EQ(probe->first_times[0], 10u);
+    EXPECT_EQ(probe->counts[1], 2u);
+    EXPECT_EQ(probe->first_times[1], 70u);
+    EXPECT_EQ(probe->last_times[1], 74u);
+    ASSERT_EQ(plain->calls, 2u);
+    EXPECT_EQ(plain->event_counts[0], 2u);
+    EXPECT_EQ(plain->first_times[0], 3u);
+    EXPECT_EQ(plain->last_times[0], 63u);
+    EXPECT_EQ(plain->event_counts[1], 3u);
+    EXPECT_EQ(plain->first_times[1], 63u);
+    EXPECT_EQ(plain->last_times[1], 127u);
+}
+
+// An edit adds an acyclic consumer of a staged fan-in, whose stream keeps a
+// source index beside each event, and whose surviving reader in the feedback
+// loop keeps its history. The added consumer's whole window is fresh: it reads
+// none of the events sent before the cutover.
+TEST_F(GraphJitRuntimeFixture, AddedConsumerOfIndexedEventFanInReadsNoEventsFromBeforeItsCutover)
+{
+    auto const predecessor = configured_staged_event_fan_in_graph(*revision);
+    auto const successor = configured_staged_event_fan_in_graph(*revision, true);
+    ASSERT_TRUE(predecessor);
+    ASSERT_TRUE(successor);
+
+    // Long enough for a transition root of the added consumer's 320 positions
+    // to expire.
+    constexpr std::int64_t cutover = 64;
+    constexpr std::int64_t end = 448;
+    PersistentEventFeedbackConsumerStateMirror added{};
+    run_across_graph_edit(
+        *jit, definitions, resources, predecessor, successor, 452,
+        cutover, end,
+        [&](iv::CompiledGraph const& compiled,
+            iv::NodeStorage const& storage,
+            std::int64_t begin) {
+            if (begin < cutover) return;
+            auto const* state =
+                find_unique_state<PersistentEventFeedbackConsumerStateMirror>(
+                    compiled.node_layout, storage);
+            ASSERT_NE(state, nullptr);
+            added = *state;
+        });
+    if (HasFatalFailure()) return;
+
+    // The ingress sends 67 and 127 after the cutover; the loop's second node
+    // sends one trigger 2 positions into each 8-position slice, 66 to 122.
+    ASSERT_EQ(added.calls, 6u);
+    EXPECT_EQ(added.event_counts[0], 10u);
+    EXPECT_EQ(added.first_times[0], 66u);
+    EXPECT_EQ(added.last_times[0], 127u);
 }
 
 TEST_F(GraphJitRuntimeFixture, DisconnectedTickEventOutputRetainsItsLatency)
@@ -20056,9 +21293,11 @@ TEST_F(GraphJitRuntimeFixture, DisconnectedTickEventOutputRetainsItsLatency)
     ASSERT_LT(realization.requirement_index, requirements.size());
     auto const& requirement = requirements[realization.requirement_index];
     EXPECT_EQ(requirement.direction, iv::graph_jit::PortDirection::output);
+    // A Tick event output owns one window, its last history + latency
+    // positions before its next tick.
     EXPECT_EQ(
         requirement.role,
-        iv::graph_jit::RealtimePortStateRole::tick_output_latency);
+        iv::graph_jit::RealtimePortStateRole::tick_output_history);
     EXPECT_EQ(requirement.extent_samples, 8u);
     EXPECT_EQ(
         realization.authored_storage.storage,
@@ -20199,7 +21438,7 @@ TEST_F(GraphJitRuntimeFixture, EventFeedbackSccFansOutToAcyclicConsumer)
     EXPECT_EQ(observer->last_time, 65u);
 }
 
-TEST_F(GraphJitRuntimeFixture, EventFeedbackSccRetainsAuthoredFutureEvents)
+TEST_F(GraphJitRuntimeFixture, EventFeedbackSccRetainsUnfinalLatencyEvents)
 {
     auto feedback_graph = configured_event_feedback_scc_external_fanout_graph(
         *revision,
@@ -20315,9 +21554,11 @@ TEST_F(GraphJitRuntimeFixture, EventFeedbackSccRetainsAuthoredFutureEvents)
         return value;
     };
 
-    // The eight SCC slices author 9,17,...,65. Delaying those events by ten
-    // samples leaves exactly 67 and 75 live across the root boundary, so the
-    // feedback stream uses a two-event compact carry here.
+    // The eight SCC slices author -7,1,...,49; their consumers read them at
+    // 9,17,...,65 (latency 16). The detach copies each event when it becomes
+    // final, at the slice that contains 9,17,...: the root call delivers 9 to
+    // 57, 10 samples later. Only 67 is live across the root boundary; 65 is not
+    // final until the next root call, whose first slice delivers it as 75.
     compiled.compiled_graph->root_operations.tick_block(
         storage.buffer().data(), &empty_tick_invocation, index(0), 64);
     EXPECT_EQ(observer->calls, 1u);
@@ -20327,12 +21568,12 @@ TEST_F(GraphJitRuntimeFixture, EventFeedbackSccRetainsAuthoredFutureEvents)
     EXPECT_EQ(observer->trigger_count, 7u);
     EXPECT_EQ(observer->first_time, 9u);
     EXPECT_EQ(observer->last_time, 57u);
-    EXPECT_EQ(feedback_carry_count(), 2u);
+    EXPECT_EQ(feedback_carry_count(), 1u);
 
-    // Source carry restore prepends the previously authored event at 65. New SCC
-    // slices then append 73,81,...,129. Feedback restore independently brings
-    // back delayed events 67 and 75; cursor initializeing prevents source event 65
-    // from being delayed and enqueued a second time.
+    // Source carry restore brings back the event read at 65, which was not
+    // final yet. New SCC slices then add 73,81,...,129. Feedback restore
+    // independently brings back the delayed 67, and the first slice delivers
+    // 65 as 75, once.
     compiled.compiled_graph->root_operations.tick_block(
         storage.buffer().data(), &empty_tick_invocation, index(64), 64);
     EXPECT_EQ(observer->calls, 2u);
@@ -20342,11 +21583,11 @@ TEST_F(GraphJitRuntimeFixture, EventFeedbackSccRetainsAuthoredFutureEvents)
     EXPECT_EQ(observer->trigger_count, 8u);
     EXPECT_EQ(observer->first_time, 65u);
     EXPECT_EQ(observer->last_time, 121u);
-    EXPECT_EQ(feedback_carry_count(), 2u);
+    EXPECT_EQ(feedback_carry_count(), 1u);
 
     // A short root call restores source event 129 and authors 137. The delayed
-    // feedback carry still retains exactly the two events live beyond the new
-    // root boundary.
+    // feedback carry retains exactly the one delivered event live beyond the
+    // new root boundary: 139, from 129.
     compiled.compiled_graph->root_operations.tick_block(
         storage.buffer().data(), &empty_tick_invocation, index(128), 8);
     EXPECT_EQ(observer->calls, 3u);
@@ -20356,10 +21597,10 @@ TEST_F(GraphJitRuntimeFixture, EventFeedbackSccRetainsAuthoredFutureEvents)
     EXPECT_EQ(observer->trigger_count, 1u);
     EXPECT_EQ(observer->first_time, 129u);
     EXPECT_EQ(observer->last_time, 129u);
-    EXPECT_EQ(feedback_carry_count(), 2u);
+    EXPECT_EQ(feedback_carry_count(), 1u);
 }
 
-TEST_F(GraphJitRuntimeFixture, EventFeedbackSccPersistentRingRetainsAuthoredFutureEvents)
+TEST_F(GraphJitRuntimeFixture, EventFeedbackSccPersistentRingRetainsUnfinalLatencyEvents)
 {
     auto feedback_graph = configured_event_feedback_scc_external_fanout_graph(
         *revision,
@@ -20484,12 +21725,13 @@ TEST_F(GraphJitRuntimeFixture, EventFeedbackSccPersistentRingRetainsAuthoredFutu
     EXPECT_EQ(observer->last_time, 57u);
     EXPECT_EQ(indices(*source_ring)[0], 0u);
     EXPECT_EQ(indices(*source_ring)[1], 8u);
-    EXPECT_EQ(indices(*feedback_ring)[1], 8u);
+    // The detach copies each event when it becomes final: the event read at 65
+    // is not final before the root call ends.
+    EXPECT_EQ(indices(*feedback_ring)[1], 7u);
 
-    // Root-entry pruning removes events before 64 but keeps the previously
-    // authored future event at 65. The root-call feedback cursor starts at the
-    // source ring's prior write index, so that retained event is not copied a
-    // second time into detached feedback.
+    // Root-entry pruning removes events before 64 but keeps the event read at
+    // 65, which was not final yet. The first slice copies it into detached
+    // feedback, once, with the seven events that become final in this call.
     compiled.compiled_graph->root_operations.tick_block(
         storage.buffer().data(), &empty_tick_invocation, index(64), 64);
     EXPECT_EQ(observer->calls, 2u);
@@ -20501,7 +21743,7 @@ TEST_F(GraphJitRuntimeFixture, EventFeedbackSccPersistentRingRetainsAuthoredFutu
     EXPECT_EQ(observer->last_time, 121u);
     EXPECT_EQ(indices(*source_ring)[0], 7u);
     EXPECT_EQ(indices(*source_ring)[1], 16u);
-    EXPECT_EQ(indices(*feedback_ring)[1], 16u);
+    EXPECT_EQ(indices(*feedback_ring)[1], 15u);
 
     compiled.compiled_graph->root_operations.tick_block(
         storage.buffer().data(), &empty_tick_invocation, index(128), 8);
@@ -20514,7 +21756,7 @@ TEST_F(GraphJitRuntimeFixture, EventFeedbackSccPersistentRingRetainsAuthoredFutu
     EXPECT_EQ(observer->last_time, 129u);
     EXPECT_EQ(indices(*source_ring)[0], 15u);
     EXPECT_EQ(indices(*source_ring)[1], 17u);
-    EXPECT_EQ(indices(*feedback_ring)[1], 17u);
+    EXPECT_EQ(indices(*feedback_ring)[1], 16u);
 }
 
 TEST_F(GraphJitRuntimeFixture, EventFeedbackSccConvertsFanoutToAcyclicConsumer)
@@ -20813,9 +22055,10 @@ TEST_F(GraphJitRuntimeFixture, EventFeedbackSccComposesLatencyHistoryAndConversi
     EXPECT_EQ(
         group->storage_plan->kind,
         iv::RealtimeBufferStorageKind::full_node_storage);
-    // The canonical producer timeline must retain both sides of the root
-    // window: 320 samples of target history behind it and 320 samples of
-    // authored source latency ahead of it.
+    // The canonical producer timeline holds each event where it becomes final,
+    // 320 positions after it was authored. It retains 320 positions of target
+    // history behind the root window and the source's 320 latency positions,
+    // which are not final yet, ahead of it.
     EXPECT_EQ(group->storage_requirements.retained_window_samples, 640u);
     EXPECT_GE(
         group->storage_requirements.retained_event_capacity,
@@ -20882,7 +22125,9 @@ TEST_F(GraphJitRuntimeFixture, EventFeedbackSccComposesLatencyHistoryAndConversi
     EXPECT_EQ(observer->marker, 0xfeed320u);
     EXPECT_EQ(indices(*source_ring)[0], 0u);
     EXPECT_EQ(indices(*source_ring)[1], 8u);
-    EXPECT_EQ(indices(*feedback_ring)[1], 8u);
+    // The detach copies each event when it becomes final; the event read at 65
+    // is not final before the root call ends.
+    EXPECT_EQ(indices(*feedback_ring)[1], 7u);
 
     compiled.compiled_graph->root_operations.tick_block(
         storage.buffer().data(), &empty_tick_invocation, index(64), 64);
@@ -20893,7 +22138,7 @@ TEST_F(GraphJitRuntimeFixture, EventFeedbackSccComposesLatencyHistoryAndConversi
     EXPECT_EQ(observer->last_times[1], 121u);
     EXPECT_EQ(indices(*source_ring)[0], 0u);
     EXPECT_EQ(indices(*source_ring)[1], 16u);
-    EXPECT_EQ(indices(*feedback_ring)[1], 16u);
+    EXPECT_EQ(indices(*feedback_ring)[1], 15u);
 
     compiled.compiled_graph->root_operations.tick_block(
         storage.buffer().data(), &empty_tick_invocation, index(128), 64);
@@ -20904,7 +22149,7 @@ TEST_F(GraphJitRuntimeFixture, EventFeedbackSccComposesLatencyHistoryAndConversi
     EXPECT_EQ(observer->last_times[2], 185u);
     EXPECT_EQ(indices(*source_ring)[0], 0u);
     EXPECT_EQ(indices(*source_ring)[1], 24u);
-    EXPECT_EQ(indices(*feedback_ring)[1], 24u);
+    EXPECT_EQ(indices(*feedback_ring)[1], 23u);
 }
 
 TEST_F(GraphJitRuntimeFixture, EventFeedbackSccPersistentRingRetainsOutboundTargetHistory)
@@ -21349,8 +22594,9 @@ TEST_F(GraphJitRuntimeFixture, ConvertedEventFanout)
     }
 
     // Small retained event windows use a compact persistent carry. The
-    // producer may publish into its authored future-latency window, while the
-    // consumer asks for eight samples of history on the following root call.
+    // producer may add events to its latency window, the newest positions
+    // before its block, while the consumer asks for eight samples of history
+    // on the following root call.
 }
 
 TEST_F(GraphJitRuntimeFixture, CompactRetainedEvents)
@@ -21457,34 +22703,38 @@ TEST_F(GraphJitRuntimeFixture, CompactRetainedEvents)
 
     retained_event.compiled_graph->root_operations.tick_block(
         retained_event_storage.buffer().data(), &empty_tick_invocation, index(0), 64);
+    // The source authors -5, 5 and 61; with latency 8 the consumer reads them
+    // at 3, 13 and 69. Its window [-8, 64) holds the first two.
     ASSERT_EQ(retained_event_probe->calls, 1u);
     EXPECT_EQ(retained_event_probe->indices[0], 0u);
     EXPECT_EQ(retained_event_probe->event_counts[0], 2u);
-    EXPECT_EQ(retained_event_probe->first_times[0], 5u);
-    EXPECT_EQ(retained_event_probe->last_times[0], 61u);
+    EXPECT_EQ(retained_event_probe->first_times[0], 3u);
+    EXPECT_EQ(retained_event_probe->second_times[0], 13u);
+    EXPECT_EQ(retained_event_probe->last_times[0], 13u);
 
-    // The compact carry committed [56, 72): timestamp 61 is historical input
-    // on the next call and timestamp 67 was authored ahead by output latency.
-    // Current-call events 69 and 125 are appended after the restored carry.
+    // The compact carry committed [56, 72): 69, the event authored at 61,
+    // which was not final yet. The second call authors 59 inside the source's
+    // latency window, before 61, then 69 and 125. The consumer's window
+    // [56, 128) reads them in position order: 67, 69, 77.
     retained_event.compiled_graph->root_operations.tick_block(
         retained_event_storage.buffer().data(), &empty_tick_invocation, index(64), 64);
     ASSERT_EQ(retained_event_probe->calls, 2u);
     EXPECT_EQ(retained_event_probe->indices[1], 64u);
-    EXPECT_EQ(retained_event_probe->event_counts[1], 4u);
-    EXPECT_EQ(retained_event_probe->first_times[1], 61u);
-    EXPECT_EQ(retained_event_probe->second_times[1], 67u);
-    EXPECT_EQ(retained_event_probe->last_times[1], 125u);
+    EXPECT_EQ(retained_event_probe->event_counts[1], 3u);
+    EXPECT_EQ(retained_event_probe->first_times[1], 67u);
+    EXPECT_EQ(retained_event_probe->second_times[1], 69u);
+    EXPECT_EQ(retained_event_probe->last_times[1], 77u);
 
-    // The next retained window is [120, 136), proving stale events from the
-    // first call were trimmed rather than accumulating indefinitely.
+    // The next retained window is [120, 136): 133 (authored at 125); the
+    // first call's events were trimmed rather than accumulating indefinitely.
     retained_event.compiled_graph->root_operations.tick_block(
         retained_event_storage.buffer().data(), &empty_tick_invocation, index(128), 64);
     ASSERT_EQ(retained_event_probe->calls, 3u);
     EXPECT_EQ(retained_event_probe->indices[2], 128u);
-    EXPECT_EQ(retained_event_probe->event_counts[2], 4u);
-    EXPECT_EQ(retained_event_probe->first_times[2], 125u);
-    EXPECT_EQ(retained_event_probe->second_times[2], 131u);
-    EXPECT_EQ(retained_event_probe->last_times[2], 189u);
+    EXPECT_EQ(retained_event_probe->event_counts[2], 3u);
+    EXPECT_EQ(retained_event_probe->first_times[2], 131u);
+    EXPECT_EQ(retained_event_probe->second_times[2], 133u);
+    EXPECT_EQ(retained_event_probe->last_times[2], 141u);
 
     // Retention larger than the compact-carry budget binds producer and
     // consumer directly to one persistent ring. The ring keeps monotonic
@@ -21532,6 +22782,9 @@ TEST_F(GraphJitRuntimeFixture,
         nullptr);
     auto const& transition = specialized.compiled_graph->cutover
         ->state_transition;
+    // The output's one window and the input's history transfer to their own
+    // storage, and the output's latency positions, which the input's group
+    // stream also holds, are seeded there.
     ASSERT_EQ(transition.event_transfers.size(), 3u);
     EXPECT_TRUE(std::ranges::all_of(
         transition.event_transfers,
@@ -21585,12 +22838,13 @@ TEST_F(GraphJitRuntimeFixture,
         index(64),
         64);
     // The probe's State is moved implicitly, so the successor's block is its
-    // second call.
+    // second call, and it reads what the steady graph reads there: the seeded
+    // 69 (authored at 61 before the cutover) between 67 and 77.
     ASSERT_EQ(probe->calls, 2u);
-    EXPECT_EQ(probe->event_counts[1], 4u);
-    EXPECT_EQ(probe->first_times[1], 61u);
-    EXPECT_EQ(probe->second_times[1], 67u);
-    EXPECT_EQ(probe->last_times[1], 125u);
+    EXPECT_EQ(probe->event_counts[1], 3u);
+    EXPECT_EQ(probe->first_times[1], 67u);
+    EXPECT_EQ(probe->second_times[1], 69u);
+    EXPECT_EQ(probe->last_times[1], 77u);
 }
 
 TEST_F(GraphJitRuntimeFixture, PersistentEventRing)

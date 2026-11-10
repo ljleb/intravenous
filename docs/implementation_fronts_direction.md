@@ -3985,6 +3985,59 @@ built, all 790 tests pass, measured below; repository owner).*
           one of those four fixtures, hand-built analyses with
           `add_identified_test_nodes()`, or a producer group without source
           channels, whose identity names no node.
+      - *Fourteenth collaborator run (2026-11-09): all 830 tests pass.*
+      - *Decision (human co-author, 2026-11-09).* The intended observable
+        behavior is implemented before any further optimization.
+      - *Remaining observable gaps (2026-11-09).* A search of the normative docs
+        and this record finds two, both in graph-revision continuity.
+        - A converted or composed input that a rewire or a conflict in shared
+          storage moves to transition-only storage keeps one window for the
+          composed value, at the input's `T`. When its sources resume at
+          different positions, the window holds contributions its sources had
+          not yet finalized.
+        - An event input owns no in-flight events.
+          - sequential_port_storage_planning.md ("Port windows are semantically
+            node-owned") gives every Sequential input its history and its
+            in-flight values. graph_jit_direction.md repeats this ("each
+            Sequential input's resolved history and in-flight values").
+          - An event connection's only read delay is a `detach()` latency. But
+            `inventory_realtime_port_states()` gives an event input a record for
+            its history only, and `inventory_sequential_input_in_flight_values()`
+            handles sample connections only.
+          - The triggers a detach has not yet delivered therefore live only in
+            its feedback ring. They survive an edit only when that ring migrates
+            by raw identity, and the event feedback identity includes the
+            latency, the producer group and the retention.
+          - So a latency change, a rewire, or an anonymous producer loses them.
+      - *Reproduction tests (2026-11-09; not yet run).* Their modules are at the
+        end of package part 1, now 60,709 of 61,440 bytes.
+        - `RewiredComposedInputReadsItsLatentSourceFinalValues`.
+          - `revising_tile_rewire_module`: `ConvertedSequenceProbe`'s mono input
+            downmixes `tile<iv::stereo>` of `RevisingSampleSource` and the ramp,
+            compensated by 7 for the delay node. `RevisingSampleSource` has
+            latency 1 and revises each value one position later to its final
+            value, `position + 100`. The edit rewires the ramp to the offset
+            ramp.
+          - The record is `composed` with 7 in-flight values in both graphs.
+          - Each source keeps its own in-flight values. The revising source
+            owns 6 final ones and resumes at 6 with the value it finalizes after
+            the cutover, and the ramp plays its 7 in-flight values first.
+          - Expected to fail at position `C + 6` only. The rewired record moves
+            to transition-only storage with one window at `T = 7`. It inherits
+            the old downmix there, which holds the revising source's frame
+            `C - 1` before its revision (1023 instead of 1123).
+        - `GrowingEventDetachDeliversItsInFlightEventsFirst`.
+          - `event_feedback_module(latency)`: `EventFeedbackA` and
+            `EventFeedbackB` in a loop, as in `ExactTypeEventDetachFeedback`, but
+            with identified nodes. B reads A's triggers through
+            `detach(latency)`. Each node sends one trigger per 8-sample slice.
+            The edit at 64 lengthens the detach from 10 to 12.
+          - Expects B to receive A's trigger sent at 57 at 67, its in-flight
+            value. Positions 74 and 75 are fresh, and later triggers arrive 12
+            after they are sent (77, 85, …).
+          - Expected to fail at the slice at 64, with no trigger, or earlier,
+            in the transition compile. The ring that held the trigger has a new
+            identity and starts empty, and no record carries the trigger.
       - *Fixes (2026-11-09; collaborator build and test run pending).*
         - *Realtime-code replacement.* `compatible_realtime_code()` compares a
           replacement with the structural generation's steady prefix only.
@@ -4184,6 +4237,594 @@ built, all 790 tests pass, measured below; repository owner).*
     about 20 ms. Each edit is a transition compile of one module with 3 functions,
     24,395 to 24,462 instructions before optimization and 14,471 to 14,495 after.
     The realtime tick mean is 1,958 to 1,988 µs per 5,333 µs block.
+- **Active feature (2026-11-09): one lifetime and ownership model for sample and event
+  streams.** Handoff record (development_workflow.md 3.5); move it to
+  `docs/historical/` when the feature is complete.
+  - *Decision (human co-author, 2026-11-09).* Sample and event streams are implemented
+    symmetrically in the lifetime and ownership of their data. The places where they
+    differ are listed explicitly; a difference outside that list must disappear.
+    Events adopt the sample port time convention of 2026-11-07. The common part is
+    implemented once and used by both kinds, rather than duplicated.
+  - *Approach (collaborator's choice of the two the human co-author offered).* First
+    extract the reusable parts of the sample implementation into utilities, without
+    changing sample behavior; then rebuild the event implementation on them.
+  - *Normative destination.* sequential_port_storage_planning.md, section "Sample and
+    event streams share one lifetime and ownership model" and "Tick event ports need
+    bounded time windows"; graph_jit_direction.md, "Port history and latency are
+    node-owned semantic state"; the glossary's "Node-owned port state". The
+    superseded text is in historical/event_output_future_window_2026-11-09.md. The
+    allowed differences: what one position holds (one value, overwritten, or a set of
+    events, added to); what a fresh position holds (detach initial value or
+    `neutral_value`, or no events); how contributions combine (sum through
+    coefficients, or merge by position, source index, then authoring order).
+  - *Current event implementation against that destination.*
+    - `EventOutputPort` (ports.h) validates against
+      `realtime_port_window(block, size, history, latency)`, which is
+      `[B - history, B + N + latency)`. Destination: `[B - latency, B + N)`.
+    - `EventInputPort::get_block()` returns events at their own timestamps and skips
+      events older than the block. Destination: events reach the input
+      `read_latency` later than their source authored them, and none arrive late.
+    - `plan_sample_latency_compensation()` (connection_plan.cpp) assigns
+      compensation to sample connections only, and `EventSourcePlan` has no
+      `read_latency`. Destination: one path-latency alignment over both kinds.
+    - `inventory_realtime_port_states()` gives an event output two records
+      (`tick_output_history`, `tick_output_latency`) and an event input its history
+      only; `inventory_sequential_input_in_flight_values()` covers sample
+      connections only. Destination: the sample record shapes.
+    - `RealtimePortStateRole::tick_output_latency`,
+      `EventRealtimePortStateFutureSource` and
+      `EventRealtimePortStateRealization::retained_future_sources` exist only for
+      the future window; the cutover seeds future events through them.
+    - Event carry commit (`iv_graph_jit_commit_event_carry()`) keeps
+      `[end - history, end + latency)`; event feedback appends shift by
+      `loop_extra_latency` only, not by source latency.
+    - Event detach structures are identified by producer group, source position
+      and latency (lowering_plan.cpp), not through `resolve_detach_identities()`.
+    - Event transition state has no transition-only storage:
+      `realize_realtime_port_state_transition_storage()` rejects it.
+  - *Milestones.*
+    - M0, done: the normative destination above.
+    - M1: shared utilities extracted from the sample implementation and used by it,
+      with no change to sample behavior. Events still use their own code, so every
+      test should still pass. Planned parts: path-latency alignment, port-state
+      inventory, in-flight counts, detach identity parts, transition windows
+      (`make_transition()`, `input_resume_position()`, `derived_source_window()`),
+      claim-based conflict resolution, and transition-only bookkeeping (suffix
+      groups, expiry cursors, cutover cells).
+    - M2: events rebuilt on those utilities under the new convention: authoring
+      window, read latency with compensation, delivery restamped by read latency
+      (a detach's shift becomes one case of it), one output record, input
+      in-flight records, event detach identities, event transition-only storage;
+      removal of the future-window roles.
+    - M3: tests. Tests that encode future stamping change
+      (`EventFeedbackSccRetainsAuthoredFutureEvents`,
+      `EventFeedbackSccPersistentRingRetainsAuthoredFutureEvents`, the
+      `RetainedTriggerEventSource` tests, and other uses of
+      `LatentEventFeedbackA` and `PersistentLatentEventFeedbackA`); new tests cover
+      event compensation, event in-flight ownership and the event authoring window.
+      `GrowingEventDetachDeliversItsInFlightEventsFirst` and
+      `RewiredComposedInputReadsItsLatentSourceFinalValues` are pending runs.
+  - *Expected breakage.* During M2, event lowering and event tests do not build or
+    pass until the event layer is complete. Sample tests must keep passing
+    throughout.
+  - *Representation consequence, not friction.* An event carries its timestamp, so a
+    read delay cannot be a storage offset as it is for samples: an event input with a
+    nonzero read delay receives a copy of its window restamped by that delay, as a
+    detach's delayed stream already is. The copy costs one event write per delivered
+    event.
+  - *M1 status (2026-11-09; collaborator run: 830 of 832 tests pass).* Extracted,
+    each still called for samples only:
+    - connection_plan.cpp: `plan_latency_compensation()` (was
+      `plan_sample_latency_compensation()`) aligns `IncomingStreamPath` records
+      through `align_incoming_paths()`; `append_sample_incoming_paths()` and
+      `summarize_sample_read_latencies()` are the sample hooks.
+      `in_flight_extent()` and `record_input_in_flight()` hold the in-flight rule
+      and the input record update. `detach_identity_port()` and
+      `detach_identity_settings()` (connection_plan.h) build detach identity parts;
+      `SampleDetachIdentities` uses them, with unchanged identity text.
+    - realtime_port_state_transition.cpp: `StreamSourceTiming` (producer port and
+      channel, read delay, producer latency, detach timeline) with
+      `sample_source_timing()`, `single_producer()`, `sample_input_sources()`;
+      `input_resume_position()`, `derived_source_window()` (now returning
+      `SourceWindow`), `apply_input_window()` and `make_fresh_input_transition()`
+      take timings, a resume position and a fresh-window kind instead of sample
+      realizations; `StorageClaim`, `storage_claims_agree()` and
+      `settle_storage_claims()` hold claim settlement for
+      `resolve_sample_transfer_conflicts()`.
+    - Expected: all tests pass except the two reproduction tests still pending
+      (`RewiredComposedInputReadsItsLatentSourceFinalValues`,
+      `GrowingEventDetachDeliversItsInFlightEventsFirst`). Observed in that run:
+      exactly those two fail, as predicted.
+      - `RewiredComposedInputReadsItsLatentSourceFinalValues`: only position 1030
+        (`C + 6`) differs; it reads 1023 instead of 1073, the downmix of the
+        revising source's final value 1123 and the ramp's 1023.
+      - `GrowingEventDetachDeliversItsInFlightEventsFirst`: the slice at 64
+        receives no trigger instead of the in-flight trigger at 67.
+    - Transition-only bookkeeping (suffix groups, expiry, cutover cells) is not
+      extracted yet. `realize_realtime_port_state_transition_storage()` already has
+      a separate event suffix path (`EventSuffixTargetGroup`) that differs from the
+      sample one; the shared shape is decided when M2 rebuilds the event path.
+    - `same_producer_port()` ignores the producer channel, as before. That is
+      correct: every channel of one Tick output shares its latency and so its
+      finalization frontier, which is what the resume position depends on.
+  - *M2 representation decision (collaborator, 2026-11-09; a storage choice, no
+    observable effect).* A latent Tick event output's retained streams hold each event
+    at the position where it becomes final, its authored position plus the output's
+    latency. The callback still authors at the event's own position, in
+    `[B - latency, B + N)`; the merge from the callback sequence into retained
+    storage adds the latency. Reasons: an event carries its timestamp, so every read
+    delay is a restamping copy; a latent output already needs that merge, because a
+    new event may land among events it authored earlier; and in that frame every
+    consumer whose read delay is the source latency (no compensation) reads the
+    stream without a copy, and the existing group, carry, ring and detach pipeline
+    keeps its time frame. The M0 sentence "Storage files each event at the position
+    it was authored for", written earlier the same day, was removed from
+    sequential_port_storage_planning.md, graph_jit_direction.md and the glossary,
+    since the same section leaves representations free.
+  - *M2 status (2026-11-09; not yet built).*
+    - Connection analysis (connection_plan.h/.cpp):
+      `EventDeliveryPlan::read_latency`; `append_event_incoming_paths()` feeds
+      event deliveries to `plan_latency_compensation()`; event input records get
+      in-flight counts through `record_input_in_flight()`; an event output has one
+      `tick_output_history` record of `history + latency`;
+      `RealtimePortStateRole::tick_output_latency` is gone; event group retention
+      adds each target's compensation.
+    - Authoring window: `tick_output_authoring_window()` (ports.h);
+      `EventOutputPort` validates `[B - latency, B + N)`.
+    - Restamping: `EventMergePlan::source_delays`, emitted as a trailing `delay`
+      argument of `iv_graph_jit_merge_event_sequence()` and
+      `iv_graph_jit_merge_ordered_event_sequence()`. The raw output merge, both
+      fan-in merges and the single-source group merge delay each source by its
+      latency.
+    - Compensation: first a per-target delayed materialization
+      (`EventMaterializationPlan::delay_samples`); replaced by compensation in
+      producer-group streams (see "Fixes" after the third M2 run).
+    - Detach: a connection detach's feedback append reads the group stream through
+      `EventFeedbackPlan::selects_final_window`: each slice copies the events that
+      became final in it, `[index, index + block_size)`, so an event added among
+      earlier ones is still delivered once (the four feedback helpers take
+      `select_final_window`, `window_begin`, `window_extent`). A per-source detach
+      reads the callback sequence and delays it by the source latency plus the
+      detach latency.
+    - Realizations: `EventRealtimePortStateStorageView::timeline_offset` (output
+      views `+latency`, compensated input views `-compensation`, detach streams and
+      transition suffixes 0); `EventRealtimePortStateSourceTiming` per delivery;
+      `EventRealtimePortStateFutureSource` and `retained_future_sources` removed.
+    - Transitions: event input transitions use `apply_input_window()` with
+      `event_input_sources()`; event transfers carry
+      `source_timeline_offset`/`target_timeline_offset`, select by the source offset
+      and restamp by the difference; the future-source seeding is removed.
+  - *Still open in M2 (not implemented).*
+    - Event claims and fresh windows: `resolve_sample_transfer_conflicts()` has no
+      event counterpart, and an event input that the predecessor lacks gets no
+      `make_fresh_input_transition()`. A new consumer of shared event storage can
+      therefore see the producer's old events in its window, against "do not
+      fabricate old consumer history". *(Resolved 2026-11-10: event fresh windows
+      and claims.)*
+    - An event transition-only input suffix is mirrored from its steady binding
+      from the cutover on without skipping the positions its inherited in-flight
+      window already holds (no cutover cell for events). *(Open; see "Remaining"
+      below.)*
+    - A fan-in input whose sources need different compensation is rejected by
+      `target_compensation()` with an explicit error. *(Resolved 2026-11-10:
+      compensation in producer-group streams and per-target partitions.)*
+    - Persisted capture of a latent event output (`tick_invocation_frame.cpp`)
+      records the callback window `[B, B + N)`, not the positions that became final.
+      *(Resolved 2026-11-10: a record covers what its block finalizes.)*
+    - Event detach structures are still identified by producer group, source and
+      latency, not through `resolve_detach_identities()`. The in-flight events now
+      also transfer through the input's record. *(Open, cleanup; see "Remaining".)*
+    - The feedback cursor plumbing (`initialize_event_feedback_cursors_after_carry_restore()`
+      and the cursor allocas) is no longer read by any feedback append.
+      *(Removed 2026-11-10.)*
+    - The compatibility runtime's `EventInputPort` (ports.h) reads events at their
+      own timestamps. *(Withdrawn 2026-11-10: it is the facade GraphJit callbacks
+      use, and it only selects a window from storage that already holds events at
+      the input's positions.)*
+  - *Expected test changes (M3).* Tests whose nodes author after their block or
+    expect events at their authored timestamps through a latent output now fail,
+    for example the `LatentEventFeedbackA`, `PersistentLatentEventFeedbackA` and
+    `RetainedTriggerEventSource` tests.
+  - *First M2 run (collaborator build and test run, 2026-11-09): 824 of 832 tests
+    pass.* `GrowingEventDetachDeliversItsInFlightEventsFirst` now passes: its
+    in-flight trigger transfers through B's input record.
+    `RewiredComposedInputReadsItsLatentSourceFinalValues` still fails (sample gap,
+    unchanged). The other seven failures:
+    - Five tests threw "realtime event output timestamp is outside the current
+      latency + block window": their nodes authored after their block
+      (`RetainedTriggerEventSource`, `LatentEventFeedbackA`,
+      `PersistentLatentEventFeedbackA`, `PersistentLatentBoundaryEventFeedbackA`).
+    - `InventoriesStableNodeOwnedRealtimePortState` counted the removed event
+      latency record.
+    - `SeparateEventOutputAndInputStateNeedsNoTransitionRoot` found 2 event
+      transfers instead of 3. That exposed a gap: a producer group's own stream
+      also holds its sources' latency positions, which belong to the outputs, and
+      M2 had dropped the seeding that copied them into the successor's stream.
+  - *Fix after the first M2 run.* `EventRealtimePortStateOutputSource` and
+    `EventRealtimePortStateRealization::retained_output_sources` name, for an input
+    whose retained storage is its producer group's own stream, each latent source
+    output. `build_steady_storage_transfers()` seeds each output's latency positions
+    `[-latency, 0)` into that stream once, as a supplemental transfer with target
+    offset `+latency`, unless the stream is the output's own storage.
+  - *M3 test updates after the first M2 run.*
+    - `RetainedTriggerEventSource` now authors `B - 5` (inside its latency window,
+      before the event it authored at the previous block's end - 3), `B + 5` and
+      `B + N - 3`. `CompactRetainedEvents`,
+      `SeparateEventOutputAndInputStateNeedsNoTransitionRoot` and
+      `FeedForwardEventFanInCompactCarryMigrates` expect the consumer to read them
+      `latency` later, in position order (67 before 69 in the second call).
+    - `LatentEventFeedbackA`, `PersistentLatentEventFeedbackA` and
+      `PersistentLatentBoundaryEventFeedbackA` author `latency` positions earlier
+      than before, so consumers that read at the output's latency see the same
+      positions. A detach now copies each event when it becomes final rather than
+      when it is authored, so each feedback ring or carry holds one event fewer at
+      a root-call boundary: the expected carry counts and ring write indices drop
+      by one (`EventFeedbackSccRetainsAuthoredFutureEvents`,
+      `EventFeedbackSccPersistentRingRetainsAuthoredFutureEvents`,
+      `EventFeedbackSccComposesLatencyHistoryAndConversion`).
+    - `InventoriesStableNodeOwnedRealtimePortState` expects 6 records and one
+      event output record of 24.
+  - *Second M2 run (collaborator, 2026-11-09): 831 of 832 tests pass.* Only
+    `RewiredComposedInputReadsItsLatentSourceFinalValues` fails, as before (the
+    sample gap). Package part 2 first exceeded its 61,440-byte limit by 16 bytes;
+    the new test-node comments were shortened.
+  - *Open items reassessed against observable behavior (2026-11-09).*
+    - The event suffix's missing cutover skip is not observable today. When an
+      event state moves to transition-only storage, `specialize_transition_plan()`
+      clears the migration identity of its steady stream, so the steady stream
+      holds no pre-cutover event at the input's in-flight positions; the only
+      events it receives before the mirror reads it are the seeded latency
+      positions of its sources, which lie after the window.
+    - An added consumer that reads a shared stream directly counts as a second
+      user in `classify_shared_successor_storage()`, which moves the surviving
+      state to transition-only storage and clears the stream. One that reads it
+      through a materialization (conversion or compensation) is not counted, so
+      the surviving state's transfer fills the stream it reads.
+  - *Reproduction tests (2026-11-09; not yet run).* Their modules are at the end of
+    package part 4, now 59,682 of 61,440 bytes.
+    - `AddedEventConsumerReadsNoEventsFromBeforeItsCutover`.
+      - `added_event_consumer_module(added)`: `MidiEventSource` (note-ons at 5 and
+        17, a note-off at 9, every block) read by `RetainedMidiEventConsumer`
+        (history 160), and with `added` also by `PersistentEventFeedbackConsumer`
+        (trigger, history 320) through the MIDI-to-trigger conversion.
+      - Expects the survivor to keep its history (6 events in `[-96, 128)`) and
+        the added consumer to read only 69 and 81.
+      - Expected to fail with 4 events, first 5: the survivor's transfer fills the
+        group stream, and the added consumer's materialization reads its
+        pre-cutover note-ons.
+    - `EventFanInAlignsSourcesOfUnequalLatency`.
+      - `configured_unequal_latency_event_fan_in_graph()`: `RetainedTriggerEventSource`
+        (latency 8) and `TriggerEventSource` (latency 0) fan in to
+        `RetainedTriggerEventConsumer` (history 8). Both deliveries have read
+        latency 8.
+      - Expects the consumer to read both sources 8 positions late: 3, 11, 13, then
+        67, 69, 71, 75, 77.
+      - Expected to fail compiling, with "GraphJit event fan-in whose sources need
+        different latency compensation is not implemented"
+        (`target_compensation()`).
+  - *Third M2 run (collaborator, 2026-11-09): 831 of 834 tests pass.* Both
+    reproduction tests fail as predicted: the added consumer reads 4 events, first
+    5; the fan-in fails to compile with the "different latency compensation" error.
+    `RewiredComposedInputReadsItsLatentSourceFinalValues` fails as before.
+  - *Fixes (2026-11-09; collaborator build and test run pending).*
+    - *Event fresh windows and claims.* `event_fresh_window_realization()`: an event
+      input the predecessor lacks gets `make_fresh_input_transition()`, and one
+      whose window inherits nothing gets that kind from `apply_input_window()`.
+      Either claims its positions in the stream it reads with a fresh-only
+      transfer (`source_access == immutable_empty`, empty inherited range), which
+      leaves them without events. `resolve_event_transfer_conflicts()` builds a
+      `StorageClaim` per event transfer, keyed by target stream and source index,
+      keeps seeding transfers and an output's own unchanged-latency transfer as
+      native, and settles each stream with `settle_storage_claims()`, the same
+      code the sample conflicts use. A moved state's seeding transfers stay. A
+      fresh transition-only event input gets an empty suffix. Validation and
+      execution accept a fresh-only transfer, which reads nothing. A fan-in stream
+      with a source-index sidecar that the input does not select from is not
+      claimed (open).
+    - *Compensation in producer-group streams.*
+      `EventProducerGroupPlan::source_compensations` keys each group by its
+      readers' per-source compensation, so a group's stream holds each source's
+      events where its readers read them: every merge into it delays a source by
+      its latency plus its compensation, its retention counts the read latency
+      ahead of the block, the raw output stream serves a single-source group
+      directly only without compensation, and the group's raw identity names its
+      compensation. An input's view of its group stream therefore has offset 0,
+      and the seeding of an output's latency positions uses
+      `EventRealtimePortStateOutputSource::stream_delay`. This replaces the
+      per-target delayed materialization of the first M2 pass:
+      `target_compensation()`, `EventMaterializationPlan::delay_samples` and the
+      materialization helper's `delay` argument are removed. Detach lookups find
+      a connection's group by membership, since groups of the same sources may
+      differ in compensation. A connection whose targets need different
+      compensation for one source is rejected with an explicit error (open).
+  - *Fourth M2 run (collaborator, 2026-11-10): 832 of 834 tests pass.*
+    `EventFanInAlignsSourcesOfUnequalLatency` passes.
+    `AddedEventConsumerReadsNoEventsFromBeforeItsCutover` failed only in
+    `run_across_graph_edit()`: the surviving consumer's 160-position transition
+    root had not expired by 128. The test now runs to 256 and also checks the
+    calls after the transition root.
+  - *Open items without a reproduction test (2026-11-10).*
+    - Event detach identities: not observable. The input's record now carries a
+      detach's in-flight events, and an anonymous or new consumer's fresh claim
+      clears the stream, so raw migration of the delayed stream is only a
+      fallback. Cleanup.
+    - The feedback cursor plumbing is dead code. Cleanup.
+    - The "compatibility runtime" item is not a gap: `EventInputPort` is the facade
+      GraphJit's callbacks use, and it only selects a window from storage that
+      already holds events at the input's positions. Withdrawn.
+    - Persisted capture of a latent output. *Decision (human co-author,
+      2026-11-10, after the collaborator confirmed that Tick/persisted outputs may
+      declare latency):* block `B`'s record covers what that block finalizes,
+      `[B - latency, B + N - latency)`, with its disposition, for sample and event
+      outputs alike. coverage_and_background_evaluation.md is updated; the
+      superseded paragraph is in
+      historical/persisted_recording_callback_block_2026-11-10.md. Today
+      `TickInvocationFrame` records `[B, B + N)` of the callback storage for both
+      kinds.
+  - *Reproduction and coverage tests (2026-11-10; not yet run).* New package code
+    is in a fifth package part (`part_5`, 4.2 KB), since part 4 was full.
+    - `EventInputIsCompensatedForItsNodesLatentSampleInput` (coverage):
+      `CompensatedTriggerProbe` (sample and trigger inputs) reads a ramp of latency
+      7 and `TriggerEventSource`. Expects read latency 7 and triggers at 10, then
+      70 and 74. Expected to pass.
+    - `RoutedEventConnectionCompensatesEachTargetOnItsOwn`:
+      `configured_routed_unequal_compensation_event_graph()` drives a subgraph's
+      event input that feeds the probe (compensation 7) and
+      `RetainedTriggerEventConsumer` (none), one authored connection with two
+      targets. Expected to fail compiling with "GraphJit event connection whose
+      targets need different latency compensation for one source is not
+      implemented".
+    - `AddedConsumerOfIndexedEventFanInReadsNoEventsFromBeforeItsCutover`:
+      `configured_staged_event_fan_in_graph(observed)` adds an acyclic
+      `PersistentEventFeedbackConsumer` (history 320) reading the staged fan-in,
+      whose stream has a source-index sidecar. Expects 10 events after the cutover,
+      66 to 127. Expected to fail, either in the cutover's preparation ("event
+      transition target has inconsistent source identity": the surviving loop
+      reader's history transfer into the indexed stream names no source index) or
+      with 12 events, first 58 (the added consumer's fresh window is not claimed).
+    - `PersistedLatentTickOutputsRecordWhatEachBlockFinalizes`:
+      `RevisingCaptureSource` (persisted sample and trigger outputs, latency 1)
+      writes each sample as its position and revises it during the next position
+      to 1000 plus its position, and adds a trigger at each block's last position
+      and one at the position before the block. The test drives the generated root
+      through a real `TickInvocationFrame` for blocks at 0 and 64 and decodes the
+      queued records (`captured_records()`). Expects sample records `[-1, 63)` and
+      `[63, 127)` holding revised values (999 ... 1062, 1063 ... 1126), and event
+      records with the event at -1, then the two events at 63. Expected to fail:
+      the records begin at 0 and 64, the samples hold 1000 ... 1062 and the
+      unrevised 63, and the event records hold 63 and 127.
+  - *Fifth M2 run (collaborator, 2026-11-10): 834 of 838 tests pass.*
+    - `PersistedLatentTickOutputsRecordWhatEachBlockFinalizes` failed as predicted
+      (records begin at 0 and 64, unrevised last values, events at 63 and 127).
+    - `AddedConsumerOfIndexedEventFanInReadsNoEventsFromBeforeItsCutover` failed
+      in the cutover's preparation: "event transition target has inconsistent
+      source identity".
+    - `RoutedEventConnectionCompensatesEachTargetOnItsOwn` failed for a test
+      reason: its graph builder passed the ramp's latency argument without a
+      registered type. Its graph is now `routed_unequal_compensation_module`.
+    - `RewiredComposedInputReadsItsLatentSourceFinalValues` failed as before.
+  - *New reproduction test (2026-11-10; not yet run).*
+    `RecompiledEventFanInOfUnequalLatencyReadsEachEventOnce`: the unequal-latency
+    fan-in with identified nodes, recompiled across a cutover at 64. Expects the
+    steady reads (67, 69, 71, 75, 77; then 131 ... 141). Expected failure before
+    the fixes below: 69 twice. The input's one in-flight window `[-8, 8)` also
+    covers the latent source's latency positions, which are seeded as well; the
+    two claims disagree, the input moves to transition-only storage, and its
+    mirror copies the seeded 69 again (the mirror-skip gap, observable here).
+  - *Fixes (2026-11-10; collaborator build and test run pending).*
+    - *Per-target compensation in one connection.* `plan_event_groups()` partitions
+      a connection's realtime targets by their per-source compensation; the
+      connection joins one group per partition, and
+      `EventProducerGroupPlan::connection_targets` (parallel to
+      `connection_indices`) names the targets that read it. Lowering binds
+      `group_targets(group, connection_index)` instead of every realtime target.
+    - *Persisted capture records what each block finalizes.* Sample capture shifts
+      its recorded range and read index back by the output's latency. Event capture
+      keeps `EventCaptureSlot::pending_events` (sized off the audio thread from the
+      output's rate and latency): each block records the pending events it
+      finalizes and its own events in `[B - L, B + N - L)`, earlier-authored first
+      at an equal position, and keeps the rest pending; a voided block erases its
+      window; an untouched block with pending events publishes just those
+      positions. The `TickInvocationWorkspace` capture tests in
+      persisted_data_store_gtest.cpp used latency 1 with expectations of the old
+      rule; their plans and bindings now use latency 0, since they test capture
+      mechanics.
+    - *Whole indexed fan-in streams.* An input reading a whole stream with a
+      source-index sidecar transfers each event with its sidecar index from the
+      predecessor (`copies_source_indices` in execution); without a predecessor
+      sidecar it moves to transition-only storage. Its fresh window claims the
+      stream too.
+    - *One window per source in a fan-in.* A group whose sources need different
+      compensation keeps a source-index sidecar (`requires_source_identity`). An
+      input reading such a whole stream transfers one window per source, from
+      `derived_source_window()` with `EventRealtimePortStateSourceTiming::source_index`;
+      a steady event transition may now have several transfers.
+  - *Still open (2026-11-10).*
+    - `RewiredComposedInputReadsItsLatentSourceFinalValues`: a composed sample
+      input moved to transition-only storage keeps one suffix for the composed
+      value, and its mirror copies the steady composition, which reads every
+      source live. Where one source still plays its in-flight value and another
+      has resumed, neither can hold the mix. Planned fix: the transition root
+      points each composition source at its own suffix ring (window and mirror per
+      source, the direct-input suffix code with its cutover cell).
+    - The event mirror skip: an event input moved to transition-only storage still
+      mirrors its steady stream from the cutover on. With per-source windows, no
+      known graph reaches it; not implemented.
+  - *Sixth M2 run (collaborator, 2026-11-10): 837 of 839 tests pass.* All new event
+    tests pass except `AddedConsumerOfIndexedEventFanInReadsNoEventsFromBeforeItsCutover`
+    (12 events, first 58): the surviving loop reader's per-source claims were keyed
+    by source index and its whole-stream fresh competitor by none, so they were
+    never compared. Fix: `resolve_event_transfer_conflicts()` keys claims by stream
+    only, and `StorageClaim::lane` (the source index a claim fills) makes claims on
+    different sources of one stream disjoint.
+  - *Composed-input design (2026-11-10; implemented, collaborator build and test run
+    pending).* For a `composed` sample record
+    whose sources do not all pair, only the unpaired sources need transition-only
+    storage:
+    - paired sources (same producer, `sample_source_views_pair()`) keep their
+      steady per-source transfers (`derived_source_window()`);
+    - each unpaired source gets a source suffix ring that stands in for the current
+      source view's storage (same geometry and timeline offset): the predecessor
+      source's window by `derived_source_window()`, then a mirror from the new
+      source's ring from that window's end, as a `direct` input's suffix is filled;
+    - the transition root's `SampleCompositionPlan` reads that source from its
+      suffix (the `SampleCompositionInputPlan` is re-pointed, read latency
+      unchanged). No new emission features are needed.
+    - Implementation: `sample_sources_partially_pair()` makes such a record
+      `transfer_to_steady_storage`; `build_steady_storage_transfers()` gives each
+      rewired source a transfer with `SampleRealtimePortStateTransfer::composition_source`
+      and `target_transition_only`; `realize_realtime_port_state_transition_storage()`
+      allocates its ring (a compact carry expands to its working ring) and a cutover
+      cell; validation accepts a source suffix of a steady state;
+      `specialize_transition_plan()` re-points the matching
+      `SampleCompositionInputPlan` (matched by channel, read latency and retained
+      NodeStorage offset), adds the mirror after the new source's step, and points
+      the transition realization's composition source at the suffix. Any source
+      suffix makes the cutover need a transition root.
+  - *Seventh M2 run (collaborator, 2026-11-10): all 839 tests pass.*
+  - *Reproduction tests (2026-11-10; not yet run).* Package part 5 is now 9.4 KB.
+    - `LatentEventOutputReadDirectlyKeepsItsUnfinalEventsAcrossARecompile` and
+      `...AcrossALatencyChange`: `latent_direct_event_module(latency)`:
+      `LatentTriggerSource` (history 8, the given latency; authors `B - 1`, `B + 5`
+      and `B + N - 2`) read by `RetainedTriggerEventConsumer` (history 8), which
+      reads the output's own retained stream. Recompiled with latency 4, then
+      changed from 4 to 6, at 64. Expects the output's event authored at 62, not
+      final at the cutover, read at 66 (resp. 68 after 2 fresh positions).
+      Expected failure: `classify_shared_successor_storage()` sees two direct
+      users of the output's own stream, moves both states to transition-only
+      storage and clears the stream; the seeding skips the output's own storage,
+      so nothing restores the unfinal event (66 resp. 68 missing; counts 2).
+    - `PersistedLatentPacedSampleOutputRecordsWhatEachBlockFinalizes`:
+      `RevisingPacedCaptureSource` (persisted samples at pace 2, latency 1 value)
+      through a real `TickInvocationFrame`. Expects each record one value earlier
+      than the block's lattice range (computed with `try_project_onto_lattice()`),
+      holding revised values. Expected to pass if latency counts values of the
+      output's pace, as the capture assumes; a failure would show otherwise.
+  - *Cleanup (2026-11-10).*
+    - The feedback cursor plumbing is removed from lowering.cpp: the cursor
+      allocas, `initialize_event_feedback_cursors_after_carry_restore()`, and the
+      cursor parameter of `emit_event_feedback_append()` and the event operation
+      emitters. graph_jit_direction.md's status text (point 12, and the
+      lifecycle paragraph) now describes the final-window append.
+    - `EventFeedbackSccRetainsAuthoredFutureEvents` and
+      `EventFeedbackSccPersistentRingRetainsAuthoredFutureEvents` are renamed
+      `...RetainsUnfinalLatencyEvents`; the run records above keep the old names.
+    - Stale comments refreshed: `realize_realtime_port_state_transition_storage()`
+      and `plan_fresh_sample_storage_values()` (realtime_port_state_transition.h),
+      `inventory_sequential_input_in_flight_values()` (connection_plan.cpp).
+  - *Eighth M2 run (collaborator, 2026-11-10): 840 of 842 tests pass.* Both
+    `LatentEventOutputReadDirectly...` tests fail as predicted (counts 2; 66 resp.
+    68 missing). `PersistedLatentPacedSampleOutputRecordsWhatEachBlockFinalizes`
+    passes: latency counts values of the output's pace.
+  - *Fix (2026-11-10; collaborator build and test run pending).* A Tick output's
+    storage belongs to its producer port:
+    - `classify_shared_successor_storage()` no longer moves an output's own
+      transition when several direct users share its stream; only the readers
+      move to transition-only storage;
+    - `resolve_event_transfer_conflicts()` counts every event output transfer into
+      its own storage as native, whatever restamp (a latency change) or window
+      growth it has, so a reader that disagrees moves instead.
+    - Sample outputs keep their narrower native rule (same producer, no shift, no
+      fresh positions), since there a grown output window and a reader's native
+      claim could both be native and disagree. Whether a sample output whose window
+      grows can lose its values to a larger reader's claim is unchecked.
+  - *Ninth M2 run (collaborator, 2026-11-10): all 842 tests pass.*
+  - *Sample counterpart (2026-11-10; test not yet run).*
+    `GrowingLatentSampleOutputBesideItsReaderKeepsItsRevisableValues`:
+    `latent_window_growth_module(history)` (`LatentWindowHistorySource`, latency 2,
+    read by `LatentWindowConsumer`, history 4), history grown from 3 to 6 at 64.
+    The reader's window covers one of the output's newly exposed positions with an
+    old value; its claim is native and the grown output's is not, so the output
+    moves to transition-only storage. Expects every value the reader reads, in
+    five blocks, to be its position's final value. Predicted to pass: a sample
+    output in transition-only storage mirrors its suffix, latency positions
+    included, back into its steady ring every block (`retained_before = latency`),
+    which the event side lacked.
+  - *Tenth M2 run (collaborator, 2026-11-10): all 843 tests pass.*
+    `GrowingLatentSampleOutputBesideItsReaderKeepsItsRevisableValues` passes as
+    predicted: no sample counterpart of the event output-own-storage gap.
+  - *Remaining (2026-11-10).* The feature's normative destination is implemented for
+    every case the tests reach. These items remain:
+    - *Latency compensation and feedback.* `plan_latency_compensation()`
+      (connection_plan.cpp) aligns nothing inside a cyclic region, and
+      `append_sample_incoming_paths()` / `append_event_incoming_paths()` skip every
+      connection with a detached source. The two parts differ:
+      - *Detached (feedback) inputs: a logical consequence, not a gap.* An SCC
+        exists only because one of its edges carries a `detach()` delay, and a
+        feedback input's path latency is the node's own output path latency plus
+        the loop's latency. Aligning it with the node's other inputs would need a
+        negative delay, so its read delay is the authored one. Once the loop's
+        forward edges are aligned, the loop shares one timeline and a feedback
+        input reads it consistently.
+      - *Non-detached edges inside an SCC, and an SCC's output path latency:
+        deferred, fixable.* The code comment says "Feedback-aware SCC latency is
+        deliberately deferred": a node inside an SCC whose inputs have unequal
+        path latency reads them unaligned, and an SCC node reports only its
+        internal latency as its output path latency, so nodes downstream of an SCC
+        are compensated against an underestimate. The SCC's non-detached edges are
+        acyclic (`SccRegionPlan::execution_order` is a topological order without
+        detached edges), so the same per-node alignment can run over it, with
+        detached inputs left at their authored delay. Compensation only adds delay
+        on forward edges, so the slice quantum (bounded by detach latencies) and
+        causality are unaffected; in-SCC streams must retain the added
+        compensation (sample feedback timelines, event SCC aggregates and their
+        merges). Both stream kinds are affected alike.
+      - *Reproduction tests (2026-11-10; not yet run).* `scc_compensation_module`:
+        `AlignedPairPassthrough` (compares its `ramp` and `loop` inputs at every
+        position, passes `ramp` through) reads `LatencyArgumentRampSource` of
+        latency 7 and `LoopRampSource`, which reads the passthrough back through
+        `detach(8)`; `LatencyCompensationProbe` after the loop compares a plain
+        ramp with the passthrough's output.
+        - `SccNodeAlignsItsInputsOfUnequalPathLatency` expects the passthrough's
+          inputs equal at all 128 positions. Expected failure: every position
+          differs by 7 (the loop input is read at delay 0).
+        - `NodeAfterAnSccIsCompensatedForTheSccsPathLatency` expects the probe's
+          inputs equal. Expected failure: they differ by 7, since the passthrough
+          reports output path latency 0, so the plain ramp is not delayed.
+        - *Eleventh M2 run (collaborator, 2026-11-10): 843 of 845 tests pass.*
+          Both fail as predicted: 127 of 128 positions differ by 7 (position 0
+          holds 0 in both inputs).
+      - *Fix (2026-11-10; collaborator build and test run pending).*
+        `plan_latency_compensation()` aligns a cyclic region like an acyclic one,
+        over its `execution_order`; detached inputs keep their authored delay, as
+        `append_sample_incoming_paths()` and `append_event_incoming_paths()`
+        already skip them, and every loop node reports its aligned output path
+        latency.
+      - *Twelfth M2 run (collaborator, 2026-11-10): all 845 tests pass.* Both
+        tests pass; no existing feedback test changed. Resolved.
+    - *Event mirror skip (unreached).* An event input moved to transition-only
+      storage mirrors its steady stream from the cutover on without skipping the
+      positions its inherited window already holds. It is wrong only when a kept
+      transfer fills those positions in the steady stream; the steady stream's
+      clearing, claim settlement and per-source windows prevent every case found.
+    - *Asymmetries outside the allowlist, no known wrong output.*
+      - Claim rule for an output's own storage: an event output's transfer into
+        its own storage is always native; a sample output's only when the producer
+        is unchanged and its window did not grow. Samples stay correct because their
+        transition-only mirror writes back into the steady ring every block. Making
+        the rules one needs a resolution for a grown sample output and a reader
+        whose claims would both be native and disagree.
+      - `select_event_inherited_state_realization()` sends every `materialized`
+        (converted) event input to transition-only storage, while a converted
+        sample input can transfer per source into steady storage. This costs
+        transition roots, not correctness.
+    - *Cleanup.*
+      - Event detach structures take their raw identity from producer group, source
+        and latency, not from `resolve_detach_identities()`; only raw migration,
+        a fallback, uses it.
+      - `classify_shared_successor_storage()` still moves every reader of a stream
+        with several direct users; claim settlement now covers most of what it
+        protects. Removing it changes storage behavior and needs tests.
+      - `EventOutputPort::_history` (ports.h) is unused since the authoring window
+        dropped history; `history()` exists only to keep the field used. The
+        constructor argument comes from generated wrappers.
+      - graph_jit_direction.md, point 11's status text, still says the carry keeps
+        "absolute event timestamps"; a latent output's streams hold each event at
+        its position plus latency.
+      - Close this record: once the items above are resolved or assigned elsewhere,
+        move it to `docs/historical/` (development_workflow.md 3.5), keeping its
+        decisions and friction in Front 16.
+  - *Next bottom-up connection.* One of the remaining items above.
 - **Still open.** `iv_edit_latency_benchmark` still waits silently when the package
   watcher service fails. Its only failure signal is
   `iv_runtime_project_notification_event`. A notification subscriber in the

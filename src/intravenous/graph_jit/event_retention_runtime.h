@@ -113,7 +113,11 @@ iv_graph_jit_prune_event_persistent_ring(
     GlobalIndex sample_index,
     std::size_t retained_history_samples) noexcept;
 
-// Append only the newly-produced suffix of one aggregate SCC event sequence.
+// Append source events [source_begin_index, source_end_index) to a delayed
+// feedback stream, each loop_extra_latency positions after its own timestamp.
+// With select_final_window, only the events of that sorted range that lie in
+// [window_begin, window_begin + window_extent) are appended: the events of a
+// retained stream that became final during the current invocation.
 // Before appending, retire feedback events older than the current slice start.
 // Consumers run before the semantic producer in same-slice order and therefore
 // observe the old ring indices; pruning here avoids a separate hot-path helper
@@ -131,7 +135,10 @@ iv_graph_jit_append_event_feedback(
     void* ring_events,
     std::size_t ring_capacity,
     std::size_t* ring_read_index,
-    std::size_t* ring_write_index) noexcept;
+    std::size_t* ring_write_index,
+    std::uint32_t select_final_window = 0,
+    GlobalIndex window_begin = {},
+    std::size_t window_extent = 0) noexcept;
 
 // Append a newly-authored delayed suffix to a linear bounded sequence. Compact
 // feedback carry restores its retained prefix before SCC execution; this helper
@@ -148,7 +155,10 @@ iv_graph_jit_append_event_feedback_sequence(
     std::size_t loop_extra_latency,
     void* target_events,
     std::size_t target_capacity,
-    std::size_t* target_count) noexcept;
+    std::size_t* target_count,
+    std::uint32_t select_final_window = 0,
+    GlobalIndex window_begin = {},
+    std::size_t window_extent = 0) noexcept;
 
 // Persistent producer rings expose monotonic source indices rather than a
 // linear aggregate count. Copy the newly-authored [begin,end) suffix through
@@ -167,7 +177,10 @@ iv_graph_jit_append_event_feedback_sequence_ring_source(
     std::size_t loop_extra_latency,
     void* target_events,
     std::size_t target_capacity,
-    std::size_t* target_count) noexcept;
+    std::size_t* target_count,
+    std::uint32_t select_final_window = 0,
+    GlobalIndex window_begin = {},
+    std::size_t window_extent = 0) noexcept;
 
 extern "C" IV_GRAPH_JIT_RETENTION_RUNTIME_EXPORT void
 iv_graph_jit_append_event_feedback_ring_source(
@@ -183,7 +196,10 @@ iv_graph_jit_append_event_feedback_ring_source(
     void* ring_events,
     std::size_t ring_capacity,
     std::size_t* ring_read_index,
-    std::size_t* ring_write_index) noexcept;
+    std::size_t* ring_write_index,
+    std::uint32_t select_final_window = 0,
+    GlobalIndex window_begin = {},
+    std::size_t window_extent = 0) noexcept;
 
 #undef IV_GRAPH_JIT_RETENTION_RUNTIME_EXPORT
 

@@ -171,21 +171,24 @@ TEST(EventOutputPort, RejectsRealtimeEventsOutsideActiveWindow)
         }),
         std::logic_error);
 
+    // History 4, latency 3: the callback may author its newest 3 positions
+    // before the block and the block itself, [97, 116). History is never
+    // authored again, and nothing at or after the next tick.
     output.begin_block(index(100), 16);
     EXPECT_NO_THROW(output.push(iv::TimedEvent{
-        .time = index(96),
+        .time = index(97),
         .value = iv::TriggerEvent{},
     }));
     EXPECT_NO_THROW(output.push(iv::TimedEvent{
-        .time = index(118),
+        .time = index(115),
         .value = iv::TriggerEvent{},
     }));
     EXPECT_THROW(output.push(iv::TimedEvent{
-        .time = index(95),
+        .time = index(96),
         .value = iv::TriggerEvent{},
     }), std::logic_error);
     EXPECT_THROW(output.push(iv::TimedEvent{
-        .time = index(119),
+        .time = index(116),
         .value = iv::TriggerEvent{},
     }), std::logic_error);
     output.end_block();
@@ -201,9 +204,15 @@ TEST(EventOutputPort, ExplicitBlockPushUsesSameWindow)
     iv::EventOutputPort output(shared, iv::EventTypeId::trigger, 2, 1);
 
     EXPECT_NO_THROW(output.push(
-        iv::TriggerEvent{}, 8, index(100), 8)); // time 108; latency permits it
+        iv::TriggerEvent{}, 7, index(100), 8)); // time 107, the block's last
     EXPECT_THROW(output.push(
-        iv::TriggerEvent{}, 9, index(100), 8), std::logic_error); // end is 109
+        iv::TriggerEvent{}, 8, index(100), 8), std::logic_error); // end is 108
+    EXPECT_NO_THROW(output.push(
+        iv::TimedEvent{.time = index(99), .value = iv::TriggerEvent{}},
+        index(100), 8)); // latency 1 permits the position before the block
+    EXPECT_THROW(output.push(
+        iv::TimedEvent{.time = index(98), .value = iv::TriggerEvent{}},
+        index(100), 8), std::logic_error);
 }
 
 TEST(EventOutputPort, CountsProducerSequenceOverflowWithoutAllocating)

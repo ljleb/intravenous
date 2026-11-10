@@ -63,6 +63,30 @@ void insert_delayed_ring(
     target[position & mask] = std::move(event);
     ++write_index;
 }
+// The indices [first, last) of a sorted range [begin, end) whose events lie in
+// [window_begin, window_begin + window_extent).
+template<typename EventAt>
+void select_final_window_indices(
+    EventAt event_at,
+    std::size_t& begin,
+    std::size_t& end,
+    GlobalIndex window_begin,
+    std::size_t window_extent) noexcept
+{
+    auto const extent = static_cast<GlobalIndex::difference_type>(window_extent);
+    auto last = end;
+    while (last != begin
+        && window_begin.signed_distance_to(event_at(last - 1).time) >= extent) {
+        --last;
+    }
+    auto first = last;
+    while (first != begin
+        && window_begin.signed_distance_to(event_at(first - 1).time) >= 0) {
+        --first;
+    }
+    begin = first;
+    end = last;
+}
 } // namespace
 
 extern "C" void iv_graph_jit_rebase_event_sequence(
@@ -234,7 +258,10 @@ extern "C" void iv_graph_jit_append_event_feedback(
     void* ring_events,
     std::size_t ring_capacity,
     std::size_t* ring_read_index,
-    std::size_t* ring_write_index) noexcept
+    std::size_t* ring_write_index,
+    std::uint32_t select_final_window,
+    GlobalIndex window_begin,
+    std::size_t window_extent) noexcept
 {
     if (source_events == nullptr || ring_events == nullptr
         || (filter_source_index != 0 && source_indices == nullptr)
@@ -256,6 +283,14 @@ extern "C" void iv_graph_jit_append_event_feedback(
     }
 
     source_begin_index = std::min(source_begin_index, source_end_index);
+    if (select_final_window != 0) {
+        select_final_window_indices(
+            [&](std::size_t i) -> TimedEvent const& { return source[i]; },
+            source_begin_index,
+            source_end_index,
+            window_begin,
+            window_extent);
+    }
     for (std::size_t i = source_begin_index; i < source_end_index; ++i) {
         if (filter_source_index != 0
             && source_indices[i] != source_index_filter) continue;
@@ -283,7 +318,10 @@ extern "C" void iv_graph_jit_append_event_feedback_sequence(
     std::size_t loop_extra_latency,
     void* target_events,
     std::size_t target_capacity,
-    std::size_t* target_count) noexcept
+    std::size_t* target_count,
+    std::uint32_t select_final_window,
+    GlobalIndex window_begin,
+    std::size_t window_extent) noexcept
 {
     if (source_events == nullptr || target_events == nullptr
         || (filter_source_index != 0 && source_indices == nullptr)
@@ -295,6 +333,14 @@ extern "C" void iv_graph_jit_append_event_feedback_sequence(
     auto* target = static_cast<TimedEvent*>(target_events);
     auto count = std::min(*target_count, target_capacity);
     source_begin_index = std::min(source_begin_index, source_end_index);
+    if (select_final_window != 0) {
+        select_final_window_indices(
+            [&](std::size_t i) -> TimedEvent const& { return source[i]; },
+            source_begin_index,
+            source_end_index,
+            window_begin,
+            window_extent);
+    }
     for (std::size_t i = source_begin_index;
          i < source_end_index; ++i) {
         if (filter_source_index != 0
@@ -322,7 +368,10 @@ extern "C" void iv_graph_jit_append_event_feedback_sequence_ring_source(
     std::size_t loop_extra_latency,
     void* target_events,
     std::size_t target_capacity,
-    std::size_t* target_count) noexcept
+    std::size_t* target_count,
+    std::uint32_t select_final_window,
+    GlobalIndex window_begin,
+    std::size_t window_extent) noexcept
 {
     if (source_events == nullptr || source_capacity == 0
         || (filter_source_index != 0 && source_indices == nullptr)
@@ -336,6 +385,14 @@ extern "C" void iv_graph_jit_append_event_feedback_sequence_ring_source(
     auto const source_mask = source_capacity - 1;
     auto count = std::min(*target_count, target_capacity);
     source_begin_index = std::min(source_begin_index, source_end_index);
+    if (select_final_window != 0) {
+        select_final_window_indices(
+            [&](std::size_t i) -> TimedEvent const& { return source[i & source_mask]; },
+            source_begin_index,
+            source_end_index,
+            window_begin,
+            window_extent);
+    }
     for (std::size_t i = source_begin_index;
          i < source_end_index; ++i) {
         if (filter_source_index != 0
@@ -364,7 +421,10 @@ extern "C" void iv_graph_jit_append_event_feedback_ring_source(
     void* ring_events,
     std::size_t ring_capacity,
     std::size_t* ring_read_index,
-    std::size_t* ring_write_index) noexcept
+    std::size_t* ring_write_index,
+    std::uint32_t select_final_window,
+    GlobalIndex window_begin,
+    std::size_t window_extent) noexcept
 {
     if (source_events == nullptr || source_capacity == 0
         || (filter_source_index != 0 && source_indices == nullptr)
@@ -387,6 +447,14 @@ extern "C" void iv_graph_jit_append_event_feedback_ring_source(
     }
 
     source_begin_index = std::min(source_begin_index, source_end_index);
+    if (select_final_window != 0) {
+        select_final_window_indices(
+            [&](std::size_t i) -> TimedEvent const& { return source[i & source_mask]; },
+            source_begin_index,
+            source_end_index,
+            window_begin,
+            window_extent);
+    }
     for (std::size_t i = source_begin_index; i < source_end_index; ++i) {
         if (filter_source_index != 0
             && source_indices[i & source_mask] != source_index_filter) continue;

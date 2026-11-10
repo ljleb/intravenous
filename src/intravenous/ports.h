@@ -105,6 +105,19 @@ namespace iv {
         };
     }
 
+    // Positions a Tick output may author in a callback beginning at
+    // block_index: its newest `latency` positions before the block, which are
+    // still open to authoring, and the block itself
+    // (sequential_port_storage_planning.md, "Tick event ports need bounded
+    // time windows"). History is never authored again.
+    [[nodiscard]] constexpr GlobalIndexRange tick_output_authoring_window(
+        GlobalIndex block_index,
+        size_t block_size,
+        size_t latency) noexcept
+    {
+        return realtime_port_window(block_index, block_size, latency, 0);
+    }
+
     using Event = std::variant<MidiEvent, TriggerEvent, BoundaryEvent, EmptyEvent>;
 
     struct TimedEvent {
@@ -1421,11 +1434,14 @@ namespace iv {
     };
 
     // Realtime event producers must append each logical output in
-    // nondecreasing forward order from the invocation's legal window begin.
-    // A history/latency window may overlap adjacent invocations;
-    // GraphJit therefore gives such cyclic producers an invocation-local stream
-    // and merges that sorted stream into the retained aggregate. EventOutputPort
-    // itself does not sort or add an O(n) release-time validation pass.
+    // nondecreasing forward order from the invocation's legal window begin,
+    // its newest `latency` positions before the block. That latency window
+    // overlaps the previous invocation's window, so an event may precede
+    // events authored earlier; GraphJit therefore gives a latent producer an
+    // invocation-local stream and merges that sorted stream into the retained
+    // aggregate after events already authored at the same position.
+    // EventOutputPort itself does not sort or add an O(n) release-time
+    // validation pass.
     class EventOutputPort {
         EventSharedPortData* _shared_data = nullptr;
         EventTypeId _source_type {};
@@ -1439,8 +1455,8 @@ namespace iv {
         [[nodiscard]] GlobalIndexRange window_for(
             GlobalIndex block_index, size_t block_size) const noexcept
         {
-            return realtime_port_window(
-                block_index, block_size, _history, _latency);
+            return tick_output_authoring_window(
+                block_index, block_size, _latency);
         }
 
         static void validate_time(
@@ -1449,7 +1465,7 @@ namespace iv {
             if (!window.contains(event.time)) {
                 throw std::logic_error(
                     "realtime event output timestamp is outside the current "
-                    "block + history + latency window");
+                    "latency + block window");
             }
         }
 
@@ -1610,6 +1626,16 @@ namespace iv {
         EventTypeId source_type() const
         {
             return _source_type;
+        }
+
+        size_t history() const noexcept
+        {
+            return _history;
+        }
+
+        size_t latency() const noexcept
+        {
+            return _latency;
         }
 
         bool empty_in_block(

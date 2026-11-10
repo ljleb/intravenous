@@ -1752,12 +1752,18 @@ the default skipped-block silence and empty-event outputs, it uses those same or
 facades. Ephemeral Tick outputs and all Tock outputs instantiate facades without
 observation and pay no dynamic recording check.
 
-For `tick_block()`, the disposition applies to the entire addressed callback block:
-`written` publishes one authoritative overwrite for that block and `voided` publishes
-one authoritative erase for that block. Scalar `tick()` has the same rule with a
-one-sample block. History and latency remain legal mutation/storage facts, but do not
-extend a recording item to `[block-history, block-end+latency)`. Recording start and
-stop precision therefore follows Tick callback boundaries.
+For `tick_block()`, the disposition applies to the positions the addressed callback
+block finalizes: for a block beginning at `B` with `N` positions and an output latency
+`L`, `[B - L, B + N - L)`. Those are the positions no later block can change: the block
+may still revise sample values or add events in its latency window `[B - L, B)`, and
+leaves its own newest `L` positions open to the next block. `written` publishes one
+authoritative overwrite of that range and `voided` publishes one authoritative erase of
+it. Scalar `tick()` has the same rule with a one-sample block. History does not extend a
+recording item. Recording start and stop precision therefore follows Tick callback
+boundaries, shifted by the output's latency. (Newly settled 2026-11-10, human
+co-author; the superseded text, under which the item covered the callback block itself,
+is preserved in
+[historical/persisted_recording_callback_block_2026-11-10.md](historical/persisted_recording_callback_block_2026-11-10.md).)
 
 An explicitly authored zero-event Tick/persisted block is distinct from both an
 untouched output and a recording void. Calling the ordinary block-authoring operation

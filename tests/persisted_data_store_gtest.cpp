@@ -486,8 +486,12 @@ iv::graph_jit::BackgroundEvaluationPlan direct_tick_plan(
             .kind = kind,
             .direction = PortDirection::output,
             .persisted_tick_output = true,
+            // Latency 0: these plans test capture mechanics. A latent output
+            // records what each block finalizes, which the GraphJit capture
+            // test PersistedLatentTickOutputsRecordWhatEachBlockFinalizes
+            // covers.
             .output_history = 1,
-            .output_latency = 1,
+            .output_latency = 0,
             .retention = iv::OutputRetention::persisted,
             .sample_layout = iv::mono_interleaved_channel_layout,
             .continuous_geometry = kind == iv::PortKind::sample
@@ -1864,7 +1868,7 @@ TEST(TickInvocationWorkspace,
     auto binding = sample_output_binding(
         std::span{source},
         1,
-        1,
+        0,
         iv::OutputDisposition::written,
         iv::mono_interleaved_channel_layout);
     binding.sequential_begin_index = 6;
@@ -1940,7 +1944,7 @@ TEST(TickInvocationWorkspace,
         },
         .source_type = iv::EventTypeId::trigger,
         .history = 1,
-        .latency = 1,
+        .latency = 0,
         .disposition = iv::OutputDisposition::written,
     };
 
@@ -2003,7 +2007,7 @@ TEST(TickInvocationWorkspace,
             .channel_layout = iv::mono_interleaved_channel_layout,
         },
         .history = 1,
-        .latency = 1,
+        .latency = 0,
         .absolute_pace_exponent = 1,
         .sequential_begin_index = 14,
         .disposition = iv::OutputDisposition::written,
@@ -2070,7 +2074,7 @@ TEST(TickInvocationWorkspace,
     auto binding = sample_output_binding(
         std::span{source},
         1,
-        1,
+        0,
         iv::OutputDisposition::voided,
         iv::mono_interleaved_channel_layout);
     binding.absolute_pace_exponent = -1;
@@ -2123,7 +2127,7 @@ TEST(TickInvocationWorkspace,
     auto binding = sample_output_binding(
         std::span{source},
         1,
-        1,
+        0,
         iv::OutputDisposition::written,
         iv::mono_interleaved_channel_layout);
 
@@ -2160,7 +2164,7 @@ TEST(TickInvocationWorkspace,
     auto binding = sample_output_binding(
         std::span{source},
         1,
-        1,
+        0,
         iv::OutputDisposition::voided,
         iv::mono_interleaved_channel_layout);
 
