@@ -1556,9 +1556,12 @@ void GraphExecutor::tick_block(GlobalIndex sample_index, std::size_t block_size)
     auto const phase = generation.realtime_phase.load(std::memory_order_relaxed);
     auto const* realtime_code = generation.realtime_code.load(
         std::memory_order_acquire);
-    auto const tick = phase == CompiledGraphRealtimePhase::transition
-        ? generation.graph->root_operations.transition_tick_block
-        : realtime_code->root_operations.tick_block;
+    auto const& root_operations = phase == CompiledGraphRealtimePhase::transition
+        ? generation.graph->root_operations
+        : realtime_code->root_operations;
+    auto const& tick = phase == CompiledGraphRealtimePhase::transition
+        ? root_operations.transition_tick_block
+        : root_operations.tick_block;
     if (!tick) {
         throw std::logic_error(
             "GraphExecutor active realtime realization has no root operation");

@@ -1,0 +1,52 @@
+building the packages (not timed)...
+-- The CXX compiler identification is Clang 23.1.0
+-- Detecting CXX compiler ABI info
+-- Detecting CXX compiler ABI info - done
+-- Check for working CXX compiler: /nix/store/b04h3phsrakl7sinx6zx931n4l5lc29v-clang-wrapper-23.1.0/bin/clang++ - skipped
+-- Detecting CXX compile features
+-- Detecting CXX compile features - done
+-- Configuring done (1.1s)
+-- Generating done (0.0s)
+-- Build files have been written to: /tmp/iv_edit_latency_benchmark_workspace/feedback_voice/build/iv/build/feedback_voice_45fc19fab63bc5d4/Release/cmake-build
+[1/2] Building CXX object CMakeFiles/iv_package.dir/tmp/iv_edit_latency_benchmark_workspace/feedback_voice/module.cpp.o
+[2/2] Finalizing IV package LLVM iv_package_feedback_voice_6d6f9bc674204c3.ivpkg.bc
+edit=initial iteration=0 wall_ms=20.04 bundles=513 accepted=yes configure_ms=3.67 graph_jit_ms=16.01 stage_ms=0.14 compilations=1 tick_mean_us=3437.78 tick_max_us=6509.39 block_period_us=5333.33
+edit=configure iteration=0 wall_ms=20.67 bundles=513 accepted=yes configure_ms=2.18 graph_jit_ms=18.08 stage_ms=0.31 compilations=1 tick_mean_us=3331.85 tick_max_us=3462.90 block_period_us=5333.33
+edit=add_node iteration=0 wall_ms=19.61 bundles=514 accepted=yes configure_ms=2.28 graph_jit_ms=16.80 stage_ms=0.36 compilations=1 tick_mean_us=3336.04 tick_max_us=3798.09 block_period_us=5333.33
+edit=connect iteration=0 wall_ms=18.39 bundles=514 accepted=yes configure_ms=1.61 graph_jit_ms=16.40 stage_ms=0.29 compilations=1 tick_mean_us=3418.84 tick_max_us=6009.39 block_period_us=5333.33
+edit=disconnect iteration=0 wall_ms=18.20 bundles=514 accepted=yes configure_ms=1.64 graph_jit_ms=16.15 stage_ms=0.30 compilations=1 tick_mean_us=3316.23 tick_max_us=3945.65 block_period_us=5333.33
+edit=delete_node iteration=0 wall_ms=18.57 bundles=513 accepted=yes configure_ms=2.16 graph_jit_ms=16.01 stage_ms=0.29 compilations=1 tick_mean_us=3499.85 tick_max_us=6450.84 block_period_us=5333.33
+edit=configure iteration=1 wall_ms=18.36 bundles=513 accepted=yes configure_ms=1.97 graph_jit_ms=16.00 stage_ms=0.30 compilations=1 tick_mean_us=3341.56 tick_max_us=4047.86 block_period_us=5333.33
+edit=add_node iteration=1 wall_ms=18.48 bundles=514 accepted=yes configure_ms=2.15 graph_jit_ms=15.93 stage_ms=0.29 compilations=1 tick_mean_us=3319.25 tick_max_us=3430.82 block_period_us=5333.33
+edit=connect iteration=1 wall_ms=18.52 bundles=514 accepted=yes configure_ms=1.84 graph_jit_ms=16.29 stage_ms=0.30 compilations=1 tick_mean_us=3340.34 tick_max_us=3743.27 block_period_us=5333.33
+edit=disconnect iteration=1 wall_ms=17.90 bundles=514 accepted=yes configure_ms=1.70 graph_jit_ms=15.81 stage_ms=0.30 compilations=1 tick_mean_us=3303.18 tick_max_us=3551.02 block_period_us=5333.33
+edit=delete_node iteration=1 wall_ms=18.92 bundles=513 accepted=yes configure_ms=2.25 graph_jit_ms=16.13 stage_ms=0.40 compilations=1 tick_mean_us=3322.80 tick_max_us=3926.89 block_period_us=5333.33
+edit=configure iteration=2 wall_ms=18.44 bundles=513 accepted=yes configure_ms=2.13 graph_jit_ms=15.94 stage_ms=0.30 compilations=1 tick_mean_us=3302.67 tick_max_us=3390.34 block_period_us=5333.33
+edit=add_node iteration=2 wall_ms=18.76 bundles=514 accepted=yes configure_ms=2.22 graph_jit_ms=16.14 stage_ms=0.30 compilations=1 tick_mean_us=3292.05 tick_max_us=3392.68 block_period_us=5333.33
+edit=connect iteration=2 wall_ms=18.65 bundles=514 accepted=yes configure_ms=1.79 graph_jit_ms=16.38 stage_ms=0.37 compilations=1 tick_mean_us=3300.69 tick_max_us=3953.83 block_period_us=5333.33
+edit=disconnect iteration=2 wall_ms=18.91 bundles=514 accepted=yes configure_ms=1.75 graph_jit_ms=16.75 stage_ms=0.31 compilations=1 tick_mean_us=3326.38 tick_max_us=3431.27 block_period_us=5333.33
+edit=delete_node iteration=2 wall_ms=18.73 bundles=513 accepted=yes configure_ms=2.23 graph_jit_ms=16.11 stage_ms=0.30 compilations=1 tick_mean_us=3329.53 tick_max_us=3918.66 block_period_us=5333.33
+edit=configure iteration=3 wall_ms=18.77 bundles=513 accepted=yes configure_ms=2.06 graph_jit_ms=16.29 stage_ms=0.30 compilations=1 tick_mean_us=3352.36 tick_max_us=4161.65 block_period_us=5333.33
+edit=add_node iteration=3 wall_ms=18.85 bundles=514 accepted=yes configure_ms=2.35 graph_jit_ms=16.08 stage_ms=0.31 compilations=1 tick_mean_us=3324.66 tick_max_us=3837.35 block_period_us=5333.33
+edit=connect iteration=3 wall_ms=18.51 bundles=514 accepted=yes configure_ms=1.78 graph_jit_ms=16.32 stage_ms=0.30 compilations=1 tick_mean_us=3379.64 tick_max_us=6047.77 block_period_us=5333.33
+edit=disconnect iteration=3 wall_ms=18.64 bundles=514 accepted=yes configure_ms=1.82 graph_jit_ms=16.42 stage_ms=0.31 compilations=1 tick_mean_us=3324.45 tick_max_us=3443.11 block_period_us=5333.33
+edit=delete_node iteration=3 wall_ms=18.66 bundles=513 accepted=yes configure_ms=2.24 graph_jit_ms=15.99 stage_ms=0.35 compilations=1 tick_mean_us=3373.91 tick_max_us=4486.49 block_period_us=5333.33
+edit=configure iteration=4 wall_ms=18.57 bundles=513 accepted=yes configure_ms=2.15 graph_jit_ms=15.95 stage_ms=0.37 compilations=1 tick_mean_us=3359.82 tick_max_us=5413.06 block_period_us=5333.33
+edit=add_node iteration=4 wall_ms=19.11 bundles=514 accepted=yes configure_ms=2.30 graph_jit_ms=16.39 stage_ms=0.33 compilations=1 tick_mean_us=3309.06 tick_max_us=3427.19 block_period_us=5333.33
+edit=connect iteration=4 wall_ms=18.42 bundles=514 accepted=yes configure_ms=1.84 graph_jit_ms=16.20 stage_ms=0.29 compilations=1 tick_mean_us=3325.74 tick_max_us=3412.19 block_period_us=5333.33
+edit=disconnect iteration=4 wall_ms=18.43 bundles=514 accepted=yes configure_ms=1.85 graph_jit_ms=16.18 stage_ms=0.31 compilations=1 tick_mean_us=3341.67 tick_max_us=3637.89 block_period_us=5333.33
+edit=delete_node iteration=4 wall_ms=19.18 bundles=513 accepted=yes configure_ms=2.30 graph_jit_ms=16.47 stage_ms=0.33 compilations=1 tick_mean_us=3329.96 tick_max_us=3527.77 block_period_us=5333.33
+
+summary (shape feedback, size 64, 256 instances; medians, ms; target: wall <= 200)
+add_node (5, accepted 5): wall 18.85 = configure 2.28 + graph jit 16.14 + stage 0.31; realtime tick mean 3319.25 us, max 3430.82 us per block
+    transition compile 16.01 = capture 0.56 + plan 11.63 + transition plan 1.03 + emit 0.45 + verify 0.06 + optimize 0.39 + codegen 1.30
+configure (5, accepted 5): wall 18.57 = configure 2.13 + graph jit 16.00 + stage 0.30; realtime tick mean 3341.56 us, max 4047.86 us per block
+    transition compile 15.86 = capture 0.56 + plan 11.54 + transition plan 1.03 + emit 0.45 + verify 0.06 + optimize 0.37 + codegen 1.31
+connect (5, accepted 5): wall 18.51 = configure 1.79 + graph jit 16.32 + stage 0.30; realtime tick mean 3340.34 us, max 3953.83 us per block
+    transition compile 16.19 = capture 0.57 + plan 11.66 + transition plan 1.03 + emit 0.51 + verify 0.06 + optimize 0.37 + codegen 1.27
+delete_node (5, accepted 5): wall 18.73 = configure 2.24 + graph jit 16.11 + stage 0.33; realtime tick mean 3329.96 us, max 3926.89 us per block
+    transition compile 15.97 = capture 0.56 + plan 11.50 + transition plan 1.04 + emit 0.47 + verify 0.06 + optimize 0.39 + codegen 1.28
+disconnect (5, accepted 5): wall 18.43 = configure 1.75 + graph jit 16.18 + stage 0.31; realtime tick mean 3324.45 us, max 3551.02 us per block
+    transition compile 16.03 = capture 0.56 + plan 11.63 + transition plan 1.03 + emit 0.46 + verify 0.06 + optimize 0.38 + codegen 1.27
+initial (1, accepted 1): wall 20.04 = configure 3.67 + graph jit 16.01 + stage 0.14; realtime tick mean 3437.78 us, max 6509.39 us per block
+    transition compile 15.90 = capture 0.54 + plan 12.57 + transition plan 0.33 + emit 0.39 + verify 0.06 + optimize 0.39 + codegen 1.30

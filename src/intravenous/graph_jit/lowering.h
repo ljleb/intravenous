@@ -22,6 +22,7 @@ namespace iv::graph_jit {
 // module declares for it. An empty symbol marks a global node code cannot use.
 struct PackageRetainedGlobal {
     std::string symbol{};
+    void const* address = nullptr;
     std::size_t size = 0;
     std::size_t alignment = 1;
 };
@@ -81,6 +82,12 @@ struct NodeImplementation {
     std::string initialize_sequential_input{};
     std::string combine_sequential_input_values{};
 
+    // Native node-code callbacks that the realtime root calls by address. The
+    // symbol fields above are the import names of the generated background
+    // roots. A name and its address identify the same callback in the pinned
+    // PackageRevision.
+    details::NodeCompilerOperations native_operations{};
+
     bool (*host_initialize_sequential_input)(
         std::size_t,
         ContinuousValueTypeId,
@@ -126,12 +133,9 @@ struct LoweringInput {
     LoweringTransitionInput const* transition = nullptr;
 };
 
-// Name of the generated zero-input/zero-output root operation. The root owns
-// scheduling decisions; primitive skip callbacks remain internal implementation
-// details and are never exposed as a root skip_block ABI.
+// Names of the generated project-module operations. The realtime root is not
+// among them: it is application code that executes a RealtimeRootPlan.
 struct LoweredGraphRootSymbols {
-    std::string tick_block{};
-    std::string transition_tick_block{};
     std::string propagate_background_forward{};
     std::string propagate_background_reverse{};
     std::string evaluate_background{};
@@ -144,13 +148,13 @@ struct LoweredGraphTransition {
     RealtimePortStateRealizations realtime_port_state_realizations{};
 };
 
-// The lowerer owns graph analysis and canonical storage planning as well as
-// the selected node-code imports and construction of the complete project
-// module. It must finish node_layout before emitting final realtime
-// storage accesses into output_module. TockState remains separately owned
-// background sidecar state and is supplied through background call frames.
-// Immutable lowering-shared tables should be emitted as LLVM globals so their
-// lifetime is exactly the materialized ORC generation.
+// The lowerer owns graph analysis and canonical storage planning, the realtime
+// roots built from that plan, and construction of the project module that holds
+// the generated background operations. realtime_root executes the steady
+// realization; transition_realtime_root, present exactly when the transition
+// has a finite Sequential cursor horizon, executes the cutover realization.
+// TockState remains separately owned background sidecar state and is supplied
+// through background call frames.
 struct LoweringOutput {
     ResolvedPortRealization port_realization{};
     NodeLayout node_layout{};
@@ -160,6 +164,8 @@ struct LoweringOutput {
     RealtimePortStateRealizations realtime_port_state_realizations{};
     std::vector<ManualControlRuntimeBinding> manual_controls{};
     std::optional<LoweredGraphTransition> transition{};
+    std::shared_ptr<RealtimeRootPlan const> realtime_root{};
+    std::shared_ptr<RealtimeRootPlan const> transition_realtime_root{};
     LoweredGraphRootSymbols root_symbols{};
     // Wall-clock microseconds of the three lowering phases.
     std::uint64_t plan_us = 0;

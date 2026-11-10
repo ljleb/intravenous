@@ -167,6 +167,7 @@ iv::SystemAudioOutputBinding missing_output_binding{};
 std::atomic<std::size_t> render_probe_calls = 0;
 
 void render_binding_probe(
+    iv::graph_jit::RealtimeRootPlan const*,
     std::byte*,
     iv::graph_jit::TickInvocationCall const*,
     iv::GlobalIndex,
@@ -297,7 +298,7 @@ TEST(SystemAudioDevices, MissingOutputUsesFallbackGraphClock)
     };
     graph->node_layout = iv::NodeLayoutBuilder(64).build();
     graph->root_operations = {
-        .tick_block = &render_binding_probe,
+        .tick_block = {.function = &render_binding_probe},
         .combine_sequential_input = &combine_sample_values,
     };
     ASSERT_EQ(
@@ -337,7 +338,7 @@ TEST(SystemAudioDevices, OutputClockActivatesAndRendersTheGraphExecutor)
     };
     graph->node_layout = iv::NodeLayoutBuilder(64).build();
     graph->root_operations = {
-        .tick_block = &render_binding_probe,
+        .tick_block = {.function = &render_binding_probe},
         .combine_sequential_input = &combine_sample_values,
     };
     ASSERT_EQ(
@@ -375,7 +376,7 @@ TEST(SystemAudioDevices, OutputClockSlicesLargeDeviceRequestsIntoProjectBlocks)
     };
     graph->node_layout = iv::NodeLayoutBuilder(64).build();
     graph->root_operations = {
-        .tick_block = &render_binding_probe,
+        .tick_block = {.function = &render_binding_probe},
         .combine_sequential_input = &combine_sample_values,
     };
     ASSERT_EQ(
@@ -414,7 +415,7 @@ TEST(SystemAudioDevices, LogicalOutputBindingFollowsDeviceSelection)
     };
     graph->node_layout = iv::NodeLayoutBuilder(64).build();
     graph->root_operations = {
-        .tick_block = &render_binding_probe,
+        .tick_block = {.function = &render_binding_probe},
         .combine_sequential_input = &combine_sample_values,
     };
     ASSERT_EQ(

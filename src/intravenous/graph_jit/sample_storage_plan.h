@@ -65,7 +65,7 @@ struct SampleSinkStorageRequest {
 
 // The node-owned Sequential timeline of a realtime input whose current block is
 // supplied through a TickInvocationCall slot, alone or combined with a realtime
-// contribution. The generated root writes each current block into it before
+// contribution. The realtime root writes each current block into it before
 // the consumer executes, so its retained history is the input's own record of
 // earlier deliveries in Tick invocation order. Retained frames start at
 // neutral_value, the input's pre-start history.
@@ -402,7 +402,7 @@ std::expected<SampleStoragePlan, std::string> build_sample_storage_plan(
     std::span<SampleInputTimelineRequest const> input_timelines = {});
 
 // Reserve canonical NodeStorage for persistent connection state. Transient
-// backing belongs to the generated root stack. Retained feedback state with
+// backing belongs to the realtime root stack. Retained feedback state with
 // authored initial values installs raw-region initialization callbacks, so
 // realtime execution performs no setup/allocation.
 std::expected<void, std::string> declare_sample_storage(

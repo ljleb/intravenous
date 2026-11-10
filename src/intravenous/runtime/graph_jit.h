@@ -19,12 +19,15 @@
 #include <vector>
 
 namespace iv {
+namespace graph_jit {
+struct RealtimeRootPlan;
+}
 
 struct GraphJitConfig {
     std::size_t sample_rate = 48000;
     std::size_t block_size = 256;
     // One compiler-wide policy for realtime sample/event buffer placement.
-    // stack_budget_bytes is enforced against the packed generated-root stack,
+    // stack_budget_bytes is enforced against the packed realtime-root stack,
     // not independently against every buffer choice.
     RealtimeStorageCostModel realtime_storage_cost_model{};
 };
@@ -55,20 +58,48 @@ struct GraphJitDiagnostic {
     std::string package_root{};
 };
 
-// Generated zero-input/zero-output root-node execution ABI. Mutable bytes are
-// owned by GraphExecutor through NodeStorage created from CompiledGraph::node_layout.
-// Dynamic background-derived inputs arrive only as resolved views in one
-// callback-scoped invocation record. Realtime lifecycle remains in NodeStorage;
-// background TockState lifecycle belongs to its separate sidecar. Callers must
-// provide block_size > 0; an empty audio block is outside the root-operation ABI.
-// If the compiled graph has Tick runtime slots, invocation must be non-null and
-// contain the complete kind-specific spans described by its
-// BackgroundEvaluationPlan::tick_runtime.
+// Zero-input/zero-output root-node execution ABI. GraphJit's realtime root is
+// application code, graph_jit::execute_realtime_root(), and its operation pairs
+// that code with the immutable RealtimeRootPlan of one realization; plan is
+// that pointer. Mutable bytes are owned by GraphExecutor through NodeStorage
+// created from CompiledGraph::node_layout. Dynamic background-derived inputs
+// arrive only as resolved views in one callback-scoped invocation record.
+// Realtime lifecycle remains in NodeStorage; background TockState lifecycle
+// belongs to its separate sidecar. Callers must provide block_size > 0; an
+// empty audio block is outside the root-operation ABI. If the compiled graph
+// has Tick runtime slots, invocation must be non-null and contain the complete
+// kind-specific spans described by its BackgroundEvaluationPlan::tick_runtime.
 using CompiledGraphBlockFunction = void (*)(
+    graph_jit::RealtimeRootPlan const* plan,
     std::byte* storage_base,
     graph_jit::TickInvocationCall const* invocation,
     GlobalIndex sample_index,
     std::size_t block_size);
+
+// One root operation: its code and the immutable data that code executes. The
+// operation keeps that data alive for as long as the realization can run.
+struct CompiledGraphBlockOperation {
+    CompiledGraphBlockFunction function = nullptr;
+    std::shared_ptr<graph_jit::RealtimeRootPlan const> plan{};
+
+    explicit operator bool() const noexcept { return function != nullptr; }
+
+    void operator()(
+        std::byte* storage_base,
+        graph_jit::TickInvocationCall const* invocation,
+        GlobalIndex sample_index,
+        std::size_t block_size) const
+    {
+        function(plan.get(), storage_base, invocation, sample_index, block_size);
+    }
+
+    friend bool operator==(
+        CompiledGraphBlockOperation const& operation,
+        std::nullptr_t) noexcept
+    {
+        return operation.function == nullptr;
+    }
+};
 
 using CompiledGraphSequentialInputCombineFunction =
     graph_jit::SequentialInputCombineFunction;
@@ -76,15 +107,16 @@ using CompiledGraphSequentialInputInitializeFunction =
     graph_jit::SequentialInputInitializeFunction;
 
 struct CompiledGraphRootOperations {
-    CompiledGraphBlockFunction tick_block = nullptr;
-    CompiledGraphBlockFunction transition_tick_block = nullptr;
+    CompiledGraphBlockOperation tick_block{};
+    CompiledGraphBlockOperation transition_tick_block{};
     CompiledGraphSequentialInputCombineFunction combine_sequential_input = nullptr;
     CompiledGraphSequentialInputInitializeFunction initialize_sequential_input =
         nullptr;
 
     [[nodiscard]] bool valid() const noexcept
     {
-        return tick_block != nullptr && combine_sequential_input != nullptr;
+        return static_cast<bool>(tick_block)
+            && combine_sequential_input != nullptr;
     }
 };
 
@@ -135,7 +167,8 @@ struct CompiledGraphBackgroundOperations {
 // One immutable native project generation. GraphJit owns code/layout/planning
 // metadata only; GraphExecutor creates realtime NodeStorage plus the
 // background-owned TockState sidecar and owns their separate lifecycles.
-// Generated code remains pinned by code_lifetime.
+// Generated background code remains pinned by code_lifetime; each realtime root
+// operation owns its RealtimeRootPlan.
 struct CompiledGraph {
     std::uint64_t project_generation = 0;
     std::uint64_t definitions_generation = 0;
@@ -146,7 +179,7 @@ struct CompiledGraph {
     NodeLayout node_layout{};
     TockStateLayout tock_state_layout{};
     graph_jit::BackgroundEvaluationPlan background_evaluation_plan{};
-    // Cold graph-revision metadata. Generated realtime code never consults
+    // Cold graph-revision metadata. The realtime root never consults
     // this inventory; execution-generation preparation uses it to reconcile
     // semantic port state before activating a replacement realization.
     graph_jit::RealtimePortStateRequirements realtime_port_state_requirements{};

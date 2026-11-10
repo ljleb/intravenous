@@ -1,6 +1,7 @@
 #include <intravenous/runtime/graph_jit.h>
 
 #include <intravenous/graph_jit/lowering.h>
+#include <intravenous/graph_jit/realtime_root.h>
 #include <intravenous/ports.h>
 #include <intravenous/runtime/package_pipeline_types.h>
 
@@ -552,17 +553,6 @@ void validate_tock_state_layout(
     }
 }
 
-llvm::FunctionType* root_block_operation_type(llvm::LLVMContext& context)
-{
-    auto* pointer = llvm::PointerType::getUnqual(context);
-    auto* size_type = llvm::IntegerType::get(
-        context, static_cast<unsigned>(sizeof(std::size_t) * 8));
-    return llvm::FunctionType::get(
-        llvm::Type::getVoidTy(context),
-        {pointer, pointer, size_type, size_type},
-        false);
-}
-
 llvm::FunctionType* root_background_operation_type(llvm::LLVMContext& context)
 {
     auto* pointer = llvm::PointerType::getUnqual(context);
@@ -623,17 +613,20 @@ void validate_lowering_output(
         }
     }
 
-    auto* block_type = root_block_operation_type(module.getContext());
-    validate_root_operation(
-        module, output.root_symbols.tick_block, block_type, "tick_block", true);
-    validate_root_operation(
-        module,
-        output.root_symbols.transition_tick_block,
-        block_type,
-        "transition tick_block",
-        output.transition
-            && !output.transition->state_transition
-                    .sample_expiry_cursors.empty());
+    if (!output.realtime_root) {
+        fail(
+            GraphJitDiagnosticStage::lowering,
+            "graph lowerer returned no immutable realtime root plan");
+    }
+    auto const transition_root_required = output.transition
+        && (!output.transition->state_transition.sample_expiry_cursors.empty()
+            || output.transition->state_transition.event_expiry_samples != 0);
+    if (static_cast<bool>(output.transition_realtime_root)
+        != transition_root_required) {
+        fail(
+            GraphJitDiagnosticStage::lowering,
+            "graph lowerer returned inconsistent transition realtime root data");
+    }
 
     auto* background_type = root_background_operation_type(module.getContext());
     auto const background_required = !output.background_evaluation_plan.empty();
@@ -980,6 +973,8 @@ MaterializedProjectCode materialize_project_module(
     std::span<std::shared_ptr<PackageRevision const> const> package_revisions,
     ImportedNodeCode const& imported,
     graph_jit::LoweredGraphRootSymbols const& root_symbols,
+    std::shared_ptr<graph_jit::RealtimeRootPlan const> realtime_root,
+    std::shared_ptr<graph_jit::RealtimeRootPlan const> transition_realtime_root,
     std::uint64_t project_generation)
 {
     auto lifetime = std::make_shared<ProjectCodeLifetime>();
@@ -1042,13 +1037,16 @@ MaterializedProjectCode materialize_project_module(
         };
 
         CompiledGraphRootOperations root_operations{
-            .tick_block = symbol.template operator()<CompiledGraphBlockFunction>(
-                root_symbols.tick_block, "root tick_block"),
-            .transition_tick_block = root_symbols.transition_tick_block.empty()
-                ? nullptr
-                : symbol.template operator()<CompiledGraphBlockFunction>(
-                    root_symbols.transition_tick_block,
-                    "transition root tick_block"),
+            .tick_block = {
+                .function = &graph_jit::execute_realtime_root,
+                .plan = std::move(realtime_root),
+            },
+            .transition_tick_block = transition_realtime_root
+                ? CompiledGraphBlockOperation{
+                    .function = &graph_jit::execute_realtime_root,
+                    .plan = std::move(transition_realtime_root),
+                }
+                : CompiledGraphBlockOperation{},
             .combine_sequential_input = symbol.template operator()<
                 CompiledGraphSequentialInputCombineFunction>(
                     root_symbols.combine_sequential_input,
@@ -1209,6 +1207,7 @@ public:
                 }
                 globals.push_back(graph_jit::PackageRetainedGlobal{
                     .symbol = imported.data(global.address),
+                    .address = global.address,
                     .size = global.size,
                     .alignment = global.alignment,
                 });
@@ -1277,6 +1276,7 @@ public:
                         imported.callback(code.initialize_sequential_input),
                     .combine_sequential_input_values =
                         imported.callback(code.combine_sequential_input_values),
+                    .native_operations = code,
                     .host_initialize_sequential_input =
                         accepted.operations.initialize_sequential_input,
                 });
@@ -1429,6 +1429,8 @@ public:
                 package_revisions,
                 imported,
                 lowering->root_symbols,
+                lowering->realtime_root,
+                lowering->transition_realtime_root,
                 request.project_generation);
             timings.materialization_us = microseconds_since(materialization_begin);
             if (codegen_passes_path) {

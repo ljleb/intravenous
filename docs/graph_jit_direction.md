@@ -639,12 +639,15 @@ The remaining port work should preserve these invariants:
   `NodeStorage`. `InputPort`/`OutputPort` are invocation-local authored-node API
   adapters over the selected concrete pointer.
 - **Bindings are immutable compiler facts.** Port implementation kind, offsets,
-  capacities, layouts, history/latency parameters, and branch relationships should
-  be emitted as immutable LLVM-visible records whenever possible. The generated
-  root resolves each binding to its already-selected stack or `NodeStorage`
-  pointer before invoking the node; fetching a port must not branch between
-  storage classes. Only concrete base pointers and the current sample index/block
-  size are dynamic values.
+  capacities, layouts, history/latency parameters, and branch relationships are
+  immutable records of the realtime root's `RealtimeRootPlan`, built once per
+  graph revision. The root resolves each binding to its already-selected stack or
+  `NodeStorage` pointer before invoking the node; fetching a port must not branch
+  between storage classes. Only concrete base pointers and the current sample
+  index/block size are dynamic values. (Changed 2026-11-10 by the human
+  co-author's decision to replace the per-edit generated root with precompiled
+  root execution; the LLVM-visible wording is preserved in
+  [historical/generated_realtime_root_2026-11-10.md](historical/generated_realtime_root_2026-11-10.md).)
 - **No audio-thread setup.** Root execution performs no heap allocation, lazy
   initialization, ownership changes, or first-call construction. Compiler-owned
   persistent sample/event state declares `NodeLayout` raw-region initializers and
@@ -670,9 +673,11 @@ The remaining port work should preserve these invariants:
   connection copy/materialization between producer and consumer. A later fusion/SSA
   optimization may eliminate even that backing where profitable.
 
-The shell continues to use the generated-root and canonical realtime
+The shell continues to use the root-operation and canonical realtime
 `NodeLayout`/`NodeStorage` contract specified in this document: `CompiledGraph`
-carries the finalized `NodeLayout` plus the generated root `tick_block`. Realtime
+carries the finalized `NodeLayout` plus the root `tick_block` operation, which
+pairs the application's realtime root code with the generation's immutable
+`RealtimeRootPlan` (2026-11-10; see the historical note above). Realtime
 state lifecycle stays in `NodeStorage`; background-only lifecycle such as
 `TockState` is owned separately by `BackgroundExecutor`. Primitive `skip_block` callbacks
 are internal scheduling tools, not root operations. Whole-project lowering must not

@@ -104,6 +104,7 @@ struct BackgroundPropagationObservation {
 BackgroundPropagationObservation background_observation;
 
 void observe_first(
+    iv::graph_jit::RealtimeRootPlan const*,
     std::byte* storage,
     iv::graph_jit::TickInvocationCall const* invocation,
     iv::GlobalIndex sample_index,
@@ -119,6 +120,7 @@ void observe_first(
 }
 
 void observe_second(
+    iv::graph_jit::RealtimeRootPlan const*,
     std::byte* storage,
     iv::graph_jit::TickInvocationCall const* invocation,
     iv::GlobalIndex sample_index,
@@ -134,12 +136,13 @@ void observe_second(
 }
 
 void observe_first_and_advance_transition_cursor(
+    iv::graph_jit::RealtimeRootPlan const*,
     std::byte* storage,
     iv::graph_jit::TickInvocationCall const* invocation,
     iv::GlobalIndex sample_index,
     std::size_t block_size)
 {
-    observe_first(storage, invocation, sample_index, block_size);
+    observe_first(nullptr, storage, invocation, sample_index, block_size);
     std::uint64_t cursor = 0;
     std::memcpy(&cursor, storage, sizeof(cursor));
     cursor += block_size;
@@ -154,6 +157,7 @@ void initialize_zero_raw_region(
 }
 
 void write_raw_state(
+    iv::graph_jit::RealtimeRootPlan const*,
     std::byte* storage,
     iv::graph_jit::TickInvocationCall const*,
     iv::GlobalIndex,
@@ -163,6 +167,7 @@ void write_raw_state(
 }
 
 void observe_raw_state(
+    iv::graph_jit::RealtimeRootPlan const*,
     std::byte* storage,
     iv::graph_jit::TickInvocationCall const*,
     iv::GlobalIndex,
@@ -172,6 +177,7 @@ void observe_raw_state(
 }
 
 void replace_second_raw_state(
+    iv::graph_jit::RealtimeRootPlan const*,
     std::byte* storage,
     iv::graph_jit::TickInvocationCall const*,
     iv::GlobalIndex,
@@ -182,6 +188,7 @@ void replace_second_raw_state(
 }
 
 void observe_third_raw_state(
+    iv::graph_jit::RealtimeRootPlan const*,
     std::byte* storage,
     iv::graph_jit::TickInvocationCall const*,
     iv::GlobalIndex,
@@ -850,7 +857,7 @@ std::shared_ptr<iv::CompiledGraph const> compiled_graph(
     graph->specialization.sample_rate = 48000;
     graph->specialization.block_size = 64;
     graph->node_layout = std::move(layout);
-    graph->root_operations.tick_block = tick;
+    graph->root_operations.tick_block = {.function = tick};
     graph->root_operations.combine_sequential_input = &combine_sample_values;
     if (background) {
         graph->background_operations = {
@@ -883,8 +890,8 @@ std::shared_ptr<iv::CompiledGraph const> transition_graph(
         initialize_zero_raw_region);
     graph->node_layout = std::move(layout_builder).build();
     graph->root_operations = {
-        .tick_block = steady_tick,
-        .transition_tick_block = transition_tick,
+        .tick_block = {.function = steady_tick},
+        .transition_tick_block = {.function = transition_tick},
         .combine_sequential_input = &combine_sample_values,
     };
     graph->cutover.emplace(iv::CompiledGraphCutover{
@@ -1160,7 +1167,7 @@ TEST_F(GraphExecutorFixture,
     EXPECT_FLOAT_EQ(std::bit_cast<float>(state.target_bits), 0.25f);
 
     auto replacement = std::make_shared<iv::CompiledGraph>(*initial);
-    replacement->root_operations.tick_block = &observe_second;
+    replacement->root_operations.tick_block = {.function = &observe_second};
     ASSERT_EQ(
         executor.stage_realtime_code(replacement),
         iv::GraphExecutorStageResult::accepted);

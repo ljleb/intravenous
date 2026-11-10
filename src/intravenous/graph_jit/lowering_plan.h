@@ -45,7 +45,7 @@ struct PrimitiveActivityPlan {
 };
 
 // Equal ordinary realtime fanout channels share one persistent comparison
-// value. Generated lowering also shares the compact fact while the source
+// value. The realtime root also shares the compact fact while the source
 // representation and invocation window remain unchanged.
 struct ContinuousActivityFrontierPlan {
     std::size_t representation = no_sample_representation;
@@ -73,7 +73,7 @@ struct DeclarationPlan {
     // coupling execution-step identity to canonical layout record order.
     std::vector<PrimitiveStoragePlan> primitive_storage{};
     // Entry positions match the primitive namespace. A missing entry means
-    // TTL is disabled and generated execution pays no activity cost.
+    // TTL is disabled and the realtime root pays no activity cost.
     std::vector<std::optional<PrimitiveActivityPlan>> primitive_activity{};
     std::vector<ContinuousActivityFrontierPlan> activity_frontiers{};
 };
@@ -142,7 +142,6 @@ struct NodeConfigurationPlan {
     std::size_t alignment = 1;
     ReflectedNodeTickContext tick_context_template{};
     std::string node_global_symbol{};
-    std::string tick_context_global_symbol{};
 };
 
 struct ConfigurationPlan {
@@ -176,7 +175,7 @@ struct PrimitiveSampleInputBindingPlan {
     bool has_contiguous_scratch = false;
     // Background evaluation supplies this Sequential input's current block
     // through its TickSequentialBindingPlan slot on every invocation. Without
-    // history it has no channels and the generated root binds the slot
+    // history it has no channels and the realtime root binds the slot
     // directly. With history, channels name the input's node-owned timeline:
     // the root writes each delivered block into it before the callback, so
     // its history is the input's own record of earlier deliveries.
@@ -266,7 +265,7 @@ struct EventRepresentationPlan {
     std::size_t producer_group_index = 0;
     EventTypeId type = EventTypeId::empty;
     std::size_t event_capacity = 0;
-    // A zero-capacity sequence whose count is zero in compiler-emitted
+    // A zero-capacity sequence whose count is zero in plan-owned
     // read-only data. Every disconnected Sequential input of this type binds
     // to it; it needs neither stack bytes nor per-invocation resets.
     bool immutable_empty = false;
@@ -300,7 +299,7 @@ struct EventRepresentationPlan {
     NodeLayout::RegionHandle overflow_region{};
     // Canonical NodeStorage offsets exist only for persistent ports
     // and producer telemetry. Transient storage addresses come from the
-    // generated root's event arena plus region_relative_offset.
+    // realtime root's event arena plus region_relative_offset.
     std::size_t storage_offset = 0;
     std::size_t overflow_count_storage_offset = 0;
 };
@@ -320,7 +319,7 @@ struct PrimitiveEventInputBindingPlan {
     std::optional<std::size_t> storage{};
     // Background evaluation supplies this Sequential input's current window
     // through its TickSequentialBindingPlan slot on every invocation. Without
-    // history storage is empty and the generated root binds the slot
+    // history storage is empty and the realtime root binds the slot
     // directly. With history, storage is the input's node-owned persistent
     // timeline ring: the root inserts each delivered window into it before
     // the callback, so its history is the input's own record of earlier
@@ -328,7 +327,7 @@ struct PrimitiveEventInputBindingPlan {
     bool invocation_supplied = false;
     // Mixed delivery keeps the realtime contribution in
     // realtime_operand_storage and receives the background contribution
-    // through TickInvocationCall. Generated code merges both into
+    // through TickInvocationCall. The realtime root merges both into
     // combined_storage, then inserts that merge's current window into the
     // timeline that storage names.
     bool combines_invocation_supplied = false;
@@ -346,7 +345,7 @@ struct PrimitiveEventInputBindingPlan {
 
 struct PrimitiveEventOutputBindingPlan {
     // Entry positions correspond to declared storage event-port indices. Only
-    // realtime entries are emitted into ReflectedNodeTickContext.
+    // realtime entries are bound into ReflectedNodeTickContext.
     bool realtime = true;
     // Callback-facing storage. A retained or sliced output can use a separate
     // canonical_storage so the callback writes only its current invocation.
@@ -396,7 +395,7 @@ struct EventMaterializationPlan {
     bool preserve_source_indices = false;
     // Aggregate or retained canonical sources may contain events outside the
     // consumer invocation currently being materialized. Windowed selection uses
-    // the index/block_size supplied at the emission site: a cyclic step-local
+    // the index/block_size of the operation's scope: a cyclic step-local
     // materialization therefore selects one SCC slice, while a region-exit
     // materialization selects the complete root call. In both cases the window
     // is [index-history_samples, index+block_size) before conversion. Target
@@ -551,12 +550,12 @@ struct EventOperationRef {
 struct PrimitiveExecutionStep {
     std::size_t configuration_index = 0;
     std::size_t storage_index = 0;
-    // Maximum block size accepted by this primitive. LLVM realization uses
+    // Maximum block size accepted by this primitive. The realtime root uses
     // this as the single invocation-slicing boundary for both tick and skip.
     std::size_t maximum_block_size = 0;
-    std::string tick_callback_symbol{};
+    // Node-code identities of the batch callbacks. Ready-group planning
+    // batches only primitives that share both.
     std::string tick_batch_callback_symbol{};
-    std::string skip_callback_symbol{};
     std::string skip_batch_callback_symbol{};
 
     // Explicit sample storage operations surrounding this producer. These are
@@ -592,7 +591,7 @@ struct ExecutionRegionPlan {
 struct ExecutionReadyGroupPlan {
     // A multi-step entry is one compatible antichain discovered from one
     // scheduler ready-frontier snapshot. Planning keeps a multi-step entry
-    // only when lowering can emit it as one native batch; otherwise its
+    // only when the realtime root can run it as one native batch; otherwise its
     // members return to the scalar schedule. Cyclic SCC execution is
     // represented by cyclic_region instead.
     std::vector<std::size_t> primitive_steps{};
@@ -602,7 +601,7 @@ struct ExecutionReadyGroupPlan {
 struct ExecutionPlan {
     // Ordered root execution sequence. For disconnected zero-port primitives this
     // is configured-bundle order; connection-aware scheduling will later replace
-    // that provisional order without changing the LLVM-emission boundary.
+    // that provisional order without changing the realtime-root boundary.
     std::vector<PrimitiveExecutionStep> primitive_steps{};
     std::vector<ExecutionRegionPlan> regions{};
     std::vector<ExecutionReadyGroupPlan> ready_groups{};

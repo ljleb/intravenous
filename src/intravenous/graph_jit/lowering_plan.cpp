@@ -107,11 +107,6 @@ std::string node_config_global_symbol(std::size_t primitive_index)
     return "iv.graph.node_config." + std::to_string(primitive_index);
 }
 
-std::string tick_context_global_symbol(std::size_t primitive_index)
-{
-    return "iv.graph.tick_context." + std::to_string(primitive_index);
-}
-
 bool is_structurally_empty(ConfiguredGraph const& graph)
 {
     if (!graph.connections.configured_sample_connections().empty()
@@ -366,7 +361,7 @@ std::expected<std::string, std::string> input_timeline_migration_identity(
 }
 
 // Locates the TickSequentialBindingPlan slot through which background
-// evaluation supplies this Sequential input in the generated root's
+// evaluation supplies this Sequential input in the realtime root's
 // TickInvocationCall, as an index in the kind-specific TickRuntimePlan array.
 // Invalid retained ranges are plan corruption, not evidence of an external
 // binding.
@@ -2666,7 +2661,6 @@ std::expected<ConfigurationPlan, std::string> plan_node_configurations(
                 }(),
             },
             .node_global_symbol = node_config_global_symbol(i),
-            .tick_context_global_symbol = tick_context_global_symbol(i),
         };
 
         for (auto const& relocation : input.config_relocations) {
@@ -3867,7 +3861,7 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
                     && input_binding.history != 0);
             // The node limit bounds one invocation; it is not the size of an
             // invocation. Most nodes retain MAX_BLOCK_SIZE as their authored
-            // limit, while the generated root can expose at most one kernel
+            // limit, while the realtime root can expose at most one kernel
             // block here (and may split that block further for an SCC).
             auto const maximum_invocation_extent = std::min(
                 input.specialization.block_size,
@@ -8037,7 +8031,7 @@ std::expected<ExecutionPlan, std::string> plan_execution(
     // Keep one flattened primitive-step namespace because all storage plans
     // refer to producer execution positions in that namespace. Tock-only
     // primitives have no position in it. Execution regions add the information
-    // LLVM realization needs to switch cyclic SCCs from the ordinary
+    // the realtime root needs to switch cyclic SCCs from the ordinary
     // primitive-major traversal to slice-major traversal. Detach is connection
     // metadata, so there are no synthetic detach primitives.
     std::vector<bool> scheduled(analysis.primitives.size(), false);
@@ -8080,9 +8074,7 @@ std::expected<ExecutionPlan, std::string> plan_execution(
                 .configuration_index = i,
                 .storage_index = i,
                 .maximum_block_size = primitive->bundle.maximum_block_size,
-                .tick_callback_symbol = callbacks.tick_block,
                 .tick_batch_callback_symbol = callbacks.tick_block_batch,
-                .skip_callback_symbol = callbacks.skip_block,
                 .skip_batch_callback_symbol = callbacks.skip_block_batch,
             });
             region.primitive_steps.push_back(step_index);

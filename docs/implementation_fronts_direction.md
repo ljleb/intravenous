@@ -2619,11 +2619,144 @@ principle, because that compilation pays the cost.
    `voices`, `chain`, `mixed`, and `feedback`. **Complete 2026-11-10.**
 2. Replace the per-edit generated LLVM root with precompiled root execution that
    consumes immutable graph-dependent data. Keep graph-specific compilation only
-   for measured, profitable fused operations, cached by content.
+   for measured, profitable fused operations, cached by content. **Implemented
+   2026-11-10 for the realtime root; all tests pass (repository owner,
+   2026-11-10).** See "Precompiled realtime root" below.
 3. Measure edit-to-activation latency and realtime Tick cost after that change.
+   **Measured 2026-11-10;** see "Size-64 measurement after the precompiled
+   realtime root" below.
 4. Resolve or explicitly assign the remaining sample/event transition-planning
    cleanup recorded below.
 5. Select any further optimization candidate only from the new measurements.
+
+**Precompiled realtime root (implementation status, 2026-11-10; built by the
+repository owner, all tests pass).**
+- *Implemented.* The realtime root is application code,
+  `graph_jit::execute_realtime_root()` in `graph_jit/realtime_root.cpp`. It
+  executes one immutable `RealtimeRootPlan`.
+  - `build_realtime_root_plan()` takes ownership of the `LoweringPlan` sections only
+    the root reads: `sample_ports`, `event_ports`, `execution`, `root_stack`,
+    `declarations.primitive_activity`, and `declarations.activity_frontiers`. The
+    sections the background roots and `LoweringOutput` read stay in the plan.
+  - Planning-invariant work is done once at build:
+    - each primitive's relocated configuration bytes and native
+      `NodeCompilerOperations`;
+    - one template of every reflected binding array, plus the pointer fields each
+      root call writes after copying that template;
+    - the Tick slot tables;
+    - each channel conversion with its zero terms removed;
+    - the shifted feedback write latencies;
+    - the per-call frame layout.
+  - `build_realtime_root_plan()` checks every plan invariant the root relies on,
+    so a root call checks no plan structure. These are the checks the generated
+    emitter made while emitting, applied to the operations that some step or
+    region schedules.
+  - `emit_lowering_plan()` builds both realtime roots before it mutates output LLVM.
+    It then emits only package imports, node configurations, the Sequential input
+    combiner and initializer, and the background roots.
+  - `CompiledGraphBlockOperation` pairs `CompiledGraphBlockFunction`, which now
+    receives a `RealtimeRootPlan const*`, with the `std::shared_ptr` that keeps the
+    plan alive.
+  - The generated realtime emitter is removed from `lowering.cpp`: about 6,900
+    lines, with the root tick symbols, `LoweredGraphRootSymbols::tick_block` and
+    `transition_tick_block`, the Tick-context LLVM globals, and
+    `PrimitiveExecutionStep::tick_callback_symbol` and `skip_callback_symbol`.
+- *Divergences found and corrected in the first port (2026-11-10).* Each one
+  departed from the generated emitter's observable behavior:
+  - an `EventOperationRef` of kind `sequence_reset` names its event representation
+    directly, and the port read it as an index into `sequence_resets`;
+  - a sample materialization, carry restore, or carry commit whose slice projects
+    no value of its pace must do nothing, and the port still copied its retained
+    frames;
+  - a sample carry commit must not advance the representation's activity epoch,
+    because `iv_graph_jit_continuous_input_activity()` updates its remembered value
+    and must not run twice for one window;
+  - channel conversion must skip zero coefficients and leave unit coefficients
+    unscaled, because a zero term would turn an infinite or NaN source into NaN;
+  - each primitive's `scc_feedback_latency` comes from its configured
+    `tick_context_template`, and the port overwrote it;
+  - Tick capture and Random Access spans must be checked for presence in the
+    `TickInvocationCall` before use, and the port used them unchecked;
+  - a primitive whose background node has no Tick slot must not read the
+    invocation record.
+- *Known costs, not yet measured.*
+  - Every root call copies the binding template and writes its pointer fields.
+    The generated root performed the same copy from LLVM constants.
+  - The node configuration bytes exist twice per generation: once in the
+    `RealtimeRootPlan` and once as an LLVM global for the generated background
+    roots.
+  - The `SampleStoragePlan` moved into the root also carries its planning-only
+    tables, such as `connection_channel_bindings`, for the generation's lifetime.
+- *Not included.* The background roots, the Sequential input combiner, and the
+  initializer are still generated per edit. Whether they leave the per-edit
+  compilation too is for step 3's measurement to show.
+- *Tests.* No root-specific test was added. Every existing GraphJit runtime test
+  executes the new root. `tests/graph_executor_gtest.cpp` and
+  `tests/modules/system_audio_devices_gtest.cpp` construct their hand-written root
+  operations with the new `{function, plan}` shape.
+- *Next bottom-up connection.* Step 3 is measured below. The SCC Tick friction it
+  found comes before step 4 only if the human co-author orders it so.
+
+**Size-64 measurement after the precompiled realtime root (repository owner,
+2026-11-10).** All generations were accepted. As in the baseline above, each range
+spans the five edit-kind medians, with five iterations per edit kind, and package
+builds are excluded. The block period is 5,333 µs.
+
+| Shape | Edit wall (baseline) | Edit wall | Lowering plan | Optimize | Code generation | Tick mean (baseline) | Tick mean |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| `chain` | 91-93 ms | 3.80-3.90 ms | 1.49-1.54 ms | 0.33-0.34 ms | 1.01-1.08 ms | 638-656 µs | 641-697 µs |
+| `voices` | 390-402 ms | 9.20-10.14 ms | 5.26-5.54 ms | 0.36-0.37 ms | 1.18-1.27 ms | 944-960 µs | 965-1,006 µs |
+| `mixed` | 620-667 ms | 15.32-16.34 ms | 9.92-10.44 ms | 0.39 ms | 1.26-1.44 ms | 1,577-1,619 µs | 1,572-1,607 µs |
+| `feedback` | 1,591-1,618 ms | 18.43-18.85 ms | 11.50-11.66 ms | 0.37-0.39 ms | 1.27-1.31 ms | 1,948-1,991 µs | 3,319-3,342 µs |
+
+- *Edit latency.* Every shape now meets the 200 ms target by at least a factor of
+  ten. The initial generations took 4.73 ms (`chain`), 12.21 ms (`voices`),
+  22.90 ms (`mixed`), and 20.04 ms (`feedback`). `build_lowering_plan()` is now the
+  largest phase. Optimization and code generation of the remaining project module
+  (the background roots, the Sequential input combiner, and the initializer) take
+  about 1.4-1.7 ms. Configuration outside GraphJit takes 0.3-2.4 ms.
+- *Tick cost of acyclic graphs.* `chain`, `voices`, and `mixed` are within 0-6% of
+  the baseline.
+- *Friction: Tick cost of single-sample SCCs (observation, 2026-11-10; unresolved).*
+  - *Planned assumption.* Step 2 replaces the per-edit generated root with
+    execution that consumes immutable data, and keeps graph-specific compilation
+    only for measured, profitable fused operations.
+  - *Observed constraint.* `feedback` Tick cost rose by about 68%, from about
+    1,970 µs to about 3,330 µs per block.
+    - Each `feedback_voice` loop is one SCC whose detach latency is one sample, so
+      its quantum (`ExecutionRegionPlan::maximum_block_size`) is one.
+    - At 64 loops, `execute_realtime_root()` therefore runs `run_step()` about
+      32,768 times per 256-frame block: 256 slices of two steps in each of 64
+      SCCs.
+    - Both roots call the same native node callbacks, so the difference is the
+      root's own work per slice step: about 41 ns. That work is `run_step()`'s
+      operation lists, `prepare_primitive()`'s begin indices and context copy,
+      the activity decision, and `mark_primitive_outputs()`.
+    - The generated root folded the plan constants of that work into its SCC
+      loop body.
+  - *Complexity introduced.* About 1.35 ms more per block at this size, which is
+    about 25% of the block period. In 3 of the 31 measured `feedback` generations,
+    the largest block took 6.0-6.5 ms, more than the block period. The baseline's
+    largest blocks were not recorded, so whether those overruns are new is unknown.
+  - *Reach.* `run_step()`, `prepare_primitive()`, `decide_primitive_activity()`,
+    and the SCC slice loop in `execute_realtime_root()`; the step-5 selection of
+    optimization candidates.
+  - *Alternatives.*
+    - (A) Specialize the interpreter at plan build: precompute each binding's
+      Sequential pace cursor and each step's non-empty operation lists, and
+      prepare each SCC step's `ReflectedNodeTickContext` once per root call, so
+      that a slice only advances its begin indices.
+    - (B) Compile each SCC region's slice loop as a fused operation cached by its
+      content. This is step 2's exception for measured, profitable fused
+      operations. At quantum one it could also inline package node code.
+    - (C) Accept the cost.
+  - *Recommendation.* First profile the `feedback` Tick to confirm that the
+    root's per-slice work, rather than node code or activity scans, accounts for
+    the difference. Then (A), which needs no compilation and keeps edit latency
+    unchanged. Choose (B) under step 5 only if the measurement after (A) still
+    justifies it.
+  - *Dependency-graph change if accepted.* SCC slice cost becomes the first step-5
+    candidate. Step 4 is unaffected.
 
 Measurement (implementation status, 2026-11-06): setting `IV_EDIT_TIMING=1` makes
 `ProjectGraph::rebuild_locked()` write one "edit timing" entry per published
