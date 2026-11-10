@@ -422,7 +422,9 @@ public:
 };
 
 void wait_for_definitions(
-    iv::ProjectGraph const& project_graph, std::vector<std::string_view> const& required)
+    iv::ProjectGraph const& project_graph,
+    iv::PackageWatcherService const& package_watcher_service,
+    std::vector<std::string_view> const& required)
 {
     auto const deadline = Clock::now() + std::chrono::minutes(30);
     auto last_report = Clock::now();
@@ -432,6 +434,9 @@ void wait_for_definitions(
                 return snapshot->by_id.contains(std::string(id));
             })) {
             return;
+        }
+        if (auto failure = package_watcher_service.failure_message()) {
+            throw std::runtime_error(*failure);
         }
         if (Clock::now() > deadline) {
             throw std::runtime_error("package definitions did not load in 30 minutes");
@@ -597,7 +602,8 @@ int main(int argc, char** argv)
         }
         std::cout << "building the packages (not timed)...\n" << std::flush;
         package_watcher_service.start();
-        wait_for_definitions(project_graph, project.definitions);
+        wait_for_definitions(
+            project_graph, package_watcher_service, project.definitions);
 
         RealtimeLoop realtime(
             graph_executor, startup.execution.sample_rate, startup.execution.block_size);

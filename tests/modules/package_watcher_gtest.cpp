@@ -24,6 +24,7 @@
 #include <optional>
 #include <string>
 #include <stdexcept>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -160,6 +161,7 @@ struct WatcherHarness {
     iv::PackageWatcher watcher{};
     FakePackageJit jit{};
     FakePackageDefinitions definitions{};
+    iv::PackageWatcherRefreshRequest last_refresh{};
     package_watcher_fake_jit_bridge::scope jit_scope;
     package_watcher_fake_definitions_bridge::scope definitions_scope;
 
@@ -170,9 +172,9 @@ struct WatcherHarness {
 
     bool refresh()
     {
-        iv::PackageWatcherRefreshRequest request;
-        watcher.handle_refresh_requested(request);
-        return request.changed;
+        last_refresh = {};
+        watcher.handle_refresh_requested(last_refresh);
+        return last_refresh.changed;
     }
 };
 
@@ -505,6 +507,55 @@ TEST(PackageWatcherService, LogicalWorkAfterStartupIsNotStrandedWithoutFilesyste
     service.request_shutdown();
 }
 
+TEST(PackageWatcherService, RetainsPackageBuildFailureForNonFrontendCallers)
+{
+    using namespace std::chrono_literals;
+
+    auto const project_root = iv::test_support::fresh_module_fixture_workspace(
+        "package_watcher_service_build_failure");
+    auto const package_root = project_root / "failing";
+    std::filesystem::create_directories(package_root);
+    iv::test_support::write_text(
+        package_root / "iv_package.json",
+        R"({"schema":2,"entry":"module.cpp"})");
+    iv::test_support::write_text(package_root / "module.cpp", "// failing\n");
+
+    iv::PackageWatcher watcher;
+    FakePackageJit jit;
+    FakePackageDefinitions definitions;
+    jit.respond = [](iv::PackageJitBatchRequest& request) {
+        ASSERT_EQ(request.declarations.size(), 1u);
+        auto const& declaration = request.declarations.front();
+        request.result.failed.push_back(iv::PackageJitFailure{
+            .package_id = declaration.package_id,
+            .package_root = declaration.package_root,
+            .message = "synthetic service build failure",
+        });
+    };
+
+    std::optional<package_watcher_fake_jit_bridge::scope> jit_scope;
+    std::optional<package_watcher_fake_definitions_bridge::scope> definitions_scope;
+    std::optional<iv::package_watcher_service_bridge::scope> service_scope;
+    iv::PackageWatcherService service(watcher, project_root, {});
+    jit_scope = package_watcher_fake_jit_bridge::bind(watcher, jit);
+    definitions_scope = package_watcher_fake_definitions_bridge::bind(
+        watcher, definitions);
+    service_scope = iv::package_watcher_service_bridge::bind(service, watcher);
+
+    service.start();
+    auto const deadline = std::chrono::steady_clock::now() + 2s;
+    std::optional<std::string> failure;
+    while (!(failure = service.failure_message())
+           && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(1ms);
+    }
+    service.request_shutdown();
+
+    ASSERT_TRUE(failure.has_value());
+    EXPECT_NE(failure->find("synthetic service build failure"), std::string::npos);
+    EXPECT_NE(failure->find(package_root.string()), std::string::npos);
+}
+
 TEST(PackageWatcher, CoalescesMultipleDirtyPackagesIntoOneJitCallAndOneTransaction)
 {
     auto const first = iv::test_support::fresh_module_fixture_workspace(
@@ -572,9 +623,11 @@ TEST(PackageWatcher, FailedBuildIsForwardedOnceAndDoesNotBusyRetry)
     ASSERT_EQ(harness.jit.calls.size(), 1u);
     ASSERT_EQ(harness.definitions.transactions.size(), 1u);
     ASSERT_EQ(harness.definitions.transactions.front().failed_builds.size(), 1u);
+    ASSERT_EQ(harness.last_refresh.failed_builds.size(), 1u);
     EXPECT_EQ(
         harness.definitions.transactions.front().failed_builds.front().message,
         "synthetic failure");
+    EXPECT_EQ(harness.last_refresh.failed_builds.front().message, "synthetic failure");
 
     EXPECT_FALSE(harness.watcher.has_pending_refresh());
     EXPECT_FALSE(harness.refresh());

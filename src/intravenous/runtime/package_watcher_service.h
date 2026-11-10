@@ -7,6 +7,7 @@
 #include <intravenous/runtime/package_pipeline_events.h>
 
 #include <filesystem>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <thread>
@@ -31,8 +32,10 @@ class PackageWatcherService {
     EventSignal work_signal_{"package watcher work"};
     EventSignal shutdown_signal_{"package watcher shutdown"};
     std::optional<std::vector<IvPackageDeclaration>> last_package_declarations_;
+    mutable std::mutex failure_mutex_{};
     std::optional<std::string> last_discovery_error_;
     std::optional<std::string> last_service_error_;
+    std::vector<PackageJitFailure> last_refresh_failures_{};
     std::optional<std::jthread> worker_{};
 
     [[nodiscard]] bool synchronize_discovered_packages();
@@ -52,6 +55,7 @@ public:
 
     void start();
     void request_shutdown();
+    [[nodiscard]] std::optional<std::string> failure_message() const;
     void handle_work_available(PackageWatcherWorkAvailable const&) noexcept;
 };
 } // namespace iv

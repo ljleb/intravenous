@@ -40,7 +40,8 @@ class PackageWatcher {
     void install_effective_declarations_locked(
         std::unordered_map<std::string, IvPackageDeclaration> next);
     void refresh_watched_dependencies_locked();
-    [[nodiscard]] bool refresh_pending_packages();
+    [[nodiscard]] bool refresh_pending_packages(
+        PackageWatcherRefreshRequest& request);
     void emit_status(
         std::string level,
         std::string code,

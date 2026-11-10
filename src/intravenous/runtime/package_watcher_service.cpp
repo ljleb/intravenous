@@ -67,8 +67,13 @@ PackageWatcherService::~PackageWatcherService()
 
 void PackageWatcherService::report_discovery_error(std::string message)
 {
-    if (last_discovery_error_.has_value() && *last_discovery_error_ == message) return;
-    last_discovery_error_ = message;
+    {
+        std::scoped_lock lock(failure_mutex_);
+        if (last_discovery_error_.has_value() && *last_discovery_error_ == message) {
+            return;
+        }
+        last_discovery_error_ = message;
+    }
     IV_INVOKE_LINKER_EVENT_SOURCE(
         iv_runtime_project_notification_event,
         ProjectNotification(ProjectStatusNotification{
@@ -80,8 +85,13 @@ void PackageWatcherService::report_discovery_error(std::string message)
 
 void PackageWatcherService::report_service_error(std::string message)
 {
-    if (last_service_error_.has_value() && *last_service_error_ == message) return;
-    last_service_error_ = message;
+    {
+        std::scoped_lock lock(failure_mutex_);
+        if (last_service_error_.has_value() && *last_service_error_ == message) {
+            return;
+        }
+        last_service_error_ = message;
+    }
     IV_INVOKE_LINKER_EVENT_SOURCE(
         iv_runtime_project_notification_event,
         ProjectNotification(ProjectStatusNotification{
@@ -95,7 +105,10 @@ bool PackageWatcherService::synchronize_discovered_packages()
 {
     try {
         auto declarations = discover_iv_package_declarations(project_root_, package_roots_);
-        last_discovery_error_.reset();
+        {
+            std::scoped_lock lock(failure_mutex_);
+            last_discovery_error_.reset();
+        }
         if (last_package_declarations_.has_value()
             && declarations == *last_package_declarations_) {
             return false;
@@ -119,6 +132,12 @@ void PackageWatcherService::process_pending_refresh()
         IV_INVOKE_LINKER_EVENT_SOURCE(
             iv_runtime_package_watcher_refresh_requested_event,
             request);
+        {
+            std::scoped_lock lock(failure_mutex_);
+            if (request.changed) {
+                last_refresh_failures_ = request.failed_builds;
+            }
+        }
         if (request.changed) publish_package_catalog_changed();
     }
 }
@@ -196,6 +215,29 @@ void PackageWatcherService::request_shutdown()
     if (!worker_.has_value()) return;
     worker_->request_stop();
     shutdown_signal_.signal();
+}
+
+std::optional<std::string> PackageWatcherService::failure_message() const
+{
+    std::scoped_lock lock(failure_mutex_);
+    if (last_service_error_) {
+        return "IV package watcher service failed: " + *last_service_error_;
+    }
+    if (last_discovery_error_) {
+        return "IV package discovery failed: " + *last_discovery_error_;
+    }
+    if (!last_refresh_failures_.empty()) {
+        auto const& failure = last_refresh_failures_.front();
+        std::string message = "IV package build failed";
+        if (!failure.package_id.empty()) {
+            message += " for '" + failure.package_id + "'";
+        }
+        if (!failure.package_root.empty()) {
+            message += " at " + failure.package_root.string();
+        }
+        return message + ": " + failure.message;
+    }
+    return std::nullopt;
 }
 
 void PackageWatcherService::handle_work_available(PackageWatcherWorkAvailable const&) noexcept

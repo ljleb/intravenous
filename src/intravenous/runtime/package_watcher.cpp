@@ -400,7 +400,8 @@ void PackageWatcher::emit_status(
         }));
 }
 
-bool PackageWatcher::refresh_pending_packages()
+bool PackageWatcher::refresh_pending_packages(
+    PackageWatcherRefreshRequest& request)
 {
     PackageRefreshTransaction transaction;
     PackageJitBatchRequest jit_request;
@@ -505,6 +506,7 @@ bool PackageWatcher::refresh_pending_packages()
 
     transaction.successful_revisions = std::move(jit_request.result.revisions);
     transaction.failed_builds = std::move(jit_request.result.failed);
+    request.failed_builds = transaction.failed_builds;
     IV_INVOKE_LINKER_EVENT(iv_runtime_package_refresh_event, transaction);
 
     {
@@ -516,6 +518,7 @@ bool PackageWatcher::refresh_pending_packages()
 
 void PackageWatcher::handle_refresh_requested(PackageWatcherRefreshRequest& request)
 {
-    request.changed = refresh_pending_packages();
+    request.failed_builds.clear();
+    request.changed = refresh_pending_packages(request);
 }
 } // namespace iv

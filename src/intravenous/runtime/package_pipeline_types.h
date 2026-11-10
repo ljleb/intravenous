@@ -83,6 +83,10 @@ struct PackageJitBatchResult {
 
 struct PackageWatcherRefreshRequest {
     bool changed = false;
+    // The service that owns the refresh request retains these diagnostics so
+    // non-frontend callers can fail instead of waiting for definitions that a
+    // failed build cannot publish.
+    std::vector<PackageJitFailure> failed_builds{};
 };
 
 struct PackageJitBatchRequest {

@@ -2612,6 +2612,19 @@ cost, ask what it depends on:
 A cache filled lazily by the first compilation that needs it does not meet this
 principle, because that compilation pays the cost.
 
+**Remaining implementation order (human co-author, 2026-11-10):**
+
+1. Make `iv_edit_latency_benchmark` report package discovery, build, and watcher
+   service failures immediately, then record a current size-64 baseline for
+   `voices`, `chain`, `mixed`, and `feedback`. **Complete 2026-11-10.**
+2. Replace the per-edit generated LLVM root with precompiled root execution that
+   consumes immutable graph-dependent data. Keep graph-specific compilation only
+   for measured, profitable fused operations, cached by content.
+3. Measure edit-to-activation latency and realtime Tick cost after that change.
+4. Resolve or explicitly assign the remaining sample/event transition-planning
+   cleanup recorded below.
+5. Select any further optimization candidate only from the new measurements.
+
 Measurement (implementation status, 2026-11-06): setting `IV_EDIT_TIMING=1` makes
 `ProjectGraph::rebuild_locked()` write one "edit timing" entry per published
 rebuild to the diagnostic log (`IV_LOG_FILE`):
@@ -3061,6 +3074,26 @@ built, all 790 tests pass, measured below; repository owner).*
   storage does not cover the interval the transition inherits. The message now
   reports the interval and the storage geometry. It read "[0, 1) in
   compact-carry storage of 1 frames (0 carried future, timeline offset 0)".
+
+  **Current size-64 baseline (repository owner, 2026-11-10).** All generations
+  were accepted. Each range below spans the five edit-kind medians (`configure`,
+  `add_node`, `connect`, `disconnect`, and `delete_node`), with five iterations per
+  edit kind. Package builds are excluded.
+
+  | Shape | Instances | Edit wall | Optimize | Code generation | Tick mean |
+  |---|---:|---:|---:|---:|---:|
+  | `voices` | 320 | 390-402 ms | 150-154 ms | 223-230 ms | 944-960 µs |
+  | `chain` | 68 | 91-93 ms | 34-35 ms | 52-53 ms | 638-656 µs |
+  | `mixed` | 448 | 620-667 ms | 229-235 ms | 367-392 ms | 1,577-1,619 µs |
+  | `feedback` | 256 | 1,591-1,618 ms | 629-636 ms | 916-934 ms | 1,948-1,991 µs |
+
+  `chain` remains below the 200 ms target. The other shapes do not. GraphJit takes
+  nearly the complete edit wall time. Optimization plus code generation takes about
+  95% of GraphJit time for `voices`, `mixed`, and `feedback`, which confirms that
+  the next dependency-ordered work is the precompiled root consuming immutable
+  graph-dependent data. The `feedback` initial generation took 636 ms, while its
+  transition edits took about 1.6 s; the data-driven root must therefore be measured
+  on both first-generation and cutover execution paths.
 
   *Friction: latent Tick output state across a cutover (earlier-front oversight,
   found 2026-11-07; decided and implemented 2026-11-07; verification pending).*
@@ -4828,13 +4861,19 @@ built, all 790 tests pass, measured below; repository owner).*
         move it to `docs/historical/` (development_workflow.md 3.5), keeping its
         decisions and friction in Front 16.
   - *Next bottom-up connection.* One of the remaining items above.
-- **Still open.** `iv_edit_latency_benchmark` still waits silently when the package
-  watcher service fails. Its only failure signal is
-  `iv_runtime_project_notification_event`. A notification subscriber in the
-  benchmark would be entered twice by one refresh, because `PackageWatcher` raises
-  both `rebuildStarted` and `rebuildFinished` in one source invocation. Whether
+- **Benchmark package-failure reporting (implemented 2026-11-10; collaborator build
+  and run pending).** `PackageWatcherRefreshRequest::failed_builds` now returns the
+  build failures already present in `PackageRefreshTransaction` to the
+  `PackageWatcherService` that owns the refresh request. The service retains that
+  result together with its discovery and worker failures behind
+  `failure_message()`. `iv_edit_latency_benchmark::wait_for_definitions()` checks
+  this state and reports the original diagnostic instead of polling for 30 minutes.
+  This deliberately does not subscribe the benchmark to
+  `iv_runtime_project_notification_event`: `PackageWatcher` raises both
+  `rebuildStarted` and `rebuildFinished` during one refresh propagation, and one
+  subscriber module cannot be entered twice in that propagation. Whether
   `SocketRpcServer`, which subscribes to the same event in the app, meets the same
-  re-entry is unverified.
+  re-entry remains unverified and is separate application-event-path work.
 - **Authored `State` migration identity (2026-11-08; collaborator build and test run
   pending).**
   - *Observed.* `NodeStorage` migrated a node's authored `State` only when the
