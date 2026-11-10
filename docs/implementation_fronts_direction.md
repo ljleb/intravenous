@@ -3021,11 +3021,14 @@ built, all 790 tests pass, measured below; repository owner).*
   `package_watcher_graph_jit_bridge`, `GraphJit::handle_package_jit_batch_completed()`,
   `GraphJit::Impl::package_code_`, the package `TargetMachine`, the project `LLJIT`'s
   concurrent compilation, and the test fixture's `deliver_package_code()`.
-- **Lost check.** The project module calls node code by address, so nothing compares
-  a callback's LLVM function type with `graph_jit::package_callback_type()` any
-  more. That check existed while the callbacks were imported as LLVM. A test that
-  parses the test package's finalized LLVM and checks each record's callback types
-  would restore it.
+- **Restored callback ABI check (2026-11-10).** The project module calls node code by
+  address, so GraphJit cannot inspect a callback's LLVM function type at import time.
+  `iv_package_finalize` now checks every non-null runtime callback in each
+  `NodeCompilerRecord` before it emits `.node-code.o`. Finalization and GraphJit use
+  the same `graph_jit::package_callback_type()` implementation, so a callback cannot
+  reach the address-only import path with a different LLVM function type.
+  `PackageCallbackAbi.AcceptsOnlyTheDeclaredFunctionTypeAndCallingConvention` checks
+  every callback ABI against both a wrong function type and a wrong calling convention.
 - **Measured (2026-11-07, repository owner, size 64, medians over five edits of
   each kind).** Edit wall is from the edit to the executor accepting the
   generation. Optimize and code generation are the transition compilation's.

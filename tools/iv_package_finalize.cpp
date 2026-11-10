@@ -1,3 +1,4 @@
+#include <intravenous/graph_jit/package_callback_abi.h>
 #include <intravenous/module/abi.h>
 #include <intravenous/module/package_definitions.h>
 #include <intravenous/node/node_state_structure.h>
@@ -300,6 +301,40 @@ struct IrNodeRecord {
     Constant* initializer = nullptr;
 };
 
+using iv::graph_jit::CallbackImportAbi;
+struct CallbackField {
+    std::string_view name;
+    CallbackImportAbi abi;
+};
+constexpr std::array node_code_callback_fields{
+    CallbackField{"tick_block", CallbackImportAbi::block},
+    CallbackField{"tick_block_batch", CallbackImportAbi::batch},
+    CallbackField{"skip_block", CallbackImportAbi::block},
+    CallbackField{"skip_block_batch", CallbackImportAbi::batch},
+    CallbackField{"tock_coverage", CallbackImportAbi::background},
+    CallbackField{"tock_coverage_batch", CallbackImportAbi::batch},
+    CallbackField{"propagate_forward_coverage", CallbackImportAbi::background},
+    CallbackField{"propagate_forward_coverage_batch", CallbackImportAbi::batch},
+    CallbackField{"propagate_reverse_coverage", CallbackImportAbi::background},
+    CallbackField{"propagate_reverse_coverage_batch", CallbackImportAbi::batch},
+    CallbackField{
+        "initialize_sequential_input", CallbackImportAbi::sequential_initialize},
+    CallbackField{
+        "combine_sequential_input_values", CallbackImportAbi::sequential_combine},
+};
+
+void validate_node_code_callback(Constant* callback, unsigned operation_index)
+{
+    if (isa<ConstantPointerNull>(callback)) return;
+    auto* function = dyn_cast<Function>(callback->stripPointerCasts());
+    auto const& field = node_code_callback_fields[operation_index - 1];
+    if (!function || function->isDeclaration()
+        || !iv::graph_jit::package_callback_type_matches(*function, field.abi)) {
+        fail("node compiler record callback '" + std::string(field.name)
+            + "' has the wrong LLVM ABI");
+    }
+}
+
 std::uint64_t constant_u64(Value const* value)
 {
     auto const* integer = dyn_cast<ConstantInt>(value);
@@ -329,6 +364,12 @@ std::vector<IrNodeRecord> scan_node_records(Module& module)
         auto* operations = dyn_cast<ConstantStruct>(record->getOperand(1));
         if (!operations || operations->getNumOperands() != 13) {
             fail("malformed iv_node_types operations ABI");
+        }
+        // Operand 0 is declare_node, which stays in configuration code and has
+        // a separate C++ ABI. Every callback copied into .node-code.o must
+        // match the type GraphJit will use for its indirect native call.
+        for (unsigned index = 1; index < operations->getNumOperands(); ++index) {
+            validate_node_code_callback(operations->getOperand(index), index);
         }
         StringRef name;
         if (!getConstantStringInfo(record->getOperand(2), name, false))
@@ -2516,10 +2557,7 @@ void reduce_to_node_code(Module& module, NodeCodeTarget const& host)
                 fail("malformed iv_node_types operations ABI");
             }
             if (index == 0 || isa<ConstantPointerNull>(callback)) continue;
-            auto* function = dyn_cast<Function>(callback->stripPointerCasts());
-            if (!function || function->isDeclaration()) {
-                fail("node compiler record callback has no definition in the finalized package");
-            }
+            validate_node_code_callback(callback, index);
         }
         records.push_back({
             .key = {

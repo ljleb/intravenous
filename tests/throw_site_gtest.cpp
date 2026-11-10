@@ -18,6 +18,16 @@ namespace {
     // Keeps the recursive call from becoming a tail call.
     asm volatile("");
 }
+
+[[gnu::noinline]] void capture_from_depth(void const* exception_object, int depth)
+{
+    if (depth == 0) {
+        iv::details::capture_throw_site(exception_object);
+        return;
+    }
+    capture_from_depth(exception_object, depth - 1);
+    asm volatile("");
+}
 } // namespace
 
 TEST(ThrowSite, CapturesTheFramesThatUnwindingRemoved)
@@ -57,4 +67,27 @@ TEST(ThrowSite, RethrowingKeepsTheOriginalSite)
     auto const site = iv::throw_site_stacktrace(failure);
     ASSERT_TRUE(site.has_value());
     EXPECT_GE(site->size(), std::stacktrace::current().size() + 4);
+}
+
+TEST(ThrowSite, ReusedExceptionAddressSelectsTheNewestCapture)
+{
+    try {
+        throw std::runtime_error("reused exception storage");
+    } catch (std::exception const& error) {
+        auto const* exception_object = dynamic_cast<void const*>(&error);
+        ASSERT_NE(exception_object, nullptr);
+
+        // Replace every retained slot with a deliberately deep stack for the
+        // same address, then record one shallow stack as the newest capture.
+        // An oldest-first lookup returns one of the stale deep stacks.
+        for (int index = 0; index != 16; ++index) {
+            capture_from_depth(exception_object, 12);
+        }
+        capture_from_depth(exception_object, 0);
+
+        auto const handler = std::stacktrace::current();
+        auto const site = iv::throw_site_stacktrace(std::current_exception());
+        ASSERT_TRUE(site.has_value());
+        EXPECT_LT(site->size(), handler.size() + 8);
+    }
 }

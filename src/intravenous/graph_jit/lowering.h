@@ -1,5 +1,6 @@
 #pragma once
 
+#include <intravenous/graph_jit/package_callback_abi.h>
 #include <intravenous/graph_jit/realtime_port_state_plan.h>
 #include <intravenous/graph_jit/realtime_port_state_transition.h>
 #include <intravenous/graph_jit/port_realization.h>
@@ -10,7 +11,6 @@
 #include <llvm/IR/GlobalVariable.h>
 #include <llvm/IR/Module.h>
 
-#include <cstdint>
 #include <expected>
 #include <memory>
 #include <span>
@@ -18,20 +18,6 @@
 #include <vector>
 
 namespace iv::graph_jit {
-// The compiler ABI of one package callback. Every callback with a given ABI has
-// the LLVM function type package_callback_type() returns for it.
-enum class CallbackImportAbi : std::uint8_t {
-    block,
-    background,
-    batch,
-    sequential_initialize,
-    sequential_combine,
-};
-
-llvm::FunctionType* package_callback_type(
-    llvm::LLVMContext& context,
-    CallbackImportAbi abi);
-
 // The node-code copy of one retained package global, by the symbol the project
 // module declares for it. An empty symbol marks a global node code cannot use.
 struct PackageRetainedGlobal {

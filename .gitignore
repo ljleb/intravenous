@@ -2,6 +2,7 @@ build/
 build-release/
 .cache
 *.wav
+/perf.data*
 /.cache
 /.direnv
 /.codex

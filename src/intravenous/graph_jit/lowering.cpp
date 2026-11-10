@@ -297,27 +297,17 @@ llvm::FunctionType* root_block_operation_type(llvm::LLVMContext& context)
 
 llvm::FunctionType* primitive_block_operation_type(llvm::LLVMContext& context)
 {
-    auto* pointer = llvm::PointerType::getUnqual(context);
-    auto* size_type = llvm::IntegerType::get(
-        context, static_cast<unsigned>(sizeof(std::size_t) * 8));
-    return llvm::FunctionType::get(
-        llvm::Type::getVoidTy(context),
-        {pointer, pointer, size_type, size_type},
-        false);
+    return package_callback_type(context, CallbackImportAbi::block);
 }
 
 llvm::FunctionType* background_operation_type(llvm::LLVMContext& context)
 {
-    auto* pointer = llvm::PointerType::getUnqual(context);
-    return llvm::FunctionType::get(
-        llvm::Type::getVoidTy(context), {pointer, pointer}, false);
+    return package_callback_type(context, CallbackImportAbi::background);
 }
 
 llvm::FunctionType* batch_operation_type(llvm::LLVMContext& context)
 {
-    auto* pointer = llvm::PointerType::getUnqual(context);
-    return llvm::FunctionType::get(
-        llvm::Type::getVoidTy(context), {pointer}, false);
+    return package_callback_type(context, CallbackImportAbi::batch);
 }
 
 llvm::FunctionType* background_root_operation_type(llvm::LLVMContext& context)
@@ -9694,33 +9684,6 @@ std::expected<LoweringOutput, std::string> emit_lowering_plan(
     };
 }
 } // namespace
-
-llvm::FunctionType* package_callback_type(
-    llvm::LLVMContext& context,
-    CallbackImportAbi abi)
-{
-    auto* pointer = llvm::PointerType::getUnqual(context);
-    auto* size_type = llvm::IntegerType::get(
-        context, static_cast<unsigned>(sizeof(std::size_t) * 8));
-    auto* boolean = llvm::Type::getInt1Ty(context);
-    auto* byte = llvm::Type::getInt8Ty(context);
-    switch (abi) {
-    case CallbackImportAbi::block:
-        return primitive_block_operation_type(context);
-    case CallbackImportAbi::background:
-        return background_operation_type(context);
-    case CallbackImportAbi::batch:
-        return batch_operation_type(context);
-    case CallbackImportAbi::sequential_initialize:
-        return llvm::FunctionType::get(
-            boolean, {size_type, byte, byte, pointer, size_type, size_type}, false);
-    case CallbackImportAbi::sequential_combine:
-        return llvm::FunctionType::get(
-            boolean, {size_type, byte, pointer, pointer, size_type, size_type}, false);
-    }
-    IV_ASSERT(false, "unknown package callback ABI");
-    return nullptr;
-}
 
 std::expected<LoweringOutput, std::string> lower_configured_graph_to_llvm(
     LoweringInput& input,

@@ -100,6 +100,19 @@ add_iv_gtest(
     intravenous_throw_site_tests
     throw_site_gtest.cpp)
 add_iv_gtest(
+    intravenous_package_callback_abi_tests
+    package_callback_abi_gtest.cpp
+    NO_HOST_RUNTIME_OBJECTS)
+target_include_directories(intravenous_package_callback_abi_tests PRIVATE
+    ${LLVM_INCLUDE_DIRS})
+target_compile_definitions(intravenous_package_callback_abi_tests PRIVATE
+    ${LLVM_DEFINITIONS})
+llvm_map_components_to_libnames(IV_PACKAGE_CALLBACK_ABI_LLVM_LIBS
+    core
+    support)
+target_link_libraries(intravenous_package_callback_abi_tests PRIVATE
+    ${IV_PACKAGE_CALLBACK_ABI_LLVM_LIBS})
+add_iv_gtest(
     intravenous_node_build_request_tests
     node_build_request_gtest.cpp)
 
