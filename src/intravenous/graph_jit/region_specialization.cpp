@@ -77,12 +77,158 @@ void write_storage(
     key.value(storage.channel_layout.sample_layout);
 }
 
+bool valid_sample_address(
+    RegionSpecializationSampleAddress const& address,
+    std::size_t representation_count) noexcept
+{
+    return address.representation < representation_count
+        && address.frame_capacity != 0
+        && std::has_single_bit(address.frame_capacity)
+        && address.channel_count != 0
+        && address.channel_count <= maximum_supported_channel_count
+        && address.value_size_bytes != 0
+        && address.frame_capacity
+            <= std::numeric_limits<std::size_t>::max() / address.channel_count
+        && address.frame_capacity * address.channel_count
+            <= std::numeric_limits<std::size_t>::max()
+                / address.value_size_bytes;
+}
+
+bool valid_composition(
+    RegionSpecializationSampleComposition const& composition,
+    std::size_t representation_count) noexcept
+{
+    if (!valid_sample_address(composition.target, representation_count)
+        || composition.scalar_lane_count == 0
+        || composition.scalar_lane_count
+            > std::numeric_limits<std::size_t>::max() / sizeof(float)
+        || composition.target.value_size_bytes
+            != composition.scalar_lane_count * sizeof(float)
+        || composition.contributions.empty()) {
+        return false;
+    }
+    std::vector<bool> targets(composition.target.channel_count);
+    for (auto const& contribution : composition.contributions) {
+        if (contribution.sources.empty()
+            || contribution.sources.size() > maximum_supported_channel_count
+            || contribution.term_begins.size()
+                != contribution.target_channels.size() + 1
+            || contribution.term_begins.empty()
+            || contribution.term_begins.front() != 0
+            || contribution.term_begins.back() != contribution.terms.size()) {
+            return false;
+        }
+        for (auto const& source : contribution.sources) {
+            if (!valid_sample_address(source.address, representation_count)
+                || source.address.value_size_bytes
+                    != composition.target.value_size_bytes
+                || source.channel >= source.address.channel_count) {
+                return false;
+            }
+        }
+        for (std::size_t channel = 0;
+             channel < contribution.target_channels.size(); ++channel) {
+            auto const target = contribution.target_channels[channel];
+            if (target >= targets.size() || targets[target]
+                || contribution.term_begins[channel]
+                    > contribution.term_begins[channel + 1]) {
+                return false;
+            }
+            targets[target] = true;
+        }
+        for (auto const& term : contribution.terms) {
+            if (term.source >= contribution.sources.size()) return false;
+        }
+    }
+    return std::ranges::all_of(targets, [](bool value) { return value; });
+}
+
+bool valid_operations(
+    std::span<RegionSpecializationOperation const> operations,
+    std::size_t representation_count) noexcept
+{
+    for (auto const& operation : operations) {
+        switch (operation.kind) {
+        case RegionSpecializationOperationKind::root_operations:
+            if (operation.operation_count == 0
+                || operation.operation_begin
+                    > std::numeric_limits<std::size_t>::max()
+                        - operation.operation_count) {
+                return false;
+            }
+            break;
+        case RegionSpecializationOperationKind::sample_composition:
+            if (operation.operation_begin != 0 || operation.operation_count != 0
+                || !valid_composition(
+                    operation.composition, representation_count)) {
+                return false;
+            }
+            break;
+        }
+    }
+    return true;
+}
+
+void write_sample_address(
+    KeyWriter& key,
+    RegionSpecializationSampleAddress const& address)
+{
+    key.value(address.representation);
+    key.value(address.frame_capacity);
+    key.value(address.channel_count);
+    key.value(address.value_size_bytes);
+    key.value(address.planar);
+}
+
+void write_operations(
+    KeyWriter& key,
+    std::span<RegionSpecializationOperation const> operations)
+{
+    key.value(operations.size());
+    for (auto const& operation : operations) {
+        key.value(operation.kind);
+        key.value(operation.operation_begin);
+        key.value(operation.operation_count);
+        if (operation.kind
+            != RegionSpecializationOperationKind::sample_composition) {
+            continue;
+        }
+        auto const& composition = operation.composition;
+        write_sample_address(key, composition.target);
+        key.value(composition.target_history);
+        key.value(composition.scalar_lane_count);
+        key.value(composition.contributions.size());
+        for (auto const& contribution : composition.contributions) {
+            key.value(contribution.sources.size());
+            for (auto const& source : contribution.sources) {
+                write_sample_address(key, source.address);
+                key.value(source.channel);
+                key.value(source.read_latency);
+            }
+            key.value(contribution.target_channels.size());
+            for (auto const channel : contribution.target_channels) {
+                key.value(channel);
+            }
+            key.value(contribution.term_begins.size());
+            for (auto const begin : contribution.term_begins) key.value(begin);
+            key.value(contribution.terms.size());
+            for (auto const& term : contribution.terms) {
+                key.value(term.source);
+                key.value(term.coefficient);
+            }
+        }
+    }
+}
+
 } // namespace
 
 bool region_specialization_request_is_complete(
     RegionSpecializationRequest const& request) noexcept
 {
-    if (request.quantum == 0 || request.steps.empty()) return false;
+    if (request.quantum == 0 || request.steps.empty()
+        || (!request.operations_per_slice && request.steps.size() != 1)) {
+        return false;
+    }
     for (auto const& step : request.steps) {
         if (!step.revision
             || step.inputs.size() != step.input_channel_counts.size()
@@ -151,6 +297,12 @@ bool region_specialization_request_is_complete(
             if (seen[update.binding]) return false;
             seen[update.binding] = true;
         }
+        if (!valid_operations(
+                step.operations_before, request.sample_representation_count)
+            || !valid_operations(
+                step.operations_after, request.sample_representation_count)) {
+            return false;
+        }
     }
     return true;
 }
@@ -163,6 +315,8 @@ std::string make_region_specialization_key(
 {
     KeyWriter key;
     key.value(request.quantum);
+    key.value(request.operations_per_slice);
+    key.value(request.sample_representation_count);
     key.value(request.steps.size());
     for (auto const& step : request.steps) {
         // The finalized bitcode's file name carries its artifact signature, so
@@ -226,8 +380,8 @@ std::string make_region_specialization_key(
             key.value(update.output);
             key.value(update.binding);
         }
-        key.value(step.operations_before);
-        key.value(step.operations_after);
+        write_operations(key, step.operations_before);
+        write_operations(key, step.operations_after);
         key.value(step.stages_manual_controls);
     }
     return std::move(key).take();

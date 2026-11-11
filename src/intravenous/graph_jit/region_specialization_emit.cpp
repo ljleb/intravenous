@@ -54,6 +54,7 @@ constexpr auto output_tail_offset =
     output_storage_offset + offsetof(ContinuousPortStorageBinding, geometry);
 
 constexpr auto span_pointer_offset = offsetof(ReflectedSpan<std::byte>, pointer);
+constexpr unsigned region_specialization_workspace_argument = 5;
 
 std::size_t channel_field(
     std::size_t storage_offset,
@@ -252,38 +253,53 @@ emit_region_specialization(
     auto& context = module.getContext();
     SpecializationEmitter emit(module);
     auto& builder = emit.builder();
+    auto* i8 = llvm::Type::getInt8Ty(context);
     auto* i64 = emit.i64();
     auto* pointer = emit.pointer();
 
     auto* type = llvm::FunctionType::get(
         llvm::Type::getVoidTy(context),
-        {pointer, pointer, pointer, i64, i64, pointer, pointer, pointer},
+        {pointer, pointer, pointer, pointer, i64, pointer, i64, i64,
+         pointer, pointer, pointer, pointer},
         false);
     auto* operations_type = llvm::FunctionType::get(
-        llvm::Type::getVoidTy(context), {pointer, pointer, i64, i64}, false);
+        llvm::Type::getVoidTy(context),
+        {pointer, pointer, i64, i64, i64, i64},
+        false);
     auto* manual_controls_type = llvm::FunctionType::get(
         llvm::Type::getVoidTy(context),
         {pointer, i64, i64, i64, i64, i64},
         false);
+    auto* mark_sample_type = llvm::FunctionType::get(
+        llvm::Type::getVoidTy(context), {pointer, i64}, false);
     auto* function = llvm::Function::Create(
         type, llvm::GlobalValue::ExternalLinkage, function_name, module);
     function->addFnAttr(llvm::Attribute::NoUnwind);
     auto* steps = function->getArg(0);
     auto* begin_bases = function->getArg(1);
-    auto* workspace = function->getArg(2);
-    auto* root_index = function->getArg(3);
-    auto* block_size = function->getArg(4);
-    auto* frame = function->getArg(5);
-    auto* run_operations = function->getArg(6);
-    auto* stage_manual_controls = function->getArg(7);
+    auto* sample_representations = function->getArg(2);
+    auto* sample_representation_indices = function->getArg(3);
+    auto* project_begin_index = function->getArg(4);
+    auto* workspace = function->getArg(
+        region_specialization_workspace_argument);
+    auto* root_index = function->getArg(6);
+    auto* block_size = function->getArg(7);
+    auto* frame = function->getArg(8);
+    auto* run_operations = function->getArg(9);
+    auto* stage_manual_controls = function->getArg(10);
+    auto* mark_sample = function->getArg(11);
     steps->setName("steps");
     begin_bases->setName("begin_bases");
+    sample_representations->setName("sample_representations");
+    sample_representation_indices->setName("sample_representation_indices");
+    project_begin_index->setName("project_begin_index");
     workspace->setName("workspace");
     root_index->setName("root_index");
     block_size->setName("block_size");
     frame->setName("frame");
     run_operations->setName("run_operations");
     stage_manual_controls->setName("stage_manual_controls");
+    mark_sample->setName("mark_sample");
 
     auto* entry = llvm::BasicBlock::Create(context, "entry", function);
     builder.SetInsertPoint(entry);
@@ -313,11 +329,11 @@ emit_region_specialization(
             record, offsetof(RegionSpecializationStep, node_data));
         auto* prepared = emit.load_pointer(
             record, offsetof(RegionSpecializationStep, context));
-        if (step.operations_before) {
+        if (!step.operations_before.empty()) {
             local.operations_before = emit.load_pointer(
                 record, offsetof(RegionSpecializationStep, operations_before));
         }
-        if (step.operations_after) {
+        if (!step.operations_after.empty()) {
             local.operations_after = emit.load_pointer(
                 record, offsetof(RegionSpecializationStep, operations_after));
         }
@@ -496,14 +512,180 @@ emit_region_specialization(
             "GraphJit region specialization workspace layout disagrees");
     }
 
+    std::vector<llvm::Value*> local_sample_representations;
+    std::vector<llvm::Value*> local_sample_representation_indices;
+    local_sample_representations.reserve(request.sample_representation_count);
+    local_sample_representation_indices.reserve(
+        request.sample_representation_count);
+    for (std::size_t representation = 0;
+         representation < request.sample_representation_count;
+         ++representation) {
+        local_sample_representations.push_back(emit.load_pointer(
+            sample_representations, representation * sizeof(void*)));
+        local_sample_representation_indices.push_back(builder.CreateLoad(
+            i64,
+            emit.at(
+                sample_representation_indices,
+                representation * sizeof(std::size_t))));
+    }
+
+    auto* float_type = llvm::Type::getFloatTy(context);
+    auto sample_value = [&](RegionSpecializationSampleAddress const& address,
+                            llvm::Value* frame_index,
+                            std::size_t channel,
+                            std::size_t lane) {
+        auto* base = local_sample_representations[address.representation];
+        auto* slot = builder.CreateAnd(
+            frame_index,
+            llvm::ConstantInt::get(i64, address.frame_capacity - 1));
+        llvm::Value* value_index = nullptr;
+        if (address.planar) {
+            value_index = builder.CreateAdd(
+                slot,
+                llvm::ConstantInt::get(
+                    i64, channel * address.frame_capacity));
+        } else {
+            value_index = builder.CreateAdd(
+                builder.CreateMul(
+                    slot,
+                    llvm::ConstantInt::get(i64, address.channel_count)),
+                llvm::ConstantInt::get(i64, channel));
+        }
+        auto* byte_offset = builder.CreateAdd(
+            builder.CreateMul(
+                value_index,
+                llvm::ConstantInt::get(i64, address.value_size_bytes)),
+            llvm::ConstantInt::get(i64, lane * sizeof(float)));
+        return builder.CreateInBoundsGEP(i8, base, byte_offset);
+    };
+    auto emit_composition = [&](RegionSpecializationSampleComposition const& composition,
+                                llvm::Value* begin,
+                                llvm::Value* count) {
+        auto* preheader = builder.GetInsertBlock();
+        auto* loop = llvm::BasicBlock::Create(context, "composition", function);
+        auto* body = llvm::BasicBlock::Create(context, "composition.body", function);
+        auto* done = llvm::BasicBlock::Create(context, "composition.done", function);
+        builder.CreateBr(loop);
+
+        builder.SetInsertPoint(loop);
+        auto* offset = builder.CreatePHI(i64, 2, "composition.offset");
+        offset->addIncoming(llvm::ConstantInt::get(i64, 0), preheader);
+        auto* total = builder.CreateAdd(
+            count,
+            llvm::ConstantInt::get(i64, composition.target_history));
+        builder.CreateCondBr(builder.CreateICmpULT(offset, total), body, done);
+
+        builder.SetInsertPoint(body);
+        auto* first = builder.CreateSub(
+            begin,
+            llvm::ConstantInt::get(i64, composition.target_history));
+        auto* target_frame = builder.CreateAdd(first, offset);
+        for (auto const& contribution : composition.contributions) {
+            for (std::size_t lane = 0;
+                 lane < composition.scalar_lane_count;
+                 ++lane) {
+                std::vector<llvm::Value*> sources;
+                sources.reserve(contribution.sources.size());
+                for (auto const& source : contribution.sources) {
+                    auto* source_frame = builder.CreateSub(
+                        target_frame,
+                        llvm::ConstantInt::get(i64, source.read_latency));
+                    auto* load = builder.CreateLoad(
+                        float_type,
+                        sample_value(
+                            source.address,
+                            source_frame,
+                            source.channel,
+                            lane));
+                    load->setAlignment(llvm::Align(alignof(float)));
+                    sources.push_back(load);
+                }
+                for (std::size_t converted = 0;
+                     converted < contribution.target_channels.size();
+                     ++converted) {
+                    auto const term_begin = contribution.term_begins[converted];
+                    auto const term_end = contribution.term_begins[converted + 1];
+                    llvm::Value* mixed = llvm::ConstantFP::get(float_type, 0.0);
+                    for (auto term = term_begin; term < term_end; ++term) {
+                        auto const& selected = contribution.terms[term];
+                        auto* value = sources[selected.source];
+                        if (selected.coefficient != 1.0f) {
+                            value = builder.CreateFMul(
+                                value,
+                                llvm::ConstantFP::get(
+                                    float_type, selected.coefficient));
+                        }
+                        mixed = term == term_begin
+                            ? value
+                            : builder.CreateFAdd(mixed, value);
+                    }
+                    auto* store = builder.CreateStore(
+                        mixed,
+                        sample_value(
+                            composition.target,
+                            target_frame,
+                            contribution.target_channels[converted],
+                            lane));
+                    store->setAlignment(llvm::Align(alignof(float)));
+                }
+            }
+        }
+        auto* next = builder.CreateAdd(offset, llvm::ConstantInt::get(i64, 1));
+        offset->addIncoming(next, body);
+        builder.CreateBr(loop);
+
+        builder.SetInsertPoint(done);
+        auto* mark = builder.CreateCall(
+            mark_sample_type,
+            mark_sample,
+            {frame,
+             local_sample_representation_indices[
+                 composition.target.representation]});
+        mark->setDoesNotThrow();
+    };
+    auto emit_operations = [&](std::span<RegionSpecializationOperation const> actions,
+                               llvm::Value* root_operations,
+                               llvm::Value* index,
+                               llvm::Value* begin,
+                               llvm::Value* count) {
+        for (auto const& action : actions) {
+            if (action.kind
+                == RegionSpecializationOperationKind::root_operations) {
+                auto* operation_call = builder.CreateCall(
+                    operations_type,
+                    run_operations,
+                    {frame,
+                     root_operations,
+                     llvm::ConstantInt::get(i64, action.operation_begin),
+                     llvm::ConstantInt::get(i64, action.operation_count),
+                     index,
+                     count});
+                operation_call->setDoesNotThrow();
+            } else {
+                emit_composition(action.composition, begin, count);
+            }
+        }
+    };
+
+    if (!request.operations_per_slice) {
+        auto const& step = request.steps.front();
+        emit_operations(
+            step.operations_before,
+            locals.front().operations_before,
+            root_index,
+            project_begin_index,
+            block_size);
+    }
+
     auto* loop = llvm::BasicBlock::Create(context, "slice", function);
     auto* body = llvm::BasicBlock::Create(context, "slice.body", function);
     auto* done = llvm::BasicBlock::Create(context, "done", function);
+    auto* slice_preheader = builder.GetInsertBlock();
     builder.CreateBr(loop);
 
     builder.SetInsertPoint(loop);
     auto* offset = builder.CreatePHI(i64, 2, "offset");
-    offset->addIncoming(llvm::ConstantInt::get(i64, 0), entry);
+    offset->addIncoming(llvm::ConstantInt::get(i64, 0), slice_preheader);
     builder.CreateCondBr(builder.CreateICmpULT(offset, block_size), body, done);
 
     builder.SetInsertPoint(body);
@@ -529,15 +711,14 @@ emit_region_specialization(
                 binding.output ? local.outputs : local.inputs,
                 field);
         }
-        // The step's own storage operations run through the root, around its
-        // invocation, in the order of run_step().
-        auto operations = [&](llvm::Value* list) {
-            if (!list) return;
-            auto* operation_call = builder.CreateCall(
-                operations_type, run_operations, {frame, list, slice, count});
-            operation_call->setDoesNotThrow();
-        };
-        operations(local.operations_before);
+        if (request.operations_per_slice) {
+            emit_operations(
+                step.operations_before,
+                local.operations_before,
+                slice,
+                builder.CreateAdd(project_begin_index, offset),
+                count);
+        }
         if (step.stages_manual_controls) {
             auto* manual_controls_call = builder.CreateCall(
                 manual_controls_type,
@@ -553,13 +734,29 @@ emit_region_specialization(
         auto* call = builder.CreateCall(
             local.tick_block, {local.node_data, local.context, slice, count});
         call->setDoesNotThrow();
-        operations(local.operations_after);
+        if (request.operations_per_slice) {
+            emit_operations(
+                step.operations_after,
+                local.operations_after,
+                slice,
+                builder.CreateAdd(project_begin_index, offset),
+                count);
+        }
     }
     auto* next = builder.CreateAdd(offset, quantum, "next");
-    offset->addIncoming(next, body);
+    offset->addIncoming(next, builder.GetInsertBlock());
     builder.CreateBr(loop);
 
     builder.SetInsertPoint(done);
+    if (!request.operations_per_slice) {
+        auto const& step = request.steps.front();
+        emit_operations(
+            step.operations_after,
+            locals.front().operations_after,
+            root_index,
+            project_begin_index,
+            block_size);
+    }
     builder.CreateRetVoid();
     return contents;
 }
@@ -920,8 +1117,12 @@ std::size_t substitute_region_workspace_values(
     RegionSpecializationWorkspaceContents const& contents)
 {
     auto* function = module.getFunction(function_name);
-    if (!function || function->isDeclaration() || function->arg_size() < 3) return 0;
-    auto* workspace = function->getArg(2);
+    if (!function || function->isDeclaration()
+        || function->arg_size() <= region_specialization_workspace_argument) {
+        return 0;
+    }
+    auto* workspace = function->getArg(
+        region_specialization_workspace_argument);
     auto const& layout = module.getDataLayout();
     auto& context = module.getContext();
     std::map<std::size_t, RegionSpecializationWorkspaceContents::PointerField const*> pointers;

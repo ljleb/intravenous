@@ -50,6 +50,8 @@
 #include <variant>
 #include <vector>
 
+#include <unistd.h>
+
 
 namespace {
 
@@ -13727,9 +13729,9 @@ TEST_F(GraphJitRuntimeFixture, CyclicRegionSpecializationMatchesInterpreterAndIs
     // rate from the workspace; those reads become the fields' values.
     EXPECT_GT(first->region_specialization_substitutions, 0u);
 
-    // Compiled code lives while some compiled graph uses it. compare() has
-    // released its graphs, so held compiles the region again, and a second
-    // compilation while held lives reuses that code.
+    // compare() released its compiled graphs. The byte-bounded recent-use
+    // cache still owns the specialization, so held reuses it. A second
+    // compilation also reuses the same code while held owns it.
     float gain = 0.5f;
     float initial = 0.0f;
     std::array arguments{
@@ -13740,6 +13742,13 @@ TEST_F(GraphJitRuntimeFixture, CyclicRegionSpecializationMatchesInterpreterAndIs
         *revision, graph_jit_constant_gain_feedback_module_id, arguments);
     auto held = compile_graph(graph, 121);
     ASSERT_TRUE(held.succeeded());
+    ASSERT_EQ(held.timings.size(), 1u);
+    EXPECT_EQ(held.timings.front().region_specializations_compiled, 0u);
+    EXPECT_EQ(held.timings.front().region_specializations_reused, 1u);
+    EXPECT_GT(held.timings.front().region_specialization_cache_bytes, 0u);
+    EXPECT_LE(
+        held.timings.front().region_specialization_cache_bytes,
+        held.timings.front().region_specialization_cache_budget_bytes);
     auto reused = compile_graph(graph, 122);
     ASSERT_TRUE(reused.succeeded());
     ASSERT_EQ(reused.timings.size(), 1u);
@@ -13758,6 +13767,306 @@ TEST_F(GraphJitRuntimeFixture, CyclicRegionSpecializationMatchesInterpreterAndIs
         << copied->region_specialization_skip;
     EXPECT_EQ(copied->region_specialization_failures, 0u)
         << copied->region_specialization_failure;
+
+    // A one-byte budget cannot retain generated code. The first compilation
+    // reports its allocated code memory, which is whole pages. After its graph
+    // is released, the second compilation must generate the specialization
+    // again.
+    iv::GraphJit one_byte_cache(iv::GraphJitConfig{
+        .sample_rate = 88200,
+        .block_size = 64,
+        .region_specialization_cache_budget_bytes = 1,
+    });
+    {
+        auto limited = one_byte_cache.compile(iv::GraphJitCompileRequest{
+            .project_generation = 128,
+            .graph = graph,
+            .definitions = definitions,
+        });
+        ASSERT_TRUE(limited.succeeded())
+            << (limited.diagnostics.empty()
+                    ? ""
+                    : limited.diagnostics.front().message);
+        ASSERT_EQ(limited.timings.size(), 1u);
+        EXPECT_EQ(limited.timings.front().region_specializations_compiled, 1u);
+        auto const allocated =
+            limited.timings.front().region_specialization_allocated_bytes;
+        auto const page_size = static_cast<std::uint64_t>(::sysconf(_SC_PAGESIZE));
+        EXPECT_GE(allocated, page_size);
+        EXPECT_EQ(allocated % page_size, 0u);
+        EXPECT_EQ(limited.timings.front().region_specialization_cache_bytes, 0u);
+        EXPECT_EQ(
+            limited.timings.front().region_specialization_cache_budget_bytes,
+            1u);
+    }
+    auto limited_again = one_byte_cache.compile(iv::GraphJitCompileRequest{
+        .project_generation = 129,
+        .graph = graph,
+        .definitions = definitions,
+    });
+    ASSERT_TRUE(limited_again.succeeded())
+        << (limited_again.diagnostics.empty()
+                ? ""
+                : limited_again.diagnostics.front().message);
+    ASSERT_EQ(limited_again.timings.size(), 1u);
+    EXPECT_EQ(
+        limited_again.timings.front().region_specializations_compiled,
+        1u);
+    EXPECT_EQ(limited_again.timings.front().region_specializations_reused, 0u);
+}
+
+// The recent-use cache owns region specializations within its byte budget and
+// evicts the least recently requested one first. Eviction removes only the
+// cache's ownership: code that a compiled graph still runs keeps working, a
+// later request reuses it, and the cache then owns it again. A specialization
+// larger than the budget is reused while a compiled graph owns it and compiled
+// again once nothing does.
+TEST_F(GraphJitRuntimeFixture, RegionSpecializationCacheEvictsLeastRecentlyUsedCode)
+{
+    // Three gains of one cyclic region: three value specializations.
+    std::array const gains{0.5f, 0.25f, 0.125f};
+    // configuration_argument() keeps its argument's address, so each value
+    // is a named object that outlives the graph construction.
+    auto gain_graph = [&](float gain) {
+        float initial = 0.0f;
+        std::array arguments{
+            iv::details::configuration_argument(gain),
+            iv::details::configuration_argument(initial),
+        };
+        return configured_module_graph_with_arguments(
+            *revision, graph_jit_constant_gain_feedback_module_id, arguments);
+    };
+    std::array const graphs{
+        gain_graph(gains[0]),
+        gain_graph(gains[1]),
+        gain_graph(gains[2]),
+    };
+    auto make_jit = [](std::size_t budget) {
+        return std::make_unique<iv::GraphJit>(iv::GraphJitConfig{
+            .sample_rate = 88200,
+            .block_size = 64,
+            .region_specialization_cache_budget_bytes = budget,
+        });
+    };
+    std::uint64_t generation = 140;
+    auto compile_with = [&](iv::GraphJit& graph_jit, std::size_t graph) {
+        auto result = graph_jit.compile(iv::GraphJitCompileRequest{
+            .project_generation = generation++,
+            .graph = graphs[graph],
+            .definitions = definitions,
+        });
+        EXPECT_TRUE(result.succeeded())
+            << (result.diagnostics.empty() ? "" : result.diagnostics.front().message);
+        EXPECT_EQ(result.timings.size(), 1u);
+        return result;
+    };
+    struct Counts {
+        std::uint64_t compiled = 0;
+        std::uint64_t reused = 0;
+        std::uint64_t allocated = 0;
+        std::uint64_t cache = 0;
+    };
+    auto counts = [](iv::GraphJitCompileResult const& result) {
+        if (result.timings.size() != 1) return Counts{};
+        auto const& timings = result.timings.front();
+        return Counts{
+            .compiled = timings.region_specializations_compiled,
+            .reused = timings.region_specializations_reused,
+            .allocated = timings.region_specialization_allocated_bytes,
+            .cache = timings.region_specialization_cache_bytes,
+        };
+    };
+    // Compiles one graph and releases the result at once, so only the cache
+    // can keep the graph's specialization alive.
+    auto released = [&](iv::GraphJit& graph_jit, std::size_t graph) {
+        return counts(compile_with(graph_jit, graph));
+    };
+
+    // Each specialization's allocated code memory, from a GraphJit whose
+    // budget holds all three. The code is the same in every GraphJit; each
+    // compilation below checks that.
+    std::array<std::uint64_t, 3> sizes{};
+    {
+        auto probe = make_jit(
+            iv::GraphJitConfig{}.region_specialization_cache_budget_bytes);
+        for (std::size_t graph = 0; graph < graphs.size(); ++graph) {
+            auto const measured = released(*probe, graph);
+            EXPECT_EQ(measured.compiled, 1u);
+            sizes[graph] = measured.allocated;
+        }
+    }
+    auto const [a, b, c] = sizes;
+    ASSERT_GT(a, 1u);
+    ASSERT_GT(b, 0u);
+    ASSERT_GT(c, 0u);
+
+    // A budget that holds A with B or with C, never all three.
+    {
+        auto lru = make_jit(std::max(a + b, a + c));
+        auto step = released(*lru, 0);
+        EXPECT_EQ(step.compiled, 1u);
+        EXPECT_EQ(step.allocated, a);
+        EXPECT_EQ(step.cache, a);
+        step = released(*lru, 1);
+        EXPECT_EQ(step.compiled, 1u);
+        EXPECT_EQ(step.allocated, b);
+        EXPECT_EQ(step.cache, a + b);
+        // Requesting A makes B the least recently requested entry.
+        step = released(*lru, 0);
+        EXPECT_EQ(step.compiled, 0u);
+        EXPECT_EQ(step.reused, 1u);
+        EXPECT_EQ(step.cache, a + b);
+        // C evicts B, not A.
+        step = released(*lru, 2);
+        EXPECT_EQ(step.compiled, 1u);
+        EXPECT_EQ(step.allocated, c);
+        EXPECT_EQ(step.cache, a + c);
+        step = released(*lru, 0);
+        EXPECT_EQ(step.compiled, 0u);
+        EXPECT_EQ(step.reused, 1u);
+        EXPECT_EQ(step.cache, a + c);
+        // B was released when it was evicted. Owning it again evicts C, now
+        // the least recently requested entry.
+        step = released(*lru, 1);
+        EXPECT_EQ(step.compiled, 1u);
+        EXPECT_EQ(step.reused, 0u);
+        EXPECT_EQ(step.cache, a + b);
+        step = released(*lru, 2);
+        EXPECT_EQ(step.compiled, 1u);
+        EXPECT_EQ(step.reused, 0u);
+    }
+
+    // A budget that holds A or B, never both.
+    {
+        auto single = make_jit(std::max(a, b));
+        auto held = compile_with(*single, 0);
+        auto step = counts(held);
+        EXPECT_EQ(step.compiled, 1u);
+        EXPECT_EQ(step.cache, a);
+        // B evicts A from the cache. held still owns A.
+        step = released(*single, 1);
+        EXPECT_EQ(step.compiled, 1u);
+        EXPECT_EQ(step.cache, b);
+        ASSERT_TRUE(held.succeeded());
+        {
+            // A's code still runs after its eviction.
+            auto storage = held.compiled_graph->node_layout.create_storage(resources);
+            storage.initialize();
+            std::vector<FeedbackGainStateMirror const*> states;
+            auto const& nodes = held.compiled_graph->node_layout.nodes;
+            for (std::size_t node = 0; node < nodes.size(); ++node) {
+                if (nodes[node].state_size != sizeof(FeedbackGainStateMirror)) continue;
+                states.push_back(static_cast<FeedbackGainStateMirror const*>(
+                    storage.state_ptr(node)));
+            }
+            ASSERT_EQ(states.size(), 2u);
+            float head = 0.0f;
+            float tail = 0.0f;
+            for (std::int64_t block = 0; block < 3; ++block) {
+                held.compiled_graph->root_operations.tick_block(
+                    storage.buffer().data(),
+                    &empty_tick_invocation,
+                    index(block * 64),
+                    64);
+                for (std::size_t sample = 0; sample < 64; ++sample) {
+                    head = tail * gains[0] + 1.0f;
+                    tail = head * gains[0] + 2.0f;
+                }
+                EXPECT_EQ(states[0]->ticks, static_cast<std::uint64_t>((block + 1) * 64));
+                EXPECT_FLOAT_EQ(states[0]->last_output, head);
+                EXPECT_FLOAT_EQ(states[1]->last_output, tail);
+            }
+        }
+        // A is reused through held, and the cache owns it again in place of B.
+        step = released(*single, 0);
+        EXPECT_EQ(step.compiled, 0u);
+        EXPECT_EQ(step.reused, 1u);
+        EXPECT_EQ(step.cache, a);
+        held = {};
+        step = released(*single, 0);
+        EXPECT_EQ(step.compiled, 0u);
+        EXPECT_EQ(step.reused, 1u);
+        step = released(*single, 1);
+        EXPECT_EQ(step.compiled, 1u);
+        EXPECT_EQ(step.reused, 0u);
+    }
+
+    // A budget smaller than A.
+    {
+        auto small = make_jit(a - 1);
+        auto held = compile_with(*small, 0);
+        auto step = counts(held);
+        EXPECT_EQ(step.compiled, 1u);
+        EXPECT_EQ(step.allocated, a);
+        EXPECT_EQ(step.cache, 0u);
+        step = released(*small, 0);
+        EXPECT_EQ(step.compiled, 0u);
+        EXPECT_EQ(step.reused, 1u);
+        EXPECT_EQ(step.cache, 0u);
+        held = {};
+        step = released(*small, 0);
+        EXPECT_EQ(step.compiled, 1u);
+        EXPECT_EQ(step.reused, 0u);
+    }
+}
+
+// A package rebuild supersedes the revision whose node code a cached
+// specialization calls, and region_specialization_key() names each revision's
+// retained-global addresses, so that code can never be reused. The first
+// compilation with the successor's definitions stops owning it. The superseded
+// PackageRevision is then released once nothing else uses it.
+TEST_F(GraphJitRuntimeFixture, RegionSpecializationCacheReleasesSupersededPackageRevision)
+{
+    // configuration_argument() keeps its argument's address, so each value
+    // is a named object that outlives the graph construction.
+    auto gain_graph = [](iv::PackageRevision const& package) {
+        float gain = 0.5f;
+        float initial = 0.0f;
+        std::array arguments{
+            iv::details::configuration_argument(gain),
+            iv::details::configuration_argument(initial),
+        };
+        return configured_module_graph_with_arguments(
+            package, graph_jit_constant_gain_feedback_module_id, arguments);
+    };
+    auto first_graph = gain_graph(*revision);
+    {
+        auto first = compile_graph(first_graph, 170);
+        ASSERT_TRUE(first.succeeded())
+            << (first.diagnostics.empty() ? "" : first.diagnostics.front().message);
+        ASSERT_EQ(first.timings.size(), 1u);
+        EXPECT_EQ(first.timings.front().region_specializations_compiled, 1u);
+        EXPECT_GT(first.timings.front().region_specialization_cache_bytes, 0u);
+    }
+    std::weak_ptr<iv::PackageRevision const> const superseded = revision;
+
+    // Loading the package again stands in for a rebuild: the successor has
+    // its own package code and retained-global addresses.
+    std::shared_ptr<iv::PackageRevision const> successor;
+    ASSERT_NO_THROW(successor = load_graph_jit_runtime_revision());
+    ASSERT_TRUE(successor);
+    ASSERT_NE(successor, revision);
+    auto const successor_definitions = make_graph_jit_snapshot(successor, 92);
+    auto second = jit->compile(iv::GraphJitCompileRequest{
+        .project_generation = 171,
+        .graph = gain_graph(*successor),
+        .definitions = successor_definitions,
+    });
+    ASSERT_TRUE(second.succeeded())
+        << (second.diagnostics.empty() ? "" : second.diagnostics.front().message);
+    ASSERT_EQ(second.timings.size(), 1u);
+    auto const& timings = second.timings.front();
+    EXPECT_EQ(timings.region_specializations_compiled, 1u);
+    EXPECT_EQ(timings.region_specializations_reused, 0u);
+    // The cache owns only the successor's specialization.
+    EXPECT_EQ(
+        timings.region_specialization_cache_bytes,
+        timings.region_specialization_allocated_bytes);
+
+    first_graph.reset();
+    definitions.reset();
+    revision.reset();
+    EXPECT_TRUE(superseded.expired());
 }
 
 // An acyclic node reading immutable inputs with history, through get() and
@@ -19415,7 +19724,15 @@ void expect_converted_feedback_unaffected_by_edit(
     constexpr std::int64_t cutover = 64;
     constexpr std::int64_t end = 128;
 
-    auto reference = jit.compile(iv::GraphJitCompileRequest{
+    // The uninterrupted reference keeps every composition on
+    // compose_samples(). The edited execution uses the fixture GraphJit and
+    // therefore exercises generated compositions in eligible steady regions.
+    iv::GraphJit reference_jit(iv::GraphJitConfig{
+        .sample_rate = 88200,
+        .block_size = 64,
+        .specialize_regions = false,
+    });
+    auto reference = reference_jit.compile(iv::GraphJitCompileRequest{
         .project_generation = generation + 2,
         .graph = predecessor,
         .definitions = definitions,
@@ -19610,10 +19927,24 @@ void expect_sequential_input_access(
 
 TEST_F(GraphJitRuntimeFixture, RoutedSampleDetachFeedbackUnaffectedByRecompile)
 {
+    auto const graph = configured_module_graph(
+        *revision, graph_jit_routed_feedback_module_id);
+    auto specialized = compile_graph(graph, 359);
+    ASSERT_TRUE(specialized.succeeded())
+        << (specialized.diagnostics.empty()
+                ? ""
+                : specialized.diagnostics.front().message);
+    ASSERT_EQ(specialized.timings.size(), 1u);
+    EXPECT_GT(
+        specialized.timings.front().region_specializations_compiled
+            + specialized.timings.front().region_specializations_reused,
+        0u);
+    EXPECT_EQ(
+        specialized.timings.front().region_specialization_failures,
+        0u)
+        << specialized.timings.front().region_specialization_failure;
     expect_converted_feedback_unaffected_by_recompile(
-        *jit, definitions, resources,
-        configured_module_graph(*revision, graph_jit_routed_feedback_module_id),
-        360);
+        *jit, definitions, resources, graph, 360);
 }
 
 // The edit lengthens the counter's detach() from 5 to 7. Its input reads its 5

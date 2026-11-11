@@ -19,6 +19,7 @@
 #include <cstdint>
 #include <cstring>
 #include <exception>
+#include <iterator>
 #include <limits>
 #include <new>
 #include <optional>
@@ -245,11 +246,12 @@ struct RootRegionSpecialization {
     std::vector<std::size_t> steps{};
     // Per begin index of every step, in request order: its pace cursor.
     std::vector<std::size_t> begin_cursors{};
-    // Set for a cyclic region: the code runs each step's own operations
-    // around every slice of the step. An acyclic region's one step runs its
-    // operations once around the complete invocation, as run_step() does, so
-    // the root runs them around the code.
-    bool runs_step_operations = false;
+    // Graph-wide representation indices in the dense order used by the
+    // compiled request. The root resolves their addresses for every call.
+    std::vector<std::size_t> sample_representations{};
+    // The project-rate cursor used by generated sample compositions, or
+    // no_index when the specialization contains none.
+    std::size_t project_cursor = no_index;
 };
 
 // The operations around one cyclic region's complete root call, and the
@@ -310,6 +312,7 @@ struct RootFrameLayout {
     std::size_t tick_lane_primitives = 0;
     std::size_t specialization_steps = 0;
     std::size_t specialization_begin_bases = 0;
+    std::size_t specialization_sample_representations = 0;
     std::size_t specialization_workspace = 0;
     std::size_t size = 0;
 };
@@ -355,10 +358,11 @@ struct RealtimeRootPlan {
     std::size_t scratch_size = 0;
     std::size_t scratch_alignment = 1;
     std::size_t maximum_batch_lanes = 0;
-    // The largest step count, begin-index count, and reusable binding/context
-    // workspace of any region specialization.
+    // The largest step count, begin-index count, dense sample-representation
+    // count, and reusable binding/context workspace of any specialization.
     std::size_t maximum_specialization_steps = 0;
     std::size_t maximum_specialization_begin_indices = 0;
+    std::size_t maximum_specialization_sample_representations = 0;
     std::size_t maximum_specialization_workspace_size = 0;
     RootFrameLayout frame{};
     bool has_tick_slots = false;
@@ -490,6 +494,7 @@ struct RootFrame {
     std::span<std::size_t> tick_lane_primitives{};
     std::span<RegionSpecializationStep> specialization_steps{};
     std::span<std::uint64_t> specialization_begin_bases{};
+    std::span<std::byte*> specialization_sample_representations{};
     std::span<std::byte> specialization_workspace{};
     TickInvocationCall const* invocation = nullptr;
     GlobalIndex root_index{};
@@ -2148,14 +2153,27 @@ void run_region_slices(
 void run_specialized_step_operations(
     void* frame,
     void const* operations,
+    std::size_t operation_begin,
+    std::size_t operation_count,
     std::uint64_t index_bits,
     std::size_t count) noexcept
 {
+    auto const& selected =
+        *static_cast<std::vector<RootOperation> const*>(operations);
     run_operations(
         *static_cast<RootFrame*>(frame),
-        *static_cast<std::vector<RootOperation> const*>(operations),
+        std::span<RootOperation const>{selected}.subspan(
+            operation_begin, operation_count),
         GlobalIndex::from_bits(index_bits),
         count);
+}
+
+void mark_specialized_sample_representation(
+    void* frame,
+    std::size_t representation_index) noexcept
+{
+    mark_sample_representation(
+        *static_cast<RootFrame*>(frame), representation_index);
 }
 
 // The RegionSpecializationManualControlsFunction a specialization calls after
@@ -2177,14 +2195,10 @@ void stage_specialized_manual_controls(
         enclosing_count);
 }
 
-// One region's complete invocation through its compiled specialization. A
-// cyclic region's own operations run around it, as around the interpreter's
-// slice loop, and each step's own operations run through
-// run_specialized_step_operations() around every slice of the step. An
-// acyclic region's one step runs its operations around the code, as
-// run_step() runs them around the step's sliced invocation. The
-// specialization updates the begin indices of its own binding copies, so the
-// prepared contexts stay as the root call completed them.
+// One region's complete invocation through its compiled specialization. The
+// generated function preserves every step operation's position. It delegates
+// operation spans that remain on the root and directly executes the sample
+// compositions that it owns.
 void run_region_specialization(
     RootFrame& frame,
     RootRegionSpecialization const& specialization,
@@ -2192,11 +2206,6 @@ void run_region_specialization(
     std::size_t block_size) noexcept
 {
     auto const& plan = frame.plan;
-    auto const inside = specialization.runs_step_operations;
-    if (!inside) {
-        auto const& step = plan.steps[specialization.steps.front()];
-        if (!step.before.empty()) run_operations(frame, step.before, index, block_size);
-    }
     for (std::size_t step = 0; step < specialization.steps.size(); ++step) {
         auto const& root_step = plan.steps[specialization.steps[step]];
         auto const& primitive = plan.primitives[root_step.primitive];
@@ -2204,10 +2213,10 @@ void run_region_specialization(
             .node_data = primitive.node_data.data(),
             .context = reinterpret_cast<ReflectedNodeTickContext const*>(
                 frame.scratch + primitive.context_offset),
-            .operations_before = inside && !root_step.before.empty()
+            .operations_before = !root_step.before.empty()
                 ? &root_step.before
                 : nullptr,
-            .operations_after = inside && !root_step.after.empty()
+            .operations_after = !root_step.after.empty()
                 ? &root_step.after
                 : nullptr,
             .primitive_index = root_step.primitive,
@@ -2218,21 +2227,31 @@ void run_region_specialization(
         frame.specialization_begin_bases[update] =
             frame.sequential_pace_cursors[specialization.begin_cursors[update]];
     }
+    for (std::size_t representation = 0;
+         representation < specialization.sample_representations.size();
+         ++representation) {
+        frame.specialization_sample_representations[representation] =
+            frame.sample_representations[
+                specialization.sample_representations[representation]];
+    }
+    auto const project_begin = specialization.project_cursor == no_index
+        ? std::uint64_t{0}
+        : frame.sequential_pace_cursors[specialization.project_cursor];
     specialization.function(
         frame.specialization_steps.data(),
         frame.specialization_begin_bases.data(),
+        frame.specialization_sample_representations.data(),
+        specialization.sample_representations.data(),
+        project_begin,
         frame.specialization_workspace.data(),
         index.bits(),
         block_size,
         &frame,
         &run_specialized_step_operations,
-        &stage_specialized_manual_controls);
+        &stage_specialized_manual_controls,
+        &mark_specialized_sample_representation);
     for (auto const step : specialization.steps) {
         mark_primitive_outputs(frame, plan.primitives[plan.steps[step].primitive]);
-    }
-    if (!inside) {
-        auto const& step = plan.steps[specialization.steps.front()];
-        if (!step.after.empty()) run_operations(frame, step.after, index, block_size);
     }
 }
 
@@ -4367,8 +4386,147 @@ private:
         RegionSpecializationRequest request{};
         std::vector<std::size_t> steps{};
         std::vector<std::size_t> begin_cursors{};
+        std::vector<std::size_t> sample_representations{};
+        std::size_t project_cursor = no_index;
         std::size_t workspace_size = 0;
     };
+
+    RegionSpecializationSampleAddress specialization_sample_address(
+        std::size_t representation,
+        PlannedRegionSpecialization& planned) const
+    {
+        auto const& selected =
+            plan_.sample_ports.storage.representations[representation];
+        auto position = std::ranges::find(
+            planned.sample_representations, representation);
+        if (position == planned.sample_representations.end()) {
+            planned.sample_representations.push_back(representation);
+            position = std::prev(planned.sample_representations.end());
+        }
+        return {
+            .representation = static_cast<std::size_t>(
+                position - planned.sample_representations.begin()),
+            .frame_capacity = selected.frame_capacity,
+            .channel_count = channel_count(selected.channel_layout),
+            .value_size_bytes = selected.geometry.value_size_bytes,
+            .planar = selected.channel_layout.sample_layout
+                == SampleStreamLayout::planar,
+        };
+    }
+
+    // The generated form of one feed-forward sample composition. A
+    // composition stays in its RootOperation list if any representation is
+    // not project-rate linear audio. Feedback writes are a different
+    // RootOperationKind and remain on the root.
+    std::optional<RegionSpecializationSampleComposition>
+    specialization_sample_composition(
+        std::size_t composition_index,
+        PlannedRegionSpecialization& planned) const
+    {
+        auto const& storage = plan_.sample_ports.storage;
+        if (composition_index >= storage.compositions.size()
+            || composition_index >= plan_.compositions.size()) {
+            return std::nullopt;
+        }
+        auto const& composition = storage.compositions[composition_index];
+        if (composition.target_representation >= storage.representations.size()) {
+            return std::nullopt;
+        }
+        auto eligible = [&](std::size_t representation) {
+            if (representation >= storage.representations.size()) return false;
+            auto const& selected = storage.representations[representation];
+            return selected.absolute_pace_exponent == 0
+                && selected.frame_capacity != 0
+                && std::has_single_bit(selected.frame_capacity)
+                && supports_linear_audio_channel_conversion(selected.geometry);
+        };
+        if (!eligible(composition.target_representation)
+            || composition.contributions.size()
+                != plan_.compositions[composition_index].size()) {
+            return std::nullopt;
+        }
+        for (auto const& contribution : composition.contributions) {
+            if (contribution.feedback_alignment_representation
+                    != detail::no_sample_representation
+                || !std::ranges::all_of(
+                    contribution.sources,
+                    [&](auto const& source) {
+                        return eligible(source.source_representation);
+                    })) {
+                return std::nullopt;
+            }
+        }
+
+        auto const cursor = pace_cursor(plan_, 0);
+        if (cursor == no_index) return std::nullopt;
+        planned.project_cursor = cursor;
+        RegionSpecializationSampleComposition result{
+            .target = specialization_sample_address(
+                composition.target_representation, planned),
+            .target_history = composition.target_history,
+            .scalar_lane_count = storage.representations[
+                composition.target_representation]
+                    .geometry.channel_scalar_lane_count,
+        };
+        result.contributions.reserve(composition.contributions.size());
+        for (std::size_t index = 0;
+             index < composition.contributions.size();
+             ++index) {
+            auto const& contribution = composition.contributions[index];
+            auto const& derived = plan_.compositions[composition_index][index];
+            RegionSpecializationCompositionContribution converted;
+            converted.sources.reserve(contribution.sources.size());
+            for (auto const& source : contribution.sources) {
+                converted.sources.push_back({
+                    .address = specialization_sample_address(
+                        source.source_representation, planned),
+                    .channel = source.source_channel,
+                    .read_latency = source.read_latency,
+                });
+            }
+            converted.target_channels = contribution.target_channels;
+            converted.term_begins = derived.mix.term_begins;
+            converted.terms.reserve(derived.mix.terms.size());
+            for (auto const& term : derived.mix.terms) {
+                converted.terms.push_back({
+                    .source = term.source_channel,
+                    .coefficient = term.coefficient,
+                });
+            }
+            result.contributions.push_back(std::move(converted));
+        }
+        return result;
+    }
+
+    void append_specialization_operations(
+        std::span<RootOperation const> operations,
+        PlannedRegionSpecialization& planned,
+        std::vector<RegionSpecializationOperation>& result) const
+    {
+        auto root_begin = std::size_t{0};
+        auto flush_root = [&](std::size_t end) {
+            if (end == root_begin) return;
+            result.push_back({
+                .kind = RegionSpecializationOperationKind::root_operations,
+                .operation_begin = root_begin,
+                .operation_count = end - root_begin,
+            });
+        };
+        for (std::size_t index = 0; index < operations.size(); ++index) {
+            auto const& operation = operations[index];
+            if (operation.kind != RootOperationKind::sample_composition) continue;
+            auto composition = specialization_sample_composition(
+                operation.index, planned);
+            if (!composition) continue;
+            flush_root(index);
+            result.push_back({
+                .kind = RegionSpecializationOperationKind::sample_composition,
+                .composition = std::move(*composition),
+            });
+            root_begin = index + 1;
+        }
+        flush_root(operations.size());
+    }
 
     // The one value every channel of a Sequential input reads, when each of
     // its channels is bound to immutable storage holding that same value.
@@ -4473,10 +4631,12 @@ private:
     // interpreter: some step needs work that this first form does not
     // compile. That is a capture, a Tick slot, an event port, an activity
     // plan, a Random Access input, or a non-project-rate
-    // pace. A cyclic region's step runs its own storage operations through
-    // the root around each slice of the step; an acyclic region's one step
-    // runs them around the complete invocation, outside the code. The
-    // specialization calls each node's scalar tick_block, which every Tick
+    // pace. The specialization preserves each step operation's exact order.
+    // Eligible feed-forward sample compositions run as generated code. Other
+    // contiguous operation spans run through the root callback. A cyclic
+    // region runs those actions around each slice. An acyclic region runs
+    // them once around the complete sliced invocation. The specialization
+    // calls each node's scalar tick_block, which every Tick
     // node has, whichever form its author wrote. A slice is at most the
     // kernel's maximum block size, the largest root call.
     std::expected<PlannedRegionSpecialization, std::string> plan_region_specialization(
@@ -4502,6 +4662,7 @@ private:
         result.request.quantum = std::min(
             region.maximum_block_size,
             lowering_.declarations.node_layout.max_block_size);
+        result.request.operations_per_slice = region.cyclic;
         for (auto const step_index : region.primitive_steps) {
             if (step_index >= plan_.steps.size()) return reject("a step is missing");
             auto const& step = plan_.steps[step_index];
@@ -4527,8 +4688,6 @@ private:
                 .revision = implementation->revision,
                 .code_key = implementation->code_key,
                 .provider_version = implementation->provider_version,
-                .operations_before = region.cyclic && !step.before.empty(),
-                .operations_after = region.cyclic && !step.after.empty(),
                 .stages_manual_controls =
                     primitive_stages_manual_controls(primitive),
             };
@@ -4594,12 +4753,18 @@ private:
                 request.begin_indices.push_back(*binding);
                 result.begin_cursors.push_back(update.cursor);
             }
+            append_specialization_operations(
+                step.before, result, request.operations_before);
+            append_specialization_operations(
+                step.after, result, request.operations_after);
             result.steps.push_back(step_index);
             result.request.steps.push_back(std::move(request));
         }
         if (result.request.steps.empty() || result.request.quantum == 0) {
             return reject("the region has no slice quantum");
         }
+        result.request.sample_representation_count =
+            result.sample_representations.size();
         auto const workspace_size = region_specialization_workspace_size(result.request);
         if (!workspace_size) {
             return reject("the region specialization workspace size overflows");
@@ -4690,6 +4855,9 @@ private:
             plan_.maximum_specialization_begin_indices = std::max(
                 plan_.maximum_specialization_begin_indices,
                 planned.begin_cursors.size());
+            plan_.maximum_specialization_sample_representations = std::max(
+                plan_.maximum_specialization_sample_representations,
+                planned.sample_representations.size());
             plan_.maximum_specialization_workspace_size = std::max(
                 plan_.maximum_specialization_workspace_size,
                 planned.workspace_size);
@@ -4698,7 +4866,9 @@ private:
                 .lifetime = std::move(code->lifetime),
                 .steps = std::move(planned.steps),
                 .begin_cursors = std::move(planned.begin_cursors),
-                .runs_step_operations = execution.regions[candidate.region].cyclic,
+                .sample_representations =
+                    std::move(planned.sample_representations),
+                .project_cursor = planned.project_cursor,
             };
         }
 
@@ -4794,6 +4964,10 @@ private:
             plan_.maximum_specialization_begin_indices,
             sizeof(std::uint64_t),
             alignof(std::uint64_t));
+        layout.specialization_sample_representations = take(
+            plan_.maximum_specialization_sample_representations,
+            sizeof(std::byte*),
+            alignof(std::byte*));
         layout.specialization_workspace = take(
             plan_.maximum_specialization_workspace_size,
             sizeof(std::byte),
@@ -4890,6 +5064,10 @@ void execute_realtime_root(
             scratch,
             layout.specialization_begin_bases,
             plan.maximum_specialization_begin_indices),
+        .specialization_sample_representations = frame_array<std::byte*>(
+            scratch,
+            layout.specialization_sample_representations,
+            plan.maximum_specialization_sample_representations),
         .specialization_workspace = frame_array<std::byte>(
             scratch,
             layout.specialization_workspace,

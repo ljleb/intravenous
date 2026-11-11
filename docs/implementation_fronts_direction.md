@@ -3708,6 +3708,273 @@ The repository owner still needs to compile and run the complete suite. After
 that result, rerun the four edit benchmarks and the `feedback` profile before
 starting step 2.
 
+*Manual-control specialization verification and step 2 baseline (repository
+owner, 2026-11-11).* The complete suite passed. The later interactive edits
+remain below the provisional 40 ms common-case target except for a `chain`
+configuration edit that compiles one new value specialization.
+
+| Shape | Initial edit | Add | Configure | Connect | Delete | Disconnect | Later Tick mean |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| `chain` | 282 ms | 24 ms | 74 ms | 4 ms | 4 ms | 24 ms | 97-106 us |
+| `voices` | 157 ms | 30 ms | 10 ms | 10 ms | 10 ms | 30 ms | 347-358 us |
+| `mixed` | 451 ms | 38 ms | 18 ms | 17 ms | 18 ms | 37 ms | 526-535 us |
+| `feedback` | 203 ms | 39 ms | 20 ms | 19 ms | 19 ms | 40 ms | 594-600 us |
+
+The accepted `feedback` graph ran for 30 seconds at a 5,333 us block period.
+Its steady Tick mean was 595 us and its maximum was 1,269 us. The largest
+performance-core costs were `compose_samples()` at 22.74%, the two region
+specializations at 13.41% and 10.71%, `run_operations()` at 5.05%, and
+`memmove()` at 2.79%. The prior profile measured 571 us mean and 1,087 us
+maximum. The `feedback` graph has no manual control, so this difference is run
+variation rather than manual-control staging cost. Both profiles select the
+same next target: `RootOperationKind::sample_composition` and its dispatch.
+
+*Generated feed-forward sample compositions (implementation status,
+2026-11-11; repository-owner build and tests pending).* Step 2 now has a
+complete source implementation.
+
+- `RegionSpecializationStepRequest::operations_before` and
+  `operations_after` are ordered action lists. A `root_operations` action
+  delegates one contiguous span of the original `RootOperation` vector. A
+  `sample_composition` action contains the validated project-rate storage
+  geometry, channel projection, source latencies, and nonzero mix terms.
+- `emit_region_specialization()` emits the selected feed-forward composition
+  loop directly. It addresses the existing representation rings, preserves
+  planar and interleaved layouts, writes the target history window, applies
+  every scalar lane and channel mix, and invalidates the target activity
+  summary after the write.
+- A cyclic region runs each step action list around every slice. An acyclic
+  region runs its one step's before and after action lists once around the
+  complete sliced callback. This keeps the exact `run_step()` order.
+- A per-region dense representation list keeps graph-wide representation
+  indices out of the specialization key. Equal regions can share compiled
+  code when their physical representation indices differ. The root resolves
+  the dense pointer list once for each specialized region invocation.
+- `compose_samples()` remains the correctness path for an unspecialized
+  region, a non-project-rate representation, and every shifted feedback write.
+  This slice does not make an acyclic region eligible only because it owns a
+  composition. That avoids extra LLVM compilations before measurement proves
+  their value.
+- The converted feedback edit fixture now uses a GraphJit instance with
+  `specialize_regions = false` for its uninterrupted reference. The edited
+  execution uses specialized steady regions. This compares generated
+  composition results with `compose_samples()` across conversion, detach
+  history, recompilation, and transition cutover.
+
+After verification, rerun the four edit benchmarks and the 30-second
+`feedback` profile. Step 2 succeeds when `compose_samples()` and
+`run_operations()` lose a material share without a material increase in one
+specialization's compile time or the later interactive edits.
+
+*Step 2 verification and step 3 selection (repository owner, 2026-11-11).*
+The complete test suite passed. The generated composition path reduced the
+30-second `feedback` Tick mean from 595 us to 395 us. The observed maximum
+fell from 1,269 us to 801 us. Performance-core cycles fell from 23.24 billion
+to 17.45 billion, a 25% reduction.
+
+`compose_samples()` no longer appears in the profile. `run_operations()` fell
+from 5.05% to 0.50%. The two generated specializations now include the
+composition work and account for 18.75% and 16.30%. `memmove()` accounts for
+4.35%, and `mark_specialized_sample_representation()` accounts for 1.39%.
+
+The edit benchmarks found one compile-time cost. A `feedback` connect edit now
+compiles one larger specialization in about 104 ms. Its median wall time rose
+from about 19 ms to 125 ms. The edit remains below the 200 ms upper bound, but
+the increase is material. Every repeated connect in the benchmark recompiles
+the same content because no live generation retains the earlier code.
+
+The other median edit times remain within their prior class. `chain`
+configuration takes 77 ms. All other add, configuration, connect, delete, and
+disconnect medians stay at or below 40 ms. Initial medians are 289 ms for
+`chain`, 161 ms for `voices`, 459 ms for `mixed`, and 205 ms for `feedback`.
+
+This result selects fixed step 3: retain recently used region specializations
+under a measured byte budget. It does not select package preparation or
+parallel compilation.
+
+*Byte-bounded recent specialization cache (implementation status,
+2026-11-11; the repository owner's build passed all 862 tests; corrected by the
+next entry).* Linked block bytes are
+live bytes after JITLink dead stripping. `LinkedCodeSizePlugin` records this
+sum for each specialization's `ResourceTracker`.
+
+- `RegionSpecializationCache` retains recent `ProjectCodeLifetime` owners in
+  least-recently-used order. The default budget is 64 MiB through
+  `GraphJitConfig::region_specialization_cache_budget_bytes`.
+- Eviction removes only the cache owner. A `CompiledGraph` that still uses the
+  specialization keeps its own owner and continues to run the code.
+- An entry larger than the budget remains available while a live graph owns
+  it, but the cache does not keep it alive afterward.
+- `GraphJitCompileTimings` records newly linked bytes, retained cache bytes,
+  and the configured budget. The edit timing log writes these values.
+- The specialization runtime test now requires reuse after the first graph
+  releases its owner. A one-byte-budget case requires recompilation and proves
+  that retention uses linked bytes instead of an entry count.
+
+After verification, rerun the four edit benchmarks. Repeated `feedback`
+connect operations must reuse the large specialization after the first cache
+miss. The first miss can still take about 125 ms. Later connect medians must
+return to the no-compilation range without changing the Tick profile.
+
+*Recent-use cache review and corrections (implementation status, 2026-11-11;
+all 864 tests passed; measured in the next entry).* After the repository owner's build
+passed, a three-iteration `voices` edit benchmark compiled the add-node sink
+specialization once. Every later add-node and disconnect edit reused it, at
+10-12 ms instead of about 30 ms, and the later Tick mean stayed at 335-375 us.
+`feedback` could not run in that environment because its package build failed
+there, so the repeated-connect check above is still open. A review of the
+cache found four defects, which this change corrects. This entry supersedes
+the byte measure of the preceding entry and the lifetime sentence of the first
+slice's *Cache* bullet ("An entry lives while some `RealtimeRootPlan` uses
+it"). Both entries stay as the record of what was implemented.
+
+- *Superseded package revisions.* A cached owner, `ProjectCodeLifetime`,
+  holds every `PackageRevision` that its code calls, and a `PackageRevision`
+  holds its `package_code`. `region_specialization_key()` names each
+  revision's retained-global addresses, so a rebuilt package never reuses a
+  specialization of an earlier revision. The cache nevertheless owned that
+  code until byte eviction, and through it the superseded revision, its
+  package code, and its cached bitcode. A 64 MiB budget reaches that eviction
+  only after many later specializations. `RegionSpecializationCompiler` now
+  first stops owning every specialization that calls a revision outside the
+  compilation's `NodeDefinitionsSnapshot::package_revisions`. It compares with
+  the snapshot's revisions, not with the graph's used revisions, so code of a
+  package that the graph stopped using stays reusable for a later edit.
+- *Allocated code memory.* The block-size sum measured 677 bytes for the
+  `voices` sink specialization. JITLink's in-process memory manager, the
+  default of LLJIT's in-process executor, reserves every segment in whole
+  pages. `AllocatedCodeSizePlugin` replaces `LinkedCodeSizePlugin`. Its
+  post-allocation pass computes the page-rounded standard-lifetime segments
+  with `BasicLayout::getContiguousPageBasedLayoutSizes()`, the computation the
+  manager uses for its allocation. Finalize-lifetime segments are released
+  after finalization and are not counted. The timing field and log text now
+  say allocated code bytes. ORC's heap bookkeeping for each specialization's
+  JITDylib, its symbol table and definition generators, is still not counted.
+  No stable measure of it exists. Removing it would need one JITDylib shared
+  by several specializations, which is a separate design decision.
+- *Budget meaning.* The `GraphJitConfig` comment described the budget as
+  bytes kept alive only for reuse. `RegionSpecializationCache::retained_bytes`
+  counts every entry the cache owns, including one that a live compiled graph
+  also runs. The comments now describe that accounting. The 64 MiB default is
+  provisional, not a measured choice.
+- *Eviction coverage.* No test reached `evict_oldest()`.
+  `RegionSpecializationCacheEvictsLeastRecentlyUsedCode` measures three value
+  specializations of one cyclic region, then uses budgets that hold two, one,
+  or none of them. It checks least-recently-requested eviction order, that
+  evicted code still runs for a compiled graph that owns it, that a later
+  request reuses that code and the cache owns it again, and that a
+  specialization larger than the budget is reused only while a graph owns it.
+  `RegionSpecializationCacheReleasesSupersededPackageRevision` loads the test
+  package a second time as a rebuild and requires the first `PackageRevision`
+  to be released after one compilation with the successor's definitions. The
+  one-byte-budget case now requires a whole-page allocated size.
+
+After verification, rerun the four edit benchmarks. `feedback` must still show
+that repeated connect edits reuse the large specialization after the first
+miss.
+
+*Recent-use cache verification and the step 4 and 5 conditions (repository
+owner, 2026-11-11; all 864 tests passed).* The first run of
+`RegionSpecializationCacheEvictsLeastRecentlyUsedCode` failed because the test
+passed temporaries to `configuration_argument()`, which keeps its argument's
+address. The module then read a dead stack slot as the detach's initial
+value. Both new tests now pass named values. Median edit times over five
+iterations, with the later Tick mean and maximum:
+
+| Shape | Initial | Add | Configure | Connect | Delete | Disconnect | Tick mean | Tick max |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| `chain` | 280 ms | 4.0 ms | 73.6 ms | 3.8 ms | 3.9 ms | 3.8 ms | 102 us | 215 us |
+| `voices` | 169 ms | 10.7 ms | 10.4 ms | 10.2 ms | 10.4 ms | 10.0 ms | 362 us | 637 us |
+| `mixed` | 455 ms | 17.6 ms | 17.4 ms | 16.9 ms | 17.7 ms | 16.7 ms | 539 us | 1,111 us |
+| `feedback` | 204 ms | 19.5 ms | 20.5 ms | 19.4 ms | 19.1 ms | 18.7 ms | 357 us | 647 us |
+
+- *Cache.* The first `feedback` connect took 121.8 ms for one 102 ms
+  compilation. The four later connects took 18.9-19.8 ms and compiled nothing.
+  The add-node and disconnect medians fell from about 39 ms to about 19 ms
+  because the added sink's specialization is reused. A `chain` configuration
+  edit still compiles one value specialization for each new value. Allocated
+  code memory is whole pages: 8,192 bytes for the sink specialization and
+  16,384 bytes for the connected `feedback` region. The size-64 caches hold
+  28-82 KiB.
+- *Profile.* The 30-second `feedback` profile measured a Tick mean of 378 us
+  and a maximum of 679 us. Performance-core cycles were 17.31 billion, against
+  17.45 billion after step 2, which is run variation. The two specializations
+  account for 20.25% and 17.44%, `memmove()` for 3.28%,
+  `mark_specialized_sample_representation()` for 1.36%,
+  `execute_realtime_root()` for 1.29%, and `run_region_specialization()` for
+  1.03%.
+- *Provisional gates.* Every initial edit is within the 500 ms bulk target.
+  Every interactive median is within 40 ms except `chain` configuration
+  (73.6 ms). The first `feedback` connect miss, 121.8 ms, is above the 100 ms
+  p95 target; five samples cannot separate p95 from the maximum. The `mixed`
+  Tick mean of 539 us is above the 10% gate of 533 us. The other Tick means
+  and every Tick maximum pass. The p99 gate cannot be checked because the edit
+  benchmark reports only the Tick mean and maximum.
+- *Steps 4 and 5.* Step 4's condition, that bulk loading still deserves
+  investment, is not met: every initial edit is within the bulk target. Step 5
+  is not justified either: each remaining over-target edit compiles a single
+  specialization, which parallel compilation does not shorten. Neither step
+  is implemented. The two gate misses lie outside the five steps: the `mixed`
+  Tick mean, whose compositions are in acyclic regions that step 2 did not make
+  eligible, and the cost of one first-miss compilation in an interactive
+  edit. The next item of the accepted order is the measured
+  `RealtimeStorageCostModel` sweep, which needs the Tick p50, p95, and p99
+  that the edit benchmark does not yet record.
+
+*Tick percentiles in the edit benchmark (implementation status, 2026-11-11;
+accepted by the human co-author; repository-owner build pending).*
+`RealtimeLoop` in `benchmark/iv_edit_latency_benchmark.cpp` now records every
+block's `tick_block()` duration in a ring of 2^20 atomic entries that is
+allocated before the realtime thread starts, so that thread still does not
+allocate. `take_tick_cost()` summarizes the blocks recorded since its previous
+call as a `TickCost`: mean, nearest-rank p50, p95, and p99, maximum, and block
+count. A window longer than the ring keeps its most recent blocks and reports
+how many it omitted.
+- Each edit line adds `tick_p50_us`, `tick_p95_us`, `tick_p99_us`, and
+  `tick_blocks` beside the existing `tick_mean_us` and `tick_max_us`. The
+  per-kind summary reports the medians of all five statistics. The default
+  300 ms settle window holds about 56 blocks, so a per-edit p99 is close to
+  that edit's maximum.
+- `--profile-seconds` prints the same statistics over its window, about 5,600
+  blocks in 30 seconds, and the mean, p99, and maximum as shares of the block
+  period. That window is the measure for the provisional Tick gates.
+- The next measurement runs the four edit benchmarks and profiles both
+  `feedback` and `mixed`. `mixed` is the shape whose Tick mean missed its gate.
+
+*Tick percentiles and the `mixed` attribution (repository owner and Claude,
+2026-11-11).* The 30-second profile windows, 5,625 blocks each, measured:
+
+| Shape | Mean | p50 | p95 | p99 | Max | Mean / p99 / max share of the block |
+|---|---:|---:|---:|---:|---:|---:|
+| `feedback` | 358.6 us | 347.0 us | 433.4 us | 598.3 us | 753.3 us | 6.72% / 11.22% / 14.12% |
+| `mixed` | 521.3 us | 509.5 us | 600.7 us | 965.4 us | 1,271.2 us | 9.77% / 18.10% / 23.83% |
+
+Both shapes pass every provisional Tick gate in these windows. The earlier
+539 us `mixed` mean came from 300 ms edit windows, and `mixed` keeps only a
+2.3% margin to the mean gate.
+- *`feedback`.* Performance-core cycles were 17.85 billion. The region
+  specializations take 37.37%, package node code 0.08%, and `memmove()` 3.94%.
+- *`mixed` node code.* Performance-core cycles were 15.03 billion. 36.10% of
+  them were unnamed. All of them lie in the builtin node-code object, which
+  JITLink placed with `.text` at the recorded address of
+  `iv_package_node_code_records` minus its section offset `0x3a480`. They are
+  the subtract callback: `BinaryOpNode<std::minus<Sample>>::tick()` 20.05%,
+  `ContinuousInputPort<Sample>::get()` 7.82%,
+  `ContinuousOutputPort<Sample>::value()` 4.40%, and its `tick_node_block<>`
+  3.19%. The region specializations take 31.00%.
+- *Cause.* `difference_0` reads the Constant `cutoff_0`, so its acyclic region
+  is a candidate and has a specialization. `difference_1` through
+  `difference_63` read the previous voice's warper and no immutable input.
+  The acyclic selection rule of the entry *Acyclic region specialization and
+  immutable inputs read with history* therefore leaves them on their native
+  callback. That entry called the rule a compile-cost choice. This profile
+  measures its Tick cost: about a third of `mixed`.
+- *`memmove()`.* 6.66% of `mixed`. On the realtime thread in steady state,
+  3,999 of 4,000 recorded calls copied 4 bytes. They came in groups of four
+  call sites with the spacing of the `memcpy` calls in the package's
+  `tick_node_block<>` wrappers. The remaining call copied 279,552 bytes from
+  `sample_carry()` once per block.
+
 Measurement (implementation status, 2026-11-06): setting `IV_EDIT_TIMING=1` makes
 `ProjectGraph::rebuild_locked()` write one "edit timing" entry per published
 rebuild to the diagnostic log (`IV_LOG_FILE`):

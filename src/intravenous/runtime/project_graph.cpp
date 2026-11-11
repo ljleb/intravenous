@@ -500,7 +500,12 @@ void log_edit_timing(ProjectGraphGeneration const& generation) noexcept
                     << compile.region_specialization_failures << " failed, "
                     << compile.region_specializations_skipped << " skipped, "
                     << compile.region_specialization_substitutions
-                    << " loads substituted\n";
+                    << " loads substituted, "
+                    << compile.region_specialization_allocated_bytes
+                    << " allocated code bytes, "
+                    << compile.region_specialization_cache_bytes << " / "
+                    << compile.region_specialization_cache_budget_bytes
+                    << " cache bytes\n";
                 if (!compile.region_specialization_failure.empty()) {
                     out << "  region specialization failure: "
                         << compile.region_specialization_failure << '\n';

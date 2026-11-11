@@ -16,7 +16,10 @@
 #include <llvm/ExecutionEngine/Orc/ExecutionUtils.h>
 #include <llvm/ExecutionEngine/Orc/JITTargetMachineBuilder.h>
 #include <llvm/ExecutionEngine/Orc/LLJIT.h>
+#include <llvm/ExecutionEngine/Orc/ObjectLinkingLayer.h>
 #include <llvm/ExecutionEngine/Orc/ThreadSafeModule.h>
+#include <llvm/ExecutionEngine/JITLink/JITLink.h>
+#include <llvm/ExecutionEngine/JITLink/JITLinkMemoryManager.h>
 #include <llvm/IR/Attributes.h>
 #include <llvm/IR/CallingConv.h>
 #include <llvm/IR/Constants.h>
@@ -51,9 +54,11 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <list>
 #include <limits>
 #include <mutex>
 #include <optional>
+#include <span>
 #include <stdexcept>
 #include <string_view>
 #include <type_traits>
@@ -872,9 +877,117 @@ void optimize_project_module(
     }
 }
 
+// Records, for each ResourceTracker, the memory that JITLink's in-process
+// memory manager keeps for the tracker's linked code and data. That manager,
+// the default of LLJIT's in-process executor, lays out each LinkGraph with
+// BasicLayout, reserves every segment in whole pages, and releases the
+// finalize-lifetime segments once finalization completes. The memory a linked
+// graph keeps is therefore its page-rounded standard-lifetime segments, which
+// the post-allocation pass computes with the same layout. ORC's heap
+// bookkeeping for a JITDylib, such as its symbol table and definition
+// generators, lies outside these pages and is not included.
+class AllocatedCodeSizePlugin final
+    : public llvm::orc::LinkGraphLinkingLayer::Plugin {
+    mutable std::mutex mutex_{};
+    std::unordered_map<llvm::orc::ResourceKey, std::size_t> bytes_{};
+
+    static std::size_t add_saturated(
+        std::size_t left,
+        std::size_t right) noexcept
+    {
+        return right > std::numeric_limits<std::size_t>::max() - left
+            ? std::numeric_limits<std::size_t>::max()
+            : left + right;
+    }
+
+    void erase(llvm::orc::ResourceKey key)
+    {
+        std::lock_guard lock(mutex_);
+        bytes_.erase(key);
+    }
+
+public:
+    void modifyPassConfig(
+        llvm::orc::MaterializationResponsibility& responsibility,
+        llvm::jitlink::LinkGraph&,
+        llvm::jitlink::PassConfiguration& configuration) override
+    {
+        auto const page_size =
+            responsibility.getExecutionSession().getPageSize();
+        auto error = responsibility.withResourceKeyDo(
+            [&](llvm::orc::ResourceKey key) {
+                configuration.PostAllocationPasses.push_back(
+                    [this, key, page_size](llvm::jitlink::LinkGraph& graph)
+                        -> llvm::Error {
+                        llvm::jitlink::BasicLayout layout(graph);
+                        auto sizes =
+                            layout.getContiguousPageBasedLayoutSizes(page_size);
+                        if (!sizes) return sizes.takeError();
+                        static_assert(sizeof(std::size_t) >= sizeof(std::uint64_t));
+                        auto const bytes =
+                            static_cast<std::size_t>(sizes->StandardSegs);
+                        std::lock_guard lock(mutex_);
+                        bytes_[key] = add_saturated(bytes_[key], bytes);
+                        return llvm::Error::success();
+                    });
+            });
+        llvm::consumeError(std::move(error));
+    }
+
+    llvm::Error notifyEmitted(
+        llvm::orc::MaterializationResponsibility&) override
+    {
+        return llvm::Error::success();
+    }
+
+    llvm::Error notifyFailed(
+        llvm::orc::MaterializationResponsibility& responsibility) override
+    {
+        return responsibility.withResourceKeyDo(
+            [&](llvm::orc::ResourceKey key) { erase(key); });
+    }
+
+    llvm::Error notifyRemovingResources(
+        llvm::orc::JITDylib&,
+        llvm::orc::ResourceKey key) override
+    {
+        erase(key);
+        return llvm::Error::success();
+    }
+
+    void notifyTransferringResources(
+        llvm::orc::JITDylib&,
+        llvm::orc::ResourceKey destination,
+        llvm::orc::ResourceKey source) override
+    {
+        std::lock_guard lock(mutex_);
+        auto const found = bytes_.find(source);
+        if (found == bytes_.end()) return;
+        bytes_[destination] = add_saturated(bytes_[destination], found->second);
+        bytes_.erase(found);
+    }
+
+    std::size_t allocated_bytes(
+        llvm::orc::ResourceTrackerSP const& resources) const noexcept
+    {
+        if (!resources) return 0;
+        std::size_t result = 0;
+        auto error = resources->withResourceKeyDo(
+            [&](llvm::orc::ResourceKey key) {
+                std::lock_guard lock(mutex_);
+                if (auto const found = bytes_.find(key); found != bytes_.end()) {
+                    result = found->second;
+                }
+            });
+        llvm::consumeError(std::move(error));
+        return result;
+    }
+};
+
 struct SharedProjectJit {
     std::mutex mutex{};
     std::unique_ptr<llvm::orc::LLJIT> jit{};
+    std::shared_ptr<AllocatedCodeSizePlugin> allocated_code_sizes{};
     std::atomic<std::uint64_t> next_generation{0};
 };
 
@@ -885,6 +998,10 @@ struct ProjectCodeLifetime {
     std::vector<std::shared_ptr<PackageRevision const>> package_revisions{};
     llvm::orc::JITDylib* jit_dylib = nullptr;
     llvm::orc::ResourceTrackerSP resources{};
+    // AllocatedCodeSizePlugin's measure for resources. Region specializations
+    // record it once their code is materialized; it is zero for project
+    // generation code.
+    std::size_t allocated_code_bytes = 0;
 
     void release_locked() noexcept
     {
@@ -1137,7 +1254,12 @@ struct PackageBitcode {
 
 struct CachedRegionSpecialization {
     std::weak_ptr<ProjectCodeLifetime> lifetime{};
+    // The cache's own strong owner, set only while the entry is in the
+    // recent-use list. Compiled graphs keep their own owners independently.
+    std::shared_ptr<ProjectCodeLifetime> retained_lifetime{};
     graph_jit::RegionSpecializationFunction function = nullptr;
+    std::size_t allocated_code_bytes = 0;
+    std::optional<std::list<std::string>::iterator> recent{};
 };
 
 struct CachedPackageBitcode {
@@ -1148,19 +1270,101 @@ struct CachedPackageBitcode {
     std::shared_ptr<PackageBitcode const> bitcode{};
 };
 
-// Region specializations live while some realtime root plan uses them. A
-// compilation finds every specialization that an active, pending, or
-// predecessor generation still holds.
+// Region specializations live while a realtime root plan uses them, or while
+// the recent-use cache owns them. The cache owns the most recently requested
+// specializations whose AllocatedCodeSizePlugin bytes fit in budget_bytes and
+// evicts the least recently requested one first. retained_bytes counts every
+// entry the cache owns, including one that a live compiled graph also runs, so
+// the budget bounds the cache's ownership rather than only the code that the
+// cache alone keeps alive. Eviction and release remove only the cache's owner;
+// code that a compiled graph still owns remains usable and reusable.
 struct RegionSpecializationCache {
     std::unordered_map<std::string, CachedRegionSpecialization> entries{};
     std::unordered_map<std::string, CachedPackageBitcode> package_bitcode{};
+    // Keys of the owned entries, least recently requested first.
+    std::list<std::string> recent{};
+    std::size_t retained_bytes = 0;
+    std::size_t budget_bytes = 0;
     std::uint64_t next_name = 0;
+
+    void stop_retaining(CachedRegionSpecialization& entry)
+    {
+        if (!entry.retained_lifetime) return;
+        retained_bytes -= entry.allocated_code_bytes;
+        entry.retained_lifetime.reset();
+        if (entry.recent) {
+            recent.erase(*entry.recent);
+            entry.recent.reset();
+        }
+    }
+
+    void evict_oldest()
+    {
+        auto const key = std::move(recent.front());
+        recent.pop_front();
+        auto found = entries.find(key);
+        if (found == entries.end()) return;
+        auto& entry = found->second;
+        entry.recent.reset();
+        retained_bytes -= entry.allocated_code_bytes;
+        entry.retained_lifetime.reset();
+        if (entry.lifetime.expired()) entries.erase(found);
+    }
+
+    void retain(
+        std::string const& key,
+        CachedRegionSpecialization& entry,
+        std::shared_ptr<ProjectCodeLifetime> lifetime)
+    {
+        if (entry.retained_lifetime) {
+            recent.splice(recent.end(), recent, *entry.recent);
+            return;
+        }
+        if (!lifetime || entry.allocated_code_bytes == 0 || budget_bytes == 0) {
+            return;
+        }
+        if (entry.allocated_code_bytes > budget_bytes) return;
+        while (!recent.empty()
+            && retained_bytes > budget_bytes - entry.allocated_code_bytes) {
+            evict_oldest();
+        }
+        entry.retained_lifetime = std::move(lifetime);
+        retained_bytes += entry.allocated_code_bytes;
+        recent.push_back(key);
+        entry.recent = std::prev(recent.end());
+    }
+
+    // Stops owning every specialization that calls node code of a package
+    // revision outside current, the revisions of the compilation's
+    // definitions. Such code can never be reused: region_specialization_key()
+    // names each revision's retained-global addresses, which a later revision
+    // of the package does not share. The cache's owner would otherwise keep
+    // that revision, with its package code and bitcode, alive until eviction.
+    void stop_retaining_superseded(
+        std::span<std::shared_ptr<PackageRevision const> const> current)
+    {
+        for (auto& item : entries) {
+            auto& entry = item.second;
+            if (!entry.retained_lifetime) continue;
+            auto const superseded = std::ranges::any_of(
+                entry.retained_lifetime->package_revisions,
+                [&](std::shared_ptr<PackageRevision const> const& revision) {
+                    return !std::ranges::contains(current, revision);
+                });
+            if (superseded) stop_retaining(entry);
+        }
+    }
 
     void remove_expired()
     {
-        std::erase_if(entries, [](auto const& entry) {
-            return entry.second.lifetime.expired();
-        });
+        for (auto entry = entries.begin(); entry != entries.end();) {
+            if (entry->second.lifetime.expired()) {
+                stop_retaining(entry->second);
+                entry = entries.erase(entry);
+            } else {
+                ++entry;
+            }
+        }
         std::erase_if(package_bitcode, [](auto const& entry) {
             return entry.second.revision.expired();
         });
@@ -1520,6 +1724,9 @@ class RegionSpecializationCompiler final : public graph_jit::RegionSpecializatio
                 jit.lookup(jit_dylib, name),
                 GraphJitDiagnosticStage::materialization,
                 "lookup region specialization");
+            lifetime->allocated_code_bytes = shared_->allocated_code_sizes
+                ? shared_->allocated_code_sizes->allocated_bytes(lifetime->resources)
+                : 0;
             return {
                 address.toPtr<graph_jit::RegionSpecializationFunction>(),
                 std::move(lifetime),
@@ -1531,17 +1738,24 @@ class RegionSpecializationCompiler final : public graph_jit::RegionSpecializatio
     }
 
 public:
+    // current_revisions are the package revisions of the compilation's
+    // definitions. The cache stops owning code of any other revision before
+    // this compilation requests specializations.
     RegionSpecializationCompiler(
         std::shared_ptr<SharedProjectJit> const& shared,
         llvm::TargetMachine& target,
         RegionSpecializationCache& cache,
-        GraphJitCompileTimings& timings)
+        GraphJitCompileTimings& timings,
+        std::span<std::shared_ptr<PackageRevision const> const> current_revisions)
         : shared_(shared)
         , target_(target)
         , cache_(cache)
         , timings_(timings)
     {
+        cache_.stop_retaining_superseded(current_revisions);
         cache_.remove_expired();
+        timings_.region_specialization_cache_bytes = cache_.retained_bytes;
+        timings_.region_specialization_cache_budget_bytes = cache_.budget_bytes;
     }
 
     void region_kept_on_interpreter(std::string const& reason) override
@@ -1569,6 +1783,8 @@ public:
         }
         if (auto const cached = cache_.entries.find(key); cached != cache_.entries.end()) {
             if (auto lifetime = cached->second.lifetime.lock()) {
+                cache_.retain(key, cached->second, lifetime);
+                timings_.region_specialization_cache_bytes = cache_.retained_bytes;
                 ++timings_.region_specializations_reused;
                 return graph_jit::RegionSpecializationCode{
                     .function = cached->second.function,
@@ -1584,11 +1800,18 @@ public:
             timings_.region_specialization_us += static_cast<std::uint64_t>(
                 std::chrono::duration_cast<std::chrono::microseconds>(
                     Clock::now() - begin).count());
+            timings_.region_specialization_allocated_bytes +=
+                lifetime->allocated_code_bytes;
             ++timings_.region_specializations_compiled;
-            cache_.entries.insert_or_assign(std::move(key), CachedRegionSpecialization{
+            auto [cached, inserted] = cache_.entries.try_emplace(key);
+            if (!inserted) cache_.stop_retaining(cached->second);
+            cached->second = CachedRegionSpecialization{
                 .lifetime = lifetime,
                 .function = function,
-            });
+                .allocated_code_bytes = lifetime->allocated_code_bytes,
+            };
+            cache_.retain(key, cached->second, lifetime);
+            timings_.region_specialization_cache_bytes = cache_.retained_bytes;
             return graph_jit::RegionSpecializationCode{
                 .function = function,
                 .lifetime = std::move(lifetime),
@@ -1634,6 +1857,8 @@ public:
 
         realtime_storage_cost_model_ = config.realtime_storage_cost_model;
         specialize_regions_ = config.specialize_regions;
+        region_specializations_.budget_bytes =
+            config.region_specialization_cache_budget_bytes;
 
         initialize_graph_jit_target();
         auto target = take_llvm_expected(
@@ -1662,8 +1887,19 @@ public:
             details::enable_orc_perf_support_if_requested(*jit),
             GraphJitDiagnosticStage::materialization,
             "enable project ORC perf support");
+        auto* object_layer =
+            llvm::dyn_cast<llvm::orc::ObjectLinkingLayer>(
+                &jit->getObjLinkingLayer());
+        if (!object_layer) {
+            fail(
+                GraphJitDiagnosticStage::materialization,
+                "region specialization code sizing requires LLVM's JITLink ObjectLinkingLayer");
+        }
+        auto allocated_code_sizes = std::make_shared<AllocatedCodeSizePlugin>();
+        object_layer->addPlugin(allocated_code_sizes);
         shared_jit_ = std::make_shared<SharedProjectJit>();
         shared_jit_->jit = std::move(jit);
+        shared_jit_->allocated_code_sizes = std::move(allocated_code_sizes);
     }
 
     GraphJitKernelSpecialization const& specialization() const noexcept
@@ -1876,8 +2112,15 @@ public:
             });
         }
 
+        // Every accepted revision of the definition world, not only the ones
+        // this graph uses: code of a package that the graph stopped using can
+        // still be requested again by a later edit.
         RegionSpecializationCompiler region_specializations(
-            shared_jit_, *optimization_target_, region_specializations_, timings);
+            shared_jit_,
+            *optimization_target_,
+            region_specializations_,
+            timings,
+            request.definitions->package_revisions);
         graph_jit::LoweringInput lowering_input{
             .graph = *request.graph,
             .specialization = specialization_,

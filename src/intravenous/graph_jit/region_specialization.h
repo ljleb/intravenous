@@ -32,12 +32,10 @@ namespace iv::graph_jit {
 
 // One step's per-call inputs. context is the step's prepared
 // ReflectedNodeTickContext in the root scratch; the specialization reads only
-// its storage pointers. operations_before and operations_after identify the
-// step's own storage operations when the request has the specialization run
-// them: through the root's run_operations callback around each slice of a
-// cyclic region's step, exactly as the interpreter runs them. An acyclic
-// region's step runs its operations once around the complete invocation, so
-// the root runs them around the specialization.
+// its storage pointers. operations_before and operations_after point at the
+// complete RootOperation vectors selected by the request's ordered operation
+// actions. Generated code delegates selected spans and directly executes
+// eligible sample compositions.
 struct RegionSpecializationStep {
     void const* node_data = nullptr;
     ReflectedNodeTickContext const* context = nullptr;
@@ -52,8 +50,16 @@ struct RegionSpecializationStep {
 using RegionSpecializationOperationsFunction = void (*)(
     void* frame,
     void const* operations,
+    std::size_t operation_begin,
+    std::size_t operation_count,
     std::uint64_t index_bits,
     std::size_t count) noexcept;
+
+// Invalidates the activity summary of one sample representation after
+// generated code writes it.
+using RegionSpecializationMarkSampleFunction = void (*)(
+    void* frame,
+    std::size_t representation_index) noexcept;
 
 // Stages the ManualControlPlan timelines of one primitive immediately before
 // its specialized callback. slice_index/count identify the current region
@@ -72,12 +78,16 @@ using RegionSpecializationManualControlsFunction = void (*)(
 using RegionSpecializationFunction = void (*)(
     RegionSpecializationStep const* steps,
     std::uint64_t const* begin_bases,
+    std::byte* const* sample_representations,
+    std::size_t const* sample_representation_indices,
+    std::uint64_t project_begin_index,
     std::byte* workspace,
     std::uint64_t root_index_bits,
     std::size_t block_size,
     void* frame,
     RegionSpecializationOperationsFunction run_operations,
-    RegionSpecializationManualControlsFunction stage_manual_controls) noexcept;
+    RegionSpecializationManualControlsFunction stage_manual_controls,
+    RegionSpecializationMarkSampleFunction mark_sample) noexcept;
 
 // The binding whose sequential_begin_index one root begin-index update writes.
 struct RegionSpecializationBeginIndex {
@@ -95,6 +105,58 @@ struct RegionSpecializationImmutableInput {
     std::vector<std::byte> value{};
 };
 
+// One continuous representation used by a generated sample composition.
+// representation selects a dense per-region pointer. The remaining fields
+// describe how one timeline index and channel select a value in that storage.
+struct RegionSpecializationSampleAddress {
+    std::size_t representation = 0;
+    std::size_t frame_capacity = 0;
+    std::size_t channel_count = 0;
+    std::size_t value_size_bytes = 0;
+    bool planar = false;
+};
+
+struct RegionSpecializationCompositionSource {
+    RegionSpecializationSampleAddress address{};
+    std::size_t channel = 0;
+    std::size_t read_latency = 0;
+};
+
+struct RegionSpecializationCompositionTerm {
+    std::size_t source = 0;
+    float coefficient = 1.0f;
+};
+
+struct RegionSpecializationCompositionContribution {
+    std::vector<RegionSpecializationCompositionSource> sources{};
+    std::vector<std::size_t> target_channels{};
+    std::vector<std::size_t> term_begins{};
+    std::vector<RegionSpecializationCompositionTerm> terms{};
+};
+
+struct RegionSpecializationSampleComposition {
+    RegionSpecializationSampleAddress target{};
+    std::size_t target_history = 0;
+    std::size_t scalar_lane_count = 0;
+    std::vector<RegionSpecializationCompositionContribution> contributions{};
+};
+
+enum class RegionSpecializationOperationKind : std::uint8_t {
+    root_operations,
+    sample_composition,
+};
+
+// One action in a step's before or after operation list. A root_operations
+// action delegates the selected contiguous span to the existing root. A
+// sample_composition action emits that operation directly into native code.
+struct RegionSpecializationOperation {
+    RegionSpecializationOperationKind kind =
+        RegionSpecializationOperationKind::root_operations;
+    std::size_t operation_begin = 0;
+    std::size_t operation_count = 0;
+    RegionSpecializationSampleComposition composition{};
+};
+
 struct RegionSpecializationStepRequest {
     std::shared_ptr<PackageRevision const> revision{};
     NodeCodeKey code_key{};
@@ -110,10 +172,8 @@ struct RegionSpecializationStepRequest {
     std::vector<std::byte> context{};
     std::vector<RegionSpecializationImmutableInput> immutable_inputs{};
     std::vector<RegionSpecializationBeginIndex> begin_indices{};
-    // The specialization runs the step's storage operations before or after
-    // each slice of its invocation.
-    bool operations_before = false;
-    bool operations_after = false;
+    std::vector<RegionSpecializationOperation> operations_before{};
+    std::vector<RegionSpecializationOperation> operations_after{};
     // The root stages this primitive's participating ManualControlPlan
     // timelines after operations_before and before tick_block.
     bool stages_manual_controls = false;
@@ -123,6 +183,11 @@ struct RegionSpecializationRequest {
     // Frames per slice: ExecutionRegionPlan::maximum_block_size, at most the
     // kernel's maximum block size.
     std::size_t quantum = 0;
+    // Cyclic-region step operations run around every slice. An acyclic
+    // region's one step runs its operations once around the complete sliced
+    // callback.
+    bool operations_per_slice = false;
+    std::size_t sample_representation_count = 0;
     std::vector<RegionSpecializationStepRequest> steps{};
 };
 

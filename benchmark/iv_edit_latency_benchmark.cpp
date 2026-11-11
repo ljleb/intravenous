@@ -35,7 +35,10 @@
 //
 // stderr receives ProjectGraph's per-edit "edit timing" breakdown
 // (IV_EDIT_TIMING). stdout receives one line per edit and a per-kind summary of
-// medians.
+// medians. Each edit line gives the new generation's tick_block() mean,
+// nearest-rank p50, p95, and p99, and maximum per block over the settle
+// window. --profile-seconds reports the same statistics for its longer window,
+// with the mean, p99, and maximum as shares of the block period.
 
 #include <intravenous/compat.h>
 #include <intravenous/global_index.h>
@@ -75,7 +78,9 @@
 #include <functional>
 #include <iomanip>
 #include <iostream>
+#include <limits>
 #include <map>
+#include <memory>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -340,13 +345,26 @@ ShapeProject shape_project(std::string_view shape, int size)
     throw std::runtime_error("unknown shape " + std::string(shape));
 }
 
+// The tick_block() durations of the blocks in one measurement window: their
+// mean, nearest-rank p50, p95, and p99, and maximum.
+struct TickCost {
+    double mean_us = 0;
+    double p50_us = 0;
+    double p95_us = 0;
+    double p99_us = 0;
+    double max_us = 0;
+    std::size_t blocks = 0;
+    // Blocks of a window longer than the recording ring; the summary covers
+    // the window's most recent blocks.
+    std::size_t dropped_blocks = 0;
+};
+
 struct EditRecord {
     std::string kind{};
     double wall_ms = 0;
-    // Realtime cost of the new generation: mean and worst tick_block() time per
-    // block over the settle window, and the block period they must fit in.
-    double tick_mean_us = 0;
-    double tick_max_us = 0;
+    // Realtime cost of the new generation over the settle window, and the
+    // block period it must fit in.
+    TickCost tick{};
     double block_period_us = 0;
     bool published = false;
     bool accepted = false;
@@ -365,21 +383,25 @@ double median(std::vector<double> values)
 }
 
 // Activates and ticks accepted generations at the block period, as the audio
-// device callback does (SystemAudioDevices), and accumulates tick_block()
-// cost until the main thread takes it.
+// device callback does (SystemAudioDevices). The realtime thread records each
+// block's tick_block() duration in a ring allocated before the thread starts,
+// so it never allocates. The main thread summarizes the blocks recorded since
+// its previous request.
 class RealtimeLoop {
-    std::atomic<std::uint64_t> tick_ns_sum_{0};
-    std::atomic<std::uint64_t> tick_ns_max_{0};
-    std::atomic<std::uint64_t> ticks_{0};
+    // More than 90 minutes of blocks at the default block period.
+    static constexpr std::size_t recorded_block_capacity = std::size_t{1} << 20;
+
+    std::unique_ptr<std::atomic<std::uint32_t>[]> tick_ns_ =
+        std::make_unique<std::atomic<std::uint32_t>[]>(recorded_block_capacity);
+    // Blocks recorded since the thread started. Only the realtime thread
+    // writes it; the release store publishes each recorded duration.
+    std::atomic<std::uint64_t> recorded_{0};
+    // Main thread only: the first block of the next measurement window.
+    std::uint64_t window_begin_ = 0;
     std::chrono::nanoseconds period_{};
     std::jthread thread_;
 
 public:
-    struct TickCost {
-        double mean_us = 0;
-        double max_us = 0;
-    };
-
     RealtimeLoop(iv::GraphExecutor& executor, std::size_t sample_rate, std::size_t block_size)
         : period_(std::chrono::nanoseconds(
               static_cast<std::int64_t>(block_size) * 1'000'000'000LL
@@ -396,12 +418,12 @@ public:
                     auto const elapsed = static_cast<std::uint64_t>(
                         std::chrono::duration_cast<std::chrono::nanoseconds>(
                             Clock::now() - begin).count());
-                    tick_ns_sum_.fetch_add(elapsed, std::memory_order_relaxed);
-                    ticks_.fetch_add(1, std::memory_order_relaxed);
-                    auto max = tick_ns_max_.load(std::memory_order_relaxed);
-                    while (elapsed > max && !tick_ns_max_.compare_exchange_weak(
-                               max, elapsed, std::memory_order_relaxed)) {
-                    }
+                    auto const block = recorded_.load(std::memory_order_relaxed);
+                    tick_ns_[block % recorded_block_capacity].store(
+                        static_cast<std::uint32_t>(std::min<std::uint64_t>(
+                            elapsed, std::numeric_limits<std::uint32_t>::max())),
+                        std::memory_order_relaxed);
+                    recorded_.store(block + 1, std::memory_order_release);
                 }
                 cursor += static_cast<std::int64_t>(block_size);
                 next += period_;
@@ -415,17 +437,43 @@ public:
         return std::chrono::duration<double, std::micro>(period_).count();
     }
 
-    // Returns the cost accumulated since the previous call and restarts it.
+    // Summarizes the blocks recorded since the previous call and starts the
+    // next window.
     TickCost take_tick_cost()
     {
-        auto const sum = tick_ns_sum_.exchange(0, std::memory_order_relaxed);
-        auto const max = tick_ns_max_.exchange(0, std::memory_order_relaxed);
-        auto const ticks = ticks_.exchange(0, std::memory_order_relaxed);
-        if (ticks == 0) return {};
-        return {
-            .mean_us = static_cast<double>(sum) / static_cast<double>(ticks) / 1000.0,
-            .max_us = static_cast<double>(max) / 1000.0,
+        auto const end = recorded_.load(std::memory_order_acquire);
+        auto begin = window_begin_;
+        window_begin_ = end;
+        TickCost cost{};
+        if (end == begin) return cost;
+        if (end - begin > recorded_block_capacity) {
+            cost.dropped_blocks = static_cast<std::size_t>(
+                end - begin - recorded_block_capacity);
+            begin = end - recorded_block_capacity;
+        }
+        std::vector<std::uint32_t> blocks;
+        blocks.reserve(static_cast<std::size_t>(end - begin));
+        for (auto block = begin; block < end; ++block) {
+            blocks.push_back(tick_ns_[block % recorded_block_capacity].load(
+                std::memory_order_relaxed));
+        }
+        std::ranges::sort(blocks);
+        auto const count = blocks.size();
+        std::uint64_t sum = 0;
+        for (auto const nanoseconds : blocks) sum += nanoseconds;
+        // Nearest rank: the smallest duration that at least percent% of the
+        // blocks do not exceed.
+        auto const percentile = [&](std::size_t percent) {
+            auto const rank = std::max<std::size_t>(1, (percent * count + 99) / 100);
+            return static_cast<double>(blocks[rank - 1]) / 1000.0;
         };
+        cost.mean_us = static_cast<double>(sum) / static_cast<double>(count) / 1000.0;
+        cost.p50_us = percentile(50);
+        cost.p95_us = percentile(95);
+        cost.p99_us = percentile(99);
+        cost.max_us = static_cast<double>(blocks.back()) / 1000.0;
+        cost.blocks = count;
+        return cost;
     }
 };
 
@@ -474,8 +522,12 @@ void print_record(EditRecord const& record, int iteration)
               << " graph_jit_ms=" << ms(record.rebuild.graph_jit_us)
               << " stage_ms=" << ms(record.rebuild.executor_stage_us)
               << " compilations=" << record.compiles.size()
-              << " tick_mean_us=" << record.tick_mean_us
-              << " tick_max_us=" << record.tick_max_us
+              << " tick_mean_us=" << record.tick.mean_us
+              << " tick_p50_us=" << record.tick.p50_us
+              << " tick_p95_us=" << record.tick.p95_us
+              << " tick_p99_us=" << record.tick.p99_us
+              << " tick_max_us=" << record.tick.max_us
+              << " tick_blocks=" << record.tick.blocks
               << " block_period_us=" << record.block_period_us << '\n';
 }
 
@@ -521,9 +573,15 @@ void print_summary(std::vector<EditRecord> const& records, std::string const& la
                   << " + stage "
                   << collect([](EditRecord const& r) { return ms(r.rebuild.executor_stage_us); })
                   << "; realtime tick mean "
-                  << collect([](EditRecord const& r) { return r.tick_mean_us; })
+                  << collect([](EditRecord const& r) { return r.tick.mean_us; })
+                  << " us, p50 "
+                  << collect([](EditRecord const& r) { return r.tick.p50_us; })
+                  << " us, p95 "
+                  << collect([](EditRecord const& r) { return r.tick.p95_us; })
+                  << " us, p99 "
+                  << collect([](EditRecord const& r) { return r.tick.p99_us; })
                   << " us, max "
-                  << collect([](EditRecord const& r) { return r.tick_max_us; })
+                  << collect([](EditRecord const& r) { return r.tick.max_us; })
                   << " us per block\n";
         for (bool const transition : {false, true}) {
             auto const total = compile_phase(transition, [](auto const& c) { return c.total_us; });
@@ -648,9 +706,7 @@ int main(int argc, char** argv)
                 std::this_thread::sleep_for(std::chrono::milliseconds(20));
                 (void)realtime.take_tick_cost();
                 std::this_thread::sleep_for(std::chrono::milliseconds(options.settle_ms));
-                auto const cost = realtime.take_tick_cost();
-                record.tick_mean_us = cost.mean_us;
-                record.tick_max_us = cost.max_us;
+                record.tick = realtime.take_tick_cost();
                 record.block_period_us = realtime.block_period_us();
             } else if (auto const failure = project_graph.configuration_failure()) {
                 for (auto const& diagnostic : failure->node_instance_diagnostics) {
@@ -685,9 +741,22 @@ int main(int argc, char** argv)
             std::this_thread::sleep_for(
                 std::chrono::seconds(options.profile_seconds));
             auto const cost = realtime.take_tick_cost();
-            std::cout << "steady Tick: mean " << cost.mean_us << " us, max "
-                      << cost.max_us << " us, block period "
-                      << realtime.block_period_us() << " us\n";
+            auto const period = realtime.block_period_us();
+            auto const share = [&](double us) { return 100.0 * us / period; };
+            std::cout << std::fixed << std::setprecision(2)
+                      << "steady Tick: mean " << cost.mean_us << " us, p50 "
+                      << cost.p50_us << " us, p95 " << cost.p95_us << " us, p99 "
+                      << cost.p99_us << " us, max " << cost.max_us
+                      << " us over " << cost.blocks << " blocks, block period "
+                      << period << " us\n"
+                      << "steady Tick share of the block period: mean "
+                      << share(cost.mean_us) << "%, p99 " << share(cost.p99_us)
+                      << "%, max " << share(cost.max_us) << "%\n";
+            if (cost.dropped_blocks != 0) {
+                std::cout << "steady Tick summary omits the first "
+                          << cost.dropped_blocks
+                          << " blocks, which exceed the recording ring\n";
+            }
             package_watcher_service.request_shutdown();
             return 0;
         }

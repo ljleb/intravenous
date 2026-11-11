@@ -34,6 +34,15 @@ struct GraphJitConfig {
     // (graph_jit/region_specialization.h). Off, every region runs through the
     // realtime root's interpreter; tests and measurements compare the two.
     bool specialize_regions = true;
+    // Budget of the recent-use region specialization cache, in bytes of
+    // allocated code memory: the whole pages that JITLink's in-process memory
+    // manager keeps for each specialization's code and data. ORC's heap
+    // bookkeeping per specialization is not counted. Every specialization the
+    // cache owns counts, including one that a live compiled graph also runs;
+    // the least recently requested one is evicted first. Eviction removes only
+    // the cache's ownership, so code that a compiled graph still runs stays
+    // alive. The default is provisional, not a measured choice.
+    std::size_t region_specialization_cache_budget_bytes = 64 * 1024 * 1024;
 };
 
 // Immutable specialization facts for one project kernel. CPU/features are
@@ -261,6 +270,12 @@ struct GraphJitCompileTimings {
     // input rings, that compiled specializations replaced with those values.
     std::uint64_t region_specialization_substitutions = 0;
     std::uint64_t region_specialization_us = 0;
+    // Allocated code memory, in whole pages, of the region specializations
+    // this compilation created; then the bytes the recent-use cache owns after
+    // this compilation, and its budget (GraphJitConfig).
+    std::uint64_t region_specialization_allocated_bytes = 0;
+    std::uint64_t region_specialization_cache_bytes = 0;
+    std::uint64_t region_specialization_cache_budget_bytes = 0;
     std::string region_specialization_failure{};
     std::string region_specialization_skip{};
 };
