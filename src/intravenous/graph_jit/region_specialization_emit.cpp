@@ -5,7 +5,11 @@
 
 #include <llvm/ADT/APFloat.h>
 #include <llvm/ADT/APInt.h>
+#include <llvm/ADT/MapVector.h>
+#include <llvm/ADT/SmallVector.h>
 #include <llvm/ADT/StringRef.h>
+#include <llvm/Analysis/ConstantFolding.h>
+#include <llvm/Analysis/ValueTracking.h>
 #include <llvm/IR/Constants.h>
 #include <llvm/IR/DataLayout.h>
 #include <llvm/IR/DerivedTypes.h>
@@ -16,10 +20,13 @@
 #include <llvm/IR/IRBuilder.h>
 #include <llvm/IR/Instructions.h>
 #include <llvm/IR/Module.h>
+#include <llvm/IR/Operator.h>
 #include <llvm/Support/Error.h>
+#include <llvm/Support/KnownBits.h>
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cstddef>
 #include <cstring>
 #include <limits>
@@ -54,6 +61,24 @@ std::size_t channel_field(
     std::size_t field) noexcept
 {
     return storage_offset + channels_offset + channel * channel_binding_size + field;
+}
+
+template<class T>
+T read_bytes(std::span<std::byte const> bytes, std::size_t offset)
+{
+    T record{};
+    std::memcpy(&record, bytes.data() + offset, sizeof(T));
+    return record;
+}
+
+// size bytes of value repeated from its first byte.
+std::vector<std::byte> repeated(std::span<std::byte const> value, std::size_t size)
+{
+    std::vector<std::byte> result(size);
+    for (std::size_t offset = 0; offset < size; ++offset) {
+        result[offset] = value[offset % value.size()];
+    }
+    return result;
 }
 
 class SpecializationEmitter {
@@ -93,11 +118,6 @@ public:
     void store(llvm::Value* value, llvm::Value* base, std::size_t offset)
     {
         builder_.CreateStore(value, at(base, offset));
-    }
-
-    void store_size(std::size_t value, llvm::Value* base, std::size_t offset)
-    {
-        store(llvm::ConstantInt::get(i64_, value), base, offset);
     }
 
     llvm::GlobalVariable* constant_bytes(
@@ -164,13 +184,6 @@ public:
             source.size(), std::uint8_t{1});
     }
 
-    void size_value(std::size_t offset, std::size_t value)
-    {
-        std::array<std::byte, sizeof(value)> encoded{};
-        std::memcpy(encoded.data(), &value, sizeof(value));
-        bytes(offset, encoded);
-    }
-
     void null_pointer(std::size_t offset)
     {
         std::array<std::byte, sizeof(void*)> zero{};
@@ -210,6 +223,7 @@ struct LocalStep {
     std::size_t context_offset = 0;
     llvm::Value* operations_before = nullptr;
     llvm::Value* operations_after = nullptr;
+    llvm::Value* primitive_index = nullptr;
     llvm::FunctionCallee tick_block{};
     // Per begin index of the step, its pace cursor value for this call.
     std::vector<llvm::Value*> begin_bases{};
@@ -243,10 +257,14 @@ emit_region_specialization(
 
     auto* type = llvm::FunctionType::get(
         llvm::Type::getVoidTy(context),
-        {pointer, pointer, pointer, i64, i64, pointer, pointer},
+        {pointer, pointer, pointer, i64, i64, pointer, pointer, pointer},
         false);
     auto* operations_type = llvm::FunctionType::get(
         llvm::Type::getVoidTy(context), {pointer, pointer, i64, i64}, false);
+    auto* manual_controls_type = llvm::FunctionType::get(
+        llvm::Type::getVoidTy(context),
+        {pointer, i64, i64, i64, i64, i64},
+        false);
     auto* function = llvm::Function::Create(
         type, llvm::GlobalValue::ExternalLinkage, function_name, module);
     function->addFnAttr(llvm::Attribute::NoUnwind);
@@ -257,6 +275,7 @@ emit_region_specialization(
     auto* block_size = function->getArg(4);
     auto* frame = function->getArg(5);
     auto* run_operations = function->getArg(6);
+    auto* stage_manual_controls = function->getArg(7);
     steps->setName("steps");
     begin_bases->setName("begin_bases");
     workspace->setName("workspace");
@@ -264,6 +283,7 @@ emit_region_specialization(
     block_size->setName("block_size");
     frame->setName("frame");
     run_operations->setName("run_operations");
+    stage_manual_controls->setName("stage_manual_controls");
 
     auto* entry = llvm::BasicBlock::Create(context, "entry", function);
     builder.SetInsertPoint(entry);
@@ -300,6 +320,10 @@ emit_region_specialization(
         if (step.operations_after) {
             local.operations_after = emit.load_pointer(
                 record, offsetof(RegionSpecializationStep, operations_after));
+        }
+        if (step.stages_manual_controls) {
+            local.primitive_index = builder.CreateLoad(
+                i64, emit.at(record, offsetof(RegionSpecializationStep, primitive_index)));
         }
         auto* prepared_inputs = emit.load_pointer(
             prepared,
@@ -339,45 +363,6 @@ emit_region_specialization(
                 local.inputs_offset + base + input_tail_offset,
                 inputs_bytes.subspan(
                     base + input_tail_offset, input_binding_size - input_tail_offset));
-            auto const immutable = std::ranges::find(
-                step.immutable_inputs,
-                input,
-                &RegionSpecializationImmutableInput::binding);
-            if (immutable != step.immutable_inputs.end()) {
-                // One value, repeated at every position, as a one-value ring.
-                auto* value = emit.constant_bytes(immutable->value, "iv.region.immutable");
-                for (std::size_t channel = 0; channel < channels; ++channel) {
-                    auto field = [&](std::size_t offset) {
-                        return base + channel_field(input_storage_offset, channel, offset);
-                    };
-                    auto const storage_field =
-                        field(offsetof(ContinuousChannelStorageBinding, storage));
-                    emit.store(value, local.inputs, storage_field);
-                    written.constant_pointer(
-                        local.inputs_offset + storage_field, immutable->value);
-                    auto size_field = [&](std::size_t offset, std::size_t size_value) {
-                        emit.store_size(size_value, local.inputs, field(offset));
-                        written.size_value(local.inputs_offset + field(offset), size_value);
-                    };
-                    size_field(offsetof(ContinuousChannelStorageBinding, value_capacity), 1);
-                    size_field(
-                        offsetof(ContinuousChannelStorageBinding, value_stride_bytes),
-                        immutable->value.size());
-                    size_field(offsetof(ContinuousChannelStorageBinding, value_delay), 0);
-                    for (auto const offset : {
-                             offsetof(ContinuousChannelStorageBinding, contiguous_scratch),
-                             offsetof(ContinuousChannelStorageBinding, contiguous_storage)}) {
-                        emit.store(
-                            llvm::ConstantPointerNull::get(pointer), local.inputs, field(offset));
-                        written.null_pointer(local.inputs_offset + field(offset));
-                    }
-                }
-                auto const capacity_field = base + input_storage_offset
-                    + offsetof(ContinuousPortStorageBinding, value_capacity);
-                emit.store_size(1, local.inputs, capacity_field);
-                written.size_value(local.inputs_offset + capacity_field, 1);
-                continue;
-            }
             for (std::size_t channel = 0; channel < channels; ++channel) {
                 for (auto const offset : {
                          offsetof(ContinuousChannelStorageBinding, storage),
@@ -387,6 +372,26 @@ emit_region_specialization(
                         emit.load_pointer(prepared_inputs, field), local.inputs, field);
                     written.unknown(local.inputs_offset + field, sizeof(void*));
                 }
+            }
+            auto const immutable = std::ranges::find(
+                step.immutable_inputs,
+                input,
+                &RegionSpecializationImmutableInput::binding);
+            if (immutable == step.immutable_inputs.end()) continue;
+            // The input keeps its interpreter binding: ring, capacity, delay,
+            // and contiguous scratch. Each channel's ring holds the one value
+            // at every position, which only the recorded contents state.
+            for (std::size_t channel = 0; channel < channels; ++channel) {
+                auto const storage_field = base + channel_field(
+                    input_storage_offset,
+                    channel,
+                    offsetof(ContinuousChannelStorageBinding, storage));
+                auto const ring = read_bytes<ContinuousChannelStorageBinding>(
+                    inputs_bytes,
+                    base + channel_field(input_storage_offset, channel, 0));
+                written.constant_pointer(
+                    local.inputs_offset + storage_field,
+                    repeated(immutable->value, ring.value_capacity * ring.value_stride_bytes));
             }
         }
         for (std::size_t output = 0; output < output_count; ++output) {
@@ -533,6 +538,18 @@ emit_region_specialization(
             operation_call->setDoesNotThrow();
         };
         operations(local.operations_before);
+        if (step.stages_manual_controls) {
+            auto* manual_controls_call = builder.CreateCall(
+                manual_controls_type,
+                stage_manual_controls,
+                {frame,
+                 local.primitive_index,
+                 slice,
+                 count,
+                 root_index,
+                 block_size});
+            manual_controls_call->setDoesNotThrow();
+        }
         auto* call = builder.CreateCall(
             local.tick_block, {local.node_data, local.context, slice, count});
         call->setDoesNotThrow();
@@ -811,6 +828,90 @@ llvm::Constant* known_value(
     return nullptr;
 }
 
+// The least p with bytes[i] == bytes[i + p] for every i, so that
+// bytes[i] == bytes[i % p].
+std::size_t byte_period(llvm::StringRef bytes)
+{
+    if (bytes.empty()) return 0;
+    std::vector<std::size_t> border(bytes.size(), 0);
+    std::size_t matched = 0;
+    for (std::size_t index = 1; index < bytes.size(); ++index) {
+        while (matched > 0 && bytes[index] != bytes[matched]) matched = border[matched - 1];
+        if (bytes[index] == bytes[matched]) ++matched;
+        border[index] = matched;
+    }
+    return bytes.size() - border.back();
+}
+
+// The value a load reads from a constant global whose bytes repeat with
+// period p, when its address is the global plus a constant offset and
+// variable terms that are each a multiple of p. A defined load reads inside
+// the global, where all positions of one residue modulo p hold the same
+// bytes. An immutable input's ring is such a global: a slot index computed at
+// run time reads the one value. Address arithmetic wraps modulo 2^64, which
+// preserves the residue when p is a power of two; otherwise every address
+// step must be nusw, so that the terms add without wrapping.
+llvm::Constant* periodic_constant_value(
+    llvm::LoadInst& load,
+    llvm::DataLayout const& layout,
+    std::map<llvm::GlobalVariable const*, std::size_t>& periods)
+{
+    auto* type = load.getType();
+    auto const size = layout.getTypeStoreSize(type);
+    if (size.isScalable() || size.getFixedValue() == 0) return nullptr;
+    auto const bits = layout.getIndexTypeSizeInBits(load.getPointerOperand()->getType());
+    llvm::APInt constant(bits, 0);
+    llvm::SmallVector<std::pair<llvm::Value*, llvm::APInt>, 4> terms;
+    auto no_wrap = true;
+    auto* pointer = load.getPointerOperand();
+    for (unsigned depth = 0; depth < 16; ++depth) {
+        auto* step = llvm::dyn_cast<llvm::GEPOperator>(pointer);
+        if (!step) break;
+        llvm::SmallMapVector<llvm::Value*, llvm::APInt, 4> variables;
+        llvm::APInt offset(bits, 0);
+        if (!step->collectOffset(layout, bits, variables, offset)) return nullptr;
+        constant += offset;
+        for (auto const& [value, scale] : variables) terms.emplace_back(value, scale);
+        no_wrap = no_wrap && step->hasNoUnsignedSignedWrap();
+        pointer = step->getPointerOperand();
+    }
+    // LLVM folds a load at a constant offset itself.
+    if (terms.empty()) return nullptr;
+    auto* global = llvm::dyn_cast<llvm::GlobalVariable>(pointer);
+    if (!global || !global->isConstant() || !global->hasDefinitiveInitializer()) {
+        return nullptr;
+    }
+    // An all-zero value's ring is a zero initializer, of period one.
+    if (auto* uniform = llvm::ConstantFoldLoadFromUniformValue(
+            global->getInitializer(), type, layout)) {
+        return uniform;
+    }
+    auto const* data = llvm::dyn_cast<llvm::ConstantDataSequential>(global->getInitializer());
+    if (!data || !data->getElementType()->isIntegerTy(8)) return nullptr;
+    auto const bytes = data->getRawDataValues();
+    auto const extent = static_cast<std::size_t>(size.getFixedValue());
+    if (extent > bytes.size()) return nullptr;
+    auto [found, inserted] = periods.try_emplace(global, 0);
+    if (inserted) found->second = byte_period(bytes);
+    auto const period = found->second;
+    if (period == 0 || (!std::has_single_bit(period) && !no_wrap)) return nullptr;
+    for (auto const& [value, scale] : terms) {
+        auto const known = llvm::computeKnownBits(value, layout);
+        if (known.isZero()) continue;
+        auto const multiple = scale.abs().zext(2 * bits) << known.countMinTrailingZeros();
+        if (multiple.urem(period) != 0) return nullptr;
+    }
+    auto const divisor = llvm::APInt(bits, period);
+    auto residue = constant.srem(divisor);
+    if (residue.isNegative()) residue += divisor;
+    std::vector<std::byte> value(extent);
+    for (std::size_t offset = 0; offset < extent; ++offset) {
+        value[offset] = static_cast<std::byte>(
+            bytes[(static_cast<std::size_t>(residue.getZExtValue()) + offset) % period]);
+    }
+    return known_value(type, value);
+}
+
 } // namespace
 
 std::size_t substitute_region_workspace_values(
@@ -848,6 +949,9 @@ std::size_t substitute_region_workspace_values(
         return found->second;
     };
 
+    // Per constant global that a load reads, its byte period.
+    std::map<llvm::GlobalVariable const*, std::size_t> periods;
+
     std::size_t replaced = 0;
     // A replaced pointer load can make the loads based on it resolvable.
     for (unsigned sweep = 0; sweep < 8; ++sweep) {
@@ -858,7 +962,12 @@ std::size_t substitute_region_workspace_values(
                 if (!load || !load->isSimple()) continue;
                 auto const offset = workspace_offset(
                     load->getPointerOperand(), workspace, layout, pointers);
-                if (!offset) continue;
+                if (!offset) {
+                    if (auto* value = periodic_constant_value(*load, layout, periods)) {
+                        replacements.emplace_back(load, value);
+                    }
+                    continue;
+                }
                 auto* type = load->getType();
                 auto const size = layout.getTypeStoreSize(type);
                 if (size.isScalable() || *offset > contents.bytes.size()

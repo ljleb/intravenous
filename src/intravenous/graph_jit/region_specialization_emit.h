@@ -27,14 +27,15 @@ struct PackageRetainedGlobalDefinition {
 
 // What a region specialization's workspace holds for its whole call, as far as
 // GraphJit knows it. known[i] marks workspace byte i whose value is bytes[i].
-// A pointer field holds either another workspace address or the address of an
-// immutable value, given by its bytes. Runtime storage pointers and the
-// reflected ABI's mutable fields are not known.
+// A pointer field holds either another workspace address or the address of
+// immutable bytes, given by their contents. Other runtime storage pointers and
+// the reflected ABI's mutable fields are not known.
 struct RegionSpecializationWorkspaceContents {
     struct PointerField {
         std::size_t offset = 0;
-        // Set for a workspace address at target; otherwise the field points at
-        // constant, which holds one immutable value.
+        // Set for a workspace address at target. Otherwise the field points
+        // at bytes equal to constant for the whole call: an immutable input
+        // channel's ring, which holds the input's value at every position.
         bool workspace = false;
         std::size_t target = 0;
         std::vector<std::byte> constant{};
@@ -51,11 +52,13 @@ struct RegionSpecializationWorkspaceContents {
 //
 // Once per call the function builds a private copy of each step's bindings
 // and ReflectedNodeTickContext in the workspace: every binding constant from
-// the request's template bytes, every storage pointer from the step's
-// prepared context, and each immutable input bound to an LLVM constant. It
-// then runs the region's slices, writing each binding's Sequential begin index
-// and calling every step's tick_block in order, as the interpreter's slice
-// loop does. The result describes what the workspace holds for the call.
+// the request's template bytes and every storage pointer from the step's
+// prepared context. An immutable input keeps that binding; the result records
+// that its rings hold the input's value. The function then runs the region's
+// slices, writing each binding's Sequential begin index, staging an affected
+// step's ManualControlPlan timelines through the root callback, and calling
+// every step's tick_block in order, as the interpreter does. The result
+// describes what the workspace holds for the call.
 std::expected<RegionSpecializationWorkspaceContents, std::string>
 emit_region_specialization(
     llvm::Module& module,
@@ -67,8 +70,12 @@ emit_region_specialization(
 // workspace argument and contents' pointer fields, to a known workspace field
 // with that field's value. The reflected ABI passes the context and bindings
 // as const; only their mutable fields change during a call, and contents
-// excludes those. Run after the package callbacks are inlined. Returns the
-// number of loads replaced.
+// excludes those. A load of a field that points at immutable bytes becomes a
+// private constant global holding them. A load from a constant global whose
+// bytes repeat, such as an immutable input's ring, becomes its value when the
+// address's variable part is a multiple of the repetition period: a ring slot
+// computed at run time then still reads a constant. Run after the package
+// callbacks are inlined. Returns the number of loads replaced.
 std::size_t substitute_region_workspace_values(
     llvm::Module& module,
     std::string const& function_name,

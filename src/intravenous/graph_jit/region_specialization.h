@@ -16,30 +16,36 @@ struct ReflectedNodeTickContext;
 
 namespace iv::graph_jit {
 
-// A region specialization is optimized native code for the complete sliced
-// invocation of one cyclic ExecutionRegionPlan. It inlines each step's package
-// tick_block from the revision's finalized bitcode and binds eligible immutable
-// inputs to constant storage. LLVM can then remove ordinary loads and control
-// flow proved redundant. Strict floating-point library calls can remain even
-// after their arguments become constant; folding those calls is optimizer work
-// inside this same general specialization mechanism, not node-specific planner
-// behavior. The specialization is cached by its actual code inputs: regions
-// whose steps run the same node code over the same binding constants and
-// immutable values share one compiled function. The generic interpreter path in
+// A region specialization is optimized native code for the complete
+// invocation of one ExecutionRegionPlan: a cyclic region's slices, or an
+// acyclic region's one step, sliced to its maximum block size. It inlines each
+// step's package tick_block from the revision's finalized bitcode. GraphJit
+// then replaces reads of every value fixed for the call, binding constants,
+// context constants, and immutable inputs, with LLVM constants, and LLVM
+// removes the computation that depends only on them. The specialization is
+// cached by its actual code inputs. A value specialization includes immutable
+// values in that identity. A structure specialization leaves those values as
+// runtime ring reads and can therefore serve several value tuples of the same
+// code and binding shape. The generic interpreter path in
 // execute_realtime_root() remains the correctness path for every region that
 // is not specialized.
 
 // One step's per-call inputs. context is the step's prepared
 // ReflectedNodeTickContext in the root scratch; the specialization reads only
 // its storage pointers. operations_before and operations_after identify the
-// step's own storage operations, which the specialization runs through the
-// root's run_operations callback around each slice of the step, exactly as
-// the interpreter runs them.
+// step's own storage operations when the request has the specialization run
+// them: through the root's run_operations callback around each slice of a
+// cyclic region's step, exactly as the interpreter runs them. An acyclic
+// region's step runs its operations once around the complete invocation, so
+// the root runs them around the specialization.
 struct RegionSpecializationStep {
     void const* node_data = nullptr;
     ReflectedNodeTickContext const* context = nullptr;
     void const* operations_before = nullptr;
     void const* operations_after = nullptr;
+    // RootPrimitive index used only when the request asks the root to stage
+    // this step's participating ManualControlPlan records.
+    std::size_t primitive_index = 0;
 };
 
 // Runs one step operation list of the root call frame for one slice.
@@ -48,6 +54,18 @@ using RegionSpecializationOperationsFunction = void (*)(
     void const* operations,
     std::uint64_t index_bits,
     std::size_t count) noexcept;
+
+// Stages the ManualControlPlan timelines of one primitive immediately before
+// its specialized callback. slice_index/count identify the current region
+// slice. enclosing_index/count identify the complete root invocation, which
+// owns the interpolation ramp.
+using RegionSpecializationManualControlsFunction = void (*)(
+    void* frame,
+    std::size_t primitive_index,
+    std::uint64_t slice_index_bits,
+    std::size_t slice_count,
+    std::uint64_t enclosing_index_bits,
+    std::size_t enclosing_count) noexcept;
 
 // begin_bases holds, for every Sequential begin index of every step in
 // request order, the generation pace cursor that index advances from.
@@ -58,7 +76,8 @@ using RegionSpecializationFunction = void (*)(
     std::uint64_t root_index_bits,
     std::size_t block_size,
     void* frame,
-    RegionSpecializationOperationsFunction run_operations) noexcept;
+    RegionSpecializationOperationsFunction run_operations,
+    RegionSpecializationManualControlsFunction stage_manual_controls) noexcept;
 
 // The binding whose sequential_begin_index one root begin-index update writes.
 struct RegionSpecializationBeginIndex {
@@ -67,8 +86,10 @@ struct RegionSpecializationBeginIndex {
 };
 
 // An input whose every channel reads one immutable value. The specialization
-// binds it to an LLVM constant: a one-value ring with no delay, which is
-// exact for a node without block input access reading no history.
+// keeps the input's interpreter binding, with its ring, delay, and contiguous
+// scratch, so every read means what it means to the interpreter. GraphJit
+// knows that each channel's ring holds this value at every position: a read
+// through the ring, at any history offset, becomes this value.
 struct RegionSpecializationImmutableInput {
     std::size_t binding = 0;
     std::vector<std::byte> value{};
@@ -89,13 +110,18 @@ struct RegionSpecializationStepRequest {
     std::vector<std::byte> context{};
     std::vector<RegionSpecializationImmutableInput> immutable_inputs{};
     std::vector<RegionSpecializationBeginIndex> begin_indices{};
-    // The step has storage operations before or after its invocation.
+    // The specialization runs the step's storage operations before or after
+    // each slice of its invocation.
     bool operations_before = false;
     bool operations_after = false;
+    // The root stages this primitive's participating ManualControlPlan
+    // timelines after operations_before and before tick_block.
+    bool stages_manual_controls = false;
 };
 
 struct RegionSpecializationRequest {
-    // Frames per slice: ExecutionRegionPlan::maximum_block_size.
+    // Frames per slice: ExecutionRegionPlan::maximum_block_size, at most the
+    // kernel's maximum block size.
     std::size_t quantum = 0;
     std::vector<RegionSpecializationStepRequest> steps{};
 };
@@ -108,6 +134,13 @@ bool region_specialization_request_is_complete(
 // the field values that the emitted code depends on, never raw template bytes,
 // whose padding is unspecified. An incomplete request has an empty key.
 std::string region_specialization_key(RegionSpecializationRequest const& request);
+
+// Equal keys identify requests whose code and binding shape agree after
+// immutable input values are left as runtime ring reads. This is the cache key
+// of a shared structure specialization. An incomplete request has an empty
+// key.
+std::string region_specialization_structure_key(
+    RegionSpecializationRequest const& request);
 
 // Reusable per-call storage for the request's binding and context copies. One
 // root call needs only the largest specialized region's workspace because its
@@ -128,8 +161,8 @@ public:
     virtual ~RegionSpecializationProvider() = default;
     virtual std::optional<RegionSpecializationCode> region_specialization(
         RegionSpecializationRequest const& request) = 0;
-    // A cyclic region that the root builder keeps on the interpreter without
-    // requesting a specialization, and why.
+    // A candidate region that the root builder keeps on the interpreter
+    // without requesting a specialization, and why.
     virtual void region_kept_on_interpreter(std::string const& reason) = 0;
 };
 

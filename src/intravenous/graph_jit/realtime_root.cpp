@@ -235,7 +235,8 @@ struct RootStep {
     bool captures = false;
 };
 
-// The compiled code that replaces one cyclic region's slice loop, and the
+// The compiled code that replaces one region's interpreted invocation: a
+// cyclic region's slice loop, or an acyclic region's one step. It holds the
 // per-call inputs the root gathers for it.
 struct RootRegionSpecialization {
     RegionSpecializationFunction function = nullptr;
@@ -244,13 +245,28 @@ struct RootRegionSpecialization {
     std::vector<std::size_t> steps{};
     // Per begin index of every step, in request order: its pace cursor.
     std::vector<std::size_t> begin_cursors{};
+    // Set for a cyclic region: the code runs each step's own operations
+    // around every slice of the step. An acyclic region's one step runs its
+    // operations once around the complete invocation, as run_step() does, so
+    // the root runs them around the code.
+    bool runs_step_operations = false;
 };
 
-// The operations around one cyclic region's complete root call.
+// The operations around one cyclic region's complete root call, and the
+// compiled code of any specialized region.
 struct RootRegion {
     std::vector<RootOperation> before{};
     std::vector<RootOperation> after{};
     std::optional<RootRegionSpecialization> specialization{};
+};
+
+// How one acyclic ready group runs: first the regions that have compiled
+// code, then the remaining steps through the interpreter, as one native batch
+// when more than one remains. The group's steps are independent, so this
+// order computes what one batch of all of them computes.
+struct RootAcyclicGroup {
+    std::vector<std::size_t> specialized_regions{};
+    std::vector<std::size_t> interpreted_steps{};
 };
 
 struct ContinuousActivitySummary {
@@ -313,6 +329,9 @@ struct RealtimeRootPlan {
     // Indexed like ExecutionPlan::primitive_steps and ExecutionPlan::regions.
     std::vector<RootStep> steps{};
     std::vector<RootRegion> regions{};
+    // Indexed like ExecutionPlan::ready_groups. Entries of cyclic groups stay
+    // empty.
+    std::vector<RootAcyclicGroup> acyclic_groups{};
     // Primitives with Tick runtime slots.
     std::vector<std::size_t> tick_primitives{};
     std::vector<RootAddress> sample_addresses{};
@@ -2139,10 +2158,31 @@ void run_specialized_step_operations(
         count);
 }
 
-// One cyclic region's complete sliced invocation through its compiled
-// specialization. The region's own operations run around it, as around the
-// interpreter's slice loop, and each step's own operations run through
-// run_specialized_step_operations() around every slice of the step. The
+// The RegionSpecializationManualControlsFunction a specialization calls after
+// one step's operations_before and before its callback.
+void stage_specialized_manual_controls(
+    void* frame,
+    std::size_t primitive_index,
+    std::uint64_t slice_index_bits,
+    std::size_t slice_count,
+    std::uint64_t enclosing_index_bits,
+    std::size_t enclosing_count) noexcept
+{
+    stage_manual_control_sample_timelines(
+        *static_cast<RootFrame*>(frame),
+        primitive_index,
+        GlobalIndex::from_bits(slice_index_bits),
+        slice_count,
+        GlobalIndex::from_bits(enclosing_index_bits),
+        enclosing_count);
+}
+
+// One region's complete invocation through its compiled specialization. A
+// cyclic region's own operations run around it, as around the interpreter's
+// slice loop, and each step's own operations run through
+// run_specialized_step_operations() around every slice of the step. An
+// acyclic region's one step runs its operations around the code, as
+// run_step() runs them around the step's sliced invocation. The
 // specialization updates the begin indices of its own binding copies, so the
 // prepared contexts stay as the root call completed them.
 void run_region_specialization(
@@ -2152,6 +2192,11 @@ void run_region_specialization(
     std::size_t block_size) noexcept
 {
     auto const& plan = frame.plan;
+    auto const inside = specialization.runs_step_operations;
+    if (!inside) {
+        auto const& step = plan.steps[specialization.steps.front()];
+        if (!step.before.empty()) run_operations(frame, step.before, index, block_size);
+    }
     for (std::size_t step = 0; step < specialization.steps.size(); ++step) {
         auto const& root_step = plan.steps[specialization.steps[step]];
         auto const& primitive = plan.primitives[root_step.primitive];
@@ -2159,8 +2204,13 @@ void run_region_specialization(
             .node_data = primitive.node_data.data(),
             .context = reinterpret_cast<ReflectedNodeTickContext const*>(
                 frame.scratch + primitive.context_offset),
-            .operations_before = root_step.before.empty() ? nullptr : &root_step.before,
-            .operations_after = root_step.after.empty() ? nullptr : &root_step.after,
+            .operations_before = inside && !root_step.before.empty()
+                ? &root_step.before
+                : nullptr,
+            .operations_after = inside && !root_step.after.empty()
+                ? &root_step.after
+                : nullptr,
+            .primitive_index = root_step.primitive,
         };
     }
     for (std::size_t update = 0;
@@ -2175,9 +2225,14 @@ void run_region_specialization(
         index.bits(),
         block_size,
         &frame,
-        &run_specialized_step_operations);
+        &run_specialized_step_operations,
+        &stage_specialized_manual_controls);
     for (auto const step : specialization.steps) {
         mark_primitive_outputs(frame, plan.primitives[plan.steps[step].primitive]);
+    }
+    if (!inside) {
+        auto const& step = plan.steps[specialization.steps.front()];
+        if (!step.after.empty()) run_operations(frame, step.after, index, block_size);
     }
 }
 
@@ -4120,7 +4175,10 @@ private:
         auto const& execution = plan_.execution;
         auto carry = [&](std::size_t index) { return prepare_sample_carry(index); };
         plan_.regions.resize(execution.regions.size());
-        for (auto const& group : execution.ready_groups) {
+        plan_.acyclic_groups.resize(execution.ready_groups.size());
+        for (std::size_t group_index = 0;
+             group_index < execution.ready_groups.size(); ++group_index) {
+            auto const& group = execution.ready_groups[group_index];
             if (group.cyclic_regions.empty()) {
                 for (auto const step : group.primitive_steps) {
                     if (step >= execution.primitive_steps.size()) {
@@ -4132,6 +4190,8 @@ private:
                     plan_.maximum_batch_lanes = std::max(
                         plan_.maximum_batch_lanes, group.primitive_steps.size());
                 }
+                plan_.acyclic_groups[group_index].interpreted_steps =
+                    group.primitive_steps;
                 continue;
             }
             if (group.cyclic_regions.front() >= execution.regions.size()) {
@@ -4367,13 +4427,58 @@ private:
         return std::nullopt;
     }
 
-    // The specialization request of one cyclic region, or why it keeps the
+    // Some Sequential input of a step of the region reads an immutable value.
+    bool reads_immutable_input(detail::ExecutionRegionPlan const& region) const
+    {
+        for (auto const step_index : region.primitive_steps) {
+            if (step_index >= plan_.steps.size()) continue;
+            auto const& sample =
+                plan_.sample_ports.primitives[plan_.steps[step_index].primitive];
+            for (auto const& input : sample.inputs) {
+                if (!input.random_access && !input.invocation_supplied
+                    && immutable_input_value(input)) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    bool primitive_stages_manual_controls(RootPrimitive const& primitive) const
+    {
+        return std::ranges::any_of(
+            primitive.manual_controls,
+            [&](std::size_t control) {
+                return control < plan_.sample_ports.manual_controls.size()
+                    && plan_.sample_ports.manual_controls[control].stages_timeline;
+            });
+    }
+
+    // Some step keeps a participating ManualControlPlan timeline current.
+    // Dynamic code reads that timeline. Settled code can read an immutable
+    // binding while this shadow timeline remains ready for code-only
+    // activation of the dynamic replacement.
+    bool stages_manual_controls(detail::ExecutionRegionPlan const& region) const
+    {
+        for (auto const step_index : region.primitive_steps) {
+            if (step_index >= plan_.steps.size()) continue;
+            auto const& primitive = plan_.primitives[
+                plan_.steps[step_index].primitive];
+            if (primitive_stages_manual_controls(primitive)) return true;
+        }
+        return false;
+    }
+
+    // The specialization request of one region, or why it keeps the
     // interpreter: some step needs work that this first form does not
-    // compile. That is a capture, a Tick slot, a manual control, an event
-    // port, an activity plan, a Random Access input, or a non-project-rate
-    // pace. A step's own storage operations run through the root around each
-    // slice of the step. The specialization calls each node's scalar
-    // tick_block, which every Tick node has, whichever form its author wrote.
+    // compile. That is a capture, a Tick slot, an event port, an activity
+    // plan, a Random Access input, or a non-project-rate
+    // pace. A cyclic region's step runs its own storage operations through
+    // the root around each slice of the step; an acyclic region's one step
+    // runs them around the complete invocation, outside the code. The
+    // specialization calls each node's scalar tick_block, which every Tick
+    // node has, whichever form its author wrote. A slice is at most the
+    // kernel's maximum block size, the largest root call.
     std::expected<PlannedRegionSpecialization, std::string> plan_region_specialization(
         detail::ExecutionRegionPlan const& region) const
     {
@@ -4394,7 +4499,9 @@ private:
         };
 
         PlannedRegionSpecialization result;
-        result.request.quantum = region.maximum_block_size;
+        result.request.quantum = std::min(
+            region.maximum_block_size,
+            lowering_.declarations.node_layout.max_block_size);
         for (auto const step_index : region.primitive_steps) {
             if (step_index >= plan_.steps.size()) return reject("a step is missing");
             auto const& step = plan_.steps[step_index];
@@ -4402,9 +4509,6 @@ private:
             auto const index = step.primitive;
             auto const& primitive = plan_.primitives[index];
             if (primitive.tick) return reject("a primitive has Tick slots");
-            if (!primitive.manual_controls.empty()) {
-                return reject("a primitive has a manual control");
-            }
             if (plan_.primitive_activity[index]) {
                 return reject("a primitive has an activity plan");
             }
@@ -4423,8 +4527,10 @@ private:
                 .revision = implementation->revision,
                 .code_key = implementation->code_key,
                 .provider_version = implementation->provider_version,
-                .operations_before = !step.before.empty(),
-                .operations_after = !step.after.empty(),
+                .operations_before = region.cyclic && !step.before.empty(),
+                .operations_after = region.cyclic && !step.after.empty(),
+                .stages_manual_controls =
+                    primitive_stages_manual_controls(primitive),
             };
             auto const& sample = plan_.sample_ports.primitives[index];
             for (std::size_t input = 0; input < sample.inputs.size(); ++input) {
@@ -4441,9 +4547,6 @@ private:
                     return reject("an input is not at project rate");
                 }
                 request.input_channel_counts.push_back(planned.channels.size());
-                if (implementation->block_input_access || planned.history != 0) {
-                    continue;
-                }
                 if (auto value = immutable_input_value(planned)) {
                     request.immutable_inputs.push_back(RegionSpecializationImmutableInput{
                         .binding = input,
@@ -4505,38 +4608,121 @@ private:
         return result;
     }
 
-    // Attaches the provider's compiled code to every cyclic region it
-    // specializes. A region it does not specialize keeps the interpreter's
-    // slice loop.
+    // Attaches the provider's compiled code to every region it specializes. A
+    // region it does not specialize keeps the interpreter. Every cyclic region
+    // is a candidate. An acyclic region is a candidate when its step reads an
+    // immutable input or stages a participating manual-control timeline. A
+    // structure group with one value tuple computes with those values as LLVM
+    // constants. A group with several tuples shares code that reads them from
+    // the existing rings. A dynamic manual control uses that structure form.
+    // This is a compile-cost selection, not a limit of the code.
     void build_region_specializations()
     {
         if (!specializations_) return;
         auto const& execution = plan_.execution;
+        struct Candidate {
+            std::size_t region = 0;
+            PlannedRegionSpecialization planned{};
+            std::string complete_key{};
+            bool share_structure = false;
+        };
+        std::vector<Candidate> candidates;
+        std::unordered_map<std::string, std::vector<std::size_t>> structure_groups;
         for (std::size_t region_index = 0;
              region_index < execution.regions.size(); ++region_index) {
             auto const& region = execution.regions[region_index];
-            if (!region.cyclic || region.primitive_steps.empty()) continue;
+            if (region.primitive_steps.empty()) continue;
+            if (!region.cyclic
+                && (region.primitive_steps.size() != 1
+                    || (!reads_immutable_input(region)
+                        && !stages_manual_controls(region)))) {
+                continue;
+            }
             auto planned = plan_region_specialization(region);
             if (!planned) {
                 specializations_->region_kept_on_interpreter(planned.error());
                 continue;
             }
-            auto code = specializations_->region_specialization(planned->request);
+            auto complete_key = region_specialization_key(planned->request);
+            auto structure_key = region_specialization_structure_key(planned->request);
+            if (complete_key.empty() || structure_key.empty()) {
+                specializations_->region_kept_on_interpreter(
+                    "the specialization request is incomplete");
+                continue;
+            }
+            auto const candidate = candidates.size();
+            candidates.push_back(Candidate{
+                .region = region_index,
+                .planned = std::move(*planned),
+                .complete_key = std::move(complete_key),
+            });
+            structure_groups[std::move(structure_key)].push_back(candidate);
+        }
+
+        // A structure group with several immutable-value tuples gets one
+        // shared specialization. A group with one tuple keeps the values in
+        // the request, so LLVM can fold their complete downstream work.
+        for (auto const& [key, group] : structure_groups) {
+            (void)key;
+            auto const& first = candidates[group.front()].complete_key;
+            auto const several_values = std::ranges::any_of(
+                group,
+                [&](std::size_t candidate) {
+                    return candidates[candidate].complete_key != first;
+                });
+            if (!several_values) continue;
+            for (auto const candidate : group) {
+                candidates[candidate].share_structure = true;
+            }
+        }
+
+        for (auto& candidate : candidates) {
+            auto& planned = candidate.planned;
+            if (candidate.share_structure) {
+                for (auto& step : planned.request.steps) {
+                    step.immutable_inputs.clear();
+                }
+            }
+            auto code = specializations_->region_specialization(planned.request);
             if (!code || !code->function) continue;
             plan_.maximum_specialization_steps = std::max(
-                plan_.maximum_specialization_steps, planned->steps.size());
+                plan_.maximum_specialization_steps, planned.steps.size());
             plan_.maximum_specialization_begin_indices = std::max(
                 plan_.maximum_specialization_begin_indices,
-                planned->begin_cursors.size());
+                planned.begin_cursors.size());
             plan_.maximum_specialization_workspace_size = std::max(
                 plan_.maximum_specialization_workspace_size,
-                planned->workspace_size);
-            plan_.regions[region_index].specialization = RootRegionSpecialization{
+                planned.workspace_size);
+            plan_.regions[candidate.region].specialization = RootRegionSpecialization{
                 .function = code->function,
                 .lifetime = std::move(code->lifetime),
-                .steps = std::move(planned->steps),
-                .begin_cursors = std::move(planned->begin_cursors),
+                .steps = std::move(planned.steps),
+                .begin_cursors = std::move(planned.begin_cursors),
+                .runs_step_operations = execution.regions[candidate.region].cyclic,
             };
+        }
+
+        // An acyclic group runs a specialized region's code in place of the
+        // region's one step.
+        std::vector<std::size_t> step_regions(execution.primitive_steps.size(), no_index);
+        for (std::size_t region_index = 0;
+             region_index < execution.regions.size(); ++region_index) {
+            for (auto const step : execution.regions[region_index].primitive_steps) {
+                if (step < step_regions.size()) step_regions[step] = region_index;
+            }
+        }
+        for (auto& group : plan_.acyclic_groups) {
+            std::vector<std::size_t> interpreted;
+            for (auto const step : group.interpreted_steps) {
+                auto const region = step_regions[step];
+                if (region != no_index && !execution.regions[region].cyclic
+                    && plan_.regions[region].specialization) {
+                    group.specialized_regions.push_back(region);
+                } else {
+                    interpreted.push_back(step);
+                }
+            }
+            group.interpreted_steps = std::move(interpreted);
         }
     }
 
@@ -4735,18 +4921,24 @@ void execute_realtime_root(
     initialize_tick_slots(frame);
 
     auto const& execution = plan.execution;
-    for (auto const& group : execution.ready_groups) {
+    for (std::size_t group_index = 0;
+         group_index < execution.ready_groups.size(); ++group_index) {
+        auto const& group = execution.ready_groups[group_index];
         if (group.cyclic_regions.empty()) {
-            if (group.primitive_steps.size() > 1) {
-                run_step_batch(
+            auto const& acyclic = plan.acyclic_groups[group_index];
+            for (auto const region_index : acyclic.specialized_regions) {
+                run_region_specialization(
                     frame,
-                    group.primitive_steps,
+                    *plan.regions[region_index].specialization,
                     sample_index,
-                    block_size,
-                    false);
+                    block_size);
+            }
+            auto const& steps = acyclic.interpreted_steps;
+            if (steps.size() > 1) {
+                run_step_batch(frame, steps, sample_index, block_size, false);
                 continue;
             }
-            for (auto const step : group.primitive_steps) {
+            for (auto const step : steps) {
                 run_step(frame, step, sample_index, block_size, true);
             }
             continue;

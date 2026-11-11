@@ -259,6 +259,10 @@ constexpr char graph_jit_constant_history_module_id[] =
     "iv.test.graph_jit.state_context.constant_history_module";
 constexpr char graph_jit_constant_gain_feedback_module_id[] =
     "iv.test.graph_jit.state_context.constant_gain_feedback_module";
+constexpr char graph_jit_immutable_history_module_id[] =
+    "iv.test.graph_jit.state_context.immutable_history_module";
+constexpr char graph_jit_distinct_immutable_history_module_id[] =
+    "iv.test.graph_jit.state_context.distinct_immutable_history_module";
 constexpr char graph_jit_shared_neutral_compensated_module_id[] =
     "iv.test.graph_jit.state_context.shared_neutral_compensated_module";
 constexpr char graph_jit_unequal_latency_composition_module_id[] =
@@ -457,6 +461,12 @@ struct FeedbackGainStateMirror {
     std::uint64_t retained_pointer_identity_matches = 0;
     float last_input = 0.0f;
     float last_gain = 0.0f;
+    float last_output = 0.0f;
+};
+
+struct ImmutableHistoryReaderStateMirror {
+    std::uint64_t ticks = 0;
+    float last_input = 0.0f;
     float last_output = 0.0f;
 };
 
@@ -10713,6 +10723,107 @@ void constant_gain_feedback_module(
 IV_MODULE(
     "iv.test.graph_jit.state_context.constant_gain_feedback_module",
     constant_gain_feedback_module);
+
+// A pointwise node that, like SawOscillator, reads immutable inputs with
+// history: out = in * gain[n - 1] + offset[n - 2] + the sum of gain's
+// extended block (history plus the current value) + id.
+struct ImmutableHistoryReader {
+    std::uint64_t id = 0;
+
+    struct State {
+        std::uint64_t ticks = 0;
+        float last_input = 0.0f;
+        float last_output = 0.0f;
+    };
+
+    constexpr explicit ImmutableHistoryReader(std::uint64_t id_) : id(id_) {}
+
+    static constexpr auto inputs()
+    {
+        return std::array{
+            iv::input<iv::Sample>("in"),
+            iv::input<iv::Sample>("gain"),
+            iv::input<iv::Sample>("offset", {
+                .default_value = iv::Sample{0.125f},
+            }),
+        };
+    }
+
+    static constexpr auto outputs()
+    {
+        return std::array{iv::output<iv::Sample>("out")};
+    }
+
+    void constrain_ports(iv::ConstrainPortsContext<ImmutableHistoryReader>& ctx) const
+    {
+        ctx.input<"gain">().history() = 1;
+        ctx.input<"offset">().history() = 2;
+    }
+
+    void tick(iv::TickSampleContext<ImmutableHistoryReader> const& ctx) const
+    {
+        auto& state = ctx.state();
+        auto const in = static_cast<float>(ctx.input<"in">().get());
+        auto extended = 0.0f;
+        for (auto const value : ctx.input<"gain">().block_extended()) {
+            extended += static_cast<float>(value);
+        }
+        auto const out = in * static_cast<float>(ctx.input<"gain">().get(1))
+            + static_cast<float>(ctx.input<"offset">().get(2))
+            + extended
+            + static_cast<float>(id);
+        ctx.output<"out">().push(iv::Sample{out});
+        ++state.ticks;
+        state.last_input = in;
+        state.last_output = out;
+    }
+};
+IV_NODE("iv.test.graph_jit.state_context.immutable_history_reader", ImmutableHistoryReader);
+
+// A ramp read by two ImmutableHistoryReaders of one Constant gain. Neither
+// reader is in a cycle; offset stays disconnected.
+void immutable_history_module(iv::GraphBuilder& graph, float gain = 0.5f)
+{
+    auto ramp = graph.node<"iv.test.graph_jit.state_context.sample_ramp_source">();
+    auto factor = graph.node<"iv.test.graph_jit.state_context.constant">(
+        iv::Sample{gain});
+    auto first = graph.node<"iv.test.graph_jit.state_context.immutable_history_reader">(
+        std::uint64_t{1});
+    auto second = graph.node<"iv.test.graph_jit.state_context.immutable_history_reader">(
+        std::uint64_t{2});
+    first.connect_input("in", static_cast<iv::SamplePortRef>(ramp));
+    first.connect_input("gain", static_cast<iv::SamplePortRef>(factor));
+    second.connect_input("in", static_cast<iv::SamplePortRef>(ramp));
+    second.connect_input("gain", static_cast<iv::SamplePortRef>(factor));
+    graph.outputs();
+}
+IV_MODULE(
+    "iv.test.graph_jit.state_context.immutable_history_module",
+    immutable_history_module);
+
+// Two equal reader shapes with different immutable gain values. GraphJit can
+// share their structure specialization while each invocation still reads its
+// own gain ring.
+void distinct_immutable_history_module(iv::GraphBuilder& graph)
+{
+    auto ramp = graph.node<"iv.test.graph_jit.state_context.sample_ramp_source">();
+    auto first_gain = graph.node<"iv.test.graph_jit.state_context.constant">(
+        iv::Sample{0.5f});
+    auto second_gain = graph.node<"iv.test.graph_jit.state_context.constant">(
+        iv::Sample{0.75f});
+    auto first = graph.node<"iv.test.graph_jit.state_context.immutable_history_reader">(
+        std::uint64_t{1});
+    auto second = graph.node<"iv.test.graph_jit.state_context.immutable_history_reader">(
+        std::uint64_t{2});
+    first.connect_input("in", static_cast<iv::SamplePortRef>(ramp));
+    first.connect_input("gain", static_cast<iv::SamplePortRef>(first_gain));
+    second.connect_input("in", static_cast<iv::SamplePortRef>(ramp));
+    second.connect_input("gain", static_cast<iv::SamplePortRef>(second_gain));
+    graph.outputs();
+}
+IV_MODULE(
+    "iv.test.graph_jit.state_context.distinct_immutable_history_module",
+    distinct_immutable_history_module);
 )cpp";
     static_assert(part_1.size() < 60 * 1024);
     static_assert(part_2.size() < 60 * 1024);
@@ -12181,6 +12292,10 @@ TEST(GraphJitSharedRuntimeFixture, BuildPackage)
     EXPECT_TRUE(has_module_definition(
         graph_jit_constant_gain_feedback_module_id));
     EXPECT_TRUE(has_module_definition(
+        graph_jit_immutable_history_module_id));
+    EXPECT_TRUE(has_module_definition(
+        graph_jit_distinct_immutable_history_module_id));
+    EXPECT_TRUE(has_module_definition(
         graph_jit_native_batch_replay_module_id));
     EXPECT_TRUE(has_module_definition(
         graph_jit_native_batch_background_module_id));
@@ -13645,6 +13760,136 @@ TEST_F(GraphJitRuntimeFixture, CyclicRegionSpecializationMatchesInterpreterAndIs
         << copied->region_specialization_failure;
 }
 
+// An acyclic node reading immutable inputs with history, through get() and
+// block_extended(), runs as a region specialization. The interpreter's
+// constant ring and contiguous scratch serve both reads. Two equal readers
+// share one compiled function; the ramp, which reads no immutable input,
+// stays on its native callback.
+TEST_F(GraphJitRuntimeFixture, AcyclicRegionWithImmutableHistoryRunsSpecialized)
+{
+    iv::GraphJit interpreter_jit(iv::GraphJitConfig{
+        .sample_rate = 88200,
+        .block_size = 64,
+        .specialize_regions = false,
+    });
+    auto states = [](iv::CompiledGraph const& graph, iv::NodeStorage& storage) {
+        // Configured order: the ramp and the Constant, which have no State,
+        // then the readers with ids 1 and 2.
+        std::vector<ImmutableHistoryReaderStateMirror*> result;
+        for (std::size_t node = 0; node < graph.node_layout.nodes.size(); ++node) {
+            if (graph.node_layout.nodes[node].state_size
+                != sizeof(ImmutableHistoryReaderStateMirror)) {
+                continue;
+            }
+            result.push_back(static_cast<ImmutableHistoryReaderStateMirror*>(
+                storage.state_ptr(node)));
+        }
+        return result;
+    };
+    float gain = 0.5f;
+    std::array arguments{iv::details::configuration_argument(gain)};
+    auto const graph = configured_module_graph_with_arguments(
+        *revision, graph_jit_immutable_history_module_id, arguments);
+    auto specialized = compile_graph(graph, 126);
+    auto interpreted = interpreter_jit.compile(iv::GraphJitCompileRequest{
+        .project_generation = 126,
+        .graph = graph,
+        .definitions = definitions,
+    });
+    ASSERT_TRUE(specialized.succeeded())
+        << (specialized.diagnostics.empty()
+                ? ""
+                : specialized.diagnostics.front().message);
+    ASSERT_TRUE(interpreted.succeeded())
+        << (interpreted.diagnostics.empty()
+                ? ""
+                : interpreted.diagnostics.front().message);
+    ASSERT_EQ(specialized.timings.size(), 1u);
+    auto const& timings = specialized.timings.front();
+    EXPECT_EQ(timings.region_specializations_compiled, 1u);
+    EXPECT_EQ(timings.region_specializations_reused, 1u);
+    EXPECT_EQ(timings.region_specializations_skipped, 0u)
+        << timings.region_specialization_skip;
+    EXPECT_EQ(timings.region_specialization_failures, 0u)
+        << timings.region_specialization_failure;
+    EXPECT_GT(timings.region_specialization_substitutions, 0u);
+
+    auto specialized_storage =
+        specialized.compiled_graph->node_layout.create_storage(resources);
+    specialized_storage.initialize();
+    auto interpreted_storage =
+        interpreted.compiled_graph->node_layout.create_storage(resources);
+    interpreted_storage.initialize();
+    auto const specialized_states =
+        states(*specialized.compiled_graph, specialized_storage);
+    auto const interpreted_states =
+        states(*interpreted.compiled_graph, interpreted_storage);
+    ASSERT_EQ(specialized_states.size(), 2u);
+    ASSERT_EQ(interpreted_states.size(), 2u);
+
+    for (std::int64_t block = 0; block < 3; ++block) {
+        specialized.compiled_graph->root_operations.tick_block(
+            specialized_storage.buffer().data(),
+            &empty_tick_invocation,
+            index(block * 64),
+            64);
+        interpreted.compiled_graph->root_operations.tick_block(
+            interpreted_storage.buffer().data(),
+            &empty_tick_invocation,
+            index(block * 64),
+            64);
+        auto const last = static_cast<float>(block * 64 + 63);
+        for (std::size_t node = 0; node < 2; ++node) {
+            auto const& actual = *specialized_states[node];
+            auto const& expected = *interpreted_states[node];
+            EXPECT_EQ(actual.ticks, static_cast<std::uint64_t>((block + 1) * 64));
+            EXPECT_EQ(actual.ticks, expected.ticks);
+            EXPECT_FLOAT_EQ(actual.last_input, last);
+            EXPECT_FLOAT_EQ(actual.last_input, expected.last_input);
+            // in * gain + offset + (gain + gain) + id.
+            EXPECT_FLOAT_EQ(
+                actual.last_output,
+                last * gain + 0.125f + 2.0f * gain + static_cast<float>(node + 1));
+            EXPECT_FLOAT_EQ(actual.last_output, expected.last_output);
+        }
+    }
+}
+
+TEST_F(GraphJitRuntimeFixture, DistinctImmutableValuesShareOneStructureSpecialization)
+{
+    auto compiled = compile(graph_jit_distinct_immutable_history_module_id, 127);
+    ASSERT_TRUE(compiled.succeeded())
+        << (compiled.diagnostics.empty()
+                ? ""
+                : compiled.diagnostics.front().message);
+    ASSERT_EQ(compiled.timings.size(), 1u);
+    auto const& timings = compiled.timings.front();
+    EXPECT_EQ(timings.region_specializations_compiled, 1u);
+    EXPECT_EQ(timings.region_specializations_reused, 1u);
+    EXPECT_EQ(timings.region_specialization_failures, 0u)
+        << timings.region_specialization_failure;
+
+    auto storage = compiled.compiled_graph->node_layout.create_storage(resources);
+    storage.initialize();
+    std::vector<ImmutableHistoryReaderStateMirror*> states;
+    for (std::size_t node = 0;
+         node < compiled.compiled_graph->node_layout.nodes.size(); ++node) {
+        if (compiled.compiled_graph->node_layout.nodes[node].state_size
+            == sizeof(ImmutableHistoryReaderStateMirror)) {
+            states.push_back(static_cast<ImmutableHistoryReaderStateMirror*>(
+                storage.state_ptr(node)));
+        }
+    }
+    ASSERT_EQ(states.size(), 2u);
+
+    compiled.compiled_graph->root_operations.tick_block(
+        storage.buffer().data(), &empty_tick_invocation, index(0), 64);
+    EXPECT_EQ(states[0]->ticks, 64u);
+    EXPECT_EQ(states[1]->ticks, 64u);
+    EXPECT_FLOAT_EQ(states[0]->last_output, 63.0f * 0.5f + 0.125f + 1.0f + 1.0f);
+    EXPECT_FLOAT_EQ(states[1]->last_output, 63.0f * 0.75f + 0.125f + 1.5f + 2.0f);
+}
+
 TEST_F(GraphJitRuntimeFixture, ActivityPartitionsReadyFrontierIntoTickAndSkipBatches)
 {
     auto compiled = compile(graph_jit_native_batch_activity_module_id, 113);
@@ -14037,6 +14282,14 @@ TEST_F(GraphJitRuntimeFixture,
         << (dynamic.diagnostics.empty()
                 ? ""
                 : dynamic.diagnostics.front().message);
+    ASSERT_EQ(constant.timings.size(), 1u);
+    ASSERT_EQ(dynamic.timings.size(), 1u);
+    EXPECT_EQ(constant.timings.front().region_specializations_compiled, 1u);
+    EXPECT_EQ(constant.timings.front().region_specializations_reused, 0u);
+    EXPECT_EQ(dynamic.timings.front().region_specializations_compiled, 1u);
+    EXPECT_EQ(dynamic.timings.front().region_specializations_reused, 0u);
+    EXPECT_EQ(constant.timings.front().region_specializations_skipped, 0u);
+    EXPECT_EQ(dynamic.timings.front().region_specializations_skipped, 0u);
     ASSERT_EQ(constant.compiled_graph->manual_controls.size(), 1u);
     ASSERT_EQ(dynamic.compiled_graph->manual_controls.size(), 1u);
     EXPECT_FALSE(constant.compiled_graph->manual_controls[0].configured.dynamic);

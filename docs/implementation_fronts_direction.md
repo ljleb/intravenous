@@ -3377,6 +3377,337 @@ two frequency endpoints are PackageJIT constants. The project sample period
 becomes a GraphJit specialization constant. A sample rate below 40 kHz still
 limits the upper endpoint to its Nyquist frequency.
 
+*Acyclic region specialization and immutable inputs read with history
+(implementation status, 2026-11-11; all 861 tests passed; measured below).* This is the
+first item of the measured order above ("Next, by measured cost"), which the
+human co-author accepted. It changes the selection and the immutable-input
+binding of the region specialization first slice. That earlier entry stays as
+the record of the first slice; this entry supersedes its *Immutable values*
+bullet and the parts of its *Not yet covered* bullet named below.
+- *Selection.* An acyclic `ExecutionRegionPlan` holds one step.
+  `build_region_specializations()` makes it a candidate when that step reads an
+  immutable input: a Sequential input whose every channel reads one
+  `constant_value` representation. Such a representation is a Constant's
+  output or a disconnected input's default value. A candidate is planned like a
+  cyclic region. Its quantum is the region's maximum block size, at most the
+  kernel's maximum block size, so the code slices the invocation as `run_step()`
+  does. An acyclic step without an immutable input stays on its native
+  callback. Its code would remove only the generic port access, for one more
+  LLVM compilation per distinct step. This is a compile-cost choice. It is not a
+  limit of the code, and the compile-time budget of the general
+  value-specialization section in `graph_jit_direction.md` can replace it.
+- *Execution.* `RealtimeRootPlan::acyclic_groups` records, per acyclic ready
+  group, the regions that have code and the remaining steps.
+  `execute_realtime_root()` runs each specialized region's code, then runs the
+  remaining steps as one native batch when more than one remains, or through
+  `run_step()`. The steps of one ready group are independent, so the order does
+  not change any result. An acyclic step's own storage operations run once
+  around its code (`RootRegionSpecialization::runs_step_operations` is false),
+  as `run_step()` runs them around the step's sliced invocation. A cyclic step's
+  operations still run around each slice inside the code. The transition root
+  keeps the interpreter.
+- *Immutable inputs (supersedes the first slice's one-value ring).* The first
+  slice bound an immutable input to a one-value LLVM constant ring of capacity
+  one. That ring is exact for `get()` at every history offset, but not for
+  `block_extended()`, which a pointwise node with history can call.
+  `prepare_reflected_continuous_inputs()` builds that view from the ring's
+  capacity and the input's contiguous scratch, and the one-value ring had
+  neither. The first slice therefore excluded inputs with history and nodes
+  with block input access, which excluded the `feedback` saw's `frequency` and
+  `phase_offset` (history 1). An immutable input now keeps its interpreter
+  binding unchanged: the constant ring that `build_addresses()` allocates, its
+  capacity and delay, and the planned contiguous scratch. Only the
+  `RegionSpecializationWorkspaceContents` that `emit_region_specialization()`
+  returns differs: it records that each channel's ring pointer addresses the
+  value repeated over the ring. `substitute_region_workspace_values()` replaces
+  a load of that pointer with a private constant global holding those bytes. A
+  ring read then indexes that global with a slot computed at run time. LLVM
+  folds such a read only when every byte of the global is zero, or every bit
+  is one (`ConstantFoldLoadFromUniformValue()`). The substitution therefore also
+  replaces a load from a constant global whose bytes repeat with period p when
+  every variable part of the address is a provable multiple of p, from the
+  address scales and the index's known trailing zero bits. An immutable ring's
+  period divides the value size. Block reads use the prepared contiguous
+  storage, as in the interpreter, and stay loads. Both restrictions are
+  removed.
+- *Remaining not-yet-covered cases.* Settled manual controls, event ports,
+  activity plans, captures, Tick slots, and non-project-rate paces still keep
+  the interpreter, for cyclic and acyclic regions alike.
+- *Coverage.* `AcyclicRegionWithImmutableHistoryRunsSpecialized` compiles two
+  pointwise readers of one Constant gain, read through `get(1)` and
+  `block_extended()`, and of a disconnected default read with history 2. It
+  checks one compiled and one reused specialization, a non-zero substitution
+  count, and equal values from the interpreter and the specialized code across
+  three root calls. Under the default `GraphJitConfig`, existing tests whose
+  acyclic nodes read Constants or default values now run their specializations
+  too. These include the history readers and the stereo interleaved block
+  reads of `DisconnectedSampleInputProbe`.
+- *Expected cost, to be measured.* Each distinct candidate step adds one
+  synchronous LLVM compilation on a cache miss. The `feedback` benchmark adds one
+  for its 64 equal saws. The profile shows whether its Tick cost falls by the
+  29.1% that the saw took. The edit benchmark shows whether the initial edit
+  stays within 200 ms and what the added compilations cost later edits whose
+  changed node is a candidate.
+- *Measurement (repository owner, 2026-11-11; all 861 tests passed).*
+  - *Tick.* The mean over the 25 later edits of each edit benchmark was 93 us
+    for `chain` (651 us before), 345 us for `voices` (1,051-1,163 us), 514 us
+    for `mixed` (1,511 us), and 594 us for `feedback` (771-794 us). The cyclic
+    `feedback` region's `region-1-after.ll` still contains no `powf()` or
+    `tanf()` call, so the periodic fold replaces the one-value ring for the
+    cutoff.
+  - *Compile count.* The expectation above was wrong: the 64 saws are not
+    equal. Each `frequency_<v>` Constant holds `110 + 10 * v`, and that value
+    is part of `region_specialization_key()`. `feedback` and `voices` therefore
+    compile 65 specializations (64 saws and one shared filter or cyclic
+    region), `mixed` 68, and `chain` 4. Two dumped saw modules differ only in
+    the folded phase increment, the frequency divided by the sample rate, in
+    four `fadd` instructions.
+  - *Edit time.* The initial edit took 4,517 ms for `feedback` (128 ms before),
+    4,507 ms for `voices`, 4,772 ms for `mixed`, and 277 ms for `chain`. One saw
+    compilation takes 68-80 ms. A later edit that introduces a new immutable
+    value compiles one specialization: configure edits averaged 72-90 ms, and
+    add-node and disconnect edits 24-38 ms. Connect and delete-node edits reuse
+    every specialization at 3.5-18 ms.
+  - *Compile phases.* A `perf` record of the `voices` initial edit attributes
+    71% of the compilation time to `optimize_project_module()` (39% inclusive
+    in `ModuleInlinerWrapperPass`), 24% to ORC code generation, 7% to reading
+    package bitcode, and 2% to linking. The pass-timing report of one saw's O3
+    run is 11.3 ms.
+  - *Friction (reported to the human co-author, not yet decided).* The initial
+    edits exceed the 200 ms target about twentyfold. The cost scales with the
+    number of distinct immutable values, not with the number of distinct
+    steps. The first-slice timing decision names the asynchronous path as the
+    response to a cache-miss cost that threatens the target.
+    `graph_jit_direction.md` ("Value specialization over immutable temporal
+    data") also budgets candidate values by compile time and prefers values
+    with few additional observed cases. The saw frequencies are the opposite
+    case: 64 cases for one folded `fadd` operand.
+
+*Review handoff after the acyclic measurement (human co-author correction,
+2026-11-11).* The acyclic implementation and its measurements are provisional
+Front 16 work. They do not change the manual-control contract. Every eligible
+Sequential sample input remains available as the target of a persistent
+project manual control. A disconnected target can use that control as its live
+input. The existing `ManualControlId`, `dynamic_inputs`, project mutation, and
+JSON-RPC paths remain the owners of control interaction. Region specialization
+must consume those facts. It must not create a separate class of editable
+inputs or make an input cease to be editable because GraphJit folded its settled
+value.
+
+The 4.5-second initial compilation for 64 distinct saw frequencies is unresolved
+implementation friction. Do not treat one specialization per immutable value as
+the final cost model. Before adding sharing, package precomputation, parallel
+compilation, or background compilation, review the current code against the
+manual-control path and the synchronous edit-to-activation contract. The next
+implementation pass must first correct any manual-control regression and retain
+the measured constant folding for settled values. It can then use the benchmark
+and profiler results to select the next compile-cost reduction.
+
+*Review result and next compile-cost slice (2026-11-11).* The review found no
+manual-control behavior regression in this implementation.
+`RootPlanBuilder::plan_region_specialization()` rejects a primitive whose
+`manual_controls` list is non-empty. Its settled and dynamic forms therefore
+continue to use the existing `ManualControlRuntimeState`, project mutation, and
+JSON-RPC paths. This is not the final optimization: a settled manual-control
+value still keeps that primitive on the interpreter instead of entering the
+specialized LLVM code as a constant. Add explicit coverage for this exclusion
+before changing specialization selection.
+
+The next implementation slice reduces the number of LLVM compilations without
+adding a node-specific rule:
+
+1. Derive a *structure key* from `RegionSpecializationRequest` by omitting only
+   `RegionSpecializationStepRequest::immutable_inputs`. The key still includes
+   the package artifact, `NodeCodeKey`, provider version, binding storage
+   geometry, histories, latencies, paces, context constants, begin-index
+   updates, and operation placement.
+2. Before requesting code, group all candidate regions in the compilation by
+   that structure key. Count the distinct complete
+   `region_specialization_key()` values in each group.
+3. If a group has one distinct complete key, compile the existing fully
+   value-specialized code. Equal region instances reuse it.
+4. If a group has more than one distinct complete key, clear
+   `immutable_inputs` from every request in that group and compile one shared
+   structure specialization. It reads those values through the existing input
+   rings at run time. It still specializes the callback, binding shape,
+   context, and execution loop. This rule makes the 64 differently tuned saws
+   share code, while the one filter cutoff tuple remains available to LLVM as
+   a constant so that LLVM can remove `powf()` and `tanf()`.
+5. Measure the four edit benchmarks and the `feedback` profile again. Do not
+   add parallel LLVM compilation in this slice. If it is still useful later,
+   bound its worker count and priority so compilation cannot take the audio
+   thread's cores and cache without limit.
+
+This is the first deterministic compile-budget rule. A later global budget can
+allow several value tuples when their downstream optimization benefit pays for
+their compile cost. Package-level preparation and a bounded strong cache for
+recent specializations remain later measured steps. They do not precede this
+sharing result.
+
+*Implementation status.* The structure key and the one-tuple/many-tuple
+selection are implemented, pending the repository owner's build, full test
+run, four edit benchmarks, and `feedback` profile. The manual-control runtime
+test now asserts that neither its settled nor its dynamic compilation creates
+or reuses a region specialization. A separate runtime test gives two otherwise
+equal acyclic nodes different immutable values, checks that GraphJit compiles
+one structure specialization and reuses it once, and checks that each node
+still reads its own value. Do not advance to package preparation or parallel
+compilation until those measurements are recorded here.
+
+*Latency priority clarification (human co-author, 2026-11-11).* Distinguish a
+bulk initial graph insertion from an interactive edit. Loading a project,
+template, or preset can take somewhat longer than 200 ms. Ordinary mouse and
+keyboard edits usually change one node, connection, or value and must remain
+fast. Live manual controls and the realtime Tick callback have higher priority
+than bulk-load latency. Do not add parallel compilation, extra code tiers, or
+package preparation only to reduce the bulk initial edit when that change can
+slow a small edit, complicate live-control activation, or compete with the
+audio thread. Improve both classes when the same change does so without those
+costs.
+
+*Priority order update (human co-author, 2026-11-11).* This order supersedes
+only the earlier ranking of Front 16 work. It does not remove the 200 ms edit
+target or the edit-invariant-work principle.
+
+1. Realtime audio execution is first. The audio thread does not wait for LLVM,
+   allocation, file access, locks held by another thread, or graph planning.
+2. Interactive graph edits and live manual controls are second.
+3. Initial project, template, and preset compilation is third. Improve it when
+   the same work does not make either higher-priority path worse.
+
+Use these provisional measurement gates until results from more machines and
+graph shapes justify a stable performance contract:
+
+- For the declared realtime benchmark set, target a steady Tick mean below 10%
+  of the block period, a p99 below 25%, and an observed maximum below 50%.
+  Record p50, p95, and p99 in addition to mean and maximum. These are Front 16
+  engineering gates, not limits on the size of an authored project.
+- For one-node, one-connection, and one-value edits, target 40 ms for the common
+  case, 100 ms at p95, and 200 ms as the rare upper bound from mutation receipt
+  to `GraphExecutor` acceptance.
+- When predictive hover has prepared a dynamic manual-control specialization,
+  target less than 1 ms of host work to select it and make it audible no later
+  than the next audio block. Keep LLVM work off the audio thread.
+- After interaction becomes idle, target 100 ms after the debounce interval to
+  prepare the settled constant specialization for one affected region. The
+  dynamic specialization continues to run during this work.
+- For the current size-64 bulk benchmark shapes, use 500 ms as the provisional
+  initial-compilation target. Treat one second as a soft investigation
+  threshold for larger templates and presets, not as an interactive-edit
+  guarantee.
+
+A 40 ms compilation time does not make LLVM safe to run on the audio thread.
+LLVM has unbounded tail latency from allocation, locks, page faults, and code
+publication. A future project can also use a smaller audio block. The 40 ms
+perspective still changes orchestration decisions: ProjectGraph can compile on
+its worker, stage the result, and often activate it at a nearby block boundary
+without adding another asynchronous code tier.
+
+The first accepted project generation already plans and compiles every region
+that is eligible for `RegionSpecializationRequest`. It does not need a later
+edit to specialize those regions. Repeated instances reuse specializations by
+content during that initial compilation. The current exception is a primitive
+whose `manual_controls` list is nonempty:
+`RootPlanBuilder::plan_region_specialization()` rejects it, so both its settled
+and dynamic forms use the existing unspecialized realtime path. Removing this
+optimization gap is the first next step.
+
+A manual control has two specialization forms:
+
+- A settled control uses full value specialization. Its value is an LLVM
+  constant when the value earns its compile cost.
+- An active control uses structure specialization. The generated kernel keeps
+  the exact runtime timeline read for the inputs in `dynamic_inputs`, but still
+  specializes the callback, bindings, storage geometry, and execution loop.
+
+`ProjectGraph::desired_dynamic_inputs_locked()` and
+`ProjectGraph::schedule_control_compile_locked()` remain the owners of the
+exact dynamic-input set. Predictive hover prepares that dynamic specialization
+without activating it. Starting interaction selects ready code at a block
+boundary. Not specializing the dynamic kernel can reduce its compile time, but
+it also gives back realtime execution speed while the user moves a control.
+That is the wrong final trade because realtime audio has first priority. Cache
+the dynamic specialization by structure and exact dynamic-input set instead.
+
+*Structure-sharing validation (repository owner, 2026-11-11).* All 862 tests
+pass. Initial-edit results are: `chain`, 284 ms with 4 compiled and 61 reused
+specializations; `voices`, 159 ms with 2 compiled and 126 reused; `mixed`,
+435 ms with 6 compiled and 187 reused; and `feedback`, 202 ms with 2 compiled
+and 126 reused. The 64 different oscillator frequencies therefore no longer
+cause 64 compilations. Later edits remain interactive: large-graph configure,
+connect, and delete operations take about 10-19 ms; adding or disconnecting one
+node takes about 29-39 ms. `chain` configuration changes, which still produce
+one fully value-specialized compilation, take about 72 ms.
+
+The 30-second `feedback` profile reports a steady Tick mean of 571 us and a
+maximum of 1,087 us for a 5,333 us block period. On performance cores, the
+largest named costs are `compose_samples()` at 21.81%, the two region
+specializations at 13.62% and 11.20%, `run_operations()` at 4.78%, and
+`memmove()` at 3.22%. Structure sharing fixed the compilation explosion without
+giving back the measured realtime gain. The next measured audio-thread target
+is therefore the sample-composition work and its operation dispatch, not more
+bulk-load compilation machinery.
+
+The next five implementation steps are fixed in this order:
+
+1. Let settled manual controls use full value specialization. Let dynamic
+   controls use structure specialization with their runtime timeline reads.
+   Preserve the project-owned control state, predictive hover, exact
+   `dynamic_inputs` set, and JSON-RPC routes.
+2. Move eligible `RootOperation` sample compositions into the same specialized
+   code as their consuming or producing region. Measure the reduction in
+   `compose_samples()` and operation-dispatch cost.
+3. Add a bounded strong cache for recently used specializations if repeated
+   disconnect, reconnect, undo, or return-to-value edits still recompile code.
+   Bound it by measured code memory, not only by entry count.
+4. Prepare package-revision work ahead of graph compilation only if bulk
+   project and preset loading still deserves investment after the first three
+   steps. Do not add lazy first-use package preparation to an interactive edit.
+5. Keep parallel LLVM compilation last. If measurement justifies it, bound its
+   worker count and lower its scheduling priority so it does not take CPU time
+   or cache capacity from the audio thread.
+
+After these five steps, measure the existing GraphJit cost decisions instead of
+guessing new constants. In particular, sweep `RealtimeStorageCostModel`
+parameters such as `copied_byte_weight`, `ring_addressed_byte_weight`,
+`stack_footprint_byte_weight`, `persistent_footprint_byte_weight`, and the stack
+budget. Run the same semantic graphs across all parameter sets. Include the
+four edit shapes plus targeted history, fan-in, fan-out, conversion, feedback,
+and large-block graphs. Record the selected plan, Tick p50, p95, p99, and
+maximum, edit and compile latency, copied bytes, stack bytes, and persistent
+bytes. Choose a Pareto frontier before selecting production defaults. Do not
+tune the cost model from one graph or one machine.
+
+*Manual-control specialization implementation (2026-11-11, pending repository
+owner verification).* The first step now has a complete source implementation.
+This supersedes the earlier test assertion that both manual-control forms stay
+on the interpreter.
+
+- `RootPlanBuilder::plan_region_specialization()` no longer rejects a primitive
+  only because `RootPrimitive::manual_controls` is nonempty.
+- `RegionSpecializationStepRequest::stages_manual_controls` records whether the
+  step has a participating `ManualControlPlan` whose timeline must remain
+  current. The field is part of both specialization keys.
+- The generated region loop calls
+  `stage_manual_control_sample_timelines()` through an explicit root callback,
+  after the step's `operations_before` and before its `tick_block`. This keeps
+  connected operands, retained history, interpolation, and per-slice ordering
+  identical to `prepare_invocation()`.
+- A settled disconnected control keeps its existing immutable node-facing
+  binding, so full value specialization can fold the value. Its shadow timeline
+  still receives the settled value when history is retained.
+- A dynamic control qualifies its acyclic region through the required timeline
+  staging even though it has no immutable input. Its structure specialization
+  reads the staged timeline at run time.
+- `DynamicManualControlInterpolatesAcrossAllPrimitiveSlices` now requires one
+  constant specialization and one dynamic specialization. Its existing value,
+  history, interpolation, storage-layout, and connected-participation checks
+  exercise both generated paths.
+
+The repository owner still needs to compile and run the complete suite. After
+that result, rerun the four edit benchmarks and the `feedback` profile before
+starting step 2.
+
 Measurement (implementation status, 2026-11-06): setting `IV_EDIT_TIMING=1` makes
 `ProjectGraph::rebuild_locked()` write one "edit timing" entry per published
 rebuild to the diagnostic log (`IV_LOG_FILE`):

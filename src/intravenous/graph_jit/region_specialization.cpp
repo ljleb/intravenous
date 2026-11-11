@@ -4,6 +4,7 @@
 #include <intravenous/runtime/package_pipeline_types.h>
 
 #include <algorithm>
+#include <bit>
 #include <cstring>
 #include <limits>
 #include <span>
@@ -117,8 +118,23 @@ bool region_specialization_request_is_complete(
             immutable_inputs[input.binding] = true;
             auto const binding = read_record<ReflectedContinuousInputPortBinding>(
                 std::span<std::byte const>{step.inputs}, input.binding);
-            if (input.value.size() != binding.storage.geometry.value_size_bytes) {
+            auto const value_size = input.value.size();
+            if (value_size != binding.storage.geometry.value_size_bytes) {
                 return false;
+            }
+            // Each channel's ring is the value repeated at its stride.
+            for (std::size_t channel = 0;
+                 channel < step.input_channel_counts[input.binding]; ++channel) {
+                auto const& ring = binding.storage.channels[channel];
+                if (ring.value_capacity == 0
+                    || !std::has_single_bit(ring.value_capacity)
+                    || ring.value_stride_bytes < value_size
+                    || ring.value_stride_bytes % value_size != 0
+                    || ring.value_capacity
+                        > std::numeric_limits<std::size_t>::max()
+                            / ring.value_stride_bytes) {
+                    return false;
+                }
             }
         }
         std::vector<bool> input_begin_indices(step.input_channel_counts.size());
@@ -139,9 +155,12 @@ bool region_specialization_request_is_complete(
     return true;
 }
 
-std::string region_specialization_key(RegionSpecializationRequest const& request)
+namespace {
+
+std::string make_region_specialization_key(
+    RegionSpecializationRequest const& request,
+    bool include_immutable_inputs)
 {
-    if (!region_specialization_request_is_complete(request)) return {};
     KeyWriter key;
     key.value(request.quantum);
     key.value(request.steps.size());
@@ -193,10 +212,14 @@ std::string region_specialization_key(RegionSpecializationRequest const& request
         key.value(context.scc_feedback_latency);
         key.value(context.state.extent);
 
-        key.value(step.immutable_inputs.size());
-        for (auto const& input : step.immutable_inputs) {
-            key.value(input.binding);
-            key.bytes(input.value);
+        if (include_immutable_inputs) {
+            key.value(step.immutable_inputs.size());
+            for (auto const& input : step.immutable_inputs) {
+                key.value(input.binding);
+                key.bytes(input.value);
+            }
+        } else {
+            key.value(std::size_t{0});
         }
         key.value(step.begin_indices.size());
         for (auto const& update : step.begin_indices) {
@@ -205,8 +228,24 @@ std::string region_specialization_key(RegionSpecializationRequest const& request
         }
         key.value(step.operations_before);
         key.value(step.operations_after);
+        key.value(step.stages_manual_controls);
     }
     return std::move(key).take();
+}
+
+} // namespace
+
+std::string region_specialization_key(RegionSpecializationRequest const& request)
+{
+    if (!region_specialization_request_is_complete(request)) return {};
+    return make_region_specialization_key(request, true);
+}
+
+std::string region_specialization_structure_key(
+    RegionSpecializationRequest const& request)
+{
+    if (!region_specialization_request_is_complete(request)) return {};
+    return make_region_specialization_key(request, false);
 }
 
 std::optional<std::size_t> region_specialization_workspace_size(

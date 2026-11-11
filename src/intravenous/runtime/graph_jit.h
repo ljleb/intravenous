@@ -257,8 +257,8 @@ struct GraphJitCompileTimings {
     std::uint64_t region_specializations_reused = 0;
     std::uint64_t region_specialization_failures = 0;
     std::uint64_t region_specializations_skipped = 0;
-    // Loads of workspace fields fixed for the call that compiled
-    // specializations replaced with their values.
+    // Loads of values fixed for the call, workspace fields and immutable
+    // input rings, that compiled specializations replaced with those values.
     std::uint64_t region_specialization_substitutions = 0;
     std::uint64_t region_specialization_us = 0;
     std::string region_specialization_failure{};
