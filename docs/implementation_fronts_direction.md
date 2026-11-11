@@ -2911,6 +2911,472 @@ specialized code yet.
 - *Next.* Optimizer-visible code for one selected cone, beginning with the
   `feedback` benchmark's one-sample `ExecutionRegionPlan`, as selected above.
 
+**Accepted audio-thread optimization order (human co-author, 2026-11-11).**
+This order supersedes only the immediate sequencing in the preceding *Next*
+entry. Graph-specific value specialization remains the destination described
+there and appears as items 4 and 5 below.
+The following order keeps the graph-specific specialization destination visible
+while first removing execution costs that do not require a new LLVM compilation
+unit:
+
+1. Batch mutually ready cyclic `SccRegionPlan` values. Corresponding
+   `PrimitiveExecutionStep` values from independent, compatible cyclic regions
+   run through the existing native batch callbacks. Execution positions and
+   transient storage lifetimes are planned in that batch order; batching is not
+   applied after storage placement.
+2. Replace `initial_callback_batch_lane_limit` with a lane count derived from a
+   planned storage budget. The fixed value of eight is an initial guard, not the
+   intended cost model.
+3. Prepare and retain stable root-call binding and scratch data that does not
+   depend on the current callback window. A root call then updates only values
+   that actually vary for that call.
+4. Add asynchronously compiled, content-addressed specializations for selected
+   `ExecutionRegionPlan` values. Cache reuse must keep a graph edit from
+   recompiling an unchanged region, and the generic package callback path stays
+   available until a specialization is ready.
+5. Extend immutable-value propagation from the existing
+   `static_sample_value` source through larger selected graph regions. Settled
+   manual controls and other proven immutable values become LLVM constants;
+   `dynamic_inputs` remains the explicit variant used while a control is being
+   manipulated.
+
+The first item is active. Its implementation must preserve the schedule's ready
+frontier, assign execution positions in cyclic batch phase order, and make the
+sample and event storage planners see the resulting overlapping callback
+lifetimes. If storage or callback compatibility prevents a native batch, the
+planner must retain scalar cyclic-region execution. Direct bundle-to-primitive
+lookup and retained callback-batch-class buckets are supporting planner work;
+they may reduce reload time but do not replace any item above.
+
+*Implementation status (2026-11-11; verified by the repository owner: all 855
+tests pass).* Schedule
+formation is split at `bind_detach_regions()`: `build_schedule()` creates the
+`SccRegionPlan` records and bundle mapping, detach binding finalizes each cyclic
+region's quantum, and `finalize_schedule()` forms compatible ready groups.
+`plan_execution()` gives a multi-region cyclic `ExecutionReadyGroupPlan` a
+phase-major `primitive_steps` list. The sample and event storage planners see
+those same execution positions before allocating transient storage.
+`PrimitiveSampleInputBindingPlan::contiguous_scratch_offset` is also packed by
+callback lifetime instead of assigning every primitive the same shared range;
+corresponding batch lanes therefore receive disjoint contiguous-input scratch,
+while different phases can reuse it. The
+realtime root invokes one native batch for each corresponding cyclic phase and
+keeps region operations, step operations, activity decisions, and captures at
+their existing scopes. Physical callback-storage validation can reject a group;
+the lowering retry then restores singleton cyclic groups. Planning and runtime
+tests cover phase order, native lane count, and independent feedback values.
+
+The repository owner's size-64 rerun after this change kept edit latency well
+below the 200 ms target. The five edit-kind medians were 3.02-3.17 ms for
+`chain`, 8.28-8.93 ms for `voices`, 13.81-14.65 ms for `mixed`, and
+16.03-17.27 ms for `feedback`. Their corresponding Tick means were
+657-668 us, 842-848 us, 1,459-1,484 us, and 2,674-2,711 us. Cyclic batching
+therefore recovered only part of the `feedback` cost; it did not make reload
+latency worse enough to threaten the target. The next action is measurement,
+not another scheduler change.
+
+*Fine-grained runtime measurement (implementation status, 2026-11-11; build and
+profiling run pending).* `iv_edit_latency_benchmark` already reports the complete
+`GraphExecutor::tick_block()` duration and the compilation phase durations. It
+does not time `execute_realtime_root()`, its step batching and invocation
+preparation, or native package callbacks separately. Timers inside those
+functions would run at the one-sample feedback frequency and would perturb the
+cost being investigated.
+
+The selected measurement is Linux `perf` sampling plus native disassembly:
+
+- `--profile-seconds N` makes `iv_edit_latency_benchmark` activate its initial
+  graph and hold that one graph steady for `N` seconds, without applying the edit
+  sequence.
+- `IV_ORC_PERF_JITDUMP=1` installs LLVM's `PerfSupportPlugin` in both the package
+  `LLJIT` and project `LLJIT`. The ordinary path installs no plugin and performs
+  no profiling I/O. A profiling run can therefore name both the application
+  functions, such as `execute_realtime_root()`, and the ORC-generated package or
+  project functions.
+  - *Correction (2026-11-11).* The first two profiles left every ORC function
+    unnamed (41% and 49% of performance-core samples) and printed
+    "PerfState not initialized". LLVM's target-process jitdump state is one
+    per process, but each `PerfSupportPlugin` starts it on construction, ends
+    it on destruction, and numbers its code records from zero. The project
+    JIT's plugin therefore reopened the dump after the package JIT had written
+    its records, any destroyed plugin stopped the dump for every JIT, and the
+    two plugins' code indices collided in `perf inject`'s extracted objects.
+    `enable_orc_perf_support_if_requested()` now adds one process-lifetime
+    plugin, `process_orc_perf_plugin()`, to every IV `LLJIT`. Its own
+    never-destroyed `ExecutionSession` supplies the in-process executor the
+    plugin uses for start and end.
+- `scripts/profile_edit_benchmark.sh` records user-space cycles and call stacks,
+  injects the JIT records, and writes an interactive `perf.jit.data` file plus a
+  text report under a new `build-release/iv-perf-*` directory.
+
+The first profile is `feedback`, size 64. Its result decides whether the next
+change should reduce `prepare_invocation()` and batch-lane construction, change
+another measured root operation, or proceed directly to the selected
+content-addressed region specialization. A source-level guess does not select
+that change.
+
+*Measured priority adjustment (accepted by the human co-author, 2026-11-11).*
+The first size-64 `feedback` profile recorded 18,000 performance-core samples
+with no lost samples. Exclusive costs were 11.80% in `sample_carry()`, 5.22% in
+`run_operations()`, 5.05% in `compose_samples()`, 4.77% in
+`prepare_invocation()`, and 2.67% in `execute_realtime_root()`. The authored
+node math accounted for another 7.87% in `tanf()` and 7.15% in `powf()`.
+
+Inspection found that `plan_execution()` assigns every
+`SampleCarryOperationPlan` restore and commit to a
+`PrimitiveExecutionStep`. A cyclic `ExecutionRegionPlan` whose
+`maximum_block_size` is one consequently restores and commits the compact
+persistent tail once per sample. The compact tail exists to cross complete root
+calls; the transient working ring already carries values between the region's
+slices inside one root call. This is remaining stable-root work, not region
+specialization.
+
+The active dependency order is therefore:
+
+1. Keep the completed mutually-ready cyclic-region batching.
+2. When a sample carry's restore and commit steps belong to the same cyclic
+   `ExecutionRegionPlan`, schedule its restore before the complete region and
+   its commit after the complete region. Retain step-local scheduling for any
+   carry that does not meet that exact condition.
+3. Re-run the size-64 `feedback` profile. This measures the carry change before
+   another execution mechanism changes the sample distribution.
+4. Add the content-addressed `ExecutionRegionPlan` specialization selected
+   above.
+5. Add planner-level immutable-value propagation through specialized regions,
+   while retaining the existing `dynamic_inputs` interaction variant. Binding
+   an input to constant storage supplies information to this pass. It does not
+   replace the pass.
+6. Replace `initial_callback_batch_lane_limit` with the
+   planned-storage-budget lane count from the earlier order.
+
+The earlier order and the performance assumption it used are preserved in
+[Front 16 Region Specialization Before The First Profile Correction](historical/front_16_region_specialization_before_first_profile_correction_2026-11-11.md).
+
+The earlier stable binding-template work has already completed the original
+step 3 for port bindings and invocation scratch. Step 2 above completes the
+same objective for compact sample carries. It is expected to reduce both the
+direct `sample_carry()` cost and the `run_operations()` dispatch surrounding
+one-sample SCC slices without adding LLVM compilation work or changing reload
+latency materially.
+
+Step 2 implementation status (2026-11-11; build and test run pending):
+
+- `SampleCarryOperationPlan` records the cyclic `SchedulePlan::regions` index
+  when both operation endpoints belong to that region.
+- `build_sample_storage_plan()` widens that carry's transient representation
+  through the complete cyclic ready group before `plan_transient_arena()`
+  assigns offsets. Carries for independently batched regions therefore cannot
+  alias while all region restores are live.
+- `plan_execution()` places the restore and commit on the corresponding
+  `ExecutionRegionPlan`. `execute_realtime_root()` already runs those region
+  operations once before and after the complete sliced invocation.
+- Carries whose endpoints do not share one cyclic region remain on their
+  existing `PrimitiveExecutionStep` positions.
+- `build_sample_storage_plan()` requires every carry endpoint to be a
+  scheduled execution position inside one `SccRegionPlan`, as every
+  `build_connection_analysis_plan()` schedule provides. A schedule missing that
+  region would otherwise keep a cyclic carry step-local without any visible
+  failure, so the planner rejects it.
+- First collaborator run (856 tests, 5 failures): five hand-built
+  `GraphJitSampleStoragePlan` tests set `bundle_execution_position` without
+  `SchedulePlan::regions`, a schedule the scheduler never produces.
+  `RealizesCompactPersistentCarryExactly` had no schedule and passed only
+  through a planner branch that skipped the scope pass for an empty schedule;
+  that branch is removed. The feed-forward tests now complete their schedule
+  with `add_acyclic_test_regions()`. `ConvertedFeedbackUsesCompactCarryTimeline`,
+  whose detach target runs before its source, now has its cyclic region and
+  asserts the carry's region scope.
+  `GraphJitConnectionPlan.FeedbackCarryIsScopedToItsCyclicRegion` checks the
+  scope against a schedule produced by `build_connection_analysis_plan()`.
+
+Step 3 result (repository owner's size-64 `feedback` profile, 2026-11-11):
+the steady Tick mean fell to 2,228 us, from 2,674-2,711 us after cyclic
+batching. Performance-core cycles over the same profile window fell from
+77.8 G to 62.9 G (-19%). `sample_carry()` fell from 11.80% (about 9.2 G cycles)
+to 0.16% (about 0.1 G), `run_operations()` from 5.22% (4.1 G) to 2.17% (1.4 G),
+and `memmove` from 2.18% (1.7 G) to 1.22% (0.8 G). The remaining Tick mean is
+about 12-14% above the generated-root baseline of 1,948-1,991 us. ORC-generated
+package code, about 49% of samples, was still unnamed in this profile; see the
+correction to the measurement entry above. The largest named costs were
+`tanf()` 9.63%, `powf()` 8.96%, `compose_samples()` 5.87%,
+`prepare_invocation()` 5.86%, and `execute_realtime_root()` 2.67%.
+
+Symbolized attribution (repository owner's rerun with the process-wide perf
+plugin, 2026-11-11; steady Tick mean 2,208 us). The "PerfState" errors are gone,
+but 48.4% of performance-core samples remained unnamed. All of them lie in the
+builtin package's precompiled node-code object (`*.ivpkg.bc.node-code.o`,
+added with `LLJIT::addObjectFile()`). Its node functions are local symbols, and
+LLVM's `PerfSupportPlugin` recorded only the object's two global symbols,
+`iv_package_node_code_records` and `iv_package_node_code_retained_globals`.
+Placing the object at the recorded address of the first of these maps every
+unnamed sample to one of its local functions:
+
+| Share | Code |
+|---|---|
+| 13.40% | `SimpleIirLowPass::tick()` |
+| 9.80% + 9.43% | `tanf()` + `powf()`, called by that `tick()` |
+| 7.54% | `SawOscillator::tick()` |
+| 7.24% | `ContinuousInputPort<Sample>::get()`, not inlined |
+| 4.25% + 2.92% + 1.18% | `tick_node_block<>` for the low-pass, subtract, and saw |
+| 4.15% | subtract `BinaryOpNode::tick()` |
+| 3.47% | `FractionalGlobalIndexRange::try_project_onto_lattice()` |
+| 2.52% + 1.73% | `ContinuousOutputPort<Sample>::value()` + `get()` |
+| 16.8% | root interpreter: `compose_samples()`, `prepare_invocation()`, `execute_realtime_root()`, `run_operations()`, `memmove` |
+
+The `feedback` low-pass cutoff is an `iv::Constant`. The generic callback still
+evaluates `powf()` and `tanf()` from that cutoff on every sample: about 33% of
+the cycles, with the low-pass `tick()`. Generic per-sample port access and
+`tick_node_block<>` wrappers take about 23% more. Region specialization targets
+the callback and port-access overhead. Planner-level immutable-value
+propagation is separate work that must remove calculations made unnecessary by
+settled values. A wider native batch changes only the dispatch part of the
+16.8% root interpreter cost.
+
+*Measurement gap.* A future profile of package node code needs the same
+object-symbol mapping until perf records name the node-code object's local
+functions.
+
+**Reordered optimization sequence (accepted by the human co-author,
+2026-11-11).** The symbolized attribution above places the bottleneck in generic
+node code. The `ExecutionRegionPlan` specialization and immutable-value
+propagation (items 4 and 5 of the active order) therefore come before the
+storage-budget-derived lane count (item 6), which follows them.
+
+*First-slice compilation timing (human co-author decision, 2026-11-11).* The
+accepted order described the region specializations as asynchronously compiled;
+`graph_jit_direction.md` ("Synchronous compilation is the intended contract")
+requires measuring before committing to asynchronous compilation. The first
+slice compiles a region specialization that is not yet cached synchronously,
+inside the edit's GraphJit compilation. A cached specialization adds no LLVM
+work. The asynchronous path, with generic code running until a specialization
+is ready, is added only if the measured cost of a cache miss threatens the
+200 ms edit-to-activation target.
+
+*Region specialization, first slice (implementation status, 2026-11-11; full
+test suite passed).* A region specialization is optimized native code for one
+complete sliced invocation of a cyclic `ExecutionRegionPlan`
+(`graph_jit/region_specialization.h`).
+- *Selection.* `RootPlanBuilder::plan_region_specialization()` builds a
+  `RegionSpecializationRequest` for a cyclic region when no step captures its
+  outputs, and no primitive has a Tick slot, manual control, event port,
+  activity plan, or Random Access input. Every Sequential binding must be at
+  pace 0. Otherwise it returns the reason, which `GraphJitCompileTimings` counts
+  as a skip and the edit timing log prints. A step's own storage operations
+  (materializations, compositions, feedback writes, step-local carries) run
+  through `run_specialized_step_operations()`, the interpreter's
+  `run_operations()`, before and after each slice of the step. The specialization calls each node's
+  scalar `tick_block`, which every Tick node has. A node whose author wrote only
+  `tick_block_batch()` is therefore specialized too: `NodeCompilerRecord`
+  cannot tell it apart, because `block_input_access` covers every block form.
+  Whether such a node should keep cross-region native batching instead is a
+  cost-model question for later measurement. The region's own operations, now
+  including its compact sample carries, stay with the interpreter around the
+  specialization.
+- *Code.* `emit_region_specialization()` emits one function per request. Once
+  per root call it builds a private copy of each step's bindings and
+  `ReflectedNodeTickContext`: binding constants from the binding template,
+  storage pointers from the prepared context in the root scratch. Those copies
+  use one reusable region-specialization workspace in the root scratch, not
+  an unplanned generated-function stack allocation. It then runs
+  the slices, writing each begin index and calling every step's `tick_block`.
+  GraphJit links those `tick_block` definitions from the revision's finalized
+  bitcode, found through its `iv_node_types` records. It makes the module's
+  package code internal and always inlined, and optimizes it with the project
+  pipeline.
+- *Immutable values.* An input whose every channel reads one `constant_value`
+  representation becomes a one-value LLVM constant ring when the node has no
+  block input access and the input has no history. This covers the `feedback`
+  low-pass cutoff. Other immutable inputs keep their runtime binding.
+- *Cache.* `region_specialization_key()` holds the decoded field values the
+  code depends on: node code identity and bitcode path, binding constants,
+  immutable values, begin-index layout, and quantum. Regions with equal keys
+  share one compiled function. An entry lives while some `RealtimeRootPlan`
+  uses it, so an edit finds every specialization that the active generation
+  holds. Expired specialization keys are removed on the next compilation.
+  Each revision's bitcode is read, and its `tick_block` table built, once per
+  bitcode path while an accepted `PackageRevision` for that artifact remains
+  alive. Expired package-bitcode entries are removed too.
+- *Audit correction (2026-11-11; build and tests pending).* Finalized package
+  bitcode also contains definitions for the package's retained globals. The
+  first implementation linked private copies into a specialization. Ordinary
+  GraphJit configuration relocation instead points at
+  `PackageRevision::node_code_retained_globals`; code that compared such a
+  pointer with the corresponding package global could therefore observe two
+  different objects. The specializer now reads
+  `iv_package_retained_globals`, replaces each usable definition with an
+  absolute import of the accepted node-code address, and pins that revision.
+  These addresses are part of `region_specialization_key()`, so code from an
+  obsolete accepted package generation is not reused for a new generation at
+  different addresses. Selected `tick_block` definitions also receive unique
+  symbols before packages are linked, while every other package definition is
+  internalized. Two packages with the same C++ symbol name can no longer make
+  one region call the other package's callback. The metadata reader and linker
+  explicitly materialize the lazily loaded `iv_node_types` records,
+  `iv_package_retained_globals` accessor and table, selected `tick_block`
+  definitions, and selected retained-global definitions before inspecting
+  them. Their correctness no longer depends on incidental LLVM lazy-loader
+  state. The specialized feedback test now compares a relocated
+  retained-global pointer with the package global, in addition to comparing
+  the interpreter's sample results.
+- *Execution.* `execute_realtime_root()` runs a specialized region's code in
+  place of its slice loop. A cyclic ready group then runs its regions one at a
+  time; a group with some unspecialized regions runs those through
+  `run_region_slices()`. Only the steady root is specialized. The transition
+  root keeps the interpreter.
+- *Failure.* A compilation failure leaves that region on the interpreter.
+  `GraphJitCompileTimings` counts compiled, reused, and failed specializations
+  with their compile time, and the first failure message. The edit timing log
+  prints them. Equal regions reuse the first failed result within that GraphJit
+  compilation instead of repeating the same failed LLVM compile. A later graph
+  compilation makes one fresh attempt.
+- *First measurement (repository owner, 2026-11-11).* All tests passed. The
+  `feedback` profile's steady Tick was 2,172 us, against 2,208 us before, and
+  the edit timing log printed no specialization: every `feedback` region was
+  rejected before the provider, which then reported no reason. Skip reasons are
+  now reported, and steps with their own storage operations are now
+  specialized; the next run shows which reason, if any, remains.
+- *Switch.* `GraphJitConfig::specialize_regions` turns compilation off for
+  comparisons. `CyclicRegionSpecializationMatchesInterpreterAndIsReused`
+  compares both paths across three root calls and checks cache reuse and
+  recompilation for a changed Constant value.
+- *Not yet covered.* Settled manual controls, whose constant code stages a
+  shadow timeline every invocation, regions with event ports or activity
+  plans, non-project-rate paces, and immutable inputs read with history or by
+  block access. Code outside cyclic regions, such as the `feedback`
+  benchmark's saw oscillator, stays on native package callbacks.
+- *Measurement.* The `feedback` edit benchmark and profile below measure
+  compile time, reuse across the 64 equal regions, and the Tick change before
+  choosing the general region size.
+
+*First successful specialization measurement (repository owner, 2026-11-11).*
+All 858 tests passed. The size-64 `feedback` benchmark compiled one
+specialization in 202.46 ms. It reused that specialization for the other 63
+equal regions. Later edits reused all 64 specializations. Their median times
+were 16.45-17.86 ms. The initial edit took 220.99 ms, which exceeds the 200 ms
+target. This is implementation friction that the fast reuse path does not
+hide.
+
+The specialized steady Tick mean was 1,263-1,278 us in the edit benchmark. A
+30-second accepted-graph profile measured 1,278.74 us. The specialization was
+15.16% of performance-core samples, but `tanf()` remained 15.56% and `powf()`
+10.36%. `compose_samples()` was 7.65%, `run_operations()` 3.23%, `memmove`
+1.67%, and `execute_realtime_root()` 0.54%. The first slice removes substantial
+wrapper and interpreter work. Its constant storage binding does not remove the
+strict floating-point library calls. The next implementation step is the
+planner-level immutable-value propagation in item 5. The decision about cache
+misses that exceed the edit target remains open. This measurement does not
+change the synchronous compilation contract.
+
+*Correction to the analysis above (IR inspection, 2026-11-11).* The
+measurement stands; its explanation does not. Strict floating-point semantics
+do not keep `powf()` and `tanf()` alive. Both calls receive operands that are
+still loaded at run time. In `region-0-after.ll`, the cutoff reaches `powf()`
+through three loads: the step context's `continuous_input_bindings` pointer in
+the workspace, then the binding's channel storage pointer, then the value. The
+sample rate is loaded from the context copy. Replacing only those two loads
+with their known constants and rerunning O3 removed both calls: LLVM evaluates
+them at GraphJit compile time. Marking the copies `noalias`, private allocas,
+and `llvm.invariant.start` did not suffice. Node code also stores through
+pointers that it loads from those records, so alias analysis cannot prove that
+the records stay unchanged. Enabling loop unrolling did not suffice either.
+These experiments used the `IV_GRAPH_JIT_DUMP_IR` region dumps.
+
+*Accepted design change (human co-author, 2026-11-11): constant values reach
+node code as LLVM constants.* A region specialization runs a GraphJit
+partial-evaluation step over the imported, inlined package callback. Each read
+of a value fixed for the whole call becomes an LLVM constant, and the normal
+pipeline then removes the computation that depends only on constants. Such
+values are a proven immutable input and the kernel specialization's context
+constants, such as the sample rate. The step is general: it applies to every
+node that reads an input through its ordinary port, and no node defines a
+constant-propagation callback. Package native code is unaffected.
+
+*Implementation choice for that step (Claude, 2026-11-11; build and tests
+pending).* The considered mechanism had the package finalizer preserve marker
+calls at static input reads and context reads, and GraphJit replace them. The
+implemented mechanism needs no package marker. The workspace is the region
+specialization's own memory, and `emit_region_specialization()` writes every
+byte of it, so GraphJit knows each record field's value. The reflected ABI
+passes `ReflectedNodeTickContext` and its bindings as `const`. The only fields
+written during a call are the `mutable` ones:
+- `sequential_begin_index`, `contiguous_begin_index`, and
+  `contiguous_value_count` of an input binding;
+- each channel's `contiguous_storage`;
+- an output binding's `sequential_begin_index` and `disposition`.
+
+`emit_region_specialization()` therefore returns a
+`RegionSpecializationWorkspaceContents` description. It records the bytes known
+for the call, the pointer fields that hold another workspace address or an
+immutable-value global, and no runtime storage pointer or `mutable` field.
+After a first O1 pass inlines and unrolls the callback,
+`substitute_region_workspace_values()` resolves every load through the
+workspace argument and those known pointer fields. It replaces each load of a
+known field with that field's value, and O3 then removes the dependent
+computation. Package bitcode, the finalizer, and native node code are
+unchanged. A read that the resolution cannot follow, such as one through a
+variable index that unrolling does not remove, simply stays a load.
+
+*Measurement after workspace value substitution (repository owner,
+2026-11-11; all tests passed).*
+- *Code.* `region-0-after.ll` contains no `powf()` or `tanf()` call. The one
+  `feedback` specialization substituted 79 workspace loads.
+- *Tick.* The size-64 `feedback` edit benchmark's Tick mean was 771-794 us, and
+  the 30-second profile measured 775 us. That is down from 1,263-1,278 us with
+  the first slice, 2,674-2,711 us before region specialization, and the
+  generated root's 1,948-1,991 us.
+- *Compile.* The one compiled specialization took 109.60 ms, against 202.46 ms
+  before substitution; its folded code is smaller to optimize and generate. The
+  initial edit took 128.20 ms, within the 200 ms target. Later edits reused all
+  64 specializations at 16.64-17.90 ms.
+- *Profile.* Performance-core cycles over the profile window fell from 40.5 G
+  to 27.7 G. The largest cost is now the saw oscillator, which lies outside the
+  cyclic region and runs its native node code: 29.1% of samples, mapped
+  through the node-code object's symbols. That is `SawOscillator::tick()`
+  15.67%, `ContinuousInputPort<Sample>::get()` 7.26%,
+  `ContinuousOutputPort<Sample>::value()` and `get()` 3.69%, and its
+  `tick_node_block<>` 2.35%. The other large costs are `compose_samples()`
+  18.66%, the specialization 9.49%, `run_operations()` 4.13%, and `memmove`
+  2.27%. The composition runs through `run_specialized_step_operations()` on
+  every one-sample slice.
+- *`voices` baseline change.* `voices` measured 1,051-1,163 us, against
+  842-888 us in earlier runs. The benchmark changed, not the code. The
+  `voices` cutoff Constant changed from `1200` to `0.592675`, the normalized
+  value of 1,200 Hz for the filter's `[0, 1]` cutoff range. With `1200`,
+  `powf()` overflowed to infinity and `tanf()` took libm's fast path for it, so
+  earlier `voices` numbers measured a filter computing NaN. `voices` has no
+  cyclic region, so its filters still run generic package callbacks with
+  per-sample `powf()` and `tanf()`. `chain` (651 us) and `mixed` (1,511 us)
+  are unchanged within noise.
+- *Next, by measured cost.* First, specialize acyclic regions whose nodes read
+  immutable inputs. The `feedback` saw, whose frequency is a Constant, is
+  29.1% alone, and `voices` and `mixed` run the same generic filter math.
+  Second, compile a specialized step's own storage operations, starting with
+  its composition (`compose_samples()` 18.66% with its dispatch), into the
+  specialization instead of calling the interpreter for each slice. Then the
+  storage-budget-derived lane count.
+
+*Immutable input specialization clarification (human co-author,
+2026-11-11).* A Sequential input's `min` and `max` values are authored facts.
+They do not require a check in each callback. GraphJit can omit a clamp when it
+proves that the source stays in that range. It can insert a clamp when the
+connection requires one. This is the intended connection-planning rule. The
+planner does not implement the clamp decision yet.
+
+Constant specialization is a general GraphJit mechanism. A custom node does
+not define a callback for constant propagation. GraphJit binds each proven
+immutable input to constant storage and inlines the existing node callback.
+LLVM then removes calculations that depend only on those constants and the
+kernel specialization, such as the project sample rate. The mechanism applies
+to every eligible node. Replacing a complete node with constant output needs a
+separate proof that the callback does not depend on state, time, or another
+runtime value.
+
+`SimpleIirHighPass` and `SimpleIirLowPass` declare the normalized `cutoff`
+range as `[0, 1]`. The endpoints map logarithmically to 20 Hz and 20 kHz. The
+two frequency endpoints are PackageJIT constants. The project sample period
+becomes a GraphJit specialization constant. A sample rate below 40 kHz still
+limits the upper endpoint to its Nyquist frequency.
+
 Measurement (implementation status, 2026-11-06): setting `IV_EDIT_TIMING=1` makes
 `ProjectGraph::rebuild_locked()` write one "edit timing" entry per published
 rebuild to the diagnostic log (`IV_LOG_FILE`):

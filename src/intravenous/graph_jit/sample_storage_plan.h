@@ -253,6 +253,11 @@ struct SampleCarryOperationPlan {
     std::size_t persistent_allocation = no_sample_persistent_allocation;
     std::size_t restore_execution_position = 0;
     std::size_t commit_execution_position = 0;
+    // SchedulePlan::regions index. When set, restore and commit surround the
+    // complete cyclic region instead of each primitive slice. Storage
+    // planning widens the transient representation through the complete
+    // ready group before assigning arena offsets.
+    std::optional<std::size_t> cyclic_region_scope{};
     std::size_t retained_frames = 0;
     // Number of retained frames at or after the next root invocation's first
     // index. Every carry states it explicitly. A Tick output files each value

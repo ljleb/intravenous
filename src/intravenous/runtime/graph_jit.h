@@ -30,6 +30,10 @@ struct GraphJitConfig {
     // stack_budget_bytes is enforced against the packed realtime-root stack,
     // not independently against every buffer choice.
     RealtimeStorageCostModel realtime_storage_cost_model{};
+    // Compile eligible cyclic regions into cached region specializations
+    // (graph_jit/region_specialization.h). Off, every region runs through the
+    // realtime root's interpreter; tests and measurements compare the two.
+    bool specialize_regions = true;
 };
 
 // Immutable specialization facts for one project kernel. CPU/features are
@@ -243,6 +247,22 @@ struct GraphJitCompileTimings {
     std::uint64_t functions = 0;
     std::uint64_t instructions_before_optimization = 0;
     std::uint64_t instructions_after_optimization = 0;
+    // Region specializations of the steady root: compiled by this
+    // compilation, reused from the cache, failed, and cyclic regions skipped
+    // because they need work the specialization does not compile. A failed or
+    // skipped region runs through the interpreter. region_specialization_us
+    // is the compile time of the compiled ones, inside lowering_emit_us. The
+    // strings hold the first failure and the first skip reason.
+    std::uint64_t region_specializations_compiled = 0;
+    std::uint64_t region_specializations_reused = 0;
+    std::uint64_t region_specialization_failures = 0;
+    std::uint64_t region_specializations_skipped = 0;
+    // Loads of workspace fields fixed for the call that compiled
+    // specializations replaced with their values.
+    std::uint64_t region_specialization_substitutions = 0;
+    std::uint64_t region_specialization_us = 0;
+    std::string region_specialization_failure{};
+    std::string region_specialization_skip{};
 };
 
 struct GraphJitCompileResult {

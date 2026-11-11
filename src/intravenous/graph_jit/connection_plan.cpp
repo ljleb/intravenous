@@ -3816,7 +3816,6 @@ std::size_t floor_power_of_two(std::size_t value) noexcept
 std::expected<SchedulePlan, std::string> build_schedule(
     ConfiguredGraph const& graph,
     ConnectionAnalysisPlan const& plan,
-    std::span<std::size_t const> callback_batch_classes,
     std::span<std::uint8_t const> callback_elided)
 {
     SchedulePlan schedule;
@@ -3912,10 +3911,28 @@ std::expected<SchedulePlan, std::string> build_schedule(
         }
     }
 
+    return schedule;
+}
+
+std::expected<void, std::string> finalize_schedule(
+    ConfiguredGraph const& graph,
+    ConnectionAnalysisPlan const& plan,
+    std::span<std::size_t const> callback_batch_classes,
+    SchedulePlan& schedule)
+{
     // Schedule condensation is a semantically distinct adjacency: background
     // dependencies must not pretend that tick_block produces their values.
     // Reuse the retained SCC partition, then order those SCCs using only
-    // ordinary sequential tick dependencies.
+    // ordinary sequential tick dependencies. Detach binding has already
+    // finalized every cyclic region's scheduling quantum.
+    auto const explicit_outgoing = dependency_adjacency(graph, plan, true);
+    std::vector<std::optional<std::size_t>> node_to_region(plan.nodes.size());
+    for (std::size_t node = 0; node < plan.nodes.size(); ++node) {
+        auto const bundle = plan.nodes[node].bundle;
+        if (bundle < schedule.bundle_to_region.size()) {
+            node_to_region[node] = schedule.bundle_to_region[bundle];
+        }
+    }
     std::vector<std::vector<std::size_t>> region_outgoing(
         schedule.regions.size());
     std::vector<std::size_t> region_indegree(schedule.regions.size(), 0);
@@ -3924,10 +3941,10 @@ std::expected<SchedulePlan, std::string> build_schedule(
             if (!node_to_region[source] || !node_to_region[target]) {
                 auto const source_bundle = plan.nodes[source].bundle;
                 auto const target_bundle = plan.nodes[target].bundle;
-                if ((source_bundle < callback_elided.size()
-                        && callback_elided[source_bundle] != 0)
-                    || (target_bundle < callback_elided.size()
-                        && callback_elided[target_bundle] != 0)) {
+                if ((source_bundle < schedule.callback_elided.size()
+                        && schedule.callback_elided[source_bundle] != 0)
+                    || (target_bundle < schedule.callback_elided.size()
+                        && schedule.callback_elided[target_bundle] != 0)) {
                     continue;
                 }
                 return std::unexpected(
@@ -3947,14 +3964,8 @@ std::expected<SchedulePlan, std::string> build_schedule(
     auto region_key = [&](std::size_t region) {
         return schedule.regions[region].nodes.front();
     };
-    auto region_batch_class = [&](std::size_t region)
+    auto callback_class = [&](NodeBundleHandle bundle)
         -> std::optional<std::size_t> {
-        auto const& candidate = schedule.regions[region];
-        if (candidate.cyclic || candidate.execution_order.size() != 1
-            || callback_batch_classes.empty()) {
-            return std::nullopt;
-        }
-        auto const bundle = candidate.execution_order.front();
         if (bundle >= callback_batch_classes.size()) return std::nullopt;
         auto const selected = callback_batch_classes[bundle];
         if (selected == std::numeric_limits<std::size_t>::max()) {
@@ -3962,31 +3973,63 @@ std::expected<SchedulePlan, std::string> build_schedule(
         }
         return selected;
     };
+    auto batchable = [&](std::size_t region) {
+        auto const& candidate = schedule.regions[region];
+        if (callback_batch_classes.empty()
+            || candidate.execution_order.empty()) {
+            return false;
+        }
+        if (!candidate.cyclic && candidate.execution_order.size() != 1) {
+            return false;
+        }
+        return std::ranges::all_of(
+            candidate.execution_order,
+            [&](NodeBundleHandle bundle) { return callback_class(bundle).has_value(); });
+    };
+    auto same_batch_class = [&](std::size_t left, std::size_t right) {
+        auto const& a = schedule.regions[left];
+        auto const& b = schedule.regions[right];
+        if (!batchable(left) || !batchable(right) || a.cyclic != b.cyclic
+            || a.execution_order.size() != b.execution_order.size()) {
+            return false;
+        }
+        if (a.cyclic
+            && (a.maximum_block_size != b.maximum_block_size
+                || a.scc_feedback_latency != b.scc_feedback_latency)) {
+            return false;
+        }
+        for (std::size_t phase = 0; phase < a.execution_order.size(); ++phase) {
+            if (callback_class(a.execution_order[phase])
+                != callback_class(b.execution_order[phase])) {
+                return false;
+            }
+        }
+        return true;
+    };
     std::vector<std::size_t> ready_regions;
     for (std::size_t region = 0; region < schedule.regions.size(); ++region) {
         if (region_indegree[region] == 0) ready_regions.push_back(region);
     }
     std::ranges::sort(ready_regions, {}, region_key);
     while (!ready_regions.empty()) {
-        auto selected_class = region_batch_class(ready_regions.front());
-        std::size_t selected_count = selected_class ? 0 : 1;
+        auto selected_representative = ready_regions.front();
+        std::size_t selected_count = 1;
         for (auto const candidate : ready_regions) {
-            auto const candidate_class = region_batch_class(candidate);
-            if (!candidate_class) continue;
+            if (!batchable(candidate)) continue;
             auto const count = static_cast<std::size_t>(std::ranges::count_if(
                 ready_regions,
                 [&](std::size_t region) {
-                    return region_batch_class(region) == candidate_class;
+                    return same_batch_class(region, candidate);
                 }));
             if (count > selected_count) {
-                selected_class = candidate_class;
+                selected_representative = candidate;
                 selected_count = count;
             }
         }
         std::vector<std::size_t> selected;
-        if (selected_class) {
+        if (selected_count > 1) {
             for (auto const region : ready_regions) {
-                if (region_batch_class(region) == selected_class) {
+                if (same_batch_class(region, selected_representative)) {
                     selected.push_back(region);
                 }
             }
@@ -4027,11 +4070,27 @@ std::expected<SchedulePlan, std::string> build_schedule(
     }
 
     std::size_t execution_position = 0;
-    for (auto const region_index : schedule.region_order) {
-        for (auto const bundle : schedule.regions[region_index].execution_order)
-            schedule.bundle_execution_position[bundle] = execution_position++;
+    for (auto const& group : schedule.ready_groups) {
+        auto const cyclic = schedule.regions[group.front()].cyclic;
+        if (cyclic) {
+            auto const phase_count = schedule.regions[group.front()]
+                .execution_order.size();
+            for (std::size_t phase = 0; phase < phase_count; ++phase) {
+                for (auto const region_index : group) {
+                    auto const bundle = schedule.regions[region_index]
+                        .execution_order[phase];
+                    schedule.bundle_execution_position[bundle] = execution_position++;
+                }
+            }
+            continue;
+        }
+        for (auto const region_index : group) {
+            for (auto const bundle : schedule.regions[region_index].execution_order) {
+                schedule.bundle_execution_position[bundle] = execution_position++;
+            }
+        }
     }
-    return schedule;
+    return {};
 }
 
 std::expected<void, std::string> bind_detach_regions(
@@ -6184,12 +6243,16 @@ std::expected<ConnectionAnalysisPlan, std::string> build_connection_analysis_pla
         callback_elided[bundle] = static_cast<std::uint8_t>(
             has_realtime_consumer && !has_background_consumer);
     }
-    auto schedule = build_schedule(
-        graph, plan, callback_batch_classes, callback_elided);
+    auto schedule = build_schedule(graph, plan, callback_elided);
     if (!schedule) return std::unexpected(std::move(schedule.error()));
     plan.schedule = std::move(*schedule);
     if (auto detach_regions = bind_detach_regions(plan); !detach_regions) {
         return std::unexpected(std::move(detach_regions.error()));
+    }
+    if (auto finalized = finalize_schedule(
+            graph, plan, callback_batch_classes, plan.schedule);
+        !finalized) {
+        return std::unexpected(std::move(finalized.error()));
     }
     if (auto latency = plan_latency_compensation(plan); !latency) {
         return std::unexpected(std::move(latency.error()));

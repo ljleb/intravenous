@@ -10,6 +10,7 @@
 namespace iv::graph_jit {
 struct LoweringInput;
 struct TickInvocationCall;
+class RegionSpecializationProvider;
 namespace detail {
 struct LoweringPlan;
 }
@@ -25,9 +26,14 @@ struct RealtimeRootPlan;
 // root_stack, declarations.primitive_activity, and
 // declarations.activity_frontiers. Every other section stays in plan for the
 // generated background roots and LoweringOutput. Every plan invariant the root
-// relies on is checked here, so a root call checks no plan structure.
+// relies on is checked here, so a root call checks no plan structure. With
+// specializations, each cyclic region it compiles code for runs that code
+// instead of the interpreter's slice loop.
 std::expected<std::shared_ptr<RealtimeRootPlan const>, std::string>
-build_realtime_root_plan(LoweringInput const& input, detail::LoweringPlan& plan);
+build_realtime_root_plan(
+    LoweringInput const& input,
+    detail::LoweringPlan& plan,
+    RegionSpecializationProvider* specializations = nullptr);
 
 // Executes one root block of plan, which is never null. block_size > 0. If
 // the plan has Tick runtime slots, invocation is non-null and carries the

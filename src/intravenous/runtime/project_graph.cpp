@@ -489,6 +489,27 @@ void log_edit_timing(ProjectGraphGeneration const& generation) noexcept
                 << "; " << compile.functions << " functions, "
                 << compile.instructions_before_optimization << " -> "
                 << compile.instructions_after_optimization << " instructions\n";
+            auto const specializations = compile.region_specializations_compiled
+                + compile.region_specializations_reused
+                + compile.region_specialization_failures
+                + compile.region_specializations_skipped;
+            if (specializations != 0) {
+                out << "  region specializations: " << compile.region_specializations_compiled
+                    << " compiled in " << ms(compile.region_specialization_us) << " ms, "
+                    << compile.region_specializations_reused << " reused, "
+                    << compile.region_specialization_failures << " failed, "
+                    << compile.region_specializations_skipped << " skipped, "
+                    << compile.region_specialization_substitutions
+                    << " workspace loads substituted\n";
+                if (!compile.region_specialization_failure.empty()) {
+                    out << "  region specialization failure: "
+                        << compile.region_specialization_failure << '\n';
+                }
+                if (!compile.region_specialization_skip.empty()) {
+                    out << "  region specialization skip: "
+                        << compile.region_specialization_skip << '\n';
+                }
+            }
         }
         out.flush();
     } catch (...) {

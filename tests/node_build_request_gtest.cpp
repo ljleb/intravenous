@@ -1,3 +1,4 @@
+#include <intravenous/basic_nodes/filters.h>
 #include <intravenous/graph/reflected_node_description.h>
 #include <intravenous/node/coverage_port_context.h>
 #include <intravenous/node/tick.h>
@@ -686,6 +687,13 @@ static_assert(std::same_as<
     decltype(iv::input<iv::Sample>("", iv::InputAccess::sequential)),
     iv::SequentialInputConfig<iv::Sample>>);
 static_assert(std::same_as<
+    decltype(iv::input<iv::Sample>("")),
+    iv::SequentialInputConfig<iv::Sample>>);
+static_assert(std::same_as<
+    decltype(iv::input<iv::Sample>(
+        "", iv::SampleContinuousValueExtension::SequentialInputOptions{})),
+    iv::SequentialInputConfig<iv::Sample>>);
+static_assert(std::same_as<
     decltype(iv::input<iv::Sample>("", iv::InputAccess::coverage)),
     iv::CoverageInputConfig<iv::Sample>>);
 static_assert(std::same_as<
@@ -696,6 +704,16 @@ static_assert(std::same_as<
     iv::CoverageEventInputConfig>);
 static_assert(std::same_as<
     decltype(iv::output<iv::Sample>("", iv::OutputProduction::tick)),
+    iv::TickOutputConfig<iv::Sample>>);
+static_assert(std::same_as<
+    decltype(iv::output<iv::Sample>("")),
+    iv::TickOutputConfig<iv::Sample>>);
+static_assert(std::same_as<
+    decltype(iv::output<iv::Sample>("", iv::OutputRetention::persisted)),
+    iv::TickOutputConfig<iv::Sample>>);
+static_assert(std::same_as<
+    decltype(iv::output<iv::Sample>(
+        "", iv::SampleContinuousValueExtension::TickOutputOptions{})),
     iv::TickOutputConfig<iv::Sample>>);
 static_assert(std::same_as<
     decltype(iv::output<iv::Sample>("", iv::OutputProduction::coverage)),
@@ -751,12 +769,30 @@ static_assert(iv::is_tock(iv::event_output("background", iv::EventTypeId::trigge
 static_assert(!iv::is_persisted(iv::output<iv::Sample>("ephemeral", iv::OutputProduction::coverage)));
 static_assert(iv::is_persisted(iv::output<iv::Sample>("persisted", iv::OutputProduction::coverage, iv::OutputRetention::persisted)));
 static_assert(iv::is_persisted(iv::output<iv::Sample>("persisted", iv::OutputProduction::tick, iv::OutputRetention::persisted)));
+static_assert(iv::is_persisted(
+    iv::output<iv::Sample>("persisted", iv::OutputRetention::persisted)));
+
+TEST(NodeBuildRequest, SimpleIirCutoffDeclaresItsNormalizedRange)
+{
+    for (auto const& inputs : {
+             iv::SimpleIirHighPass::inputs(),
+             iv::SimpleIirLowPass::inputs(),
+         }) {
+        ASSERT_EQ(inputs[1].name, "cutoff");
+        auto const& options = std::get<0>(inputs[1].options);
+        EXPECT_FLOAT_EQ(options.min, 0.0f);
+        EXPECT_FLOAT_EQ(options.max, 1.0f);
+    }
+    EXPECT_FLOAT_EQ(iv::SimpleIirHighPass::minimum_cutoff_hz, 20.0f);
+    EXPECT_FLOAT_EQ(iv::SimpleIirHighPass::maximum_cutoff_hz, 20'000.0f);
+    EXPECT_FLOAT_EQ(iv::SimpleIirLowPass::minimum_cutoff_hz, 20.0f);
+    EXPECT_FLOAT_EQ(iv::SimpleIirLowPass::maximum_cutoff_hz, 20'000.0f);
+}
 
 TEST(NodeBuildRequest, PersistedTickContinuousOutputReflectsAsInterleaved)
 {
     auto const erased = iv::erase_port_config(iv::output<iv::Sample>(
         "recording",
-        iv::OutputProduction::tick,
         iv::OutputRetention::persisted,
         {.channel_layout = iv::ChannelLayout{
             .channel_type = iv::ChannelTypeId::stereo,

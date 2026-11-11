@@ -301,7 +301,9 @@ llvm_map_components_to_libnames(IV_PACKAGE_LOADER_LLVM_LIBS
     executionengine
     native
     nativecodegen
+    orcdebugging
     orcjit
+    orctargetprocess
     passes
     support
     target)
@@ -334,6 +336,8 @@ add_library(intravenous_graph_jit OBJECT
     graph_jit/port_realization.cpp
     graph_jit/realtime_root.cpp
     graph_jit/realtime_port_state_transition.cpp
+    graph_jit/region_specialization.cpp
+    graph_jit/region_specialization_emit.cpp
     graph_jit/sample_storage_plan.cpp
     graph_jit/transient_arena_plan.cpp
 )
@@ -350,7 +354,9 @@ llvm_map_components_to_libnames(IV_GRAPH_JIT_LLVM_LIBS
     linker
     native
     nativecodegen
+    orcdebugging
     orcjit
+    orctargetprocess
     passes
     support
     target)

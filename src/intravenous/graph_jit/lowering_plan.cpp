@@ -3909,8 +3909,96 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
         return (value + mask) & ~mask;
     };
 
-    std::size_t shared_scratch_size = 0;
-    std::size_t shared_scratch_alignment = 1;
+    std::vector<std::optional<std::size_t>> bundle_to_primitive(
+        connections.schedule.bundle_execution_position.size());
+    std::vector<ConnectionLiveIntervalPlan> primitive_scratch_lifetimes(
+        plan.primitives.size());
+    for (std::size_t primitive = 0; primitive < analysis.primitives.size(); ++primitive) {
+        auto const bundle = analysis.primitives[primitive].bundle.node_bundle;
+        if (bundle >= bundle_to_primitive.size()) continue;
+        bundle_to_primitive[bundle] = primitive;
+        if (connections.schedule.bundle_execution_position[bundle]) {
+            auto const position =
+                *connections.schedule.bundle_execution_position[bundle];
+            primitive_scratch_lifetimes[primitive] = {
+                .begin = position,
+                .end = position,
+            };
+        }
+    }
+    auto widen_batch_lifetimes = [&](std::span<NodeBundleHandle const> bundles)
+        -> std::expected<void, std::string> {
+        if (bundles.empty()) return {};
+        auto begin = std::numeric_limits<std::size_t>::max();
+        std::size_t end = 0;
+        for (auto const bundle : bundles) {
+            if (bundle >= connections.schedule.bundle_execution_position.size()
+                || !connections.schedule.bundle_execution_position[bundle]) {
+                return std::unexpected(
+                    "GraphJit continuous input scratch batch has no execution position");
+            }
+            auto const position =
+                *connections.schedule.bundle_execution_position[bundle];
+            begin = std::min(begin, position);
+            end = std::max(end, position);
+        }
+        for (auto const bundle : bundles) {
+            if (bundle >= bundle_to_primitive.size()
+                || !bundle_to_primitive[bundle]) {
+                return std::unexpected(
+                    "GraphJit continuous input scratch batch has no primitive");
+            }
+            primitive_scratch_lifetimes[*bundle_to_primitive[bundle]] = {
+                .begin = begin,
+                .end = end,
+            };
+        }
+        return {};
+    };
+    for (auto const& group : connections.schedule.ready_groups) {
+        if (group.size() < 2) continue;
+        auto const& first = connections.schedule.regions[group.front()];
+        if (first.cyclic) {
+            for (std::size_t phase = 0; phase < first.execution_order.size(); ++phase) {
+                std::vector<NodeBundleHandle> bundles;
+                bundles.reserve(group.size());
+                for (auto const region_index : group) {
+                    if (region_index >= connections.schedule.regions.size()
+                        || connections.schedule.regions[region_index]
+                               .execution_order.size()
+                            != first.execution_order.size()) {
+                        return std::unexpected(
+                            "GraphJit continuous input scratch batch has incompatible cyclic regions");
+                    }
+                    bundles.push_back(connections.schedule.regions[region_index]
+                        .execution_order[phase]);
+                }
+                if (auto widened = widen_batch_lifetimes(bundles); !widened) {
+                    return std::unexpected(std::move(widened.error()));
+                }
+            }
+            continue;
+        }
+        std::vector<NodeBundleHandle> bundles;
+        bundles.reserve(group.size());
+        for (auto const region_index : group) {
+            if (region_index >= connections.schedule.regions.size()
+                || connections.schedule.regions[region_index]
+                       .execution_order.size() != 1) {
+                return std::unexpected(
+                    "GraphJit continuous input scratch batch has an invalid acyclic region");
+            }
+            bundles.push_back(connections.schedule.regions[region_index]
+                .execution_order.front());
+        }
+        if (auto widened = widen_batch_lifetimes(bundles); !widened) {
+            return std::unexpected(std::move(widened.error()));
+        }
+    }
+
+    std::vector<std::size_t> primitive_scratch_sizes(plan.primitives.size());
+    std::vector<std::size_t> primitive_scratch_alignments(
+        plan.primitives.size(), std::size_t{1});
     for (std::size_t primitive_index = 0;
          primitive_index < plan.primitives.size(); ++primitive_index) {
         auto& primitive = plan.primitives[primitive_index];
@@ -3983,36 +4071,55 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
             input_binding.contiguous_scratch_offset = *aligned;
             input_binding.has_contiguous_scratch = true;
             primitive_scratch_size = *aligned + bytes;
-            shared_scratch_alignment = std::max(
-                shared_scratch_alignment,
+            primitive_scratch_alignments[primitive_index] = std::max(
+                primitive_scratch_alignments[primitive_index],
                 input_binding.geometry.element_alignment);
         }
-        shared_scratch_size = std::max(
-            shared_scratch_size, primitive_scratch_size);
+        primitive_scratch_sizes[primitive_index] = primitive_scratch_size;
     }
 
-    if (shared_scratch_size != 0) {
+    std::vector<TransientArenaAllocationRequest> scratch_requests;
+    std::vector<std::size_t> scratch_primitives;
+    for (std::size_t primitive = 0;
+         primitive < primitive_scratch_sizes.size();
+         ++primitive) {
+        if (primitive_scratch_sizes[primitive] == 0) continue;
+        scratch_requests.push_back(TransientArenaAllocationRequest{
+            .size_bytes = primitive_scratch_sizes[primitive],
+            .alignment = primitive_scratch_alignments[primitive],
+            .live_interval = primitive_scratch_lifetimes[primitive],
+        });
+        scratch_primitives.push_back(primitive);
+    }
+    auto scratch_arena = plan_transient_arena(scratch_requests);
+    if (!scratch_arena) {
+        return std::unexpected(std::move(scratch_arena.error()));
+    }
+    if (scratch_arena->size_bytes != 0) {
         auto const scratch_base = align_up(
             plan.storage.transient_arena_size,
-            shared_scratch_alignment);
+            scratch_arena->alignment);
         if (!scratch_base
-            || shared_scratch_size
+            || scratch_arena->size_bytes
                 > std::numeric_limits<std::size_t>::max() - *scratch_base) {
             return std::unexpected(
                 "GraphJit continuous input scratch arena overflows size_t");
         }
-        for (auto& primitive : plan.primitives) {
+        for (std::size_t request = 0; request < scratch_primitives.size(); ++request) {
+            auto& primitive = plan.primitives[scratch_primitives[request]];
+            auto const allocation = scratch_arena->allocations[request].offset;
             for (auto& input_binding : primitive.inputs) {
                 if (!input_binding.has_contiguous_scratch) continue;
-                input_binding.contiguous_scratch_offset += *scratch_base;
+                input_binding.contiguous_scratch_offset += *scratch_base + allocation;
             }
         }
-        plan.contiguous_input_scratch_size = shared_scratch_size;
-        plan.contiguous_input_scratch_alignment = shared_scratch_alignment;
-        plan.storage.transient_arena_size = *scratch_base + shared_scratch_size;
+        plan.contiguous_input_scratch_size = scratch_arena->size_bytes;
+        plan.contiguous_input_scratch_alignment = scratch_arena->alignment;
+        plan.storage.transient_arena_size =
+            *scratch_base + scratch_arena->size_bytes;
         plan.storage.transient_arena_alignment = std::max(
             plan.storage.transient_arena_alignment,
-            shared_scratch_alignment);
+            scratch_arena->alignment);
     }
 
     return plan;
@@ -8123,47 +8230,46 @@ std::expected<ExecutionPlan, std::string> plan_execution(
             .maximum_block_size = source_region.maximum_block_size,
             .scc_feedback_latency = source_region.scc_feedback_latency,
         };
-        for (auto const bundle : source_region.execution_order) {
-            auto const primitive = std::ranges::find_if(
-                analysis.primitives,
-                [&](PrimitiveAnalysis const& candidate) {
-                    return candidate.bundle.node_bundle == bundle;
-                });
-            if (primitive == analysis.primitives.end()) {
-                return std::unexpected(
-                    "GraphJit connection schedule contains a non-primitive bundle");
-            }
-            auto const i = static_cast<std::size_t>(
-                std::distance(analysis.primitives.begin(), primitive));
-            if (scheduled[i]) {
-                return std::unexpected(
-                    "GraphJit connection schedule contains a primitive more than once");
-            }
-            if (imports.primitive_callbacks[i].tick_block.empty()) {
-                return std::unexpected(
-                    "GraphJit connection schedule contains a Tock-only primitive");
-            }
-            scheduled[i] = true;
-            auto const& callbacks = imports.primitive_callbacks[i];
-            auto const step_index = plan.primitive_steps.size();
-            plan.primitive_steps.push_back(PrimitiveExecutionStep{
-                .configuration_index = i,
-                .storage_index = i,
-                .maximum_block_size = primitive->bundle.maximum_block_size,
-                .tick_batch_callback_symbol = callbacks.tick_block_batch,
-                .skip_batch_callback_symbol = callbacks.skip_block_batch,
-            });
-            region.primitive_steps.push_back(step_index);
-        }
-        if (region.cyclic && region.primitive_steps.empty()) {
-            return std::unexpected(
-                "GraphJit cyclic execution region contains no executable primitive");
-        }
-        if (!region.primitive_steps.empty()) {
-            schedule_region_execution_region[region_index] = execution_region_index;
-            plan.regions.push_back(std::move(region));
-        }
+        if (source_region.execution_order.empty()) continue;
+        schedule_region_execution_region[region_index] = execution_region_index;
+        plan.regions.push_back(std::move(region));
     }
+
+    auto append_step = [&](NodeBundleHandle bundle, std::size_t execution_region)
+        -> std::expected<std::size_t, std::string> {
+        auto const primitive = std::ranges::find_if(
+            analysis.primitives,
+            [&](PrimitiveAnalysis const& candidate) {
+                return candidate.bundle.node_bundle == bundle;
+            });
+        if (primitive == analysis.primitives.end()) {
+            return std::unexpected(
+                "GraphJit connection schedule contains a non-primitive bundle");
+        }
+        auto const i = static_cast<std::size_t>(
+            std::distance(analysis.primitives.begin(), primitive));
+        if (scheduled[i]) {
+            return std::unexpected(
+                "GraphJit connection schedule contains a primitive more than once");
+        }
+        if (imports.primitive_callbacks[i].tick_block.empty()) {
+            return std::unexpected(
+                "GraphJit connection schedule contains a Tock-only primitive");
+        }
+        scheduled[i] = true;
+        auto const& callbacks = imports.primitive_callbacks[i];
+        auto const step_index = plan.primitive_steps.size();
+        plan.primitive_steps.push_back(PrimitiveExecutionStep{
+            .configuration_index = i,
+            .storage_index = i,
+            .maximum_block_size = primitive->bundle.maximum_block_size,
+            .tick_batch_callback_symbol = callbacks.tick_block_batch,
+            .skip_batch_callback_symbol = callbacks.skip_block_batch,
+        });
+        plan.regions[execution_region].primitive_steps.push_back(step_index);
+        return step_index;
+    };
+
     plan.ready_groups.reserve(connections.schedule.ready_groups.size());
     for (auto const& scheduled_group : connections.schedule.ready_groups) {
         if (scheduled_group.empty()) {
@@ -8171,6 +8277,10 @@ std::expected<ExecutionPlan, std::string> plan_execution(
                 "GraphJit connection schedule contains an empty ready group");
         }
         ExecutionReadyGroupPlan group;
+        auto const group_is_cyclic = connections.schedule
+            .regions[scheduled_group.front()].cyclic;
+        std::vector<std::size_t> execution_regions;
+        execution_regions.reserve(scheduled_group.size());
         for (auto const schedule_region : scheduled_group) {
             if (schedule_region >= schedule_region_execution_region.size()
                 || !schedule_region_execution_region[schedule_region]) {
@@ -8179,23 +8289,49 @@ std::expected<ExecutionPlan, std::string> plan_execution(
             }
             auto const execution_region =
                 *schedule_region_execution_region[schedule_region];
-            auto const& region = plan.regions[execution_region];
-            if (region.cyclic) {
-                if (scheduled_group.size() != 1 || group.cyclic_region
-                    || !group.primitive_steps.empty()) {
-                    return std::unexpected(
-                        "GraphJit cyclic SCC was placed in a realtime batch group");
-                }
-                group.cyclic_region = execution_region;
-                continue;
-            }
-            if (region.primitive_steps.size() != 1 || group.cyclic_region) {
+            auto const& source_region = connections.schedule.regions[schedule_region];
+            if (source_region.cyclic != group_is_cyclic) {
                 return std::unexpected(
-                    "GraphJit acyclic ready group has an invalid execution region");
+                    "GraphJit ready group mixes cyclic and acyclic regions");
             }
-            group.primitive_steps.push_back(region.primitive_steps.front());
+            execution_regions.push_back(execution_region);
         }
-        if (group.primitive_steps.size() > 1) {
+        if (group_is_cyclic) {
+            auto const phase_count = connections.schedule
+                .regions[scheduled_group.front()].execution_order.size();
+            for (auto const schedule_region : scheduled_group) {
+                if (connections.schedule.regions[schedule_region]
+                        .execution_order.size() != phase_count) {
+                    return std::unexpected(
+                        "GraphJit cyclic ready group has unequal execution phase counts");
+                }
+            }
+            group.cyclic_regions = execution_regions;
+            for (std::size_t phase = 0; phase < phase_count; ++phase) {
+                for (std::size_t lane = 0; lane < scheduled_group.size(); ++lane) {
+                    auto step = append_step(
+                        connections.schedule.regions[scheduled_group[lane]]
+                            .execution_order[phase],
+                        execution_regions[lane]);
+                    if (!step) return std::unexpected(std::move(step.error()));
+                    group.primitive_steps.push_back(*step);
+                }
+            }
+        } else {
+            for (std::size_t lane = 0; lane < scheduled_group.size(); ++lane) {
+                auto const& source_region = connections.schedule
+                    .regions[scheduled_group[lane]];
+                if (source_region.execution_order.size() != 1) {
+                    return std::unexpected(
+                        "GraphJit acyclic ready group has an invalid execution region");
+                }
+                auto step = append_step(
+                    source_region.execution_order.front(), execution_regions[lane]);
+                if (!step) return std::unexpected(std::move(step.error()));
+                group.primitive_steps.push_back(*step);
+            }
+        }
+        if (group.cyclic_regions.empty() && group.primitive_steps.size() > 1) {
             auto const& first = plan.primitive_steps[group.primitive_steps.front()];
             for (auto const step_index : group.primitive_steps) {
                 auto const& step = plan.primitive_steps[step_index];
@@ -8209,6 +8345,12 @@ std::expected<ExecutionPlan, std::string> plan_execution(
             }
         }
         plan.ready_groups.push_back(std::move(group));
+    }
+    for (auto const& region : plan.regions) {
+        if (region.cyclic && region.primitive_steps.empty()) {
+            return std::unexpected(
+                "GraphJit cyclic execution region contains no executable primitive");
+        }
     }
     if (plan.ready_groups.empty() && !plan.regions.empty()) {
         return std::unexpected(
@@ -8259,6 +8401,30 @@ std::expected<ExecutionPlan, std::string> plan_execution(
             || carry.commit_execution_position >= plan.primitive_steps.size()) {
             return std::unexpected(
                 "GraphJit sample carry operation references an invalid execution position");
+        }
+        if (carry.cyclic_region_scope) {
+            if (*carry.cyclic_region_scope
+                    >= schedule_region_execution_region.size()
+                || !schedule_region_execution_region[
+                    *carry.cyclic_region_scope]) {
+                return std::unexpected(
+                    "GraphJit sample carry operation references a missing cyclic region");
+            }
+            auto const execution_region = *schedule_region_execution_region[
+                *carry.cyclic_region_scope];
+            if (!plan.regions[execution_region].cyclic
+                || step_regions[carry.restore_execution_position]
+                    != execution_region
+                || step_regions[carry.commit_execution_position]
+                    != execution_region) {
+                return std::unexpected(
+                    "GraphJit sample carry operation has an inconsistent cyclic scope");
+            }
+            plan.regions[execution_region]
+                .sample_carry_restores_before.push_back(carry_index);
+            plan.regions[execution_region]
+                .sample_carry_commits_after.push_back(carry_index);
+            continue;
         }
         plan.primitive_steps[carry.restore_execution_position]
             .sample_carry_restores_before.push_back(carry_index);
@@ -8526,10 +8692,12 @@ std::expected<ExecutionPlan, std::string> plan_execution(
         order_operations(region.event_operations_before);
         order_operations(region.event_operations_after);
         if (!region.cyclic
-            && (!region.event_operations_before.empty()
+            && (!region.sample_carry_restores_before.empty()
+                || !region.sample_carry_commits_after.empty()
+                || !region.event_operations_before.empty()
                 || !region.event_operations_after.empty())) {
             return std::unexpected(
-                "GraphJit acyclic execution region unexpectedly owns region-scoped event operations");
+                "GraphJit acyclic execution region unexpectedly owns region-scoped operations");
         }
     }
 
@@ -8606,9 +8774,75 @@ std::expected<bool, std::string> realtime_ready_group_batches(
     EventPortBindingPlan const& event_ports,
     RootStackBufferPlan const& root_stack,
     ExecutionPlan const& execution,
-    ExecutionReadyGroupPlan const& group)
+    ExecutionReadyGroupPlan const& group,
+    bool allow_step_operations = false,
+    std::size_t required_block_size = 0)
 {
-    if (group.cyclic_region || group.primitive_steps.size() < 2) return false;
+    if (!group.cyclic_regions.empty()) {
+        if (group.cyclic_regions.size() < 2) {
+            return false;
+        }
+        auto const first_region_index = group.cyclic_regions.front();
+        if (first_region_index >= execution.regions.size()) {
+            return std::unexpected(
+                "GraphJit realtime cyclic batch references a missing region");
+        }
+        auto const& first_region = execution.regions[first_region_index];
+        if (group.primitive_steps.size()
+            != group.cyclic_regions.size()
+                * first_region.primitive_steps.size()) {
+            return std::unexpected(
+                "GraphJit realtime cyclic batch has an invalid phase layout");
+        }
+        for (auto const region_index : group.cyclic_regions) {
+            if (region_index >= execution.regions.size()) {
+                return std::unexpected(
+                    "GraphJit realtime cyclic batch references a missing region");
+            }
+            auto const& region = execution.regions[region_index];
+            if (!region.cyclic
+                || region.maximum_block_size != first_region.maximum_block_size
+                || region.scc_feedback_latency != first_region.scc_feedback_latency
+                || region.primitive_steps.size()
+                    != first_region.primitive_steps.size()) {
+                return false;
+            }
+        }
+        for (std::size_t phase = 0;
+             phase < first_region.primitive_steps.size();
+             ++phase) {
+            ExecutionReadyGroupPlan phase_group;
+            phase_group.primitive_steps.reserve(group.cyclic_regions.size());
+            for (std::size_t lane = 0; lane < group.cyclic_regions.size(); ++lane) {
+                auto const step = execution.regions[group.cyclic_regions[lane]]
+                    .primitive_steps[phase];
+                if (group.primitive_steps[
+                        phase * group.cyclic_regions.size() + lane]
+                    != step) {
+                    return std::unexpected(
+                        "GraphJit realtime cyclic batch phase does not match its regions");
+                }
+                phase_group.primitive_steps.push_back(step);
+            }
+            auto batches = realtime_ready_group_batches(
+                connections,
+                declarations,
+                imports,
+                sample_ports,
+                event_ports,
+                root_stack,
+                execution,
+                phase_group,
+                true,
+                first_region.maximum_block_size);
+            if (!batches || !*batches) return batches;
+        }
+        return true;
+    }
+    if (group.primitive_steps.size() < 2) return false;
+    if (required_block_size == 0) {
+        required_block_size = declarations.node_layout.max_block_size;
+    }
 
     std::string_view tick_symbol;
     std::string_view skip_symbol;
@@ -8642,7 +8876,7 @@ std::expected<bool, std::string> realtime_ready_group_batches(
         }
         if (step.tick_batch_callback_symbol != tick_symbol
             || step.skip_batch_callback_symbol != skip_symbol
-            || step.maximum_block_size < declarations.node_layout.max_block_size) {
+            || step.maximum_block_size < required_block_size) {
             return false;
         }
 
@@ -8651,7 +8885,8 @@ std::expected<bool, std::string> realtime_ready_group_batches(
         // legal for an antichain, but it can extend transient live ranges and
         // increase stack pressure. The initial cost model keeps such groups
         // scalar; Front 16 can cost that transformation with layout jointly.
-        if (!step.sample_carry_restores_before.empty()
+        if (!allow_step_operations
+            && (!step.sample_carry_restores_before.empty()
             || !step.sample_materializations_before.empty()
             || !step.sample_compositions_before.empty()
             || !step.sample_transition_materializations_before.empty()
@@ -8661,7 +8896,7 @@ std::expected<bool, std::string> realtime_ready_group_batches(
             || !step.sample_transition_materializations_after.empty()
             || !step.sample_carry_commits_after.empty()
             || !step.event_operations_before.empty()
-            || !step.event_operations_after.empty()) {
+            || !step.event_operations_after.empty())) {
             return false;
         }
 
@@ -8678,21 +8913,19 @@ std::expected<bool, std::string> realtime_ready_group_batches(
             }
             auto const& tick_invocation =
                 background_plan.tick_runtime.nodes[node];
-            if (tick_invocation.sample_capture_count != 0
-                || tick_invocation.event_capture_count != 0) {
+            if (!allow_step_operations
+                && (tick_invocation.sample_capture_count != 0
+                    || tick_invocation.event_capture_count != 0)) {
                 return false;
             }
         }
         lanes.push_back(std::addressof(step));
     }
-    // Transient placement is planned against the flattened scalar execution
-    // positions. Two representations whose scalar lifetimes do not overlap may
-    // therefore share bytes even when their primitives are later selected for
-    // one native batch. A batch callback can retain and access every lane
-    // facade until it returns, so a writable lane range must not overlap any
-    // other lane's callback-facing range. Shared read-only inputs remain legal.
-    // Front 16 can widen/co-plan these lifetimes when the additional storage is
-    // cheaper than scalar fallback.
+    // Transient placement uses the batch-aware execution positions. Keep this
+    // physical check as an independent invariant: persistent storage, a
+    // transition specialization, or a future storage policy must not make two
+    // callback lanes alias writable bytes. Shared read-only inputs remain
+    // legal.
     enum class CallbackStorageBase : std::uint8_t {
         root_transient,
         node_storage,
@@ -8835,7 +9068,32 @@ std::expected<bool, std::string> realtime_ready_group_batches(
         auto const primitive = lanes[lane_index]->configuration_index;
         auto const& lane_sample_ports = sample_ports.primitives[primitive];
         for (auto const& input : lane_sample_ports.inputs) {
-            if (input.has_contiguous_scratch) return false;
+            if (input.has_contiguous_scratch) {
+                auto const channels = channel_count(input.channel_layout);
+                auto const value_size = input.geometry.value_size_bytes;
+                if (channels == 0 || value_size == 0
+                    || input.contiguous_storage_capacity == 0
+                    || input.contiguous_storage_capacity
+                        > std::numeric_limits<std::size_t>::max() / value_size
+                    || channels
+                        > std::numeric_limits<std::size_t>::max()
+                            / (input.contiguous_storage_capacity * value_size)
+                    || root_stack.sample_offset
+                        > std::numeric_limits<std::size_t>::max()
+                            - input.contiguous_scratch_offset) {
+                    return std::unexpected(
+                        "GraphJit realtime batch continuous input scratch is invalid");
+                }
+                auto appended = append_range(
+                    CallbackStorageBase::root_transient,
+                    root_stack.sample_offset + input.contiguous_scratch_offset,
+                    channels * input.contiguous_storage_capacity * value_size,
+                    lane_index,
+                    true);
+                if (!appended) {
+                    return std::unexpected(std::move(appended.error()));
+                }
+            }
             // The root writes a slot-fed input's timeline for this lane.
             for (auto const& channel : input.channels) {
                 auto appended = append_sample_representation(
@@ -9467,7 +9725,12 @@ std::expected<LoweringPlan, std::string> build_lowering_plan(
         // bundles, so this terminates.
         std::vector<std::size_t> rejected_bundles;
         for (auto const& group : execution->ready_groups) {
-            if (group.cyclic_region || group.primitive_steps.size() < 2) continue;
+            if ((!group.cyclic_regions.empty()
+                    && group.cyclic_regions.size() < 2)
+                || (group.cyclic_regions.empty()
+                    && group.primitive_steps.size() < 2)) {
+                continue;
+            }
             auto batches = realtime_ready_group_batches(
                 realtime_ports->connections,
                 *declarations,
@@ -9479,11 +9742,23 @@ std::expected<LoweringPlan, std::string> build_lowering_plan(
                 group);
             if (!batches) return std::unexpected(std::move(batches.error()));
             if (*batches) continue;
-            for (auto const step_index : group.primitive_steps) {
-                auto const configuration =
-                    execution->primitive_steps[step_index].configuration_index;
-                rejected_bundles.push_back(
-                    imports->primitive_callbacks[configuration].bundle);
+            if (!group.cyclic_regions.empty()) {
+                for (auto const region_index : group.cyclic_regions) {
+                    for (auto const step_index :
+                         execution->regions[region_index].primitive_steps) {
+                        auto const configuration = execution
+                            ->primitive_steps[step_index].configuration_index;
+                        rejected_bundles.push_back(
+                            imports->primitive_callbacks[configuration].bundle);
+                    }
+                }
+            } else {
+                for (auto const step_index : group.primitive_steps) {
+                    auto const configuration = execution
+                        ->primitive_steps[step_index].configuration_index;
+                    rejected_bundles.push_back(
+                        imports->primitive_callbacks[configuration].bundle);
+                }
             }
         }
         if (!rejected_bundles.empty()) {
@@ -9518,7 +9793,10 @@ std::expected<void, std::string> split_unbatched_ready_groups(LoweringPlan& plan
     std::vector<ExecutionReadyGroupPlan> groups;
     groups.reserve(plan.execution.ready_groups.size());
     for (auto& group : plan.execution.ready_groups) {
-        if (group.cyclic_region || group.primitive_steps.size() < 2) {
+        if ((!group.cyclic_regions.empty()
+                && group.cyclic_regions.size() < 2)
+            || (group.cyclic_regions.empty()
+                && group.primitive_steps.size() < 2)) {
             groups.push_back(std::move(group));
             continue;
         }
@@ -9534,6 +9812,15 @@ std::expected<void, std::string> split_unbatched_ready_groups(LoweringPlan& plan
         if (!batches) return std::unexpected(std::move(batches.error()));
         if (*batches) {
             groups.push_back(std::move(group));
+            continue;
+        }
+        if (!group.cyclic_regions.empty()) {
+            for (auto const region : group.cyclic_regions) {
+                groups.push_back(ExecutionReadyGroupPlan{
+                    .primitive_steps = plan.execution.regions[region].primitive_steps,
+                    .cyclic_regions = {region},
+                });
+            }
             continue;
         }
         for (auto const step : group.primitive_steps) {

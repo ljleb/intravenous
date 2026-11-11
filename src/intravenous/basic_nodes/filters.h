@@ -36,14 +36,18 @@ namespace iv {
     };
 
     struct SimpleIirHighPass {
-        static constexpr Sample FMIN = 2e1f;
-        static constexpr Sample FMAX = 2e4f;
+        static constexpr Sample minimum_cutoff_hz = 20.0f;
+        static constexpr Sample maximum_cutoff_hz = 20'000.0f;
 
         static constexpr auto inputs()
         {
             return std::array {
-                input<Sample>("in", InputAccess::sequential),
-                input<Sample>("cutoff", InputAccess::sequential),
+                input<Sample>("in"),
+                input<Sample>("cutoff", {
+                    .default_value = 1.0f,
+                    .min = 0.0f,
+                    .max = 1.0f,
+                }),
             };
         }
 
@@ -54,20 +58,23 @@ namespace iv {
 
         static constexpr auto outputs()
         {
-            return std::array<TickOutputConfig<Sample>, 1>{};
+            return std::array { output<Sample>("out") };
         }
 
         void tick(TickSampleContext<SimpleIirHighPass> const& ctx) const
         {
-            auto in = ctx.template input<0>();
-            auto const ctrl = ctx.template input<1>().get();
-            auto const dx = ctx.sample_period();
-            auto out = ctx.template output<0>();
+            auto in = ctx.input<"in">();
+            auto const ctrl = ctx.input<"cutoff">().get();
+            auto const sample_period = ctx.sample_period();
+            auto out = ctx.output<"out">();
 
-            auto const usableMax = std::min<Sample>(FMAX, 0.5f / dx);
-            auto const f_c = FMIN * std::pow(usableMax / FMIN, ctrl);
-            auto const norm = f_c * dx;
-            auto const c = std::tanf(std::numbers::pi_v<Sample::storage> * norm);
+            auto const maximum_usable_cutoff_hz = std::min<Sample>(
+                maximum_cutoff_hz, 0.5f / sample_period);
+            auto const cutoff_hz = minimum_cutoff_hz * std::pow(
+                maximum_usable_cutoff_hz / minimum_cutoff_hz, ctrl);
+            auto const normalized_cutoff = cutoff_hz * sample_period;
+            auto const c = std::tanf(
+                std::numbers::pi_v<Sample::storage> * normalized_cutoff);
             auto const a1 = (1.0f - c) / (1.0f + c);
             auto const b0 = 1.0f / (1.0f + c);
 
@@ -79,14 +86,18 @@ namespace iv {
     };
 
     struct SimpleIirLowPass {
-        static constexpr Sample FMIN = 2e1f;
-        static constexpr Sample FMAX = 2e4f;
+        static constexpr Sample minimum_cutoff_hz = 20.0f;
+        static constexpr Sample maximum_cutoff_hz = 20'000.0f;
 
         static constexpr auto inputs()
         {
             return std::array {
-                input<Sample>("in", InputAccess::sequential),
-                input<Sample>("cutoff", InputAccess::sequential),
+                input<Sample>("in"),
+                input<Sample>("cutoff", {
+                    .default_value = 1.0f,
+                    .min = 0.0f,
+                    .max = 1.0f,
+                }),
             };
         }
 
@@ -97,20 +108,23 @@ namespace iv {
 
         static constexpr auto outputs()
         {
-            return std::array { output<Sample>("out", OutputProduction::tick) };
+            return std::array { output<Sample>("out") };
         }
 
         void tick(TickSampleContext<SimpleIirLowPass> const& ctx) const
         {
-            auto in_port = ctx.template input<0>();
-            auto const ctrl = ctx.template input<1>().get();
-            auto const dt = ctx.sample_period();
-            auto out = ctx.template output<0>();
+            auto in_port = ctx.input<"in">();
+            auto const ctrl = ctx.input<"cutoff">().get();
+            auto const sample_period = ctx.sample_period();
+            auto out = ctx.output<"out">();
 
-            auto const usableMax = std::min<Sample>(FMAX, 0.5f / dt);
-            auto const f_c = FMIN * std::pow(usableMax / FMIN, ctrl);
-            auto const norm = f_c * dt;
-            auto const c = std::tanf(std::numbers::pi_v<Sample::storage> * norm);
+            auto const maximum_usable_cutoff_hz = std::min<Sample>(
+                maximum_cutoff_hz, 0.5f / sample_period);
+            auto const cutoff_hz = minimum_cutoff_hz * std::pow(
+                maximum_usable_cutoff_hz / minimum_cutoff_hz, ctrl);
+            auto const normalized_cutoff = cutoff_hz * sample_period;
+            auto const c = std::tanf(
+                std::numbers::pi_v<Sample::storage> * normalized_cutoff);
             auto const a1 = (1.0f - c) / (1.0f + c);
             auto const alpha = c / (1.0f + c);
 

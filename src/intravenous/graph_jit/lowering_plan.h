@@ -566,8 +566,10 @@ struct PrimitiveExecutionStep {
     std::string tick_batch_callback_symbol{};
     std::string skip_batch_callback_symbol{};
 
-    // Explicit sample storage operations surrounding this producer. These are
-    // storage-plan indices, not OutputPort behavior or runtime objects.
+    // Explicit sample storage operations surrounding this producer. A carry
+    // whose endpoints share one cyclic region belongs to ExecutionRegionPlan
+    // instead. These are storage-plan indices, not OutputPort behavior or
+    // runtime objects.
     std::vector<std::size_t> sample_carry_restores_before{};
     std::vector<std::size_t> sample_materializations_before{};
     std::vector<std::size_t> sample_compositions_before{};
@@ -589,6 +591,11 @@ struct PrimitiveExecutionStep {
 
 struct ExecutionRegionPlan {
     std::vector<std::size_t> primitive_steps{};
+    // A compact sample carry crosses complete root calls. When both of its
+    // execution positions belong to this cyclic region, restore and commit
+    // surround the complete sliced invocation rather than every slice.
+    std::vector<std::size_t> sample_carry_restores_before{};
+    std::vector<std::size_t> sample_carry_commits_after{};
     std::vector<EventOperationRef> event_operations_before{};
     std::vector<EventOperationRef> event_operations_after{};
     bool cyclic = false;
@@ -601,9 +608,10 @@ struct ExecutionReadyGroupPlan {
     // scheduler ready-frontier snapshot. Planning keeps a multi-step entry
     // only when the realtime root can run it as one native batch; otherwise its
     // members return to the scalar schedule. Cyclic SCC execution is
-    // represented by cyclic_region instead.
+    // represented by cyclic_regions. Its primitive_steps are phase-major:
+    // one contiguous lane set per corresponding cyclic-region step.
     std::vector<std::size_t> primitive_steps{};
-    std::optional<std::size_t> cyclic_region{};
+    std::vector<std::size_t> cyclic_regions{};
 };
 
 struct ExecutionPlan {

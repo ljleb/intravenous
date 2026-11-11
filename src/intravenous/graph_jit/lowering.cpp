@@ -2435,7 +2435,10 @@ std::expected<LoweringOutput, std::string> emit_lowering_plan(
         if (!built) return std::unexpected(std::move(built.error()));
         transition_realtime_root = std::move(*built);
     }
-    auto realtime_root = build_realtime_root_plan(input, plan);
+    // Only the steady root runs region specializations. The transition root
+    // is temporary and predecessor-specific, so it keeps the interpreter.
+    auto realtime_root = build_realtime_root_plan(
+        input, plan, input.region_specializations);
     if (!realtime_root) {
         return std::unexpected(std::move(realtime_root.error()));
     }

@@ -2229,6 +2229,25 @@ namespace iv {
         Coverage, CoverageInputConfig, CoverageInputOptions)
 #undef IV_DEFINE_CONTINUOUS_INPUT_HELPERS
 
+    template<RegisteredContinuousValue... Types>
+    [[nodiscard]] constexpr auto input(
+        std::string name,
+        typename ContinuousValueType<Types>::SequentialInputOptions... options)
+        requires(sizeof...(Types) != 0)
+    {
+        return input<Types...>(
+            std::move(name),
+            InputAccess::sequential,
+            std::move(options)...);
+    }
+
+    template<RegisteredContinuousValue... Types>
+    [[nodiscard]] constexpr auto input(std::string name)
+        requires(sizeof...(Types) != 0)
+    {
+        return input<Types...>(std::move(name), InputAccess::sequential);
+    }
+
 #define IV_DEFINE_CONTINUOUS_OUTPUT_HELPERS(Token, Config, Options)      \
     template<RegisteredContinuousValue... Types>                         \
     [[nodiscard]] constexpr auto output(                                 \
@@ -2276,6 +2295,47 @@ namespace iv {
     IV_DEFINE_CONTINUOUS_OUTPUT_HELPERS(
         Coverage, CoverageOutputConfig, CoverageOutputOptions)
 #undef IV_DEFINE_CONTINUOUS_OUTPUT_HELPERS
+
+    template<RegisteredContinuousValue... Types>
+    [[nodiscard]] constexpr auto output(std::string name)
+        requires(sizeof...(Types) != 0)
+    {
+        return output<Types...>(std::move(name), OutputProduction::tick);
+    }
+
+    template<RegisteredContinuousValue... Types>
+    [[nodiscard]] constexpr auto output(
+        std::string name,
+        OutputRetention retention)
+        requires(sizeof...(Types) != 0)
+    {
+        return output<Types...>(
+            std::move(name), OutputProduction::tick, retention);
+    }
+
+    template<RegisteredContinuousValue... Types>
+    [[nodiscard]] constexpr auto output(
+        std::string name,
+        typename ContinuousValueType<Types>::TickOutputOptions... options)
+        requires(sizeof...(Types) != 0)
+    {
+        return output<Types...>(
+            std::move(name), OutputProduction::tick, std::move(options)...);
+    }
+
+    template<RegisteredContinuousValue... Types>
+    [[nodiscard]] constexpr auto output(
+        std::string name,
+        OutputRetention retention,
+        typename ContinuousValueType<Types>::TickOutputOptions... options)
+        requires(sizeof...(Types) != 0)
+    {
+        return output<Types...>(
+            std::move(name),
+            OutputProduction::tick,
+            retention,
+            std::move(options)...);
+    }
 
     [[nodiscard]] constexpr SequentialEventInputConfig event_input(
         std::string name, EventTypeId type, InputAccess::Sequential)

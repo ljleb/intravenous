@@ -3,6 +3,7 @@
 #include <intravenous/module/builder_session.h>
 #include <intravenous/module/package_manifest.h>
 #include <intravenous/module/package_definitions.h>
+#include <intravenous/orc_perf_support.h>
 #include <intravenous/compat.h>
 #include <intravenous/graph/builder.h>
 #include <intravenous/graph/introspection.h>
@@ -640,6 +641,9 @@ std::shared_ptr<SharedPackageJit> create_shared_package_jit()
             .setJITTargetMachineBuilder(std::move(target))
             .create(),
         "create package ORC JIT");
+    check_llvm_error(
+        details::enable_orc_perf_support_if_requested(*jit),
+        "enable package ORC perf support");
     auto result = std::make_shared<SharedPackageJit>();
     result->jit = std::move(jit);
     return result;

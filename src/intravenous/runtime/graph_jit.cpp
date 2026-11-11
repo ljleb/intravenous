@@ -1,11 +1,16 @@
 #include <intravenous/runtime/graph_jit.h>
 
 #include <intravenous/graph_jit/lowering.h>
+#include <intravenous/graph_jit/package_callback_abi.h>
 #include <intravenous/graph_jit/realtime_root.h>
+#include <intravenous/graph_jit/region_specialization.h>
+#include <intravenous/graph_jit/region_specialization_emit.h>
+#include <intravenous/orc_perf_support.h>
 #include <intravenous/ports.h>
 #include <intravenous/runtime/package_pipeline_types.h>
 
 #include <llvm/ADT/StringExtras.h>
+#include <llvm/Bitcode/BitcodeReader.h>
 #include <llvm/Demangle/Demangle.h>
 #include <llvm/ExecutionEngine/Orc/AbsoluteSymbols.h>
 #include <llvm/ExecutionEngine/Orc/ExecutionUtils.h>
@@ -18,6 +23,7 @@
 #include <llvm/IR/DerivedTypes.h>
 #include <llvm/IR/DataLayout.h>
 #include <llvm/IR/Function.h>
+#include <llvm/IR/GlobalIFunc.h>
 #include <llvm/IR/GlobalVariable.h>
 #include <llvm/IR/LLVMContext.h>
 #include <llvm/IR/Module.h>
@@ -25,22 +31,26 @@
 #include <llvm/IR/PassManager.h>
 #include <llvm/IR/PassTimingInfo.h>
 #include <llvm/IR/Verifier.h>
+#include <llvm/Linker/Linker.h>
 #include <llvm/Passes/OptimizationLevel.h>
 #include <llvm/Passes/PassBuilder.h>
 #include <llvm/Passes/StandardInstrumentations.h>
 #include <llvm/Support/CodeGen.h>
 #include <llvm/Support/Error.h>
+#include <llvm/Support/MemoryBuffer.h>
 #include <llvm/Support/TargetSelect.h>
 #include <llvm/Support/raw_ostream.h>
 #include <llvm/Target/TargetMachine.h>
 #include <llvm/TargetParser/Triple.h>
 
 #include <cstdlib>
-#include <fstream>
-#include <chrono>
 #include <algorithm>
 #include <atomic>
+#include <bit>
+#include <chrono>
 #include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <limits>
 #include <mutex>
 #include <optional>
@@ -786,9 +796,14 @@ void write_function_inventory(llvm::Module const& module, std::string const& ste
     }
 }
 
+// level overrides IV_GRAPH_JIT_OPT_LEVEL. A region specialization unrolls
+// loops: its constant trip counts come from the immutable values GraphJit
+// substitutes, and the module is compiled once per cached region.
 void optimize_project_module(
     llvm::Module& module, llvm::TargetMachine& target_machine,
-    std::string const& profile_stem)
+    std::string const& profile_stem,
+    std::optional<llvm::OptimizationLevel> level_override = std::nullopt,
+    bool loop_unrolling = false)
 {
     // The project module contains no package code: each revision's package
     // code was compiled once, before any project compilation used it.
@@ -826,7 +841,7 @@ void optimize_project_module(
     // pipeline in iv_package_finalize. Profiling knob, not configuration:
     // IV_GRAPH_JIT_UNROLL=1 re-enables unrolling to compare realtime cost.
     llvm::PipelineTuningOptions tuning;
-    tuning.LoopUnrolling = false;
+    tuning.LoopUnrolling = loop_unrolling;
     if (char const* value = std::getenv("IV_GRAPH_JIT_UNROLL");
         value && std::string_view(value) == "1") {
         tuning.LoopUnrolling = true;
@@ -842,7 +857,7 @@ void optimize_project_module(
     pass_builder.registerFunctionAnalyses(functions);
     pass_builder.registerLoopAnalyses(loops);
     pass_builder.crossRegisterProxies(loops, functions, cgscc, modules);
-    auto const level = project_optimization_level();
+    auto const level = level_override ? *level_override : project_optimization_level();
     auto pipeline = level == llvm::OptimizationLevel::O0
         ? pass_builder.buildO0DefaultPipeline(level)
         : pass_builder.buildPerModuleDefaultPipeline(level);
@@ -960,6 +975,28 @@ struct ImportedNodeCode {
     }
 };
 
+void define_imported_node_code(
+    llvm::orc::LLJIT& jit,
+    llvm::orc::JITDylib& jit_dylib,
+    llvm::orc::ResourceTrackerSP const& resources,
+    ImportedNodeCode const& imported,
+    std::string_view role)
+{
+    if (imported.symbols.empty()) return;
+    llvm::orc::SymbolMap symbols;
+    for (auto const& [name, symbol] : imported.symbols) {
+        llvm::JITSymbolFlags flags = llvm::JITSymbolFlags::Exported;
+        if (symbol.callable) flags |= llvm::JITSymbolFlags::Callable;
+        symbols[jit.mangleAndIntern(name)] = llvm::orc::ExecutorSymbolDef(
+            llvm::orc::ExecutorAddr(symbol.address), flags);
+    }
+    check_llvm_error(
+        jit_dylib.define(
+            llvm::orc::absoluteSymbols(std::move(symbols)), resources),
+        GraphJitDiagnosticStage::materialization,
+        "define " + std::string(role) + " imported node code");
+}
+
 struct MaterializedProjectCode {
     CompiledGraphRootOperations root_operations{};
     CompiledGraphBackgroundOperations background_operations{};
@@ -993,21 +1030,8 @@ MaterializedProjectCode materialize_project_module(
             "create project JITDylib");
         lifetime->jit_dylib = &jit_dylib;
         lifetime->resources = jit_dylib.createResourceTracker();
-        if (!imported.symbols.empty()) {
-            llvm::orc::SymbolMap symbols;
-            for (auto const& [name, symbol] : imported.symbols) {
-                llvm::JITSymbolFlags flags = llvm::JITSymbolFlags::Exported;
-                if (symbol.callable) flags |= llvm::JITSymbolFlags::Callable;
-                symbols[jit.mangleAndIntern(name)] = llvm::orc::ExecutorSymbolDef(
-                    llvm::orc::ExecutorAddr(symbol.address), flags);
-            }
-            check_llvm_error(
-                jit_dylib.define(
-                    llvm::orc::absoluteSymbols(std::move(symbols)),
-                    lifetime->resources),
-                GraphJitDiagnosticStage::materialization,
-                "define imported node code");
-        }
+        define_imported_node_code(
+            jit, jit_dylib, lifetime->resources, imported, "project");
         std::vector<PackageRevision const*> revisions;
         revisions.reserve(package_revisions.size());
         for (auto const& revision : package_revisions) revisions.push_back(revision.get());
@@ -1102,6 +1126,483 @@ MaterializedProjectCode materialize_project_module(
         throw;
     }
 }
+
+// One package revision's finalized bitcode, read once per package build, and
+// the tick_block definition of each of its nodes.
+struct PackageBitcode {
+    std::unique_ptr<llvm::MemoryBuffer> buffer{};
+    std::vector<std::pair<NodeCodeKey, std::string>> tick_blocks{};
+    std::vector<graph_jit::PackageRetainedGlobalDefinition> retained_globals{};
+};
+
+struct CachedRegionSpecialization {
+    std::weak_ptr<ProjectCodeLifetime> lifetime{};
+    graph_jit::RegionSpecializationFunction function = nullptr;
+};
+
+struct CachedPackageBitcode {
+    // The bitcode is useful only while some accepted package generation with
+    // this content-addressed artifact remains alive. A later request for the
+    // same path refreshes this owner.
+    std::weak_ptr<PackageRevision const> revision{};
+    std::shared_ptr<PackageBitcode const> bitcode{};
+};
+
+// Region specializations live while some realtime root plan uses them. A
+// compilation finds every specialization that an active, pending, or
+// predecessor generation still holds.
+struct RegionSpecializationCache {
+    std::unordered_map<std::string, CachedRegionSpecialization> entries{};
+    std::unordered_map<std::string, CachedPackageBitcode> package_bitcode{};
+    std::uint64_t next_name = 0;
+
+    void remove_expired()
+    {
+        std::erase_if(entries, [](auto const& entry) {
+            return entry.second.lifetime.expired();
+        });
+        std::erase_if(package_bitcode, [](auto const& entry) {
+            return entry.second.revision.expired();
+        });
+    }
+};
+
+// Compiles, or finds in the cache, the region specializations of one
+// GraphJit compilation, synchronously (human co-author decision,
+// 2026-11-11). A failure leaves that region on the interpreter path and is
+// reported in the compilation's timings.
+class RegionSpecializationCompiler final : public graph_jit::RegionSpecializationProvider {
+    std::shared_ptr<SharedProjectJit> const& shared_;
+    llvm::TargetMachine& target_;
+    RegionSpecializationCache& cache_;
+    GraphJitCompileTimings& timings_;
+    // One deterministic compiler failure per content key is enough during a
+    // GraphJit compilation. Equal regions keep the interpreter without
+    // repeating the same expensive failed LLVM work. A later graph
+    // compilation gets one fresh attempt.
+    std::unordered_map<std::string, std::string> failures_{};
+
+    PackageBitcode const& package_bitcode(
+        std::shared_ptr<PackageRevision const> const& revision)
+    {
+        auto const path = revision->compiler_artifact.bitcode_path.string();
+        if (auto found = cache_.package_bitcode.find(path);
+            found != cache_.package_bitcode.end()) {
+            // The artifact name includes its build signature. Reusing these
+            // decoded records for another accepted PackageRevision at the
+            // same path is exact; follow the newest owner so the entry is not
+            // retained by an unrelated obsolete generation.
+            found->second.revision = revision;
+            return *found->second.bitcode;
+        }
+        auto buffer = llvm::MemoryBuffer::getFile(path);
+        if (!buffer) {
+            fail(
+                GraphJitDiagnosticStage::package_llvm,
+                "cannot read package bitcode '" + path + "': "
+                    + buffer.getError().message());
+        }
+        auto bitcode = std::make_shared<PackageBitcode>();
+        bitcode->buffer = std::move(*buffer);
+        {
+            llvm::LLVMContext context;
+            auto package = take_llvm_expected(
+                llvm::getOwningLazyBitcodeModule(
+                    llvm::MemoryBuffer::getMemBuffer(
+                        bitcode->buffer->getMemBufferRef(), false),
+                    context),
+                GraphJitDiagnosticStage::package_llvm,
+                "read package bitcode '" + path + "'");
+            auto symbols = graph_jit::package_tick_block_symbols(*package);
+            if (!symbols) {
+                fail(GraphJitDiagnosticStage::package_llvm, std::move(symbols.error()));
+            }
+            bitcode->tick_blocks = std::move(*symbols);
+            auto retained = graph_jit::package_retained_global_definitions(*package);
+            if (!retained) {
+                fail(GraphJitDiagnosticStage::package_llvm, std::move(retained.error()));
+            }
+            bitcode->retained_globals = std::move(*retained);
+        }
+        auto const& result = *bitcode;
+        cache_.package_bitcode.emplace(path, CachedPackageBitcode{
+            .revision = revision,
+            .bitcode = std::move(bitcode),
+        });
+        return result;
+    }
+
+    std::pair<graph_jit::RegionSpecializationFunction, std::shared_ptr<ProjectCodeLifetime>>
+    compile(graph_jit::RegionSpecializationRequest const& request)
+    {
+        auto& jit = *shared_->jit;
+        auto const name = "__iv_region_specialization";
+        auto const suffix = std::to_string(cache_.next_name++);
+
+        struct PackageLink {
+            std::shared_ptr<PackageRevision const> revision{};
+            PackageBitcode const* bitcode = nullptr;
+            std::vector<std::pair<std::string, std::string>> tick_blocks{};
+        };
+        std::vector<PackageLink> packages;
+        std::vector<std::string> tick_blocks;
+        for (auto const& step : request.steps) {
+            auto const& bitcode = package_bitcode(step.revision);
+            auto const symbol = std::ranges::find(
+                bitcode.tick_blocks,
+                step.code_key,
+                &std::pair<NodeCodeKey, std::string>::first);
+            if (symbol == bitcode.tick_blocks.end()) {
+                fail(
+                    GraphJitDiagnosticStage::package_llvm,
+                    "package bitcode has no tick_block for a specialized node");
+            }
+            auto package = std::ranges::find(
+                packages, step.revision, &PackageLink::revision);
+            if (package == packages.end()) {
+                packages.push_back(PackageLink{
+                    .revision = step.revision,
+                    .bitcode = &bitcode,
+                });
+                package = std::prev(packages.end());
+            }
+            auto renamed = std::ranges::find(
+                package->tick_blocks,
+                symbol->second,
+                &std::pair<std::string, std::string>::first);
+            if (renamed == package->tick_blocks.end()) {
+                auto unique = "__iv_region_tick_" + suffix + "_"
+                    + std::to_string(std::distance(packages.begin(), package)) + "_"
+                    + std::to_string(package->tick_blocks.size());
+                package->tick_blocks.emplace_back(symbol->second, std::move(unique));
+                renamed = std::prev(package->tick_blocks.end());
+            }
+            tick_blocks.push_back(renamed->second);
+        }
+
+        auto context = std::make_unique<llvm::LLVMContext>();
+        auto module = std::make_unique<llvm::Module>("iv.region." + suffix, *context);
+        module->setDataLayout(jit.getDataLayout());
+        module->setTargetTriple(jit.getTargetTriple());
+        auto emitted = graph_jit::emit_region_specialization(
+            *module, request, name, tick_blocks);
+        if (!emitted) {
+            fail(GraphJitDiagnosticStage::lowering, std::move(emitted.error()));
+        }
+        auto const workspace_contents = std::move(*emitted);
+        auto* entry = module->getFunction(name);
+        entry->addFnAttr("target-cpu", target_.getTargetCPU());
+        entry->addFnAttr("target-features", target_.getTargetFeatureString());
+
+        ImportedNodeCode imported;
+        std::unordered_map<std::string, std::size_t> imported_global_sizes;
+        {
+            // The Linker tracks metadata of the module's context, so it must
+            // be destroyed before the module and context move into ORC.
+            llvm::Linker linker(*module);
+            for (auto const& package_link : packages) {
+                auto package = take_llvm_expected(
+                    llvm::getOwningLazyBitcodeModule(
+                        llvm::MemoryBuffer::getMemBuffer(
+                            package_link.bitcode->buffer->getMemBufferRef(), false),
+                        *context),
+                    GraphJitDiagnosticStage::package_llvm,
+                    "read package bitcode for a region specialization");
+
+                auto const& accepted =
+                    package_link.revision->node_code_retained_globals;
+                auto const& definitions = package_link.bitcode->retained_globals;
+                if (accepted.size() != definitions.size()) {
+                    fail(
+                        GraphJitDiagnosticStage::package_llvm,
+                        "package bitcode and accepted node code disagree on retained globals");
+                }
+                for (std::size_t index = 0; index < accepted.size(); ++index) {
+                    auto const& native = accepted[index];
+                    auto const& definition = definitions[index];
+                    if (!native.address) continue;
+                    if (native.size != definition.size) {
+                        fail(
+                            GraphJitDiagnosticStage::package_llvm,
+                            "package retained global changed size before specialization");
+                    }
+                    if (definition.symbol.empty()) {
+                        fail(
+                            GraphJitDiagnosticStage::package_llvm,
+                            "accepted retained global has no package LLVM definition");
+                    }
+                    auto* global = package->getNamedGlobal(definition.symbol);
+                    if (!global) {
+                        fail(
+                            GraphJitDiagnosticStage::package_llvm,
+                            "package retained global disappeared before specialization");
+                    }
+                    if (auto error = global->materialize()) {
+                        fail(
+                            GraphJitDiagnosticStage::package_llvm,
+                            "cannot materialize package retained global for specialization: "
+                                + llvm_error_string(std::move(error)));
+                    }
+                    if (!global->isConstant() || !global->hasInitializer()
+                        || global->isThreadLocal() || global->getAddressSpace() != 0
+                        || native.alignment == 0
+                        || !std::has_single_bit(native.alignment)) {
+                        fail(
+                            GraphJitDiagnosticStage::package_llvm,
+                            "package retained global cannot be imported by specialization");
+                    }
+                    auto imported_name = imported.data(native.address);
+                    auto const [imported_size, inserted] =
+                        imported_global_sizes.try_emplace(imported_name, native.size);
+                    if (!inserted && imported_size->second != native.size) {
+                        fail(
+                            GraphJitDiagnosticStage::package_llvm,
+                            "retained globals at one native address disagree on size");
+                    }
+                    auto* declaration = package->getNamedGlobal(imported_name);
+                    if (declaration) {
+                        auto const size = package->getDataLayout().getTypeAllocSize(
+                            declaration->getValueType());
+                        if (!declaration->isDeclaration() || size.isScalable()
+                            || size.getFixedValue() != native.size) {
+                            fail(
+                                GraphJitDiagnosticStage::package_llvm,
+                                "retained-global import collides with a package LLVM symbol");
+                        }
+                    } else {
+                        declaration = new llvm::GlobalVariable(
+                            *package,
+                            llvm::ArrayType::get(
+                                llvm::Type::getInt8Ty(package->getContext()), native.size),
+                            true,
+                            llvm::GlobalValue::ExternalLinkage,
+                            nullptr,
+                            imported_name);
+                        declaration->setAlignment(llvm::Align(native.alignment));
+                    }
+                    global->replaceAllUsesWith(declaration);
+                    global->eraseFromParent();
+                }
+
+                for (auto const& [source, renamed] : package_link.tick_blocks) {
+                    auto* callback = package->getFunction(source);
+                    if (!callback) {
+                        fail(
+                            GraphJitDiagnosticStage::package_llvm,
+                            "package tick_block changed before specialization linking");
+                    }
+                    if (auto error = callback->materialize()) {
+                        fail(
+                            GraphJitDiagnosticStage::package_llvm,
+                            "cannot materialize package tick_block for specialization: "
+                                + llvm_error_string(std::move(error)));
+                    }
+                    if (callback->isDeclaration()
+                        || !graph_jit::package_callback_type_matches(
+                            *callback, graph_jit::CallbackImportAbi::block)) {
+                        fail(
+                            GraphJitDiagnosticStage::package_llvm,
+                            "package tick_block changed before specialization linking");
+                    }
+                    callback->setName(renamed);
+                    callback->setLinkage(llvm::GlobalValue::ExternalLinkage);
+                    callback->setVisibility(llvm::GlobalValue::DefaultVisibility);
+                    callback->setComdat(nullptr);
+                    if (callback->getName() != renamed) {
+                        fail(
+                            GraphJitDiagnosticStage::package_llvm,
+                            "region tick_block symbol collides inside package bitcode");
+                    }
+                }
+                for (auto const* list : {"llvm.global_ctors", "llvm.global_dtors",
+                         "llvm.used", "llvm.compiler.used"}) {
+                    if (auto* global = package->getNamedGlobal(list)) {
+                        global->eraseFromParent();
+                    }
+                }
+                for (auto& function : *package) {
+                    if (function.isDeclaration()
+                        || std::ranges::contains(
+                            package_link.tick_blocks,
+                            function.getName().str(),
+                            &std::pair<std::string, std::string>::second)) {
+                        continue;
+                    }
+                    function.setLinkage(llvm::GlobalValue::InternalLinkage);
+                    function.setVisibility(llvm::GlobalValue::DefaultVisibility);
+                    function.setComdat(nullptr);
+                }
+                for (auto& global : package->globals()) {
+                    if (global.isDeclaration()) continue;
+                    global.setLinkage(llvm::GlobalValue::InternalLinkage);
+                    global.setVisibility(llvm::GlobalValue::DefaultVisibility);
+                    global.setComdat(nullptr);
+                }
+                for (auto& alias : package->aliases()) {
+                    alias.setLinkage(llvm::GlobalValue::InternalLinkage);
+                    alias.setVisibility(llvm::GlobalValue::DefaultVisibility);
+                }
+                for (auto& ifunc : package->ifuncs()) {
+                    ifunc.setLinkage(llvm::GlobalValue::InternalLinkage);
+                    ifunc.setVisibility(llvm::GlobalValue::DefaultVisibility);
+                }
+                if (linker.linkInModule(
+                        std::move(package), llvm::Linker::Flags::LinkOnlyNeeded)) {
+                    fail(
+                        GraphJitDiagnosticStage::package_llvm,
+                        "cannot link package node code into a region specialization");
+                }
+            }
+        }
+        graph_jit::internalize_region_specialization(*module, name);
+        verify_module(
+            *module,
+            GraphJitDiagnosticStage::lowering,
+            "region specialization LLVM is invalid");
+        auto const profile_stem = "region-" + suffix;
+        write_function_inventory(*module, profile_stem + "-before");
+        write_module_ir(*module, profile_stem + "-before");
+        // The workspace's values reach node code once its callbacks are
+        // inlined: a simplifying pass inlines them, then every read of a field
+        // fixed for the call becomes that field's value. A substitution can
+        // fix a loop's trip count, so the pair repeats until none remains.
+        for (unsigned round = 0; round < 3; ++round) {
+            optimize_project_module(
+                *module, target_, profile_stem, llvm::OptimizationLevel::O1, true);
+            auto const replaced = graph_jit::substitute_region_workspace_values(
+                *module, name, workspace_contents);
+            timings_.region_specialization_substitutions += replaced;
+            if (replaced == 0) break;
+        }
+        write_module_ir(*module, profile_stem + "-substituted");
+        optimize_project_module(
+            *module, target_, profile_stem, llvm::OptimizationLevel::O3, true);
+        write_function_inventory(*module, profile_stem + "-after");
+        write_module_ir(*module, profile_stem + "-after");
+        verify_module(
+            *module,
+            GraphJitDiagnosticStage::optimization,
+            "optimized region specialization LLVM is invalid");
+
+        auto lifetime = std::make_shared<ProjectCodeLifetime>();
+        lifetime->shared = shared_;
+        for (auto const& package : packages) {
+            lifetime->package_revisions.push_back(package.revision);
+        }
+        std::lock_guard lock(shared_->mutex);
+        try {
+            auto& jit_dylib = take_llvm_expected(
+                jit.createJITDylib("iv.region." + suffix),
+                GraphJitDiagnosticStage::materialization,
+                "create region specialization JITDylib");
+            lifetime->jit_dylib = &jit_dylib;
+            lifetime->resources = jit_dylib.createResourceTracker();
+            std::vector<PackageRevision const*> libraries;
+            for (auto const& package : packages) {
+                libraries.push_back(package.revision.get());
+            }
+            define_imported_node_code(
+                jit,
+                jit_dylib,
+                lifetime->resources,
+                imported,
+                "region specialization");
+            add_project_code_generators(jit, jit_dylib, libraries);
+            check_llvm_error(
+                jit.addIRModule(
+                    lifetime->resources,
+                    llvm::orc::ThreadSafeModule(
+                        std::move(module),
+                        llvm::orc::ThreadSafeContext(std::move(context)))),
+                GraphJitDiagnosticStage::materialization,
+                "add region specialization LLVM to ORC JIT");
+            auto address = take_llvm_expected(
+                jit.lookup(jit_dylib, name),
+                GraphJitDiagnosticStage::materialization,
+                "lookup region specialization");
+            return {
+                address.toPtr<graph_jit::RegionSpecializationFunction>(),
+                std::move(lifetime),
+            };
+        } catch (...) {
+            lifetime->release_locked();
+            throw;
+        }
+    }
+
+public:
+    RegionSpecializationCompiler(
+        std::shared_ptr<SharedProjectJit> const& shared,
+        llvm::TargetMachine& target,
+        RegionSpecializationCache& cache,
+        GraphJitCompileTimings& timings)
+        : shared_(shared)
+        , target_(target)
+        , cache_(cache)
+        , timings_(timings)
+    {
+        cache_.remove_expired();
+    }
+
+    void region_kept_on_interpreter(std::string const& reason) override
+    {
+        ++timings_.region_specializations_skipped;
+        if (timings_.region_specialization_skip.empty()) {
+            timings_.region_specialization_skip = reason;
+        }
+    }
+
+    std::optional<graph_jit::RegionSpecializationCode> region_specialization(
+        graph_jit::RegionSpecializationRequest const& request) override
+    {
+        auto key = graph_jit::region_specialization_key(request);
+        if (key.empty()) {
+            region_kept_on_interpreter("the specialization request is incomplete");
+            return std::nullopt;
+        }
+        if (auto const failed = failures_.find(key); failed != failures_.end()) {
+            ++timings_.region_specialization_failures;
+            if (timings_.region_specialization_failure.empty()) {
+                timings_.region_specialization_failure = failed->second;
+            }
+            return std::nullopt;
+        }
+        if (auto const cached = cache_.entries.find(key); cached != cache_.entries.end()) {
+            if (auto lifetime = cached->second.lifetime.lock()) {
+                ++timings_.region_specializations_reused;
+                return graph_jit::RegionSpecializationCode{
+                    .function = cached->second.function,
+                    .lifetime = std::move(lifetime),
+                };
+            }
+            cache_.entries.erase(cached);
+        }
+        using Clock = std::chrono::steady_clock;
+        auto const begin = Clock::now();
+        try {
+            auto [function, lifetime] = compile(request);
+            timings_.region_specialization_us += static_cast<std::uint64_t>(
+                std::chrono::duration_cast<std::chrono::microseconds>(
+                    Clock::now() - begin).count());
+            ++timings_.region_specializations_compiled;
+            cache_.entries.insert_or_assign(std::move(key), CachedRegionSpecialization{
+                .lifetime = lifetime,
+                .function = function,
+            });
+            return graph_jit::RegionSpecializationCode{
+                .function = function,
+                .lifetime = std::move(lifetime),
+            };
+        } catch (GraphJitCompileError const& error) {
+            ++timings_.region_specialization_failures;
+            if (timings_.region_specialization_failure.empty()) {
+                timings_.region_specialization_failure = error.what();
+            }
+            failures_.try_emplace(std::move(key), error.what());
+            return std::nullopt;
+        }
+    }
+};
 } // namespace
 
 class GraphJit::Impl {
@@ -1113,8 +1614,11 @@ class GraphJit::Impl {
 
     GraphJitKernelSpecialization specialization_{};
     RealtimeStorageCostModel realtime_storage_cost_model_{};
+    bool specialize_regions_ = true;
     std::unique_ptr<llvm::TargetMachine> optimization_target_{};
     std::shared_ptr<SharedProjectJit> shared_jit_{};
+    // Accessed only under compile_mutex_.
+    RegionSpecializationCache region_specializations_{};
     std::mutex compile_mutex_{};
 
 public:
@@ -1129,6 +1633,7 @@ public:
         }
 
         realtime_storage_cost_model_ = config.realtime_storage_cost_model;
+        specialize_regions_ = config.specialize_regions;
 
         initialize_graph_jit_target();
         auto target = take_llvm_expected(
@@ -1153,6 +1658,10 @@ public:
                 .create(),
             GraphJitDiagnosticStage::materialization,
             "create project ORC JIT");
+        check_llvm_error(
+            details::enable_orc_perf_support_if_requested(*jit),
+            GraphJitDiagnosticStage::materialization,
+            "enable project ORC perf support");
         shared_jit_ = std::make_shared<SharedProjectJit>();
         shared_jit_->jit = std::move(jit);
     }
@@ -1367,6 +1876,8 @@ public:
             });
         }
 
+        RegionSpecializationCompiler region_specializations(
+            shared_jit_, *optimization_target_, region_specializations_, timings);
         graph_jit::LoweringInput lowering_input{
             .graph = *request.graph,
             .specialization = specialization_,
@@ -1375,6 +1886,8 @@ public:
             .node_implementations = implementations,
             .config_relocations = relocations,
             .transition = transition_input ? &*transition_input : nullptr,
+            .region_specializations =
+                specialize_regions_ ? &region_specializations : nullptr,
         };
         auto lowering = graph_jit::lower_configured_graph_to_llvm(lowering_input, *output);
         if (!lowering) {

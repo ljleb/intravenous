@@ -148,6 +148,8 @@ constexpr char graph_jit_native_batch_tick_module_id[] =
     "iv.test.graph_jit.state_context.native_batch_tick_module";
 constexpr char graph_jit_native_batch_aliasing_module_id[] =
     "iv.test.graph_jit.state_context.native_batch_aliasing_module";
+constexpr char graph_jit_native_batch_feedback_module_id[] =
+    "iv.test.graph_jit.state_context.native_batch_feedback_module";
 constexpr char graph_jit_native_batch_replay_module_id[] =
     "iv.test.graph_jit.state_context.native_batch_replay_module";
 constexpr char graph_jit_native_batch_background_module_id[] =
@@ -255,6 +257,8 @@ constexpr char graph_jit_retained_neutral_latency_module_id[] =
     "iv.test.graph_jit.state_context.retained_neutral_latency_module";
 constexpr char graph_jit_constant_history_module_id[] =
     "iv.test.graph_jit.state_context.constant_history_module";
+constexpr char graph_jit_constant_gain_feedback_module_id[] =
+    "iv.test.graph_jit.state_context.constant_gain_feedback_module";
 constexpr char graph_jit_shared_neutral_compensated_module_id[] =
     "iv.test.graph_jit.state_context.shared_neutral_compensated_module";
 constexpr char graph_jit_unequal_latency_composition_module_id[] =
@@ -437,6 +441,23 @@ struct NativeBatchAliasingProbeStateMirror {
     std::uint64_t tick_batch_calls = 0;
     std::uint64_t last_lane_count = 0;
     std::uint64_t configured_id = 0;
+};
+
+struct NativeBatchFeedbackProbeStateMirror {
+    std::uint64_t tick_batch_calls = 0;
+    std::uint64_t last_lane_count = 0;
+    std::uint64_t configured_id = 0;
+    float last_input = 0.0f;
+    float last_output = 0.0f;
+};
+
+struct FeedbackGainStateMirror {
+    std::uint64_t ticks = 0;
+    std::uint64_t configured_id = 0;
+    std::uint64_t retained_pointer_identity_matches = 0;
+    float last_input = 0.0f;
+    float last_gain = 0.0f;
+    float last_output = 0.0f;
 };
 
 struct NativeBatchActivityProbeStateMirror {
@@ -1880,6 +1901,36 @@ TEST(GraphJitTransientArenaPlan, ComplexPackingPreservesAllSafetyInvariants)
     EXPECT_EQ(plan->size_bytes, observed_high_water);
 }
 
+// Completes a hand-built feed-forward SchedulePlan from its execution
+// positions, as build_connection_analysis_plan() schedules independent
+// primitives without callback batch classes: each positioned bundle is one
+// acyclic SccRegionPlan in its own ready group, in position order.
+void add_acyclic_test_regions(
+    iv::graph_jit::detail::ConnectionAnalysisPlan& connections)
+{
+    auto& schedule = connections.schedule;
+    std::vector<std::pair<std::size_t, iv::NodeBundleHandle>> positioned;
+    for (iv::NodeBundleHandle bundle = 0;
+         bundle < schedule.bundle_execution_position.size();
+         ++bundle) {
+        if (auto const position = schedule.bundle_execution_position[bundle]) {
+            positioned.emplace_back(*position, bundle);
+        }
+    }
+    std::ranges::sort(positioned);
+    schedule.bundle_to_region.resize(schedule.bundle_execution_position.size());
+    for (auto const& [position, bundle] : positioned) {
+        auto const region = schedule.regions.size();
+        schedule.regions.push_back(iv::graph_jit::detail::SccRegionPlan{
+            .nodes = {bundle},
+            .execution_order = {bundle},
+        });
+        schedule.region_order.push_back(region);
+        schedule.ready_groups.push_back({region});
+        schedule.bundle_to_region[bundle] = region;
+    }
+}
+
 TEST(GraphJitSampleStoragePlan, PacksExactTransientByteRangesAcrossLifetimes)
 {
     using namespace iv::graph_jit::detail;
@@ -2141,6 +2192,10 @@ TEST(GraphJitSampleStoragePlan, RealizesCompactPersistentCarryExactly)
         .crosses_kernel_invocations = true,
     };
     connections.sample_producer_groups.push_back(group);
+    // The producer's carry runs at its first live position.
+    connections.schedule.bundle_execution_position.resize(1);
+    connections.schedule.bundle_execution_position[0] = 0;
+    add_acyclic_test_regions(connections);
 
     auto storage = build_sample_storage_plan(connections, 64);
     ASSERT_TRUE(storage.has_value())
@@ -2149,6 +2204,7 @@ TEST(GraphJitSampleStoragePlan, RealizesCompactPersistentCarryExactly)
     ASSERT_EQ(storage->transient_allocations.size(), 1u);
     ASSERT_EQ(storage->persistent_allocations.size(), 1u);
     ASSERT_EQ(storage->carry_operations.size(), 1u);
+    EXPECT_FALSE(storage->carry_operations[0].cyclic_region_scope);
     ASSERT_TRUE(storage->producer_groups[0].has_value());
     auto const representation_index =
         storage->producer_groups[0]->canonical_representation;
@@ -2187,6 +2243,76 @@ TEST(GraphJitSampleStoragePlan, RealizesCompactPersistentCarryExactly)
         persistent_region.migration_identity,
         persistent.migration_identity);
     EXPECT_EQ(persistent_region.size, 7u * sizeof(iv::Sample));
+}
+
+TEST(GraphJitSampleStoragePlan,
+    CyclicRegionCarriesStayLiveAcrossTheirBatchedReadyGroup)
+{
+    using namespace iv::graph_jit::detail;
+
+    ConnectionAnalysisPlan connections;
+    connections.nodes.resize(2);
+    connections.schedule.regions = {
+        SccRegionPlan{
+            .nodes = {0},
+            .execution_order = {0},
+            .cyclic = true,
+            .maximum_block_size = 1,
+            .scc_feedback_latency = 1,
+        },
+        SccRegionPlan{
+            .nodes = {1},
+            .execution_order = {1},
+            .cyclic = true,
+            .maximum_block_size = 1,
+            .scc_feedback_latency = 1,
+        },
+    };
+    connections.schedule.region_order = {0, 1};
+    connections.schedule.ready_groups = {{0, 1}};
+    connections.schedule.bundle_to_region = {0, 1};
+    connections.schedule.bundle_execution_position = {0, 1};
+
+    iv::ChannelLayout const mono{
+        .channel_type = iv::ChannelTypeId::mono,
+        .sample_layout = iv::SampleStreamLayout::planar,
+    };
+    std::array const sinks{
+        SampleSinkStorageRequest{
+            .channel_layout = mono,
+            .history = 1,
+            .execution_position = 0,
+            .migration_identity = "cyclic-carry-a",
+        },
+        SampleSinkStorageRequest{
+            .channel_layout = mono,
+            .history = 1,
+            .execution_position = 1,
+            .migration_identity = "cyclic-carry-b",
+        },
+    };
+
+    auto storage = build_sample_storage_plan(connections, 64, sinks);
+    ASSERT_TRUE(storage.has_value())
+        << (storage ? std::string{} : storage.error());
+    ASSERT_EQ(storage->carry_operations.size(), 2u);
+    ASSERT_EQ(storage->transient_allocations.size(), 2u);
+    for (std::size_t index = 0; index < 2; ++index) {
+        ASSERT_TRUE(storage->carry_operations[index].cyclic_region_scope);
+        EXPECT_EQ(*storage->carry_operations[index].cyclic_region_scope, index);
+        auto const representation = storage->carry_operations[index]
+            .representation_index;
+        ASSERT_LT(representation, storage->representations.size());
+        EXPECT_EQ(storage->representations[representation].live_interval.begin, 0u);
+        EXPECT_EQ(storage->representations[representation].live_interval.end, 1u);
+    }
+    auto const& first = storage->transient_allocations[0];
+    auto const& second = storage->transient_allocations[1];
+    EXPECT_TRUE(
+        first.region_relative_offset + first.size_bytes
+            <= second.region_relative_offset
+        || second.region_relative_offset + second.size_bytes
+            <= first.region_relative_offset);
 }
 
 TEST(GraphJitSampleStoragePlan, RealizesLargeRetentionAsPersistentRing)
@@ -2462,6 +2588,7 @@ TEST(GraphJitSampleStoragePlan, ZeroInitializedFeedbackUsesProducerHomeAndCopies
     connections.schedule.bundle_execution_position[2] = 1;
     connections.schedule.bundle_execution_position[3] = 2;
     connections.schedule.bundle_execution_position[4] = 3;
+    add_acyclic_test_regions(connections);
 
     auto make_feedback = [&](std::size_t target_bundle,
                              std::size_t latency,
@@ -2975,6 +3102,18 @@ TEST(GraphJitSampleStoragePlan, ConvertedFeedbackUsesCompactCarryTimeline)
     connections.schedule.bundle_execution_position.resize(3);
     connections.schedule.bundle_execution_position[1] = 1;
     connections.schedule.bundle_execution_position[2] = 0;
+    // Bundle 2 runs before bundle 1 and reads bundle 1's earlier values
+    // through the detach, so the two form one cyclic region.
+    connections.schedule.regions = {SccRegionPlan{
+        .nodes = {1, 2},
+        .execution_order = {2, 1},
+        .cyclic = true,
+        .maximum_block_size = 6,
+        .scc_feedback_latency = 6,
+    }};
+    connections.schedule.region_order = {0};
+    connections.schedule.ready_groups = {{0}};
+    connections.schedule.bundle_to_region = {std::nullopt, 0, 0};
 
     SampleConnectionPlan feedback;
     feedback.source_type = iv::ChannelTypeId::mono;
@@ -3075,7 +3214,12 @@ TEST(GraphJitSampleStoragePlan, ConvertedFeedbackUsesCompactCarryTimeline)
     EXPECT_EQ(carry.commit_execution_position, 1u);
     EXPECT_EQ(carry.retained_frames, 9u);
     EXPECT_EQ(timeline.writer.after_execution_position, 1u);
-
+    // Both endpoints lie in the cyclic region, so the carry surrounds the
+    // complete sliced region and its working ring stays live across it.
+    ASSERT_TRUE(carry.cyclic_region_scope);
+    EXPECT_EQ(*carry.cyclic_region_scope, 0u);
+    EXPECT_EQ(storage->representations[ring].live_interval.begin, 0u);
+    EXPECT_EQ(storage->representations[ring].live_interval.end, 1u);
 }
 
 TEST(GraphJitSampleStoragePlan, AliasableConversionReadsRetainedProducerHistoryDirectly)
@@ -3105,6 +3249,7 @@ TEST(GraphJitSampleStoragePlan, AliasableConversionReadsRetainedProducerHistoryD
     connections.schedule.bundle_execution_position.resize(3);
     connections.schedule.bundle_execution_position[1] = 0;
     connections.schedule.bundle_execution_position[2] = 1;
+    add_acyclic_test_regions(connections);
 
     SampleProducerGroupPlan group;
     group.canonical_source_layout = mono;
@@ -3182,6 +3327,7 @@ TEST(GraphJitSampleStoragePlan, AliasableConvertedFanoutSharesRetainedProducerTi
     connections.schedule.bundle_execution_position[1] = 0;
     connections.schedule.bundle_execution_position[2] = 1;
     connections.schedule.bundle_execution_position[3] = 2;
+    add_acyclic_test_regions(connections);
 
     SampleProducerGroupPlan group;
     group.canonical_source_layout = mono;
@@ -3248,6 +3394,7 @@ TEST(GraphJitSampleStoragePlan, GeneratedConversionReadsAffectProducerStorageCos
     connections.schedule.bundle_execution_position.resize(3);
     connections.schedule.bundle_execution_position[1] = 0;
     connections.schedule.bundle_execution_position[2] = 1;
+    add_acyclic_test_regions(connections);
 
     SampleConnectionPlan converted;
     converted.source_type = iv::ChannelTypeId::stereo;
@@ -10100,6 +10247,78 @@ IV_MODULE("iv.test.graph_jit.state_context.detach_feedback_module", detach_feedb
 
 )cpp";
     static constexpr std::string_view part_5 = R"cpp(
+struct NativeBatchFeedbackProbe {
+    std::uint64_t id = 0;
+
+    struct State {
+        std::uint64_t tick_batch_calls = 0;
+        std::uint64_t last_lane_count = 0;
+        std::uint64_t configured_id = 0;
+        float last_input = 0.0f;
+        float last_output = 0.0f;
+    };
+
+    constexpr explicit NativeBatchFeedbackProbe(std::uint64_t id_) : id(id_) {}
+
+    static constexpr auto inputs()
+    {
+        return std::array{iv::input<iv::Sample>(
+            "in", iv::InputAccess::sequential)};
+    }
+
+    static constexpr auto outputs()
+    {
+        return std::array{iv::output<iv::Sample>(
+            "out", iv::OutputProduction::tick)};
+    }
+
+    static void tick_block_batch(
+        iv::TickBlockBatchContext<NativeBatchFeedbackProbe> const& context)
+    {
+        for (auto lane : context) {
+            auto input = lane.template input<"in">().block();
+            auto output = lane.template output<"out">().block();
+            auto& state = lane.state();
+            ++state.tick_batch_calls;
+            state.last_lane_count = context.size();
+            state.configured_id = lane.node().id;
+            for (std::size_t i = 0; i < output.size(); ++i) {
+                output[i] = input[i] + static_cast<float>(lane.node().id);
+                state.last_input = input[i];
+                state.last_output = output[i];
+            }
+        }
+    }
+};
+
+void native_batch_feedback_module(iv::GraphBuilder& graph)
+{
+    auto first_head = graph.node<
+        "iv.test.graph_jit.state_context.native_batch_feedback">(
+        std::uint64_t{1});
+    auto first_tail = graph.node<
+        "iv.test.graph_jit.state_context.native_batch_feedback">(
+        std::uint64_t{2});
+    auto second_head = graph.node<
+        "iv.test.graph_jit.state_context.native_batch_feedback">(
+        std::uint64_t{10});
+    auto second_tail = graph.node<
+        "iv.test.graph_jit.state_context.native_batch_feedback">(
+        std::uint64_t{20});
+    first_head(static_cast<iv::SamplePortRef>(first_tail).detach(1));
+    first_tail(first_head);
+    second_head(static_cast<iv::SamplePortRef>(second_tail).detach(1));
+    second_tail(second_head);
+    graph.outputs();
+}
+
+IV_NODE(
+    "iv.test.graph_jit.state_context.native_batch_feedback",
+    NativeBatchFeedbackProbe);
+IV_MODULE(
+    "iv.test.graph_jit.state_context.native_batch_feedback_module",
+    native_batch_feedback_module);
+
 // A MIDI source read by a MIDI consumer with history 160, and with `added`
 // also by a trigger consumer with history 320, through a conversion.
 void added_event_consumer_module(iv::GraphBuilder& graph, bool added = false)
@@ -10419,6 +10638,81 @@ void constant_history_module(iv::GraphBuilder& graph, bool raised = false)
     graph.outputs();
 }
 IV_MODULE("iv.test.graph_jit.state_context.constant_history_module", constant_history_module);
+
+// A pointwise node in a feedback loop: out = in * gain + id. Its gain reads a
+// Sequential input without history.
+struct FeedbackGain {
+    std::uint64_t id = 0;
+    std::uint64_t const* retained_pointer = nullptr;
+
+    struct State {
+        std::uint64_t ticks = 0;
+        std::uint64_t configured_id = 0;
+        std::uint64_t retained_pointer_identity_matches = 0;
+        float last_input = 0.0f;
+        float last_gain = 0.0f;
+        float last_output = 0.0f;
+    };
+
+    constexpr FeedbackGain(
+        std::uint64_t id_, std::uint64_t const* retained_pointer_)
+        : id(id_)
+        , retained_pointer(retained_pointer_)
+    {}
+
+    static constexpr auto inputs()
+    {
+        return std::array{
+            iv::input<iv::Sample>("in", iv::InputAccess::sequential),
+            iv::input<iv::Sample>("gain", iv::InputAccess::sequential),
+        };
+    }
+
+    static constexpr auto outputs()
+    {
+        return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::tick)};
+    }
+
+    void tick(iv::TickSampleContext<FeedbackGain> const& ctx) const
+    {
+        auto& state = ctx.state();
+        auto const in = static_cast<float>(ctx.input<"in">().get());
+        auto const gain = static_cast<float>(ctx.input<"gain">().get());
+        auto const out = in * gain + static_cast<float>(id);
+        ctx.output<"out">().push(iv::Sample{out});
+        ++state.ticks;
+        state.configured_id = id;
+        state.retained_pointer_identity_matches =
+            retained_pointer == pointer_probe_values.data() + id;
+        state.last_input = in;
+        state.last_gain = gain;
+        state.last_output = out;
+    }
+};
+IV_NODE("iv.test.graph_jit.state_context.feedback_gain", FeedbackGain);
+
+// head reads tail one sample later through detach(1); both read a Constant
+// gain. The two nodes form one cyclic region. A non-zero initial value gives
+// the detach its own copied timeline, whose write is a step operation.
+void constant_gain_feedback_module(
+    iv::GraphBuilder& graph, float gain = 0.5f, float initial = 0.0f)
+{
+    auto factor = graph.node<"iv.test.graph_jit.state_context.constant">(
+        iv::Sample{gain});
+    auto head = graph.node<"iv.test.graph_jit.state_context.feedback_gain">(
+        std::uint64_t{1}, pointer_probe_values.data() + 1);
+    auto tail = graph.node<"iv.test.graph_jit.state_context.feedback_gain">(
+        std::uint64_t{2}, pointer_probe_values.data() + 2);
+    head.connect_input(
+        "in", static_cast<iv::SamplePortRef>(tail).detach(1, iv::Sample{initial}));
+    head.connect_input("gain", static_cast<iv::SamplePortRef>(factor));
+    tail.connect_input("in", static_cast<iv::SamplePortRef>(head));
+    tail.connect_input("gain", static_cast<iv::SamplePortRef>(factor));
+    graph.outputs();
+}
+IV_MODULE(
+    "iv.test.graph_jit.state_context.constant_gain_feedback_module",
+    constant_gain_feedback_module);
 )cpp";
     static_assert(part_1.size() < 60 * 1024);
     static_assert(part_2.size() < 60 * 1024);
@@ -11883,6 +12177,10 @@ TEST(GraphJitSharedRuntimeFixture, BuildPackage)
     EXPECT_TRUE(has_module_definition(
         graph_jit_native_batch_aliasing_module_id));
     EXPECT_TRUE(has_module_definition(
+        graph_jit_native_batch_feedback_module_id));
+    EXPECT_TRUE(has_module_definition(
+        graph_jit_constant_gain_feedback_module_id));
+    EXPECT_TRUE(has_module_definition(
         graph_jit_native_batch_replay_module_id));
     EXPECT_TRUE(has_module_definition(
         graph_jit_native_batch_background_module_id));
@@ -13076,6 +13374,275 @@ TEST_F(GraphJitRuntimeFixture, NativeTickBatchScalarizesAliasedCallbackStorage)
     EXPECT_EQ(second->tick_batch_calls, 1u);
     EXPECT_EQ(second->last_lane_count, 1u);
     EXPECT_EQ(second->configured_id, 22u);
+}
+
+TEST_F(GraphJitRuntimeFixture, IndependentFeedbackRegionsBatchEachExecutionPhase)
+{
+    // The interpreter's cyclic batching runs every region that has no region
+    // specialization; compiling without them exercises it here.
+    iv::GraphJit interpreter_jit(iv::GraphJitConfig{
+        .sample_rate = 88200,
+        .block_size = 64,
+        .specialize_regions = false,
+    });
+    auto compiled = interpreter_jit.compile(iv::GraphJitCompileRequest{
+        .project_generation = 112,
+        .graph = configured_module_graph(
+            *revision, graph_jit_native_batch_feedback_module_id),
+        .definitions = definitions,
+    });
+    ASSERT_TRUE(compiled.succeeded())
+        << (compiled.diagnostics.empty()
+                ? ""
+                : compiled.diagnostics.front().message);
+    ASSERT_TRUE(compiled.compiled_graph->root_operations.valid());
+    ASSERT_EQ(compiled.compiled_graph->node_layout.nodes.size(), 4u);
+
+    auto storage = compiled.compiled_graph->node_layout.create_storage(resources);
+    storage.initialize();
+    std::array<NativeBatchFeedbackProbeStateMirror*, 4> states{};
+    for (std::size_t node = 0; node < states.size(); ++node) {
+        states[node] = static_cast<NativeBatchFeedbackProbeStateMirror*>(
+            storage.state_ptr(node));
+        ASSERT_NE(states[node], nullptr);
+    }
+
+    compiled.compiled_graph->root_operations.tick_block(
+        storage.buffer().data(), &empty_tick_invocation, index(0), 4);
+
+    for (auto const* state : states) {
+        EXPECT_EQ(state->tick_batch_calls, 4u);
+        EXPECT_EQ(state->last_lane_count, 2u);
+    }
+    EXPECT_EQ(states[0]->configured_id, 1u);
+    EXPECT_EQ(states[1]->configured_id, 2u);
+    EXPECT_EQ(states[2]->configured_id, 10u);
+    EXPECT_EQ(states[3]->configured_id, 20u);
+    EXPECT_FLOAT_EQ(states[0]->last_output, 10.0f);
+    EXPECT_FLOAT_EQ(states[1]->last_output, 12.0f);
+    EXPECT_FLOAT_EQ(states[2]->last_output, 100.0f);
+    EXPECT_FLOAT_EQ(states[3]->last_output, 120.0f);
+
+    // Each compact carry is restored once before the complete sliced region
+    // and committed once after it. The next root call must continue from the
+    // final value of the preceding call, not from an intermediate slice.
+    compiled.compiled_graph->root_operations.tick_block(
+        storage.buffer().data(), &empty_tick_invocation, index(4), 4);
+    for (auto const* state : states) {
+        EXPECT_EQ(state->tick_batch_calls, 8u);
+        EXPECT_EQ(state->last_lane_count, 2u);
+    }
+    EXPECT_FLOAT_EQ(states[0]->last_output, 22.0f);
+    EXPECT_FLOAT_EQ(states[1]->last_output, 24.0f);
+    EXPECT_FLOAT_EQ(states[2]->last_output, 220.0f);
+    EXPECT_FLOAT_EQ(states[3]->last_output, 240.0f);
+}
+
+TEST_F(GraphJitRuntimeFixture, IndependentFeedbackRegionsRunSpecialized)
+{
+    auto compiled = compile(graph_jit_native_batch_feedback_module_id, 125);
+    ASSERT_TRUE(compiled.succeeded())
+        << (compiled.diagnostics.empty()
+                ? ""
+                : compiled.diagnostics.front().message);
+    ASSERT_EQ(compiled.timings.size(), 1u);
+    EXPECT_EQ(compiled.timings.front().region_specializations_compiled, 1u);
+    EXPECT_EQ(compiled.timings.front().region_specializations_reused, 1u);
+    EXPECT_EQ(compiled.timings.front().region_specialization_failures, 0u)
+        << compiled.timings.front().region_specialization_failure;
+    ASSERT_TRUE(compiled.compiled_graph->root_operations.valid());
+    ASSERT_EQ(compiled.compiled_graph->node_layout.nodes.size(), 4u);
+
+    auto storage = compiled.compiled_graph->node_layout.create_storage(resources);
+    storage.initialize();
+    std::array<NativeBatchFeedbackProbeStateMirror*, 4> states{};
+    for (std::size_t node = 0; node < states.size(); ++node) {
+        states[node] = static_cast<NativeBatchFeedbackProbeStateMirror*>(
+            storage.state_ptr(node));
+        ASSERT_NE(states[node], nullptr);
+    }
+
+    compiled.compiled_graph->root_operations.tick_block(
+        storage.buffer().data(), &empty_tick_invocation, index(0), 4);
+    for (auto const* state : states) {
+        EXPECT_EQ(state->tick_batch_calls, 4u);
+        // A region specialization calls the normalized scalar tick_block.
+        // The batch-only authored callback therefore receives one lane.
+        EXPECT_EQ(state->last_lane_count, 1u);
+    }
+    EXPECT_FLOAT_EQ(states[0]->last_output, 10.0f);
+    EXPECT_FLOAT_EQ(states[1]->last_output, 12.0f);
+    EXPECT_FLOAT_EQ(states[2]->last_output, 100.0f);
+    EXPECT_FLOAT_EQ(states[3]->last_output, 120.0f);
+
+    compiled.compiled_graph->root_operations.tick_block(
+        storage.buffer().data(), &empty_tick_invocation, index(4), 4);
+    for (auto const* state : states) {
+        EXPECT_EQ(state->tick_batch_calls, 8u);
+        EXPECT_EQ(state->last_lane_count, 1u);
+    }
+    EXPECT_FLOAT_EQ(states[0]->last_output, 22.0f);
+    EXPECT_FLOAT_EQ(states[1]->last_output, 24.0f);
+    EXPECT_FLOAT_EQ(states[2]->last_output, 220.0f);
+    EXPECT_FLOAT_EQ(states[3]->last_output, 240.0f);
+}
+
+// A cyclic region of pointwise nodes reading a Constant compiles into one
+// region specialization, which the realtime root runs in place of its slice
+// loop. It produces the interpreter's values across root calls, with and
+// without a step operation (the copied timeline of a detach with a non-zero
+// initial value). A later compilation of the same region reuses the compiled
+// code; a different Constant value is a different code input and compiles
+// again.
+TEST_F(GraphJitRuntimeFixture, CyclicRegionSpecializationMatchesInterpreterAndIsReused)
+{
+    iv::GraphJit interpreter_jit(iv::GraphJitConfig{
+        .sample_rate = 88200,
+        .block_size = 64,
+        .specialize_regions = false,
+    });
+    auto states = [](iv::CompiledGraph const& graph, iv::NodeStorage& storage) {
+        // Configured order: the Constant, which has no State, then head and
+        // tail.
+        std::vector<FeedbackGainStateMirror*> result;
+        for (std::size_t node = 0; node < graph.node_layout.nodes.size(); ++node) {
+            if (graph.node_layout.nodes[node].state_size
+                != sizeof(FeedbackGainStateMirror)) {
+                continue;
+            }
+            result.push_back(
+                static_cast<FeedbackGainStateMirror*>(storage.state_ptr(node)));
+        }
+        return result;
+    };
+    // Compiles the module with and without region specializations, runs three
+    // root calls of both, and checks them against each other and against
+    // head[n] = tail[n - 1] * gain + 1 and tail[n] = head[n] * gain + 2.
+    auto compare = [&](float gain, float initial, std::uint64_t generation)
+        -> std::optional<iv::GraphJitCompileTimings> {
+        std::array arguments{
+            iv::details::configuration_argument(gain),
+            iv::details::configuration_argument(initial),
+        };
+        auto const graph = configured_module_graph_with_arguments(
+            *revision, graph_jit_constant_gain_feedback_module_id, arguments);
+        auto specialized = compile_graph(graph, generation);
+        auto interpreted = interpreter_jit.compile(iv::GraphJitCompileRequest{
+            .project_generation = generation,
+            .graph = graph,
+            .definitions = definitions,
+        });
+        EXPECT_TRUE(specialized.succeeded())
+            << (specialized.diagnostics.empty()
+                    ? ""
+                    : specialized.diagnostics.front().message);
+        EXPECT_TRUE(interpreted.succeeded())
+            << (interpreted.diagnostics.empty()
+                    ? ""
+                    : interpreted.diagnostics.front().message);
+        if (!specialized.succeeded() || !interpreted.succeeded()
+            || specialized.timings.size() != 1 || interpreted.timings.size() != 1) {
+            ADD_FAILURE() << "compilation did not produce one steady result";
+            return std::nullopt;
+        }
+        EXPECT_EQ(interpreted.timings.front().region_specializations_compiled, 0u);
+        EXPECT_EQ(interpreted.timings.front().region_specializations_reused, 0u);
+
+        auto specialized_storage =
+            specialized.compiled_graph->node_layout.create_storage(resources);
+        specialized_storage.initialize();
+        auto interpreted_storage =
+            interpreted.compiled_graph->node_layout.create_storage(resources);
+        interpreted_storage.initialize();
+        auto const specialized_states =
+            states(*specialized.compiled_graph, specialized_storage);
+        auto const interpreted_states =
+            states(*interpreted.compiled_graph, interpreted_storage);
+        if (specialized_states.size() != 2 || interpreted_states.size() != 2) {
+            ADD_FAILURE() << "the module does not have two feedback nodes";
+            return std::nullopt;
+        }
+
+        float head = 0.0f;
+        float tail = initial;
+        for (std::int64_t block = 0; block < 3; ++block) {
+            specialized.compiled_graph->root_operations.tick_block(
+                specialized_storage.buffer().data(),
+                &empty_tick_invocation,
+                index(block * 64),
+                64);
+            interpreted.compiled_graph->root_operations.tick_block(
+                interpreted_storage.buffer().data(),
+                &empty_tick_invocation,
+                index(block * 64),
+                64);
+            for (std::size_t sample = 0; sample < 64; ++sample) {
+                head = tail * gain + 1.0f;
+                tail = head * gain + 2.0f;
+            }
+            for (std::size_t node = 0; node < 2; ++node) {
+                auto const& actual = *specialized_states[node];
+                auto const& expected = *interpreted_states[node];
+                EXPECT_EQ(actual.ticks, static_cast<std::uint64_t>((block + 1) * 64));
+                EXPECT_EQ(actual.ticks, expected.ticks);
+                EXPECT_EQ(actual.configured_id, node + 1);
+                EXPECT_EQ(actual.retained_pointer_identity_matches, 1u);
+                EXPECT_EQ(
+                    actual.retained_pointer_identity_matches,
+                    expected.retained_pointer_identity_matches);
+                EXPECT_FLOAT_EQ(actual.last_gain, gain);
+                EXPECT_FLOAT_EQ(actual.last_input, expected.last_input);
+                EXPECT_FLOAT_EQ(actual.last_output, expected.last_output);
+            }
+            EXPECT_FLOAT_EQ(specialized_states[0]->last_output, head);
+            EXPECT_FLOAT_EQ(specialized_states[1]->last_output, tail);
+        }
+        return specialized.timings.front();
+    };
+
+    auto const first = compare(0.5f, 0.0f, 120);
+    ASSERT_TRUE(first);
+    EXPECT_EQ(first->region_specializations_compiled, 1u);
+    EXPECT_EQ(first->region_specializations_reused, 0u);
+    EXPECT_EQ(first->region_specializations_skipped, 0u)
+        << first->region_specialization_skip;
+    EXPECT_EQ(first->region_specialization_failures, 0u)
+        << first->region_specialization_failure;
+    // The inlined callbacks read the Constant gain and the context's sample
+    // rate from the workspace; those reads become the fields' values.
+    EXPECT_GT(first->region_specialization_substitutions, 0u);
+
+    // Compiled code lives while some compiled graph uses it. compare() has
+    // released its graphs, so held compiles the region again, and a second
+    // compilation while held lives reuses that code.
+    float gain = 0.5f;
+    float initial = 0.0f;
+    std::array arguments{
+        iv::details::configuration_argument(gain),
+        iv::details::configuration_argument(initial),
+    };
+    auto const graph = configured_module_graph_with_arguments(
+        *revision, graph_jit_constant_gain_feedback_module_id, arguments);
+    auto held = compile_graph(graph, 121);
+    ASSERT_TRUE(held.succeeded());
+    auto reused = compile_graph(graph, 122);
+    ASSERT_TRUE(reused.succeeded());
+    ASSERT_EQ(reused.timings.size(), 1u);
+    EXPECT_EQ(reused.timings.front().region_specializations_compiled, 0u);
+    EXPECT_EQ(reused.timings.front().region_specializations_reused, 1u);
+
+    auto const changed = compare(0.25f, 0.0f, 123);
+    ASSERT_TRUE(changed);
+    EXPECT_EQ(changed->region_specializations_compiled, 1u);
+    EXPECT_EQ(changed->region_specializations_reused, 0u);
+
+    auto const copied = compare(0.5f, 0.25f, 124);
+    ASSERT_TRUE(copied);
+    EXPECT_EQ(copied->region_specializations_compiled, 1u);
+    EXPECT_EQ(copied->region_specializations_skipped, 0u)
+        << copied->region_specialization_skip;
+    EXPECT_EQ(copied->region_specialization_failures, 0u)
+        << copied->region_specialization_failure;
 }
 
 TEST_F(GraphJitRuntimeFixture, ActivityPartitionsReadyFrontierIntoTickAndSkipBatches)

@@ -6,7 +6,9 @@
 #include <intravenous/graph_jit/event_conversion_runtime.h>
 #include <intravenous/graph_jit/event_retention_runtime.h>
 #include <intravenous/graph_jit/lowering_plan.h>
+#include <intravenous/graph_jit/region_specialization.h>
 #include <intravenous/graph_jit/tick_invocation_call.h>
+#include <intravenous/runtime/package_pipeline_types.h>
 #include <intravenous/node/manual_control.h>
 
 #include <algorithm>
@@ -233,10 +235,22 @@ struct RootStep {
     bool captures = false;
 };
 
+// The compiled code that replaces one cyclic region's slice loop, and the
+// per-call inputs the root gathers for it.
+struct RootRegionSpecialization {
+    RegionSpecializationFunction function = nullptr;
+    std::shared_ptr<void const> lifetime{};
+    // The region's RootStep indices, in ExecutionRegionPlan order.
+    std::vector<std::size_t> steps{};
+    // Per begin index of every step, in request order: its pace cursor.
+    std::vector<std::size_t> begin_cursors{};
+};
+
 // The operations around one cyclic region's complete root call.
 struct RootRegion {
     std::vector<RootOperation> before{};
     std::vector<RootOperation> after{};
+    std::optional<RootRegionSpecialization> specialization{};
 };
 
 struct ContinuousActivitySummary {
@@ -278,6 +292,9 @@ struct RootFrameLayout {
     std::size_t skip_lanes = 0;
     std::size_t tick_decisions = 0;
     std::size_t tick_lane_primitives = 0;
+    std::size_t specialization_steps = 0;
+    std::size_t specialization_begin_bases = 0;
+    std::size_t specialization_workspace = 0;
     std::size_t size = 0;
 };
 } // namespace
@@ -319,6 +336,11 @@ struct RealtimeRootPlan {
     std::size_t scratch_size = 0;
     std::size_t scratch_alignment = 1;
     std::size_t maximum_batch_lanes = 0;
+    // The largest step count, begin-index count, and reusable binding/context
+    // workspace of any region specialization.
+    std::size_t maximum_specialization_steps = 0;
+    std::size_t maximum_specialization_begin_indices = 0;
+    std::size_t maximum_specialization_workspace_size = 0;
     RootFrameLayout frame{};
     bool has_tick_slots = false;
     // Some primitive has a TTL activity plan, so the root keeps
@@ -447,6 +469,9 @@ struct RootFrame {
     std::span<ReflectedNodeTickBatchLane> skip_lanes{};
     std::span<PrimitiveActivityDecision> tick_decisions{};
     std::span<std::size_t> tick_lane_primitives{};
+    std::span<RegionSpecializationStep> specialization_steps{};
+    std::span<std::uint64_t> specialization_begin_bases{};
+    std::span<std::byte> specialization_workspace{};
     TickInvocationCall const* invocation = nullptr;
     GlobalIndex root_index{};
 };
@@ -1979,21 +2004,30 @@ void run_step(
     if (step.captures) capture_outputs(frame, step.primitive, index, block_size);
 }
 
-// A multi-step acyclic ready group is an antichain whose lanes have no
-// step-local operations or captures and need no slicing. Every lane decides
-// Tick or skip before either batch runs, so no lane observes another lane's
-// outputs and the decision matches scalar execution.
-void run_batch(
+// Invokes one compatible set of primitive steps as native callback lanes.
+// A cyclic phase keeps each step's operations and captures around the common
+// callback. Its regions are independent, so no lane observes another lane's
+// outputs. An acyclic ready group has no step-local work by construction.
+void run_step_batch(
     RootFrame& frame,
-    detail::ExecutionReadyGroupPlan const& group,
+    std::span<std::size_t const> steps,
     GlobalIndex index,
-    std::size_t block_size) noexcept
+    std::size_t block_size,
+    bool run_step_operations) noexcept
 {
     auto const& plan = frame.plan;
+    if (run_step_operations) {
+        for (auto const step_index : steps) {
+            auto const& step = plan.steps[step_index];
+            if (!step.before.empty()) {
+                run_operations(frame, step.before, index, block_size);
+            }
+        }
+    }
     if (!plan.tracks_activity) {
         details::NodeCompilerOperations const* callbacks = nullptr;
         std::size_t lane_count = 0;
-        for (auto const step_index : group.primitive_steps) {
+        for (auto const step_index : steps) {
             auto const primitive_index = plan.steps[step_index].primitive;
             auto const& primitive = plan.primitives[primitive_index];
             if (!callbacks) callbacks = &primitive.callbacks;
@@ -2008,56 +2042,142 @@ void run_batch(
         callbacks->tick_block_batch(ReflectedNodeTickBatchContext{
             .lanes = {frame.tick_lanes.data(), lane_count},
         });
-        return;
-    }
-    std::size_t tick_count = 0;
-    std::size_t skip_count = 0;
-    details::NodeCompilerOperations const* callbacks = nullptr;
-    for (auto const step_index : group.primitive_steps) {
-        auto const primitive_index = plan.steps[step_index].primitive;
-        auto const& primitive = plan.primitives[primitive_index];
-        if (!callbacks) callbacks = &primitive.callbacks;
-        auto const& context = prepare_invocation(
-            frame, primitive_index, index, block_size, index, block_size);
-        auto const decision = decide_primitive_activity(
-            frame, primitive_index, context, index, block_size);
-        auto const lane = ReflectedNodeTickBatchLane{
-            .node_data = primitive.node_data.data(),
-            .context = context,
-            .index = index,
-            .block_size = block_size,
-        };
-        if (decision.should_skip) {
-            frame.skip_lanes[skip_count++] = lane;
-            continue;
+    } else {
+        std::size_t tick_count = 0;
+        std::size_t skip_count = 0;
+        details::NodeCompilerOperations const* callbacks = nullptr;
+        for (auto const step_index : steps) {
+            auto const primitive_index = plan.steps[step_index].primitive;
+            auto const& primitive = plan.primitives[primitive_index];
+            if (!callbacks) callbacks = &primitive.callbacks;
+            auto const& context = prepare_invocation(
+                frame, primitive_index, index, block_size, index, block_size);
+            auto const decision = decide_primitive_activity(
+                frame, primitive_index, context, index, block_size);
+            auto const lane = ReflectedNodeTickBatchLane{
+                .node_data = primitive.node_data.data(),
+                .context = context,
+                .index = index,
+                .block_size = block_size,
+            };
+            if (decision.should_skip) {
+                frame.skip_lanes[skip_count++] = lane;
+                continue;
+            }
+            if (decision.state) decision.state->dormant = 0;
+            frame.tick_lanes[tick_count] = lane;
+            frame.tick_decisions[tick_count] = decision;
+            frame.tick_lane_primitives[tick_count] = primitive_index;
+            ++tick_count;
         }
-        if (decision.state) decision.state->dormant = 0;
-        frame.tick_lanes[tick_count] = lane;
-        frame.tick_decisions[tick_count] = decision;
-        frame.tick_lane_primitives[tick_count] = primitive_index;
-        ++tick_count;
-    }
-    if (tick_count != 0) {
-        callbacks->tick_block_batch(ReflectedNodeTickBatchContext{
-            .lanes = {frame.tick_lanes.data(), tick_count},
-        });
-        for (std::size_t lane = 0; lane < tick_count; ++lane) {
-            update_primitive_activity(
-                frame,
-                frame.tick_lane_primitives[lane],
-                frame.tick_decisions[lane],
-                frame.tick_lanes[lane].context,
-                index,
-                block_size);
+        if (tick_count != 0) {
+            callbacks->tick_block_batch(ReflectedNodeTickBatchContext{
+                .lanes = {frame.tick_lanes.data(), tick_count},
+            });
+            for (std::size_t lane = 0; lane < tick_count; ++lane) {
+                update_primitive_activity(
+                    frame,
+                    frame.tick_lane_primitives[lane],
+                    frame.tick_decisions[lane],
+                    frame.tick_lanes[lane].context,
+                    index,
+                    block_size);
+            }
+        }
+        if (skip_count != 0) {
+            callbacks->skip_block_batch(ReflectedNodeTickBatchContext{
+                .lanes = {frame.skip_lanes.data(), skip_count},
+            });
         }
     }
-    if (skip_count != 0) {
-        callbacks->skip_block_batch(ReflectedNodeTickBatchContext{
-            .lanes = {frame.skip_lanes.data(), skip_count},
-        });
-    }
-    for (auto const step_index : group.primitive_steps) {
+    for (auto const step_index : steps) {
         mark_primitive_outputs(frame, plan.primitives[plan.steps[step_index].primitive]);
+    }
+    if (run_step_operations) {
+        for (auto const step_index : steps) {
+            auto const& step = plan.steps[step_index];
+            if (!step.after.empty()) {
+                run_operations(frame, step.after, index, block_size);
+            }
+            if (step.captures) {
+                capture_outputs(frame, step.primitive, index, block_size);
+            }
+        }
+    }
+}
+
+// One cyclic region's complete sliced invocation through the interpreter,
+// without batching it with other regions.
+void run_region_slices(
+    RootFrame& frame,
+    detail::ExecutionRegionPlan const& region,
+    GlobalIndex index,
+    std::size_t block_size) noexcept
+{
+    for (std::size_t offset = 0; offset < block_size;
+         offset += region.maximum_block_size) {
+        auto const slice = index.advanced_by(offset);
+        auto const count = std::min(region.maximum_block_size, block_size - offset);
+        for (auto const step : region.primitive_steps) {
+            run_step(frame, step, slice, count, false);
+        }
+    }
+}
+
+// The RegionSpecializationOperationsFunction a specialization calls for a
+// step's own storage operations.
+void run_specialized_step_operations(
+    void* frame,
+    void const* operations,
+    std::uint64_t index_bits,
+    std::size_t count) noexcept
+{
+    run_operations(
+        *static_cast<RootFrame*>(frame),
+        *static_cast<std::vector<RootOperation> const*>(operations),
+        GlobalIndex::from_bits(index_bits),
+        count);
+}
+
+// One cyclic region's complete sliced invocation through its compiled
+// specialization. The region's own operations run around it, as around the
+// interpreter's slice loop, and each step's own operations run through
+// run_specialized_step_operations() around every slice of the step. The
+// specialization updates the begin indices of its own binding copies, so the
+// prepared contexts stay as the root call completed them.
+void run_region_specialization(
+    RootFrame& frame,
+    RootRegionSpecialization const& specialization,
+    GlobalIndex index,
+    std::size_t block_size) noexcept
+{
+    auto const& plan = frame.plan;
+    for (std::size_t step = 0; step < specialization.steps.size(); ++step) {
+        auto const& root_step = plan.steps[specialization.steps[step]];
+        auto const& primitive = plan.primitives[root_step.primitive];
+        frame.specialization_steps[step] = RegionSpecializationStep{
+            .node_data = primitive.node_data.data(),
+            .context = reinterpret_cast<ReflectedNodeTickContext const*>(
+                frame.scratch + primitive.context_offset),
+            .operations_before = root_step.before.empty() ? nullptr : &root_step.before,
+            .operations_after = root_step.after.empty() ? nullptr : &root_step.after,
+        };
+    }
+    for (std::size_t update = 0;
+         update < specialization.begin_cursors.size(); ++update) {
+        frame.specialization_begin_bases[update] =
+            frame.sequential_pace_cursors[specialization.begin_cursors[update]];
+    }
+    specialization.function(
+        frame.specialization_steps.data(),
+        frame.specialization_begin_bases.data(),
+        frame.specialization_workspace.data(),
+        index.bits(),
+        block_size,
+        &frame,
+        &run_specialized_step_operations);
+    for (auto const step : specialization.steps) {
+        mark_primitive_outputs(frame, plan.primitives[plan.steps[step].primitive]);
     }
 }
 
@@ -2300,20 +2420,25 @@ class RootPlanBuilder {
     LoweringInput const& input_;
     detail::LoweringPlan const& lowering_;
     RealtimeRootPlan& plan_;
+    RegionSpecializationProvider* specializations_ = nullptr;
     std::vector<std::uint8_t> materialization_ready_{};
     std::vector<std::uint8_t> composition_ready_{};
     std::vector<std::uint8_t> feedback_ready_{};
     std::vector<std::uint8_t> sample_carry_ready_{};
     std::vector<std::uint8_t> primitive_ready_{};
+    // Per primitive, its registered implementation, if any.
+    std::vector<NodeImplementation const*> implementations_{};
 
 public:
     RootPlanBuilder(
         LoweringInput const& input,
         detail::LoweringPlan const& lowering,
-        RealtimeRootPlan& plan)
+        RealtimeRootPlan& plan,
+        RegionSpecializationProvider* specializations)
         : input_(input)
         , lowering_(lowering)
         , plan_(plan)
+        , specializations_(specializations)
     {}
 
     Checked build()
@@ -2333,6 +2458,7 @@ public:
         if (auto valid = build_primitives(); !valid) return valid;
         if (auto valid = build_steps(); !valid) return valid;
         if (auto valid = build_groups(); !valid) return valid;
+        build_region_specializations();
         return build_layout();
     }
 
@@ -3086,6 +3212,7 @@ private:
             plan_.primitive_activity,
             [](auto const& activity) { return activity.has_value(); });
         plan_.primitives.resize(count);
+        implementations_.assign(count, nullptr);
         for (std::size_t index = 0; index < count; ++index) {
             auto& primitive = plan_.primitives[index];
             auto const& configuration = lowering_.configurations.nodes[index];
@@ -3130,6 +3257,7 @@ private:
             if (auto const implementation = implementations.find(bundle);
                 implementation != implementations.end()) {
                 primitive.callbacks = implementation->second->native_operations;
+                implementations_[index] = implementation->second;
             }
 
             if (auto valid = build_tick_slots(index, bundle); !valid) return valid;
@@ -3990,9 +4118,10 @@ private:
     Checked build_groups()
     {
         auto const& execution = plan_.execution;
+        auto carry = [&](std::size_t index) { return prepare_sample_carry(index); };
         plan_.regions.resize(execution.regions.size());
         for (auto const& group : execution.ready_groups) {
-            if (!group.cyclic_region) {
+            if (group.cyclic_regions.empty()) {
                 for (auto const step : group.primitive_steps) {
                     if (step >= execution.primitive_steps.size()) {
                         return invalid("GraphJit ready group references a missing primitive step");
@@ -4005,36 +4134,125 @@ private:
                 }
                 continue;
             }
-            if (*group.cyclic_region >= execution.regions.size()) {
-                return invalid("GraphJit ready group references a missing cyclic region");
+            if (group.cyclic_regions.front() >= execution.regions.size()) {
+                return invalid(
+                    "GraphJit ready group references a missing cyclic region");
             }
-            auto const& region = execution.regions[*group.cyclic_region];
-            if (!region.cyclic || !group.primitive_steps.empty()) {
-                return invalid("GraphJit cyclic ready group has invalid execution contents");
+            auto const& first = execution.regions[group.cyclic_regions.front()];
+            if (group.primitive_steps.size()
+                != group.cyclic_regions.size() * first.primitive_steps.size()) {
+                return invalid("GraphJit cyclic ready group has an invalid phase layout");
             }
-            if (region.maximum_block_size == 0 || region.scc_feedback_latency == 0) {
-                return invalid("GraphJit cyclic execution region has invalid slice semantics");
-            }
-            for (auto const step : region.primitive_steps) {
-                if (step >= execution.primitive_steps.size()) {
-                    return invalid("GraphJit cyclic region references a missing primitive step");
-                }
-                if (execution.primitive_steps[step].maximum_block_size
-                    < region.maximum_block_size) {
+            for (auto const region_index : group.cyclic_regions) {
+                if (region_index >= execution.regions.size()) {
                     return invalid(
-                        "GraphJit SCC quantum exceeds a primitive maximum block size");
+                        "GraphJit ready group references a missing cyclic region");
+                }
+                auto const& region = execution.regions[region_index];
+                if (!region.cyclic) {
+                    return invalid(
+                        "GraphJit cyclic ready group contains an acyclic region");
+                }
+                if (region.maximum_block_size == 0
+                    || region.scc_feedback_latency == 0) {
+                    return invalid(
+                        "GraphJit cyclic execution region has invalid slice semantics");
+                }
+                for (auto const step : region.primitive_steps) {
+                    if (step >= execution.primitive_steps.size()) {
+                        return invalid(
+                            "GraphJit cyclic region references a missing primitive step");
+                    }
+                    if (execution.primitive_steps[step].maximum_block_size
+                        < region.maximum_block_size) {
+                        return invalid(
+                            "GraphJit SCC quantum exceeds a primitive maximum block size");
+                    }
+                }
+                auto& operations = plan_.regions[region_index];
+                if (auto valid = append_event_operations(
+                        region.event_operations_before, operations.before);
+                    !valid) {
+                    return valid;
+                }
+                if (auto valid = append_sample_operations(
+                        region.sample_carry_restores_before,
+                        RootOperationKind::sample_carry_restore,
+                        carry,
+                        operations.before);
+                    !valid) {
+                    return valid;
+                }
+                if (auto valid = append_event_operations(
+                        region.event_operations_after, operations.after);
+                    !valid) {
+                    return valid;
+                }
+                if (auto valid = append_sample_operations(
+                        region.sample_carry_commits_after,
+                        RootOperationKind::sample_carry_commit,
+                        carry,
+                        operations.after);
+                    !valid) {
+                    return valid;
                 }
             }
-            auto& operations = plan_.regions[*group.cyclic_region];
-            if (auto valid = append_event_operations(
-                    region.event_operations_before, operations.before);
-                !valid) {
-                return valid;
+            if (group.cyclic_regions.size() > 1) {
+                if (auto valid = validate_cyclic_batch(group); !valid) return valid;
+                plan_.maximum_batch_lanes = std::max(
+                    plan_.maximum_batch_lanes, group.cyclic_regions.size());
             }
-            if (auto valid = append_event_operations(
-                    region.event_operations_after, operations.after);
-                !valid) {
-                return valid;
+        }
+        return {};
+    }
+
+    Checked validate_cyclic_batch(
+        detail::ExecutionReadyGroupPlan const& group) const
+    {
+        auto const& execution = plan_.execution;
+        auto const& first = execution.regions[group.cyclic_regions.front()];
+        for (auto const region_index : group.cyclic_regions) {
+            if (region_index >= execution.regions.size()) {
+                return invalid("GraphJit cyclic batch references a missing region");
+            }
+            auto const& region = execution.regions[region_index];
+            if (!region.cyclic
+                || region.maximum_block_size != first.maximum_block_size
+                || region.scc_feedback_latency != first.scc_feedback_latency
+                || region.primitive_steps.size() != first.primitive_steps.size()) {
+                return invalid("GraphJit cyclic batch contains incompatible regions");
+            }
+        }
+        for (std::size_t phase = 0; phase < first.primitive_steps.size(); ++phase) {
+            details::NodeCompilerOperations const* callbacks = nullptr;
+            auto has_activity = false;
+            for (std::size_t lane = 0; lane < group.cyclic_regions.size(); ++lane) {
+                auto const region_index = group.cyclic_regions[lane];
+                auto const step_index = execution.regions[region_index]
+                    .primitive_steps[phase];
+                if (group.primitive_steps[
+                        phase * group.cyclic_regions.size() + lane]
+                    != step_index) {
+                    return invalid(
+                        "GraphJit cyclic batch phase does not match its regions");
+                }
+                auto const& step = execution.primitive_steps[step_index];
+                auto const& primitive = plan_.primitives[step.configuration_index];
+                if (!callbacks) callbacks = &primitive.callbacks;
+                has_activity = has_activity
+                    || plan_.primitive_activity[step.configuration_index].has_value();
+                if (!primitive.callbacks.tick_block_batch
+                    || primitive.callbacks.tick_block_batch
+                        != callbacks->tick_block_batch
+                    || primitive.callbacks.skip_block_batch
+                        != callbacks->skip_block_batch) {
+                    return invalid(
+                        "GraphJit cyclic batch phase contains incompatible native callbacks");
+                }
+            }
+            if (has_activity && !callbacks->skip_block_batch) {
+                return invalid(
+                    "GraphJit cyclic batch phase has no skip batch callback");
             }
         }
         return {};
@@ -4081,6 +4299,245 @@ private:
             return invalid("GraphJit realtime batch has no skip batch callback");
         }
         return {};
+    }
+
+    // --- region specializations -------------------------------------------
+
+    struct PlannedRegionSpecialization {
+        RegionSpecializationRequest request{};
+        std::vector<std::size_t> steps{};
+        std::vector<std::size_t> begin_cursors{};
+        std::size_t workspace_size = 0;
+    };
+
+    // The one value every channel of a Sequential input reads, when each of
+    // its channels is bound to immutable storage holding that same value.
+    std::optional<std::vector<std::byte>> immutable_input_value(
+        detail::PrimitiveSampleInputBindingPlan const& input) const
+    {
+        auto const& storage = plan_.sample_ports.storage;
+        std::optional<std::vector<std::byte>> value;
+        for (auto const& channel : input.channels) {
+            if (channel.storage >= storage.representations.size()) return std::nullopt;
+            auto const& constant = storage.representations[channel.storage].constant_value;
+            if (!constant || constant->size() != input.geometry.value_size_bytes) {
+                return std::nullopt;
+            }
+            if (value && *value != *constant) return std::nullopt;
+            value = *constant;
+        }
+        return value;
+    }
+
+    // The binding a begin-index update writes, when it is a Sequential sample
+    // binding of the primitive.
+    std::optional<RegionSpecializationBeginIndex> begin_index_binding(
+        RootPrimitive const& primitive,
+        std::size_t input_count,
+        RootBeginIndex const& update) const
+    {
+        constexpr auto input_size = sizeof(ReflectedContinuousInputPortBinding);
+        constexpr auto output_size = sizeof(ReflectedContinuousOutputPortBinding);
+        auto const field = update.field_offset;
+        if (field >= primitive.sample_inputs_offset
+            && field < primitive.sample_inputs_offset + input_count * input_size) {
+            auto const relative = field - primitive.sample_inputs_offset;
+            if (relative % input_size
+                != offsetof(ReflectedContinuousInputPortBinding, sequential_begin_index)) {
+                return std::nullopt;
+            }
+            return RegionSpecializationBeginIndex{
+                .output = false,
+                .binding = relative / input_size,
+            };
+        }
+        if (field >= primitive.sample_outputs_offset
+            && field < primitive.sample_outputs_offset
+                + primitive.sample_output_count * output_size) {
+            auto const relative = field - primitive.sample_outputs_offset;
+            if (relative % output_size
+                != offsetof(ReflectedContinuousOutputPortBinding, sequential_begin_index)) {
+                return std::nullopt;
+            }
+            return RegionSpecializationBeginIndex{
+                .output = true,
+                .binding = relative / output_size,
+            };
+        }
+        return std::nullopt;
+    }
+
+    // The specialization request of one cyclic region, or why it keeps the
+    // interpreter: some step needs work that this first form does not
+    // compile. That is a capture, a Tick slot, a manual control, an event
+    // port, an activity plan, a Random Access input, or a non-project-rate
+    // pace. A step's own storage operations run through the root around each
+    // slice of the step. The specialization calls each node's scalar
+    // tick_block, which every Tick node has, whichever form its author wrote.
+    std::expected<PlannedRegionSpecialization, std::string> plan_region_specialization(
+        detail::ExecutionRegionPlan const& region) const
+    {
+        auto const area = plan_.binding_offset;
+        auto const& template_bytes = plan_.binding_template;
+        auto template_range = [&](std::size_t offset, std::size_t size)
+            -> std::optional<std::vector<std::byte>> {
+            if (offset < area || offset - area > template_bytes.size()
+                || size > template_bytes.size() - (offset - area)) {
+                return std::nullopt;
+            }
+            auto const begin = template_bytes.begin()
+                + static_cast<std::ptrdiff_t>(offset - area);
+            return std::vector<std::byte>(begin, begin + static_cast<std::ptrdiff_t>(size));
+        };
+        auto reject = [](std::string reason) {
+            return std::unexpected(std::move(reason));
+        };
+
+        PlannedRegionSpecialization result;
+        result.request.quantum = region.maximum_block_size;
+        for (auto const step_index : region.primitive_steps) {
+            if (step_index >= plan_.steps.size()) return reject("a step is missing");
+            auto const& step = plan_.steps[step_index];
+            if (step.captures) return reject("a step captures its outputs");
+            auto const index = step.primitive;
+            auto const& primitive = plan_.primitives[index];
+            if (primitive.tick) return reject("a primitive has Tick slots");
+            if (!primitive.manual_controls.empty()) {
+                return reject("a primitive has a manual control");
+            }
+            if (plan_.primitive_activity[index]) {
+                return reject("a primitive has an activity plan");
+            }
+            if (!primitive.callbacks.tick_block) return reject("a primitive has no tick_block");
+            auto const& events = plan_.event_ports.primitives[index];
+            if (!events.inputs.empty() || !events.outputs.empty()) {
+                return reject("a primitive has event ports");
+            }
+            auto const* implementation = implementations_[index];
+            if (!implementation || !implementation->revision
+                || implementation->revision->compiler_artifact.bitcode_path.empty()) {
+                return reject("a primitive has no package bitcode");
+            }
+
+            RegionSpecializationStepRequest request{
+                .revision = implementation->revision,
+                .code_key = implementation->code_key,
+                .provider_version = implementation->provider_version,
+                .operations_before = !step.before.empty(),
+                .operations_after = !step.after.empty(),
+            };
+            auto const& sample = plan_.sample_ports.primitives[index];
+            for (std::size_t input = 0; input < sample.inputs.size(); ++input) {
+                auto const& planned = sample.inputs[input];
+                if (planned.random_access) return reject("an input is Random Access");
+                if (planned.invocation_supplied) {
+                    return reject("an input is supplied by the Tick invocation");
+                }
+                if (planned.channels.empty()
+                    || planned.channels.size() != channel_count(planned.channel_layout)) {
+                    return reject("an input does not bind every channel");
+                }
+                if (planned.absolute_pace_exponent != 0) {
+                    return reject("an input is not at project rate");
+                }
+                request.input_channel_counts.push_back(planned.channels.size());
+                if (implementation->block_input_access || planned.history != 0) {
+                    continue;
+                }
+                if (auto value = immutable_input_value(planned)) {
+                    request.immutable_inputs.push_back(RegionSpecializationImmutableInput{
+                        .binding = input,
+                        .value = std::move(*value),
+                    });
+                }
+            }
+            auto const& storage = plan_.sample_ports.storage;
+            for (auto const& output : sample.outputs) {
+                if (!output.realtime) continue;
+                if (!output.storage || *output.storage >= storage.representations.size()) {
+                    return reject("an output has no realtime storage");
+                }
+                if (output.absolute_pace_exponent != 0) {
+                    return reject("an output is not at project rate");
+                }
+                request.output_channel_counts.push_back(channel_count(
+                    storage.representations[*output.storage].channel_layout));
+            }
+            if (request.output_channel_counts.size() != primitive.sample_output_count) {
+                return reject("the realtime outputs disagree with the binding template");
+            }
+
+            auto inputs = template_range(
+                primitive.sample_inputs_offset,
+                sample.inputs.size() * sizeof(ReflectedContinuousInputPortBinding));
+            auto outputs = template_range(
+                primitive.sample_outputs_offset,
+                primitive.sample_output_count * sizeof(ReflectedContinuousOutputPortBinding));
+            auto context = template_range(
+                primitive.context_offset, sizeof(ReflectedNodeTickContext));
+            if (!inputs || !outputs || !context) {
+                return reject("a binding lies outside the binding template");
+            }
+            request.inputs = std::move(*inputs);
+            request.outputs = std::move(*outputs);
+            request.context = std::move(*context);
+
+            for (auto const& update : primitive.begin_indices) {
+                if (update.cursor == no_index || update.pace_exponent != 0) {
+                    return reject("a begin index has no project-rate cursor");
+                }
+                auto binding = begin_index_binding(primitive, sample.inputs.size(), update);
+                if (!binding) return reject("a begin index is not a sample binding's");
+                request.begin_indices.push_back(*binding);
+                result.begin_cursors.push_back(update.cursor);
+            }
+            result.steps.push_back(step_index);
+            result.request.steps.push_back(std::move(request));
+        }
+        if (result.request.steps.empty() || result.request.quantum == 0) {
+            return reject("the region has no slice quantum");
+        }
+        auto const workspace_size = region_specialization_workspace_size(result.request);
+        if (!workspace_size) {
+            return reject("the region specialization workspace size overflows");
+        }
+        result.workspace_size = *workspace_size;
+        return result;
+    }
+
+    // Attaches the provider's compiled code to every cyclic region it
+    // specializes. A region it does not specialize keeps the interpreter's
+    // slice loop.
+    void build_region_specializations()
+    {
+        if (!specializations_) return;
+        auto const& execution = plan_.execution;
+        for (std::size_t region_index = 0;
+             region_index < execution.regions.size(); ++region_index) {
+            auto const& region = execution.regions[region_index];
+            if (!region.cyclic || region.primitive_steps.empty()) continue;
+            auto planned = plan_region_specialization(region);
+            if (!planned) {
+                specializations_->region_kept_on_interpreter(planned.error());
+                continue;
+            }
+            auto code = specializations_->region_specialization(planned->request);
+            if (!code || !code->function) continue;
+            plan_.maximum_specialization_steps = std::max(
+                plan_.maximum_specialization_steps, planned->steps.size());
+            plan_.maximum_specialization_begin_indices = std::max(
+                plan_.maximum_specialization_begin_indices,
+                planned->begin_cursors.size());
+            plan_.maximum_specialization_workspace_size = std::max(
+                plan_.maximum_specialization_workspace_size,
+                planned->workspace_size);
+            plan_.regions[region_index].specialization = RootRegionSpecialization{
+                .function = code->function,
+                .lifetime = std::move(code->lifetime),
+                .steps = std::move(planned->steps),
+                .begin_cursors = std::move(planned->begin_cursors),
+            };
+        }
     }
 
     // --- frame layout -----------------------------------------------------
@@ -4143,6 +4600,18 @@ private:
             plan_.tracks_activity ? plan_.maximum_batch_lanes : 0,
             sizeof(std::size_t),
             alignof(std::size_t));
+        layout.specialization_steps = take(
+            plan_.maximum_specialization_steps,
+            sizeof(RegionSpecializationStep),
+            alignof(RegionSpecializationStep));
+        layout.specialization_begin_bases = take(
+            plan_.maximum_specialization_begin_indices,
+            sizeof(std::uint64_t),
+            alignof(std::uint64_t));
+        layout.specialization_workspace = take(
+            plan_.maximum_specialization_workspace_size,
+            sizeof(std::byte),
+            alignof(std::max_align_t));
         layout.size = cursor;
         if (!std::has_single_bit(plan_.scratch_alignment)) {
             return invalid("GraphJit realtime root scratch alignment is not a power of two");
@@ -4153,7 +4622,10 @@ private:
 } // namespace
 
 std::expected<std::shared_ptr<RealtimeRootPlan const>, std::string>
-build_realtime_root_plan(LoweringInput const& input, detail::LoweringPlan& plan)
+build_realtime_root_plan(
+    LoweringInput const& input,
+    detail::LoweringPlan& plan,
+    RegionSpecializationProvider* specializations)
 {
     auto root = std::make_shared<RealtimeRootPlan>();
     root->sample_ports = std::move(plan.sample_ports);
@@ -4162,7 +4634,8 @@ build_realtime_root_plan(LoweringInput const& input, detail::LoweringPlan& plan)
     root->root_stack = plan.root_stack;
     root->primitive_activity = std::move(plan.declarations.primitive_activity);
     root->activity_frontiers = std::move(plan.declarations.activity_frontiers);
-    if (auto built = RootPlanBuilder(input, plan, *root).build(); !built) {
+    if (auto built = RootPlanBuilder(input, plan, *root, specializations).build();
+        !built) {
         return std::unexpected(std::move(built.error()));
     }
     return std::shared_ptr<RealtimeRootPlan const>(std::move(root));
@@ -4225,6 +4698,16 @@ void execute_realtime_root(
             scratch, layout.tick_decisions, activity_batch_count),
         .tick_lane_primitives = frame_array<std::size_t>(
             scratch, layout.tick_lane_primitives, activity_batch_count),
+        .specialization_steps = frame_array<RegionSpecializationStep>(
+            scratch, layout.specialization_steps, plan.maximum_specialization_steps),
+        .specialization_begin_bases = frame_array<std::uint64_t>(
+            scratch,
+            layout.specialization_begin_bases,
+            plan.maximum_specialization_begin_indices),
+        .specialization_workspace = frame_array<std::byte>(
+            scratch,
+            layout.specialization_workspace,
+            plan.maximum_specialization_workspace_size),
         .invocation = invocation,
         .root_index = sample_index,
     };
@@ -4253,9 +4736,14 @@ void execute_realtime_root(
 
     auto const& execution = plan.execution;
     for (auto const& group : execution.ready_groups) {
-        if (!group.cyclic_region) {
+        if (group.cyclic_regions.empty()) {
             if (group.primitive_steps.size() > 1) {
-                run_batch(frame, group, sample_index, block_size);
+                run_step_batch(
+                    frame,
+                    group.primitive_steps,
+                    sample_index,
+                    block_size,
+                    false);
                 continue;
             }
             for (auto const step : group.primitive_steps) {
@@ -4263,18 +4751,67 @@ void execute_realtime_root(
             }
             continue;
         }
-        auto const& region = execution.regions[*group.cyclic_region];
-        auto const& operations = plan.regions[*group.cyclic_region];
-        run_operations(frame, operations.before, sample_index, block_size);
+        auto const& first_region = execution.regions[group.cyclic_regions.front()];
+        for (auto const region_index : group.cyclic_regions) {
+            auto const& operations = plan.regions[region_index];
+            run_operations(frame, operations.before, sample_index, block_size);
+        }
+        // The group's regions are independent, so each specialized region
+        // runs its complete invocation in turn. Without a specialization for
+        // every region, the remaining regions run their slices alone.
+        auto const specialized = static_cast<std::size_t>(std::ranges::count_if(
+            group.cyclic_regions,
+            [&](std::size_t region_index) {
+                return plan.regions[region_index].specialization.has_value();
+            }));
+        if (specialized != 0) {
+            for (auto const region_index : group.cyclic_regions) {
+                if (auto const& specialization =
+                        plan.regions[region_index].specialization) {
+                    run_region_specialization(
+                        frame, *specialization, sample_index, block_size);
+                } else {
+                    run_region_slices(
+                        frame,
+                        execution.regions[region_index],
+                        sample_index,
+                        block_size);
+                }
+            }
+            for (auto const region_index : group.cyclic_regions) {
+                auto const& operations = plan.regions[region_index];
+                run_operations(frame, operations.after, sample_index, block_size);
+            }
+            continue;
+        }
         for (std::size_t offset = 0; offset < block_size;
-             offset += region.maximum_block_size) {
+             offset += first_region.maximum_block_size) {
             auto const slice = sample_index.advanced_by(offset);
-            auto const count = std::min(region.maximum_block_size, block_size - offset);
-            for (auto const step : region.primitive_steps) {
-                run_step(frame, step, slice, count, false);
+            auto const count = std::min(
+                first_region.maximum_block_size, block_size - offset);
+            if (group.cyclic_regions.size() == 1) {
+                for (auto const step : first_region.primitive_steps) {
+                    run_step(frame, step, slice, count, false);
+                }
+                continue;
+            }
+            auto const lane_count = group.cyclic_regions.size();
+            for (std::size_t phase = 0;
+                 phase < first_region.primitive_steps.size();
+                 ++phase) {
+                run_step_batch(
+                    frame,
+                    std::span<std::size_t const>{group.primitive_steps}
+                        .subspan(phase * lane_count, lane_count),
+                    slice,
+                    count,
+                    true);
             }
         }
-        run_operations(frame, operations.after, sample_index, block_size);
+        for (auto const region_index : group.cyclic_regions) {
+            auto const& operations = plan.regions[region_index];
+            run_operations(frame, operations.after, sample_index, block_size);
+        }
     }
 
     for (std::size_t index = 0; index < storage.producer_authored_extents.size(); ++index) {

@@ -1142,6 +1142,97 @@ TEST(GraphJitConnectionPlan, GroupsOneCompatibleReadyFrontierWithoutHidingDepend
             first_target_handle, second_target_handle}));
 }
 
+TEST(GraphJitConnectionPlan, GroupsCompatibleCyclicRegionsInExecutionPhaseOrder)
+{
+    using namespace iv;
+    GraphBuilder graph;
+    auto first_head = details::configure_concrete_node<PlainSamplePass>(graph);
+    auto first_tail = details::configure_concrete_node<PlainSamplePass>(graph);
+    auto second_head = details::configure_concrete_node<PlainSamplePass>(graph);
+    auto second_tail = details::configure_concrete_node<PlainSamplePass>(graph);
+    auto const first_head_handle = first_head.node_bundle_handle();
+    auto const first_tail_handle = first_tail.node_bundle_handle();
+    auto const second_head_handle = second_head.node_bundle_handle();
+    auto const second_tail_handle = second_tail.node_bundle_handle();
+
+    first_head(static_cast<SamplePortRef>(first_tail).detach(1));
+    first_tail(first_head);
+    second_head(static_cast<SamplePortRef>(second_tail).detach(1));
+    second_tail(second_head);
+    graph.outputs(
+        "first"_P = first_tail,
+        "second"_P = second_tail);
+
+    auto configured = std::move(graph).finish();
+    std::vector<std::size_t> classes(
+        configured.node_bundles.size(),
+        std::numeric_limits<std::size_t>::max());
+    classes[first_head_handle] = 0;
+    classes[second_head_handle] = 0;
+    classes[first_tail_handle] = 1;
+    classes[second_tail_handle] = 1;
+    auto plan = build_connection_analysis_plan(
+        configured, 64, {}, std::span<std::size_t const>{classes});
+    ASSERT_TRUE(plan.has_value()) << (plan ? std::string{} : plan.error());
+
+    ASSERT_EQ(plan->schedule.regions.size(), 2u);
+    ASSERT_EQ(plan->schedule.ready_groups.size(), 1u);
+    ASSERT_EQ(plan->schedule.ready_groups.front().size(), 2u);
+    for (auto const region_index : plan->schedule.ready_groups.front()) {
+        ASSERT_LT(region_index, plan->schedule.regions.size());
+        auto const& region = plan->schedule.regions[region_index];
+        EXPECT_TRUE(region.cyclic);
+        EXPECT_EQ(region.maximum_block_size, 1u);
+        EXPECT_EQ(region.scc_feedback_latency, 1u);
+        ASSERT_EQ(region.execution_order.size(), 2u);
+    }
+
+    ASSERT_TRUE(plan->schedule.bundle_execution_position[first_head_handle]);
+    ASSERT_TRUE(plan->schedule.bundle_execution_position[second_head_handle]);
+    ASSERT_TRUE(plan->schedule.bundle_execution_position[first_tail_handle]);
+    ASSERT_TRUE(plan->schedule.bundle_execution_position[second_tail_handle]);
+    EXPECT_EQ(
+        *plan->schedule.bundle_execution_position[first_head_handle], 0u);
+    EXPECT_EQ(
+        *plan->schedule.bundle_execution_position[second_head_handle], 1u);
+    EXPECT_EQ(
+        *plan->schedule.bundle_execution_position[first_tail_handle], 2u);
+    EXPECT_EQ(
+        *plan->schedule.bundle_execution_position[second_tail_handle], 3u);
+}
+
+TEST(GraphJitConnectionPlan, FeedbackCarryIsScopedToItsCyclicRegion)
+{
+    using namespace iv;
+    GraphBuilder graph;
+    auto head = details::configure_concrete_node<PlainSamplePass>(graph);
+    auto tail = details::configure_concrete_node<PlainSamplePass>(graph);
+    // Lowering resolves an unauthored detach initial value to the target
+    // input's neutral value before storage planning. Connection analysis
+    // alone does not, so the test authors that same zero.
+    head(static_cast<SamplePortRef>(tail).detach(1, Sample{0.0f}));
+    tail(head);
+    graph.outputs();
+
+    auto configured = std::move(graph).finish();
+    auto plan = build_connection_analysis_plan(configured, 64);
+    ASSERT_TRUE(plan.has_value()) << (plan ? std::string{} : plan.error());
+    ASSERT_EQ(plan->schedule.regions.size(), 1u);
+    ASSERT_TRUE(plan->schedule.regions.front().cyclic);
+
+    // The scheduler's own SchedulePlan, not a hand-built one, must give the
+    // feedback carry its region scope. Otherwise the carry silently restores
+    // and commits once per one-sample slice.
+    auto storage = graph_jit::detail::build_sample_storage_plan(*plan, 64);
+    ASSERT_TRUE(storage.has_value())
+        << (storage ? std::string{} : storage.error());
+    ASSERT_FALSE(storage->carry_operations.empty());
+    for (auto const& carry : storage->carry_operations) {
+        ASSERT_TRUE(carry.cyclic_region_scope);
+        EXPECT_EQ(*carry.cyclic_region_scope, 0u);
+    }
+}
+
 TEST(GraphJitConnectionPlan, FusesSampleConversionsAcrossASubgraphInput)
 {
     using namespace iv;

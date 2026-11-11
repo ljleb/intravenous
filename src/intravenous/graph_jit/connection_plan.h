@@ -81,15 +81,17 @@ struct SchedulePlan {
     std::vector<SccRegionPlan> regions{};
     std::vector<std::size_t> region_order{};
     // Each entry is one snapshot of mutually ready SCC regions. A multi-entry
-    // group contains only acyclic one-node regions with one equal batch-class
-    // identifier. Later lowering may keep the group scalar, but it need not
-    // rediscover whether its members form an antichain.
+    // group contains either compatible acyclic one-node regions or compatible
+    // cyclic regions whose corresponding execution-order entries have equal
+    // callback batch classes. Later lowering may keep the group scalar, but it
+    // need not rediscover whether its members form an antichain.
     std::vector<std::vector<std::size_t>> ready_groups{};
     // Entry positions correspond to configured NodeBundleHandle values.
     // Boundary/non-concrete bundles have no region.
     std::vector<std::optional<std::size_t>> bundle_to_region{};
     // Entry positions correspond to configured NodeBundleHandle values. Values
-    // are positions in the flattened provisional execution schedule.
+    // are positions in the flattened provisional execution schedule. For a
+    // batched cyclic group, positions are phase-major across its regions.
     std::vector<std::optional<std::size_t>> bundle_execution_position{};
     // Entry positions correspond to configured NodeBundleHandle values. A set
     // entry means planning proved that the node's Tick result is immutable and

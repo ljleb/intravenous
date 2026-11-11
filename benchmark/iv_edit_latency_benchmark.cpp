@@ -102,6 +102,9 @@ struct Options {
     // Time the realtime thread runs each accepted generation after cutover;
     // its tick cost is measured over this window.
     int settle_ms = 300;
+    // After the initial graph activates, run only that graph for this many
+    // seconds. This gives a sampling profiler a stable audio-thread workload.
+    int profile_seconds = 0;
 };
 
 Options parse_options(int argc, char** argv)
@@ -119,17 +122,21 @@ Options parse_options(int argc, char** argv)
         } else if (arg == "--size") options.size = value();
         else if (arg == "--iterations") options.iterations = value();
         else if (arg == "--settle-ms") options.settle_ms = value();
+        else if (arg == "--profile-seconds") options.profile_seconds = value();
         else if (arg == "--help") {
             std::cout << "Usage: iv_edit_latency_benchmark"
                          " [--shape voices|chain|mixed|feedback] [--size N]"
-                         " [--iterations N] [--settle-ms N]\n";
+                         " [--iterations N] [--settle-ms N]"
+                         " [--profile-seconds N]\n";
             std::exit(0);
         } else {
             throw std::runtime_error("unknown option " + std::string(arg));
         }
     }
-    if (options.size < 1 || options.iterations < 1 || options.settle_ms < 0) {
-        throw std::runtime_error("--size and --iterations must be positive");
+    if (options.size < 1 || options.iterations < 1 || options.settle_ms < 0
+        || options.profile_seconds < 0) {
+        throw std::runtime_error(
+            "--size and --iterations must be positive; timing values cannot be negative");
     }
     return options;
 }
@@ -199,7 +206,8 @@ ShapeProject voices_project(int voices)
     for (int voice = 0; voice < voices; ++voice) {
         auto const v = std::to_string(voice);
         g.instance("frequency_" + v, constant_id, std::to_string(110 + 10 * voice));
-        g.instance("cutoff_" + v, constant_id, "1200");
+        // log(1'200 / 20) / log(20'000 / 20)
+        g.instance("cutoff_" + v, constant_id, "0.592675");
         g.instance("oscillator_" + v, saw_id);
         g.instance("filter_" + v, low_pass_id);
         g.instance("sink_" + v, sink_id);
@@ -664,6 +672,25 @@ int main(int argc, char** argv)
                 project_graph.handle_project_replace_graph(project.graph, builder);
             });
         });
+        if (options.profile_seconds > 0) {
+            if (!project_graph.current_generation()
+                || !project_graph.current_generation()->graph_executor_accepted) {
+                throw std::runtime_error(
+                    "cannot profile because the initial graph was not accepted");
+            }
+            (void)realtime.take_tick_cost();
+            std::cout << "profiling the accepted " << options.shape << " graph for "
+                      << options.profile_seconds << " seconds...\n"
+                      << std::flush;
+            std::this_thread::sleep_for(
+                std::chrono::seconds(options.profile_seconds));
+            auto const cost = realtime.take_tick_cost();
+            std::cout << "steady Tick: mean " << cost.mean_us << " us, max "
+                      << cost.max_us << " us, block period "
+                      << realtime.block_period_us() << " us\n";
+            package_watcher_service.request_shutdown();
+            return 0;
+        }
         for (int iteration = 0; iteration < options.iterations; ++iteration) {
             run_edit("configure", iteration, [&] {
                 ack([&](auto& builder) {

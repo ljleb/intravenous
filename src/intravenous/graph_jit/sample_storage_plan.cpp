@@ -3255,6 +3255,133 @@ std::expected<SampleStoragePlan, std::string> build_sample_storage_plan(
         plan.input_timeline_representations.push_back(*representation);
     }
 
+    // A compact carry whose endpoints belong to one cyclic region crosses the
+    // complete sliced invocation of that region. Every region-level carry in
+    // one ready group is restored before any lane runs and committed after all
+    // lanes finish, so their transient representations are simultaneously
+    // live even when their flattened primitive positions do not overlap.
+    // Widen these intervals before assigning transient arena offsets.
+    std::size_t execution_position_count = 0;
+    for (auto const& position :
+         connections.schedule.bundle_execution_position) {
+        if (position) {
+            execution_position_count = std::max(
+                execution_position_count, *position + 1);
+        }
+    }
+    std::vector<std::optional<std::size_t>> execution_position_region(
+        execution_position_count);
+    for (std::size_t region_index = 0;
+         region_index < connections.schedule.regions.size();
+         ++region_index) {
+        for (auto const bundle :
+             connections.schedule.regions[region_index].execution_order) {
+            if (bundle
+                    >= connections.schedule.bundle_execution_position.size()
+                || !connections.schedule.bundle_execution_position[bundle]) {
+                return std::unexpected(
+                    "GraphJit sample carry scope lost a region execution position");
+            }
+            auto const position =
+                *connections.schedule.bundle_execution_position[bundle];
+            if (position >= execution_position_region.size()
+                || execution_position_region[position]) {
+                return std::unexpected(
+                    "GraphJit sample carry scope found a duplicate execution position");
+            }
+            execution_position_region[position] = region_index;
+        }
+    }
+
+    std::vector<std::optional<ConnectionLiveIntervalPlan>>
+        cyclic_region_invocation_lifetimes(
+            connections.schedule.regions.size());
+    for (auto const& ready_group : connections.schedule.ready_groups) {
+        if (ready_group.empty()) {
+            return std::unexpected(
+                "GraphJit sample carry scope found an empty ready group");
+        }
+        if (ready_group.front() >= connections.schedule.regions.size()) {
+            return std::unexpected(
+                "GraphJit sample carry scope found an invalid ready-group region");
+        }
+        if (!connections.schedule.regions[ready_group.front()].cyclic) {
+            continue;
+        }
+        auto begin = std::numeric_limits<std::size_t>::max();
+        std::size_t end = 0;
+        for (auto const region_index : ready_group) {
+            if (region_index >= connections.schedule.regions.size()
+                || !connections.schedule.regions[region_index].cyclic
+                || connections.schedule.regions[region_index]
+                       .execution_order.empty()) {
+                return std::unexpected(
+                    "GraphJit sample carry scope found an invalid cyclic ready group");
+            }
+            for (auto const bundle :
+                 connections.schedule.regions[region_index].execution_order) {
+                auto const position = connections.schedule
+                    .bundle_execution_position[bundle];
+                if (!position) {
+                    return std::unexpected(
+                        "GraphJit sample carry scope lost a cyclic execution position");
+                }
+                begin = std::min(begin, *position);
+                end = std::max(end, *position);
+            }
+        }
+        auto const lifetime = ConnectionLiveIntervalPlan{
+            .begin = begin,
+            .end = end,
+            .crosses_kernel_invocations = false,
+        };
+        for (auto const region_index : ready_group) {
+            cyclic_region_invocation_lifetimes[region_index] = lifetime;
+        }
+    }
+
+    for (auto& carry : plan.carry_operations) {
+        // A carry runs at scheduled execution positions, and every scheduled
+        // position belongs to one SccRegionPlan. A schedule without that
+        // region would silently keep a cyclic carry step-local.
+        if (carry.restore_execution_position >= execution_position_region.size()
+            || carry.commit_execution_position
+                >= execution_position_region.size()) {
+            return std::unexpected(
+                "GraphJit sample carry references an invalid execution position");
+        }
+        auto const restore_region = execution_position_region[
+            carry.restore_execution_position];
+        auto const commit_region = execution_position_region[
+            carry.commit_execution_position];
+        if (!restore_region || !commit_region) {
+            return std::unexpected(
+                "GraphJit sample carry references an unscheduled execution position");
+        }
+        if (*restore_region != *commit_region
+            || !cyclic_region_invocation_lifetimes[*restore_region]) {
+            continue;
+        }
+        if (carry.representation_index >= plan.representations.size()) {
+            return std::unexpected(
+                "GraphJit sample carry references an invalid representation");
+        }
+        carry.cyclic_region_scope = *restore_region;
+        auto& representation = plan.representations[
+            carry.representation_index];
+        auto const& lifetime =
+            *cyclic_region_invocation_lifetimes[*restore_region];
+        representation.live_interval.begin = std::min(
+            representation.live_interval.begin, lifetime.begin);
+        representation.live_interval.end = std::max(
+            representation.live_interval.end, lifetime.end);
+        if (auto updated = update_transient_request(
+                carry.representation_index);
+            !updated) {
+            return std::unexpected(std::move(updated.error()));
+        }
+    }
+
     auto arena = plan_transient_arena(transient_requests);
     if (!arena) return std::unexpected(std::move(arena.error()));
     if (arena->allocations.size() != transient_representations.size()) {

@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+shape="${1:-feedback}"
+size="${2:-64}"
+seconds="${3:-30}"
+repo_root="$(git rev-parse --show-toplevel)"
+build_dir="${IV_BUILD_DIR:-${repo_root}/build-release}"
+benchmark="${build_dir}/benchmark/iv_edit_latency_benchmark"
+
+if ! command -v perf >/dev/null 2>&1; then
+    echo "perf is not available; enter the repository's default Nix development shell" >&2
+    exit 1
+fi
+if [[ ! -x "${benchmark}" ]]; then
+    echo "benchmark executable not found: ${benchmark}" >&2
+    exit 1
+fi
+if [[ ! "${size}" =~ ^[1-9][0-9]*$ || ! "${seconds}" =~ ^[1-9][0-9]*$ ]]; then
+    echo "usage: $0 [voices|chain|mixed|feedback] [positive-size] [positive-seconds]" >&2
+    exit 1
+fi
+
+profile_dir="$(mktemp -d "${build_dir}/iv-perf-${shape}-${size}.XXXXXX")"
+raw_data="${profile_dir}/perf.data"
+jit_data="${profile_dir}/perf.jit.data"
+report="${profile_dir}/report.txt"
+
+echo "Recording ${shape}, size ${size}, for ${seconds} steady-state seconds"
+echo "Profile directory: ${profile_dir}"
+
+JITDUMPDIR="${profile_dir}" IV_ORC_PERF_JITDUMP=1 \
+    perf record -k 1 -F 999 -e cycles:u --call-graph dwarf \
+        -o "${raw_data}" -- \
+        "${benchmark}" \
+            --shape "${shape}" \
+            --size "${size}" \
+            --profile-seconds "${seconds}"
+
+if [[ -z "$(find "${profile_dir}" -type f -name 'jit-*.dump' -print -quit)" ]]; then
+    echo "LLVM produced no ORC jitdump; the benchmark likely exited before profiling" >&2
+    echo "Raw perf data remains at: ${raw_data}" >&2
+    exit 1
+fi
+
+perf inject -j -i "${raw_data}" -o "${jit_data}"
+perf report --stdio --no-children --comms iv_edit_latency \
+    -i "${jit_data}" > "${report}"
+
+echo "Symbolized samples: ${jit_data}"
+echo "Text report:        ${report}"
+echo "Inspect interactively with: perf report --comms iv_edit_latency -i '${jit_data}'"
+echo "Inspect one function with:  perf annotate -i '${jit_data}' --symbol FUNCTION"

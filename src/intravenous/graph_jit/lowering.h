@@ -2,6 +2,7 @@
 
 #include <intravenous/graph_jit/package_callback_abi.h>
 #include <intravenous/graph_jit/realtime_port_state_plan.h>
+#include <intravenous/graph_jit/region_specialization.h>
 #include <intravenous/graph_jit/realtime_port_state_transition.h>
 #include <intravenous/graph_jit/port_realization.h>
 #include <intravenous/node/layout.h>
@@ -131,6 +132,9 @@ struct LoweringInput {
     // than embedding the native pointer bytes stored in configured node objects.
     std::span<ConfigRelocation const> config_relocations{};
     LoweringTransitionInput const* transition = nullptr;
+    // Compiles or reuses the steady root's region specializations. Without
+    // it every cyclic region runs through the interpreter.
+    RegionSpecializationProvider* region_specializations = nullptr;
 };
 
 // Names of the generated project-module operations. The realtime root is not
