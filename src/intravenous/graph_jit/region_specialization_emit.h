@@ -74,7 +74,12 @@ emit_region_specialization(
 // private constant global holding them. A load from a constant global whose
 // bytes repeat, such as an immutable input's ring, becomes its value when the
 // address's variable part is a multiple of the repetition period: a ring slot
-// computed at run time then still reads a constant. Run after the package
+// computed at run time then still reads a constant. A load of a known field
+// whose workspace address has variable index terms, each a phi or select of a
+// few integer constants, becomes that field's value when every possible
+// address holds one value. With one such term it otherwise becomes a phi or
+// select of the field values. A loop over a step's bindings that unrolling
+// keeps then still reads each binding's constants. Run after the package
 // callbacks are inlined. Returns the number of loads replaced.
 std::size_t substitute_region_workspace_values(
     llvm::Module& module,

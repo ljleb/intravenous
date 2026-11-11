@@ -112,6 +112,15 @@ llvm_map_components_to_libnames(IV_PACKAGE_CALLBACK_ABI_LLVM_LIBS
     support)
 target_link_libraries(intravenous_package_callback_abi_tests PRIVATE
     ${IV_PACKAGE_CALLBACK_ABI_LLVM_LIBS})
+# Builds LLVM IR directly against the GraphJit objects, which the host
+# runtime objects already link together with their LLVM libraries.
+add_iv_gtest(
+    intravenous_region_specialization_substitution_tests
+    region_specialization_substitution_gtest.cpp)
+target_include_directories(intravenous_region_specialization_substitution_tests PRIVATE
+    ${LLVM_INCLUDE_DIRS})
+target_compile_definitions(intravenous_region_specialization_substitution_tests PRIVATE
+    ${LLVM_DEFINITIONS})
 add_iv_gtest(
     intravenous_node_build_request_tests
     node_build_request_gtest.cpp)

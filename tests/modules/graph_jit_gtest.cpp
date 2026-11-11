@@ -13432,7 +13432,19 @@ TEST_F(GraphJitRuntimeFixture, MultipleNodesAndBlockSlicing)
 
 TEST_F(GraphJitRuntimeFixture, NativeTickCallbacksReceiveReadyFrontierBatch)
 {
-    auto compiled = compile(graph_jit_native_batch_tick_module_id, 110);
+    // The interpreter batches the steps of an acyclic ready group that have
+    // no region specialization; compiling without them exercises it here.
+    iv::GraphJit interpreter_jit(iv::GraphJitConfig{
+        .sample_rate = 88200,
+        .block_size = 64,
+        .specialize_regions = false,
+    });
+    auto compiled = interpreter_jit.compile(iv::GraphJitCompileRequest{
+        .project_generation = 110,
+        .graph = configured_module_graph(
+            *revision, graph_jit_native_batch_tick_module_id),
+        .definitions = definitions,
+    });
     ASSERT_TRUE(compiled.succeeded())
         << (compiled.diagnostics.empty()
                 ? ""
@@ -13466,7 +13478,19 @@ TEST_F(GraphJitRuntimeFixture, NativeTickCallbacksReceiveReadyFrontierBatch)
 
 TEST_F(GraphJitRuntimeFixture, NativeTickBatchScalarizesAliasedCallbackStorage)
 {
-    auto compiled = compile(graph_jit_native_batch_aliasing_module_id, 111);
+    // The interpreter's native batch path; see
+    // NativeTickCallbacksReceiveReadyFrontierBatch.
+    iv::GraphJit interpreter_jit(iv::GraphJitConfig{
+        .sample_rate = 88200,
+        .block_size = 64,
+        .specialize_regions = false,
+    });
+    auto compiled = interpreter_jit.compile(iv::GraphJitCompileRequest{
+        .project_generation = 111,
+        .graph = configured_module_graph(
+            *revision, graph_jit_native_batch_aliasing_module_id),
+        .definitions = definitions,
+    });
     ASSERT_TRUE(compiled.succeeded())
         << (compiled.diagnostics.empty()
                 ? ""
@@ -14115,7 +14139,9 @@ TEST_F(GraphJitRuntimeFixture, AcyclicRegionWithImmutableHistoryRunsSpecialized)
                 : interpreted.diagnostics.front().message);
     ASSERT_EQ(specialized.timings.size(), 1u);
     auto const& timings = specialized.timings.front();
-    EXPECT_EQ(timings.region_specializations_compiled, 1u);
+    // One specialization for the ramp, which reads no immutable input, and
+    // one that both readers share.
+    EXPECT_EQ(timings.region_specializations_compiled, 2u);
     EXPECT_EQ(timings.region_specializations_reused, 1u);
     EXPECT_EQ(timings.region_specializations_skipped, 0u)
         << timings.region_specialization_skip;
@@ -14173,7 +14199,9 @@ TEST_F(GraphJitRuntimeFixture, DistinctImmutableValuesShareOneStructureSpecializ
                 : compiled.diagnostics.front().message);
     ASSERT_EQ(compiled.timings.size(), 1u);
     auto const& timings = compiled.timings.front();
-    EXPECT_EQ(timings.region_specializations_compiled, 1u);
+    // The ramp's specialization, and one structure specialization that both
+    // readers share.
+    EXPECT_EQ(timings.region_specializations_compiled, 2u);
     EXPECT_EQ(timings.region_specializations_reused, 1u);
     EXPECT_EQ(timings.region_specialization_failures, 0u)
         << timings.region_specialization_failure;

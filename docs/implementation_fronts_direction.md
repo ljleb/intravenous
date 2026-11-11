@@ -3921,8 +3921,8 @@ iterations, with the later Tick mean and maximum:
   `RealtimeStorageCostModel` sweep, which needs the Tick p50, p95, and p99
   that the edit benchmark does not yet record.
 
-*Tick percentiles in the edit benchmark (implementation status, 2026-11-11;
-accepted by the human co-author; repository-owner build pending).*
+*Tick percentiles in the edit benchmark (implementation status, 2026-11-11,
+implemented during delegated work, repository-owner build pending).*
 `RealtimeLoop` in `benchmark/iv_edit_latency_benchmark.cpp` now records every
 block's `tick_block()` duration in a ring of 2^20 atomic entries that is
 allocated before the realtime thread starts, so that thread still does not
@@ -3974,6 +3974,174 @@ Both shapes pass every provisional Tick gate in these windows. The earlier
   call sites with the spacing of the `memcpy` calls in the package's
   `tick_node_block<>` wrappers. The remaining call copied 279,552 bytes from
   `sample_carry()` once per block.
+
+*Every acyclic step is a specialization candidate (implementation status,
+2026-11-11, implemented during delegated work, repository-owner build and tests
+pending).* This supersedes the *Selection* bullet of the entry *Acyclic region
+specialization and immutable inputs read with history*. It also supersedes
+the later rule that added steps staging a participating manual-control
+timeline. Both entries stay as the record of what was implemented.
+- *Selection.* `build_region_specializations()` now plans every cyclic region
+  and the one step of every acyclic region. The earlier rule required an
+  immutable input or a staged manual-control timeline. It assumed that
+  inlining a step without one removed too little to pay for its compilation.
+  The `mixed` profile measured the opposite: the 63 unspecialized subtract
+  callbacks took about a third of the Tick. `plan_region_specialization()`
+  still keeps a step on the interpreter for a capture, Tick slots, an
+  activity plan, event ports, a Random Access input, or a non-project-rate
+  pace. Each such step now counts in `region_specializations_skipped`.
+- *Compile cost.* Equal steps share one compilation, and steps that differ
+  only in immutable values share one structure specialization. The added
+  compilations therefore grow with distinct steps, not with instances. In
+  the benchmark shapes they are the sinks, the subtracts, and the warpers.
+- *Native batches.* An acyclic ready group used to run its unspecialized
+  steps as one native `tick_block_batch()` call. A specialized step now runs
+  its own code. The native batch remains the path for steps that keep the
+  interpreter. `NativeTickCallbacksReceiveReadyFrontierBatch` and
+  `NativeTickBatchScalarizesAliasedCallbackStorage` test that path, so they
+  now compile with `GraphJitConfig::specialize_regions = false`, as
+  `IndependentFeedbackRegionsBatchEachExecutionPhase` already does for cyclic
+  batches.
+- *Coverage.* `AcyclicRegionWithImmutableHistoryRunsSpecialized` and
+  `DistinctImmutableValuesShareOneStructureSpecialization` now also compile
+  the ramp source, which reads no immutable input: 2 compiled and 1 reused.
+  The first test compares the readers' inputs, which are the specialized
+  ramp's output, with the interpreter. Under the default `GraphJitConfig`,
+  every test whose graph has an eligible acyclic step now runs its
+  specialization.
+- *Measurement.* After verification, rerun the four edit benchmarks and both
+  profiles. The `mixed` subtract callbacks and the small `memmove()` calls
+  should leave its profile. The initial edits pay for the added compilations,
+  and `mixed` should stay within the 500 ms bulk target.
+
+*Every-step selection verification and the variable-index field fold
+(repository owner and Claude, 2026-11-11; all tests passed before the fold;
+fold build and tests pending).*
+
+| Shape | Initial | Compiled / reused | Tick mean | Tick p99 | Tick max |
+|---|---:|---:|---:|---:|---:|
+| `chain` | 327 ms | 5 / 61 | 115 us | 192 us | 227 us |
+| `voices` | 178 ms | 3 / 189 | 265 us | 375 us | 578 us |
+| `mixed` | 538 ms | 8 / 312 | 386 us | 617 us | 913 us |
+| `feedback` | 225 ms | 3 / 189 | 370 us | 518 us | 726 us |
+
+The Tick columns are the mean over each benchmark's later edits. Every later
+interactive median is within 21 ms except `chain` configuration (74 ms) and
+each shape's first connect miss. The 30-second profiles measured 349.9 us
+mean, 676.3 us p99, and 1,219.5 us maximum for `mixed`, against 521.3 us,
+965.4 us, and 1,271.2 us before. `feedback` stayed at 358.5 us mean. The
+`voices` mean fell from 362 us to 265 us. The `mixed` initial edit now exceeds
+the 500 ms bulk target by 38 ms.
+- *`mixed` profile.* Performance-core cycles fell from 15.03 billion to
+  11.12 billion. Package node code fell from 36.10% to 0.24%; the
+  specializations take 49.60%. `memmove()` kept about 1.1 billion cycles,
+  now 9.95%.
+- *Correction.* The earlier attribution of the 4-byte `memmove()` calls to
+  the package's `tick_node_block<>` wrappers was wrong. The same call sites
+  ran at the same addresses before and after this change, each in a
+  specialization's own page. The loop is the contiguous-window gather of
+  `prepare_reflected_continuous_inputs()`. When an input's history window
+  wraps its ring, it copies each value with
+  `std::memcpy(..., binding.storage.geometry.value_size_bytes)`, and that
+  size reached the code as a run-time load. In the dumped `mixed` IR, all 30
+  variable-size copies in the six regions load their size from
+  `%workspace + %input * 224 + 128`, where `%input` is a phi of 0 and 1: the
+  loop over the step's two input bindings, which unrolling kept.
+  `substitute_region_workspace_values()` resolved only constant workspace
+  offsets, so it left that load.
+- *Variable-index field fold.* The substitution now also resolves a load
+  whose workspace address has variable GEP index terms that each hold one of
+  a few known integers. Those are constants, phis and selects of them, and
+  integer extensions of such values. It enumerates at most 8 values per term
+  and 64 addresses per load. Every address must name known, non-pointer
+  bytes. When all addresses hold one value, the load becomes that constant,
+  which makes the gather's copy size 4 and lets LLVM inline it. With one term
+  it otherwise becomes a phi or select of the field values, beside the index's
+  own phi or before the load for a select. Known fields do not change during
+  the call, so each replacement reads what the load would.
+  `RegionSpecializationSubstitution.ResolvesFieldsAtPhiAndSelectIndexedAddresses`
+  checks the constant, phi, select, and sign-extended cases on hand-built IR.
+  `KeepsLoadsWhoseAddressesCanReachUnknownBytes` checks that an address
+  reaching an unknown byte keeps its load.
+- *Profile records.* `scripts/profile_edit_benchmark.sh` now writes the
+  benchmark's output to `benchmark.log`, the steady Tick statistics and the
+  performance-core sample header to `summary.txt`, and points
+  `build-release/iv-perf-<shape>-<size>.latest` at the newest profile
+  directory.
+- *Next.* After verification, rerun the four edit benchmarks and both
+  profiles. `memmove()` should leave the `mixed` profile. The `mixed` initial
+  edit then still needs its 38 ms. The remaining step-4 mechanism, package
+  preparation ahead of compilation, is the measured candidate for it.
+
+*Variable-index field fold verification (repository owner and Claude,
+2026-11-11; all 866 tests passed).*
+- *Invalid timings.* The run after this build cannot measure Tick or edit
+  latency. A Nix build compiled CUDA code (`cicc`, `ptxas`) on every core
+  during it, at a load average of 22-25 on 16 hardware threads. Code that this
+  change does not touch slowed by the same factor as the rest. In the `voices`
+  delete-node edit, `NodeInstances` time rose from 1.45 ms to 6.06 ms, capture
+  from 0.50 ms to 3.06 ms, and the lowering plan from 4.68 ms to 23.02 ms. The
+  `feedback` profile counted 36.7 billion performance-core cycles, against
+  17.9 billion for the same 30-second workload, as when another thread shares
+  each core. Its 580 us mean and 5.4 ms maximum, and the `mixed` 767 us mean,
+  are not results of this change.
+- *The fold, verified independently of load.* The `mixed` region IR has no
+  variable-size copy left: 0 in all eight specializations, against 30 in six
+  before. A gdb trace of the realtime thread recorded no `memmove()` call from
+  a specialization's code.
+- *Correction.* The earlier entry attributed the one 279,552-byte copy per
+  block to `sample_carry()`. The trace places it in `execute_realtime_root()`,
+  at the inlined `initialize_bindings()` copy of `binding_template` into the
+  root scratch. That copy runs on every root call. A specialized step does
+  not read those template bytes: its specialization copies its own template
+  into its workspace and reads only the pointer fields that
+  `initialize_bindings()` writes after the copy. The remaining small
+  `memmove()` calls come from `sample_carry()`, which copies each retained
+  value with a separate `memcpy()` of a run-time size.
+- *Next.* Rerun the four edit benchmarks and both profiles on an idle machine.
+  The per-call binding-template copy is the next measured root cost.
+
+*Every-step selection and variable-index fold verification on an idle machine
+(repository owner, 2026-11-11, all 866 tests passed).* The fresh run confirms
+that both delegated changes preserve the existing test suite. It also confirms
+that every-step specialization improves realtime execution without moving a
+small edit outside the interactive targets.
+
+| Shape | Initial | Add | Configure | Connect | Delete | Disconnect |
+|---|---:|---:|---:|---:|---:|---:|
+| `chain` | 260.76 ms | 4.06 ms | 66.76 ms | 3.85 ms | 3.94 ms | 3.81 ms |
+| `voices` | 160.88 ms | 10.88 ms | 10.93 ms | 11.12 ms | 11.05 ms | 10.50 ms |
+| `mixed` | 424.44 ms | 18.81 ms | 19.22 ms | 18.23 ms | 19.16 ms | 18.04 ms |
+| `feedback` | 177.67 ms | 19.26 ms | 20.66 ms | 19.04 ms | 19.56 ms | 19.01 ms |
+
+The initial `mixed` build is now below the 500 ms bulk target. Every small-edit
+median is below 100 ms. `chain` configuration remains the slowest small edit
+because each new immutable value compiles one value specialization.
+
+The 30-second profiles contain 5,625 blocks each:
+
+| Shape | Mean | p50 | p95 | p99 | Maximum | Mean / p99 / maximum share of the block |
+|---|---:|---:|---:|---:|---:|---:|
+| `feedback` | 287.62 us | 284.08 us | 355.73 us | 385.37 us | 756.80 us | 5.39% / 7.23% / 14.19% |
+| `mixed` | 327.47 us | 312.33 us | 464.74 us | 584.53 us | 1,692.37 us | 6.14% / 10.96% / 31.73% |
+
+Against the verified generated-composition result, the `feedback` mean fell
+from 395.35 us to 287.62 us. This is a 27% reduction. Performance-core cycles
+fell from 17.45 billion to 15.98 billion. Against the earlier `mixed` profile,
+the mean fell from 521.3 us to 327.47 us. Performance-core cycles fell from
+15.03 billion to 10.05 billion.
+
+The `mixed` profile no longer attributes a material share to package node
+callbacks. Region specializations now contain that work. `memmove()` remains
+at 3.53% in `mixed` and 1.62% in `feedback`. The variable-index fold removed
+the specialization's variable-size input gathers. The remaining calls come
+from root binding initialization and sample carry, as the preceding trace
+records.
+
+This measurement validates every eligible acyclic step as a specialization
+candidate for the current benchmark set. It does not establish a general
+compile-cost rule for future node types. The planner still rejects every step
+whose required behavior the specialization does not implement.
 
 Measurement (implementation status, 2026-11-06): setting `IV_EDIT_TIMING=1` makes
 `ProjectGraph::rebuild_locked()` write one "edit timing" entry per published

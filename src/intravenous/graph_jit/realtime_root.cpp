@@ -4585,23 +4585,6 @@ private:
         return std::nullopt;
     }
 
-    // Some Sequential input of a step of the region reads an immutable value.
-    bool reads_immutable_input(detail::ExecutionRegionPlan const& region) const
-    {
-        for (auto const step_index : region.primitive_steps) {
-            if (step_index >= plan_.steps.size()) continue;
-            auto const& sample =
-                plan_.sample_ports.primitives[plan_.steps[step_index].primitive];
-            for (auto const& input : sample.inputs) {
-                if (!input.random_access && !input.invocation_supplied
-                    && immutable_input_value(input)) {
-                    return true;
-                }
-            }
-        }
-        return false;
-    }
-
     bool primitive_stages_manual_controls(RootPrimitive const& primitive) const
     {
         return std::ranges::any_of(
@@ -4610,21 +4593,6 @@ private:
                 return control < plan_.sample_ports.manual_controls.size()
                     && plan_.sample_ports.manual_controls[control].stages_timeline;
             });
-    }
-
-    // Some step keeps a participating ManualControlPlan timeline current.
-    // Dynamic code reads that timeline. Settled code can read an immutable
-    // binding while this shadow timeline remains ready for code-only
-    // activation of the dynamic replacement.
-    bool stages_manual_controls(detail::ExecutionRegionPlan const& region) const
-    {
-        for (auto const step_index : region.primitive_steps) {
-            if (step_index >= plan_.steps.size()) continue;
-            auto const& primitive = plan_.primitives[
-                plan_.steps[step_index].primitive];
-            if (primitive_stages_manual_controls(primitive)) return true;
-        }
-        return false;
     }
 
     // The specialization request of one region, or why it keeps the
@@ -4775,12 +4743,15 @@ private:
 
     // Attaches the provider's compiled code to every region it specializes. A
     // region it does not specialize keeps the interpreter. Every cyclic region
-    // is a candidate. An acyclic region is a candidate when its step reads an
-    // immutable input or stages a participating manual-control timeline. A
-    // structure group with one value tuple computes with those values as LLVM
-    // constants. A group with several tuples shares code that reads them from
-    // the existing rings. A dynamic manual control uses that structure form.
-    // This is a compile-cost selection, not a limit of the code.
+    // and every acyclic region's one step is a candidate. Inlining a step's
+    // callback removes its generic port access and callback wrapper even when
+    // no input is immutable; the measured `mixed` subtract callbacks spent
+    // about a third of that graph's Tick there. Equal steps share one
+    // compilation, so the cost grows with distinct steps, not with instances.
+    // A structure group with one value tuple computes with those values as
+    // LLVM constants. A group with several tuples shares code that reads them
+    // from the existing rings. A dynamic manual control uses that structure
+    // form.
     void build_region_specializations()
     {
         if (!specializations_) return;
@@ -4797,12 +4768,7 @@ private:
              region_index < execution.regions.size(); ++region_index) {
             auto const& region = execution.regions[region_index];
             if (region.primitive_steps.empty()) continue;
-            if (!region.cyclic
-                && (region.primitive_steps.size() != 1
-                    || (!reads_immutable_input(region)
-                        && !stages_manual_controls(region)))) {
-                continue;
-            }
+            if (!region.cyclic && region.primitive_steps.size() != 1) continue;
             auto planned = plan_region_specialization(region);
             if (!planned) {
                 specializations_->region_kept_on_interpreter(planned.error());

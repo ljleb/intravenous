@@ -30,9 +30,10 @@ struct GraphJitConfig {
     // stack_budget_bytes is enforced against the packed realtime-root stack,
     // not independently against every buffer choice.
     RealtimeStorageCostModel realtime_storage_cost_model{};
-    // Compile eligible cyclic regions into cached region specializations
-    // (graph_jit/region_specialization.h). Off, every region runs through the
-    // realtime root's interpreter; tests and measurements compare the two.
+    // Compile every eligible cyclic region and acyclic step into cached region
+    // specializations (graph_jit/region_specialization.h). Off, every region
+    // runs through the realtime root's interpreter; tests and measurements
+    // compare the two.
     bool specialize_regions = true;
     // Budget of the recent-use region specialization cache, in bytes of
     // allocated code memory: the whole pages that JITLink's in-process memory
@@ -257,11 +258,12 @@ struct GraphJitCompileTimings {
     std::uint64_t instructions_before_optimization = 0;
     std::uint64_t instructions_after_optimization = 0;
     // Region specializations of the steady root: compiled by this
-    // compilation, reused from the cache, failed, and cyclic regions skipped
-    // because they need work the specialization does not compile. A failed or
-    // skipped region runs through the interpreter. region_specialization_us
-    // is the compile time of the compiled ones, inside lowering_emit_us. The
-    // strings hold the first failure and the first skip reason.
+    // compilation, reused from the cache, failed, and eligible regions or
+    // acyclic steps skipped because they need work the specialization does
+    // not compile. A failed or skipped candidate runs through the interpreter.
+    // region_specialization_us is the compile time of the compiled ones,
+    // inside lowering_emit_us. The strings hold the first failure and the
+    // first skip reason.
     std::uint64_t region_specializations_compiled = 0;
     std::uint64_t region_specializations_reused = 0;
     std::uint64_t region_specialization_failures = 0;

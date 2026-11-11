@@ -1109,6 +1109,229 @@ llvm::Constant* periodic_constant_value(
     return known_value(type, value);
 }
 
+// At most this many integers per variable address term, and this many
+// addresses per load, are enumerated.
+constexpr std::size_t maximum_term_candidates = 8;
+constexpr std::size_t maximum_address_candidates = 64;
+
+// Every integer that value can hold: the value of an integer constant, the
+// union of what the operands of a phi or select of such values can hold, or
+// an integer extension or truncation of such a value. A phi always holds one
+// of its incoming values and a select one of its arms, so the set is exact.
+// Nothing when an operand is anything else or the set exceeds
+// maximum_term_candidates.
+std::optional<llvm::SmallVector<llvm::APInt, 8>> integer_candidates(
+    llvm::Value* value,
+    unsigned depth = 0)
+{
+    llvm::SmallVector<llvm::APInt, 8> result;
+    if (auto* constant = llvm::dyn_cast<llvm::ConstantInt>(value)) {
+        result.push_back(constant->getValue());
+        return result;
+    }
+    if (depth >= 4) return std::nullopt;
+    if (auto* cast = llvm::dyn_cast<llvm::CastInst>(value);
+        cast && cast->getType()->isIntegerTy()) {
+        auto const bits = cast->getType()->getIntegerBitWidth();
+        auto const opcode = cast->getOpcode();
+        if (opcode != llvm::Instruction::SExt && opcode != llvm::Instruction::ZExt
+            && opcode != llvm::Instruction::Trunc) {
+            return std::nullopt;
+        }
+        auto nested = integer_candidates(cast->getOperand(0), depth + 1);
+        if (!nested) return std::nullopt;
+        for (auto const& candidate : *nested) {
+            auto converted = opcode == llvm::Instruction::SExt
+                ? candidate.sext(bits)
+                : opcode == llvm::Instruction::ZExt ? candidate.zext(bits)
+                                                     : candidate.trunc(bits);
+            if (std::ranges::find(result, converted) == result.end()) {
+                result.push_back(std::move(converted));
+            }
+        }
+        return result;
+    }
+    llvm::SmallVector<llvm::Value*, 4> operands;
+    if (auto* phi = llvm::dyn_cast<llvm::PHINode>(value)) {
+        for (auto& incoming : phi->incoming_values()) operands.push_back(incoming.get());
+    } else if (auto* select = llvm::dyn_cast<llvm::SelectInst>(value)) {
+        operands.push_back(select->getTrueValue());
+        operands.push_back(select->getFalseValue());
+    } else {
+        return std::nullopt;
+    }
+    for (auto* operand : operands) {
+        // A phi that keeps its own value along a back edge adds nothing.
+        if (operand == value) continue;
+        auto nested = integer_candidates(operand, depth + 1);
+        if (!nested) return std::nullopt;
+        for (auto const& candidate : *nested) {
+            if (std::ranges::find(result, candidate) != result.end()) continue;
+            if (result.size() == maximum_term_candidates) return std::nullopt;
+            result.push_back(candidate);
+        }
+    }
+    if (result.empty()) return std::nullopt;
+    return result;
+}
+
+// A load address whose base resolves to a workspace offset, as
+// workspace_offset() resolves it, plus a constant and variable GEP index
+// terms, each with its scale in bytes.
+struct VariableWorkspaceAddress {
+    std::size_t base = 0;
+    llvm::APInt constant{};
+    llvm::SmallVector<std::pair<llvm::Value*, llvm::APInt>, 4> terms{};
+};
+
+std::optional<VariableWorkspaceAddress> variable_workspace_address(
+    llvm::Value* pointer,
+    llvm::Value const* workspace,
+    llvm::DataLayout const& layout,
+    std::map<std::size_t, RegionSpecializationWorkspaceContents::PointerField const*> const&
+        pointers)
+{
+    auto const bits = layout.getIndexTypeSizeInBits(pointer->getType());
+    VariableWorkspaceAddress result{.constant = llvm::APInt(bits, 0)};
+    for (unsigned depth = 0; depth < 16; ++depth) {
+        auto* step = llvm::dyn_cast<llvm::GEPOperator>(pointer);
+        if (!step) break;
+        llvm::SmallMapVector<llvm::Value*, llvm::APInt, 4> variables;
+        llvm::APInt offset(bits, 0);
+        if (!step->collectOffset(layout, bits, variables, offset)) return std::nullopt;
+        result.constant += offset;
+        for (auto const& [value, scale] : variables) {
+            auto const existing = std::ranges::find(
+                result.terms, value, &std::pair<llvm::Value*, llvm::APInt>::first);
+            if (existing != result.terms.end()) {
+                existing->second += scale;
+            } else {
+                result.terms.emplace_back(value, scale);
+            }
+        }
+        pointer = step->getPointerOperand();
+    }
+    if (result.terms.empty()) return std::nullopt;
+    auto const base = workspace_offset(pointer, workspace, layout, pointers);
+    if (!base) return std::nullopt;
+    result.base = *base;
+    return result;
+}
+
+// The value that load reads when its workspace address has variable index
+// terms that each hold one of a few known integers, such as a loop over a
+// step's bindings that unrolling has not removed. Each address the terms can
+// form must lie in the workspace and name a known, non-pointer field; known
+// fields do not change during a call. When every address holds one value,
+// that value replaces the load. When the one variable term is a phi or
+// select of integer constants, a phi or select of the corresponding field
+// values does: it holds the field of the address that the original selects.
+llvm::Value* variable_known_value(
+    llvm::LoadInst& load,
+    llvm::Value const* workspace,
+    llvm::DataLayout const& layout,
+    std::map<std::size_t, RegionSpecializationWorkspaceContents::PointerField const*> const&
+        pointers,
+    RegionSpecializationWorkspaceContents const& contents)
+{
+    auto* type = load.getType();
+    if (type->isPointerTy()) return nullptr;
+    auto const size = layout.getTypeStoreSize(type);
+    if (size.isScalable() || size.getFixedValue() == 0) return nullptr;
+    auto const extent = static_cast<std::size_t>(size.getFixedValue());
+    auto const address = variable_workspace_address(
+        load.getPointerOperand(), workspace, layout, pointers);
+    if (!address) return nullptr;
+    auto const bits = address->constant.getBitWidth();
+
+    llvm::SmallVector<llvm::SmallVector<llvm::APInt, 8>, 4> candidates;
+    std::size_t combinations = 1;
+    for (auto const& [value, scale] : address->terms) {
+        (void)scale;
+        auto values = integer_candidates(value);
+        if (!values) return nullptr;
+        // GEP indices are sign-extended to the index width.
+        for (auto& candidate : *values) candidate = candidate.sextOrTrunc(bits);
+        combinations *= values->size();
+        if (combinations > maximum_address_candidates) return nullptr;
+        candidates.push_back(std::move(*values));
+    }
+
+    // The field value at the address that one choice of term values forms.
+    auto value_at = [&](std::span<llvm::APInt const> choice) -> llvm::Constant* {
+        auto offset = llvm::APInt(bits, address->base) + address->constant;
+        for (std::size_t term = 0; term < choice.size(); ++term) {
+            offset += address->terms[term].second * choice[term];
+        }
+        if (offset.getActiveBits() > 64) return nullptr;
+        auto const begin = offset.getZExtValue();
+        if (begin > contents.bytes.size() || extent > contents.bytes.size() - begin) {
+            return nullptr;
+        }
+        // Pointer fields are never marked known, so this also excludes them.
+        auto const first = static_cast<std::size_t>(begin);
+        auto const known = std::span<std::uint8_t const>{contents.known}.subspan(first, extent);
+        if (!std::ranges::all_of(known, [](std::uint8_t byte) { return byte != 0; })) {
+            return nullptr;
+        }
+        return known_value(
+            type, std::span<std::byte const>{contents.bytes}.subspan(first, extent));
+    };
+
+    llvm::Constant* uniform = nullptr;
+    auto agree = true;
+    llvm::SmallVector<llvm::APInt, 4> choice(address->terms.size(), llvm::APInt(bits, 0));
+    for (std::size_t combination = 0; combination < combinations; ++combination) {
+        auto remaining = combination;
+        for (std::size_t term = 0; term < candidates.size(); ++term) {
+            choice[term] = candidates[term][remaining % candidates[term].size()];
+            remaining /= candidates[term].size();
+        }
+        auto* value = value_at(choice);
+        if (!value) return nullptr;
+        if (!uniform) {
+            uniform = value;
+        } else if (value != uniform) {
+            agree = false;
+        }
+    }
+    if (agree) return uniform;
+
+    if (address->terms.size() != 1) return nullptr;
+    auto* variable = address->terms.front().first;
+    auto field_for = [&](llvm::Value* index) -> llvm::Constant* {
+        auto* constant = llvm::dyn_cast<llvm::ConstantInt>(index);
+        if (!constant) return nullptr;
+        llvm::APInt const chosen = constant->getValue().sextOrTrunc(bits);
+        return value_at(std::span<llvm::APInt const>{&chosen, 1});
+    };
+    if (auto* phi = llvm::dyn_cast<llvm::PHINode>(variable)) {
+        llvm::SmallVector<llvm::Constant*, 8> values;
+        for (auto& incoming : phi->incoming_values()) {
+            auto* value = field_for(incoming.get());
+            if (!value) return nullptr;
+            values.push_back(value);
+        }
+        // The new phi sits in the variable's block, beside it, so it holds
+        // the corresponding field wherever the variable is defined.
+        auto* known = llvm::PHINode::Create(
+            type, phi->getNumIncomingValues(), "iv.region.known", phi->getIterator());
+        for (unsigned index = 0; index < phi->getNumIncomingValues(); ++index) {
+            known->addIncoming(values[index], phi->getIncomingBlock(index));
+        }
+        return known;
+    }
+    if (auto* select = llvm::dyn_cast<llvm::SelectInst>(variable)) {
+        auto* when_true = field_for(select->getTrueValue());
+        auto* when_false = field_for(select->getFalseValue());
+        if (!when_true || !when_false) return nullptr;
+        return llvm::SelectInst::Create(
+            select->getCondition(), when_true, when_false, "iv.region.known",
+            load.getIterator());
+    }
+    return nullptr;
+}
+
 } // namespace
 
 std::size_t substitute_region_workspace_values(
@@ -1166,6 +1389,9 @@ std::size_t substitute_region_workspace_values(
                 if (!offset) {
                     if (auto* value = periodic_constant_value(*load, layout, periods)) {
                         replacements.emplace_back(load, value);
+                    } else if (auto* known = variable_known_value(
+                                   *load, workspace, layout, pointers, contents)) {
+                        replacements.emplace_back(load, known);
                     }
                     continue;
                 }
