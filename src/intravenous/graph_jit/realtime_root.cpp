@@ -151,6 +151,15 @@ struct BindingPointer {
     std::size_t byte_offset = 0;
 };
 
+// One static part of the reflected binding area that an interpreted primitive
+// reads. Specialized primitives build their static bindings in the reusable
+// specialization workspace and need only the pointer fields below.
+struct BindingTemplateCopy {
+    std::size_t scratch_offset = 0;
+    std::size_t template_offset = 0;
+    std::size_t size = 0;
+};
+
 // The Tick runtime slots of one primitive, resolved against its port plans.
 struct RootTickSlots {
     TickNodeInvocationPlan invocation{};
@@ -349,10 +358,13 @@ struct RealtimeRootPlan {
     std::vector<RootMaterialization> materializations{};
     std::vector<std::vector<RootContribution>> compositions{};
     std::vector<std::vector<RootContribution>> feedback_writes{};
-    // The reflected binding arrays of every primitive, copied to
-    // binding_offset in the root scratch at every call, and the pointer fields
-    // written after that copy.
+    // The reflected binding arrays of every primitive. Only the coalesced
+    // ranges used by interpreted primitives are copied into the root scratch.
+    // Specialized primitives build their static records in the shared
+    // specialization workspace. Pointer fields are written separately for
+    // both paths because their addresses are resolved per root call.
     std::vector<std::byte> binding_template{};
+    std::vector<BindingTemplateCopy> binding_template_copies{};
     std::vector<BindingPointer> binding_pointers{};
     std::size_t binding_offset = 0;
     std::size_t scratch_size = 0;
@@ -1350,11 +1362,12 @@ void run_operations(
 void initialize_bindings(RootFrame& frame) noexcept
 {
     auto const& plan = frame.plan;
-    if (plan.binding_template.empty()) return;
-    std::memcpy(
-        frame.scratch + plan.binding_offset,
-        plan.binding_template.data(),
-        plan.binding_template.size());
+    for (auto const& copy : plan.binding_template_copies) {
+        std::memcpy(
+            frame.scratch + copy.scratch_offset,
+            plan.binding_template.data() + copy.template_offset,
+            copy.size);
+    }
     for (auto const& pointer : plan.binding_pointers) {
         std::byte* base = nullptr;
         switch (pointer.base) {
@@ -2533,6 +2546,7 @@ public:
         if (auto valid = build_steps(); !valid) return valid;
         if (auto valid = build_groups(); !valid) return valid;
         build_region_specializations();
+        build_binding_template_copies();
         return build_layout();
     }
 
@@ -4859,6 +4873,52 @@ private:
                 }
             }
             group.interpreted_steps = std::move(interpreted);
+        }
+    }
+
+    // The generic interpreter reads every static binding field. A region
+    // specialization instead copies its own static templates and reads only
+    // the root-resolved storage and State pointers. Keep the ABI-sized root
+    // binding area for those pointers, but do not touch its other bytes for a
+    // specialized or unexecuted primitive. Consecutive interpreted primitives
+    // become one memcpy, so a fully interpreted root keeps the old single-copy
+    // cost rather than replacing it with many small calls.
+    void build_binding_template_copies()
+    {
+        std::vector<std::uint8_t> specialized(plan_.primitives.size());
+        for (auto const& region : plan_.regions) {
+            if (!region.specialization) continue;
+            for (auto const step : region.specialization->steps) {
+                if (step < plan_.steps.size()) {
+                    specialized[plan_.steps[step].primitive] = 1;
+                }
+            }
+        }
+
+        auto append = [&](std::size_t begin, std::size_t end) {
+            if (begin >= end) return;
+            auto const template_begin = begin - plan_.binding_offset;
+            if (!plan_.binding_template_copies.empty()) {
+                auto& previous = plan_.binding_template_copies.back();
+                if (previous.scratch_offset + previous.size == begin
+                    && previous.template_offset + previous.size == template_begin) {
+                    previous.size += end - begin;
+                    return;
+                }
+            }
+            plan_.binding_template_copies.push_back(BindingTemplateCopy{
+                .scratch_offset = begin,
+                .template_offset = template_begin,
+                .size = end - begin,
+            });
+        };
+
+        for (std::size_t index = 0; index < plan_.primitives.size(); ++index) {
+            if (!primitive_ready_[index] || specialized[index]) continue;
+            auto const& primitive = plan_.primitives[index];
+            append(
+                primitive.sample_inputs_offset,
+                primitive.context_offset + sizeof(ReflectedNodeTickContext));
         }
     }
 

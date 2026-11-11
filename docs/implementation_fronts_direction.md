@@ -4143,6 +4143,66 @@ candidate for the current benchmark set. It does not establish a general
 compile-cost rule for future node types. The planner still rejects every step
 whose required behavior the specialization does not implement.
 
+*Selective root binding-template copies (implemented and verified, 2026-11-11;
+all tests passed in the repository-owner run).* The preceding
+profile trace found one 279,552-byte `initialize_bindings()` copy on every root
+call. That copy initialized the reflected binding arrays of every primitive,
+including primitives whose region specialization does not read their static
+root records.
+
+- `RealtimeRootPlan::binding_template_copies` now records only the coalesced
+  byte ranges of primitives that execute through the interpreter. Consecutive
+  interpreted primitives remain one `memcpy()`, so a fully interpreted root
+  keeps the previous single-copy behavior.
+- A specialized primitive receives no static binding-template copy in the root
+  scratch. Its generated function already copies its own input, output, and
+  context templates into the one reusable specialization workspace. It reads
+  only per-call storage pointers and the `State` pointer from the prepared root
+  records. `initialize_bindings()` continues to write those pointer fields for
+  both execution paths.
+- A primitive that no `PrimitiveExecutionStep` executes receives neither a
+  static binding copy nor a specialization.
+- This slice intentionally keeps the existing ABI-sized root binding area. It
+  removes the measured memory copy without adding a second representation to
+  node callbacks. The dynamic stack allocation can therefore remain large even
+  when every primitive is specialized. The idle-machine profile must determine
+  whether stack probing or the remaining pointer writes justify the broader
+  change in which generated specializations receive their runtime pointers
+  directly and the root omits their binding records entirely.
+
+The four edit benchmarks show no material edit-latency regression. Their later
+Tick means changed as follows:
+
+| Shape | Before | After |
+|---|---:|---:|
+| `chain` | 91-98 us | 77-80 us |
+| `voices` | 231-240 us | 213-219 us |
+| `mixed` | 310-313 us | 279-294 us |
+| `feedback` | 283-293 us | 279-316 us |
+
+The 30-second profiles give the stable comparison:
+
+| Shape | Mean before / after | p99 before / after | Maximum before / after | Performance-core cycles before / after |
+|---|---:|---:|---:|---:|
+| `mixed` | 327.47 / 284.89 us | 584.53 / 469.38 us | 1,692.37 / 696.14 us | 10.05 / 9.80 billion |
+| `feedback` | 287.62 / 281.99 us | 385.37 / 427.15 us | 756.80 / 525.13 us | 15.98 / 15.71 billion |
+
+`mixed` improved by 13% at the mean, 20% at p99, and 59% at the observed
+maximum. `feedback` improved by 2% at the mean and 31% at the maximum; its p99
+rose by 11%, within a run whose p95 stayed effectively unchanged. On performance
+cores, `__memmove_avx_unaligned_erms` fell from 3.53% to 0.18% in `mixed` and
+from 1.62% to 0.18% in `feedback`. The remaining samples agree with the small
+semantic copies in `sample_carry()` rather than the removed root-template copy.
+
+`execute_realtime_root()` still accounts for 3.25% of `mixed` performance-core
+samples and 1.14% of `feedback`. This total includes representation-address
+resolution, pointer-field writes, pace cursors, activity arrays, region dispatch,
+and any dynamic-stack cost, not only binding initialization. It is too small to
+justify a direct-pointer specialization ABI without a more specific profile.
+The next dependency-ordered Front 16 work is therefore the measured
+`RealtimeStorageCostModel` sweep recorded above, not immediate removal of the
+ABI-sized binding area.
+
 Measurement (implementation status, 2026-11-06): setting `IV_EDIT_TIMING=1` makes
 `ProjectGraph::rebuild_locked()` write one "edit timing" entry per published
 rebuild to the diagnostic log (`IV_LOG_FILE`):
